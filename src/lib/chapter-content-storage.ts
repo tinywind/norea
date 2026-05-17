@@ -16,6 +16,7 @@ import {
   type ChapterStorageChapterPathInput,
   type ChapterStorageNovelPathInput,
 } from "./chapter-storage-path";
+import { clampBackfillLimit } from "./performance-budgets";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
 interface ChapterStorageRow {
@@ -72,12 +73,16 @@ function isLocalNovel(pluginId: string, value: unknown): boolean {
 
 export interface ChapterStorageRestoreResult {
   chapters: number;
+  cursorChapterId?: number | null;
+  scannedChapters?: number;
   novels: number;
 }
 
 export interface ChapterStorageRestoreOptions {
+  afterChapterId?: number;
   chapterIds?: ReadonlySet<number>;
   contentOnly?: boolean;
+  limit?: number;
 }
 
 const SELECT_CHAPTER_STORAGE_ROW = `
@@ -127,47 +132,41 @@ const SELECT_DOWNLOADED_CHAPTER_STORAGE_ROW = `
     AND c.content IS NOT NULL
 `;
 
-const SELECT_CHAPTER_STORAGE_METADATA_ROW = `
+const SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS_BY_NOVEL = `
   ${SELECT_CHAPTER_STORAGE_ROW}
-  WHERE c.id = $1
+  WHERE c.novel_id = $1
+    AND c.is_downloaded = 1
+    AND c.content IS NOT NULL
+  ORDER BY c.position, c.id
 `;
 
-const SELECT_RESTORABLE_CHAPTER_STORAGE_ROWS = `
+const SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS = `
   ${SELECT_CHAPTER_STORAGE_ROW}
-  WHERE c.content IS NULL
+  WHERE c.is_downloaded = 1
+    AND c.content IS NOT NULL
   ORDER BY c.novel_id, c.position, c.id
 `;
 
-const SELECT_DOWNLOADED_CHAPTER_IDS_BY_NOVEL = `
-  SELECT id
-  FROM chapter
-  WHERE novel_id = $1
-    AND is_downloaded = 1
-    AND content IS NOT NULL
-  ORDER BY position, id
-`;
-
-const SELECT_DOWNLOADED_CHAPTER_IDS = `
-  SELECT id
-  FROM chapter
-  WHERE is_downloaded = 1
-    AND content IS NOT NULL
-  ORDER BY novel_id, position, id
+const SELECT_CHAPTER_STORAGE_METADATA_ROW = `
+  ${SELECT_CHAPTER_STORAGE_ROW}
+  WHERE c.id = $1
 `;
 
 const UPDATE_MIRRORED_CHAPTER_CONTENT = `
   UPDATE chapter
      SET is_downloaded = 1,
          content = $1,
-         content_bytes = $2,
-         media_bytes = $3,
-         media_repair_needed = $4,
-         content_type = $5
+          content_bytes = $2,
+          media_bytes = $3,
+          media_repair_needed = $4,
+          content_type = $5,
+          media_bytes_checked_at = unixepoch()
    WHERE id = $6
 `;
 
 const LEGACY_STORAGE_MANIFEST_FILE = "storage-manifest.json";
 let legacyAndroidStorageManifestCleanup: Promise<void> | null = null;
+let activeStorageMirrorSweepCancel: (() => void) | null = null;
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -265,18 +264,45 @@ async function readStoredChapterContentFile(
 async function restoreStoredChapterContentRows(
   options: ChapterStorageRestoreOptions,
 ): Promise<ChapterStorageRestoreResult> {
+  if (options.chapterIds && options.chapterIds.size === 0) {
+    return {
+      chapters: 0,
+      cursorChapterId: null,
+      novels: 0,
+      scannedChapters: 0,
+    };
+  }
+
   const db = await getDb();
+  const params: unknown[] = [];
+  const clauses = ["c.content IS NULL"];
+  if (options.chapterIds && options.chapterIds.size > 0) {
+    const ids = [...options.chapterIds];
+    const placeholders = ids.map((id) => {
+      params.push(id);
+      return `$${params.length}`;
+    });
+    clauses.push(`c.id IN (${placeholders.join(", ")})`);
+  } else if (options.afterChapterId && options.afterChapterId > 0) {
+    params.push(options.afterChapterId);
+    clauses.push(`c.id > $${params.length}`);
+  }
+  const limit = options.limit === undefined
+    ? null
+    : clampBackfillLimit(options.limit);
+  const limitClause = limit ? `\n  LIMIT $${params.length + 1}` : "";
+  if (limit) params.push(limit);
   const rows = await db.select<ChapterStorageRow[]>(
-    SELECT_RESTORABLE_CHAPTER_STORAGE_ROWS,
+    `${SELECT_CHAPTER_STORAGE_ROW}
+  WHERE ${clauses.join(" AND ")}
+  ORDER BY c.id${limitClause}`,
+    params,
   );
-  const candidates = options.chapterIds
-    ? rows.filter((row) => options.chapterIds?.has(row.chapterId) === true)
-    : rows;
   let restoredChapters = 0;
 
   await deleteLegacyStorageManifest();
 
-  for (const row of candidates) {
+  for (const row of rows) {
     const metadata = storageMetadata(row);
     const contentFile = chapterContentRelativePath(
       metadata.novel,
@@ -308,7 +334,12 @@ async function restoreStoredChapterContentRows(
     restoredChapters += 1;
   }
 
-  return { chapters: restoredChapters, novels: 0 };
+  return {
+    chapters: restoredChapters,
+    cursorChapterId: rows.at(-1)?.chapterId ?? null,
+    novels: 0,
+    scannedChapters: rows.length,
+  };
 }
 
 export async function mirrorStoredChapterContent(
@@ -342,18 +373,41 @@ export async function mirrorStoredChapterContent(
   });
 }
 
+async function mirrorStoredChapterContentRow(
+  row: ChapterStorageRow,
+): Promise<void> {
+  if (!row.content) return;
+  const metadata = storageMetadata(row);
+
+  if (isAndroidRuntime()) {
+    const contentFile = chapterContentRelativePath(
+      metadata.novel,
+      metadata.chapter,
+    );
+    await deleteLegacyAndroidStorageManifest();
+    await writeAndroidStorageText(contentFile, row.content);
+    return;
+  }
+
+  await invoke("chapter_content_mirror_store", {
+    chapterId: row.chapterId,
+    content: row.content,
+    metadata,
+  });
+}
+
 export async function mirrorStoredNovelChapters(
   novelId: number,
 ): Promise<void> {
   if (!isTauriRuntime()) return;
 
   const db = await getDb();
-  const rows = await db.select<Array<{ id: number }>>(
-    SELECT_DOWNLOADED_CHAPTER_IDS_BY_NOVEL,
+  const rows = await db.select<ChapterStorageRow[]>(
+    SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS_BY_NOVEL,
     [novelId],
   );
   for (const row of rows) {
-    await mirrorStoredChapterContent(row.id);
+    await mirrorStoredChapterContentRow(row);
   }
 }
 
@@ -361,11 +415,11 @@ export async function mirrorAllStoredChapterContent(): Promise<number> {
   if (!isTauriRuntime()) return 0;
 
   const db = await getDb();
-  const rows = await db.select<Array<{ id: number }>>(
-    SELECT_DOWNLOADED_CHAPTER_IDS,
+  const rows = await db.select<ChapterStorageRow[]>(
+    SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS,
   );
   for (const row of rows) {
-    await mirrorStoredChapterContent(row.id);
+    await mirrorStoredChapterContentRow(row);
   }
   return rows.length;
 }
@@ -397,4 +451,62 @@ export async function restoreChapterContentStorageMirror(
 ): Promise<ChapterStorageRestoreResult> {
   if (!isTauriRuntime()) return { chapters: 0, novels: 0 };
   return restoreStoredChapterContentRows(options);
+}
+
+export function startChapterContentStorageMirrorSweep(
+  options: { batchSize?: number; delayMs?: number } = {},
+): () => void {
+  if (!isTauriRuntime()) return () => undefined;
+  if (activeStorageMirrorSweepCancel) return () => undefined;
+
+  const batchSize = clampBackfillLimit(options.batchSize ?? 25, 25);
+  const delayMs = Math.max(0, Math.floor(options.delayMs ?? 250));
+  let cancelled = false;
+  let cursorChapterId = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const cleanup = () => {
+    if (activeStorageMirrorSweepCancel === cancel) {
+      activeStorageMirrorSweepCancel = null;
+    }
+  };
+
+  const schedule = () => {
+    if (cancelled) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void step();
+    }, delayMs);
+  };
+
+  async function step(): Promise<void> {
+    if (cancelled) return;
+    try {
+      const result = await restoreChapterContentStorageMirror({
+        afterChapterId: cursorChapterId,
+        contentOnly: true,
+        limit: batchSize,
+      });
+      if (cancelled) return;
+      cursorChapterId = result.cursorChapterId ?? cursorChapterId;
+      if ((result.scannedChapters ?? 0) >= batchSize && cursorChapterId > 0) {
+        schedule();
+        return;
+      }
+    } catch (unknownError) {
+      // eslint-disable-next-line no-console
+      console.warn("[storage] chapter content mirror sweep failed", unknownError);
+    }
+    cleanup();
+  }
+
+  function cancel(): void {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+    cleanup();
+  }
+
+  activeStorageMirrorSweepCancel = cancel;
+  schedule();
+  return cancel;
 }

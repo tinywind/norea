@@ -11,7 +11,9 @@ import {
 import type { ChapterItem, SourceNovel } from "./plugins/types";
 
 export const LOCAL_IMPORT_LIMITS = {
+  cachedFileBytes: 8 * 1024 * 1024,
   fileBytes: 25 * 1024 * 1024,
+  fileReadConcurrency: 2,
   textBytes: 8 * 1024 * 1024,
   htmlBytes: 8 * 1024 * 1024,
   markdownBytes: 8 * 1024 * 1024,
@@ -47,6 +49,7 @@ export interface LocalImportAnalysis {
 }
 
 export interface LocalImportConvertedChapter extends ChapterItem {
+  binaryResource?: LocalImportBinaryResource;
   content: string;
   contentBytes: number;
   mediaResources?: EpubHtmlResource[];
@@ -57,6 +60,26 @@ export interface LocalImportConversion {
   novel: SourceNovel;
   chapters: LocalImportConvertedChapter[];
   duplicate: LocalImportDuplicateMetadata;
+}
+
+interface LocalImportConversionOptions {
+  analysis?: LocalImportAnalysis;
+}
+
+export interface LocalImportBinaryResource {
+  bytes: Uint8Array;
+  fileName: string;
+  locator: LocalImportContentLocator;
+  mediaType: string;
+}
+
+export interface LocalImportContentLocator {
+  byteLength: number;
+  fileName: string;
+  mediaType: string;
+  placeholder: string;
+  sourcePath: string;
+  storage: "chapter-media";
 }
 
 const DATA_IMAGE_SOURCE_PATTERN =
@@ -163,6 +186,45 @@ export class LocalImportError extends Error {
   }
 }
 
+function createConcurrencyLimiter(concurrency: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const drain = () => {
+    if (active >= concurrency) return;
+    const next = queue.shift();
+    if (!next) return;
+    active += 1;
+    next();
+  };
+
+  return async function limit<T>(task: () => Promise<T>): Promise<T> {
+    await new Promise<void>((resolve) => {
+      queue.push(resolve);
+      drain();
+    });
+
+    try {
+      return await task();
+    } finally {
+      active -= 1;
+      drain();
+    }
+  };
+}
+
+const limitLocalImportFileRead = createConcurrencyLimiter(
+  LOCAL_IMPORT_LIMITS.fileReadConcurrency,
+);
+const localImportByteCache = new WeakMap<
+  File,
+  { analysis: LocalImportAnalysis; bytes: Uint8Array<ArrayBuffer> }
+>();
+
+export function clearLocalImportFileCache(file: File): void {
+  localImportByteCache.delete(file);
+}
+
 function getExtension(fileName: string): string {
   const dotIndex = fileName.lastIndexOf(".");
   if (dotIndex < 0 || dotIndex === fileName.length - 1) return "";
@@ -173,6 +235,21 @@ function titleFromFileName(fileName: string): string {
   const dotIndex = fileName.lastIndexOf(".");
   const baseName = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
   return baseName.trim() || "Untitled";
+}
+
+function safeLocalImportFileName(
+  fileName: string,
+  fallbackExtension: string,
+): string {
+  const leaf = fileName.split(/[\\/]/).pop() ?? "";
+  const sanitized = leaf
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const fallback = `local-import.${fallbackExtension}`;
+  const candidate = sanitized || fallback;
+  return candidate.includes(".")
+    ? candidate
+    : `${candidate}.${fallbackExtension}`;
 }
 
 function formatFromFile(file: File): LocalImportFormat {
@@ -271,8 +348,35 @@ function duplicateMetadata(
   };
 }
 
+function cachedLocalImportBytes(
+  file: File,
+): { analysis: LocalImportAnalysis; bytes: Uint8Array<ArrayBuffer> } | null {
+  const cached = localImportByteCache.get(file);
+  if (!cached) return null;
+  return canReuseLocalImportAnalysis(
+    file,
+    cached.analysis.format,
+    cached.analysis,
+  )
+    ? cached
+    : null;
+}
+
+function rememberLocalImportBytes(
+  file: File,
+  analysis: LocalImportAnalysis,
+  bytes: Uint8Array<ArrayBuffer>,
+): void {
+  if (bytes.byteLength > LOCAL_IMPORT_LIMITS.cachedFileBytes) return;
+  localImportByteCache.set(file, { analysis, bytes });
+}
+
 async function readFileBytes(file: File): Promise<Uint8Array<ArrayBuffer>> {
-  return new Uint8Array(await file.arrayBuffer());
+  const cached = cachedLocalImportBytes(file);
+  if (cached) return cached.bytes;
+  return new Uint8Array(
+    await limitLocalImportFileRead(() => file.arrayBuffer()),
+  );
 }
 
 async function analyzeLocalImportBytes(
@@ -292,10 +396,12 @@ async function analyzeLocalImportBytes(
     contentHash,
     pathKey: pathKeyForHash(format, contentHash),
   };
-  return {
+  const analysis = {
     ...analysisWithoutDuplicate,
     duplicate: duplicateMetadata(analysisWithoutDuplicate),
   };
+  rememberLocalImportBytes(file, analysis, bytes);
+  return analysis;
 }
 
 export async function analyzeLocalImportFile(
@@ -304,6 +410,20 @@ export async function analyzeLocalImportFile(
   const format = formatFromFile(file);
   assertFileWithinLimit(file, format);
   return analyzeLocalImportBytes(file, await readFileBytes(file));
+}
+
+function canReuseLocalImportAnalysis(
+  file: File,
+  format: LocalImportFormat,
+  analysis: LocalImportAnalysis | undefined,
+): analysis is LocalImportAnalysis {
+  return (
+    analysis !== undefined &&
+    analysis.fileName === file.name &&
+    analysis.fileSize === file.size &&
+    analysis.mimeType === file.type &&
+    analysis.format === format
+  );
 }
 
 function isAllowedUrl(value: string, allowDataImages: boolean): boolean {
@@ -388,8 +508,10 @@ function singleChapterConversion(
   analysis: LocalImportAnalysis,
   content: string,
   contentType: ChapterContentType,
+  binaryResource?: LocalImportBinaryResource,
 ): LocalImportConversion {
   const chapter: LocalImportConvertedChapter = {
+    ...(binaryResource ? { binaryResource } : {}),
     name: analysis.title,
     path: chapterPath(analysis.pathKey, 0),
     chapterNumber: 1,
@@ -414,6 +536,27 @@ function singleChapterConversion(
     },
     chapters: [chapter],
     duplicate: analysis.duplicate,
+  };
+}
+
+function pdfBinaryResource(
+  analysis: LocalImportAnalysis,
+  bytes: Uint8Array,
+  legacyDataUrl: string,
+): LocalImportBinaryResource {
+  const fileName = safeLocalImportFileName(analysis.fileName, "pdf");
+  return {
+    bytes,
+    fileName,
+    locator: {
+      byteLength: bytes.byteLength,
+      fileName,
+      mediaType: "application/pdf",
+      placeholder: legacyDataUrl,
+      sourcePath: `local-import://pdf/${analysis.contentHash}`,
+      storage: "chapter-media",
+    },
+    mediaType: "application/pdf",
   };
 }
 
@@ -475,11 +618,15 @@ async function convertEpub(
 
 export async function convertLocalImportFile(
   file: File,
+  options: LocalImportConversionOptions = {},
 ): Promise<LocalImportConversion> {
   const format = formatFromFile(file);
   assertFileWithinLimit(file, format);
   const bytes = await readFileBytes(file);
-  const analysis = await analyzeLocalImportBytes(file, bytes);
+  const analysis = canReuseLocalImportAnalysis(file, format, options.analysis)
+    ? options.analysis
+    : await analyzeLocalImportBytes(file, bytes);
+  rememberLocalImportBytes(file, analysis, bytes);
 
   if (analysis.format === "txt") {
     return singleChapterConversion(
@@ -506,10 +653,12 @@ export async function convertLocalImportFile(
   }
 
   if (analysis.format === "pdf") {
+    const legacyDataUrl = `data:application/pdf;base64,${bytesToBase64(bytes)}`;
     return singleChapterConversion(
       analysis,
-      `data:application/pdf;base64,${bytesToBase64(bytes)}`,
+      legacyDataUrl,
       "pdf",
+      pdfBinaryResource(analysis, bytes, legacyDataUrl),
     );
   }
 

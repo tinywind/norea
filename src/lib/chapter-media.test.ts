@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
 
 vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
   invoke: vi.fn(),
 }));
 vi.mock("./http", () => ({
@@ -29,17 +30,31 @@ vi.mock("../db/queries/novel", () => ({
   getNovelById: vi.fn(),
 }));
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { pluginMediaFetch } from "./http";
 import {
   cacheHtmlChapterMedia,
   getStoredChapterMediaBytes,
   localChapterMediaSources,
   resolveLocalChapterMedia,
+  resolveLocalChapterMediaPatches,
 } from "./chapter-media";
 
 const invokeMock = vi.mocked(invoke);
+const convertFileSrcMock = vi.mocked(convertFileSrc);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
+
+function nativeStreamInfo(handle: string, size = 0, finished = false) {
+  return {
+    createdAtMs: 1,
+    domain: "chapter-media",
+    expiresAtMs: 2,
+    finished,
+    handle,
+    maxBytes: 100,
+    size,
+  };
+}
 
 function installTemplateDocument(): void {
   vi.stubGlobal("document", {
@@ -120,6 +135,8 @@ function installTemplateDocument(): void {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  convertFileSrcMock.mockReset();
+  convertFileSrcMock.mockImplementation((path) => `asset://localhost/${path}`);
   pluginMediaFetchMock.mockReset();
   Object.values(androidStorageMocks).forEach((mock) => mock.mockReset());
   vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
@@ -243,6 +260,122 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).toContain("norea-media://chapter/42/old-page.png");
     expect(result.html).toContain("file:///tmp/page.png");
     expect(result.html).not.toMatch(/000\d-[^"]+-[0-9a-f]{8}\./);
+  });
+
+  it("stores desktop media through a native stream handle when available", async () => {
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      }),
+    );
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "native_stream_create") return nativeStreamInfo("media-1");
+      if (command === "native_stream_write_chunk") {
+        const chunk = (args as { chunk: number[] }).chunk;
+        return nativeStreamInfo("media-1", chunk.length);
+      }
+      if (command === "native_stream_finish") {
+        return nativeStreamInfo("media-1", 3, true);
+      }
+      if (command === "chapter_media_store_handle") {
+        const input = args as {
+          chapterId: number;
+          fileName: string;
+        };
+        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      }
+      if (command === "chapter_media_archive_cache") return 3;
+      if (command === "chapter_media_write_manifest") return null;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: `<img src="/page.png">`,
+      novelId: 9,
+      novelPath: "/novel/sample",
+      sourceId: "demo",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("native_stream_create", {
+      domain: "chapter-media",
+      maxBytes: 3,
+      ttlMs: undefined,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("native_stream_write_chunk", {
+      chunk: [1, 2, 3],
+      handle: "media-1",
+      offset: 0,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_store_handle", {
+      chapterId: 42,
+      fileName: "0001-page.png",
+      handle: "media-1",
+      novelId: 9,
+      novelPath: "/novel/sample",
+      sourceId: "demo",
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "chapter_media_store",
+      expect.anything(),
+    );
+    expect(result.html).toContain("norea-media://chapter/42/0001-page.png");
+  });
+
+  it("falls back to legacy desktop media store when the handle command is missing", async () => {
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response(new Uint8Array([4, 5]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      }),
+    );
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "native_stream_create") return nativeStreamInfo("media-1");
+      if (command === "native_stream_write_chunk") {
+        return nativeStreamInfo("media-1", 2);
+      }
+      if (command === "native_stream_finish") {
+        return nativeStreamInfo("media-1", 2, true);
+      }
+      if (command === "chapter_media_store_handle") {
+        throw new Error("unknown command: chapter_media_store_handle");
+      }
+      if (command === "native_stream_cancel") return null;
+      if (command === "chapter_media_store") {
+        const input = args as {
+          chapterId: number;
+          fileName: string;
+        };
+        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      }
+      if (command === "chapter_media_archive_cache") return 2;
+      if (command === "chapter_media_write_manifest") return null;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: `<img src="/page.png">`,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("native_stream_cancel", {
+      handle: "media-1",
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_media_store",
+      expect.objectContaining({
+        body: [4, 5],
+        fileName: "0001-page.png",
+      }),
+    );
+    expect(result.html).toContain("norea-media://chapter/42/0001-page.png");
   });
 
   it("rewrites lazy and responsive image sources through the media cache", async () => {
@@ -578,6 +711,9 @@ describe("cacheHtmlChapterMedia", () => {
     });
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "native_stream_create") {
+        throw new Error("unknown command: native_stream_create");
+      }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
       const input = args as {
@@ -1046,7 +1182,7 @@ describe("cacheHtmlChapterMedia", () => {
 
     expect(androidStorageMocks.writeAndroidStorageBytes).toHaveBeenCalledWith(
       "contents/source-a/Novel-novel-path/1-Chapter/media/0001-page-1.jpg",
-      [1, 2, 3],
+      new Uint8Array([1, 2, 3]),
       "image/jpeg",
     );
     expect(androidStorageMocks.renameAndroidStoragePath).not.toHaveBeenCalled();
@@ -1219,8 +1355,38 @@ describe("stored chapter media byte stats", () => {
 });
 
 describe("resolveLocalChapterMedia", () => {
+  it("prefers desktop asset URLs from stored media paths", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_media_path") {
+        return "C:\\Users\\reader\\media\\page.png";
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const html = await resolveLocalChapterMedia(
+      `<img src="norea-media://chapter/42/page.png">`,
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_path", {
+      mediaSrc: "norea-media://chapter/42/page.png",
+    });
+    expect(convertFileSrcMock).toHaveBeenCalledWith(
+      "C:\\Users\\reader\\media\\page.png",
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "chapter_media_data_url",
+      expect.anything(),
+    );
+    expect(html).toContain(
+      'src="asset://localhost/C:\\Users\\reader\\media\\page.png"',
+    );
+  });
+
   it("rewrites cached chapter media to local data URLs", async () => {
-    invokeMock.mockImplementation(async (_command, args) => {
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_path") {
+        throw new Error("chapter media: file not found");
+      }
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
@@ -1262,5 +1428,96 @@ describe("resolveLocalChapterMedia", () => {
     expect(html).toContain("data:image/png;base64,cover.png");
     expect(html).not.toContain("data-src=");
     expect(html).toContain('src="https://source.test/page.png"');
+  });
+
+  it("deduplicates repeated cached media sources while resolving HTML", async () => {
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_path") {
+        throw new Error("chapter media: file not found");
+      }
+      const { mediaSrc } = args as { mediaSrc: string };
+      return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
+    });
+
+    const repeated = "norea-media://chapter/42/page.png";
+    const html = await resolveLocalChapterMedia(
+      [
+        `<img src="${repeated}">`,
+        `<img data-src="${repeated}">`,
+        `<img srcset="${repeated} 1x, norea-media://chapter/42/large.png 2x">`,
+        `<div style="background-image:url('${repeated}')"></div>`,
+      ].join(""),
+    );
+
+    const requestedSources = invokeMock.mock.calls
+      .filter(([command]) => command === "chapter_media_data_url")
+      .map(([, args]) => (args as { mediaSrc: string }).mediaSrc)
+      .sort();
+    expect(requestedSources).toEqual([
+      "norea-media://chapter/42/large.png",
+      repeated,
+    ]);
+    expect(html).toContain('src="data:image/png;base64,page.png"');
+    expect(html).toContain("data:image/png;base64,page.png 1x");
+    expect(html).toContain("data:image/png;base64,large.png 2x");
+    expect(html).toContain("data:image/png;base64,page.png");
+  });
+});
+
+describe("resolveLocalChapterMediaPatches", () => {
+  it("deduplicates repeated cached media sources across a patch batch", async () => {
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_path") {
+        throw new Error("chapter media: file not found");
+      }
+      const { mediaSrc } = args as { mediaSrc: string };
+      return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
+    });
+
+    const repeated = "norea-media://chapter/42/page.png";
+    const patches = await resolveLocalChapterMediaPatches([
+      {
+        attributes: {
+          src: repeated,
+        },
+        index: 0,
+        sourceAttributes: {
+          src: repeated,
+        },
+      },
+      {
+        attributes: {
+          srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+          style: `background-image:url('${repeated}')`,
+        },
+        index: 1,
+        sourceAttributes: {
+          srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+          style: `background-image:url('${repeated}')`,
+        },
+      },
+    ]);
+
+    const requestedSources = invokeMock.mock.calls
+      .filter(([command]) => command === "chapter_media_data_url")
+      .map(([, args]) => (args as { mediaSrc: string }).mediaSrc)
+      .sort();
+    expect(requestedSources).toEqual([
+      "norea-media://chapter/42/large.png",
+      repeated,
+    ]);
+    expect(patches).toHaveLength(2);
+    expect(patches[0]?.attributes.src).toBe(
+      "data:image/png;base64,page.png",
+    );
+    expect(patches[1]?.attributes.srcset).toContain(
+      "data:image/png;base64,page.png 1x",
+    );
+    expect(patches[1]?.attributes.srcset).toContain(
+      "data:image/png;base64,large.png 2x",
+    );
+    expect(patches[1]?.attributes.style).toContain(
+      'url("data:image/png;base64,page.png")',
+    );
   });
 });

@@ -4,11 +4,17 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("../chapter-media", () => ({
+  localChapterMediaSources: vi.fn(),
+}));
+
 import { invoke } from "@tauri-apps/api/core";
+import { localChapterMediaSources } from "../chapter-media";
 import { BACKUP_FORMAT_VERSION, type BackupManifest } from "./format";
 import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
 
 const invokeMock = vi.mocked(invoke);
+const localChapterMediaSourcesMock = vi.mocked(localChapterMediaSources);
 
 function makeManifest(): BackupManifest {
   return {
@@ -99,6 +105,8 @@ describe("packBackup", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
+    localChapterMediaSourcesMock.mockReset();
+    localChapterMediaSourcesMock.mockReturnValue([]);
   });
 
   it("invokes backup_pack with manifest content and media payloads", async () => {
@@ -152,6 +160,59 @@ describe("packBackup", () => {
     const packedManifest = JSON.parse(typed.manifestJson) as BackupManifest;
     expect(packedManifest.chapters[0]?.content).toBe("<p>downloaded</p>");
     expect(packedManifest.chapters[0]?.isDownloaded).toBe(true);
+  });
+
+  it("sends media refs with chapter context without materializing bodies", async () => {
+    const manifest = makeManifest();
+    manifest.chapters[0] = {
+      ...manifest.chapters[0]!,
+      content:
+        '<img src="norea-media://chapter/10/image.png"><img src="norea-media://chapter/10/image.png">',
+    };
+    localChapterMediaSourcesMock.mockReturnValue([
+      "norea-media://chapter/10/image.png",
+      "norea-media://chapter/10/image.png",
+    ]);
+    await packBackup(manifest, "C:\\backup.zip");
+
+    const [, args] = invokeMock.mock.calls[0]!;
+    expect(args).toMatchObject({
+      chapterMedia: [],
+      chapterMediaFiles: [
+        {
+          media_src: "norea-media://chapter/10/image.png",
+          novel_id: 1,
+          source_id: "demo",
+          novel_name: "Sample Novel",
+          novel_path: "/n/1",
+          chapter_number: "1",
+          chapter_name: "Chapter 1",
+          chapter_position: 1,
+        },
+      ],
+    });
+  });
+
+  it("lets the Rust command enforce media file size budgets", async () => {
+    const manifest = makeManifest();
+    manifest.chapters[0] = {
+      ...manifest.chapters[0]!,
+      content: '<img src="norea-media://chapter/10/large.png">',
+    };
+    localChapterMediaSourcesMock.mockReturnValue([
+      "norea-media://chapter/10/large.png",
+    ]);
+    await packBackup(manifest, "C:\\backup.zip");
+
+    const [, args] = invokeMock.mock.calls[0]!;
+    expect(args).toMatchObject({
+      chapterMedia: [],
+      chapterMediaFiles: [
+        {
+          media_src: "norea-media://chapter/10/large.png",
+        },
+      ],
+    });
   });
 
   it("deletes backup temp files through the Rust command", async () => {

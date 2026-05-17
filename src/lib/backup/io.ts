@@ -1,12 +1,16 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
+  copyAndroidContentUriToTempFile,
+  deleteAndroidContentUriTempFile,
   readAndroidContentUriBytes,
   writeAndroidContentUriFile,
 } from "../android-storage";
 import { restoreChapterContentStorageMirror } from "../chapter-content-storage";
+import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
 import { applyBackupSnapshot, gatherBackupSnapshot } from "./snapshot";
+import type { BackupManifest } from "./format";
 import { unpackBackup, unpackBackupBytes } from "./unpack";
 
 const ZIP_FILTER_NAME = "Norea Backup";
@@ -87,7 +91,7 @@ export async function importBackupFromFile(): Promise<string | null> {
   }
   const manifest =
     isAndroidRuntime() && selected.startsWith("content://")
-      ? await unpackBackupBytes(await readAndroidContentUriBytes(selected))
+      ? await unpackAndroidBackupContentUri(selected)
       : await unpackBackup(selected);
   await applyBackupSnapshot(manifest);
   await restoreChapterContentStorageMirror({
@@ -99,4 +103,21 @@ export async function importBackupFromFile(): Promise<string | null> {
     contentOnly: true,
   });
   return selected;
+}
+
+async function unpackAndroidBackupContentUri(
+  uri: string,
+): Promise<BackupManifest> {
+  const tempFile = await copyAndroidContentUriToTempFile(
+    uri,
+    MAX_BACKUP_ARCHIVE_BYTES,
+  );
+  if (tempFile) {
+    try {
+      return await unpackBackup(tempFile.path);
+    } finally {
+      await deleteAndroidContentUriTempFile(tempFile);
+    }
+  }
+  return unpackBackupBytes(await readAndroidContentUriBytes(uri));
 }

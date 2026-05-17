@@ -25,12 +25,14 @@ export async function cacheLocalImportedChapterMedia({
   novelName,
   novelPath,
 }: CacheLocalImportedChapterMediaInput): Promise<void> {
-  const htmlLikeChapters = chapters.filter((chapter) =>
-    isHtmlLikeChapterContentType(
-      storedChapterContentType(chapter.contentType ?? "html"),
-    ),
+  const cacheableChapters = chapters.filter(
+    (chapter) =>
+      chapter.binaryResource ||
+      isHtmlLikeChapterContentType(
+        storedChapterContentType(chapter.contentType ?? "html"),
+      ),
   );
-  if (htmlLikeChapters.length === 0) return;
+  if (cacheableChapters.length === 0) return;
 
   const rowsByPath = new Map(
     (await listChaptersByNovel(novelId)).map((chapter) => [
@@ -39,7 +41,7 @@ export async function cacheLocalImportedChapterMedia({
     ]),
   );
 
-  for (const chapter of htmlLikeChapters) {
+  for (const chapter of cacheableChapters) {
     const row = rowsByPath.get(chapter.path);
     if (!row) continue;
     const contentType = storedChapterContentType(chapter.contentType ?? "html");
@@ -56,6 +58,34 @@ export async function cacheLocalImportedChapterMedia({
 
     let content = chapter.content;
     let mediaBytes = 0;
+    if (chapter.binaryResource) {
+      const resource = chapter.binaryResource;
+      const embedded = await storeEmbeddedChapterMedia({
+        chapterId: row.id,
+        chapterName: row.name,
+        chapterNumber: row.chapterNumber,
+        chapterPosition: row.position,
+        html: content,
+        novelId,
+        novelName,
+        novelPath,
+        resources: [
+          {
+            bytes: resource.bytes,
+            contentType: resource.mediaType,
+            fileName: resource.fileName,
+            placeholder: resource.locator.placeholder,
+            sourcePath: resource.locator.sourcePath,
+          },
+        ],
+        sourceId: LOCAL_PLUGIN_ID,
+      });
+      await saveChapterContent(row.id, embedded.html, contentType, {
+        mediaBytes: embedded.mediaBytes,
+      });
+      continue;
+    }
+
     const mediaResources = chapter.mediaResources ?? [];
     if (mediaResources.length > 0) {
       const embedded = await storeEmbeddedChapterMedia({

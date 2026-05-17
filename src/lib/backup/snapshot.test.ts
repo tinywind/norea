@@ -350,7 +350,9 @@ describe("applyBackupSnapshot", () => {
       [
         {
           mediaSrc: "norea-media://chapter/10/image.png",
-          body: [1, 2, 3],
+          bytes: 3,
+          stagedRef: "media-0.bin",
+          stagingId: "stage-1",
         },
       ],
     );
@@ -358,8 +360,7 @@ describe("applyBackupSnapshot", () => {
     await applyBackupSnapshot(manifest);
 
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_begin_restore");
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_store", {
-      body: [1, 2, 3],
+    expect(invokeMock).toHaveBeenCalledWith("backup_restore_staged_media", {
       chapterId: 10,
       chapterName: "Chapter 1",
       chapterNumber: "1",
@@ -369,7 +370,13 @@ describe("applyBackupSnapshot", () => {
       novelName: "Sample Novel",
       novelPath: "/n/1",
       sourceId: "demo",
+      stagedRef: "media-0.bin",
+      stagingId: "stage-1",
     });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "chapter_media_store",
+      expect.anything(),
+    );
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_write_manifest", {
       chapterId: 10,
       chapterName: "Chapter 1",
@@ -406,6 +413,55 @@ describe("applyBackupSnapshot", () => {
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_commit_restore", {
       token: "restore-1",
     });
+    expect(invokeMock).toHaveBeenCalledWith("backup_cleanup_staged_unpack", {
+      stagingId: "stage-1",
+    });
+  });
+
+  it("keeps legacy media body restore as an explicit fallback", async () => {
+    installTauriRuntime();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "chapter_media_begin_restore") {
+        return Promise.resolve("restore-1");
+      }
+      if (command === "chapter_media_archive_cache") {
+        return Promise.resolve(9);
+      }
+      return Promise.resolve(undefined);
+    });
+    const manifest = attachBackupChapterMediaFiles(
+      parseBackupManifest(encodeBackupManifest(await gatherForTest())),
+      [
+        {
+          mediaSrc: "norea-media://chapter/10/image.png",
+          body: [1, 2, 3],
+          bytes: 3,
+        },
+      ],
+    );
+
+    await applyBackupSnapshot(manifest);
+
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_store", {
+      body: [1, 2, 3],
+      chapterId: 10,
+      chapterName: "Chapter 1",
+      chapterNumber: "1",
+      chapterPosition: 1,
+      fileName: "image.png",
+      novelId: 1,
+      novelName: "Sample Novel",
+      novelPath: "/n/1",
+      sourceId: "demo",
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "backup_restore_staged_media",
+      expect.anything(),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "backup_cleanup_staged_unpack",
+      expect.anything(),
+    );
   });
 
   it("rolls back restored media when database restore fails", async () => {
@@ -428,7 +484,9 @@ describe("applyBackupSnapshot", () => {
       [
         {
           mediaSrc: "norea-media://chapter/10/image.png",
-          body: [1, 2, 3],
+          bytes: 3,
+          stagedRef: "media-0.bin",
+          stagingId: "stage-1",
         },
       ],
     );
@@ -437,6 +495,9 @@ describe("applyBackupSnapshot", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_rollback_restore", {
       token: "restore-1",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("backup_cleanup_staged_unpack", {
+      stagingId: "stage-1",
     });
     expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_commit_restore", {
       token: "restore-1",

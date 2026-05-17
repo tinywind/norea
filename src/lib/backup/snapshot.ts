@@ -9,6 +9,11 @@ import {
   normalizeChapterContentType,
   storedChapterContentType,
 } from "../chapter-content";
+import {
+  MAX_ZIP_ENTRY_BYTES,
+  MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
+  assertByteBudget,
+} from "../performance-budgets";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import {
   BACKUP_FORMAT_VERSION,
@@ -23,8 +28,12 @@ import {
   type BackupSetting,
 } from "./format";
 import {
+  cleanupBackupStagedUnpack,
   getBackupChapterMediaFiles,
+  getBackupChapterMediaStagingIds,
   hasBackupChapterMediaFiles,
+  isLegacyBackupChapterMediaFile,
+  isStagedBackupChapterMediaFile,
   type BackupChapterMediaFile,
 } from "./unpack";
 
@@ -335,15 +344,26 @@ async function restoreBackupChapterMediaFiles(
       updatedAt: number;
     }>
   >();
+  let totalMediaBytes = 0;
 
   for (const file of files) {
+    assertByteBudget(
+      file.bytes,
+      MAX_ZIP_ENTRY_BYTES,
+      "Backup media entry",
+    );
+    totalMediaBytes += file.bytes;
+    assertByteBudget(
+      totalMediaBytes,
+      MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
+      "Backup media total",
+    );
     const { chapterId, fileName } = parseBackupChapterMediaSource(
       file.mediaSrc,
     );
     const chapter = chaptersById.get(chapterId);
     const novel = chapter ? novelsById.get(chapter.novelId) : undefined;
-    await invoke("chapter_media_store", {
-      body: file.body,
+    const storeArgs = {
       chapterId,
       ...(chapter?.name ? { chapterName: chapter.name } : {}),
       ...(chapter?.chapterNumber
@@ -355,10 +375,26 @@ async function restoreBackupChapterMediaFiles(
       ...(novel ? { novelName: novel.name } : {}),
       ...(novel ? { novelPath: novel.path } : {}),
       ...(novel ? { sourceId: novel.pluginId } : {}),
-    });
+    };
+    if (isStagedBackupChapterMediaFile(file)) {
+      await invoke("backup_restore_staged_media", {
+        ...storeArgs,
+        stagedRef: file.stagedRef,
+        stagingId: file.stagingId,
+      });
+    } else if (isLegacyBackupChapterMediaFile(file)) {
+      await invoke("chapter_media_store", {
+        ...storeArgs,
+        body: file.body,
+      });
+    } else {
+      throw new Error(
+        `Backup media file is missing staged data: ${file.mediaSrc}`,
+      );
+    }
     const restoredFiles = restoredFilesByChapterId.get(chapterId) ?? [];
     restoredFiles.push({
-      bytes: file.body.length,
+      bytes: file.bytes,
       fileName,
       path: `media/${fileName}`,
       sourceUrl: file.mediaSrc,
@@ -440,6 +476,14 @@ async function rollbackChapterMediaRestore(token: string): Promise<void> {
   await invoke("chapter_media_rollback_restore", { token });
 }
 
+async function cleanupBackupChapterMediaStaging(
+  stagingIds: readonly string[],
+): Promise<void> {
+  await Promise.all(
+    stagingIds.map((stagingId) => cleanupBackupStagedUnpack(stagingId)),
+  );
+}
+
 /**
  * Read every row from the backup-relevant tables and return a
  * fresh `BackupManifest` ready to feed `encodeBackupManifest` and
@@ -491,12 +535,13 @@ export async function applyBackupSnapshot(
   let mediaBytesByChapterId = new Map<number, number>();
   const shouldRestoreChapterMedia =
     hasBackupChapterMediaFiles(manifest) && isTauriRuntime();
-  if (shouldRestoreChapterMedia) {
-    mediaRestoreToken = await beginChapterMediaRestore();
-  }
+  const stagedMediaIds = shouldRestoreChapterMedia
+    ? getBackupChapterMediaStagingIds(manifest)
+    : [];
 
   try {
     if (shouldRestoreChapterMedia) {
+      mediaRestoreToken = await beginChapterMediaRestore();
       mediaBytesByChapterId = await restoreBackupChapterMediaFiles(
         manifest,
         getBackupChapterMediaFiles(manifest),
@@ -516,12 +561,24 @@ export async function applyBackupSnapshot(
         },
       );
     }
+    if (stagedMediaIds.length > 0) {
+      await cleanupBackupChapterMediaStaging(stagedMediaIds).catch(
+        (cleanupError) => {
+          console.warn("[backup] media staging cleanup failed", cleanupError);
+        },
+      );
+    }
     throw error;
   }
 
   if (mediaRestoreToken) {
     await commitChapterMediaRestore(mediaRestoreToken).catch((error) => {
       console.warn("[backup] media restore cleanup failed", error);
+    });
+  }
+  if (stagedMediaIds.length > 0) {
+    await cleanupBackupChapterMediaStaging(stagedMediaIds).catch((error) => {
+      console.warn("[backup] media staging cleanup failed", error);
     });
   }
 

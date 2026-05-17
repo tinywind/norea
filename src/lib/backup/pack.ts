@@ -1,55 +1,66 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   localChapterMediaSources,
-  resolveLocalChapterMediaSrc,
+  type ChapterMediaStorageContext,
 } from "../chapter-media";
 import { encodeBackupManifest, type BackupManifest } from "./format";
 
-interface BackupChapterMediaPayload {
-  body: number[];
+interface BackupChapterMediaFilePayload {
   media_src: string;
+  novel_id?: number | null;
+  source_id?: string | null;
+  novel_name?: string | null;
+  novel_path?: string | null;
+  chapter_number?: string | null;
+  chapter_name?: string | null;
+  chapter_position?: number | null;
 }
 
-function backupChapterMediaSources(manifest: BackupManifest): string[] {
-  const mediaSources = new Set<string>();
+interface BackupChapterMediaSource {
+  context: ChapterMediaStorageContext;
+  mediaSrc: string;
+}
+
+function backupChapterMediaSources(
+  manifest: BackupManifest,
+): BackupChapterMediaSource[] {
+  const mediaSources = new Map<string, BackupChapterMediaSource>();
+  const novelsById = new Map(manifest.novels.map((novel) => [novel.id, novel]));
   for (const chapter of manifest.chapters) {
     if (!chapter.content) continue;
+    const novel = novelsById.get(chapter.novelId);
+    const context: ChapterMediaStorageContext = {
+      chapterId: chapter.id,
+      chapterName: chapter.name,
+      chapterNumber: chapter.chapterNumber,
+      chapterPosition: chapter.position,
+      novelId: chapter.novelId,
+      novelName: novel?.name,
+      novelPath: novel?.path,
+      sourceId: novel?.pluginId,
+    };
     for (const mediaSrc of localChapterMediaSources(chapter.content)) {
-      mediaSources.add(mediaSrc);
+      if (!mediaSources.has(mediaSrc)) {
+        mediaSources.set(mediaSrc, { context, mediaSrc });
+      }
     }
   }
-  return [...mediaSources];
+  return [...mediaSources.values()];
 }
 
-function bytesFromDataUrl(dataUrl: string): number[] {
-  const commaIndex = dataUrl.indexOf(",");
-  if (commaIndex < 0 || !dataUrl.slice(0, commaIndex).includes(";base64")) {
-    throw new Error("Backup media must resolve to a base64 data URL.");
-  }
-  const binary = atob(dataUrl.slice(commaIndex + 1));
-  const bytes = new Array<number>(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-async function backupChapterMediaPayloads(
+function backupChapterMediaFilePayloads(
   manifest: BackupManifest,
-): Promise<BackupChapterMediaPayload[]> {
-  const mediaSources = backupChapterMediaSources(manifest);
-  const files: BackupChapterMediaPayload[] = [];
-  for (const mediaSrc of mediaSources) {
-    const dataUrl = await resolveLocalChapterMediaSrc(mediaSrc);
-    if (!dataUrl?.startsWith("data:")) {
-      throw new Error(`Backup media is missing: ${mediaSrc}`);
-    }
-    files.push({
-      body: bytesFromDataUrl(dataUrl),
-      media_src: mediaSrc,
-    });
-  }
-  return files;
+): BackupChapterMediaFilePayload[] {
+  return backupChapterMediaSources(manifest).map((source) => ({
+      media_src: source.mediaSrc,
+      novel_id: source.context.novelId,
+      source_id: source.context.sourceId,
+      novel_name: source.context.novelName,
+      novel_path: source.context.novelPath,
+      chapter_number: source.context.chapterNumber,
+      chapter_name: source.context.chapterName,
+      chapter_position: source.context.chapterPosition,
+    }));
 }
 
 /**
@@ -60,9 +71,10 @@ export async function packBackup(
   manifest: BackupManifest,
   outputPath: string,
 ): Promise<void> {
-  const chapterMedia = await backupChapterMediaPayloads(manifest);
+  const chapterMediaFiles = backupChapterMediaFilePayloads(manifest);
   await invoke("backup_pack", {
-    chapterMedia,
+    chapterMedia: [],
+    chapterMediaFiles,
     manifestJson: encodeBackupManifest(manifest),
     outputPath,
   });
@@ -71,9 +83,10 @@ export async function packBackup(
 export async function packBackupTempFile(
   manifest: BackupManifest,
 ): Promise<string> {
-  const chapterMedia = await backupChapterMediaPayloads(manifest);
+  const chapterMediaFiles = backupChapterMediaFilePayloads(manifest);
   return invoke<string>("backup_pack_temp_file", {
-    chapterMedia,
+    chapterMedia: [],
+    chapterMediaFiles,
     manifestJson: encodeBackupManifest(manifest),
   });
 }
@@ -85,9 +98,10 @@ export async function deleteBackupTempFile(path: string): Promise<void> {
 export async function packBackupBytes(
   manifest: BackupManifest,
 ): Promise<number[]> {
-  const chapterMedia = await backupChapterMediaPayloads(manifest);
+  const chapterMediaFiles = backupChapterMediaFilePayloads(manifest);
   return invoke<number[]>("backup_pack_bytes", {
-    chapterMedia,
+    chapterMedia: [],
+    chapterMediaFiles,
     manifestJson: encodeBackupManifest(manifest),
   });
 }

@@ -12,6 +12,8 @@ vi.mock("./pack", () => ({
 }));
 
 vi.mock("../android-storage", () => ({
+  copyAndroidContentUriToTempFile: vi.fn(),
+  deleteAndroidContentUriTempFile: vi.fn(),
   readAndroidContentUriBytes: vi.fn(),
   writeAndroidContentUriFile: vi.fn(),
 }));
@@ -36,10 +38,13 @@ vi.mock("./unpack", () => ({
 
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
+  copyAndroidContentUriToTempFile,
+  deleteAndroidContentUriTempFile,
   readAndroidContentUriBytes,
   writeAndroidContentUriFile,
 } from "../android-storage";
 import { restoreChapterContentStorageMirror } from "../chapter-content-storage";
+import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
 import { isAndroidRuntime } from "../tauri-runtime";
 import {
   BACKUP_FORMAT_VERSION,
@@ -67,6 +72,12 @@ const applyBackupSnapshotMock = vi.mocked(applyBackupSnapshot);
 const gatherBackupSnapshotMock = vi.mocked(gatherBackupSnapshot);
 const restoreChapterContentStorageMirrorMock = vi.mocked(
   restoreChapterContentStorageMirror,
+);
+const copyAndroidContentUriToTempFileMock = vi.mocked(
+  copyAndroidContentUriToTempFile,
+);
+const deleteAndroidContentUriTempFileMock = vi.mocked(
+  deleteAndroidContentUriTempFile,
 );
 const readAndroidContentUriBytesMock = vi.mocked(readAndroidContentUriBytes);
 const unpackBackupMock = vi.mocked(unpackBackup);
@@ -146,6 +157,8 @@ beforeEach(() => {
   packBackupMock.mockResolvedValue(undefined);
   packBackupTempFileMock.mockResolvedValue("C:\\temp\\norea-backup.zip");
   applyBackupSnapshotMock.mockResolvedValue(undefined);
+  copyAndroidContentUriToTempFileMock.mockResolvedValue(null);
+  deleteAndroidContentUriTempFileMock.mockResolvedValue(undefined);
   readAndroidContentUriBytesMock.mockResolvedValue([4, 5, 6]);
   restoreChapterContentStorageMirrorMock.mockResolvedValue({
     chapters: 0,
@@ -233,18 +246,72 @@ describe("backup import/export flow", () => {
     });
   });
 
-  it("imports Android content URI backups through the storage bridge", async () => {
+  it("imports Android content URI backups through the temp file bridge", async () => {
+    const manifest = makeManifest();
+    const uri = "content://com.android.externalstorage.documents/document/backup.zip";
+    const tempFile = {
+      bytes: 3,
+      mimeType: "application/zip",
+      path: "/data/user/0/io.github.tinywind.norea/cache/android-storage-bridge/backup.tmp",
+    };
+    isAndroidRuntimeMock.mockReturnValue(true);
+    openMock.mockResolvedValue(uri);
+    copyAndroidContentUriToTempFileMock.mockResolvedValue(tempFile);
+    unpackBackupMock.mockResolvedValue(manifest);
+
+    const path = await importBackupFromFile();
+
+    expect(path).toBe(uri);
+    expect(copyAndroidContentUriToTempFileMock).toHaveBeenCalledWith(
+      uri,
+      MAX_BACKUP_ARCHIVE_BYTES,
+    );
+    expect(unpackBackupMock).toHaveBeenCalledWith(tempFile.path);
+    expect(deleteAndroidContentUriTempFileMock).toHaveBeenCalledWith(tempFile);
+    expect(readAndroidContentUriBytesMock).not.toHaveBeenCalled();
+    expect(unpackBackupBytesMock).not.toHaveBeenCalled();
+    expect(applyBackupSnapshotMock).toHaveBeenCalledWith(manifest);
+  });
+
+  it("cleans up Android temp file imports when unpack fails", async () => {
+    const uri = "content://com.android.externalstorage.documents/document/backup.zip";
+    const tempFile = {
+      bytes: 3,
+      mimeType: "application/zip",
+      path: "/data/user/0/io.github.tinywind.norea/cache/android-storage-bridge/backup.tmp",
+    };
+    const failure = new Error("bad backup");
+    isAndroidRuntimeMock.mockReturnValue(true);
+    openMock.mockResolvedValue(uri);
+    copyAndroidContentUriToTempFileMock.mockResolvedValue(tempFile);
+    unpackBackupMock.mockRejectedValue(failure);
+
+    await expect(importBackupFromFile()).rejects.toThrow(failure);
+
+    expect(deleteAndroidContentUriTempFileMock).toHaveBeenCalledWith(tempFile);
+    expect(readAndroidContentUriBytesMock).not.toHaveBeenCalled();
+    expect(unpackBackupBytesMock).not.toHaveBeenCalled();
+    expect(applyBackupSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to base64 Android content URI imports when temp files are unavailable", async () => {
     const manifest = makeManifest();
     const uri = "content://com.android.externalstorage.documents/document/backup.zip";
     isAndroidRuntimeMock.mockReturnValue(true);
     openMock.mockResolvedValue(uri);
+    copyAndroidContentUriToTempFileMock.mockResolvedValue(null);
     unpackBackupBytesMock.mockResolvedValue(manifest);
 
     const path = await importBackupFromFile();
 
     expect(path).toBe(uri);
+    expect(copyAndroidContentUriToTempFileMock).toHaveBeenCalledWith(
+      uri,
+      MAX_BACKUP_ARCHIVE_BYTES,
+    );
     expect(readAndroidContentUriBytesMock).toHaveBeenCalledWith(uri);
     expect(unpackBackupBytesMock).toHaveBeenCalledWith([4, 5, 6]);
+    expect(deleteAndroidContentUriTempFileMock).not.toHaveBeenCalled();
     expect(unpackBackupMock).not.toHaveBeenCalled();
     expect(applyBackupSnapshotMock).toHaveBeenCalledWith(manifest);
   });

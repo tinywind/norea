@@ -137,7 +137,7 @@ describe("cacheLocalImportedChapterMedia", () => {
           contentType: "epub",
           mediaResources: [
             {
-              bytes: [1, 2, 3, 4],
+              bytes: new Uint8Array([1, 2, 3, 4]),
               fileName: "0001-page.png",
               mediaType: "image/png",
               placeholder: "norea-epub-resource://OEBPS%2Fpage.png",
@@ -174,6 +174,68 @@ describe("cacheLocalImportedChapterMedia", () => {
       99,
       `<img src="norea-media://chapter/99/0001-page.png">`,
       "epub",
+      { mediaBytes: 4 },
+    );
+  });
+
+  it("stores imported pdf binary resources while keeping legacy content as fallback", async () => {
+    hasRemoteChapterMediaMock.mockReturnValue(false);
+    storeEmbeddedChapterMediaMock.mockResolvedValue({
+      html: "norea-media://chapter/99/Manual.pdf",
+      mediaBytes: 4,
+      storedMediaCount: 1,
+    });
+
+    await cacheLocalImportedChapterMedia({
+      chapters: [
+        {
+          binaryResource: {
+            bytes: new Uint8Array([37, 80, 68, 70]),
+            fileName: "Manual.pdf",
+            locator: {
+              byteLength: 4,
+              fileName: "Manual.pdf",
+              mediaType: "application/pdf",
+              placeholder: "data:application/pdf;base64,JVBERg==",
+              sourcePath: "local-import://pdf/hash",
+              storage: "chapter-media",
+            },
+            mediaType: "application/pdf",
+          },
+          content: "data:application/pdf;base64,JVBERg==",
+          contentBytes: 36,
+          contentType: "pdf",
+          name: "Chapter 1",
+          path: "local:markdown:hash/chapter-0001",
+          position: 1,
+        },
+      ],
+      novelId: 7,
+      novelName: "Local Book",
+      novelPath: "local:pdf:hash",
+    });
+
+    expect(storeEmbeddedChapterMediaMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chapterId: 99,
+        html: "data:application/pdf;base64,JVBERg==",
+        resources: [
+          expect.objectContaining({
+            bytes: new Uint8Array([37, 80, 68, 70]),
+            contentType: "application/pdf",
+            fileName: "Manual.pdf",
+            placeholder: "data:application/pdf;base64,JVBERg==",
+            sourcePath: "local-import://pdf/hash",
+          }),
+        ],
+        sourceId: "local",
+      }),
+    );
+    expect(cacheHtmlChapterMediaMock).not.toHaveBeenCalled();
+    expect(saveChapterContentMock).toHaveBeenCalledWith(
+      99,
+      "norea-media://chapter/99/Manual.pdf",
+      "pdf",
       { mediaBytes: 4 },
     );
   });

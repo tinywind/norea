@@ -6,7 +6,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  LOCAL_IMPORT_LIMITS,
   analyzeLocalImportFile,
+  clearLocalImportFileCache,
   convertLocalImportFile,
   sanitizeLocalImportHtml,
 } from "./local-import";
@@ -19,6 +21,19 @@ function file(parts: BlobPart[], name: string, type = ""): File {
 
 function bytes(value: string): number[] {
   return Array.from(new TextEncoder().encode(value));
+}
+
+function arrayBufferFromText(value: string): ArrayBuffer {
+  const encoded = new TextEncoder().encode(value);
+  return encoded.buffer.slice(
+    encoded.byteOffset,
+    encoded.byteOffset + encoded.byteLength,
+  );
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 beforeEach(() => {
@@ -38,6 +53,70 @@ describe("sanitizeLocalImportHtml", () => {
 });
 
 describe("analyzeLocalImportFile", () => {
+  it("rejects oversized files before reading their body", async () => {
+    const oversized = file([""], "Huge.pdf", "application/pdf");
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0));
+    Object.defineProperty(oversized, "size", {
+      configurable: true,
+      value: LOCAL_IMPORT_LIMITS.pdfBytes + 1,
+    });
+    Object.defineProperty(oversized, "arrayBuffer", {
+      configurable: true,
+      value: arrayBuffer,
+    });
+
+    await expect(analyzeLocalImportFile(oversized)).rejects.toThrow(
+      /larger than the pdf import limit/,
+    );
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it("bounds concurrent full-file reads during analysis", async () => {
+    const releases: Array<() => void> = [];
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const files = Array.from(
+      { length: LOCAL_IMPORT_LIMITS.fileReadConcurrency + 3 },
+      (_, index) => {
+        const nextFile = file(
+          [`file-${index}`],
+          `Book-${index}.txt`,
+          "text/plain",
+        );
+        Object.defineProperty(nextFile, "arrayBuffer", {
+          configurable: true,
+          value: vi.fn(async () => {
+            activeReads += 1;
+            maxActiveReads = Math.max(maxActiveReads, activeReads);
+            await new Promise<void>((resolve) => releases.push(resolve));
+            activeReads -= 1;
+            return arrayBufferFromText(`file-${index}`);
+          }),
+        });
+        return nextFile;
+      },
+    );
+
+    const pending = Promise.all(
+      files.map((entry) => analyzeLocalImportFile(entry)),
+    );
+    await flushMicrotasks();
+
+    expect(activeReads).toBe(LOCAL_IMPORT_LIMITS.fileReadConcurrency);
+    while (releases.length > 0) {
+      releases.shift()?.();
+      await flushMicrotasks();
+      expect(activeReads).toBeLessThanOrEqual(
+        LOCAL_IMPORT_LIMITS.fileReadConcurrency,
+      );
+    }
+    await pending;
+
+    expect(maxActiveReads).toBeLessThanOrEqual(
+      LOCAL_IMPORT_LIMITS.fileReadConcurrency,
+    );
+  });
+
   it("emits deterministic hash-backed duplicate metadata", async () => {
     const analysis = await analyzeLocalImportFile(
       file(["hello"], "Example.txt", "text/plain"),
@@ -56,6 +135,25 @@ describe("analyzeLocalImportFile", () => {
       fileSize: 5,
       format: "txt",
     });
+  });
+
+  it("reuses bytes from review analysis when converting the same file", async () => {
+    const input = file(["cached"], "Cached.txt", "text/plain");
+    const arrayBuffer = vi.fn(async () => arrayBufferFromText("cached"));
+    Object.defineProperty(input, "arrayBuffer", {
+      configurable: true,
+      value: arrayBuffer,
+    });
+
+    const analysis = await analyzeLocalImportFile(input);
+    const result = await convertLocalImportFile(input, { analysis });
+
+    expect(result.analysis.contentHash).toBe(analysis.contentHash);
+    expect(arrayBuffer).toHaveBeenCalledTimes(1);
+
+    clearLocalImportFileCache(input);
+    await convertLocalImportFile(input, { analysis });
+    expect(arrayBuffer).toHaveBeenCalledTimes(2);
   });
 
   it("recognizes markdown files as hash-backed local imports", async () => {
@@ -136,17 +234,33 @@ describe("convertLocalImportFile", () => {
     expect(result.chapters[0]?.content).not.toContain("<script>");
   });
 
-  it("converts pdf files to data url content", async () => {
-    const result = await convertLocalImportFile(
-      file(["%PDF"], "Manual.pdf", "application/pdf"),
-    );
+  it("keeps legacy pdf files as data url content", async () => {
+    const input = file(["%PDF"], "Manual.pdf", "application/pdf");
+    const analysis = await analyzeLocalImportFile(input);
+    const result = await convertLocalImportFile(input, { analysis });
 
     expect(result.analysis.title).toBe("Manual");
+    expect(result.analysis.contentHash).toBe(analysis.contentHash);
     expect(result.chapters[0]).toMatchObject({
       name: "Manual",
       contentType: "pdf",
       content: "data:application/pdf;base64,JVBERg==",
     });
+    expect(result.chapters[0]?.binaryResource).toMatchObject({
+      fileName: "Manual.pdf",
+      mediaType: "application/pdf",
+      locator: {
+        byteLength: 4,
+        fileName: "Manual.pdf",
+        mediaType: "application/pdf",
+        placeholder: "data:application/pdf;base64,JVBERg==",
+        sourcePath: `local-import://pdf/${analysis.contentHash}`,
+        storage: "chapter-media",
+      },
+    });
+    expect([
+      ...(result.chapters[0]?.binaryResource?.bytes ?? []),
+    ]).toEqual([37, 80, 68, 70]);
   });
 
   it("merges epub spine items into one reader html chapter with embedded resources", async () => {
@@ -225,11 +339,18 @@ describe("convertLocalImportFile", () => {
     const result = await convertLocalImportFile(
       file(["epub"], "Book.epub", "application/epub+zip"),
     );
+    const zipIpcPayloads = mockedInvoke.mock.calls
+      .filter(
+        ([command]) =>
+          command === "plugin_zip_list" || command === "plugin_zip_read_file",
+      )
+      .map(([, args]) => (args as { bytes: number[] }).bytes);
 
     expect(result.novel).toMatchObject({
       name: "EPUB Book",
       author: "Writer",
     });
+    expect(new Set(zipIpcPayloads).size).toBe(1);
     expect(result.chapters).toHaveLength(1);
     expect(result.chapters[0]).toMatchObject({
       name: "EPUB Book",
@@ -266,12 +387,15 @@ describe("convertLocalImportFile", () => {
     expect(result.chapters[0]?.content).not.toContain("<script>");
     expect(result.chapters[0]?.mediaResources).toEqual([
       expect.objectContaining({
-        bytes: [1, 2, 3, 4],
+        bytes: expect.any(Uint8Array),
         fileName: "0001-page.png",
         mediaType: "image/png",
         placeholder: "norea-epub-resource://OEBPS%2Fimages%2Fpage.png",
         sourcePath: "OEBPS/images/page.png",
       }),
     ]);
+    expect([
+      ...(result.chapters[0]?.mediaResources?.[0]?.bytes ?? []),
+    ]).toEqual([1, 2, 3, 4]);
   });
 });
