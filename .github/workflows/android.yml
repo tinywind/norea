@@ -268,11 +268,21 @@ jobs:
           compression-level: 0
           retention-days: 30
 
-      - name: Upload Android update metadata
+      - name: Upload arm64 Android update metadata
         uses: actions/upload-artifact@v7
         with:
-          name: norea-android-update-metadata
-          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-updates-android-*.json
+          name: norea-updates-android-arm64.json
+          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-updates-android-arm64.json
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload x86_64 Android update metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: norea-updates-android-x86_64.json
+          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-updates-android-x86_64.json
           if-no-files-found: error
           archive: false
           compression-level: 0
