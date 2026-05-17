@@ -41,6 +41,8 @@ import {
   runWithScraperExecutor,
   type ScraperExecutorId,
 } from "./scraper-queue";
+import { recordPerformanceObservation } from "../observability";
+import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
 
 export type TaskLane = "main" | "source";
 
@@ -73,10 +75,11 @@ export type MainTaskKind =
   | "plugin.install"
   | "plugin.uninstall";
 
-export type MainLaneTaskKind = MainTaskKind | "source.openNovel";
+export type MainLaneTaskKind = MainTaskKind;
 
 export type SourceTaskKind =
   | "source.openSite"
+  | "source.openNovel"
   | "source.listPopular"
   | "source.listLatest"
   | "source.search"
@@ -154,8 +157,14 @@ export type SourceQueueSortMode =
 export interface TaskSnapshot {
   pausedSourceIds: string[];
   records: TaskRecord[];
+  recordLimit: number;
+  recordsTruncated: boolean;
+  sourceQueueLimit: number;
   sourceQueueOrder: string[];
+  sourceQueuesTotal: number;
+  sourceQueuesTruncated: boolean;
   sourceQueuesPaused: boolean;
+  total: number;
   running: number;
   queued: number;
   failed: number;
@@ -224,7 +233,7 @@ interface TaskEntry {
 }
 
 const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
-const HISTORY_LIMIT = 200;
+const HISTORY_LIMIT = Math.min(200, MAX_SCHEDULER_MATERIALIZED_TASKS);
 const TERMINAL_TASK_RETENTION_MS = 2_000;
 export const TASK_PAUSE_ABORT_MESSAGE = "Task was paused.";
 
@@ -253,6 +262,7 @@ function isOpenSiteSourceKind(kind: TaskKind): boolean {
 
 function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
   return (
+    kind === "source.openNovel" ||
     kind === "source.listPopular" ||
     kind === "source.listLatest" ||
     kind === "source.search"
@@ -378,8 +388,14 @@ export class TaskScheduler {
   private snapshot: TaskSnapshot = {
     pausedSourceIds: [],
     records: [],
+    recordLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
+    recordsTruncated: false,
+    sourceQueueLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
     sourceQueueOrder: [],
+    sourceQueuesTotal: 0,
+    sourceQueuesTruncated: false,
     sourceQueuesPaused: false,
+    total: 0,
     running: 0,
     queued: 0,
     failed: 0,
@@ -418,7 +434,7 @@ export class TaskScheduler {
     entry?: TaskEntry,
     extra?: Record<string, unknown>,
   ): void {
-    console.debug(`[task-scheduler] ${message}`, {
+    recordPerformanceObservation("scheduler.event", {
       activeBackgroundCount: this.activeBackgroundCount,
       activeImmediateTaskId: this.activeImmediateTaskId,
       activePoolTaskIdsByExecutor: Object.fromEntries(
@@ -439,6 +455,7 @@ export class TaskScheduler {
       sourceQueuesPaused: this.sourceQueuesPaused,
       status: entry?.record.status,
       taskId: entry?.record.id,
+      message,
       ...extra,
     });
   }
@@ -1114,9 +1131,19 @@ export class TaskScheduler {
     if (options.allowActiveSource) return true;
     const sourceId = entry.record.source?.id;
     if (!sourceId) return true;
+    return !this.hasActiveNonOpenSiteSourceTask(sourceId);
+  }
+
+  private hasActiveNonOpenSiteSourceTask(sourceId: string): boolean {
     const activeIds = this.activeSourceTaskIdsById.get(sourceId);
-    if (activeIds && activeIds.size > 0) return false;
-    return true;
+    if (!activeIds) return false;
+    for (const id of activeIds) {
+      const activeEntry = this.entries.get(id);
+      if (activeEntry && !isOpenSiteSourceKind(activeEntry.record.kind)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private compareTaskOrder(a: TaskEntry, b: TaskEntry): number {
@@ -1234,6 +1261,15 @@ export class TaskScheduler {
           this.finishCancelledRunningAfterSettlement(entry);
           return;
         }
+        if (!cancelled) {
+          console.error("[task-scheduler] task failed", {
+            error: describeError(error),
+            kind: entry.record.kind,
+            sourceId: entry.record.source?.id,
+            taskId: entry.record.id,
+            title: entry.record.title,
+          });
+        }
         this.finishRunning(entry, cancelled ? "cancelled" : "failed", {
           canCancel: false,
           canRetry: cancelled,
@@ -1287,6 +1323,12 @@ export class TaskScheduler {
       canRetry: true,
       finishedAt: Date.now(),
     });
+    if (
+      entry.dedupeKey &&
+      this.activeDedupeByKey.get(entry.dedupeKey) === entry.record.id
+    ) {
+      this.activeDedupeByKey.delete(entry.dedupeKey);
+    }
     entry.reject(new DOMException("Task was cancelled.", "AbortError"));
     if (entry.record.lane === "main") {
       this.releaseActive(entry);
@@ -1449,49 +1491,191 @@ export class TaskScheduler {
   }
 
   private buildSnapshot(): TaskSnapshot {
+    const counts: Record<TaskStatus, number> = {
+      cancelled: 0,
+      failed: 0,
+      queued: 0,
+      running: 0,
+      succeeded: 0,
+    };
+    const sourceIdsInActiveEntries = new Set<string>();
+    const materializedEntries: TaskEntry[] = [];
+    const materializedTaskIds = new Set<string>();
     const queuePositions = new Map<
       string,
       Pick<TaskRecord, "queueIndex" | "queueSize">
     >();
-    this.mainQueue.forEach((id, queueIndex) => {
-      queuePositions.set(id, { queueIndex, queueSize: this.mainQueue.length });
-    });
-    for (const queue of this.sourceQueues.values()) {
-      queue.forEach((id, queueIndex) => {
-        queuePositions.set(id, { queueIndex, queueSize: queue.length });
-      });
+    const remainingMaterializedCapacity = () =>
+      MAX_SCHEDULER_MATERIALIZED_TASKS - materializedEntries.length;
+    const addMaterializedEntry = (
+      entry: TaskEntry | undefined,
+      queuePosition?: Pick<TaskRecord, "queueIndex" | "queueSize">,
+    ): boolean => {
+      if (
+        !entry ||
+        materializedTaskIds.has(entry.record.id) ||
+        materializedEntries.length >= MAX_SCHEDULER_MATERIALIZED_TASKS
+      ) {
+        return false;
+      }
+      materializedTaskIds.add(entry.record.id);
+      materializedEntries.push(entry);
+      if (queuePosition) {
+        queuePositions.set(entry.record.id, queuePosition);
+      }
+      return true;
+    };
+    const terminalCandidates: TaskEntry[] = [];
+    const addTerminalCandidate = (entry: TaskEntry): void => {
+      const capacity = remainingMaterializedCapacity();
+      if (capacity <= 0) return;
+      const insertIndex = terminalCandidates.findIndex(
+        (candidate) => candidate.record.createdAt < entry.record.createdAt,
+      );
+      if (insertIndex < 0) {
+        if (terminalCandidates.length < capacity) {
+          terminalCandidates.push(entry);
+        }
+      } else {
+        terminalCandidates.splice(insertIndex, 0, entry);
+        if (terminalCandidates.length > capacity) terminalCandidates.pop();
+      }
+    };
+
+    for (const entry of this.entries.values()) {
+      counts[entry.record.status] += 1;
+      const sourceId = entry.record.source?.id;
+      if (
+        sourceId &&
+        (entry.record.status === "queued" || entry.record.status === "running")
+      ) {
+        sourceIdsInActiveEntries.add(sourceId);
+      }
+
+      if (entry.record.status === "running") {
+        addMaterializedEntry(entry);
+      } else if (
+        entry.record.status !== "queued" &&
+        !materializedTaskIds.has(entry.record.id)
+      ) {
+        addTerminalCandidate(entry);
+      }
     }
 
-    const records = [...this.entries.values()]
-      .map((entry) => ({
-        ...entry.record,
-        ...queuePositions.get(entry.record.id),
-      }))
-      .sort((a, b) => b.createdAt - a.createdAt);
-    const sourceIdsInRecords = new Set(
-      records
-        .map((task) => task.source?.id)
-        .filter((sourceId): sourceId is string => typeof sourceId === "string"),
-    );
-    const sourceQueueOrder = [
-      ...this.sourceQueueOrder.filter((sourceId) =>
-        sourceIdsInRecords.has(sourceId),
-      ),
-      ...[...sourceIdsInRecords]
-        .filter((sourceId) => !this.sourceQueueOrder.includes(sourceId))
-        .sort(),
-    ];
-    return {
+    for (
+      let queueIndex = 0;
+      queueIndex < this.mainQueue.length &&
+      remainingMaterializedCapacity() > 0;
+      queueIndex += 1
+    ) {
+      const id = this.mainQueue[queueIndex]!;
+      const entry = this.entries.get(id);
+      if (entry?.record.status === "queued") {
+        addMaterializedEntry(entry, {
+          queueIndex,
+          queueSize: this.mainQueue.length,
+        });
+      }
+    }
+    const sourceQueueOrderSet = new Set(this.sourceQueueOrder);
+    const materializeSourceQueue = (sourceId: string): void => {
+      if (remainingMaterializedCapacity() <= 0) return;
+      const queue = this.sourceQueues.get(sourceId);
+      if (!queue) return;
+      for (
+        let queueIndex = 0;
+        queueIndex < queue.length &&
+        remainingMaterializedCapacity() > 0;
+        queueIndex += 1
+      ) {
+        const id = queue[queueIndex]!;
+        const entry = this.entries.get(id);
+        if (entry?.record.status === "queued") {
+          addMaterializedEntry(entry, {
+            queueIndex,
+            queueSize: queue.length,
+          });
+        }
+      }
+    };
+    for (const sourceId of this.sourceQueueOrder) {
+      materializeSourceQueue(sourceId);
+      if (remainingMaterializedCapacity() <= 0) break;
+    }
+    if (remainingMaterializedCapacity() > 0) {
+      const unorderedSourceIds = [...this.sourceQueues.keys()]
+        .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
+        .sort();
+      for (const sourceId of unorderedSourceIds) {
+        materializeSourceQueue(sourceId);
+        if (remainingMaterializedCapacity() <= 0) break;
+      }
+    }
+    for (const entry of terminalCandidates) {
+      if (!addMaterializedEntry(entry)) break;
+    }
+
+    const records = materializedEntries.map((entry) => ({
+      ...entry.record,
+      ...queuePositions.get(entry.record.id),
+    }));
+    const sourceQueueOrder: string[] = [];
+    const sourceQueueOrderWindowIds = new Set<string>();
+    const addSourceQueueId = (sourceId: string): void => {
+      if (
+        sourceQueueOrder.length >= MAX_SCHEDULER_MATERIALIZED_TASKS ||
+        sourceQueueOrderWindowIds.has(sourceId) ||
+        !sourceIdsInActiveEntries.has(sourceId)
+      ) {
+        return;
+      }
+      sourceQueueOrderWindowIds.add(sourceId);
+      sourceQueueOrder.push(sourceId);
+    };
+    for (const sourceId of this.sourceQueueOrder) {
+      addSourceQueueId(sourceId);
+      if (sourceQueueOrder.length >= MAX_SCHEDULER_MATERIALIZED_TASKS) break;
+    }
+    if (sourceQueueOrder.length < MAX_SCHEDULER_MATERIALIZED_TASKS) {
+      const unorderedSourceIds = [...sourceIdsInActiveEntries]
+        .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
+        .sort();
+      for (const sourceId of unorderedSourceIds) {
+        addSourceQueueId(sourceId);
+        if (sourceQueueOrder.length >= MAX_SCHEDULER_MATERIALIZED_TASKS) break;
+      }
+    }
+    const total = this.entries.size;
+    const sourceQueuesTotal = sourceIdsInActiveEntries.size;
+    const snapshot = {
       pausedSourceIds: [...this.pausedSourceIds].sort(),
       records,
+      recordLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
+      recordsTruncated: total > records.length,
+      sourceQueueLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
       sourceQueueOrder,
+      sourceQueuesTotal,
+      sourceQueuesTruncated: sourceQueuesTotal > sourceQueueOrder.length,
       sourceQueuesPaused: this.sourceQueuesPaused,
-      running: records.filter((task) => task.status === "running").length,
-      queued: records.filter((task) => task.status === "queued").length,
-      failed: records.filter((task) => task.status === "failed").length,
-      succeeded: records.filter((task) => task.status === "succeeded").length,
-      cancelled: records.filter((task) => task.status === "cancelled").length,
+      total,
+      running: counts.running,
+      queued: counts.queued,
+      failed: counts.failed,
+      succeeded: counts.succeeded,
+      cancelled: counts.cancelled,
     };
+    recordPerformanceObservation("scheduler.snapshot", {
+      materializedRecords: records.length,
+      queued: snapshot.queued,
+      recordLimit: snapshot.recordLimit,
+      recordsTruncated: snapshot.recordsTruncated,
+      running: snapshot.running,
+      sourceQueueLimit: snapshot.sourceQueueLimit,
+      sourceQueuesTotal: snapshot.sourceQueuesTotal,
+      sourceQueuesTruncated: snapshot.sourceQueuesTruncated,
+      total,
+    });
+    return snapshot;
   }
 
   private finishQueuedAsCancelled(entry: TaskEntry): void {

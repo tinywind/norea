@@ -27,6 +27,7 @@ export async function clearDownloadedChapterContent(): Promise<MaintenanceResult
        content_bytes = 0,
        media_bytes = 0,
        media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
        is_downloaded = 0,
        updated_at = unixepoch()
      WHERE (

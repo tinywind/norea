@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({
   getDb: vi.fn(),
+  runDatabaseTransaction: vi.fn(),
 }));
 
-import { getDb } from "../client";
+import { getDb, runDatabaseTransaction } from "../client";
+import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import {
   clearChapterContent,
   clearNovelHistory,
@@ -22,9 +24,12 @@ import {
   setChapterBookmark,
   updateChapterProgress,
   upsertChapter,
+  upsertDownloadedChapters,
+  upsertSourceChapters,
 } from "./chapter";
 
 const mockedGetDb = vi.mocked(getDb);
+const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
 let mockSelect: ReturnType<typeof vi.fn>;
 let mockExecute: ReturnType<typeof vi.fn>;
 
@@ -36,6 +41,12 @@ beforeEach(() => {
     select: mockSelect,
     execute: mockExecute,
   } as never);
+  mockedRunDatabaseTransaction.mockImplementation(async (run) =>
+    run({
+      select: mockSelect,
+      execute: mockExecute,
+    } as never),
+  );
 });
 
 describe("listChaptersByNovel", () => {
@@ -191,6 +202,132 @@ describe("upsertChapter", () => {
   });
 });
 
+describe("upsertSourceChapters", () => {
+  it("bulk upserts source chapter metadata in one transaction", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 2 });
+
+    const result = await upsertSourceChapters([
+      {
+        novelId: 7,
+        path: "/c/1",
+        name: "Chapter One",
+        position: 1,
+        chapterNumber: "1",
+      },
+      {
+        novelId: 7,
+        path: "/c/2",
+        name: "Chapter Two",
+        position: 2,
+        chapterNumber: "2",
+        contentType: "text",
+      },
+    ]);
+
+    expect(mockedRunDatabaseTransaction).toHaveBeenCalledOnce();
+    expect(mockExecute).toHaveBeenCalledOnce();
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("INSERT INTO chapter");
+    expect(sql).toContain("VALUES ($1, $2, $3, $4, $5, $6, $7, $8");
+    expect(sql).toContain("($9, $10, $11, $12, $13, $14, $15, $16");
+    expect(sql).toContain("ON CONFLICT(novel_id, path) DO UPDATE");
+    expect(sql).not.toContain("content        =");
+    expect(params).toEqual([
+      7,
+      "/c/1",
+      "Chapter One",
+      1,
+      "1",
+      "1",
+      null,
+      "html",
+      7,
+      "/c/2",
+      "Chapter Two",
+      2,
+      "2",
+      "1",
+      null,
+      "text",
+    ]);
+    expect(result).toEqual({ rowsAffected: 2, chunks: 1 });
+  });
+
+  it("chunks source chapter upserts by the SQLite bind budget", async () => {
+    mockExecute
+      .mockResolvedValueOnce({ rowsAffected: 112 })
+      .mockResolvedValueOnce({ rowsAffected: 1 });
+
+    const chapters = Array.from({ length: 113 }, (_, index) => ({
+      novelId: 7,
+      path: `/c/${index + 1}`,
+      name: `Chapter ${index + 1}`,
+      position: index + 1,
+      chapterNumber: String(index + 1),
+    }));
+
+    await expect(upsertSourceChapters(chapters)).resolves.toEqual({
+      rowsAffected: 113,
+      chunks: 2,
+    });
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects chapter titles over the input budget before opening a transaction", async () => {
+    await expect(
+      upsertSourceChapters([
+        {
+          novelId: 7,
+          path: "/c/1",
+          name: "x".repeat(8 * 1024 + 1),
+          position: 1,
+        },
+      ]),
+    ).rejects.toThrow("Chapter title");
+
+    expect(mockedRunDatabaseTransaction).not.toHaveBeenCalled();
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+});
+
+describe("upsertDownloadedChapters", () => {
+  it("bulk upserts downloaded chapter content and recomputes content bytes", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
+
+    const result = await upsertDownloadedChapters([
+      {
+        novelId: 7,
+        path: "local:txt:hash/chapter-0001",
+        name: "Chapter 1",
+        position: 1,
+        content: "Chapter body",
+        contentBytes: 1,
+        contentType: "text",
+      },
+    ]);
+
+    expect(mockedRunDatabaseTransaction).toHaveBeenCalledOnce();
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("content_bytes");
+    expect(sql).toContain("media_repair_needed");
+    expect(sql).toContain("media_bytes_checked_at = NULL");
+    expect(sql).toContain("is_downloaded  = 1");
+    expect(params).toEqual([
+      7,
+      "local:txt:hash/chapter-0001",
+      "Chapter 1",
+      1,
+      null,
+      "1",
+      null,
+      "html",
+      "Chapter body",
+      12,
+    ]);
+    expect(result).toEqual({ rowsAffected: 1, chunks: 1 });
+  });
+});
+
 describe("updateChapterProgress", () => {
   it("clamps below zero to 0", async () => {
     mockExecute.mockResolvedValueOnce(undefined);
@@ -292,9 +429,12 @@ describe("saveChapterContent", () => {
     expect(sql).toContain("content_bytes  = $4");
     expect(sql).toContain("media_bytes    = $5");
     expect(sql).toContain("media_repair_needed = $6");
+    expect(sql).toContain(
+      "media_bytes_checked_at = CASE WHEN $7 = 1 THEN unixepoch() ELSE NULL END",
+    );
     expect(sql).toContain("is_downloaded  = 1");
     expect(sql).toContain("updated_at     = unixepoch()");
-    expect(params).toEqual([7, "<p>hello</p>", "html", 12, 0, 0]);
+    expect(params).toEqual([7, "<p>hello</p>", "html", 12, 0, 0, 0]);
     expect(result).toEqual({ rowsAffected: 1 });
   });
 
@@ -320,6 +460,7 @@ describe("saveChapterContent", () => {
       37,
       0,
       1,
+      0,
     ]);
   });
 
@@ -360,6 +501,7 @@ describe("clearChapterContent", () => {
     expect(sql).toContain("content_bytes  = 0");
     expect(sql).toContain("media_bytes    = 0");
     expect(sql).toContain("media_repair_needed = 0");
+    expect(sql).toContain("media_bytes_checked_at = NULL");
     expect(sql).toContain("is_downloaded  = 0");
     expect(sql).toContain("FROM novel");
     expect(sql).toContain("is_local = 0");
@@ -440,6 +582,13 @@ describe("listLibraryUpdates", () => {
     expect(params).toEqual([1]);
   });
 
+  it("caps oversized route query limits", async () => {
+    mockSelect.mockResolvedValueOnce([]);
+    await listLibraryUpdates(MAX_ROUTE_QUERY_ROWS + 25);
+    const [, params] = mockSelect.mock.calls[0]!;
+    expect(params).toEqual([MAX_ROUTE_QUERY_ROWS]);
+  });
+
   it("uses keyset cursor params for the next page", async () => {
     mockSelect.mockResolvedValueOnce([]);
     await listLibraryUpdates(25, {
@@ -518,5 +667,14 @@ describe("listRecentlyRead", () => {
 
     const [, params] = mockSelect.mock.calls[0]!;
     expect(params).toEqual([25]);
+  });
+
+  it("caps oversized history limits to the route query budget", async () => {
+    mockSelect.mockResolvedValueOnce([]);
+
+    await listRecentlyRead(MAX_ROUTE_QUERY_ROWS + 1);
+
+    const [, params] = mockSelect.mock.calls[0]!;
+    expect(params).toEqual([MAX_ROUTE_QUERY_ROWS]);
   });
 });

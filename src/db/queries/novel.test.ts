@@ -2,15 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({
   getDb: vi.fn(),
+  runDatabaseTransaction: vi.fn(),
 }));
 
-import { getDb } from "../client";
+import { getDb, runDatabaseTransaction } from "../client";
+import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import {
   countNovels,
   findLocalNovelByPath,
+  getLibraryNovelSummary,
   getNovelById,
   insertNovelIfAbsent,
+  listLibraryNovelPage,
   listLibraryNovelRefreshTargets,
   listLibraryNovels,
   renumberLocalNovelChapters,
@@ -23,6 +27,7 @@ import {
 } from "./novel";
 
 const mockedGetDb = vi.mocked(getDb);
+const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
 const LOCAL_COVER = "data:image/png;base64,AQID";
 
 interface MockedDb {
@@ -33,7 +38,9 @@ interface MockedDb {
 function stubDb(): MockedDb {
   const select = vi.fn();
   const execute = vi.fn();
-  mockedGetDb.mockResolvedValue({ select, execute } as never);
+  const db = { select, execute } as never;
+  mockedGetDb.mockResolvedValue(db);
+  mockedRunDatabaseTransaction.mockImplementation(async (run) => run(db));
   return { select, execute };
 }
 
@@ -207,6 +214,236 @@ describe("listLibraryNovels", () => {
     const [sql, params] = db.select.mock.calls[0]!;
     expect(sql).not.toContain("LIKE");
     expect(params).toEqual([]);
+  });
+
+  it("adds a bounded route limit when requested", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([]);
+
+    await listLibraryNovels({ limit: 75 });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("LIMIT $1");
+    expect(params).toEqual([75]);
+  });
+
+  it("clamps oversized library route limits", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([]);
+
+    await listLibraryNovels({
+      limit: MAX_ROUTE_QUERY_ROWS + 25,
+      search: "abc",
+    });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("LIKE '%' || $1 || '%'");
+    expect(sql).toContain("LIMIT $2");
+    expect(params).toEqual(["abc", MAX_ROUTE_QUERY_ROWS]);
+  });
+});
+
+describe("listLibraryNovelPage", () => {
+  it("fetches one extra row and returns the next keyset cursor", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([
+      {
+        id: 9,
+        pluginId: "demo",
+        path: "p9",
+        name: "Nine",
+        cover: null,
+        author: null,
+        inLibrary: 1,
+        isLocal: 0,
+        totalChapters: 12,
+        chaptersDownloaded: 3,
+        chaptersUnread: 4,
+        readingProgress: 25,
+        lastReadAt: null,
+        lastUpdatedAt: 1_700_000_009,
+      },
+      {
+        id: 8,
+        pluginId: "demo",
+        path: "p8",
+        name: "Eight",
+        cover: null,
+        author: null,
+        inLibrary: 1,
+        isLocal: 0,
+        totalChapters: 10,
+        chaptersDownloaded: 5,
+        chaptersUnread: 0,
+        readingProgress: 100,
+        lastReadAt: 1_700_000_001,
+        lastUpdatedAt: 1_700_000_008,
+      },
+      {
+        id: 7,
+        pluginId: "demo",
+        path: "p7",
+        name: "Seven",
+        cover: null,
+        author: null,
+        inLibrary: 1,
+        isLocal: 0,
+        totalChapters: 1,
+        chaptersDownloaded: 0,
+        chaptersUnread: 1,
+        readingProgress: 0,
+        lastReadAt: null,
+        lastUpdatedAt: 1_700_000_007,
+      },
+    ]);
+
+    const page = await listLibraryNovelPage({ limit: 2 });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("ORDER BY id DESC");
+    expect(sql).toContain("LIMIT $1");
+    expect(params).toEqual([3]);
+    expect(page.hasMore).toBe(true);
+    expect(page.novels).toHaveLength(2);
+    expect(page.nextCursor).toEqual({
+      id: 8,
+      name: "Eight",
+      sortValue: 8,
+    });
+  });
+
+  it("adds a default descending id cursor for date-added pages", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([]);
+
+    await listLibraryNovelPage({
+      cursor: { id: 50, name: "Cursor", sortValue: 50 },
+      limit: 25,
+    });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("FROM library_rows");
+    expect(sql).toContain("WHERE id < $1");
+    expect(sql).toContain("LIMIT $2");
+    expect(params).toEqual([50, 26]);
+  });
+
+  it("uses the sorted metric plus name and id as the keyset cursor", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([]);
+
+    await listLibraryNovelPage({
+      cursor: { id: 10, name: "Beta", sortValue: 4 },
+      limit: 25,
+      search: "hero",
+      sortOrder: "downloadedDesc",
+    });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("LIKE '%' || $1 || '%'");
+    expect(sql).toContain("chaptersDownloaded < $2");
+    expect(sql).toContain("name COLLATE NOCASE > $4 COLLATE NOCASE");
+    expect(sql).toContain("AND id > $3");
+    expect(sql).toContain(
+      "ORDER BY chaptersDownloaded DESC, name COLLATE NOCASE ASC, id ASC",
+    );
+    expect(params).toEqual(["hero", 4, 10, "Beta", 26]);
+  });
+
+  it("omits the next cursor when the page is not full", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([
+      {
+        id: 1,
+        pluginId: "demo",
+        path: "p1",
+        name: "One",
+        cover: null,
+        author: null,
+        inLibrary: 1,
+        isLocal: 0,
+        totalChapters: 1,
+        chaptersDownloaded: 0,
+        chaptersUnread: 0,
+        readingProgress: 100,
+        lastReadAt: null,
+        lastUpdatedAt: 1_700_000_001,
+      },
+    ]);
+
+    const page = await listLibraryNovelPage({ limit: 2 });
+
+    expect(page).toMatchObject({
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(page.novels).toHaveLength(1);
+  });
+});
+
+describe("getLibraryNovelSummary", () => {
+  it("aggregates exact stats and tag counts for the current filter", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([
+      {
+        completeNovels: 2,
+        downloadedChapters: 25,
+        downloadedNovels: 3,
+        lastUpdatedAt: 1_700_000_099,
+        localNovels: 1,
+        totalChapters: 40,
+        totalNovels: 4,
+        unreadChapters: 6,
+        unreadNovels: 2,
+      },
+    ]);
+
+    const summary = await getLibraryNovelSummary({
+      categoryId: 7,
+      downloadedOnly: true,
+      search: "hero",
+      unreadOnly: true,
+    });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("WITH library_rows AS");
+    expect(sql).toContain("COUNT(*) AS totalNovels");
+    expect(sql).toContain("SUM(chaptersDownloaded)");
+    expect(sql).toContain("SUM(CASE WHEN chaptersUnread > 0");
+    expect(sql).toContain("EXISTS (SELECT 1 FROM novel_category");
+    expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
+    expect(sql).toContain(
+      "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+    );
+    expect(params).toEqual(["hero", 7]);
+    expect(summary).toEqual({
+      completeNovels: 2,
+      downloadedChapters: 25,
+      downloadedNovels: 3,
+      lastUpdatedAt: 1_700_000_099,
+      localNovels: 1,
+      totalChapters: 40,
+      totalNovels: 4,
+      unreadChapters: 6,
+      unreadNovels: 2,
+    });
+  });
+
+  it("returns zero summary values when SQLite does not return a row", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([]);
+
+    await expect(getLibraryNovelSummary()).resolves.toEqual({
+      completeNovels: 0,
+      downloadedChapters: 0,
+      downloadedNovels: 0,
+      lastUpdatedAt: null,
+      localNovels: 0,
+      totalChapters: 0,
+      totalNovels: 0,
+      unreadChapters: 0,
+      unreadNovels: 0,
+    });
   });
 });
 

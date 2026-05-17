@@ -73,6 +73,9 @@ export const chapterTable = sqliteTable(
     mediaRepairNeeded: integer("media_repair_needed", { mode: "boolean" })
       .notNull()
       .default(false),
+    mediaBytesCheckedAt: integer("media_bytes_checked_at", {
+      mode: "timestamp",
+    }),
     releaseTime: text("release_time"),
     readAt: integer("read_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }),

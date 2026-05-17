@@ -29,6 +29,7 @@ describe("clearDownloadedChapterContent", () => {
     expect(sql).toContain("content_bytes = 0");
     expect(sql).toContain("media_bytes = 0");
     expect(sql).toContain("media_repair_needed = 0");
+    expect(sql).toContain("media_bytes_checked_at = NULL");
     expect(sql).toContain("is_downloaded = 0");
     expect(sql).toContain("EXISTS");
     expect(sql).toContain("n.is_local = 0");

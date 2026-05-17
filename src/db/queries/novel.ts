@@ -1,12 +1,18 @@
-import { getDb } from "../client";
+import { getDb, runDatabaseTransaction } from "../client";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
+import { upsertDownloadedChaptersInDb } from "./chapter";
 import {
   normalizeChapterContentType,
   storedChapterContentType,
   type ChapterContentType,
 } from "../../lib/chapter-content";
 import type { EpubHtmlResource } from "../../lib/epub-html";
+import type { LocalImportBinaryResource } from "../../lib/local-import";
 import { isLocalCoverSource } from "../../lib/local-cover";
+import {
+  clampRouteQueryLimit,
+  MAX_ROUTE_QUERY_ROWS,
+} from "../../lib/performance-budgets";
 import type { LibrarySortOrder } from "../../store/library";
 
 export const LOCAL_PLUGIN_ID = "local";
@@ -43,11 +49,64 @@ export interface LibraryFilter {
   downloadedOnly?: boolean;
   unreadOnly?: boolean;
   sortOrder?: LibrarySortOrder;
+  /** Optional route-level guard for screens that render bounded library windows. */
+  limit?: number;
+}
+
+export interface LibraryNovelCursor {
+  id: number;
+  name: string;
+  sortValue: number | string;
+}
+
+export interface LibraryNovelPage {
+  hasMore: boolean;
+  nextCursor: LibraryNovelCursor | null;
+  novels: LibraryNovel[];
+}
+
+export interface LibraryNovelSummary {
+  completeNovels: number;
+  downloadedChapters: number;
+  downloadedNovels: number;
+  lastUpdatedAt: number | null;
+  localNovels: number;
+  totalChapters: number;
+  totalNovels: number;
+  unreadChapters: number;
+  unreadNovels: number;
+}
+
+interface LibraryNovelPageFilter extends LibraryFilter {
+  cursor?: LibraryNovelCursor | null;
 }
 
 interface RawLibraryNovel extends Omit<LibraryNovel, "inLibrary" | "isLocal"> {
   inLibrary: unknown;
   isLocal: unknown;
+}
+
+type LibrarySortCursorKind = "name" | "unique" | "valueName";
+
+interface LibrarySortConfig {
+  cursorColumn: string;
+  cursorKind: LibrarySortCursorKind;
+  direction: "asc" | "desc";
+  getSortValue: (novel: LibraryNovel) => number | string;
+  orderBy: string;
+  valueKind: "number" | "text";
+}
+
+interface RawLibraryNovelSummary {
+  completeNovels: number | null;
+  downloadedChapters: number | null;
+  downloadedNovels: number | null;
+  lastUpdatedAt: number | null;
+  localNovels: number | null;
+  totalChapters: number | null;
+  totalNovels: number | null;
+  unreadChapters: number | null;
+  unreadNovels: number | null;
 }
 
 export interface LibraryNovelRefreshTarget {
@@ -64,36 +123,139 @@ interface RawLibraryNovelRefreshTarget
   isLocal: unknown;
 }
 
-const LIBRARY_SORT_SQL: Record<LibrarySortOrder, string> = {
-  nameAsc: "n.name COLLATE NOCASE ASC",
-  nameDesc: "n.name COLLATE NOCASE DESC",
-  downloadedAsc: "chaptersDownloaded ASC",
-  downloadedDesc: "chaptersDownloaded DESC",
-  totalChaptersAsc: "totalChapters ASC",
-  totalChaptersDesc: "totalChapters DESC",
-  unreadChaptersAsc: "chaptersUnread ASC",
-  unreadChaptersDesc: "chaptersUnread DESC",
-  dateAddedAsc: "n.id ASC",
-  dateAddedDesc: "n.id DESC",
-  lastReadAsc: "COALESCE(n.last_read_at, 0) ASC",
-  lastReadDesc: "COALESCE(n.last_read_at, 0) DESC",
-  lastUpdatedAsc: "lastUpdatedAt ASC",
-  lastUpdatedDesc: "lastUpdatedAt DESC",
+const DEFAULT_LIBRARY_PAGE_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
+
+const LIBRARY_SORT_CONFIG: Record<LibrarySortOrder, LibrarySortConfig> = {
+  nameAsc: {
+    cursorColumn: "name",
+    cursorKind: "name",
+    direction: "asc",
+    getSortValue: (novel) => novel.name,
+    orderBy: "name COLLATE NOCASE ASC, id ASC",
+    valueKind: "text",
+  },
+  nameDesc: {
+    cursorColumn: "name",
+    cursorKind: "name",
+    direction: "desc",
+    getSortValue: (novel) => novel.name,
+    orderBy: "name COLLATE NOCASE DESC, id ASC",
+    valueKind: "text",
+  },
+  downloadedAsc: {
+    cursorColumn: "chaptersDownloaded",
+    cursorKind: "valueName",
+    direction: "asc",
+    getSortValue: (novel) => novel.chaptersDownloaded,
+    orderBy: "chaptersDownloaded ASC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  downloadedDesc: {
+    cursorColumn: "chaptersDownloaded",
+    cursorKind: "valueName",
+    direction: "desc",
+    getSortValue: (novel) => novel.chaptersDownloaded,
+    orderBy: "chaptersDownloaded DESC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  totalChaptersAsc: {
+    cursorColumn: "totalChapters",
+    cursorKind: "valueName",
+    direction: "asc",
+    getSortValue: (novel) => novel.totalChapters,
+    orderBy: "totalChapters ASC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  totalChaptersDesc: {
+    cursorColumn: "totalChapters",
+    cursorKind: "valueName",
+    direction: "desc",
+    getSortValue: (novel) => novel.totalChapters,
+    orderBy: "totalChapters DESC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  unreadChaptersAsc: {
+    cursorColumn: "chaptersUnread",
+    cursorKind: "valueName",
+    direction: "asc",
+    getSortValue: (novel) => novel.chaptersUnread,
+    orderBy: "chaptersUnread ASC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  unreadChaptersDesc: {
+    cursorColumn: "chaptersUnread",
+    cursorKind: "valueName",
+    direction: "desc",
+    getSortValue: (novel) => novel.chaptersUnread,
+    orderBy: "chaptersUnread DESC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  dateAddedAsc: {
+    cursorColumn: "id",
+    cursorKind: "unique",
+    direction: "asc",
+    getSortValue: (novel) => novel.id,
+    orderBy: "id ASC",
+    valueKind: "number",
+  },
+  dateAddedDesc: {
+    cursorColumn: "id",
+    cursorKind: "unique",
+    direction: "desc",
+    getSortValue: (novel) => novel.id,
+    orderBy: "id DESC",
+    valueKind: "number",
+  },
+  lastReadAsc: {
+    cursorColumn: "lastReadSort",
+    cursorKind: "valueName",
+    direction: "asc",
+    getSortValue: (novel) => novel.lastReadAt ?? 0,
+    orderBy: "lastReadSort ASC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  lastReadDesc: {
+    cursorColumn: "lastReadSort",
+    cursorKind: "valueName",
+    direction: "desc",
+    getSortValue: (novel) => novel.lastReadAt ?? 0,
+    orderBy: "lastReadSort DESC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  lastUpdatedAsc: {
+    cursorColumn: "lastUpdatedAt",
+    cursorKind: "valueName",
+    direction: "asc",
+    getSortValue: (novel) => novel.lastUpdatedAt,
+    orderBy: "lastUpdatedAt ASC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
+  lastUpdatedDesc: {
+    cursorColumn: "lastUpdatedAt",
+    cursorKind: "valueName",
+    direction: "desc",
+    getSortValue: (novel) => novel.lastUpdatedAt,
+    orderBy: "lastUpdatedAt DESC, name COLLATE NOCASE ASC, id ASC",
+    valueKind: "number",
+  },
 };
 
-export async function listLibraryNovels(
-  filter: LibraryFilter = {},
-): Promise<LibraryNovel[]> {
-  const db = await getDb();
+function addParam(params: unknown[], value: unknown): string {
+  params.push(value);
+  return `$${params.length}`;
+}
 
+function buildLibraryFilterConditions(
+  filter: LibraryFilter,
+  params: unknown[],
+): string[] {
   const conditions: string[] = ["n.in_library = 1"];
-  const params: unknown[] = [];
 
   const trimmedSearch = filter.search?.trim() ?? "";
   if (trimmedSearch !== "") {
-    params.push(trimmedSearch);
+    const searchParam = addParam(params, trimmedSearch);
     conditions.push(
-      `n.name LIKE '%' || $${params.length} || '%' COLLATE NOCASE`,
+      `n.name LIKE '%' || ${searchParam} || '%' COLLATE NOCASE`,
     );
   }
   if (filter.categoryId === UNCATEGORIZED_CATEGORY_ID) {
@@ -101,9 +263,9 @@ export async function listLibraryNovels(
       "NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)",
     );
   } else if (filter.categoryId != null) {
-    params.push(filter.categoryId);
+    const categoryParam = addParam(params, filter.categoryId);
     conditions.push(
-      `EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $${params.length})`,
+      `EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = ${categoryParam})`,
     );
   }
   if (filter.downloadedOnly) {
@@ -115,10 +277,13 @@ export async function listLibraryNovels(
     conditions.push("COALESCE(s.chapters_unread, 0) > 0");
   }
 
-  const orderBy = LIBRARY_SORT_SQL[filter.sortOrder ?? "dateAddedDesc"];
+  return conditions;
+}
 
-  const sql = `
-    SELECT
+function libraryRowsCte(conditions: readonly string[]): string {
+  return `
+    WITH library_rows AS (
+      SELECT
       n.id,
       n.plugin_id    AS pluginId,
       n.path,
@@ -132,6 +297,7 @@ export async function listLibraryNovels(
       COALESCE(s.chapters_unread, 0) AS chaptersUnread,
       COALESCE(s.reading_progress, 0) AS readingProgress,
       n.last_read_at AS lastReadAt,
+      COALESCE(n.last_read_at, 0) AS lastReadSort,
       CASE
         WHEN COALESCE(s.total_chapters, 0) > 0
           THEN COALESCE(s.last_chapter_updated_at, n.updated_at)
@@ -140,7 +306,96 @@ export async function listLibraryNovels(
     FROM novel n
     LEFT JOIN novel_stats s ON s.novel_id = n.id
     WHERE ${conditions.join(" AND ")}
-    ORDER BY ${orderBy}, n.name COLLATE NOCASE ASC
+    )
+  `;
+}
+
+function normalizeCursorSortValue(
+  cursor: LibraryNovelCursor,
+  config: LibrarySortConfig,
+): number | string {
+  if (config.valueKind === "text") return String(cursor.sortValue);
+  return typeof cursor.sortValue === "number"
+    ? cursor.sortValue
+    : Number(cursor.sortValue) || 0;
+}
+
+function buildLibraryCursorClause(
+  filter: LibraryNovelPageFilter,
+  params: unknown[],
+  config: LibrarySortConfig,
+): string {
+  if (!filter.cursor) return "";
+
+  const op = config.direction === "asc" ? ">" : "<";
+  const valueParam = addParam(
+    params,
+    normalizeCursorSortValue(filter.cursor, config),
+  );
+
+  if (config.cursorKind === "unique") {
+    return `WHERE ${config.cursorColumn} ${op} ${valueParam}`;
+  }
+
+  const idParam = addParam(params, filter.cursor.id);
+  if (config.cursorKind === "name") {
+    return `WHERE (
+      ${config.cursorColumn} COLLATE NOCASE ${op} ${valueParam} COLLATE NOCASE
+      OR (
+        ${config.cursorColumn} COLLATE NOCASE = ${valueParam} COLLATE NOCASE
+        AND id > ${idParam}
+      )
+    )`;
+  }
+
+  const nameParam = addParam(params, filter.cursor.name);
+  return `WHERE (
+    ${config.cursorColumn} ${op} ${valueParam}
+    OR (
+      ${config.cursorColumn} = ${valueParam}
+      AND name COLLATE NOCASE > ${nameParam} COLLATE NOCASE
+    )
+    OR (
+      ${config.cursorColumn} = ${valueParam}
+      AND name COLLATE NOCASE = ${nameParam} COLLATE NOCASE
+      AND id > ${idParam}
+    )
+  )`;
+}
+
+async function selectLibraryNovels(
+  filter: LibraryNovelPageFilter,
+): Promise<LibraryNovel[]> {
+  const db = await getDb();
+  const params: unknown[] = [];
+  const conditions = buildLibraryFilterConditions(filter, params);
+  const sortConfig = LIBRARY_SORT_CONFIG[filter.sortOrder ?? "dateAddedDesc"];
+  const cursorClause = buildLibraryCursorClause(filter, params, sortConfig);
+  const limitClause =
+    filter.limit === undefined
+      ? ""
+      : `LIMIT ${addParam(params, clampRouteQueryLimit(filter.limit))}`;
+  const sql = `
+    ${libraryRowsCte(conditions)}
+    SELECT
+      id,
+      pluginId,
+      path,
+      name,
+      cover,
+      author,
+      inLibrary,
+      isLocal,
+      totalChapters,
+      chaptersDownloaded,
+      chaptersUnread,
+      readingProgress,
+      lastReadAt,
+      lastUpdatedAt
+    FROM library_rows
+    ${cursorClause}
+    ORDER BY ${sortConfig.orderBy}
+    ${limitClause}
   `;
 
   const rows = await db.select<RawLibraryNovel[]>(sql, params);
@@ -153,6 +408,80 @@ export async function listLibraryNovels(
       isLocal,
     };
   });
+}
+
+export async function listLibraryNovels(
+  filter: LibraryFilter = {},
+): Promise<LibraryNovel[]> {
+  return selectLibraryNovels(filter);
+}
+
+function getLibraryNovelCursor(
+  novel: LibraryNovel | undefined,
+  sortOrder: LibrarySortOrder,
+): LibraryNovelCursor | null {
+  if (!novel) return null;
+  return {
+    id: novel.id,
+    name: novel.name,
+    sortValue: LIBRARY_SORT_CONFIG[sortOrder].getSortValue(novel),
+  };
+}
+
+export async function listLibraryNovelPage(
+  filter: LibraryNovelPageFilter = {},
+): Promise<LibraryNovelPage> {
+  const sortOrder = filter.sortOrder ?? "dateAddedDesc";
+  const normalizedLimit = clampRouteQueryLimit(
+    filter.limit ?? DEFAULT_LIBRARY_PAGE_LIMIT,
+    DEFAULT_LIBRARY_PAGE_LIMIT,
+  );
+  const rows = await selectLibraryNovels({
+    ...filter,
+    limit: normalizedLimit + 1,
+  });
+  const novels = rows.slice(0, normalizedLimit);
+  const hasMore = rows.length > normalizedLimit;
+  return {
+    hasMore,
+    nextCursor: hasMore ? getLibraryNovelCursor(novels.at(-1), sortOrder) : null,
+    novels,
+  };
+}
+
+export async function getLibraryNovelSummary(
+  filter: LibraryFilter = {},
+): Promise<LibraryNovelSummary> {
+  const db = await getDb();
+  const params: unknown[] = [];
+  const conditions = buildLibraryFilterConditions(filter, params);
+  const rows = await db.select<RawLibraryNovelSummary[]>(
+    `${libraryRowsCte(conditions)}
+     SELECT
+       COUNT(*) AS totalNovels,
+       COALESCE(SUM(totalChapters), 0) AS totalChapters,
+       COALESCE(SUM(chaptersDownloaded), 0) AS downloadedChapters,
+       COALESCE(SUM(chaptersUnread), 0) AS unreadChapters,
+       MAX(lastUpdatedAt) AS lastUpdatedAt,
+       COALESCE(SUM(CASE WHEN chaptersUnread > 0 THEN 1 ELSE 0 END), 0) AS unreadNovels,
+       COALESCE(SUM(CASE WHEN chaptersDownloaded > 0 THEN 1 ELSE 0 END), 0) AS downloadedNovels,
+       COALESCE(SUM(CASE WHEN pluginId = '${LOCAL_PLUGIN_ID}' AND isLocal = 1 THEN 1 ELSE 0 END), 0) AS localNovels,
+       COALESCE(SUM(CASE WHEN totalChapters > 0 AND chaptersUnread = 0 THEN 1 ELSE 0 END), 0) AS completeNovels
+     FROM library_rows`,
+    params,
+  );
+  const row = rows[0];
+  return {
+    completeNovels: row?.completeNovels ?? 0,
+    downloadedChapters: row?.downloadedChapters ?? 0,
+    downloadedNovels: row?.downloadedNovels ?? 0,
+    lastUpdatedAt: row?.lastUpdatedAt ?? null,
+    localNovels: row?.localNovels ?? 0,
+    totalChapters: row?.totalChapters ?? 0,
+    totalNovels: row?.totalNovels ?? 0,
+    unreadChapters: row?.unreadChapters ?? 0,
+    unreadNovels: row?.unreadNovels ?? 0,
+  };
 }
 
 export async function listLibraryNovelRefreshTargets(
@@ -361,6 +690,7 @@ export async function insertNovelIfAbsent(
 }
 
 export interface LocalNovelImportChapterInput {
+  binaryResource?: LocalImportBinaryResource;
   path: string;
   name: string;
   position: number;
@@ -676,78 +1006,52 @@ export async function upsertLocalNovelChapters(
   novelId: number,
   chapters: LocalNovelImportChapterInput[],
 ): Promise<LocalNovelImportResult> {
-  const db = await getDb();
-  await ensureLocalNovelExists(db, novelId);
+  return runDatabaseTransaction(async (db) => {
+    await ensureLocalNovelExists(db, novelId);
 
-  let changedChapters = 0;
-  for (const chapter of chapters) {
-    const chapterResult = await db.execute(
-      `INSERT INTO chapter
-           (novel_id, path, name, position, chapter_number, page, release_time, content_type, content, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 1, unixepoch(), unixepoch())
-         ON CONFLICT(novel_id, path) DO UPDATE SET
-           name           = excluded.name,
-           position       = excluded.position,
-           chapter_number = excluded.chapter_number,
-           page           = excluded.page,
-           release_time   = excluded.release_time,
-           content_type   = excluded.content_type,
-           content        = excluded.content,
-           content_bytes  = excluded.content_bytes,
-           media_repair_needed = 0,
-           is_downloaded  = 1,
-           updated_at     = unixepoch()
-          WHERE
-            name IS NOT excluded.name
-            OR position IS NOT excluded.position
-            OR chapter_number IS NOT excluded.chapter_number
-            OR page IS NOT excluded.page
-            OR release_time IS NOT excluded.release_time
-            OR content_type IS NOT excluded.content_type
-            OR content IS NOT excluded.content
-            OR content_bytes IS NOT excluded.content_bytes
-            OR media_repair_needed IS NOT 0
-            OR is_downloaded IS NOT 1`,
-      [
+    let changedChapters = 0;
+    const chapterResult = await upsertDownloadedChaptersInDb(
+      db,
+      chapters.map((chapter) => ({
         novelId,
-        chapter.path,
-        chapter.name,
-        chapter.position,
-        chapter.chapterNumber ?? null,
-        chapter.page ?? "1",
-        chapter.releaseTime ?? null,
-        storedChapterContentType(
+        path: chapter.path,
+        name: chapter.name,
+        position: chapter.position,
+        chapterNumber: chapter.chapterNumber ?? null,
+        page: chapter.page ?? "1",
+        releaseTime: chapter.releaseTime ?? null,
+        contentType: storedChapterContentType(
           normalizeChapterContentType(chapter.contentType),
         ),
-        chapter.content,
-        chapter.contentBytes,
-      ],
+        content: chapter.content,
+        contentBytes: chapter.contentBytes,
+      })),
     );
-    if (chapterResult.rowsAffected > 0) changedChapters += 1;
-  }
-  const deletedChapters = await deleteStaleLocalImportChapters(
-    db,
-    novelId,
-    chapters,
-  );
-  changedChapters += deletedChapters;
-  if (deletedChapters > 0) {
-    const renumbered = await renumberLocalNovelChaptersWithDb(db, novelId);
-    changedChapters += renumbered.rowsAffected;
-  }
+    changedChapters += chapterResult.rowsAffected;
+    const deletedChapters = await deleteStaleLocalImportChapters(
+      db,
+      novelId,
+      chapters,
+    );
+    changedChapters += deletedChapters;
+    if (deletedChapters > 0) {
+      const renumbered = await renumberLocalNovelChaptersWithDb(db, novelId);
+      changedChapters += renumbered.rowsAffected;
+    }
 
-  await db.execute(
-    `UPDATE novel
-       SET updated_at = unixepoch()
-       WHERE id = $1`,
-    [novelId],
-  );
-  return {
-    changed: changedChapters > 0,
-    changedChapters,
-    novelId,
-    chapterCount: chapters.length,
-  };
+    await db.execute(
+      `UPDATE novel
+         SET updated_at = unixepoch()
+         WHERE id = $1`,
+      [novelId],
+    );
+    return {
+      changed: changedChapters > 0,
+      changedChapters,
+      novelId,
+      chapterCount: chapters.length,
+    };
+  });
 }
 
 export async function reorderLocalNovelChapters(
@@ -854,117 +1158,91 @@ export async function reorderLocalNovelChapters(
 export async function upsertLocalNovel(
   input: LocalNovelImportInput,
 ): Promise<LocalNovelImportResult> {
-  const db = await getDb();
-  const novelResult = await db.execute(
-    `INSERT INTO novel
-         (plugin_id, path, name, cover, summary, author, artist, status, genres, in_library, is_local, library_added_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 1, unixepoch())
-       ON CONFLICT(plugin_id, path) DO UPDATE SET
-         name             = excluded.name,
-         cover            = excluded.cover,
-         summary          = excluded.summary,
-         author           = excluded.author,
-         artist           = excluded.artist,
-         status           = excluded.status,
-         genres           = excluded.genres,
-         in_library       = 1,
-         is_local         = 1,
-         library_added_at = COALESCE(library_added_at, unixepoch()),
-         updated_at       = unixepoch()
-        WHERE
-          name IS NOT excluded.name
-          OR cover IS NOT excluded.cover
-          OR summary IS NOT excluded.summary
-          OR author IS NOT excluded.author
-          OR artist IS NOT excluded.artist
-          OR status IS NOT excluded.status
-          OR genres IS NOT excluded.genres
-          OR in_library IS NOT 1
-          OR is_local IS NOT 1
-          OR library_added_at IS NULL`,
-    [
-      LOCAL_PLUGIN_ID,
-      input.path,
-      input.name,
-      nullableLocalCover(input.cover),
-      input.summary ?? null,
-      input.author ?? null,
-      input.artist ?? null,
-      input.status ?? null,
-      input.genres ?? null,
-    ],
-  );
-
-  const rows = await db.select<{ id: number }[]>(
-    `SELECT id FROM novel WHERE plugin_id = $1 AND path = $2`,
-    [LOCAL_PLUGIN_ID, input.path],
-  );
-  const novelId = rows[0]?.id;
-  if (!novelId) {
-    throw new Error("local import: failed to resolve local novel id");
-  }
-
-  let changedChapters = 0;
-  for (const chapter of input.chapters) {
-    const chapterResult = await db.execute(
-      `INSERT INTO chapter
-           (novel_id, path, name, position, chapter_number, page, release_time, content_type, content, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 1, unixepoch(), unixepoch())
-         ON CONFLICT(novel_id, path) DO UPDATE SET
-           name           = excluded.name,
-           position       = excluded.position,
-           chapter_number = excluded.chapter_number,
-           page           = excluded.page,
-           release_time   = excluded.release_time,
-           content_type   = excluded.content_type,
-           content        = excluded.content,
-           content_bytes  = excluded.content_bytes,
-           media_repair_needed = 0,
-           is_downloaded  = 1,
-           updated_at     = unixepoch()
+  return runDatabaseTransaction(async (db) => {
+    const novelResult = await db.execute(
+      `INSERT INTO novel
+           (plugin_id, path, name, cover, summary, author, artist, status, genres, in_library, is_local, library_added_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 1, unixepoch())
+         ON CONFLICT(plugin_id, path) DO UPDATE SET
+           name             = excluded.name,
+           cover            = excluded.cover,
+           summary          = excluded.summary,
+           author           = excluded.author,
+           artist           = excluded.artist,
+           status           = excluded.status,
+           genres           = excluded.genres,
+           in_library       = 1,
+           is_local         = 1,
+           library_added_at = COALESCE(library_added_at, unixepoch()),
+           updated_at       = unixepoch()
           WHERE
             name IS NOT excluded.name
-            OR position IS NOT excluded.position
-            OR chapter_number IS NOT excluded.chapter_number
-            OR page IS NOT excluded.page
-            OR release_time IS NOT excluded.release_time
-            OR content_type IS NOT excluded.content_type
-            OR content IS NOT excluded.content
-            OR content_bytes IS NOT excluded.content_bytes
-            OR media_repair_needed IS NOT 0
-            OR is_downloaded IS NOT 1`,
+            OR cover IS NOT excluded.cover
+            OR summary IS NOT excluded.summary
+            OR author IS NOT excluded.author
+            OR artist IS NOT excluded.artist
+            OR status IS NOT excluded.status
+            OR genres IS NOT excluded.genres
+            OR in_library IS NOT 1
+            OR is_local IS NOT 1
+            OR library_added_at IS NULL`,
       [
-        novelId,
-        chapter.path,
-        chapter.name,
-        chapter.position,
-        chapter.chapterNumber ?? null,
-        chapter.page ?? "1",
-        chapter.releaseTime ?? null,
-        storedChapterContentType(
-          normalizeChapterContentType(chapter.contentType),
-        ),
-        chapter.content,
-        chapter.contentBytes,
+        LOCAL_PLUGIN_ID,
+        input.path,
+        input.name,
+        nullableLocalCover(input.cover),
+        input.summary ?? null,
+        input.author ?? null,
+        input.artist ?? null,
+        input.status ?? null,
+        input.genres ?? null,
       ],
     );
-    if (chapterResult.rowsAffected > 0) changedChapters += 1;
-  }
-  const deletedChapters = await deleteStaleLocalImportChapters(
-    db,
-    novelId,
-    input.chapters,
-  );
-  changedChapters += deletedChapters;
-  if (deletedChapters > 0) {
-    const renumbered = await renumberLocalNovelChaptersWithDb(db, novelId);
-    changedChapters += renumbered.rowsAffected;
-  }
 
-  return {
-    changed: novelResult.rowsAffected > 0 || changedChapters > 0,
-    changedChapters,
-    novelId,
-    chapterCount: input.chapters.length,
-  };
+    const rows = await db.select<{ id: number }[]>(
+      `SELECT id FROM novel WHERE plugin_id = $1 AND path = $2`,
+      [LOCAL_PLUGIN_ID, input.path],
+    );
+    const novelId = rows[0]?.id;
+    if (!novelId) {
+      throw new Error("local import: failed to resolve local novel id");
+    }
+
+    let changedChapters = 0;
+    const chapterResult = await upsertDownloadedChaptersInDb(
+      db,
+      input.chapters.map((chapter) => ({
+        novelId,
+        path: chapter.path,
+        name: chapter.name,
+        position: chapter.position,
+        chapterNumber: chapter.chapterNumber ?? null,
+        page: chapter.page ?? "1",
+        releaseTime: chapter.releaseTime ?? null,
+        contentType: storedChapterContentType(
+          normalizeChapterContentType(chapter.contentType),
+        ),
+        content: chapter.content,
+        contentBytes: chapter.contentBytes,
+      })),
+    );
+    changedChapters += chapterResult.rowsAffected;
+    const deletedChapters = await deleteStaleLocalImportChapters(
+      db,
+      novelId,
+      input.chapters,
+    );
+    changedChapters += deletedChapters;
+    if (deletedChapters > 0) {
+      const renumbered = await renumberLocalNovelChaptersWithDb(db, novelId);
+      changedChapters += renumbered.rowsAffected;
+    }
+
+    return {
+      changed: novelResult.rowsAffected > 0 || changedChapters > 0,
+      changedChapters,
+      novelId,
+      chapterCount: input.chapters.length,
+    };
+  });
 }

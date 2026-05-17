@@ -5,7 +5,16 @@
   type ChapterContentType,
 } from "../../lib/chapter-content";
 import { chapterMediaRepairFlag } from "../../lib/chapter-media-state";
-import { getDb } from "../client";
+import {
+  MAX_CHAPTER_BULK_INPUT_ROWS,
+  MAX_CHAPTER_TITLE_BYTES,
+  MAX_CHAPTER_URL_BYTES,
+  MAX_INLINE_IPC_BYTES,
+  MAX_ROUTE_QUERY_ROWS,
+  assertByteBudget,
+  clampRouteQueryLimit,
+} from "../../lib/performance-budgets";
+import { getDb, runDatabaseTransaction } from "../client";
 
 export interface ChapterRow {
   id: number;
@@ -161,6 +170,290 @@ export interface ChapterMutationResult {
 
 export interface SaveChapterContentOptions {
   mediaBytes?: number;
+}
+
+export interface DownloadedChapterUpsertInput extends InsertChapterInput {
+  content: string;
+  contentBytes?: number;
+}
+
+export interface BulkChapterMutationResult extends ChapterMutationResult {
+  chunks: number;
+}
+
+type DbHandle = Awaited<ReturnType<typeof getDb>>;
+
+const SQLITE_BIND_PARAMETER_BUDGET = 900;
+const SOURCE_CHAPTER_PARAM_COUNT = 8;
+const DOWNLOADED_CHAPTER_PARAM_COUNT = 10;
+const SOURCE_CHAPTER_CHUNK_SIZE = Math.max(
+  1,
+  Math.min(
+    MAX_ROUTE_QUERY_ROWS,
+    Math.floor(SQLITE_BIND_PARAMETER_BUDGET / SOURCE_CHAPTER_PARAM_COUNT),
+  ),
+);
+const DOWNLOADED_CHAPTER_CHUNK_SIZE = Math.max(
+  1,
+  Math.min(
+    MAX_ROUTE_QUERY_ROWS,
+    Math.floor(SQLITE_BIND_PARAMETER_BUDGET / DOWNLOADED_CHAPTER_PARAM_COUNT),
+  ),
+);
+
+function assertChapterTextBudget(
+  value: string,
+  maxBytes: number,
+  label: string,
+): void {
+  assertByteBudget(getUtf8ByteLength(value), maxBytes, label);
+}
+
+function assertChapterBulkCount(
+  count: number,
+  label: string,
+): void {
+  if (count > MAX_CHAPTER_BULK_INPUT_ROWS) {
+    throw new Error(
+      `${label} has ${count} chapters, which exceeds the ${MAX_CHAPTER_BULK_INPUT_ROWS} chapter limit.`,
+    );
+  }
+}
+
+function assertChapterMetadataBudget(
+  input: InsertChapterInput,
+  label: string,
+): void {
+  assertChapterTextBudget(input.name, MAX_CHAPTER_TITLE_BYTES, `${label} title`);
+  assertChapterTextBudget(input.path, MAX_CHAPTER_URL_BYTES, `${label} URL`);
+}
+
+function validateSourceChapterInputs(
+  inputs: readonly InsertChapterInput[],
+): void {
+  assertChapterBulkCount(inputs.length, "Chapter upsert");
+  for (const input of inputs) {
+    assertChapterMetadataBudget(input, "Chapter");
+  }
+}
+
+function normalizedDownloadedChapterInput(
+  input: DownloadedChapterUpsertInput,
+): DownloadedChapterUpsertInput & { contentBytes: number } {
+  assertChapterMetadataBudget(input, "Downloaded chapter");
+  const contentBytes = getUtf8ByteLength(input.content);
+  assertByteBudget(contentBytes, MAX_INLINE_IPC_BYTES, "Downloaded chapter content");
+  if (
+    input.contentBytes !== undefined &&
+    (!Number.isFinite(input.contentBytes) ||
+      input.contentBytes < 0 ||
+      input.contentBytes > MAX_INLINE_IPC_BYTES)
+  ) {
+    assertByteBudget(
+      Number.isFinite(input.contentBytes) ? input.contentBytes : -1,
+      MAX_INLINE_IPC_BYTES,
+      "Downloaded chapter content",
+    );
+  }
+  return { ...input, contentBytes };
+}
+
+function validateDownloadedChapterInputs(
+  inputs: readonly DownloadedChapterUpsertInput[],
+): Array<DownloadedChapterUpsertInput & { contentBytes: number }> {
+  assertChapterBulkCount(inputs.length, "Downloaded chapter upsert");
+  return inputs.map(normalizedDownloadedChapterInput);
+}
+
+function sourceChapterValuesSql(inputs: readonly InsertChapterInput[]): string {
+  return inputs
+    .map((_, index) => {
+      const param = index * SOURCE_CHAPTER_PARAM_COUNT + 1;
+      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, unixepoch(), unixepoch())`;
+    })
+    .join(", ");
+}
+
+function sourceChapterParams(inputs: readonly InsertChapterInput[]): unknown[] {
+  return inputs.flatMap((input) => [
+    input.novelId,
+    input.path,
+    input.name,
+    input.position,
+    input.chapterNumber ?? null,
+    input.page ?? "1",
+    input.releaseTime ?? null,
+    normalizeChapterContentType(input.contentType),
+  ]);
+}
+
+function downloadedChapterValuesSql(
+  inputs: readonly DownloadedChapterUpsertInput[],
+): string {
+  return inputs
+    .map((_, index) => {
+      const param = index * DOWNLOADED_CHAPTER_PARAM_COUNT + 1;
+      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, $${param + 8}, $${param + 9}, 0, 1, unixepoch(), unixepoch())`;
+    })
+    .join(", ");
+}
+
+function downloadedChapterParams(
+  inputs: ReadonlyArray<DownloadedChapterUpsertInput & { contentBytes: number }>,
+): unknown[] {
+  return inputs.flatMap((input) => [
+    input.novelId,
+    input.path,
+    input.name,
+    input.position,
+    input.chapterNumber ?? null,
+    input.page ?? "1",
+    input.releaseTime ?? null,
+    storedChapterContentType(normalizeChapterContentType(input.contentType)),
+    input.content,
+    input.contentBytes,
+  ]);
+}
+
+function chapterChunks<T>(
+  inputs: readonly T[],
+  chunkSize: number,
+): readonly T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < inputs.length; index += chunkSize) {
+    chunks.push(inputs.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+async function executeSourceChapterChunk(
+  db: DbHandle,
+  chunk: readonly InsertChapterInput[],
+): Promise<number> {
+  const result = await db.execute(
+    `INSERT INTO chapter
+       (novel_id, path, name, position, chapter_number, page, release_time, content_type, created_at, found_at)
+     VALUES ${sourceChapterValuesSql(chunk)}
+     ON CONFLICT(novel_id, path) DO UPDATE SET
+       name           = excluded.name,
+       position       = excluded.position,
+       chapter_number = excluded.chapter_number,
+       page           = excluded.page,
+       release_time   = excluded.release_time,
+       content_type   = excluded.content_type,
+       updated_at     = unixepoch()
+      WHERE
+        name IS NOT excluded.name
+        OR position IS NOT excluded.position
+        OR chapter_number IS NOT excluded.chapter_number
+        OR page IS NOT excluded.page
+        OR release_time IS NOT excluded.release_time
+        OR content_type IS NOT excluded.content_type`,
+    sourceChapterParams(chunk),
+  );
+  return result.rowsAffected;
+}
+
+async function executeDownloadedChapterChunk(
+  db: DbHandle,
+  chunk: ReadonlyArray<DownloadedChapterUpsertInput & { contentBytes: number }>,
+): Promise<number> {
+  const result = await db.execute(
+    `INSERT INTO chapter
+       (novel_id, path, name, position, chapter_number, page, release_time, content_type, content, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
+     VALUES ${downloadedChapterValuesSql(chunk)}
+     ON CONFLICT(novel_id, path) DO UPDATE SET
+       name           = excluded.name,
+       position       = excluded.position,
+       chapter_number = excluded.chapter_number,
+       page           = excluded.page,
+       release_time   = excluded.release_time,
+       content_type   = excluded.content_type,
+       content        = excluded.content,
+       content_bytes  = excluded.content_bytes,
+       media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
+       is_downloaded  = 1,
+       updated_at     = unixepoch()
+      WHERE
+        name IS NOT excluded.name
+        OR position IS NOT excluded.position
+        OR chapter_number IS NOT excluded.chapter_number
+        OR page IS NOT excluded.page
+        OR release_time IS NOT excluded.release_time
+        OR content_type IS NOT excluded.content_type
+        OR content IS NOT excluded.content
+        OR content_bytes IS NOT excluded.content_bytes
+        OR media_repair_needed IS NOT 0
+        OR is_downloaded IS NOT 1`,
+    downloadedChapterParams(chunk),
+  );
+  return result.rowsAffected;
+}
+
+async function upsertSourceChaptersWithDb(
+  db: DbHandle,
+  inputs: readonly InsertChapterInput[],
+): Promise<BulkChapterMutationResult> {
+  if (inputs.length === 0) return { rowsAffected: 0, chunks: 0 };
+  validateSourceChapterInputs(inputs);
+
+  let rowsAffected = 0;
+  let chunks = 0;
+  for (const chunk of chapterChunks(inputs, SOURCE_CHAPTER_CHUNK_SIZE)) {
+    rowsAffected += await executeSourceChapterChunk(db, chunk);
+    chunks += 1;
+  }
+  return { rowsAffected, chunks };
+}
+
+export async function upsertSourceChaptersInDb(
+  db: DbHandle,
+  inputs: readonly InsertChapterInput[],
+): Promise<BulkChapterMutationResult> {
+  return upsertSourceChaptersWithDb(db, inputs);
+}
+
+export async function upsertSourceChapters(
+  inputs: readonly InsertChapterInput[],
+): Promise<BulkChapterMutationResult> {
+  validateSourceChapterInputs(inputs);
+  return runDatabaseTransaction((db) => upsertSourceChaptersWithDb(db, inputs));
+}
+
+async function upsertDownloadedChaptersWithDb(
+  db: DbHandle,
+  inputs: readonly DownloadedChapterUpsertInput[],
+): Promise<BulkChapterMutationResult> {
+  if (inputs.length === 0) return { rowsAffected: 0, chunks: 0 };
+  const normalizedInputs = validateDownloadedChapterInputs(inputs);
+
+  let rowsAffected = 0;
+  let chunks = 0;
+  for (const chunk of chapterChunks(
+    normalizedInputs,
+    DOWNLOADED_CHAPTER_CHUNK_SIZE,
+  )) {
+    rowsAffected += await executeDownloadedChapterChunk(db, chunk);
+    chunks += 1;
+  }
+  return { rowsAffected, chunks };
+}
+
+export async function upsertDownloadedChaptersInDb(
+  db: DbHandle,
+  inputs: readonly DownloadedChapterUpsertInput[],
+): Promise<BulkChapterMutationResult> {
+  return upsertDownloadedChaptersWithDb(db, inputs);
+}
+
+export async function upsertDownloadedChapters(
+  inputs: readonly DownloadedChapterUpsertInput[],
+): Promise<BulkChapterMutationResult> {
+  validateDownloadedChapterInputs(inputs);
+  return runDatabaseTransaction((db) =>
+    upsertDownloadedChaptersWithDb(db, inputs),
+  );
 }
 
 export async function insertChapterIfAbsent(
@@ -359,6 +652,7 @@ export async function saveChapterContent(
        content_bytes  = $4,
        media_bytes    = $5,
        media_repair_needed = $6,
+       media_bytes_checked_at = CASE WHEN $7 = 1 THEN unixepoch() ELSE NULL END,
        is_downloaded  = 1,
        updated_at     = unixepoch()
      WHERE id = $1`,
@@ -369,6 +663,7 @@ export async function saveChapterContent(
       getUtf8ByteLength(html),
       options.mediaBytes ?? 0,
       chapterMediaRepairFlag(html, normalizedContentType),
+      options.mediaBytes === undefined ? 0 : 1,
     ],
   );
   return { rowsAffected: result.rowsAffected };
@@ -390,6 +685,7 @@ export async function saveChapterPartialContent(
        content_type   = $3,
        content_bytes  = $4,
        media_repair_needed = $5,
+       media_bytes_checked_at = NULL,
        updated_at     = unixepoch()
      WHERE id = $1`,
     [
@@ -425,6 +721,7 @@ export async function clearChapterContent(
        content_bytes  = 0,
        media_bytes    = 0,
        media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
        is_downloaded  = 0,
        updated_at     = unixepoch()
      WHERE id = $1
@@ -462,7 +759,7 @@ interface RawLibraryUpdate
   isDownloaded: number;
 }
 
-const DEFAULT_UPDATES_LIMIT = 100;
+const DEFAULT_UPDATES_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
 
 export interface LibraryUpdatesPage {
   hasMore: boolean;
@@ -497,7 +794,7 @@ export async function listLibraryUpdates(
   cursor: LibraryUpdatesCursor | null = null,
 ): Promise<LibraryUpdateEntry[]> {
   const db = await getDb();
-  const normalizedLimit = Math.max(1, Math.floor(limit));
+  const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
   const cursorClause = cursor
     ? `AND (
          c.found_at < $1
@@ -544,7 +841,7 @@ export async function listLibraryUpdatesPage(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
 ): Promise<LibraryUpdatesPage> {
-  const normalizedLimit = Math.max(1, Math.floor(limit));
+  const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
   const rows = await listLibraryUpdates(
     normalizedLimit + 1,
     cursor,
@@ -570,7 +867,7 @@ export interface RecentlyReadEntry {
   novelCover: string | null;
 }
 
-const DEFAULT_HISTORY_LIMIT = 100;
+const DEFAULT_HISTORY_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
 
 /**
  * Latest read chapter per novel, sorted by read timestamp descending.
@@ -580,6 +877,7 @@ export async function listRecentlyRead(
   limit: number = DEFAULT_HISTORY_LIMIT,
 ): Promise<RecentlyReadEntry[]> {
   const db = await getDb();
+  const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_HISTORY_LIMIT);
   return db.select<RecentlyReadEntry[]>(
     `SELECT
        c.id              AS chapterId,
@@ -601,7 +899,7 @@ export async function listRecentlyRead(
      )
      ORDER BY c.read_at DESC, c.position DESC, c.id DESC
      LIMIT $1`,
-    [Math.max(1, Math.floor(limit))],
+    [normalizedLimit],
   );
 }
 

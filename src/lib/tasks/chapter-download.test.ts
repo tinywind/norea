@@ -82,11 +82,36 @@ import {
 } from "../chapter-media";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import {
+  enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
+  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+  type ChapterDownloadJob,
 } from "./chapter-download";
 
 let capturedSpec: SourceTaskSpec<void> | null = null;
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  reject: (error: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let reject!: (error: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    reject = promiseReject;
+    resolve = promiseResolve;
+  });
+  return { promise, reject, resolve };
+}
+
+async function flushMicrotasks(count = 20): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -142,6 +167,104 @@ beforeEach(() => {
     html: `<article class="reader-epub-content" data-epub-rendered="true"></article>`,
     mediaBytes: 0,
     storedMediaCount: 0,
+  });
+});
+
+describe("enqueueChapterDownloadBatch", () => {
+  it("materializes only a bounded scheduler window for 10k chapter batches", async () => {
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+    let yielded = 0;
+    function* jobs(): Iterable<ChapterDownloadJob> {
+      for (let id = 1; id <= 10_000; id += 1) {
+        yielded += 1;
+        yield {
+          id,
+          pluginId: "source-a",
+          chapterPath: `/chapter/${id}`,
+          title: `Chapter ${id}`,
+        };
+      }
+    }
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs: jobs(),
+      title: "Download 10k chapters",
+      total: 10_000,
+    });
+    void handle.promise.catch(() => undefined);
+
+    expect(yielded).toBe(MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW);
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
+      MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+    );
+
+    expect(capturedSpec?.subject?.batchTitle).toBe("Download 10k chapters");
+  });
+
+  it("refills the bounded batch window after a cancelled task settles", async () => {
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [1, 2, 3, 4].map((id) => ({
+        id,
+        pluginId: "source-a",
+        chapterPath: `/chapter/${id}`,
+        title: `Chapter ${id}`,
+      })),
+      title: "Download 4 chapters",
+      total: 4,
+      windowSize: 2,
+    });
+
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
+
+    deferreds[0]!.reject(
+      new DOMException("Task was cancelled.", "AbortError"),
+    );
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(3);
+
+    deferreds[1]!.resolve();
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(4);
+
+    deferreds[2]!.resolve();
+    deferreds[3]!.resolve();
+
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 1,
+      failed: 0,
+      succeeded: 3,
+      total: 4,
+    });
   });
 });
 
@@ -325,7 +448,7 @@ describe("enqueueChapterDownload", () => {
       name: "Chapter 7",
       resources: [
         {
-          bytes: [1, 2, 3],
+          bytes: new Uint8Array([1, 2, 3]),
           fileName: "0001-page.png",
           mediaType: "image/png",
           placeholder: "norea-epub-resource://OEBPS%2Fpage.png",

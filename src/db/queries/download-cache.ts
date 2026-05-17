@@ -1,4 +1,8 @@
 import { getDb } from "../client";
+import {
+  MAX_BACKFILL_PER_RUN,
+  clampBackfillLimit,
+} from "../../lib/performance-budgets";
 
 export interface DownloadCacheResult {
   rowsAffected: number;
@@ -58,12 +62,12 @@ export interface DownloadCacheMediaBackfillCandidate {
   id: number;
   chapterName: string;
   chapterNumber: string | null;
-  content: string;
   novelId: number;
   novelName: string;
   novelPath: string;
   pluginId: string;
   position: number;
+  updatedAt: number;
 }
 
 export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
@@ -148,6 +152,7 @@ export async function deleteDownloadCacheChapter(
        content_bytes = 0,
        media_bytes   = 0,
        media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
        is_downloaded = 0,
        updated_at    = unixepoch()
      WHERE id = $1
@@ -173,6 +178,7 @@ export async function deleteDownloadCacheNovel(
        content_bytes = 0,
        media_bytes   = 0,
        media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
        is_downloaded = 0,
        updated_at    = unixepoch()
      WHERE novel_id = $1
@@ -196,6 +202,7 @@ export async function deleteAllDownloadCache(): Promise<DownloadCacheResult> {
        content_bytes = 0,
        media_bytes   = 0,
        media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
        is_downloaded = 0,
        updated_at    = unixepoch()
      WHERE is_downloaded = 1
@@ -210,17 +217,20 @@ export async function deleteAllDownloadCache(): Promise<DownloadCacheResult> {
 
 export async function listDownloadCacheMediaBackfillCandidates(
   novelId?: number,
+  limit: number = MAX_BACKFILL_PER_RUN,
 ): Promise<DownloadCacheMediaBackfillCandidate[]> {
   const db = await getDb();
   const novelFilter = novelId === undefined ? "" : "AND c.novel_id = $1";
+  const normalizedLimit = clampBackfillLimit(limit);
+  const limitParam = novelId === undefined ? "$1" : "$2";
   return db.select<DownloadCacheMediaBackfillCandidate[]>(
     `SELECT
        c.id,
        c.name           AS chapterName,
        c.chapter_number AS chapterNumber,
-       c.content,
        c.novel_id       AS novelId,
        c.position,
+       c.updated_at     AS updatedAt,
        n.name           AS novelName,
        n.path           AS novelPath,
        n.plugin_id      AS pluginId
@@ -228,11 +238,33 @@ export async function listDownloadCacheMediaBackfillCandidates(
      JOIN novel n ON n.id = c.novel_id
      WHERE c.is_downloaded = 1
        AND c.media_bytes = 0
+       AND c.media_bytes_checked_at IS NULL
        AND c.content LIKE '%norea-media://chapter/%'
        AND n.is_local = 0
-       ${novelFilter}`,
-    novelId === undefined ? [] : [novelId],
+       ${novelFilter}
+     ORDER BY c.updated_at ASC, c.id ASC
+     LIMIT ${limitParam}`,
+    novelId === undefined ? [normalizedLimit] : [novelId, normalizedLimit],
   );
+}
+
+export async function getDownloadCacheMediaBackfillCandidateContent(
+  chapterId: number,
+): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<Array<{ content: string | null }>>(
+    `SELECT c.content
+     FROM chapter c
+     JOIN novel n ON n.id = c.novel_id
+     WHERE c.id = $1
+       AND c.is_downloaded = 1
+       AND c.media_bytes = 0
+       AND c.media_bytes_checked_at IS NULL
+       AND c.content LIKE '%norea-media://chapter/%'
+       AND n.is_local = 0`,
+    [chapterId],
+  );
+  return rows[0]?.content ?? null;
 }
 
 export async function updateDownloadCacheChapterMediaBytes(
@@ -242,9 +274,14 @@ export async function updateDownloadCacheChapterMediaBytes(
   const db = await getDb();
   const result = await db.execute(
     `UPDATE chapter
-     SET media_bytes = $2
+     SET
+       media_bytes = $2,
+       media_bytes_checked_at = unixepoch()
      WHERE id = $1
-       AND media_bytes IS NOT $2`,
+       AND (
+         media_bytes IS NOT $2
+         OR media_bytes_checked_at IS NULL
+       )`,
     [chapterId, Math.max(0, Math.round(mediaBytes))],
   );
   return { rowsAffected: result.rowsAffected };

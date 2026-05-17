@@ -38,6 +38,8 @@ import {
   type TaskPriority,
   type TaskRecord,
 } from "./scheduler";
+import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
+import { runBoundedTaskBatch } from "./batch-window";
 
 export interface ChapterDownloadJob {
   id: number;
@@ -94,8 +96,10 @@ export interface ChapterDownloadBatchResult {
 }
 
 export interface ChapterDownloadBatchJob {
-  jobs: ChapterDownloadJob[];
+  jobs: Iterable<ChapterDownloadJob>;
   title: string;
+  total?: number;
+  windowSize?: number;
 }
 
 export interface ChapterDownloadBatchProgress {
@@ -121,6 +125,10 @@ const chapterMediaPatchListeners = new Set<
 >();
 const CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY = "chapter-download-queue";
 const CHAPTER_DOWNLOAD_QUEUE_STORAGE_VERSION = 1;
+export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
+  100,
+  MAX_SCHEDULER_MATERIALIZED_TASKS,
+);
 
 let restorePersistedChapterDownloadsStarted = false;
 
@@ -245,6 +253,33 @@ function makeChapterDownloadBatchId(): string {
   return `chapter-download-batch-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 9)}`;
+}
+
+function normalizeChapterDownloadBatchTotal(
+  jobs: Iterable<ChapterDownloadJob>,
+  total: number | undefined,
+): number {
+  if (total !== undefined) {
+    if (!Number.isFinite(total) || total < 0) {
+      throw new Error("Chapter download batch total must be a finite count.");
+    }
+    return Math.floor(total);
+  }
+  if (Array.isArray(jobs)) return jobs.length;
+  throw new Error(
+    "Chapter download batch total is required for non-array job iterables.",
+  );
+}
+
+function normalizeChapterDownloadBatchWindowSize(
+  windowSize: number | undefined,
+): number {
+  if (windowSize === undefined) return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
+  if (!Number.isFinite(windowSize)) return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
+  return Math.max(
+    1,
+    Math.min(MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW, Math.floor(windowSize)),
+  );
 }
 
 function isAbortError(error: unknown): boolean {
@@ -861,9 +896,14 @@ export function enqueueChapterMediaRepair(
 export function enqueueChapterDownloadBatch({
   jobs,
   title,
+  total: requestedTotal,
+  windowSize: requestedWindowSize,
 }: ChapterDownloadBatchJob): TaskHandle<ChapterDownloadBatchResult> {
   const batchId = makeChapterDownloadBatchId();
-  const total = jobs.length;
+  const total = normalizeChapterDownloadBatchTotal(jobs, requestedTotal);
+  const windowSize = normalizeChapterDownloadBatchWindowSize(
+    requestedWindowSize,
+  );
   chapterDownloadBatchStates.set(batchId, {
     cancelled: 0,
     failed: 0,
@@ -872,29 +912,27 @@ export function enqueueChapterDownloadBatch({
     total,
   });
 
-  const handles = jobs.map((job) =>
-    enqueueChapterDownload({
-      ...job,
-      batchId,
-      batchTitle: title,
-    }),
-  );
-
-  const promise = Promise.all(
-    handles.map((handle, index) =>
-      handle.promise
-        .then(() => {
-          settleChapterDownloadBatchJob(batchId, jobs[index].id, "succeeded");
-        })
-        .catch((error) => {
-          settleChapterDownloadBatchJob(
-            batchId,
-            jobs[index].id,
-            isAbortError(error) ? "cancelled" : "failed",
-          );
-        }),
-    ),
-  )
+  const promise = runBoundedTaskBatch({
+    items: jobs,
+    windowSize,
+    materialize: async (job) => {
+      try {
+        const handle = enqueueChapterDownload({
+          ...job,
+          batchId,
+          batchTitle: title,
+        });
+        await handle.promise;
+        settleChapterDownloadBatchJob(batchId, job.id, "succeeded");
+      } catch (error) {
+        settleChapterDownloadBatchJob(
+          batchId,
+          job.id,
+          isAbortError(error) ? "cancelled" : "failed",
+        );
+      }
+    },
+  })
     .then(() => {
       const state = chapterDownloadBatchStates.get(batchId);
       const result = state

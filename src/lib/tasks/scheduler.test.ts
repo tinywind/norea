@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
+import { buildSyntheticSourceTasks } from "../../test/fixtures/performance";
 import { TaskScheduler, type TaskRunContext } from "./scheduler";
+import { activeScraperExecutor } from "./scraper-queue";
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
@@ -453,6 +456,31 @@ describe("TaskScheduler", () => {
     await download.promise;
   });
 
+  it("runs open novel imports on the immediate source executor", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const observations: string[] = [];
+
+    const task = scheduler.enqueueSource({
+      kind: "source.openNovel",
+      title: "Open novel",
+      priority: "interactive",
+      source: { id: "p", name: "Plugin" },
+      run: async (context) => {
+        observations.push(
+          `${context.executor}:${activeScraperExecutor("p")}`,
+        );
+      },
+    });
+
+    await task.promise;
+
+    expect(scheduler.getTask(task.id)?.lane).toBe("source");
+    expect(observations).toEqual(["immediate:immediate"]);
+  });
+
   it("reserves the immediate executor for open site work without blocking the pool", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
@@ -495,6 +523,57 @@ describe("TaskScheduler", () => {
     closeBrowser();
     finishPool();
     await Promise.all([browser.promise, pool.promise]);
+  });
+
+  it("lets same-source pool work start while open site remains running", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const source = { id: "naverwebtoon", name: "Naver Webtoon" };
+    const order: string[] = [];
+    let closeBrowser!: () => void;
+    let finishDownload!: () => void;
+
+    const browser = scheduler.enqueueSource({
+      kind: "source.openSite",
+      title: "Open source",
+      priority: "interactive",
+      exclusive: true,
+      source,
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          order.push(`open:${context.executor}:start`);
+          closeBrowser = resolve;
+        }),
+    });
+
+    await settle();
+    expect(order).toEqual(["open:immediate:start"]);
+
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Download chapter",
+      priority: "user",
+      source,
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          order.push(`download:${context.executor}:start`);
+          finishDownload = resolve;
+        }),
+    });
+
+    await settle();
+    expect(order).toEqual([
+      "open:immediate:start",
+      "download:pool:0:start",
+    ]);
+    expect(scheduler.getTask(browser.id)?.status).toBe("running");
+    expect(scheduler.getTask(download.id)?.status).toBe("running");
+
+    finishDownload();
+    closeBrowser();
+    await Promise.all([browser.promise, download.promise]);
   });
 
   it("lets open site work run while source queues are paused", async () => {
@@ -766,6 +845,53 @@ describe("TaskScheduler", () => {
     expect(order).toEqual(["cancelled:start", "next:start"]);
   });
 
+  it("queues a fresh deduped retry after cancelling running source work", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const order: string[] = [];
+    let settleCancelled!: () => void;
+
+    const cancelled = scheduler.enqueueSource({
+      kind: "source.openNovel",
+      title: "Open novel",
+      priority: "interactive",
+      source: { id: "p", name: "Plugin" },
+      dedupeKey: "source.openNovel:p:/novel",
+      run: () =>
+        new Promise<void>((resolve) => {
+          order.push("cancelled:start");
+          settleCancelled = resolve;
+        }),
+    });
+
+    await settle();
+    expect(scheduler.cancel(cancelled.id)).toBe(true);
+    await expect(cancelled.promise).rejects.toThrow("Task was cancelled.");
+
+    const retry = scheduler.enqueueSource({
+      kind: "source.openNovel",
+      title: "Open novel retry",
+      priority: "interactive",
+      source: { id: "p", name: "Plugin" },
+      dedupeKey: "source.openNovel:p:/novel",
+      run: async () => {
+        order.push("retry:start");
+      },
+    });
+
+    await settle();
+    expect(retry.id).not.toBe(cancelled.id);
+    expect(scheduler.getTask(retry.id)?.status).toBe("queued");
+    expect(order).toEqual(["cancelled:start"]);
+
+    settleCancelled();
+    await retry.promise;
+
+    expect(order).toEqual(["cancelled:start", "retry:start"]);
+  });
+
   it("passes the assigned scraper executor through the task context", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
@@ -786,5 +912,37 @@ describe("TaskScheduler", () => {
     await task.promise;
 
     expect(executor).toBe("pool:0");
+  });
+
+  it("caps materialized snapshot records at the scheduler budget", () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
+    const fixtures = buildSyntheticSourceTasks(
+      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
+    );
+
+    for (const fixture of fixtures) {
+      scheduler.enqueueSource({
+        kind: "chapter.download",
+        priority: fixture.priority,
+        source: fixture.source,
+        title: fixture.title,
+        run: async () => undefined,
+      });
+    }
+
+    const snapshot = scheduler.getSnapshot();
+    expect(snapshot.total).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
+    expect(snapshot.queued).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
+    expect(snapshot.records).toHaveLength(MAX_SCHEDULER_MATERIALIZED_TASKS);
+    expect(snapshot.recordLimit).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS);
+    expect(snapshot.recordsTruncated).toBe(true);
+    expect(snapshot.sourceQueueOrder).toHaveLength(
+      MAX_SCHEDULER_MATERIALIZED_TASKS,
+    );
+    expect(snapshot.sourceQueueLimit).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS);
+    expect(snapshot.sourceQueuesTotal).toBe(
+      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
+    );
+    expect(snapshot.sourceQueuesTruncated).toBe(true);
   });
 });

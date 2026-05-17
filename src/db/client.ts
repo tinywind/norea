@@ -1,13 +1,23 @@
 import Database from "@tauri-apps/plugin-sql";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
+import { startPerformanceObservation } from "../lib/observability";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
 const MEDIA_REPAIR_NEEDED_COLUMN = "media_repair_needed";
+const MEDIA_BYTES_CHECKED_AT_COLUMN = "media_bytes_checked_at";
 
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
 let dbOperationQueue: Promise<void> = Promise.resolve();
+
+function querySelectsContent(query: string): boolean {
+  return /\b(?:\w+\.)?content\b/i.test(query);
+}
+
+function observationError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 async function ensureMediaRepairNeededColumn(db: Database): Promise<void> {
   const columns = await db.select<Array<{ name: string }>>(
@@ -52,9 +62,31 @@ async function ensureMediaRepairNeededColumn(db: Database): Promise<void> {
   );
 }
 
+async function ensureMediaBytesCheckedAtColumn(db: Database): Promise<void> {
+  const columns = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(chapter)",
+  );
+  if (
+    columns.some((column) => column.name === MEDIA_BYTES_CHECKED_AT_COLUMN)
+  ) {
+    return;
+  }
+
+  await db.execute(
+    `ALTER TABLE chapter
+     ADD COLUMN media_bytes_checked_at integer`,
+  );
+  await db.execute(
+    `UPDATE chapter
+     SET media_bytes_checked_at = unixepoch()
+     WHERE media_bytes > 0`,
+  );
+}
+
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   await ensureMediaRepairNeededColumn(db);
+  await ensureMediaBytesCheckedAtColumn(db);
   return db;
 }
 
@@ -80,10 +112,38 @@ function serializedDb(rawDb: Database): Database {
   return {
     path: rawDb.path,
     execute(query: string, bindValues?: unknown[]): Promise<QueryResult> {
-      return queueDbOperation(() => rawDb.execute(query, bindValues));
+      const finish = startPerformanceObservation("db.execute", {
+        bindValueCount: bindValues?.length ?? 0,
+        selectsContent: querySelectsContent(query),
+      });
+      return queueDbOperation(async () => {
+        try {
+          const result = await rawDb.execute(query, bindValues);
+          finish({ rowsAffected: result.rowsAffected });
+          return result;
+        } catch (error) {
+          finish({ error: observationError(error), failed: true });
+          throw error;
+        }
+      });
     },
     select<T>(query: string, bindValues?: unknown[]): Promise<T> {
-      return queueDbOperation(() => rawDb.select<T>(query, bindValues));
+      const finish = startPerformanceObservation("db.select", {
+        bindValueCount: bindValues?.length ?? 0,
+        selectsContent: querySelectsContent(query),
+      });
+      return queueDbOperation(async () => {
+        try {
+          const result = await rawDb.select<T>(query, bindValues);
+          finish({
+            rowCount: Array.isArray(result) ? result.length : undefined,
+          });
+          return result;
+        } catch (error) {
+          finish({ error: observationError(error), failed: true });
+          throw error;
+        }
+      });
     },
     close(db?: string): Promise<boolean> {
       return queueDbOperation(() => rawDb.close(db));
@@ -112,8 +172,29 @@ export function getDb(): Promise<Database> {
   return dbPromise;
 }
 
-export function runExclusiveDatabaseOperation<T>(
-  run: () => Promise<T>,
+export async function runExclusiveDatabaseOperation<T>(
+  run: (db: Database) => Promise<T>,
 ): Promise<T> {
-  return queueDbOperation(run);
+  const rawDb = await getRawDb();
+  return queueDbOperation(() => run(rawDb));
+}
+
+export async function runDatabaseTransaction<T>(
+  run: (db: Database) => Promise<T>,
+): Promise<T> {
+  const rawDb = await getRawDb();
+  return queueDbOperation(async () => {
+    await rawDb.execute("BEGIN IMMEDIATE");
+    try {
+      const result = await run(rawDb);
+      await rawDb.execute("COMMIT");
+      return result;
+    } catch (error) {
+      await rawDb.execute("ROLLBACK").catch((rollbackError: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn("[db] transaction rollback failed", rollbackError);
+      });
+      throw error;
+    }
+  });
 }
