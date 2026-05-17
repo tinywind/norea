@@ -125,6 +125,7 @@ jobs:
 
           $checksumFile = Join-Path $artifactDir "SHA256SUMS-$platform.txt"
           New-Item -ItemType File -Force -Path $checksumFile | Out-Null
+          $manifestAssets = @()
 
           foreach ($type in @("msi", "nsis")) {
             $bundleFile = $byType[$type]
@@ -132,8 +133,45 @@ jobs:
             $destination = Join-Path $artifactDir "norea-$artifactPlatform.$extension"
             Copy-Item -LiteralPath $bundleFile.FullName -Destination $destination
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $destination).Hash.ToLowerInvariant()
-            Add-Content -Path $checksumFile -Value "$hash  $(Split-Path -Leaf $destination)"
+            $assetName = Split-Path -Leaf $destination
+            Add-Content -Path $checksumFile -Value "$hash  $assetName"
+            $manifestAssets += [ordered]@{
+              name = $assetName
+              artifactName = $assetName
+              platform = $platform
+              size = (Get-Item -LiteralPath $destination).Length
+              sha256 = $hash
+              signature = $null
+              signingKeyId = $null
+            }
           }
+
+          $channel = if ("${{ github.ref_type }}" -eq "tag") { "stable" } else { "dev" }
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { $null }
+          $dev = if ($channel -eq "dev") {
+            [ordered]@{
+              workflow = "windows.yml"
+              runId = "${{ github.run_id }}"
+              runAttempt = "${{ github.run_attempt }}"
+              headSha = "${{ github.sha }}"
+              artifactName = $null
+            }
+          } else {
+            $null
+          }
+          $manifest = [ordered]@{
+            schemaVersion = 1
+            channel = $channel
+            platform = $platform
+            version = $version
+            generatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            assets = $manifestAssets
+            signature = $null
+            signingKeyId = $null
+            dev = $dev
+          }
+          $manifestPath = Join-Path $artifactDir "norea-updates-$platform.json"
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding utf8
 
       - name: Upload Windows MSI
         uses: actions/upload-artifact@v7
@@ -160,6 +198,16 @@ jobs:
         with:
           name: norea-${{ matrix.platform }}-checksums
           path: ${{ env.WINDOWS_BUNDLE_ARTIFACT_DIR }}/SHA256SUMS-${{ matrix.platform }}.txt
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload Windows update metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: norea-updates-${{ matrix.platform }}
+          path: ${{ env.WINDOWS_BUNDLE_ARTIFACT_DIR }}/norea-updates-${{ matrix.platform }}.json
           if-no-files-found: error
           archive: false
           compression-level: 0

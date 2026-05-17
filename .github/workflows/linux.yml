@@ -148,6 +148,69 @@ jobs:
           collect_one deb "*.deb"
           collect_one rpm "*.rpm"
 
+          channel="dev"
+          version=""
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            channel="stable"
+            version="${{ github.ref_name }}"
+            version="${version#v}"
+          fi
+
+          UPDATE_CHANNEL="$channel" \
+          UPDATE_VERSION="$version" \
+          UPDATE_PLATFORM="$platform" \
+          UPDATE_WORKFLOW="linux.yml" \
+          UPDATE_RUN_ID="$GITHUB_RUN_ID" \
+          UPDATE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+          UPDATE_HEAD_SHA="$GITHUB_SHA" \
+          node <<'NODE'
+          const crypto = require("crypto");
+          const fs = require("fs");
+          const path = require("path");
+
+          const artifactDir = process.env.LINUX_BUNDLE_ARTIFACT_DIR;
+          const platform = process.env.UPDATE_PLATFORM;
+          const channel = process.env.UPDATE_CHANNEL;
+          const version = process.env.UPDATE_VERSION || null;
+          const assets = fs.readdirSync(artifactDir)
+            .filter((name) => name.startsWith(`norea-${platform}.`))
+            .sort()
+            .map((name) => {
+              const filePath = path.join(artifactDir, name);
+              const bytes = fs.readFileSync(filePath);
+              return {
+                name,
+                artifactName: name,
+                platform,
+                size: bytes.length,
+                sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+                signature: null,
+                signingKeyId: null,
+              };
+            });
+          const manifest = {
+            schemaVersion: 1,
+            channel,
+            platform,
+            version,
+            generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+            assets,
+            signature: null,
+            signingKeyId: null,
+            dev: channel === "dev" ? {
+              workflow: process.env.UPDATE_WORKFLOW,
+              runId: process.env.UPDATE_RUN_ID,
+              runAttempt: process.env.UPDATE_RUN_ATTEMPT,
+              headSha: process.env.UPDATE_HEAD_SHA,
+              artifactName: null,
+            } : null,
+          };
+          fs.writeFileSync(
+            path.join(artifactDir, `norea-updates-${platform}.json`),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+          NODE
+
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v7
         with:
@@ -183,6 +246,16 @@ jobs:
         with:
           name: norea-${{ matrix.platform }}-checksums
           path: ${{ env.LINUX_BUNDLE_ARTIFACT_DIR }}/SHA256SUMS-${{ matrix.platform }}.txt
+          if-no-files-found: error
+          archive: false
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload Linux update metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: norea-updates-${{ matrix.platform }}
+          path: ${{ env.LINUX_BUNDLE_ARTIFACT_DIR }}/norea-updates-${{ matrix.platform }}.json
           if-no-files-found: error
           archive: false
           compression-level: 0
