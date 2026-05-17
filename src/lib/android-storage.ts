@@ -1,4 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  MAX_BACKUP_ARCHIVE_BYTES,
+  assertByteBudget,
+} from "./performance-budgets";
 
 interface AndroidStorageBridge {
   archiveDirectory: (
@@ -19,6 +23,7 @@ interface AndroidStorageBridge {
   pickMediaStorageRoot: (requestId: string) => void;
   readBase64: (rootUri: string, relativePath: string) => string;
   readContentUriBase64: (uri: string) => string;
+  readContentUriFile?: (uri: string, maxBytes: string) => string;
   readText: (rootUri: string, relativePath: string) => string;
   readZipEntryBase64: (
     rootUri: string,
@@ -36,10 +41,17 @@ interface AndroidStorageBridge {
     newName: string,
   ) => string;
   rollbackRestore: (rootUri: string, token: string) => string;
+  deleteTempFile?: (path: string) => string;
   writeContentUriFile: (
     uri: string,
     inputPath: string,
     mimeType: string,
+  ) => string;
+  writeContentUriFileCapped?: (
+    uri: string,
+    inputPath: string,
+    mimeType: string,
+    maxBytes: string,
   ) => string;
   writeBytes: (
     rootUri: string,
@@ -85,9 +97,22 @@ interface AndroidStorageSizeResponse extends AndroidStorageResponse {
   bytes?: number;
 }
 
+interface AndroidStorageTempFileResponse extends AndroidStorageSizeResponse {
+  mimeType?: string;
+  path?: string;
+}
+
 interface AndroidStorageExistsResponse extends AndroidStorageResponse {
   exists?: boolean;
 }
+
+export interface AndroidStorageTempFile {
+  bytes: number;
+  mimeType: string;
+  path: string;
+}
+
+type AndroidStorageBytes = Uint8Array | readonly number[];
 
 const ANDROID_STORAGE_NOT_SELECTED =
   "Android media storage folder has not been selected.";
@@ -125,11 +150,11 @@ function parseStorageResponse<T extends AndroidStorageResponse>(raw: string): T 
   return payload;
 }
 
-function bytesToBase64(bytes: number[]): string {
+function bytesToBase64(bytes: AndroidStorageBytes): string {
   let binary = "";
   const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.slice(index, index + chunkSize);
+    const chunk = Array.from(bytes.slice(index, index + chunkSize));
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
@@ -148,6 +173,18 @@ function makeRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 10)}`;
+}
+
+function normalizeContentUriMaxBytes(maxBytes: number): number {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("Android content URI byte limit must be a positive integer.");
+  }
+  assertByteBudget(
+    maxBytes,
+    MAX_BACKUP_ARCHIVE_BYTES,
+    "Android content URI byte limit",
+  );
+  return maxBytes;
 }
 
 async function ensureAndroidStorageNomedia(root: string): Promise<void> {
@@ -214,7 +251,7 @@ export async function selectAndroidStorageRoot(): Promise<string | null> {
 
 export async function writeAndroidStorageBytes(
   relativePath: string,
-  body: number[],
+  body: AndroidStorageBytes,
   mimeType: string,
 ): Promise<void> {
   const root = await androidStorageRoot();
@@ -246,10 +283,49 @@ export async function writeAndroidContentUriFile(
   uri: string,
   inputPath: string,
   mimeType: string,
+  maxBytes: number = MAX_BACKUP_ARCHIVE_BYTES,
 ): Promise<void> {
+  const bridge = androidStorageBridge();
+  const cappedWriter = bridge.writeContentUriFileCapped;
+  const maxByteLimit = normalizeContentUriMaxBytes(maxBytes);
+  if (cappedWriter) {
+    parseStorageResponse(
+      cappedWriter(uri, inputPath, mimeType, String(maxByteLimit)),
+    );
+    return;
+  }
   parseStorageResponse(
-    androidStorageBridge().writeContentUriFile(uri, inputPath, mimeType),
+    bridge.writeContentUriFile(uri, inputPath, mimeType),
   );
+}
+
+export async function copyAndroidContentUriToTempFile(
+  uri: string,
+  maxBytes: number = MAX_BACKUP_ARCHIVE_BYTES,
+): Promise<AndroidStorageTempFile | null> {
+  const bridge = androidStorageBridge();
+  const reader = bridge.readContentUriFile;
+  if (!reader) return null;
+  const response = parseStorageResponse<AndroidStorageTempFileResponse>(
+    reader(uri, String(normalizeContentUriMaxBytes(maxBytes))),
+  );
+  if (!response.path) {
+    throw new Error("Android storage bridge did not return a temp file path.");
+  }
+  return {
+    bytes: response.bytes ?? 0,
+    mimeType: response.mimeType ?? "application/octet-stream",
+    path: response.path,
+  };
+}
+
+export async function deleteAndroidContentUriTempFile(
+  tempFile: AndroidStorageTempFile | string,
+): Promise<void> {
+  const bridge = androidStorageBridge();
+  if (!bridge.deleteTempFile) return;
+  const path = typeof tempFile === "string" ? tempFile : tempFile.path;
+  parseStorageResponse(bridge.deleteTempFile(path));
 }
 
 export async function readAndroidContentUriBytes(uri: string): Promise<number[]> {
