@@ -18,6 +18,7 @@ export const EPUB_HTML_LIMITS = {
 } as const;
 
 type ZipEntryInfo = PluginZipEntryInfo;
+type ZipIpcBytes = Uint8Array | number[];
 type CheerioInput = NonNullable<Parameters<CheerioAPI>[0]>;
 
 interface EpubManifestItem {
@@ -35,7 +36,7 @@ interface EpubPackageMetadata {
 }
 
 interface EpubResourceRecord {
-  bytes: number[];
+  bytes: Uint8Array;
   fileName: string;
   mediaType: string;
   path: string;
@@ -49,11 +50,11 @@ interface EpubResourceContext {
   packageDir: string;
   resourceBudget: { usedBytes: number };
   resources: Map<string, EpubResourceRecord>;
-  zipBytes: Uint8Array;
+  zipBytes: ZipIpcBytes;
 }
 
 export interface EpubHtmlResource {
-  bytes: number[];
+  bytes: Uint8Array;
   fileName: string;
   mediaType: string;
   placeholder: string;
@@ -359,12 +360,12 @@ function mediaTypeForResource(
   return SUPPORTED_RESOURCE_MEDIA_TYPES[extensionName(path)] ?? null;
 }
 
-async function invokeZipList(bytes: Uint8Array): Promise<ZipEntryInfo[]> {
+async function invokeZipList(bytes: ZipIpcBytes): Promise<ZipEntryInfo[]> {
   return listZipEntries(bytes);
 }
 
 async function invokeZipReadFile(
-  bytes: Uint8Array,
+  bytes: ZipIpcBytes,
   path: string,
   maxBytes: number,
 ): Promise<Uint8Array> {
@@ -650,7 +651,7 @@ async function registerResource(
     baseName(path),
   )}`;
   context.resources.set(path, {
-    bytes: bytesToArray(bytes),
+    bytes,
     fileName,
     mediaType,
     path,
@@ -1095,21 +1096,22 @@ export async function convertEpubToHtml(
   bytes: Uint8Array,
   options: { fallbackTitle: string },
 ): Promise<EpubHtmlConversion> {
-  const entries = entryMapByName(await invokeZipList(bytes));
+  const zipBytes = bytesToArray(bytes);
+  const entries = entryMapByName(await invokeZipList(zipBytes));
   if (!entries.has("META-INF/container.xml")) {
     throw new Error("EPUB archive is missing META-INF/container.xml.");
   }
 
   const containerXml = utf8Decode(
     await invokeZipReadFile(
-      bytes,
+      zipBytes,
       "META-INF/container.xml",
       EPUB_HTML_LIMITS.containerBytes,
     ),
   );
   const opfPath = parseContainerRootfile(containerXml);
   const opfXml = utf8Decode(
-    await invokeZipReadFile(bytes, opfPath, EPUB_HTML_LIMITS.opfBytes),
+    await invokeZipReadFile(zipBytes, opfPath, EPUB_HTML_LIMITS.opfBytes),
   );
   const packageDir = directoryName(opfPath);
   const manifest = manifestItemsFromOpf(opfXml);
@@ -1133,7 +1135,7 @@ export async function convertEpubToHtml(
     packageDir,
     resourceBudget: { usedBytes: 0 },
     resources: new Map(),
-    zipBytes: bytes,
+    zipBytes,
   };
   const sections: EpubHtmlSection[] = [];
   for (const [index, item] of spineItems.entries()) {

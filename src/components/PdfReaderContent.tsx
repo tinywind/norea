@@ -21,6 +21,10 @@ import {
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { useTranslation } from "../i18n";
 import {
+  resolveLocalChapterMediaSrc,
+  type ChapterMediaStorageContext,
+} from "../lib/chapter-media";
+import {
   useReaderStore,
   type ReaderAppearanceSettings,
   type ReaderGeneralSettings,
@@ -30,6 +34,11 @@ import {
 } from "../store/reader";
 import type { ReaderContentHandle } from "./ReaderContent";
 import { ReaderSeekbars } from "./ReaderSeekbars";
+import {
+  prefixSegmentHeights,
+  virtualRangeForScroll,
+  virtualRangesEqual,
+} from "./reader-virtualization";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -39,6 +48,7 @@ interface PdfReaderContentProps {
   dataUrl: string;
   generalSettings?: ReaderGeneralSettings;
   initialProgress?: number;
+  localMediaContext?: ChapterMediaStorageContext;
   onBoundaryPage?: (direction: 1 | -1) => void;
   onPageIndexChange?: (pageIndex: number) => void;
   onProgressChange?: (progress: number) => void;
@@ -49,11 +59,13 @@ interface PdfReaderContentProps {
 }
 
 interface PdfPageCanvasProps {
+  active: boolean;
+  estimatedHeight: number;
   pageNumber: number;
   pdfDocument: PDFDocumentProxy;
   renderBounds: PdfRenderBounds;
   onRenderError: (error: unknown) => void;
-  onRendered: (pageNumber: number) => void;
+  onRendered: (pageNumber: number, height: number) => void;
 }
 
 interface PdfRenderBounds {
@@ -65,6 +77,8 @@ interface PdfRenderBounds {
 const MAX_CANVAS_SCALE = 3;
 const MIN_RENDER_BOUND_PX = 1;
 const PDF_PAGE_GAP_PX = 16;
+const PDF_SCROLL_DEFAULT_ASPECT_RATIO = 1.414;
+const PDF_SCROLL_OVERSCAN_PX = 1800;
 const SCROLL_PAGE_FRACTION = 0.9;
 const TWO_PAGE_MEDIA_QUERY = "(min-width: 992px)";
 const PROGRESS_SAVE_DELAY_MS = 350;
@@ -194,6 +208,15 @@ function getPdfDisplayScale(
     : Math.min(widthScale, heightScale);
 }
 
+function estimatePdfScrollPageFrameHeight(
+  renderBounds: PdfRenderBounds,
+): number {
+  return Math.max(
+    MIN_RENDER_BOUND_PX,
+    Math.ceil(renderBounds.width * PDF_SCROLL_DEFAULT_ASPECT_RATIO),
+  );
+}
+
 function getPdfProgress(
   node: HTMLElement,
   pageNumber: number,
@@ -263,6 +286,21 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
     : decodePercentPayload(payload);
 }
 
+async function pdfDocumentSourceFromContent(
+  content: string,
+  localMediaContext: ChapterMediaStorageContext | undefined,
+) {
+  const resolved = content.startsWith("data:")
+    ? content
+    : await resolveLocalChapterMediaSrc(content, localMediaContext);
+  if (!resolved) {
+    throw new Error("PDF content is not available.");
+  }
+  return resolved.startsWith("data:")
+    ? { data: dataUrlToBytes(resolved) }
+    : { url: resolved };
+}
+
 function isInteractiveTarget(target: EventTarget | null): boolean {
   if (isPdfReaderMediaEventTarget(target)) return true;
   if (!(target instanceof HTMLElement)) return false;
@@ -324,6 +362,8 @@ function getTapZoneAction(
 }
 
 function PdfPageCanvas({
+  active,
+  estimatedHeight,
   pageNumber,
   pdfDocument,
   renderBounds,
@@ -333,6 +373,10 @@ function PdfPageCanvas({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
   const [rendering, setRendering] = useState(false);
+  const frameStyle = useMemo<CSSProperties>(
+    () => ({ minHeight: `${Math.max(1, Math.ceil(estimatedHeight))}px` }),
+    [estimatedHeight],
+  );
 
   useEffect(
     () => () => {
@@ -343,10 +387,17 @@ function PdfPageCanvas({
   );
 
   useEffect(() => {
+    if (!active) {
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+      setRendering(false);
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas || renderBounds.width <= 0) return;
 
     let disposed = false;
+    let renderedHeight = 0;
     setRendering(true);
     renderTaskRef.current?.cancel();
     renderTaskRef.current = null;
@@ -368,6 +419,7 @@ function PdfPageCanvas({
         canvas.height = Math.floor(viewport.height);
         canvas.style.width = `${Math.floor(cssViewport.width)}px`;
         canvas.style.height = `${Math.floor(cssViewport.height)}px`;
+        renderedHeight = Math.ceil(cssViewport.height);
 
         const renderTask = page.render({ canvas, viewport });
         renderTaskRef.current = renderTask;
@@ -377,7 +429,7 @@ function PdfPageCanvas({
         if (disposed) return;
         renderTaskRef.current = null;
         setRendering(false);
-        onRendered(pageNumber);
+        onRendered(pageNumber, renderedHeight);
       })
       .catch((nextError: unknown) => {
         if (disposed) return;
@@ -397,16 +449,30 @@ function PdfPageCanvas({
       renderTaskRef.current?.cancel();
       renderTaskRef.current = null;
     };
-  }, [onRenderError, onRendered, pageNumber, pdfDocument, renderBounds]);
+  }, [
+    active,
+    onRenderError,
+    onRendered,
+    pageNumber,
+    pdfDocument,
+    renderBounds,
+  ]);
 
   return (
-    <div className="lnr-pdf-reader-page-frame">
-      <canvas
-        ref={canvasRef}
-        aria-label={`${pageNumber}`}
-        className="lnr-pdf-reader-canvas"
-        data-rendering={rendering}
-      />
+    <div
+      aria-hidden={active ? undefined : "true"}
+      className="lnr-pdf-reader-page-frame"
+      data-virtualized={active ? undefined : "true"}
+      style={frameStyle}
+    >
+      {active ? (
+        <canvas
+          ref={canvasRef}
+          aria-label={`${pageNumber}`}
+          className="lnr-pdf-reader-canvas"
+          data-rendering={rendering}
+        />
+      ) : null}
     </div>
   );
 }
@@ -425,6 +491,7 @@ function PdfReaderContentInner(
     onSeekbarActivity,
     onSeekbarActiveChange,
     onToggleChrome,
+    localMediaContext,
     viewportHeight: requestedViewportHeight,
     appearanceSettings,
     generalSettings,
@@ -463,6 +530,11 @@ function PdfReaderContentInner(
   const [renderBounds, setRenderBounds] = useState<PdfRenderBounds>(
     INITIAL_PDF_RENDER_BOUNDS,
   );
+  const [scrollCanvasRange, setScrollCanvasRange] = useState({
+    start: 0,
+    end: -1,
+  });
+  const [scrollPageHeights, setScrollPageHeights] = useState<number[]>([]);
   const renderBoundsRef = useRef<PdfRenderBounds>(INITIAL_PDF_RENDER_BOUNDS);
   const [twoPageMediaMatches, setTwoPageMediaMatches] = useState(
     getTwoPageMediaMatches,
@@ -479,6 +551,43 @@ function PdfReaderContentInner(
   const pdfPageFitMode: ReaderPdfPageFitMode = isPagedReader
     ? general.pdfPageFitMode
     : "width";
+  const estimatedScrollPageFrameHeight = useMemo(
+    () => estimatePdfScrollPageFrameHeight(renderBounds),
+    [renderBounds],
+  );
+  const effectiveScrollPageHeights = useMemo(
+    () =>
+      Array.from(
+        { length: pageCount },
+        (_, index) =>
+          scrollPageHeights[index] ?? estimatedScrollPageFrameHeight,
+      ),
+    [estimatedScrollPageFrameHeight, pageCount, scrollPageHeights],
+  );
+  const scrollPageOffsets = useMemo(
+    () =>
+      prefixSegmentHeights(
+        effectiveScrollPageHeights.map((height, index) =>
+          index < effectiveScrollPageHeights.length - 1
+            ? height + PDF_PAGE_GAP_PX
+            : height,
+        ),
+      ),
+    [effectiveScrollPageHeights],
+  );
+  const normalizedScrollCanvasRange = useMemo(() => {
+    if (pageCount <= 0) return { start: 0, end: -1 };
+    if (scrollCanvasRange.end < scrollCanvasRange.start) {
+      return { start: 0, end: Math.min(pageCount - 1, 2) };
+    }
+    return {
+      start: Math.max(0, Math.min(pageCount - 1, scrollCanvasRange.start)),
+      end: Math.max(
+        0,
+        Math.min(pageCount - 1, scrollCanvasRange.end),
+      ),
+    };
+  }, [pageCount, scrollCanvasRange.end, scrollCanvasRange.start]);
   const pageNumbers = useMemo(() => {
     if (pageCount <= 0) return [];
     if (!isPagedReader) {
@@ -584,9 +693,27 @@ function PdfReaderContentInner(
     [flushProgress],
   );
 
+  const syncScrollCanvasRange = useCallback(() => {
+    if (isPagedReader || pageCountRef.current <= 0) return;
+    const node = viewportRef.current;
+    if (!node) return;
+    const nextRange = virtualRangeForScroll(
+      node.scrollTop,
+      node.clientHeight,
+      scrollPageOffsets,
+      Math.max(PDF_SCROLL_OVERSCAN_PX, node.clientHeight),
+    );
+    setScrollCanvasRange((current) =>
+      virtualRangesEqual(current, nextRange) ? current : nextRange,
+    );
+  }, [isPagedReader, scrollPageOffsets]);
+
   const updateProgressFromScroll = useCallback(() => {
     const node = viewportRef.current;
     const currentPageCount = pageCountRef.current;
+    if (!isPagedReader) {
+      syncScrollCanvasRange();
+    }
     if (
       !node ||
       currentPageCount <= 0 ||
@@ -639,7 +766,7 @@ function PdfReaderContentInner(
         : getScrollPageIndex(nextProgress, currentPageCount),
     );
     scheduleProgressSave(nextProgress);
-  }, [isPagedReader, scheduleProgressSave]);
+  }, [isPagedReader, scheduleProgressSave, syncScrollCanvasRange]);
 
   const applyPagedScrollPosition = useCallback((position: "start" | "end") => {
     const node = viewportRef.current;
@@ -815,9 +942,10 @@ function PdfReaderContentInner(
           return;
         }
         viewportRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+        syncScrollCanvasRange();
       },
     }),
-    [flushProgress, isPagedReader, moveToPage, scrollByPage],
+    [flushProgress, isPagedReader, moveToPage, scrollByPage, syncScrollCanvasRange],
   );
 
   useEffect(() => {
@@ -836,19 +964,18 @@ function PdfReaderContentInner(
     setLoading(true);
     restorePendingRef.current = true;
     renderedPagesRef.current = new Set();
+    setScrollCanvasRange({ start: 0, end: -1 });
+    setScrollPageHeights([]);
     setLayoutVersion((current) => current + 1);
-    try {
-      loadingTask = getDocument({ data: dataUrlToBytes(dataUrl) });
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
-      setLoading(false);
-      return () => {
-        disposed = true;
-      };
-    }
-
-    void loadingTask.promise
-      .then((nextDocument) => {
+    void (async () => {
+      try {
+        const source = await pdfDocumentSourceFromContent(
+          dataUrl,
+          localMediaContext,
+        );
+        if (disposed) return;
+        loadingTask = getDocument(source);
+        const nextDocument = await loadingTask.promise;
         if (disposed) {
           void nextDocument.destroy();
           return;
@@ -863,18 +990,18 @@ function PdfReaderContentInner(
         setPageCount(nextPageCount);
         setPageNumber(restoredPage);
         setLoading(false);
-      })
-      .catch((nextError: unknown) => {
+      } catch (nextError) {
         if (disposed) return;
         setError(nextError instanceof Error ? nextError.message : String(nextError));
         setLoading(false);
-      });
+      }
+    })();
 
     return () => {
       disposed = true;
       void loadingTask?.destroy();
     };
-  }, [dataUrl]);
+  }, [dataUrl, localMediaContext]);
 
   useEffect(() => {
     if (pageCount <= 0) return;
@@ -883,6 +1010,7 @@ function PdfReaderContentInner(
     );
     restorePendingRef.current = true;
     renderedPagesRef.current = new Set();
+    setScrollCanvasRange({ start: 0, end: -1 });
     setLayoutVersion((current) => current + 1);
   }, [pageCount, visiblePageCount]);
 
@@ -931,6 +1059,8 @@ function PdfReaderContentInner(
       renderBoundsRef.current = nextBounds;
       restorePendingRef.current = true;
       renderedPagesRef.current = new Set();
+      setScrollCanvasRange({ start: 0, end: -1 });
+      setScrollPageHeights([]);
       setLayoutVersion((version) => version + 1);
       setRenderBounds(nextBounds);
     };
@@ -946,25 +1076,49 @@ function PdfReaderContentInner(
   useEffect(() => {
     restorePendingRef.current = true;
     renderedPagesRef.current = new Set();
+    setScrollCanvasRange({ start: 0, end: -1 });
     setLayoutVersion((current) => current + 1);
   }, [isPagedReader, visiblePageCount]);
+
+  useEffect(() => {
+    if (isPagedReader || pageCount <= 0 || renderBounds.width <= 0) return;
+    syncScrollCanvasRange();
+  }, [
+    isPagedReader,
+    pageCount,
+    renderBounds.width,
+    scrollPageOffsets,
+    syncScrollCanvasRange,
+  ]);
 
   const handleRenderError = useCallback((nextError: unknown) => {
     setError(nextError instanceof Error ? nextError.message : String(nextError));
   }, []);
 
-  const handlePageRendered = useCallback((renderedPageNumber: number) => {
-    renderedPagesRef.current.add(renderedPageNumber);
-    if (restorePendingRef.current) {
-      logPdfReaderInput("page-rendered-while-restore-pending", {
-        renderedPageNumber,
-        renderedPageCount: renderedPagesRef.current.size,
-        expectedPages: pageNumbers,
-        snapshot: getPdfReaderDebugSnapshot(viewportRef.current),
-      });
-    }
-    setLayoutVersion((current) => current + 1);
-  }, [pageNumbers]);
+  const handlePageRendered = useCallback(
+    (renderedPageNumber: number, height: number) => {
+      renderedPagesRef.current.add(renderedPageNumber);
+      if (!isPagedReader && height > 0) {
+        setScrollPageHeights((current) => {
+          const index = renderedPageNumber - 1;
+          if (index < 0 || current[index] === height) return current;
+          const next = [...current];
+          next[index] = height;
+          return next;
+        });
+      }
+      if (restorePendingRef.current) {
+        logPdfReaderInput("page-rendered-while-restore-pending", {
+          renderedPageNumber,
+          renderedPageCount: renderedPagesRef.current.size,
+          expectedPages: pageNumbers,
+          snapshot: getPdfReaderDebugSnapshot(viewportRef.current),
+        });
+      }
+      setLayoutVersion((current) => current + 1);
+    },
+    [isPagedReader, pageNumbers],
+  );
 
   useEffect(() => {
     if (
@@ -973,7 +1127,8 @@ function PdfReaderContentInner(
       pageCount <= 0 ||
       renderBounds.width <= 0 ||
       pageNumbers.length === 0 ||
-      !pageNumbers.every((item) => renderedPagesRef.current.has(item))
+      (isPagedReader &&
+        !pageNumbers.every((item) => renderedPagesRef.current.has(item)))
     ) {
       return;
     }
@@ -1045,6 +1200,7 @@ function PdfReaderContentInner(
         });
       }
       restorePendingRef.current = false;
+      syncScrollCanvasRange();
       updateProgressFromScroll();
     };
     window.requestAnimationFrame(applyRestore);
@@ -1055,6 +1211,7 @@ function PdfReaderContentInner(
     pageNumbers,
     pdfDocument,
     renderBounds,
+    syncScrollCanvasRange,
     updateProgressFromScroll,
     visiblePageCount,
   ]);
@@ -1245,6 +1402,7 @@ function PdfReaderContentInner(
           left: 0,
           behavior: "auto",
         });
+        syncScrollCanvasRange();
         onPageIndexChangeRef.current?.(
           getScrollPageIndex(clamped, currentPageCount),
         );
@@ -1252,7 +1410,7 @@ function PdfReaderContentInner(
 
       scheduleProgressSave(clamped);
     },
-    [isPagedReader, scheduleProgressSave],
+    [isPagedReader, scheduleProgressSave, syncScrollCanvasRange],
   );
 
   const commitSeekProgress = useCallback(() => {
@@ -1326,16 +1484,28 @@ function PdfReaderContentInner(
             </div>
           ) : null}
           {pdfDocument && renderBounds.width > 0
-            ? pageNumbers.map((item) => (
-                <PdfPageCanvas
-                  key={item}
-                  pageNumber={item}
-                  pdfDocument={pdfDocument}
-                  renderBounds={renderBounds}
-                  onRenderError={handleRenderError}
-                  onRendered={handlePageRendered}
-                />
-              ))
+            ? pageNumbers.map((item) => {
+                const pageIndex = item - 1;
+                const active =
+                  isPagedReader ||
+                  (pageIndex >= normalizedScrollCanvasRange.start &&
+                    pageIndex <= normalizedScrollCanvasRange.end);
+                return (
+                  <PdfPageCanvas
+                    key={item}
+                    active={active}
+                    estimatedHeight={
+                      effectiveScrollPageHeights[pageIndex] ??
+                      estimatedScrollPageFrameHeight
+                    }
+                    pageNumber={item}
+                    pdfDocument={pdfDocument}
+                    renderBounds={renderBounds}
+                    onRenderError={handleRenderError}
+                    onRendered={handlePageRendered}
+                  />
+                );
+              })
             : null}
           {showTrailingPageSlot ? (
             <div

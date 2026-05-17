@@ -28,6 +28,10 @@ import {
   type ReaderTapZone,
 } from "../store/reader";
 import { ReaderSeekbars } from "./ReaderSeekbars";
+import {
+  prefixSegmentHeights,
+  virtualRangeForScroll,
+} from "./reader-virtualization";
 
 export interface ReaderContentHandle {
   completeIfAtEnd: () => boolean;
@@ -89,6 +93,12 @@ interface ReaderViewportSize {
 interface ReaderInitialProgressRestore {
   contentKey: number | string | undefined;
   progress: number;
+}
+
+interface ReaderMediaPatchTargetIndex {
+  byIndex: Map<number, HTMLElement[]>;
+  bySource: Map<string, HTMLElement[]>;
+  elements: HTMLElement[];
 }
 
 const SCROLL_PAGE_FRACTION = 0.9;
@@ -212,6 +222,12 @@ const READER_PAGE_SINGLE_MEDIA_ELEMENTS = [
   "iframe",
 ] as const;
 const READER_PAGE_SINGLE_FLOW_ELEMENTS = ["p", "div", "figure", "a"] as const;
+const READER_PREPROCESSED_HTML_CACHE_LIMIT = 8;
+const READER_PROTECTED_HTML_CACHE_LIMIT = 12;
+const READER_VIRTUAL_DOCUMENT_CACHE_LIMIT = 8;
+const readerPreprocessedHtmlCache = new Map<string, string>();
+const readerProtectedHtmlCache = new Map<string, string>();
+const readerVirtualDocumentCache = new Map<string, ReaderVirtualDocument>();
 
 function cssSelectorList(
   prefix: string,
@@ -219,6 +235,50 @@ function cssSelectorList(
   suffix = "",
 ): string {
   return elements.map((element) => `${prefix}${element}${suffix}`).join(",\n");
+}
+
+function rememberReaderCacheValue<T>(
+  cache: Map<string, T>,
+  key: string,
+  value: T,
+  limit: number,
+): T {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+  while (cache.size > limit) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+  return value;
+}
+
+function readerStringFingerprint(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${hash >>> 0}`;
+}
+
+function readerLocalMediaMapFingerprint(
+  resolvedLocalMedia?: ReadonlyMap<string, string>,
+): string {
+  if (!resolvedLocalMedia || resolvedLocalMedia.size === 0) return "0";
+  let hash = 2166136261;
+  for (const [source, resolved] of [...resolvedLocalMedia.entries()].sort(
+    ([left], [right]) => left.localeCompare(right),
+  )) {
+    const entry = `${source}\u0000${resolved}`;
+    for (let index = 0; index < entry.length; index += 1) {
+      hash ^= entry.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+  }
+  return `${resolvedLocalMedia.size}:${hash >>> 0}`;
 }
 
 function clampProgress(progress: number): number {
@@ -300,11 +360,13 @@ function mediaPatchValueKind(value: string): string {
 }
 
 function isRemoteMediaUrl(value: string): boolean {
-  return (
-    value.startsWith("http://") ||
-    value.startsWith("https://") ||
-    value.startsWith("//")
-  );
+  try {
+    const parsed = new URL(value, window.location.href);
+    if (parsed.host === "asset.localhost") return false;
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return value.startsWith("//");
+  }
 }
 
 function mediaErrorSource(target: EventTarget | null): string | null {
@@ -339,6 +401,12 @@ function mediaLogHost(value: string): string {
 
 function hasLocalChapterMediaValue(value: string | null): value is string {
   return !!value?.includes(READER_LOCAL_MEDIA_SRC_PREFIX);
+}
+
+function hasReaderMediaPatchCandidate(html: string): boolean {
+  return /<(?:img|video|audio|source|embed|track|object|link|image|use)\b|\b(?:style|srcset|poster|data-src|data-original|data-lazy-src|data-orig-src)\s*=/i.test(
+    html,
+  );
 }
 
 function protectedLocalMediaAttribute(
@@ -469,7 +537,9 @@ function prepareReaderHtmlForDisplay(html: string): string {
 }
 
 function annotateReaderMediaElements(html: string): string {
-  if (typeof document === "undefined") return html;
+  if (typeof document === "undefined" || !hasReaderMediaPatchCandidate(html)) {
+    return html;
+  }
   const template = document.createElement("template");
   template.innerHTML = html;
   const elements = [
@@ -481,6 +551,65 @@ function annotateReaderMediaElements(html: string): string {
     element.setAttribute(READER_MEDIA_INDEX_ATTRIBUTE, String(index));
   });
   return template.innerHTML;
+}
+
+function preprocessReaderHtmlShell(html: string, bionicReading: boolean): string {
+  if (html.length > READER_DOM_PREPROCESS_MAX_HTML_LENGTH) return html;
+  const key = [
+    "shell:v1",
+    typeof document === "undefined" ? "no-document" : "document",
+    bionicReading ? "bionic" : "plain",
+    readerStringFingerprint(html),
+  ].join("|");
+  const cached = readerPreprocessedHtmlCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const preparedHtml = prepareReaderHtmlForDisplay(html);
+  const displayHtml = bionicReading
+    ? applyBionicReading(preparedHtml)
+    : preparedHtml;
+  return rememberReaderCacheValue(
+    readerPreprocessedHtmlCache,
+    key,
+    annotateReaderMediaElements(displayHtml),
+    READER_PREPROCESSED_HTML_CACHE_LIMIT,
+  );
+}
+
+function protectLocalReaderMediaCached(
+  html: string,
+  resolvedLocalMedia?: ReadonlyMap<string, string>,
+): string {
+  if (
+    typeof document === "undefined" ||
+    !html.includes(READER_LOCAL_MEDIA_SRC_PREFIX)
+  ) {
+    return html;
+  }
+  const key = [
+    "protect:v1",
+    readerStringFingerprint(html),
+    readerLocalMediaMapFingerprint(resolvedLocalMedia),
+  ].join("|");
+  const cached = readerProtectedHtmlCache.get(key);
+  if (cached !== undefined) return cached;
+  return rememberReaderCacheValue(
+    readerProtectedHtmlCache,
+    key,
+    protectLocalReaderMedia(html, resolvedLocalMedia),
+    READER_PROTECTED_HTML_CACHE_LIMIT,
+  );
+}
+
+function preprocessReaderHtmlForRender(
+  html: string,
+  bionicReading: boolean,
+  resolvedLocalMedia?: ReadonlyMap<string, string>,
+): string {
+  return protectLocalReaderMediaCached(
+    preprocessReaderHtmlShell(html, bionicReading),
+    resolvedLocalMedia,
+  );
 }
 
 function setReaderPendingImagePlaceholder(image: HTMLImageElement): void {
@@ -547,8 +676,73 @@ function mergeMediaElementPatches(
   }
 }
 
+function readerMediaPatchSourceKey(attribute: string, source: string): string {
+  return `${attribute}\u0000${source}`;
+}
+
+function addReaderMediaPatchSourceTarget(
+  targets: Map<string, HTMLElement[]>,
+  attribute: string,
+  source: string | null,
+  element: HTMLElement,
+): void {
+  if (!source) return;
+  const key = readerMediaPatchSourceKey(attribute, source);
+  const existing = targets.get(key);
+  if (existing) {
+    existing.push(element);
+    return;
+  }
+  targets.set(key, [element]);
+}
+
+function buildReaderMediaPatchTargetIndex(
+  container: HTMLElement,
+): ReaderMediaPatchTargetIndex {
+  const elements = [
+    ...container.querySelectorAll<HTMLElement>(READER_MEDIA_PATCH_SELECTOR),
+  ];
+  const byIndex = new Map<number, HTMLElement[]>();
+  const bySource = new Map<string, HTMLElement[]>();
+
+  elements.forEach((element) => {
+    const index = Number.parseInt(
+      element.getAttribute(READER_MEDIA_INDEX_ATTRIBUTE) ?? "",
+      10,
+    );
+    if (Number.isFinite(index) && index >= 0) {
+      const indexed = byIndex.get(index);
+      if (indexed) {
+        indexed.push(element);
+      } else {
+        byIndex.set(index, [element]);
+      }
+    }
+
+    for (const attribute of READER_MEDIA_PATCH_ATTRIBUTES) {
+      addReaderMediaPatchSourceTarget(
+        bySource,
+        attribute,
+        element.getAttribute(attribute),
+        element,
+      );
+      const protectedAttribute = protectedLocalMediaAttribute(attribute);
+      if (protectedAttribute) {
+        addReaderMediaPatchSourceTarget(
+          bySource,
+          attribute,
+          element.getAttribute(protectedAttribute),
+          element,
+        );
+      }
+    }
+  });
+
+  return { byIndex, bySource, elements };
+}
+
 function localMediaPatchTargets(
-  elements: HTMLElement[],
+  targetIndex: ReaderMediaPatchTargetIndex,
   patch: ChapterMediaElementPatch,
 ): HTMLElement[] | null {
   const sourceAttributes = patch.sourceAttributes;
@@ -556,16 +750,11 @@ function localMediaPatchTargets(
     return null;
   }
   const targets = new Set<HTMLElement>();
-  for (const element of elements) {
-    for (const [attribute, source] of Object.entries(sourceAttributes)) {
-      const protectedAttribute = protectedLocalMediaAttribute(attribute);
-      if (
-        (protectedAttribute &&
-          element.getAttribute(protectedAttribute) === source) ||
-        element.getAttribute(attribute) === source
-      ) {
-        targets.add(element);
-      }
+  for (const [attribute, source] of Object.entries(sourceAttributes)) {
+    for (const element of targetIndex.bySource.get(
+      readerMediaPatchSourceKey(attribute, source),
+    ) ?? []) {
+      targets.add(element);
     }
   }
   return [...targets];
@@ -576,26 +765,20 @@ function patchReaderMediaElements(
   patches: ChapterMediaElementPatch[],
 ): void {
   if (patches.length === 0) return;
-  const currentElements = [
-    ...container.querySelectorAll<HTMLElement>(READER_MEDIA_PATCH_SELECTOR),
-  ];
+  const targetIndex = buildReaderMediaPatchTargetIndex(container);
   let changedCount = 0;
   const srcKinds = new Set<string>();
 
   for (const patch of patches) {
-    const localTargets = localMediaPatchTargets(currentElements, patch);
-    const indexedElements = [
-      ...container.querySelectorAll<HTMLElement>(
-        `[${READER_MEDIA_INDEX_ATTRIBUTE}="${patch.index}"]`,
-      ),
-    ];
+    const localTargets = localMediaPatchTargets(targetIndex, patch);
+    const indexedElements = targetIndex.byIndex.get(patch.index) ?? [];
     const targets =
       localTargets
         ? localTargets
         : indexedElements.length > 0
         ? indexedElements
-        : currentElements[patch.index]
-          ? [currentElements[patch.index]]
+        : targetIndex.elements[patch.index]
+          ? [targetIndex.elements[patch.index]]
           : [];
     for (const current of targets) {
       let changed = false;
@@ -629,7 +812,7 @@ function patchReaderMediaElements(
       patchCount: patches.length,
       srcKinds: [...srcKinds],
       firstIndexes: patches.slice(0, 8).map((patch) => patch.index),
-      mediaElementCount: currentElements.length,
+      mediaElementCount: targetIndex.elements.length,
     });
   }
 }
@@ -683,6 +866,29 @@ function hasLocalMediaSourceAttributes(
     !!patch.sourceAttributes &&
     Object.keys(patch.sourceAttributes).length > 0
   );
+}
+
+function resolveMountedLocalMediaPatchesFromMap(
+  patches: ChapterMediaElementPatch[],
+  resolvedLocalMedia: ReadonlyMap<string, string>,
+): ChapterMediaElementPatch[] | null {
+  const resolvedPatches: ChapterMediaElementPatch[] = [];
+  for (const patch of patches) {
+    const attributes: Record<string, string> = {};
+    for (const attribute of READER_MEDIA_PATCH_ATTRIBUTES) {
+      const source = patch.sourceAttributes?.[attribute];
+      if (!source) continue;
+      const resolved = resolvedLocalMedia.get(source);
+      if (!resolved) return null;
+      attributes[attribute] = resolved;
+    }
+    resolvedPatches.push({
+      index: patch.index,
+      attributes,
+      sourceAttributes: patch.sourceAttributes,
+    });
+  }
+  return resolvedPatches;
 }
 
 function countBlankReaderMedia(html: string): number {
@@ -1129,6 +1335,22 @@ function buildReaderVirtualDocument(html: string): ReaderVirtualDocument {
   };
 }
 
+function buildReaderVirtualDocumentCached(html: string): ReaderVirtualDocument {
+  const key = [
+    "virtual:v1",
+    typeof document === "undefined" ? "no-document" : "document",
+    readerStringFingerprint(html),
+  ].join("|");
+  const cached = readerVirtualDocumentCache.get(key);
+  if (cached) return cached;
+  return rememberReaderCacheValue(
+    readerVirtualDocumentCache,
+    key,
+    buildReaderVirtualDocument(html),
+    READER_VIRTUAL_DOCUMENT_CACHE_LIMIT,
+  );
+}
+
 function formatClock(date: Date, locale: AppLocale): string {
   return formatTimeForLocale(locale, date);
 }
@@ -1256,34 +1478,6 @@ function scrollToProgress(
   node.scrollTo({ top: maxTop * ratio, behavior });
 }
 
-function prefixSegmentHeights(heights: number[]): number[] {
-  const offsets = [0];
-  for (const height of heights) {
-    offsets.push(offsets[offsets.length - 1]! + height);
-  }
-  return offsets;
-}
-
-function virtualRangeForScroll(
-  scrollTop: number,
-  viewportHeight: number,
-  offsets: number[],
-): { start: number; end: number } {
-  const count = Math.max(0, offsets.length - 1);
-  if (count === 0) return { start: 0, end: -1 };
-  const startY = Math.max(0, scrollTop - READER_SCROLL_OVERSCAN_PX);
-  const endY = scrollTop + viewportHeight + READER_SCROLL_OVERSCAN_PX;
-  let start = 0;
-  while (start < count - 1 && offsets[start + 1]! < startY) {
-    start += 1;
-  }
-  let end = start;
-  while (end < count - 1 && offsets[end]! <= endY) {
-    end += 1;
-  }
-  return { start, end };
-}
-
 function getNormalizedWheelDelta(event: WheelEvent<HTMLElement>): number {
   const primaryDelta =
     Math.abs(event.deltaY) >= Math.abs(event.deltaX)
@@ -1353,6 +1547,7 @@ function ReaderContentInner(
   const localMediaPatchGenerationRef = useRef(0);
   const latestLocalMediaSignatureRef = useRef<string | null>(null);
   const pendingLocalMediaSignatureRef = useRef<string | null>(null);
+  const unresolvedLocalMediaSignatureRef = useRef<string | null>(null);
   const latestRenderedHtmlRef = useRef<string | null>(null);
   const appliedInitialContentKeyRef = useRef<number | string | undefined | null>(
     null,
@@ -1388,25 +1583,47 @@ function ReaderContentInner(
     () => new Map(Object.entries(resolvedLocalMedia)),
     [resolvedLocalMedia],
   );
+  const localMediaContextKey = useMemo(
+    () =>
+      localMediaContext
+        ? [
+            localMediaContext.chapterId,
+            localMediaContext.chapterName ?? "",
+            localMediaContext.chapterNumber ?? "",
+            localMediaContext.chapterPosition ?? "",
+            localMediaContext.novelId ?? "",
+            localMediaContext.novelName ?? "",
+            localMediaContext.novelPath ?? "",
+            localMediaContext.sourceId ?? "",
+          ].join("\u0000")
+        : "",
+    [
+      localMediaContext?.chapterId,
+      localMediaContext?.chapterName,
+      localMediaContext?.chapterNumber,
+      localMediaContext?.chapterPosition,
+      localMediaContext?.novelId,
+      localMediaContext?.novelName,
+      localMediaContext?.novelPath,
+      localMediaContext?.sourceId,
+    ],
+  );
+  const stableLocalMediaContext = useMemo(
+    () => localMediaContext,
+    [localMediaContextKey],
+  );
 
   const renderedHtml = useMemo(
-    () => {
-      if (html.length > READER_DOM_PREPROCESS_MAX_HTML_LENGTH) {
-        return html;
-      }
-      const preparedHtml = prepareReaderHtmlForDisplay(html);
-      const displayHtml = general.bionicReading
-        ? applyBionicReading(preparedHtml)
-        : preparedHtml;
-      return protectLocalReaderMedia(
-        annotateReaderMediaElements(displayHtml),
+    () =>
+      preprocessReaderHtmlForRender(
+        html,
+        general.bionicReading,
         resolvedLocalMediaMap,
-      );
-    },
+      ),
     [general.bionicReading, html, resolvedLocalMediaMap],
   );
   const virtualDocument = useMemo(
-    () => buildReaderVirtualDocument(renderedHtml),
+    () => buildReaderVirtualDocumentCached(renderedHtml),
     [renderedHtml],
   );
   const displayStaticHtml = useMemo(
@@ -1639,11 +1856,16 @@ function ReaderContentInner(
     latestMediaElementPatchesRef.current.clear();
     latestLocalMediaSignatureRef.current = null;
     pendingLocalMediaSignatureRef.current = null;
+    unresolvedLocalMediaSignatureRef.current = null;
     localMediaPatchGenerationRef.current += 1;
     setResolvedLocalMedia((current) =>
       Object.keys(current).length === 0 ? current : {},
     );
   }, [contentKey]);
+
+  useEffect(() => {
+    unresolvedLocalMediaSignatureRef.current = null;
+  }, [localMediaContextKey, renderedHtml]);
 
   useImperativeHandle(
     ref,
@@ -1742,7 +1964,12 @@ function ReaderContentInner(
     }
     if (!isPagedReader) {
       setVirtualRange(
-        virtualRangeForScroll(node.scrollTop, node.clientHeight, segmentOffsets),
+        virtualRangeForScroll(
+          node.scrollTop,
+          node.clientHeight,
+          segmentOffsets,
+          READER_SCROLL_OVERSCAN_PX,
+        ),
       );
     }
     const nextProgress = clampProgress(getProgress(node, isPagedReader));
@@ -1842,34 +2069,50 @@ function ReaderContentInner(
   }, [contentKey, getActiveScrollNode, layoutRestoreKey]);
 
   useEffect(() => {
-    if (!localMediaContext) return;
-    const content = contentRef.current;
-    if (!content || !content.innerHTML.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) {
+    if (!stableLocalMediaContext || !renderedHtml.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) {
       return;
     }
+    const content = contentRef.current;
+    if (!content) return;
     const rawPatches = collectMountedLocalMediaPatches(content);
     if (rawPatches.length === 0) return;
     const signature = localMediaPatchSignature(rawPatches);
+    const scopedSignature = `${localMediaContextKey}\u0000${signature}`;
+    const resolvedPatches = resolveMountedLocalMediaPatchesFromMap(
+      rawPatches,
+      resolvedLocalMediaMap,
+    );
+    if (resolvedPatches) {
+      latestLocalMediaSignatureRef.current = scopedSignature;
+      unresolvedLocalMediaSignatureRef.current = null;
+      mergeMediaElementPatches(
+        latestMediaElementPatchesRef.current,
+        resolvedPatches,
+      );
+      patchReaderMediaElements(content, resolvedPatches);
+      return;
+    }
     const cachedLocalPatches = [
       ...latestMediaElementPatchesRef.current.values(),
     ].filter(hasLocalMediaSourceAttributes);
     if (
-      signature === latestLocalMediaSignatureRef.current &&
+      scopedSignature === latestLocalMediaSignatureRef.current &&
       cachedLocalPatches.length > 0
     ) {
       patchReaderMediaElements(content, cachedLocalPatches);
       return;
     }
-    if (signature === pendingLocalMediaSignatureRef.current) return;
-    latestLocalMediaSignatureRef.current = signature;
-    pendingLocalMediaSignatureRef.current = signature;
+    if (scopedSignature === unresolvedLocalMediaSignatureRef.current) return;
+    if (scopedSignature === pendingLocalMediaSignatureRef.current) return;
+    latestLocalMediaSignatureRef.current = scopedSignature;
+    pendingLocalMediaSignatureRef.current = scopedSignature;
     const generation = ++localMediaPatchGenerationRef.current;
     let cancelled = false;
     void (async () => {
       try {
         const patches = await resolveLocalChapterMediaPatches(
           rawPatches,
-          localMediaContext,
+          stableLocalMediaContext,
         );
         if (
           cancelled ||
@@ -1879,6 +2122,7 @@ function ReaderContentInner(
           return;
         }
         if (patches.length > 0) {
+          unresolvedLocalMediaSignatureRef.current = null;
           setResolvedLocalMedia((current) => {
             let changed = false;
             const next = { ...current };
@@ -1908,9 +2152,11 @@ function ReaderContentInner(
             }
           }
           patchReaderMediaElements(content, patches);
+        } else if (!cancelled) {
+          unresolvedLocalMediaSignatureRef.current = scopedSignature;
         }
       } finally {
-        if (pendingLocalMediaSignatureRef.current === signature) {
+        if (pendingLocalMediaSignatureRef.current === scopedSignature) {
           pendingLocalMediaSignatureRef.current = null;
         }
       }
@@ -1918,7 +2164,15 @@ function ReaderContentInner(
     return () => {
       cancelled = true;
     };
-  });
+  }, [
+    isPagedReader,
+    localMediaContextKey,
+    renderedHtml,
+    resolvedLocalMediaMap,
+    stableLocalMediaContext,
+    virtualRange.end,
+    virtualRange.start,
+  ]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -2009,7 +2263,12 @@ function ReaderContentInner(
     const node = viewportRef.current;
     if (!node || isPagedReader) return;
     setVirtualRange(
-      virtualRangeForScroll(node.scrollTop, node.clientHeight, segmentOffsets),
+      virtualRangeForScroll(
+        node.scrollTop,
+        node.clientHeight,
+        segmentOffsets,
+        READER_SCROLL_OVERSCAN_PX,
+      ),
     );
   }, [isPagedReader, segmentOffsets, viewportSize.height]);
 
@@ -2567,7 +2826,7 @@ function ReaderContentInner(
   );
   const scrollVirtualHtml = useMemo(
     () =>
-      protectLocalReaderMedia(
+      protectLocalReaderMediaCached(
         [
           displayStaticHtml,
           '<div data-norea-reader-virtual-canvas style="height:var(--norea-reader-content-height,0px);position:relative;width:100%">',
@@ -2581,7 +2840,7 @@ function ReaderContentInner(
   );
   const pagedFullHtml = useMemo(
     () =>
-      protectLocalReaderMedia(
+      protectLocalReaderMediaCached(
         displayStaticHtml +
           virtualDocument.segments.map((segment) => segment.html).join(""),
         resolvedLocalMediaMap,

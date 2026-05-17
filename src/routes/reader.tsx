@@ -32,10 +32,21 @@ import {
   type ChapterMediaElementPatch,
 } from "../lib/chapter-media";
 import { isHtmlLikeChapterContentType } from "../lib/chapter-content";
+import { restoreChapterContentStorageMirror } from "../lib/chapter-content-storage";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
+import {
+  chapterDetailQueryKey,
+  chapterListQueryKey,
+  invalidateReaderContentQueries,
+  invalidateReaderOpenedQueries,
+  invalidateReaderProgressQueries,
+  novelChaptersQueryKey,
+  novelDetailQueryKey,
+  novelLibraryQueryKey,
+} from "../lib/reader-query-invalidation";
 import { pluginManager } from "../lib/plugins/manager";
 import { LOCAL_PLUGIN_ID } from "../lib/plugins/types";
 import {
@@ -129,10 +140,6 @@ const SAMPLE_CHAPTER_HTML = `
   waking him.
 </p>
 `;
-
-function chapterDetailKey(chapterId: number) {
-  return ["chapter", "detail", chapterId] as const;
-}
 
 function getChapterLabel(
   chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
@@ -516,9 +523,19 @@ export function ReaderPage() {
   const [remoteMediaError, setRemoteMediaError] = useState(false);
 
   const chapterQuery = useQuery({
-    queryKey: chapterDetailKey(chapterId),
+    queryKey: chapterDetailQueryKey(chapterId),
     queryFn: async () => {
-      const chapter = await getChapterById(chapterId);
+      let chapter = await getChapterById(chapterId);
+      if (chapter && !chapter.content) {
+        const restored = await restoreChapterContentStorageMirror({
+          chapterIds: new Set([chapterId]),
+          contentOnly: true,
+          limit: 1,
+        });
+        if (restored.chapters > 0) {
+          chapter = await getChapterById(chapterId);
+        }
+      }
       if (!chapter?.content) return chapter;
       if (chapter.content.length > READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH) {
         return chapter;
@@ -544,7 +561,7 @@ export function ReaderPage() {
   const chapter = rawChapter?.id === chapterId ? rawChapter : undefined;
   const currentNovelId = chapter?.novelId ?? 0;
   const currentNovelQuery = useQuery({
-    queryKey: ["novel", "detail", currentNovelId],
+    queryKey: novelDetailQueryKey(currentNovelId),
     queryFn: () => getNovelById(currentNovelId),
     enabled: currentNovelId > 0,
   });
@@ -659,14 +676,14 @@ export function ReaderPage() {
       if (event.job.id !== chapterId) return;
       if (event.status.kind === "done") {
         void queryClient.invalidateQueries({
-          queryKey: chapterDetailKey(chapterId),
+          queryKey: chapterDetailQueryKey(chapterId),
         });
         if (event.job.novelId) {
           void queryClient.invalidateQueries({
-            queryKey: ["chapter", "list", event.job.novelId],
+            queryKey: chapterListQueryKey(event.job.novelId),
           });
           void queryClient.invalidateQueries({
-            queryKey: ["novel", "detail", event.job.novelId, "chapters"],
+            queryKey: novelChaptersQueryKey(event.job.novelId),
           });
         }
       }
@@ -829,7 +846,7 @@ export function ReaderPage() {
   }, []);
 
   const chapterListQuery = useQuery({
-    queryKey: ["chapter", "list", currentNovelId],
+    queryKey: chapterListQueryKey(currentNovelId),
     queryFn: () => listChaptersByNovel(currentNovelId),
     enabled: currentNovelId > 0,
   });
@@ -851,7 +868,7 @@ export function ReaderPage() {
             : Math.floor(Date.now() / 1000),
       });
       queryClient.setQueryData<Awaited<ReturnType<typeof getChapterById>>>(
-        chapterDetailKey(chapterId),
+        chapterDetailQueryKey(chapterId),
         (chapter) => (chapter ? applyProgress(chapter) : chapter),
       );
       if (currentNovelId > 0) {
@@ -860,28 +877,23 @@ export function ReaderPage() {
             chapter.id === chapterId ? applyProgress(chapter) : chapter,
           );
         queryClient.setQueryData<ChapterListRow[]>(
-          ["chapter", "list", currentNovelId],
+          chapterListQueryKey(currentNovelId),
           updateChapterList,
         );
         queryClient.setQueryData<ChapterListRow[]>(
-          ["novel", "detail", currentNovelId, "chapters"],
+          novelChaptersQueryKey(currentNovelId),
           updateChapterList,
         );
       }
     },
     onSuccess: (_result, progress) => {
-      if (currentNovelId > 0) {
-        void queryClient.invalidateQueries({
-          queryKey: ["chapter", "list", currentNovelId],
-        });
-      }
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
-      if (!incognitoMode) {
-        void queryClient.invalidateQueries({ queryKey: ["chapter", "history"] });
-      }
+      void invalidateReaderProgressQueries(queryClient, {
+        novelId: currentNovelId,
+        progress,
+        recordHistory: !incognitoMode,
+      });
       if (progress >= FINISHED_PROGRESS) {
         markUpdatesIndexDirty("read-progress");
-        void queryClient.invalidateQueries({ queryKey: ["chapter", "updates"] });
       }
     },
   });
@@ -898,7 +910,7 @@ export function ReaderPage() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: chapterDetailKey(chapterId),
+        queryKey: chapterDetailQueryKey(chapterId),
       });
     },
   });
@@ -916,11 +928,11 @@ export function ReaderPage() {
     },
     onSuccess: () => {
       setRemoteMediaError(false);
-      void queryClient.invalidateQueries({
-        queryKey: chapterDetailKey(chapterId),
+      void invalidateReaderContentQueries(queryClient, {
+        chapterId,
+        includeDownloadCache: true,
+        novelId: currentNovelId,
       });
-      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
     },
   });
 
@@ -965,7 +977,7 @@ export function ReaderPage() {
       void (async () => {
         try {
           const novel = await queryClient.fetchQuery({
-            queryKey: ["novel", "detail", targetChapter.novelId],
+            queryKey: novelDetailQueryKey(targetChapter.novelId),
             queryFn: () => getNovelById(targetChapter.novelId),
           });
           if (!novel) return;
@@ -985,16 +997,16 @@ export function ReaderPage() {
           if (openRequestRef.current !== requestId) return;
           await Promise.all([
             queryClient.invalidateQueries({
-              queryKey: chapterDetailKey(targetChapter.id),
+              queryKey: chapterDetailQueryKey(targetChapter.id),
             }),
             queryClient.invalidateQueries({
-              queryKey: ["chapter", "list", targetChapter.novelId],
+              queryKey: chapterListQueryKey(targetChapter.novelId),
             }),
             queryClient.invalidateQueries({
-              queryKey: ["novel", "detail", targetChapter.novelId, "chapters"],
+              queryKey: novelChaptersQueryKey(targetChapter.novelId),
             }),
           ]);
-          void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+          void queryClient.invalidateQueries({ queryKey: novelLibraryQueryKey });
         } catch {
           // The reader stays open and continues showing any partial content.
         } finally {
@@ -1098,8 +1110,9 @@ export function ReaderPage() {
     setLastReadChapter(chapter.novelId, chapter.id);
     if (!incognitoMode) {
       void enqueueReaderWrite(() => markChapterOpened(chapter.id)).then(() => {
-        void queryClient.invalidateQueries({ queryKey: ["chapter", "history"] });
-        void queryClient.invalidateQueries({ queryKey: ["novel"] });
+        void invalidateReaderOpenedQueries(queryClient, {
+          novelId: chapter.novelId,
+        });
       });
     }
   }, [
@@ -1204,7 +1217,11 @@ export function ReaderPage() {
       if (htmlLikeContent && !hasRenderableReaderHtml(chapterContentHtml)) {
         return current?.chapterId === chapter.id ? current : null;
       }
-      if (htmlLikeContent && current?.chapterId === chapter.id) {
+      if (
+        htmlLikeContent &&
+        current?.chapterId === chapter.id &&
+        !chapter.isDownloaded
+      ) {
         return current;
       }
       if (!current || current.chapterId !== chapter.id) {
@@ -1557,6 +1574,7 @@ export function ReaderPage() {
         dataUrl={content}
         generalSettings={readerContentGeneral}
         initialProgress={readerProgress}
+        localMediaContext={readerLocalMediaContext}
         onToggleChrome={
           readerChromeAutoHide ? handleToggleFullPageChrome : undefined
         }
