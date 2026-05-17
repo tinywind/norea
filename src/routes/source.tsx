@@ -37,7 +37,7 @@ import { PluginSettingsEditor } from "../components/PluginSettingsEditor";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import { SearchBar } from "../components/SearchBar";
 import { getPluginBaseUrl } from "../lib/plugins/base-url";
-import { importNovelFromSource } from "../lib/plugins/import-novel";
+import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
 import { FilterTypes, type Filters } from "../lib/plugins/filterTypes";
 import { pluginManager } from "../lib/plugins/manager";
 import {
@@ -46,14 +46,16 @@ import {
   writeSourceFilters,
 } from "../lib/plugins/source-filter-storage";
 import type { NovelItem, Plugin } from "../lib/plugins/types";
-import { enqueueMainTask } from "../lib/tasks/main-tasks";
 import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
 } from "../lib/tasks/source-tasks";
+import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useTranslation } from "../i18n";
 import { sourceRoute } from "../router";
 import "../styles/browse.css";
+
+const INSTALLED_QUERY_KEY = ["plugin", "installed"] as const;
 
 type SourceFilterMode = "keyword" | "filters";
 
@@ -198,7 +200,22 @@ export function SourcePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const plugin = pluginManager.getPlugin(pluginId);
+  const installed = useQuery({
+    queryKey: INSTALLED_QUERY_KEY,
+    queryFn: async () => {
+      if (isTauriRuntime()) {
+        await pluginManager.loadInstalledFromDb();
+      }
+      return pluginManager.list();
+    },
+    staleTime: 0,
+  });
+  const plugin = useMemo(
+    () =>
+      installed.data?.find((entry) => entry.id === pluginId) ??
+      pluginManager.getPlugin(pluginId),
+    [installed.data, pluginId],
+  );
 
   const [page, setPage] = useState(1);
   const [loadedPages, setLoadedPages] = useState<ListingPage[]>([]);
@@ -355,17 +372,10 @@ export function SourcePage() {
   const open = useMutation({
     mutationFn: async (item: NovelItem) => {
       if (!plugin) throw new Error(t("source.pluginNotLoaded"));
-      return enqueueMainTask<number>({
-        kind: "source.openNovel",
-        priority: "interactive",
+      return enqueueOpenNovelFromSourceTask({
+        plugin,
+        item,
         title: t("tasks.task.openNovel", { name: item.name }),
-        subject: {
-          novelName: item.name,
-          path: item.path,
-          pluginId: plugin.id,
-        },
-        dedupeKey: `source.openNovel:${plugin.id}:${item.path}`,
-        run: () => importNovelFromSource(plugin, item),
       }).promise;
     },
     onSuccess: (novelId) => {
@@ -374,13 +384,32 @@ export function SourcePage() {
     },
   });
 
+  if (!plugin && installed.isLoading) {
+    return (
+      <PageFrame>
+        <StateView
+          title={
+            <Group gap="sm">
+              <Loader size="sm" />
+              {t("common.loading")}
+            </Group>
+          }
+        />
+      </PageFrame>
+    );
+  }
+
   if (!plugin) {
     return (
       <PageFrame>
         <StateView
-          color="orange"
+          color={installed.error ? "red" : "orange"}
           title={t("source.pluginNotLoaded")}
-          message={t("source.pluginNotLoadedMessage", { id: pluginId })}
+          message={
+            installed.error instanceof Error
+              ? installed.error.message
+              : t("source.pluginNotLoadedMessage", { id: pluginId })
+          }
         />
       </PageFrame>
     );

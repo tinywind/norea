@@ -807,7 +807,7 @@ function updateStatusMessage(
 }
 
 function canInstallUpdate(candidate: UpdateCandidate | null): boolean {
-  return Boolean(candidate && candidate.status !== "current");
+  return Boolean(candidate?.integrity && candidate.status !== "current");
 }
 
 function AboutSettingsSection({

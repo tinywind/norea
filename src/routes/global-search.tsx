@@ -36,10 +36,9 @@ import {
   type GlobalSearchResult,
 } from "../lib/plugins/global-search";
 import { getPluginBaseUrl } from "../lib/plugins/base-url";
-import { importNovelFromSource } from "../lib/plugins/import-novel";
+import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
 import { pluginManager } from "../lib/plugins/manager";
 import type { NovelItem, Plugin } from "../lib/plugins/types";
-import { enqueueMainTask } from "../lib/tasks/main-tasks";
 import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
 import { useBrowseStore } from "../store/browse";
 import "../styles/browse.css";
@@ -1017,17 +1016,10 @@ export function PluginSearchSection({
       setOpeningKey(key);
       setOpenError(null);
       try {
-        const id = await enqueueMainTask<number>({
-          kind: "source.openNovel",
-          priority: "interactive",
+        const id = await enqueueOpenNovelFromSourceTask({
+          plugin,
+          item: novel,
           title: t("tasks.task.openNovel", { name: novel.name }),
-          subject: {
-            novelName: novel.name,
-            path: novel.path,
-            pluginId: plugin.id,
-          },
-          dedupeKey: `source.openNovel:${plugin.id}:${novel.path}`,
-          run: () => importNovelFromSource(plugin, novel),
         }).promise;
         await queryClient.invalidateQueries({ queryKey: ["novel"] });
         await navigate({ to: "/novel", search: { id } });

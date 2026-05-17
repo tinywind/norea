@@ -82,7 +82,10 @@ import {
   type LocalNovelMetadataInput,
   type NovelDetailRecord,
 } from "../db/queries/novel";
-import { convertLocalImportFile } from "../lib/local-import";
+import {
+  clearLocalImportFileCache,
+  convertLocalImportFile,
+} from "../lib/local-import";
 import { syncLocalChapterStorageAfterOrderChange } from "../lib/local-chapter-storage";
 import { cacheLocalImportedChapterMedia } from "../lib/local-import-media";
 import { syncNovelFromSource } from "../lib/plugins/sync-novel";
@@ -233,21 +236,28 @@ async function convertLocalChapterFiles(
   const chapters: LocalNovelImportChapterInput[] = [];
 
   for (const file of files) {
-    const conversion = await convertLocalImportFile(file);
-    for (const chapter of conversion.chapters) {
-      chapters.push({
-        chapterNumber:
-          chapter.chapterNumber == null ? null : String(chapter.chapterNumber),
-        content: chapter.content,
-        contentBytes: chapter.contentBytes,
-        contentType: chapter.contentType,
-        mediaResources: chapter.mediaResources,
-        name: chapter.name,
-        page: chapter.page,
-        path: chapter.path,
-        position: startPosition + chapters.length + 1,
-        releaseTime: chapter.releaseTime ?? null,
-      });
+    try {
+      const conversion = await convertLocalImportFile(file);
+      for (const chapter of conversion.chapters) {
+        chapters.push({
+          binaryResource: chapter.binaryResource,
+          chapterNumber:
+            chapter.chapterNumber == null
+              ? null
+              : String(chapter.chapterNumber),
+          content: chapter.content,
+          contentBytes: chapter.contentBytes,
+          contentType: chapter.contentType,
+          mediaResources: chapter.mediaResources,
+          name: chapter.name,
+          page: chapter.page,
+          path: chapter.path,
+          position: startPosition + chapters.length + 1,
+          releaseTime: chapter.releaseTime ?? null,
+        });
+      }
+    } finally {
+      clearLocalImportFileCache(file);
     }
   }
 
@@ -1875,22 +1885,30 @@ export function NovelDetailPage() {
   function downloadChapters(chaptersToDownload: ChapterListRow[]): void {
     const novel = novelQuery.data;
     if (!novel || chaptersToDownload.length === 0) return;
+    const batchNovel = novel;
+
+    function* chapterDownloadJobs() {
+      for (const chapter of chaptersToDownload) {
+        yield {
+          id: chapter.id,
+          pluginId: batchNovel.pluginId,
+          chapterPath: chapter.path,
+          chapterName: chapter.name,
+          contentType: chapter.contentType,
+          novelId: batchNovel.id,
+          novelName: batchNovel.name,
+          novelPath: batchNovel.path,
+          title: t("tasks.task.downloadChapter", { name: chapter.name }),
+        };
+      }
+    }
 
     void enqueueChapterDownloadBatch({
-      jobs: chaptersToDownload.map((chapter) => ({
-        id: chapter.id,
-        pluginId: novel.pluginId,
-        chapterPath: chapter.path,
-        chapterName: chapter.name,
-        contentType: chapter.contentType,
-        novelId: novel.id,
-        novelName: novel.name,
-        novelPath: novel.path,
-        title: t("tasks.task.downloadChapter", { name: chapter.name }),
-      })),
+      jobs: chapterDownloadJobs(),
       title: t("tasks.task.downloadChapterBatch", {
         count: chaptersToDownload.length,
       }),
+      total: chaptersToDownload.length,
     }).promise.catch(() => undefined);
   }
 

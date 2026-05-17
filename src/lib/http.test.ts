@@ -289,11 +289,10 @@ describe("pluginFetch", () => {
 });
 
 describe("pluginMediaFetch", () => {
-  it("uses native media fetch first on Android when media and context hosts differ", async () => {
+  it("uses native media fetch first when media and context hosts differ", async () => {
     const debugSpy = vi
       .spyOn(console, "debug")
       .mockImplementation(() => undefined);
-    isAndroidRuntimeMock.mockReturnValue(true);
     invokeMock.mockResolvedValueOnce(
       wireOk("image", {
         finalUrl: "https://novel-phinf.pstatic.net/page.png",
@@ -351,6 +350,9 @@ describe("pluginMediaFetch", () => {
     const debugSpy = vi
       .spyOn(console, "debug")
       .mockImplementation(() => undefined);
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     invokeMock
       .mockRejectedValueOnce(new Error("Failed to fetch"))
       .mockResolvedValueOnce(
@@ -362,9 +364,9 @@ describe("pluginMediaFetch", () => {
 
     try {
       const response = await pluginMediaFetch("https://cdn.test/page.png", {
-        contextUrl: "https://novel.naver.com/webnovel/list",
+        contextUrl: "https://cdn.test/chapter/1",
         headers: {
-          Referer: "https://novel.naver.com/",
+          Referer: "https://cdn.test/chapter/1",
           "User-Agent": "Plugin UA",
         },
         timeoutMs: 12_345,
@@ -374,13 +376,13 @@ describe("pluginMediaFetch", () => {
         url: "https://cdn.test/page.png",
         init: {
           headers: {
-            Referer: "https://novel.naver.com/",
+            Referer: "https://cdn.test/chapter/1",
             "User-Agent": "Plugin UA",
           },
           method: undefined,
           body: undefined,
         },
-        contextUrl: "https://novel.naver.com/webnovel/list",
+        contextUrl: "https://cdn.test/chapter/1",
         queue: "immediate",
         timeoutMs: 12_345,
         userAgent: "Plugin UA",
@@ -389,7 +391,7 @@ describe("pluginMediaFetch", () => {
         url: "https://cdn.test/page.png",
         init: {
           headers: {
-            Referer: "https://novel.naver.com/",
+            Referer: "https://cdn.test/chapter/1",
             "User-Agent": "Plugin UA",
           },
           method: undefined,
@@ -422,8 +424,13 @@ describe("pluginMediaFetch", () => {
       );
       expect(response.url).toBe("https://cdn.test/page.png");
       expect(await response.text()).toBe("image");
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        "[plugin-fetch] failed",
+        expect.anything(),
+      );
     } finally {
       debugSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 
@@ -439,7 +446,7 @@ describe("pluginMediaFetch", () => {
     try {
       await expect(
         pluginMediaFetch("https://cdn.test/page.png?token=secret", {
-          contextUrl: "https://novel.test/chapter",
+          contextUrl: "https://cdn.test/chapter",
           sourceId: "source-a",
           scraperExecutor: "pool:1",
         }),

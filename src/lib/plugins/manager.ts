@@ -10,6 +10,11 @@ import {
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import { getPluginBaseUrl } from "./base-url";
 import { clearPluginInputValues, setPluginInputValue } from "./inputs";
+import {
+  createLazyPluginProxy,
+  createPluginRuntimeHandle,
+  type PluginRuntimeHandle,
+} from "./runtime";
 import { loadPlugin } from "./sandbox";
 import { createShimResolver } from "./shims";
 import type { Plugin, PluginInstallMode, PluginItem } from "./types";
@@ -172,20 +177,21 @@ export interface PluginInstanceInstallInput {
   inputs?: Record<string, string>;
 }
 
+export interface InstalledPluginMetadata extends PluginItem {
+  sourceHash: string;
+  loadedExecutors: ScraperExecutorId[];
+}
+
 /**
  * Manages installed plugins for the running session.
  *
  * Plugins are kept in memory and persisted to SQLite. App startup
- * rehydrates installed plugin source from the DB without hitting
- * the repository network path.
+ * rehydrates installed plugin metadata from the DB without hitting
+ * the repository network path or evaluating plugin source.
  */
 export class PluginManager {
   private readonly installed = new Map<string, Plugin>();
-  private readonly installedSources = new Map<
-    string,
-    { item: PluginItem; source: string }
-  >();
-  private readonly executorRuntimes = new Map<string, Plugin>();
+  private readonly runtimeHandles = new Map<string, PluginRuntimeHandle>();
   private installedLoadPromise: Promise<void> | null = null;
 
   /**
@@ -344,12 +350,20 @@ export class PluginManager {
     sourceUrl: string,
     source: string,
   ): Promise<void> {
+    const item = pluginItemFromPlugin(plugin, sourceUrl);
     this.installed.set(plugin.id, plugin);
-    this.installedSources.set(plugin.id, {
-      item: pluginItemFromPlugin(plugin, sourceUrl),
-      source,
-    });
-    this.clearExecutorRuntimes(plugin.id);
+    this.runtimeHandles.set(
+      plugin.id,
+      createPluginRuntimeHandle({
+        item,
+        source,
+        initialRuntime: plugin,
+        compiler: ({ executor, item, overrideIdentity, source }) =>
+          this.loadRuntimePlugin(source, item, executor, {
+            overrideIdentity,
+          }),
+      }),
+    );
     await upsertInstalledPlugin({
       id: plugin.id,
       name: plugin.name,
@@ -362,10 +376,8 @@ export class PluginManager {
   }
 
   /**
-   * Rehydrate every previously-installed plugin from the DB by
-   * sandbox-loading its stored source. Called once at app start.
-   * Failures per plugin are logged via console.warn; the rest still
-   * load so a single broken plugin never blocks startup.
+   * Rehydrate every previously-installed plugin from the DB as metadata-backed
+   * lazy handles. Stored source compiles only when a runtime method is used.
    */
   async loadInstalledFromDb(): Promise<void> {
     if (this.installedLoadPromise) {
@@ -382,8 +394,7 @@ export class PluginManager {
   async reloadInstalledFromDb(): Promise<void> {
     this.installedLoadPromise = null;
     this.installed.clear();
-    this.installedSources.clear();
-    this.executorRuntimes.clear();
+    this.runtimeHandles.clear();
     await this.loadInstalledFromDb();
   }
 
@@ -391,25 +402,32 @@ export class PluginManager {
     const rows = await listInstalledPlugins();
     for (const row of rows) {
       try {
-        const item = {
-          id: row.id,
-          name: row.name,
-          lang: row.lang,
-          version: row.version,
-          iconUrl: row.iconUrl,
-          url: row.sourceUrl,
+        const item: PluginItem = {
+          id: readRequiredPluginString(row.id, "id", row.sourceUrl),
+          name: readRequiredPluginString(row.name, "name", row.sourceUrl),
+          lang: readRequiredPluginString(row.lang, "lang", row.sourceUrl),
+          version: readRequiredPluginString(
+            row.version,
+            "version",
+            row.sourceUrl,
+          ),
+          iconUrl: typeof row.iconUrl === "string" ? row.iconUrl : "",
+          url: readRequiredPluginString(
+            row.sourceUrl,
+            "url",
+            row.sourceUrl,
+          ),
         };
-        const plugin = this.loadRuntimePlugin(
-          row.sourceCode,
-          item,
-          "immediate",
-          { overrideIdentity: true },
-        );
-        this.installed.set(plugin.id, plugin);
-        this.installedSources.set(plugin.id, {
+        const handle = createPluginRuntimeHandle({
           item,
           source: row.sourceCode,
+          compiler: ({ executor, item, overrideIdentity, source }) =>
+            this.loadRuntimePlugin(source, item, executor, {
+              overrideIdentity,
+            }),
         });
+        this.runtimeHandles.set(row.id, handle);
+        this.installed.set(row.id, createLazyPluginProxy(handle));
       } catch (error) {
         // eslint-disable-next-line no-console
         console.warn(
@@ -424,6 +442,24 @@ export class PluginManager {
     return this.installed.get(id);
   }
 
+  getInstalledPluginMetadata(id: string): InstalledPluginMetadata | undefined {
+    const handle = this.runtimeHandles.get(id);
+    if (!handle) return undefined;
+    return {
+      ...handle.item,
+      sourceHash: handle.sourceHash,
+      loadedExecutors: handle.loadedExecutors(),
+    };
+  }
+
+  listInstalledPluginMetadata(): InstalledPluginMetadata[] {
+    return [...this.runtimeHandles.values()].map((handle) => ({
+      ...handle.item,
+      sourceHash: handle.sourceHash,
+      loadedExecutors: handle.loadedExecutors(),
+    }));
+  }
+
   getPluginForExecutor(id: string, executor: ScraperExecutorId): Plugin {
     const base = this.installed.get(id);
     if (!base) {
@@ -431,21 +467,7 @@ export class PluginManager {
     }
     if (executor === "immediate") return base;
 
-    const runtimeKey = `${executor}:${id}`;
-    const cached = this.executorRuntimes.get(runtimeKey);
-    if (cached) return cached;
-
-    const installed = this.installedSources.get(id);
-    if (!installed) return base;
-
-    const plugin = this.loadRuntimePlugin(
-      installed.source,
-      installed.item,
-      executor,
-      { overrideIdentity: true },
-    );
-    this.executorRuntimes.set(runtimeKey, plugin);
-    return plugin;
+    return this.runtimeHandles.get(id)?.getRuntime(executor) ?? base;
   }
 
   async uninstallPlugin(id: string): Promise<boolean> {
@@ -459,8 +481,7 @@ export class PluginManager {
       );
     }
     this.installed.delete(id);
-    this.installedSources.delete(id);
-    this.clearExecutorRuntimes(id);
+    this.runtimeHandles.delete(id);
     clearPluginInputValues(id);
     return true;
   }
@@ -475,12 +496,6 @@ export class PluginManager {
 
   size(): number {
     return this.installed.size;
-  }
-
-  private clearExecutorRuntimes(pluginId: string): void {
-    for (const key of [...this.executorRuntimes.keys()]) {
-      if (key.endsWith(`:${pluginId}`)) this.executorRuntimes.delete(key);
-    }
   }
 
   private nextAvailablePluginId(baseId: string): string {

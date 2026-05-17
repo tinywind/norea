@@ -17,7 +17,10 @@ vi.mock("../../db/queries/installed-plugin", () => ({
 }));
 
 import { appFetchText, createPluginFetchShim } from "../http";
-import { deleteInstalledPlugin } from "../../db/queries/installed-plugin";
+import {
+  deleteInstalledPlugin,
+  listInstalledPlugins,
+} from "../../db/queries/installed-plugin";
 import {
   PluginManager,
   PluginValidationError,
@@ -27,6 +30,7 @@ import {
 const mockedFetchText = vi.mocked(appFetchText);
 const mockedCreateFetchShim = vi.mocked(createPluginFetchShim);
 const mockedDeleteInstalledPlugin = vi.mocked(deleteInstalledPlugin);
+const mockedListInstalledPlugins = vi.mocked(listInstalledPlugins);
 
 const VALID_ITEM = {
   id: "demo",
@@ -54,9 +58,53 @@ const VALID_PLUGIN_SOURCE = `
   };
 `;
 
+const LAZY_LOAD_MARKER = "__noreaPluginLazyLoadCount";
+
+const COUNTING_PLUGIN_SOURCE = `
+  globalThis.${LAZY_LOAD_MARKER} = (globalThis.${LAZY_LOAD_MARKER} ?? 0) + 1;
+  module.exports.default = {
+    id: "demo",
+    name: "Demo",
+    url: "https://example.test/index.js",
+    lang: "en",
+    version: "1.0.0",
+    iconUrl: "https://example.test/icon.png",
+    popularNovels: () => Promise.resolve([{ name: "Novel", path: "/novel" }]),
+    parseNovel: () => Promise.resolve({ name: "", path: "", chapters: [] }),
+    parseNovelSince: () => Promise.resolve({ name: "", path: "", chapters: [] }),
+    parseChapter: () => Promise.resolve(""),
+    searchNovels: () => Promise.resolve([]),
+    getBaseUrl: () => "https://example.test",
+  };
+`;
+
+function installedRow(sourceCode = VALID_PLUGIN_SOURCE) {
+  return {
+    id: VALID_ITEM.id,
+    name: VALID_ITEM.name,
+    lang: VALID_ITEM.lang,
+    version: VALID_ITEM.version,
+    iconUrl: VALID_ITEM.iconUrl,
+    sourceUrl: VALID_ITEM.url,
+    sourceCode,
+    installedAt: 1,
+  };
+}
+
+function lazyLoadCount(): number | undefined {
+  const value = (globalThis as Record<string, unknown>)[LAZY_LOAD_MARKER];
+  return typeof value === "number" ? value : undefined;
+}
+
+function clearLazyLoadCount(): void {
+  delete (globalThis as Record<string, unknown>)[LAZY_LOAD_MARKER];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  clearLazyLoadCount();
   mockedDeleteInstalledPlugin.mockResolvedValue(undefined);
+  mockedListInstalledPlugins.mockResolvedValue([]);
 });
 
 describe("isValidPluginItem", () => {
@@ -133,6 +181,20 @@ describe("PluginManager.installPlugin", () => {
       expect.any(Function),
       VALID_ITEM.id,
       "immediate",
+    );
+  });
+
+  it("compiles source during install validation", async () => {
+    const manager = new PluginManager();
+    mockedFetchText.mockResolvedValueOnce(COUNTING_PLUGIN_SOURCE);
+
+    await manager.installPlugin(VALID_ITEM);
+
+    expect(lazyLoadCount()).toBe(1);
+    expect(manager.getInstalledPluginMetadata("demo")).toEqual(
+      expect.objectContaining({
+        loadedExecutors: ["immediate"],
+      }),
     );
   });
 
@@ -215,6 +277,107 @@ describe("PluginManager.installPluginFromSource", () => {
     expect(plugin.lang).toBe("multi");
     expect(plugin.iconUrl).toBe("");
     expect(manager.has("demo")).toBe(true);
+  });
+});
+
+describe("PluginManager.loadInstalledFromDb", () => {
+  it("loads installed plugin metadata without evaluating stored source", async () => {
+    const manager = new PluginManager();
+    mockedListInstalledPlugins.mockResolvedValueOnce([
+      installedRow(COUNTING_PLUGIN_SOURCE),
+    ]);
+
+    await manager.loadInstalledFromDb();
+
+    expect(lazyLoadCount()).toBeUndefined();
+    expect(mockedCreateFetchShim).not.toHaveBeenCalled();
+    expect(manager.list()).toHaveLength(1);
+    expect(manager.getPlugin("demo")).toMatchObject({
+      id: "demo",
+      name: "Demo",
+      lang: "en",
+      version: "1.0.0",
+      iconUrl: "https://example.test/icon.png",
+      url: "https://example.test/index.js",
+    });
+    expect(manager.listInstalledPluginMetadata()).toEqual([
+      expect.objectContaining({
+        id: "demo",
+        name: "Demo",
+        sourceHash: expect.any(String),
+        loadedExecutors: [],
+      }),
+    ]);
+  });
+
+  it("compiles an installed plugin on first runtime use", async () => {
+    const manager = new PluginManager();
+    mockedListInstalledPlugins.mockResolvedValueOnce([
+      installedRow(COUNTING_PLUGIN_SOURCE),
+    ]);
+    await manager.loadInstalledFromDb();
+
+    const plugin = manager.getPlugin("demo");
+    expect(plugin).toBeDefined();
+    await expect(plugin!.popularNovels(1)).resolves.toEqual([
+      { name: "Novel", path: "/novel" },
+    ]);
+
+    expect(lazyLoadCount()).toBe(1);
+    expect(manager.getInstalledPluginMetadata("demo")).toEqual(
+      expect.objectContaining({
+        loadedExecutors: ["immediate"],
+      }),
+    );
+    expect(mockedCreateFetchShim).toHaveBeenCalledWith(
+      expect.any(Function),
+      "demo",
+      "immediate",
+    );
+  });
+
+  it("compiles executor-specific runtimes through the existing fetch shim", async () => {
+    const manager = new PluginManager();
+    mockedListInstalledPlugins.mockResolvedValueOnce([
+      installedRow(COUNTING_PLUGIN_SOURCE),
+    ]);
+    await manager.loadInstalledFromDb();
+
+    const runtime = manager.getPluginForExecutor("demo", "pool:0");
+
+    expect(runtime.id).toBe("demo");
+    expect(lazyLoadCount()).toBe(1);
+    expect(manager.getInstalledPluginMetadata("demo")).toEqual(
+      expect.objectContaining({
+        loadedExecutors: ["pool:0"],
+      }),
+    );
+    expect(mockedCreateFetchShim).toHaveBeenCalledWith(
+      expect.any(Function),
+      "demo",
+      "pool:0",
+    );
+  });
+
+  it("surfaces broken installed source on use instead of startup", async () => {
+    const manager = new PluginManager();
+    mockedListInstalledPlugins.mockResolvedValueOnce([
+      installedRow("const x = ;"),
+    ]);
+
+    await expect(manager.loadInstalledFromDb()).resolves.toBeUndefined();
+    expect(manager.has("demo")).toBe(true);
+    expect(manager.getInstalledPluginMetadata("demo")).toEqual(
+      expect.objectContaining({
+        loadedExecutors: [],
+      }),
+    );
+
+    const plugin = manager.getPlugin("demo");
+    expect(plugin).toBeDefined();
+    await expect(plugin!.searchNovels("query", 1)).rejects.toThrow(
+      "Plugin source failed to compile.",
+    );
   });
 });
 

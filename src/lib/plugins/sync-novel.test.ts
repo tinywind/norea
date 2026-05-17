@@ -2,30 +2,32 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../db/client", () => ({
   getDb: vi.fn(),
+  runDatabaseTransaction: vi.fn(),
 }));
 
 vi.mock("../../db/queries/chapter", () => ({
   getLatestSourceChapterAnchor: vi.fn(),
-  upsertChapter: vi.fn(),
+  upsertSourceChaptersInDb: vi.fn(),
 }));
 
 vi.mock("../updates/update-index-events", () => ({
   markUpdatesIndexDirty: vi.fn(),
 }));
 
-import { getDb } from "../../db/client";
+import { getDb, runDatabaseTransaction } from "../../db/client";
 import {
   getLatestSourceChapterAnchor,
-  upsertChapter,
+  upsertSourceChaptersInDb,
 } from "../../db/queries/chapter";
 import { syncNovelFromSource } from "./sync-novel";
 import type { Plugin, SourceNovel } from "./types";
 
 const mockedGetDb = vi.mocked(getDb);
+const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
 const mockedGetLatestSourceChapterAnchor = vi.mocked(
   getLatestSourceChapterAnchor,
 );
-const mockedUpsertChapter = vi.mocked(upsertChapter);
+const mockedUpsertSourceChaptersInDb = vi.mocked(upsertSourceChaptersInDb);
 
 let mockExecute: ReturnType<typeof vi.fn>;
 let mockSelect: ReturnType<typeof vi.fn>;
@@ -70,12 +72,21 @@ beforeEach(() => {
     execute: mockExecute,
     select: mockSelect,
   } as never);
+  mockedRunDatabaseTransaction.mockImplementation(async (run) =>
+    run({
+      execute: mockExecute,
+      select: mockSelect,
+    } as never),
+  );
   mockedGetLatestSourceChapterAnchor.mockResolvedValue({
     novelId: 7,
     chapterNumber: 2,
     position: 2,
   });
-  mockedUpsertChapter.mockResolvedValue({ rowsAffected: 1 });
+  mockedUpsertSourceChaptersInDb.mockResolvedValue({
+    chunks: 1,
+    rowsAffected: 1,
+  });
 });
 
 describe("syncNovelFromSource", () => {
@@ -121,21 +132,22 @@ describe("syncNovelFromSource", () => {
 
     expect(plugin.parseNovelSince).toHaveBeenCalledWith("/novel", 2);
     expect(plugin.parseNovel).not.toHaveBeenCalled();
-    expect(mockedUpsertChapter).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        chapterNumber: "2",
-        path: "/chapter-2",
-        position: 2,
-      }),
-    );
-    expect(mockedUpsertChapter).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        chapterNumber: "3",
-        path: "/chapter-3",
-        position: 3,
-      }),
+    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
+      expect.anything(),
+      [
+        expect.objectContaining({
+          chapterNumber: "2",
+          novelId: 7,
+          path: "/chapter-2",
+          position: 2,
+        }),
+        expect.objectContaining({
+          chapterNumber: "3",
+          novelId: 7,
+          path: "/chapter-3",
+          position: 3,
+        }),
+      ],
     );
   });
 
@@ -151,12 +163,14 @@ describe("syncNovelFromSource", () => {
     );
 
     expect(plugin.parseNovel).not.toHaveBeenCalled();
-    expect(mockedUpsertChapter).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        chapterNumber: "1",
-        position: 1,
-      }),
+    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({
+          chapterNumber: "1",
+          position: 1,
+        }),
+      ]),
     );
   });
 
@@ -173,12 +187,14 @@ describe("syncNovelFromSource", () => {
 
     expect(plugin.parseNovelSince).toHaveBeenCalledWith("/novel", 2);
     expect(plugin.parseNovel).toHaveBeenCalledWith("/novel");
-    expect(mockedUpsertChapter).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        chapterNumber: "1",
-        position: 1,
-      }),
+    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({
+          chapterNumber: "1",
+          position: 1,
+        }),
+      ]),
     );
   });
 
@@ -215,11 +231,14 @@ describe("syncNovelFromSource", () => {
 
     await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" });
 
-    expect(mockedUpsertChapter).toHaveBeenCalledWith(
-      expect.objectContaining({
-        contentType: "epub",
-        path: "/chapter-1",
-      }),
+    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({
+          contentType: "epub",
+          path: "/chapter-1",
+        }),
+      ]),
     );
   });
 
@@ -230,11 +249,14 @@ describe("syncNovelFromSource", () => {
 
     await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" });
 
-    expect(mockedUpsertChapter).toHaveBeenCalledWith(
-      expect.objectContaining({
-        contentType: "html",
-        path: "/chapter-1",
-      }),
+    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({
+          contentType: "html",
+          path: "/chapter-1",
+        }),
+      ]),
     );
   });
 
@@ -260,6 +282,6 @@ describe("syncNovelFromSource", () => {
     ).rejects.toThrow('unsupported chapter contentType "mobi"');
 
     expect(mockExecute).not.toHaveBeenCalled();
-    expect(mockedUpsertChapter).not.toHaveBeenCalled();
+    expect(mockedUpsertSourceChaptersInDb).not.toHaveBeenCalled();
   });
 });

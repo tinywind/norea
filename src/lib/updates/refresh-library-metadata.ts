@@ -5,6 +5,7 @@ import {
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource } from "../plugins/sync-novel";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
+import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { enqueueSourceTask } from "../tasks/source-tasks";
 import { taskScheduler, type TaskRunContext } from "../tasks/scheduler";
 import { markUpdatesIndexDirty } from "./update-index-events";
@@ -66,62 +67,62 @@ async function runLibraryMetadataRefresh(
 
   reportProgress();
 
-  const sourceTasks: Promise<void>[] = [];
+  await runBoundedTaskBatch({
+    items: novels,
+    shouldContinue: () => !context?.signal.aborted,
+    materialize: async (novel) => {
+      if (novel.isLocal || novel.pluginId === LOCAL_PLUGIN_ID) {
+        skippedNovels += 1;
+        processedNovels += 1;
+        reportProgress(novel.name);
+        return;
+      }
 
-  for (const novel of novels) {
-    if (novel.isLocal || novel.pluginId === LOCAL_PLUGIN_ID) {
-      skippedNovels += 1;
-      processedNovels += 1;
-      reportProgress(novel.name);
-      continue;
-    }
-
-    const plugin = pluginManager.getPlugin(novel.pluginId);
-    if (!plugin) {
-      failures.push({
-        novelId: novel.id,
-        novelName: novel.name,
-        pluginId: novel.pluginId,
-        reason: `Plugin "${novel.pluginId}" is not installed.`,
-      });
-      processedNovels += 1;
-      reportProgress(novel.name);
-      continue;
-    }
-
-    try {
-      const handle = enqueueSourceTask({
-        plugin,
-        kind: "source.refreshNovel",
-        priority: "deferred",
-        title: options.taskTitle?.(novel) ?? novel.name,
-        subject: {
+      const plugin = pluginManager.getPlugin(novel.pluginId);
+      if (!plugin) {
+        failures.push({
           novelId: novel.id,
           novelName: novel.name,
-          path: novel.path,
-        },
-        dedupeKey: `source.refreshNovel:${plugin.id}:${novel.path}`,
-        run: (context) =>
-          syncNovelFromSource(
-            pluginManager.getPluginForExecutor(
-              novel.pluginId,
-              context.executor ?? "immediate",
+          pluginId: novel.pluginId,
+          reason: `Plugin "${novel.pluginId}" is not installed.`,
+        });
+        processedNovels += 1;
+        reportProgress(novel.name);
+        return;
+      }
+
+      try {
+        const handle = enqueueSourceTask({
+          plugin,
+          kind: "source.refreshNovel",
+          priority: "deferred",
+          title: options.taskTitle?.(novel) ?? novel.name,
+          subject: {
+            novelId: novel.id,
+            novelName: novel.name,
+            path: novel.path,
+          },
+          dedupeKey: `source.refreshNovel:${plugin.id}:${novel.path}`,
+          run: (context) =>
+            syncNovelFromSource(
+              pluginManager.getPluginForExecutor(
+                novel.pluginId,
+                context.executor ?? "immediate",
+              ),
+              {
+                cover: novel.cover ?? undefined,
+                name: novel.name,
+                path: novel.path,
+              },
+              {
+                chapterRefreshMode: "since",
+                novelId: novel.id,
+                notifyUpdatesIndex: false,
+                preserveMissingMetadata: true,
+              },
             ),
-            {
-              cover: novel.cover ?? undefined,
-              name: novel.name,
-              path: novel.path,
-            },
-            {
-              chapterRefreshMode: "since",
-              novelId: novel.id,
-              notifyUpdatesIndex: false,
-              preserveMissingMetadata: true,
-            },
-          ),
-      });
-      sourceTasks.push(
-        handle.promise
+        });
+        await handle.promise
           .then((result) => {
             if (result.changed) changedNovels += 1;
             checkedNovels += 1;
@@ -133,25 +134,20 @@ async function runLibraryMetadataRefresh(
               pluginId: novel.pluginId,
               reason: describeError(error),
             });
-          })
-          .finally(() => {
-            processedNovels += 1;
-            reportProgress(novel.name);
-          }),
-      );
-    } catch (error) {
-      failures.push({
-        novelId: novel.id,
-        novelName: novel.name,
-        pluginId: novel.pluginId,
-        reason: describeError(error),
-      });
-      processedNovels += 1;
-      reportProgress(novel.name);
-    }
-  }
-
-  await Promise.all(sourceTasks);
+          });
+      } catch (error) {
+        failures.push({
+          novelId: novel.id,
+          novelName: novel.name,
+          pluginId: novel.pluginId,
+          reason: describeError(error),
+        });
+      } finally {
+        processedNovels += 1;
+        reportProgress(novel.name);
+      }
+    },
+  });
 
   if (changedNovels > 0) {
     markUpdatesIndexDirty("novel-sync");

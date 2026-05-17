@@ -200,7 +200,6 @@ function mediaFallbackContextHost(contextUrl: string | undefined): string {
 }
 
 function shouldPreferNativeMediaFetch(url: string, init: HttpInit): boolean {
-  if (!isAndroidRuntime()) return false;
   const host = mediaFallbackHost(url);
   const contextHost = mediaFallbackContextHost(init.contextUrl);
   return host !== "" && contextHost !== "" && host !== contextHost;
@@ -469,10 +468,12 @@ export async function appFetchText(
  * callers keep the familiar fetch-style API. `Response.url` is patched
  * on so plugins that follow redirects can still see the final URL.
  */
-export async function pluginFetch(
+async function pluginFetchInternal(
   url: string,
   init: HttpInit = {},
+  options: { logFailures?: boolean } = {},
 ): Promise<Response> {
+  const logFailures = options.logFailures ?? true;
   const wireInit = toWireInit(init);
   const contextUrl = init.contextUrl ?? null;
   const userAgent = scraperUserAgent(wireInit.headers);
@@ -501,7 +502,7 @@ export async function pluginFetch(
           init.signal,
         );
   } catch (error) {
-    if (!isRequestAbortError(error)) {
+    if (logFailures && !isRequestAbortError(error)) {
       console.error("[plugin-fetch] failed", {
         contextUrl,
         error,
@@ -513,6 +514,13 @@ export async function pluginFetch(
     throw error;
   }
   return responseFromWire(result);
+}
+
+export async function pluginFetch(
+  url: string,
+  init: HttpInit = {},
+): Promise<Response> {
+  return pluginFetchInternal(url, init);
 }
 
 /**
@@ -543,7 +551,7 @@ export async function pluginMediaFetch(
     }
 
     try {
-      return await pluginFetch(url, init);
+      return await pluginFetchInternal(url, init, { logFailures: false });
     } catch (browserError) {
       if (isRequestAbortError(browserError)) {
         throw browserError;
@@ -564,7 +572,7 @@ export async function pluginMediaFetch(
 
   let browserError: unknown;
   try {
-    return await pluginFetch(url, init);
+    return await pluginFetchInternal(url, init, { logFailures: false });
   } catch (error) {
     if (isRequestAbortError(error)) {
       throw error;
