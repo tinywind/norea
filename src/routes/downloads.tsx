@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useMutation,
   useQuery,
@@ -25,7 +25,6 @@ import {
   deleteDownloadCacheChapter,
   deleteDownloadCacheNovel,
   listDownloadCacheChapters,
-  listDownloadCacheNovels,
   type DownloadCacheChapter,
   type DownloadCacheNovel,
 } from "../db/queries/download-cache";
@@ -33,7 +32,11 @@ import {
   clearAllChapterMedia,
   clearChapterMedia,
 } from "../lib/chapter-media";
-import { backfillDownloadCacheMediaBytes } from "../lib/download-cache-media";
+import { scheduleDownloadCacheMediaBytesBackfill } from "../lib/download-cache-media";
+import {
+  loadDownloadCacheChapters,
+  loadDownloadCacheNovels,
+} from "../lib/download-cache-loaders";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
 import {
   formatRelativeTimeForLocale,
@@ -238,10 +241,7 @@ function DownloadCacheChapters({
   const queryClient = useQueryClient();
   const chapters = useQuery({
     queryKey: [...DOWNLOAD_CACHE_QUERY_KEY, "chapters", novel.novelId] as const,
-    queryFn: async () => {
-      await backfillDownloadCacheMediaBytes(novel.novelId);
-      return listDownloadCacheChapters(novel.novelId);
-    },
+    queryFn: () => loadDownloadCacheChapters(novel.novelId),
   });
   const deleteChapter = useMutation({
     mutationFn: async (chapterId: number) => {
@@ -473,13 +473,27 @@ export function DownloadsPage() {
   const { locale, t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const scheduledBackfillRef = useRef(false);
   const query = useQuery({
     queryKey: DOWNLOAD_CACHE_QUERY_KEY,
-    queryFn: async () => {
-      await backfillDownloadCacheMediaBytes();
-      return listDownloadCacheNovels();
-    },
+    queryFn: loadDownloadCacheNovels,
   });
+
+  useEffect(() => {
+    if (!query.data?.length || scheduledBackfillRef.current) return;
+    scheduledBackfillRef.current = true;
+    scheduleDownloadCacheMediaBytesBackfill(undefined, {
+      onComplete: (result) => {
+        if (result.updatedChapters === 0) return;
+        void queryClient.invalidateQueries({
+          queryKey: DOWNLOAD_CACHE_QUERY_KEY,
+        });
+      },
+      onSettled: () => {
+        scheduledBackfillRef.current = false;
+      },
+    });
+  }, [query.data, queryClient]);
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
   const deleteAll = useMutation({
     mutationFn: async () => {

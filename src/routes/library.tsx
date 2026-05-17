@@ -1,11 +1,17 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
   type FormEvent,
 } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Group,
@@ -51,12 +57,15 @@ import {
   type ChapterListRow,
 } from "../db/queries/chapter";
 import {
+  getLibraryNovelSummary,
   getNovelById,
-  listLibraryNovels,
+  listLibraryNovelPage,
   findLocalNovelByPath,
   setNovelInLibrary,
   upsertLocalNovel,
   upsertLocalNovelMetadata,
+  type LibraryNovelCursor,
+  type LibraryNovelSummary,
   type LibraryNovel,
   type LocalNovelMetadataInput,
   type LocalNovelImportResult,
@@ -68,6 +77,7 @@ import {
 import { clearChapterMedia } from "../lib/chapter-media";
 import {
   analyzeLocalImportFile,
+  clearLocalImportFileCache,
   convertLocalImportFile,
   LocalImportError,
   type LocalImportAnalysis,
@@ -76,6 +86,7 @@ import {
 import { cacheLocalImportedChapterMedia } from "../lib/local-import-media";
 import { syncLocalChapterStorageAfterOrderChange } from "../lib/local-chapter-storage";
 import { mirrorStoredNovelChapters } from "../lib/chapter-content-storage";
+import { MAX_ROUTE_QUERY_ROWS } from "../lib/performance-budgets";
 import {
   enqueueChapterDownloadBatch,
   getChapterDownloadStatus,
@@ -98,6 +109,8 @@ import {
 import "../styles/library.css";
 
 const SEARCH_DEBOUNCE_MS = 200;
+const LIBRARY_PAGE_SIZE = Math.min(100, MAX_ROUTE_QUERY_ROWS);
+const LIBRARY_LOAD_MORE_THRESHOLD_PX = 640;
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
 const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   name: "",
@@ -107,6 +120,17 @@ const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   artist: "",
   status: "",
   genres: "",
+};
+const EMPTY_LIBRARY_SUMMARY: LibraryNovelSummary = {
+  completeNovels: 0,
+  downloadedChapters: 0,
+  downloadedNovels: 0,
+  lastUpdatedAt: null,
+  localNovels: 0,
+  totalChapters: 0,
+  totalNovels: 0,
+  unreadChapters: 0,
+  unreadNovels: 0,
 };
 
 interface LibraryPageProps {
@@ -287,7 +311,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   );
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
 
-  const novels = useQuery({
+  const novels = useInfiniteQuery({
     queryKey: [
       "novel",
       "library",
@@ -295,17 +319,43 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         search: debouncedSearch,
         categoryId: selectedCategoryId,
         downloadedOnly: downloadedOnlyMode,
+        limit: LIBRARY_PAGE_SIZE,
         unreadOnly: unreadOnlyMode,
         sortOrder,
       },
     ] as const,
-    queryFn: () =>
-      listLibraryNovels({
+    initialPageParam: null as LibraryNovelCursor | null,
+    queryFn: ({ pageParam }) =>
+      listLibraryNovelPage({
+        search: debouncedSearch,
+        categoryId: selectedCategoryId,
+        cursor: pageParam,
+        downloadedOnly: downloadedOnlyMode,
+        limit: LIBRARY_PAGE_SIZE,
+        unreadOnly: unreadOnlyMode,
+        sortOrder,
+      }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+  });
+
+  const librarySummary = useQuery({
+    queryKey: [
+      "novel",
+      "library",
+      "summary",
+      {
         search: debouncedSearch,
         categoryId: selectedCategoryId,
         downloadedOnly: downloadedOnlyMode,
         unreadOnly: unreadOnlyMode,
-        sortOrder,
+      },
+    ] as const,
+    queryFn: () =>
+      getLibraryNovelSummary({
+        search: debouncedSearch,
+        categoryId: selectedCategoryId,
+        downloadedOnly: downloadedOnlyMode,
+        unreadOnly: unreadOnlyMode,
       }),
   });
 
@@ -322,6 +372,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
+  const libraryBodyRef = useRef<HTMLDivElement>(null);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [categoryEditor, setCategoryEditor] =
@@ -339,6 +390,16 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const [localNovelForm, setLocalNovelForm] = useState<LocalNovelMetadataInput>(
     EMPTY_LOCAL_NOVEL_FORM,
   );
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [
+    debouncedSearch,
+    downloadedOnlyMode,
+    selectedCategoryId,
+    sortOrder,
+    unreadOnlyMode,
+  ]);
 
   const invalidateLibraryCategories = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["category"] });
@@ -386,7 +447,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
   const batchDownloadMutation = useMutation({
     mutationFn: async (mode: LibraryBatchDownloadMode) => {
-      const jobs: ChapterDownloadJob[] = [];
+      const batchSources: Array<{
+        chapters: ChapterListRow[];
+        novel: Pick<LibraryNovel, "id" | "name" | "path" | "pluginId">;
+      }> = [];
+      let total = 0;
 
       for (const novelId of selectedIds) {
         const novel = await getNovelById(novelId);
@@ -399,26 +464,39 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           lastReadChapterByNovel[novel.id],
         );
 
-        for (const chapter of targetChapters) {
-          jobs.push({
-            id: chapter.id,
-            pluginId: novel.pluginId,
-            chapterPath: chapter.path,
-            chapterName: chapter.name,
-            contentType: chapter.contentType,
-            novelId: novel.id,
-            novelName: novel.name,
-            novelPath: novel.path,
-            title: t("tasks.task.downloadChapter", { name: chapter.name }),
+        if (targetChapters.length > 0) {
+          batchSources.push({
+            chapters: targetChapters,
+            novel,
           });
+          total += targetChapters.length;
         }
       }
 
-      if (jobs.length === 0) return 0;
+      if (total === 0) return 0;
+
+      function* chapterDownloadJobs(): Iterable<ChapterDownloadJob> {
+        for (const { chapters, novel } of batchSources) {
+          for (const chapter of chapters) {
+            yield {
+              id: chapter.id,
+              pluginId: novel.pluginId,
+              chapterPath: chapter.path,
+              chapterName: chapter.name,
+              contentType: chapter.contentType,
+              novelId: novel.id,
+              novelName: novel.name,
+              novelPath: novel.path,
+              title: t("tasks.task.downloadChapter", { name: chapter.name }),
+            };
+          }
+        }
+      }
 
       const handle = enqueueChapterDownloadBatch({
-        jobs,
-        title: t("tasks.task.downloadChapterBatch", { count: jobs.length }),
+        jobs: chapterDownloadJobs(),
+        title: t("tasks.task.downloadChapterBatch", { count: total }),
+        total,
       });
       try {
         const result = await handle.promise;
@@ -564,7 +642,37 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     downloadedOnlyMode ||
     unreadOnlyMode;
 
-  const rows = novels.data ?? [];
+  const rows = novels.data?.pages.flatMap((page) => page.novels) ?? [];
+  const summary = librarySummary.data ?? EMPTY_LIBRARY_SUMMARY;
+  const libraryError = novels.error ?? librarySummary.error;
+  const isInitialLibraryLoading = novels.isLoading || librarySummary.isLoading;
+  const loadMoreIfNeeded = useCallback(() => {
+    if (
+      !active ||
+      !novels.hasNextPage ||
+      novels.isFetchingNextPage ||
+      novels.isLoading
+    ) {
+      return;
+    }
+
+    const scrollElement = libraryBodyRef.current;
+    if (!scrollElement) return;
+
+    const distanceToBottom =
+      scrollElement.scrollHeight -
+      scrollElement.clientHeight -
+      scrollElement.scrollTop;
+    if (distanceToBottom <= LIBRARY_LOAD_MORE_THRESHOLD_PX) {
+      void novels.fetchNextPage();
+    }
+  }, [
+    active,
+    novels.fetchNextPage,
+    novels.hasNextPage,
+    novels.isFetchingNextPage,
+    novels.isLoading,
+  ]);
   const selectedNovelIds = Array.from(selectedIds);
   const selectedDownloadedChapterCount = rows.reduce(
     (total, novel) =>
@@ -577,7 +685,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const assignableCategories = manualCategories.filter(
     (category) => category.id !== UNCATEGORIZED_CATEGORY_ID,
   );
-  const stats = getLibraryStats(rows, locale);
+  const stats = getLibraryStats(summary, locale);
   const activeCategory =
     selectedCategoryId == null
       ? t("categories.all")
@@ -594,13 +702,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const categorySaving =
     createCategoryMutation.isPending || renameCategoryMutation.isPending;
   const status = t("library.status", {
-    novels: stats.totalNovels,
+    novels: summary.totalNovels,
     unread: stats.unreadChapters,
     downloaded: stats.downloadedChapters,
     total: stats.totalChapters,
   });
   const showMobileSearch = mobileSearchOpen || search.trim() !== "";
-  const tags = getLibraryTags(rows, t);
+  const tags = getLibraryTags(summary, t);
   const sortLabel = t(SORT_LABEL_KEYS[sortOrder]);
   const activeCategoryCount =
     selectedCategoryId == null
@@ -622,6 +730,24 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           })
         : null;
 
+  useEffect(() => {
+    if (!active) return;
+
+    const scrollElement = libraryBodyRef.current;
+    if (!scrollElement) return;
+
+    scrollElement.addEventListener("scroll", loadMoreIfNeeded, {
+      passive: true,
+    });
+    window.addEventListener("resize", loadMoreIfNeeded);
+    loadMoreIfNeeded();
+
+    return () => {
+      scrollElement.removeEventListener("scroll", loadMoreIfNeeded);
+      window.removeEventListener("resize", loadMoreIfNeeded);
+    };
+  }, [active, loadMoreIfNeeded, rows.length]);
+
   const localImportMutation = useMutation({
     mutationFn: async (
       items: readonly LocalImportReviewItem[],
@@ -630,7 +756,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
       for (const item of items) {
         try {
-          const result = await importLocalFileToLibrary(item.file);
+          const result = await importLocalFileToLibrary(
+            item.file,
+            item.analysis,
+          );
           results.push({ itemId: item.id, result, status: "imported" });
         } catch (error) {
           results.push({
@@ -638,6 +767,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             itemId: item.id,
             status: "error",
           });
+        } finally {
+          clearLocalImportFileCache(item.file);
         }
       }
 
@@ -721,9 +852,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const closeLocalImportReview = useCallback(() => {
     if (localImportMutation.isPending) return;
     localImportMutation.reset();
+    for (const item of localImportItems) {
+      clearLocalImportFileCache(item.file);
+    }
     setLocalImportOpen(false);
     setLocalImportItems([]);
-  }, [localImportMutation]);
+  }, [localImportItems, localImportMutation]);
 
   const openLocalNovelEditor = useCallback(() => {
     createLocalNovelMutation.reset();
@@ -754,6 +888,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       if (files.length === 0) return;
 
       localImportMutation.reset();
+      for (const item of localImportItems) {
+        clearLocalImportFileCache(item.file);
+      }
       setLocalImportOpen(true);
       setLocalImportAnalyzing(true);
       setLocalImportItems([]);
@@ -764,7 +901,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       setLocalImportItems(markSelectedLocalImportDuplicates(analyzedItems));
       setLocalImportAnalyzing(false);
     },
-    [localImportMutation],
+    [localImportItems, localImportMutation],
   );
 
   const readyLocalImportItems = localImportItems.filter(
@@ -817,7 +954,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 </h1>
                 <span className="lnr-library-header-meta">
                   {t("library.sortedMeta", {
-                    count: rows.length,
+                    count: summary.totalNovels,
                     sort: sortLabel.toLowerCase(),
                   })}
                 </span>
@@ -1020,8 +1157,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               </div>
             ) : null}
 
-            <div className="lnr-library-body">
-              {novels.isLoading ? (
+            <div className="lnr-library-body" ref={libraryBodyRef}>
+              {isInitialLibraryLoading ? (
                 <StateView
                   title={
                     <span className="lnr-library-loading-title">
@@ -1032,28 +1169,49 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     </span>
                   }
                 />
-              ) : novels.error ? (
+              ) : libraryError ? (
                 <StateView
                   color="red"
                   title={t("library.databaseError")}
                   message={
-                    novels.error instanceof Error
-                      ? novels.error.message
-                      : String(novels.error)
+                    libraryError instanceof Error
+                      ? libraryError.message
+                      : String(libraryError)
                   }
                 />
               ) : rows.length > 0 ? (
-                <LibraryGrid
-                  novels={rows}
-                  displayMode={displayMode}
-                  novelsPerRow={novelsPerRow}
-                  showDownloadBadges={showDownloadBadges}
-                  showUnreadBadges={showUnreadBadges}
-                  showNumberBadges={showNumberBadges}
-                  selectedIds={selectedIds}
-                  onActivate={handleActivate}
-                  onLongPress={handleLongPress}
-                />
+                <>
+                  <LibraryGrid
+                    novels={rows}
+                    displayMode={displayMode}
+                    novelsPerRow={novelsPerRow}
+                    showDownloadBadges={showDownloadBadges}
+                    showUnreadBadges={showUnreadBadges}
+                    showNumberBadges={showNumberBadges}
+                    selectedIds={selectedIds}
+                    onActivate={handleActivate}
+                    onLongPress={handleLongPress}
+                  />
+                  {novels.hasNextPage ? (
+                    <div className="lnr-library-load-more">
+                      <TextButton
+                        className="lnr-library-load-more-action"
+                        disabled={novels.isFetchingNextPage}
+                        leftSection={
+                          novels.isFetchingNextPage ? undefined : <PlusGlyph />
+                        }
+                        loading={novels.isFetchingNextPage}
+                        onClick={() => {
+                          void novels.fetchNextPage();
+                        }}
+                        size="sm"
+                        tone="accent"
+                      >
+                        {t("common.loadMore")}
+                      </TextButton>
+                    </div>
+                  ) : null}
+                </>
               ) : filterActive ? (
                 <StateView
                   color="yellow"
@@ -2117,12 +2275,14 @@ function markSelectedLocalImportDuplicates(
 
 async function importLocalFileToLibrary(
   file: File,
+  analysis?: LocalImportAnalysis,
 ): Promise<LocalNovelImportResult> {
-  const conversion = await convertLocalImportFile(file);
+  const conversion = await convertLocalImportFile(file, { analysis });
   const chapters = conversion.chapters.map((chapter, index) => ({
     chapterNumber:
       chapter.chapterNumber == null ? null : String(chapter.chapterNumber),
     content: chapter.content,
+    binaryResource: chapter.binaryResource,
     contentBytes: chapter.contentBytes,
     contentType: chapter.contentType,
     mediaResources: chapter.mediaResources,
@@ -2280,56 +2440,25 @@ interface LibraryTag {
 }
 
 function getLibraryTags(
-  novels: readonly LibraryNovel[],
+  summary: LibraryNovelSummary,
   t: TranslateFn,
 ): LibraryTag[] {
-  const unread = novels.filter((novel) => novel.chaptersUnread > 0).length;
-  const downloaded = novels.filter(
-    (novel) => novel.chaptersDownloaded > 0,
-  ).length;
-  const local = novels.filter((novel) => novel.isLocal).length;
-  const complete = novels.filter(
-    (novel) => novel.totalChapters > 0 && novel.chaptersUnread === 0,
-  ).length;
-
   return [
-    { count: unread, label: t("library.tags.unread") },
-    { count: downloaded, label: t("library.tags.downloaded") },
-    { count: local, label: t("library.tags.local") },
-    { count: complete, label: t("library.tags.complete") },
+    { count: summary.unreadNovels, label: t("library.tags.unread") },
+    { count: summary.downloadedNovels, label: t("library.tags.downloaded") },
+    { count: summary.localNovels, label: t("library.tags.local") },
+    { count: summary.completeNovels, label: t("library.tags.complete") },
   ].filter((tag) => tag.count > 0);
 }
 
 function getLibraryStats(
-  novels: readonly LibraryNovel[],
+  summary: LibraryNovelSummary,
   locale: ReturnType<typeof useTranslation>["locale"],
 ) {
-  const totalNovels = novels.length;
-  const unreadChapters = novels.reduce(
-    (sum, novel) => sum + novel.chaptersUnread,
-    0,
-  );
-  const downloadedChapters = novels.reduce(
-    (sum, novel) => sum + novel.chaptersDownloaded,
-    0,
-  );
-  const totalChapters = novels.reduce(
-    (sum, novel) => sum + novel.totalChapters,
-    0,
-  );
-  const lastUpdatedAt = novels.reduce<number | null>(
-    (latest, novel) =>
-      latest == null || novel.lastUpdatedAt > latest
-        ? novel.lastUpdatedAt
-        : latest,
-    null,
-  );
-
   return {
-    downloadedChapters,
-    lastUpdatedLabel: formatRelativeTimeForLocale(locale, lastUpdatedAt),
-    totalChapters,
-    totalNovels,
-    unreadChapters,
+    downloadedChapters: summary.downloadedChapters,
+    lastUpdatedLabel: formatRelativeTimeForLocale(locale, summary.lastUpdatedAt),
+    totalChapters: summary.totalChapters,
+    unreadChapters: summary.unreadChapters,
   };
 }

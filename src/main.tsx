@@ -34,7 +34,7 @@ import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
 } from "./lib/chapter-media-storage";
-import { restoreChapterContentStorageMirror } from "./lib/chapter-content-storage";
+import { startChapterContentStorageMirrorSweep } from "./lib/chapter-content-storage";
 import { pluginManager } from "./lib/plugins/manager";
 import { isAndroidRuntime, isTauriRuntime } from "./lib/tauri-runtime";
 import { router } from "./router";
@@ -489,11 +489,7 @@ function ChapterMediaStorageGate({
   useEffect(() => {
     if (!storageReady || !isTauriRuntime()) return;
 
-    void restoreChapterContentStorageMirror()
-      .catch((unknownError: unknown) => {
-        // eslint-disable-next-line no-console
-        console.warn("[bootstrap] failed to restore stored chapters", unknownError);
-      });
+    const stopMirrorSweep = startChapterContentStorageMirrorSweep();
     void pluginManager.loadInstalledFromDb().catch((unknownError: unknown) => {
       // eslint-disable-next-line no-console
       console.warn(
@@ -501,6 +497,7 @@ function ChapterMediaStorageGate({
         unknownError,
       );
     });
+    return stopMirrorSweep;
   }, [storageReady]);
 
   async function chooseStorageRoot(): Promise<void> {
@@ -509,7 +506,6 @@ function ChapterMediaStorageGate({
     try {
       const root = await selectChapterMediaStorageRoot();
       if (root) {
-        await restoreChapterContentStorageMirror();
         setStorageReady(true);
       }
     } catch (unknownError) {
