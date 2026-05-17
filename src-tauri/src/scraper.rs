@@ -27,9 +27,9 @@
 //!   the host asks the WebView to start an async browser fetch and
 //!   polls a page-local result slot through `eval_with_callback`.
 
-use std::collections::HashMap;
 #[cfg(desktop)]
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 #[cfg(desktop)]
 use std::hash::{Hash, Hasher};
 #[cfg(desktop)]
@@ -48,11 +48,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 #[cfg(desktop)]
-use tauri::{
-    LogicalPosition, LogicalSize, Rect, Webview, WebviewBuilder,
-};
-#[cfg(desktop)]
 use tauri::{Emitter, Manager, Url, WebviewUrl};
+#[cfg(desktop)]
+use tauri::{LogicalPosition, LogicalSize, Rect, Webview, WebviewBuilder};
 #[cfg(desktop)]
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 #[cfg(desktop)]
@@ -602,13 +600,33 @@ fn scraper_handle_for_key(
         builder = builder.user_agent(user_agent);
     }
     log_windows_scraper_event("handle_for_key add_child start");
-    let webview = main_window
-        .add_child(
-            builder,
-            LogicalPosition::new(HIDDEN_POSITION, HIDDEN_POSITION),
-            LogicalSize::new(HIDDEN_SIZE, HIDDEN_SIZE),
-        )
-        .map_err(|err| format!("scraper: add_child for {key}: {err}"))?;
+    let webview = match main_window.add_child(
+        builder,
+        LogicalPosition::new(HIDDEN_POSITION, HIDDEN_POSITION),
+        LogicalSize::new(HIDDEN_SIZE, HIDDEN_SIZE),
+    ) {
+        Ok(webview) => webview,
+        Err(err) => {
+            if let Some(webview) = app.get_webview(&label) {
+                log::warn!(
+                    "[scraper] add_child raced with an existing WebView for {key}; reusing label {label}: {err}"
+                );
+                state
+                    .webviews
+                    .lock()
+                    .expect("scraper webviews mutex")
+                    .insert(
+                        key.to_string(),
+                        ScraperEntry {
+                            label,
+                            user_agent: user_agent.map(str::to_string),
+                        },
+                    );
+                return Ok(webview);
+            }
+            return Err(format!("scraper: add_child for {key}: {err}"));
+        }
+    };
     log_windows_scraper_event("handle_for_key add_child complete");
     webview
         .hide()
@@ -658,10 +676,7 @@ fn close_scraper_webview_for_key(
     reason: &str,
 ) -> Result<bool, String> {
     {
-        let mut visible_key = state
-            .visible_key
-            .lock()
-            .expect("scraper visible_key mutex");
+        let mut visible_key = state.visible_key.lock().expect("scraper visible_key mutex");
         if visible_key.as_deref() == Some(key) {
             *visible_key = None;
         }
@@ -727,8 +742,7 @@ fn hide_scraper_webview(webview: &ScraperWebview) -> Result<(), String> {
 /// lazily per plugin site when fetch or browsing needs them.
 #[cfg(desktop)]
 pub fn init_scraper(app: &AppHandle) -> Result<(), String> {
-    app
-        .get_window("main")
+    app.get_window("main")
         .ok_or_else(|| "scraper: main window missing at setup".to_string())?;
     Ok(())
 }
@@ -807,9 +821,10 @@ pub async fn scraper_set_bounds(
             "[scraper:windows] scraper_set_bounds start url={url} x={x} y={y} width={width} height={height}"
         );
     }
+    let executor_lock = scraper_executor_lock(&state, IMMEDIATE_EXECUTOR);
+    let _executor_guard = executor_lock.lock().await;
     let key = IMMEDIATE_EXECUTOR.to_string();
-    let scraper =
-        scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
+    let scraper = scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
     let previous_key = state
         .visible_key
         .lock()
@@ -997,13 +1012,14 @@ pub async fn scraper_navigate(
             "[scraper:windows] scraper_navigate start url={url} reset_history={reset_history}"
         );
     }
+    let executor_lock = scraper_executor_lock(&state, IMMEDIATE_EXECUTOR);
+    let _executor_guard = executor_lock.lock().await;
     if reset_history
         && close_scraper_webview_for_key(&app, &state, IMMEDIATE_EXECUTOR, "history reset")?
     {
         log_windows_scraper_event("scraper_navigate reset foreground webview");
     }
-    let scraper =
-        scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
+    let scraper = scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
     let parsed: Url = url
         .parse()
         .map_err(|err| format!("scraper_navigate: invalid url '{url}': {err}"))?;
@@ -1153,8 +1169,7 @@ fn fetch_init_for_log(init: &Option<FetchInit>) -> String {
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
 
     for chunk in bytes.chunks(3) {
@@ -1250,8 +1265,7 @@ fn scraper_is_at_origin(scraper: &ScraperWebview, target: &Url) -> bool {
 async fn document_is_ready(scraper: &ScraperWebview) -> bool {
     let ready = eval_json::<String>(
         scraper,
-        r#"(function () { return document.readyState || "loading"; })()"#
-            .to_string(),
+        r#"(function () { return document.readyState || "loading"; })()"#.to_string(),
     )
     .await;
     matches!(ready.as_deref(), Ok("interactive" | "complete"))
@@ -1373,11 +1387,9 @@ async fn prepare_scraper_context(
     let Some(context_url) = context_url else {
         return Ok(());
     };
-    let target: Url = context_url
-        .parse()
-        .map_err(|err| {
-            format!("scraper: invalid {operation} context url '{context_url}': {err}")
-        })?;
+    let target: Url = context_url.parse().map_err(|err| {
+        format!("scraper: invalid {operation} context url '{context_url}': {err}")
+    })?;
 
     if scraper_is_at_origin(scraper, &target)
         && document_is_ready(scraper).await
@@ -1713,7 +1725,7 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
     }
   } catch (error) {}
 })()"#
-        .to_string(),
+            .to_string(),
     );
     if let Some(current_url) = current_url {
         clear_webview_extract_result_marker(scraper, current_url);
@@ -1735,10 +1747,7 @@ async fn webview_fetch_with_ready_scraper(
         .map_err(|err| format!("scraper: invalid url '{url}': {err}"))?;
     prepare_fetch_context(scraper, context_url.as_deref()).await?;
     let init = init.unwrap_or_default();
-    let request_id = format!(
-        "fetch-{}",
-        FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    let request_id = format!("fetch-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
     let start_script = build_webview_fetch_start_script(&request_id, &url, &init)?;
     scraper
         .eval(start_script)
@@ -1975,9 +1984,8 @@ pub async fn scraper_cancel_executor(
     let Some(scraper) = entry.and_then(|entry| app.get_webview(&entry.label)) else {
         return Ok(false);
     };
-    let script = build_webview_fetch_cancel_script(
-        message.as_deref().unwrap_or("Request cancelled"),
-    )?;
+    let script =
+        build_webview_fetch_cancel_script(message.as_deref().unwrap_or("Request cancelled"))?;
     let cancelled: u32 = eval_json(&scraper, script).await?;
     if cancelled > 0 {
         log::debug!("[scraper:fetch] cancelled queue={queue} count={cancelled}");
@@ -2067,9 +2075,9 @@ pub async fn webview_extract(
     let before_script = before_script.as_deref().filter(|script| !script.is_empty());
     let target_url_str = url.clone();
 
-    let parsed: Url = target_url_str.parse().map_err(|err| {
-        format!("webview_extract: invalid url '{target_url_str}': {err}")
-    })?;
+    let parsed: Url = target_url_str
+        .parse()
+        .map_err(|err| format!("webview_extract: invalid url '{target_url_str}': {err}"))?;
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let poll_interval = Duration::from_millis(150);
@@ -2100,9 +2108,8 @@ pub async fn webview_extract(
                 if let Ok(current) = scraper.url().map(|url| url.to_string()) {
                     if let Some(idx) = current.find(result_marker) {
                         let encoded = &current[idx + result_marker.len()..];
-                        let decoded = decode_uri_component(encoded).map_err(|err| {
-                            format!("webview_extract: decode result: {err}")
-                        })?;
+                        let decoded = decode_uri_component(encoded)
+                            .map_err(|err| format!("webview_extract: decode result: {err}"))?;
                         extract_result = Some((decoded, Some(current)));
                     }
                 }
@@ -2126,12 +2133,8 @@ pub async fn webview_extract(
                     {
                         reset_extract_navigation(&scraper, &parsed, "extract")?;
                         prepare_extract_context(&scraper, &parsed).await?;
-                        wait_for_scraper_bridge_ready(
-                            &scraper,
-                            "extract",
-                            Duration::from_secs(5),
-                        )
-                        .await;
+                        wait_for_scraper_bridge_ready(&scraper, "extract", Duration::from_secs(5))
+                            .await;
                         install_webview_extract_before_script(&scraper, before_script)?;
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url}"

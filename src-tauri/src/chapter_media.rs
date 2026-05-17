@@ -11,6 +11,9 @@ use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::native_stream::{self, NativeStreamState};
+use tauri::State;
+
 pub(crate) const MEDIA_ROOT_DIR: &str = "chapter-media";
 const MEDIA_URI_PREFIX: &str = "norea-media://chapter/";
 const CONTENTS_ROOT_DIR: &str = "contents";
@@ -21,6 +24,17 @@ const LEGACY_STORAGE_MANIFEST_FILE: &str = "storage-manifest.json";
 const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
 const MEDIA_RESTORE_BACKUP_INFIX: &str = ".restore-backup-";
+const CHAPTER_MEDIA_STREAM_DOMAIN: &str = "chapter-media";
+
+async fn chapter_media_blocking<T, F>(context: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|err| format!("chapter media: {context} task: {err}"))?
+}
 
 fn legacy_media_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -191,10 +205,7 @@ fn novel_folder_segment(
     novel_path: Option<&str>,
     novel_id: i64,
 ) -> String {
-    let novel_address = safe_segment(
-        novel_path.unwrap_or_default(),
-        &novel_id.to_string(),
-    );
+    let novel_address = safe_segment(novel_path.unwrap_or_default(), &novel_id.to_string());
     format!(
         "{}-{novel_address}",
         safe_label_segment(novel_name, "novel")
@@ -504,8 +515,7 @@ fn write_chapter_media_manifest(path: &Path, manifest: &serde_json::Value) -> Re
     body.push(b'\n');
     fs::write(&temp_path, body)
         .map_err(|err| format!("chapter media: write media manifest temp: {err}"))?;
-    fs::rename(&temp_path, path)
-        .map_err(|err| format!("chapter media: move media manifest: {err}"))
+    fs::rename(&temp_path, path).map_err(|err| format!("chapter media: move media manifest: {err}"))
 }
 
 fn delete_legacy_storage_manifest(root: &Path) -> Result<(), String> {
@@ -524,7 +534,8 @@ fn remove_chapter_content_files_in_dir(
     if !chapter_dir.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(chapter_dir).map_err(|err| format!("chapter media: read dir: {err}"))?
+    for entry in
+        fs::read_dir(chapter_dir).map_err(|err| format!("chapter media: read dir: {err}"))?
     {
         let entry = entry.map_err(|err| format!("chapter media: read entry: {err}"))?;
         let path = entry.path();
@@ -621,10 +632,7 @@ fn content_chapter_dir_from_context(
     )?))
 }
 
-fn media_path_in_chapter_dir(
-    chapter_dir: &Path,
-    file_name: &str,
-) -> Option<PathBuf> {
+fn media_path_in_chapter_dir(chapter_dir: &Path, file_name: &str) -> Option<PathBuf> {
     let current_path = chapter_dir.join(MEDIA_DOWNLOAD_DIR).join(file_name);
     if current_path.is_file() {
         return Some(current_path);
@@ -632,11 +640,62 @@ fn media_path_in_chapter_dir(
     None
 }
 
+fn extract_media_archive_entry_to_dir(
+    archive_path: &Path,
+    file_name: &str,
+    media_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if !archive_path.is_file() {
+        return Ok(None);
+    }
+
+    let archive_file =
+        File::open(archive_path).map_err(|err| format!("chapter media: open archive: {err}"))?;
+    let mut archive = ZipArchive::new(BufReader::new(archive_file))
+        .map_err(|err| format!("chapter media: read archive: {err}"))?;
+    let mut entry = match archive.by_name(file_name) {
+        Ok(entry) => entry,
+        Err(ZipError::FileNotFound) => return Ok(None),
+        Err(err) => return Err(format!("chapter media: open archive entry: {err}")),
+    };
+    if !entry.is_file() {
+        return Err("chapter media: archive entry is not a file".to_string());
+    }
+
+    fs::create_dir_all(media_dir)
+        .map_err(|err| format!("chapter media: create extracted media dir: {err}"))?;
+    let output_path = media_dir.join(file_name);
+    if output_path.is_file() {
+        return Ok(Some(output_path));
+    }
+    let temp_path = media_dir.join(format!("{file_name}.tmp"));
+    {
+        let mut output = File::create(&temp_path)
+            .map_err(|err| format!("chapter media: create extracted media: {err}"))?;
+        io::copy(&mut entry, &mut output)
+            .map_err(|err| format!("chapter media: extract archive entry: {err}"))?;
+    }
+    if output_path.is_file() {
+        let _ = fs::remove_file(&temp_path);
+        return Ok(Some(output_path));
+    }
+    fs::rename(&temp_path, &output_path)
+        .map_err(|err| format!("chapter media: move extracted media: {err}"))?;
+    Ok(Some(output_path))
+}
+
 fn media_path_from_chapter_dir(
     chapter_dir: &Path,
     file_name: &str,
 ) -> Result<Option<PathBuf>, String> {
-    Ok(media_path_in_chapter_dir(chapter_dir, file_name))
+    if let Some(path) = media_path_in_chapter_dir(chapter_dir, file_name) {
+        return Ok(Some(path));
+    }
+    extract_media_archive_entry_to_dir(
+        &chapter_dir.join(MEDIA_ARCHIVE_FILE),
+        file_name,
+        &chapter_dir.join(MEDIA_DOWNLOAD_DIR),
+    )
 }
 
 fn media_body_from_archive(
@@ -738,7 +797,7 @@ fn chapter_media_path_from_src_with_context(
         .join(&file_name))
 }
 
-fn chapter_media_body_from_src_with_context(
+pub(crate) fn chapter_media_body_from_src_with_context(
     app: &AppHandle,
     media_src: &str,
     novel_id: Option<i64>,
@@ -795,8 +854,144 @@ pub(crate) fn chapter_media_src_from_backup_entry(entry_name: &str) -> Option<St
     ))
 }
 
+struct ChapterMediaStoreInput {
+    chapter_id: i64,
+    file_name: String,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+}
+
+enum ChapterMediaStoreSource {
+    Bytes(Vec<u8>),
+    File(PathBuf),
+}
+
+fn move_media_source_to_part_path(
+    source_path: &Path,
+    part_path: &Path,
+    context: &str,
+) -> Result<(), String> {
+    if part_path.exists() {
+        fs::remove_file(part_path).map_err(|err| format!("{context}: remove stale part: {err}"))?;
+    }
+    match fs::rename(source_path, part_path) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            if let Err(copy_err) = fs::copy(source_path, part_path) {
+                let _ = fs::remove_file(part_path);
+                return Err(format!(
+                    "{context}: move temp media: {rename_err}; copy fallback: {copy_err}"
+                ));
+            }
+            if let Err(err) = fs::remove_file(source_path) {
+                let _ = fs::remove_file(part_path);
+                return Err(format!("{context}: remove temp media: {err}"));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn store_chapter_media_at_root(
+    root: &Path,
+    input: ChapterMediaStoreInput,
+    source: ChapterMediaStoreSource,
+) -> Result<String, String> {
+    let file_name = safe_segment(&input.file_name, "media");
+    let novel_id = input
+        .novel_id
+        .ok_or_else(|| "chapter media: missing novel id".to_string())?;
+    let source_id = input
+        .source_id
+        .as_deref()
+        .ok_or_else(|| "chapter media: missing source id".to_string())?;
+    ensure_contents_nomedia(root)?;
+    let dir = content_chapter_dir_at(
+        root,
+        source_id,
+        novel_id,
+        input.novel_path.as_deref(),
+        input.novel_name.as_deref(),
+        input.chapter_id,
+        input.chapter_number.as_deref(),
+        input.chapter_name.as_deref(),
+        input.chapter_position,
+    )?
+    .join(MEDIA_DOWNLOAD_DIR);
+    fs::create_dir_all(&dir).map_err(|err| format!("chapter media: create dir: {err}"))?;
+    let part_path = dir.join(format!("{file_name}.part"));
+    let final_path = dir.join(&file_name);
+    match source {
+        ChapterMediaStoreSource::Bytes(body) => {
+            fs::write(&part_path, body)
+                .map_err(|err| format!("chapter media: write media file: {err}"))?;
+        }
+        ChapterMediaStoreSource::File(source_path) => {
+            move_media_source_to_part_path(
+                &source_path,
+                &part_path,
+                "chapter media: store media handle",
+            )?;
+        }
+    }
+    if final_path.exists() {
+        fs::remove_file(&final_path)
+            .map_err(|err| format!("chapter media: replace media file: {err}"))?;
+    }
+    fs::rename(&part_path, &final_path)
+        .map_err(|err| format!("chapter media: move media file: {err}"))?;
+    Ok(format!(
+        "{MEDIA_URI_PREFIX}{}/{file_name}",
+        input.chapter_id
+    ))
+}
+
+fn store_chapter_media(
+    app: &AppHandle,
+    input: ChapterMediaStoreInput,
+    source: ChapterMediaStoreSource,
+) -> Result<String, String> {
+    let root = media_root(app)?;
+    store_chapter_media_at_root(&root, input, source)
+}
+
+pub(crate) fn store_chapter_media_file_source(
+    app: &AppHandle,
+    source_path: PathBuf,
+    chapter_id: i64,
+    file_name: String,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<String, String> {
+    store_chapter_media(
+        app,
+        ChapterMediaStoreInput {
+            chapter_id,
+            file_name,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        },
+        ChapterMediaStoreSource::File(source_path),
+    )
+}
+
 #[tauri::command]
-pub fn chapter_media_store(
+pub async fn chapter_media_store(
     app: AppHandle,
     chapter_id: i64,
     file_name: String,
@@ -809,36 +1004,70 @@ pub fn chapter_media_store(
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
 ) -> Result<String, String> {
-    let file_name = safe_segment(&file_name, "media");
-    let novel_id = novel_id.ok_or_else(|| "chapter media: missing novel id".to_string())?;
-    let source_id = source_id
-        .as_deref()
-        .ok_or_else(|| "chapter media: missing source id".to_string())?;
-    let root = media_root(&app)?;
-    ensure_contents_nomedia(&root)?;
-    let dir = content_chapter_dir_at(
-        &root,
-        source_id,
-        novel_id,
-        novel_path.as_deref(),
-        novel_name.as_deref(),
-        chapter_id,
-        chapter_number.as_deref(),
-        chapter_name.as_deref(),
-        chapter_position,
-    )?
-    .join(MEDIA_DOWNLOAD_DIR);
-    fs::create_dir_all(&dir).map_err(|err| format!("chapter media: create dir: {err}"))?;
-    let part_path = dir.join(format!("{file_name}.part"));
-    let final_path = dir.join(&file_name);
-    fs::write(&part_path, body).map_err(|err| format!("chapter media: write media file: {err}"))?;
-    if final_path.exists() {
-        fs::remove_file(&final_path)
-            .map_err(|err| format!("chapter media: replace media file: {err}"))?;
-    }
-    fs::rename(&part_path, &final_path)
-        .map_err(|err| format!("chapter media: move media file: {err}"))?;
-    Ok(format!("{MEDIA_URI_PREFIX}{chapter_id}/{file_name}"))
+    chapter_media_blocking("store", move || {
+        store_chapter_media(
+            &app,
+            ChapterMediaStoreInput {
+                chapter_id,
+                file_name,
+                novel_id,
+                source_id,
+                novel_name,
+                novel_path,
+                chapter_number,
+                chapter_name,
+                chapter_position,
+            },
+            ChapterMediaStoreSource::Bytes(body),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chapter_media_store_handle(
+    app: AppHandle,
+    state: State<'_, NativeStreamState>,
+    handle: String,
+    chapter_id: i64,
+    file_name: String,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<String, String> {
+    let stream_path = native_stream::take_finished_path(
+        &app,
+        state.inner(),
+        &handle,
+        Some(CHAPTER_MEDIA_STREAM_DOMAIN),
+    )?;
+    let cleanup_path = stream_path.clone();
+    chapter_media_blocking("store handle", move || {
+        let result = store_chapter_media(
+            &app,
+            ChapterMediaStoreInput {
+                chapter_id,
+                file_name,
+                novel_id,
+                source_id,
+                novel_name,
+                novel_path,
+                chapter_number,
+                chapter_name,
+                chapter_position,
+            },
+            ChapterMediaStoreSource::File(stream_path),
+        );
+        if result.is_err() {
+            let _ = fs::remove_file(cleanup_path);
+        }
+        result
+    })
+    .await
 }
 
 fn archive_cache_entry_paths(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
@@ -860,7 +1089,34 @@ fn archive_cache_entry_paths(dir: &Path) -> Result<Vec<(String, PathBuf)>, Strin
 }
 
 #[tauri::command]
-pub fn chapter_media_archive_cache(
+pub async fn chapter_media_archive_cache(
+    app: AppHandle,
+    chapter_id: i64,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<u64, String> {
+    chapter_media_blocking("archive cache", move || {
+        chapter_media_archive_cache_sync(
+            app,
+            chapter_id,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_archive_cache_sync(
     app: AppHandle,
     chapter_id: i64,
     novel_id: Option<i64>,
@@ -1030,7 +1286,36 @@ fn extract_media_archive_to_dir(archive_path: &Path, media_dir: &Path) -> Result
 }
 
 #[tauri::command]
-pub fn chapter_media_prepare_workspace(
+pub async fn chapter_media_prepare_workspace(
+    app: AppHandle,
+    chapter_id: i64,
+    repair: bool,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<(), String> {
+    chapter_media_blocking("prepare workspace", move || {
+        chapter_media_prepare_workspace_sync(
+            app,
+            chapter_id,
+            repair,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_prepare_workspace_sync(
     app: AppHandle,
     chapter_id: i64,
     repair: bool,
@@ -1076,7 +1361,34 @@ pub fn chapter_media_prepare_workspace(
 }
 
 #[tauri::command]
-pub fn chapter_media_cleanup_workspace(
+pub async fn chapter_media_cleanup_workspace(
+    app: AppHandle,
+    chapter_id: i64,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<(), String> {
+    chapter_media_blocking("cleanup workspace", move || {
+        chapter_media_cleanup_workspace_sync(
+            app,
+            chapter_id,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_cleanup_workspace_sync(
     app: AppHandle,
     chapter_id: i64,
     novel_id: Option<i64>,
@@ -1286,8 +1598,7 @@ fn archive_contains_file(archive_path: &Path, file_name: &str) -> Result<bool, S
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
 
     for chunk in bytes.chunks(3) {
@@ -1413,7 +1724,34 @@ pub async fn chapter_media_data_url(
 }
 
 #[tauri::command]
-pub fn chapter_media_total_size(
+pub async fn chapter_media_total_size(
+    app: AppHandle,
+    media_srcs: Vec<String>,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<u64, String> {
+    chapter_media_blocking("total size", move || {
+        chapter_media_total_size_sync(
+            app,
+            media_srcs,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_total_size_sync(
     app: AppHandle,
     media_srcs: Vec<String>,
     novel_id: Option<i64>,
@@ -1540,8 +1878,8 @@ fn prune_chapter_dir(dir: &Path) -> Result<(), String> {
 
     let media_dir = dir.join(MEDIA_DOWNLOAD_DIR);
     if media_dir.is_dir() {
-        for entry in
-            fs::read_dir(&media_dir).map_err(|err| format!("chapter media: read media dir: {err}"))?
+        for entry in fs::read_dir(&media_dir)
+            .map_err(|err| format!("chapter media: read media dir: {err}"))?
         {
             let entry = entry.map_err(|err| format!("chapter media: read media entry: {err}"))?;
             let path = entry.path();
@@ -1611,7 +1949,17 @@ fn remove_existing_path(path: &Path, context: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn chapter_storage_remove_dir(app: AppHandle, relative_dir: String) -> Result<(), String> {
+pub async fn chapter_storage_remove_dir(
+    app: AppHandle,
+    relative_dir: String,
+) -> Result<(), String> {
+    chapter_media_blocking("remove storage dir", move || {
+        chapter_storage_remove_dir_sync(app, relative_dir)
+    })
+    .await
+}
+
+fn chapter_storage_remove_dir_sync(app: AppHandle, relative_dir: String) -> Result<(), String> {
     let media_root = media_root(&app)?;
     let relative_dir = safe_relative_storage_path(&relative_dir)?;
     let path = media_root.join(relative_dir);
@@ -1620,7 +1968,18 @@ pub fn chapter_storage_remove_dir(app: AppHandle, relative_dir: String) -> Resul
 }
 
 #[tauri::command]
-pub fn chapter_storage_relocate_dir(
+pub async fn chapter_storage_relocate_dir(
+    app: AppHandle,
+    old_relative_dir: String,
+    new_relative_dir: String,
+) -> Result<(), String> {
+    chapter_media_blocking("relocate storage dir", move || {
+        chapter_storage_relocate_dir_sync(app, old_relative_dir, new_relative_dir)
+    })
+    .await
+}
+
+fn chapter_storage_relocate_dir_sync(
     app: AppHandle,
     old_relative_dir: String,
     new_relative_dir: String,
@@ -1651,7 +2010,18 @@ pub fn chapter_storage_relocate_dir(
 }
 
 #[tauri::command]
-pub fn chapter_storage_prune_dir_children(
+pub async fn chapter_storage_prune_dir_children(
+    app: AppHandle,
+    relative_dir: String,
+    keep_names: Vec<String>,
+) -> Result<(), String> {
+    chapter_media_blocking("prune storage dir children", move || {
+        chapter_storage_prune_dir_children_sync(app, relative_dir, keep_names)
+    })
+    .await
+}
+
+fn chapter_storage_prune_dir_children_sync(
     app: AppHandle,
     relative_dir: String,
     keep_names: Vec<String>,
@@ -1724,7 +2094,14 @@ fn restore_backup_roots(app: &AppHandle, token: &str) -> Result<Vec<(PathBuf, Pa
 }
 
 #[tauri::command]
-pub fn chapter_media_begin_restore(app: AppHandle) -> Result<String, String> {
+pub async fn chapter_media_begin_restore(app: AppHandle) -> Result<String, String> {
+    chapter_media_blocking("begin restore", move || {
+        chapter_media_begin_restore_sync(app)
+    })
+    .await
+}
+
+fn chapter_media_begin_restore_sync(app: AppHandle) -> Result<String, String> {
     let token = restore_token();
     let mut moved_roots: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = (|| -> Result<(), String> {
@@ -1756,7 +2133,14 @@ pub fn chapter_media_begin_restore(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn chapter_media_commit_restore(app: AppHandle, token: String) -> Result<(), String> {
+pub async fn chapter_media_commit_restore(app: AppHandle, token: String) -> Result<(), String> {
+    chapter_media_blocking("commit restore", move || {
+        chapter_media_commit_restore_sync(app, token)
+    })
+    .await
+}
+
+fn chapter_media_commit_restore_sync(app: AppHandle, token: String) -> Result<(), String> {
     for (_, backup) in restore_backup_roots(&app, &token)? {
         remove_existing_path(&backup, "chapter media: remove restore backup")?;
     }
@@ -1764,7 +2148,14 @@ pub fn chapter_media_commit_restore(app: AppHandle, token: String) -> Result<(),
 }
 
 #[tauri::command]
-pub fn chapter_media_rollback_restore(app: AppHandle, token: String) -> Result<(), String> {
+pub async fn chapter_media_rollback_restore(app: AppHandle, token: String) -> Result<(), String> {
+    chapter_media_blocking("rollback restore", move || {
+        chapter_media_rollback_restore_sync(app, token)
+    })
+    .await
+}
+
+fn chapter_media_rollback_restore_sync(app: AppHandle, token: String) -> Result<(), String> {
     for (root, backup) in restore_backup_roots(&app, &token)? {
         remove_existing_path(&root, "chapter media: remove failed restore root")?;
         if backup.exists() {
@@ -1780,7 +2171,34 @@ pub fn chapter_media_rollback_restore(app: AppHandle, token: String) -> Result<(
 }
 
 #[tauri::command]
-pub fn chapter_media_prune(
+pub async fn chapter_media_prune(
+    app: AppHandle,
+    chapter_id: i64,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<(), String> {
+    chapter_media_blocking("prune", move || {
+        chapter_media_prune_sync(
+            app,
+            chapter_id,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_prune_sync(
     app: AppHandle,
     chapter_id: i64,
     novel_id: Option<i64>,
@@ -1814,7 +2232,34 @@ pub fn chapter_media_prune(
 }
 
 #[tauri::command]
-pub fn chapter_media_clear(
+pub async fn chapter_media_clear(
+    app: AppHandle,
+    chapter_id: i64,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    novel_path: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<(), String> {
+    chapter_media_blocking("clear", move || {
+        chapter_media_clear_sync(
+            app,
+            chapter_id,
+            novel_id,
+            source_id,
+            novel_name,
+            novel_path,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_clear_sync(
     app: AppHandle,
     chapter_id: i64,
     novel_id: Option<i64>,
@@ -1854,11 +2299,114 @@ pub fn chapter_media_clear(
 }
 
 #[tauri::command]
-pub fn chapter_media_clear_all(app: AppHandle) -> Result<(), String> {
+pub async fn chapter_media_clear_all(app: AppHandle) -> Result<(), String> {
+    chapter_media_blocking("clear all", move || chapter_media_clear_all_sync(app)).await
+}
+
+fn chapter_media_clear_all_sync(app: AppHandle) -> Result<(), String> {
     for root in media_roots_for_lookup(&app)? {
         if root.exists() {
             clear_storage_root(&root)?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    fn store_input(file_name: &str) -> ChapterMediaStoreInput {
+        ChapterMediaStoreInput {
+            chapter_id: 42,
+            file_name: file_name.to_string(),
+            novel_id: Some(7),
+            source_id: Some("demo".to_string()),
+            novel_name: Some("Novel".to_string()),
+            novel_path: Some("novel/path".to_string()),
+            chapter_number: Some("1".to_string()),
+            chapter_name: Some("Opening".to_string()),
+            chapter_position: Some(1),
+        }
+    }
+
+    fn stored_media_path(root: &Path, file_name: &str) -> PathBuf {
+        root.join(CONTENTS_ROOT_DIR)
+            .join("demo")
+            .join("Novel-novel-path")
+            .join("1-Opening")
+            .join(MEDIA_DOWNLOAD_DIR)
+            .join(file_name)
+    }
+
+    #[test]
+    fn store_chapter_media_body_writes_contextual_media_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = store_chapter_media_at_root(
+            dir.path(),
+            store_input("page.png"),
+            ChapterMediaStoreSource::Bytes(vec![1, 2, 3]),
+        )
+        .expect("store media");
+
+        assert_eq!(src, "norea-media://chapter/42/page.png");
+        assert_eq!(
+            fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
+            vec![1, 2, 3]
+        );
+        assert!(dir
+            .path()
+            .join(CONTENTS_ROOT_DIR)
+            .join(NO_MEDIA_FILE)
+            .exists());
+    }
+
+    #[test]
+    fn store_chapter_media_file_consumes_source_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_path = dir.path().join("stream.bin");
+        fs::write(&source_path, [7, 8, 9]).expect("write stream");
+
+        let src = store_chapter_media_at_root(
+            dir.path(),
+            store_input("page.png"),
+            ChapterMediaStoreSource::File(source_path.clone()),
+        )
+        .expect("store media handle");
+
+        assert_eq!(src, "norea-media://chapter/42/page.png");
+        assert!(!source_path.exists());
+        assert_eq!(
+            fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
+            vec![7, 8, 9]
+        );
+    }
+
+    #[test]
+    fn media_path_from_chapter_dir_extracts_archived_media_on_demand() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = dir.path().join("chapter");
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        {
+            let archive_file = File::create(&archive_path).expect("create archive");
+            let mut archive = ZipWriter::new(BufWriter::new(archive_file));
+            archive
+                .start_file("page.png", SimpleFileOptions::default())
+                .expect("start archive entry");
+            io::copy(&mut &b"image-body"[..], &mut archive).expect("write archive entry");
+            archive.finish().expect("finish archive");
+        }
+
+        let path = media_path_from_chapter_dir(&chapter_dir, "page.png")
+            .expect("resolve archived media")
+            .expect("archived media path");
+
+        assert_eq!(path, chapter_dir.join(MEDIA_DOWNLOAD_DIR).join("page.png"));
+        assert_eq!(fs::read(path).expect("read extracted media"), b"image-body");
+    }
 }

@@ -38,6 +38,7 @@ CREATE TABLE `chapter` (
   `content_bytes` integer DEFAULT 0 NOT NULL,
   `media_bytes` integer DEFAULT 0 NOT NULL,
   `media_repair_needed` integer DEFAULT false NOT NULL,
+  `media_bytes_checked_at` integer,
   `release_time` text,
   `read_at` integer,
   `created_at` integer,

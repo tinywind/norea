@@ -113,7 +113,11 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(
 #[cfg(target_os = "windows")]
 fn menu_text(value: &str, fallback: &str) -> String {
     let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let text = if compact.is_empty() { fallback } else { &compact };
+    let text = if compact.is_empty() {
+        fallback
+    } else {
+        &compact
+    };
     let chars = text.chars().collect::<Vec<_>>();
     let truncated = if chars.len() > MAX_MENU_TEXT_CHARS {
         let mut value = chars
@@ -133,7 +137,10 @@ fn tray_tooltip(summary: &str, has_tasks: bool) -> String {
     if !has_tasks {
         "Norea".to_string()
     } else {
-        format!("Norea - {}", summary.split_whitespace().collect::<Vec<_>>().join(" "))
+        format!(
+            "Norea - {}",
+            summary.split_whitespace().collect::<Vec<_>>().join(" ")
+        )
     }
 }
 
@@ -147,8 +154,7 @@ pub fn tray_set_task_progress(
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
     };
-    let menu = build_tray_menu(&app, &items)
-        .map_err(|err| format!("build tray menu: {err}"))?;
+    let menu = build_tray_menu(&app, &items).map_err(|err| format!("build tray menu: {err}"))?;
     tray.set_menu(Some(menu))
         .map_err(|err| format!("set tray menu: {err}"))?;
     if let Err(err) = tray.set_tooltip(Some(tray_tooltip(&summary, !items.is_empty()))) {

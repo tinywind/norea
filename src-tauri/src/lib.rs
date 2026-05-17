@@ -1,7 +1,8 @@
-mod backup;
-mod chapter_media;
 #[cfg(target_os = "android")]
 mod android_tls;
+mod backup;
+mod chapter_media;
+mod native_stream;
 mod plugin_host;
 mod scraper;
 mod tray;
@@ -30,14 +31,12 @@ fn set_runtime_log_level(level: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![
-        Migration {
-            version: 1,
-            description: "create current application schema",
-            sql: include_str!("schema.sql"),
-            kind: MigrationKind::Up,
-        },
-    ];
+    let migrations = vec![Migration {
+        version: 1,
+        description: "create current application schema",
+        sql: include_str!("schema.sql"),
+        kind: MigrationKind::Up,
+    }];
 
     let builder = tauri::Builder::default();
 
@@ -51,6 +50,7 @@ pub fn run() {
     }));
 
     builder
+        .manage(native_stream::NativeStreamState::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
@@ -62,13 +62,17 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            backup::backup_cleanup_staged_unpack,
             backup::backup_delete_temp_file,
             backup::backup_pack,
             backup::backup_pack_bytes,
             backup::backup_pack_temp_file,
+            backup::backup_restore_staged_media,
             backup::backup_restore_snapshot,
             backup::backup_unpack,
             backup::backup_unpack_bytes,
+            backup::backup_unpack_bytes_staged,
+            backup::backup_unpack_staged,
             chapter_media::chapter_content_mirror_clear,
             chapter_media::chapter_content_mirror_cleanup_legacy_manifest,
             chapter_media::chapter_content_mirror_read_file,
@@ -88,12 +92,21 @@ pub fn run() {
             chapter_media::chapter_media_rollback_restore,
             chapter_media::chapter_media_set_storage_root,
             chapter_media::chapter_media_store,
+            chapter_media::chapter_media_store_handle,
             chapter_media::chapter_media_total_size,
             chapter_media::chapter_media_use_default_storage_root,
             chapter_media::chapter_media_write_manifest,
             chapter_media::chapter_storage_prune_dir_children,
             chapter_media::chapter_storage_relocate_dir,
             chapter_media::chapter_storage_remove_dir,
+            native_stream::native_stream_cancel,
+            native_stream::native_stream_cleanup,
+            native_stream::native_stream_create,
+            native_stream::native_stream_delete,
+            native_stream::native_stream_finish,
+            native_stream::native_stream_info,
+            native_stream::native_stream_read_chunk,
+            native_stream::native_stream_write_chunk,
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
             scraper::webview_fetch,
@@ -111,12 +124,14 @@ pub fn run() {
             update::download_and_open_update,
             update::get_build_info,
             update::open_downloaded_update,
+            update::open_downloaded_update_handle,
         ])
         .setup(|app| {
+            native_stream::cleanup_startup(app.handle())
+                .map_err(|err| format!("native stream init: {err}"))?;
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
-            scraper::init_scraper(app.handle())
-                .map_err(|err| format!("scraper init: {err}"))?;
+            scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
