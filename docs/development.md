@@ -22,7 +22,7 @@ Use the same major versions as CI when possible.
 
 | Tool | Version / target | Used for |
 | --- | --- | --- |
-| Node.js | 22 LTS | Frontend build, tests, and Tauri CLI |
+| Node.js | 24 LTS | Frontend build, tests, and Tauri CLI |
 | pnpm | 10.27.0 | Package manager, pinned by `packageManager` |
 | Rust | stable | Tauri host and native plugins |
 | Java | JDK 17, preferably Temurin through SDKMAN locally | Android Gradle builds |
@@ -81,11 +81,12 @@ cargo test --lib
 Android APK build:
 
 ```bash
-pnpm android:apk:release
+pnpm exec tauri android build --apk --target aarch64
 ```
 
-This builds arm64 APKs for current physical devices and x86_64 APKs for
-emulators or WSA.
+Build only the target needed for the current device or emulator. Use
+`--target x86_64` for x86_64 emulators or WSA. Use aggregate package scripts
+only when intentionally producing every release APK they cover.
 
 Local Android builds need Java, Android SDK packages, and Rust Android targets
 available in the same shell. SDKMAN is the preferred local JDK path. Install

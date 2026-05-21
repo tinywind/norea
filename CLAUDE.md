@@ -29,6 +29,10 @@ https://github.com/lnreader/lnreader/tree/639a2538
 
 - `README.md` - public overview, current status, and common commands.
 - `CLAUDE.md` - repo rules for agents and contributors.
+- `docs/development.md` - local setup, development, test, and build commands.
+  Read this before development, test, or build work.
+- `.claude/local/CLAUDE.md` - optional machine-local private instructions.
+  Read it when present, and keep `.claude/local/` untracked.
 - `docs/release-compatibility.md` - app data and backup compatibility policy.
 - `docs/plugins/contract.md` - plugin runtime compatibility reference.
 
@@ -102,7 +106,7 @@ are acceptable to keep, but they are not binding.
 | Database | SQLite through `tauri-plugin-sql` with Drizzle schema definitions |
 | HTTP | `tauri-plugin-http`, Rust-side fetch commands, and scraper WebView |
 | Package manager | pnpm |
-| Node | 22 LTS |
+| Node | 24 LTS |
 
 ## Plugin Fetch Invariant
 
@@ -138,12 +142,18 @@ explicitly requests them in the current message.
 
 When verification is allowed, choose the smallest relevant loop:
 
+When the user asks for one platform, device, or target ABI, do not use
+aggregate `package.json` build scripts. Run the Tauri CLI for the requested
+target only, such as `pnpm exec tauri android build --apk --target aarch64`.
+Use aggregate package scripts only when the user explicitly asks for every
+release target that script produces.
+
 | Change | Check |
 | --- | --- |
 | TypeScript or React | `pnpm tsc`, `pnpm test` |
 | Rust host | `cargo check`, `cargo test --lib` from `src-tauri` |
 | Desktop native integration | `pnpm tauri build --debug` |
-| Android APK/release workflow | `pnpm android:apk:release` plus device smoke when behavior is Android-only |
+| Android APK/release workflow | Targeted `pnpm exec tauri android build --apk --target <target>` plus device smoke when behavior is Android-only |
 | Data, backup, migration, or local-file behavior | Relevant unit tests plus compatibility review against `docs/release-compatibility.md` |
 | Docs only | Link/reference scan and `git diff --check` when requested |
 
