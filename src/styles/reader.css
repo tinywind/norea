@@ -603,7 +603,7 @@
   background: color-mix(in srgb, var(--lnr-design-ink-subtle) 26%, transparent);
   border-radius: 999px;
   display: block;
-  overflow: hidden;
+  overflow: visible;
   position: absolute;
 }
 
@@ -812,32 +812,18 @@
 }
 
 .lnr-reader-shell[data-full-page="true"] .lnr-reader-bottom-strip {
-  bottom: var(--lnr-app-bottom-inset);
-  box-shadow: 0 -0.5rem 1.25rem rgba(15, 23, 42, 0.1);
-  left: var(--lnr-safe-area-left);
-  opacity: 0;
-  pointer-events: none;
-  position: absolute;
-  right: var(--lnr-safe-area-right);
-  transform: translateY(100%);
-  transition:
-    opacity 180ms ease,
-    transform 180ms ease;
-  z-index: 8;
+  display: none;
 }
 
 .lnr-reader-shell[data-full-page="true"][data-chrome-visible="true"]
-  .lnr-reader-topbar,
-.lnr-reader-shell[data-full-page="true"][data-chrome-visible="true"]
-  .lnr-reader-bottom-strip {
+  .lnr-reader-topbar {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lnr-reader-shell[data-full-page="true"] .lnr-reader-topbar,
-  .lnr-reader-shell[data-full-page="true"] .lnr-reader-bottom-strip {
+  .lnr-reader-shell[data-full-page="true"] .lnr-reader-topbar {
     transition-duration: 1ms;
   }
 }
@@ -874,10 +860,6 @@
 
   .lnr-reader-strip-progress {
     grid-template-columns: minmax(0, auto) minmax(3.5rem, 1fr);
-  }
-
-  .lnr-reader-shell[data-seekbar-visible="true"] .lnr-reader-bottom-strip {
-    display: none;
   }
 
   .lnr-reader-floating-seekbar[data-orientation="horizontal"] {

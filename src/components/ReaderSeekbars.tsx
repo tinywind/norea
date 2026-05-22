@@ -62,6 +62,7 @@ function ReaderSeekbar({
   progress,
 }: ReaderSeekbarProps) {
   const elementRef = useRef<HTMLDivElement | null>(null);
+  const trackRef = useRef<HTMLSpanElement | null>(null);
   const activePointerRef = useRef<number | null>(null);
   const removeDocumentDragListenersRef = useRef<(() => void) | null>(null);
   const onActivityRef = useRef(onActivity);
@@ -105,7 +106,7 @@ function ReaderSeekbar({
   }
 
   function seekFromPointer(pointer: PointerPosition): void {
-    const element = elementRef.current;
+    const element = trackRef.current;
     if (!element) return;
     onSeekRef.current(getPointerProgress(element, pointer, orientation));
   }
@@ -257,10 +258,10 @@ function ReaderSeekbar({
       }
       tabIndex={0}
     >
-      <span className="lnr-reader-floating-seekbar-track">
+      <span ref={trackRef} className="lnr-reader-floating-seekbar-track">
         <span className="lnr-reader-floating-seekbar-fill" />
+        <span className="lnr-reader-floating-seekbar-thumb" />
       </span>
-      <span className="lnr-reader-floating-seekbar-thumb" />
     </div>
   );
 }

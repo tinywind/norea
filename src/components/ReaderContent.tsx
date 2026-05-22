@@ -2675,11 +2675,8 @@ function ReaderContentInner(
             height: auto;
           }
           ${pagedMediaSelector} {
-            display: block;
-            margin-inline: auto;
             max-height: var(--lnr-reader-page-media-max-height);
             object-fit: contain;
-            vertical-align: top;
           }
           ${pagedAtomicMediaSelector} {
             break-inside: avoid;
