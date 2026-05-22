@@ -35,7 +35,7 @@ export type ReaderTapZoneMap = Record<ReaderTapZone, ReaderTapAction>;
 
 export const READER_PAGE_TRANSITION_DURATION_MIN_MS = 0;
 export const READER_PAGE_TRANSITION_DURATION_MAX_MS = 1000;
-export const READER_PAGE_TRANSITION_DURATION_DEFAULT_MS = 500;
+export const READER_PAGE_TRANSITION_DURATION_DEFAULT_MS = 180;
 
 export interface ReaderTapPreset {
   id: ReaderTapPresetId;

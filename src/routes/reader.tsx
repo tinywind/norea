@@ -24,9 +24,7 @@ import {
 } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import {
-  collectChapterMediaElementPatches,
   hasRemoteChapterMedia,
-  resolveLocalChapterMedia,
   resolveLocalChapterMediaPatches,
   type ChapterMediaStorageContext,
   type ChapterMediaElementPatch,
@@ -70,6 +68,7 @@ import "../styles/reader.css";
 const FINISHED_PROGRESS = 100;
 const FULL_PAGE_CHROME_HIDE_DELAY_MS = 5000;
 const READER_SEEKBAR_HIDE_DELAY_MS = 1000;
+const READER_ACTIVITY_THROTTLE_MS = 250;
 const READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH = 350_000;
 const READER_CHAPTER_ROW_HEIGHT = 30;
 const READER_CHAPTER_PANEL_FALLBACK_ROWS = 36;
@@ -566,6 +565,7 @@ export function ReaderPage() {
   const readerSeekbarHideTimerRef = useRef<number | null>(null);
   const readerSeekbarEnabledRef = useRef(false);
   const readerSeekbarActiveRef = useRef(false);
+  const lastReaderActivityAtRef = useRef(-READER_ACTIVITY_THROTTLE_MS);
   const readerWriteQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [fullPageChromeVisible, setFullPageChromeVisible] = useState(false);
   const [readerSeekbarActivityVisible, setReaderSeekbarActivityVisible] =
@@ -596,24 +596,7 @@ export function ReaderPage() {
           chapter = await getChapterById(chapterId);
         }
       }
-      if (!chapter?.content) return chapter;
-      if (chapter.content.length > READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH) {
-        return chapter;
-      }
-      const novel = await getNovelById(chapter.novelId);
-      return {
-        ...chapter,
-        content: await resolveLocalChapterMedia(chapter.content, {
-          chapterId: chapter.id,
-          chapterName: chapter.name,
-          chapterNumber: chapter.chapterNumber,
-          chapterPosition: chapter.position,
-          novelId: novel?.id ?? chapter.novelId,
-          novelName: novel?.name,
-          novelPath: novel?.path,
-          sourceId: novel?.pluginId,
-        }),
-      };
+      return chapter;
     },
     enabled: chapterId > 0,
   });
@@ -844,9 +827,18 @@ export function ReaderPage() {
   }, [fullPageChromeVisible, fullPageReader, scheduleFullPageChromeHide]);
 
   const handleReaderActivity = useCallback(() => {
+    lastReaderActivityAtRef.current = performance.now();
     handleFullPageActivity();
     showReaderSeekbarForActivity();
   }, [handleFullPageActivity, showReaderSeekbarForActivity]);
+
+  const handleFrequentReaderActivity = useCallback(() => {
+    const now = performance.now();
+    if (now - lastReaderActivityAtRef.current < READER_ACTIVITY_THROTTLE_MS) {
+      return;
+    }
+    handleReaderActivity();
+  }, [handleReaderActivity]);
 
   const handleReaderSeekbarActiveChange = useCallback(
     (active: boolean) => {
@@ -1321,79 +1313,6 @@ export function ReaderPage() {
     chapterId,
   ]);
 
-  useEffect(() => {
-    if (
-      !chapter ||
-      !isHtmlLikeChapterContentType(chapter.contentType) ||
-      !chapterContentHtml ||
-      !readerDocument ||
-      readerDocument.chapterId !== chapter.id
-    ) {
-      return;
-    }
-    if (chapterContentHtml.length > READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH) {
-      logReaderMediaPipeline("query-html-patch-skipped", {
-        chapterId: chapter.id,
-        htmlLength: chapterContentHtml.length,
-        maxHtmlLength: READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH,
-        reason: "large-html",
-      });
-      return;
-    }
-    const rawPatches = collectChapterMediaElementPatches(chapterContentHtml);
-    if (rawPatches.length === 0) return;
-    logReaderMediaPipeline("query-html-patch-raw", {
-      chapterId: chapter.id,
-      patchCount: rawPatches.length,
-      firstIndexes: rawPatches.slice(0, 8).map((patch) => patch.index),
-    });
-    let cancelled = false;
-    void (async () => {
-      const patches = await resolveLocalChapterMediaPatches(rawPatches, {
-        chapterId: chapter.id,
-        chapterName: chapter.name,
-        chapterNumber: chapter.chapterNumber,
-        chapterPosition: chapter.position,
-        novelId: currentNovel?.id ?? chapter.novelId,
-        novelName: currentNovel?.name,
-        novelPath: currentNovel?.path,
-        sourceId: currentNovel?.pluginId,
-      });
-      logReaderMediaPipeline("query-html-patch-resolved", {
-        chapterId: chapter.id,
-        patchCount: patches.length,
-        firstIndexes: patches.slice(0, 8).map((patch) => patch.index),
-        hasDataUrl: patches.some((patch) =>
-          Object.values(patch.attributes).some((value) =>
-            value.startsWith("data:"),
-          ),
-        ),
-        hasBlank: patches.some((patch) =>
-          Object.values(patch.attributes).some((value) => value === ""),
-        ),
-      });
-      if (!cancelled) {
-        contentRef.current?.patchMediaElements(patches);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    chapter?.chapterNumber,
-    chapter?.contentType,
-    chapter?.id,
-    chapter?.name,
-    chapter?.novelId,
-    chapter?.position,
-    chapterContentHtml,
-    currentNovel?.id,
-    currentNovel?.name,
-    currentNovel?.path,
-    currentNovel?.pluginId,
-    readerDocument?.chapterId,
-  ]);
-
   const activeReaderDocument =
     readerDocument && readerDocument.chapterId === chapterId
       ? readerDocument
@@ -1683,8 +1602,8 @@ export function ReaderPage() {
       data-seekbar-visible={readerSeekbarVisible}
       aria-busy={readerBusy}
       onPointerDown={handleReaderActivity}
-      onPointerMove={handleReaderActivity}
-      onWheel={handleReaderActivity}
+      onPointerMove={handleFrequentReaderActivity}
+      onWheel={handleFrequentReaderActivity}
     >
       <ReaderTopChrome
         chapter={chapter}

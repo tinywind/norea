@@ -105,6 +105,7 @@ interface ReaderMediaPatchTargetIndex {
 const SCROLL_PAGE_FRACTION = 0.9;
 const TWO_PAGE_MIN_COLUMN_WIDTH = 320;
 const PAGED_SCROLL_COMPLETION_BUFFER_MS = 80;
+const PROGRESS_RENDER_DELTA = 0.1;
 const PROGRESS_SAVE_DELAY_MS = 350;
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
@@ -1571,7 +1572,9 @@ function ReaderContentInner(
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const latestProgressRef = useRef(clampProgress(initialProgress));
+  const renderedProgressRef = useRef(clampProgress(initialProgress));
   const lastSavedProgressRef = useRef(Math.round(clampProgress(initialProgress)));
+  const pendingProgressSaveRef = useRef<number | null>(null);
   const progressTimerRef = useRef<number | null>(null);
   const completedForNavigationRef = useRef(false);
   const latestMediaElementPatchesRef = useRef<
@@ -1598,10 +1601,26 @@ function ReaderContentInner(
   const nativeWheelActionLockedUntilRef = useRef(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const [progress, setProgress] = useState(clampProgress(initialProgress));
+  const setRenderedProgress = useCallback(
+    (value: number, options: { force?: boolean } = {}) => {
+      const nextProgress = clampProgress(value);
+      const shouldCommit =
+        options.force ||
+        nextProgress <= 0 ||
+        nextProgress >= 100 ||
+        Math.abs(nextProgress - renderedProgressRef.current) >=
+          PROGRESS_RENDER_DELTA;
+      if (!shouldCommit) return;
+      renderedProgressRef.current = nextProgress;
+      setProgress(nextProgress);
+    },
+    [],
+  );
   const [pageInfo, setPageInfo] = useState<PageInfo>({
     current: 1,
     total: 1,
   });
+  const latestPageInfoRef = useRef<PageInfo>({ current: 1, total: 1 });
   const [now, setNow] = useState(() => new Date());
   const [battery, setBattery] = useState<string | null>(null);
   const [viewportSize, setViewportSize] = useState<ReaderViewportSize>({
@@ -1894,10 +1913,19 @@ function ReaderContentInner(
 
   const scheduleProgressSave = useCallback(
     (value: number) => {
+      const rounded = Math.round(clampProgress(value));
+      if (
+        progressTimerRef.current !== null &&
+        pendingProgressSaveRef.current === rounded
+      ) {
+        return;
+      }
+      pendingProgressSaveRef.current = rounded;
       if (progressTimerRef.current !== null) {
         window.clearTimeout(progressTimerRef.current);
       }
       progressTimerRef.current = window.setTimeout(() => {
+        pendingProgressSaveRef.current = null;
         flushProgress(value);
         progressTimerRef.current = null;
       }, PROGRESS_SAVE_DELAY_MS);
@@ -1939,11 +1967,12 @@ function ReaderContentInner(
         if (!node || !isAtReadingEnd(node, isPagedReader)) return false;
         completedForNavigationRef.current = true;
         latestProgressRef.current = 100;
-        setProgress(100);
+        setRenderedProgress(100, { force: true });
         if (progressTimerRef.current !== null) {
           window.clearTimeout(progressTimerRef.current);
           progressTimerRef.current = null;
         }
+        pendingProgressSaveRef.current = null;
         flushProgress(100);
         return true;
       },
@@ -1964,17 +1993,21 @@ function ReaderContentInner(
       isPagedReader,
       patchMediaElements,
       scrollByPage,
+      setRenderedProgress,
     ],
   );
 
   const applyPageInfo = useCallback(
     (nextPageInfo: PageInfo) => {
-      setPageInfo((current) =>
+      const current = latestPageInfoRef.current;
+      if (
         current.current === nextPageInfo.current &&
         current.total === nextPageInfo.total
-          ? current
-          : nextPageInfo,
-      );
+      ) {
+        return;
+      }
+      latestPageInfoRef.current = nextPageInfo;
+      setPageInfo(nextPageInfo);
       onPageIndexChange?.(nextPageInfo.current);
     },
     [onPageIndexChange],
@@ -1989,7 +2022,7 @@ function ReaderContentInner(
         if (!completedForNavigationRef.current) {
           const restoredProgress = clampProgress(getProgress(node, true));
           latestProgressRef.current = restoredProgress;
-          setProgress(restoredProgress);
+          setRenderedProgress(restoredProgress, { force: true });
         }
         applyPageInfo(getPageInfo(node, true));
         return;
@@ -1998,7 +2031,7 @@ function ReaderContentInner(
       if (!completedForNavigationRef.current) {
         const restoredProgress = clampProgress(getProgress(node, false));
         latestProgressRef.current = restoredProgress;
-        setProgress(restoredProgress);
+        setRenderedProgress(restoredProgress, { force: true });
       }
       applyPageInfo(getPageInfo(node, false));
     },
@@ -2006,6 +2039,7 @@ function ReaderContentInner(
       applyPageInfo,
       getActiveScrollNode,
       isPagedReader,
+      setRenderedProgress,
     ],
   );
   const restoreProgressPositionRef = useRef(restoreProgressPosition);
@@ -2024,18 +2058,21 @@ function ReaderContentInner(
       pendingInitialProgressRestoreRef.current = null;
     }
     if (!isPagedReader) {
-      setVirtualRange(
-        virtualRangeForScroll(
-          node.scrollTop,
-          node.clientHeight,
-          segmentOffsets,
-          READER_SCROLL_OVERSCAN_PX,
-        ),
+      const nextRange = virtualRangeForScroll(
+        node.scrollTop,
+        node.clientHeight,
+        segmentOffsets,
+        READER_SCROLL_OVERSCAN_PX,
+      );
+      setVirtualRange((current) =>
+        current.start === nextRange.start && current.end === nextRange.end
+          ? current
+          : nextRange,
       );
     }
     const nextProgress = clampProgress(getProgress(node, isPagedReader));
     latestProgressRef.current = nextProgress;
-    setProgress(nextProgress);
+    setRenderedProgress(nextProgress);
     applyPageInfo(getPageInfo(node, isPagedReader));
     scheduleProgressSave(nextProgress);
   }, [
@@ -2045,6 +2082,7 @@ function ReaderContentInner(
     isPagedReader,
     scheduleProgressSave,
     segmentOffsets,
+    setRenderedProgress,
   ]);
 
   useEffect(() => {
@@ -2055,13 +2093,14 @@ function ReaderContentInner(
       contentKey,
       progress: nextProgress,
     };
+    latestPageInfoRef.current = { current: -1, total: -1 };
     latestProgressRef.current = nextProgress;
-    setProgress(nextProgress);
+    setRenderedProgress(nextProgress, { force: true });
     lastSavedProgressRef.current = Math.round(nextProgress);
     if (nextProgress < 97) {
       completedForNavigationRef.current = false;
     }
-  }, [contentKey, initialProgress]);
+  }, [contentKey, initialProgress, setRenderedProgress]);
 
   const layoutRestoreKey = useMemo(
     () =>
@@ -2460,6 +2499,7 @@ function ReaderContentInner(
       if (progressTimerRef.current !== null) {
         window.clearTimeout(progressTimerRef.current);
       }
+      pendingProgressSaveRef.current = null;
       if (wheelCooldownTimerRef.current !== null) {
         window.clearTimeout(wheelCooldownTimerRef.current);
       }
@@ -2562,7 +2602,7 @@ function ReaderContentInner(
         scrollToProgress(node, clamped, true, "auto");
         const nextProgress = clampProgress(getProgress(node, true));
         latestProgressRef.current = nextProgress;
-        setProgress(nextProgress);
+        setRenderedProgress(nextProgress, { force: true });
         applyPageInfo(getPageInfo(node, true));
         scheduleProgressSave(nextProgress);
         return;
@@ -2570,7 +2610,7 @@ function ReaderContentInner(
       scrollToProgress(node, clamped, false, "auto");
       const nextProgress = clampProgress(getProgress(node, false));
       latestProgressRef.current = nextProgress;
-      setProgress(nextProgress);
+      setRenderedProgress(nextProgress, { force: true });
       applyPageInfo(getPageInfo(node, false));
       scheduleProgressSave(nextProgress);
     },
@@ -2579,6 +2619,7 @@ function ReaderContentInner(
       getActiveScrollNode,
       isPagedReader,
       scheduleProgressSave,
+      setRenderedProgress,
     ],
   );
 
