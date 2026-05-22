@@ -103,8 +103,6 @@ interface ReaderMediaPatchTargetIndex {
 
 const SCROLL_PAGE_FRACTION = 0.9;
 const TWO_PAGE_MIN_COLUMN_WIDTH = 320;
-const PAGED_SCROLL_ANIMATION_MS = 500;
-const PAGED_SCROLL_ANIMATION_FRAME_MS = 16;
 const PROGRESS_SAVE_DELAY_MS = 350;
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
@@ -300,9 +298,16 @@ function getReaderDebugSnapshot(node: HTMLElement | null) {
   };
 }
 
-function logReaderInput(event: string, details: Record<string, unknown>): void {
+function logReaderInput(
+  event: string,
+  details: Record<string, unknown> | (() => Record<string, unknown>),
+): void {
   if (!import.meta.env.DEV) return;
-  console.warn("[reader-input:html]", event, details);
+  console.warn(
+    "[reader-input:html]",
+    event,
+    typeof details === "function" ? details() : details,
+  );
 }
 
 function logReaderMediaPipeline(
@@ -315,10 +320,6 @@ function logReaderMediaPipeline(
 
 function dispatchReaderScrollEvent(node: HTMLElement): void {
   node.dispatchEvent(new Event("scroll", { bubbles: true }));
-}
-
-function easeOutCubic(progress: number): number {
-  return 1 - Math.pow(1 - progress, 3);
 }
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
@@ -1693,47 +1694,32 @@ function ReaderContentInner(
     pageScrollAnimatingRef.current = true;
     const startLeft = node.scrollLeft;
     const distance = targetLeft - startLeft;
-    logReaderInput("page-scroll-start", {
+    logReaderInput("page-scroll-start", () => ({
       startLeft: Math.round(startLeft),
       targetLeft: Math.round(targetLeft),
       distance: Math.round(distance),
       snapshot: getReaderDebugSnapshot(node),
-    });
+    }));
     if (Math.abs(distance) <= 1) {
       node.scrollLeft = targetLeft;
       pageScrollAnimatingRef.current = false;
       dispatchReaderScrollEvent(node);
-      logReaderInput("page-scroll-complete", {
+      logReaderInput("page-scroll-complete", () => ({
         targetLeft: Math.round(targetLeft),
         snapshot: getReaderDebugSnapshot(node),
-      });
+      }));
       return;
     }
-    const startedAt = performance.now();
-    const step = () => {
-      const progress = Math.min(
-        1,
-        (performance.now() - startedAt) / PAGED_SCROLL_ANIMATION_MS,
-      );
-      node.scrollLeft = startLeft + distance * easeOutCubic(progress);
-      if (progress < 1) {
-        pageScrollTimerRef.current = window.setTimeout(
-          step,
-          PAGED_SCROLL_ANIMATION_FRAME_MS,
-        );
-        return;
-      }
-      node.scrollLeft = targetLeft;
+    node.scrollLeft = targetLeft;
+    pageScrollTimerRef.current = window.setTimeout(() => {
       pageScrollAnimatingRef.current = false;
       dispatchReaderScrollEvent(node);
-      logReaderInput("page-scroll-complete", {
+      logReaderInput("page-scroll-complete", () => ({
         targetLeft: Math.round(targetLeft),
         snapshot: getReaderDebugSnapshot(node),
-      });
+      }));
       pageScrollTimerRef.current = null;
-    };
-
-    step();
+    }, 0);
   }, [getActiveScrollNode]);
 
   const scrollByPage = useCallback(
@@ -1746,20 +1732,20 @@ function ReaderContentInner(
       if (isPagedReader) {
         const currentPage = getPagedPageIndex(node);
         const targetPage = currentPage + direction;
-        logReaderInput("page-step-request", {
+        logReaderInput("page-step-request", () => ({
           source,
           direction,
           mode: "paged",
           currentPage,
           targetPage,
           snapshot: getReaderDebugSnapshot(node),
-        });
+        }));
         if (targetPage < 1 || targetPage > getPagedPageCount(node)) {
-          logReaderInput("page-step-boundary", {
+          logReaderInput("page-step-boundary", () => ({
             source,
             direction,
             snapshot: getReaderDebugSnapshot(node),
-          });
+          }));
           onBoundaryPage?.(direction);
           return;
         }
@@ -1767,42 +1753,42 @@ function ReaderContentInner(
         return;
       }
       if (performance.now() < nativeWheelActionLockedUntilRef.current) {
-        logReaderInput("page-step-suppressed", {
+        logReaderInput("page-step-suppressed", () => ({
           source,
           direction,
           reason: "native-wheel-active",
           snapshot: getReaderDebugSnapshot(node),
-        });
+        }));
         return;
       }
       const axisMax = node.scrollHeight - node.clientHeight;
       const current = node.scrollTop;
-      logReaderInput("page-step-request", {
+      logReaderInput("page-step-request", () => ({
         source,
         direction,
         mode: "scroll",
         axisMax: Math.round(axisMax),
         snapshot: getReaderDebugSnapshot(node),
-      });
+      }));
       if (
         (direction === 1 && current >= axisMax - 2) ||
         (direction === -1 && current <= 2)
       ) {
-        logReaderInput("page-step-boundary", {
+        logReaderInput("page-step-boundary", () => ({
           source,
           direction,
           snapshot: getReaderDebugSnapshot(node),
-        });
+        }));
         onBoundaryPage?.(direction);
         return;
       }
       const amount = node.clientHeight * SCROLL_PAGE_FRACTION;
-      logReaderInput("page-step-scroll", {
+      logReaderInput("page-step-scroll", () => ({
         source,
         direction,
         amount: Math.round(amount),
         snapshot: getReaderDebugSnapshot(node),
-      });
+      }));
       node.scrollBy({ top: amount * direction, behavior: "auto" });
     },
     [
@@ -2457,31 +2443,31 @@ function ReaderContentInner(
     event.preventDefault();
     const node = getActiveScrollNode();
     if (wheelPagingLockedRef.current) {
-      logReaderInput("wheel-suppressed", {
+      logReaderInput("wheel-suppressed", () => ({
         delta: Math.round(delta),
         reason: "wheel-cooldown",
         snapshot: getReaderDebugSnapshot(node),
-      });
+      }));
       return;
     }
 
     wheelDeltaRef.current += delta;
     if (Math.abs(wheelDeltaRef.current) < WHEEL_PAGE_DELTA_THRESHOLD) {
-      logReaderInput("wheel-accumulate", {
+      logReaderInput("wheel-accumulate", () => ({
         delta: Math.round(delta),
         accumulated: Math.round(wheelDeltaRef.current),
         snapshot: getReaderDebugSnapshot(node),
-      });
+      }));
       return;
     }
 
     const direction: 1 | -1 = wheelDeltaRef.current > 0 ? 1 : -1;
     wheelDeltaRef.current = 0;
     wheelPagingLockedRef.current = true;
-    logReaderInput("wheel-page-step", {
+    logReaderInput("wheel-page-step", () => ({
       direction,
       snapshot: getReaderDebugSnapshot(node),
-    });
+    }));
     scrollByPage(direction, "wheel-page-step");
 
     if (wheelCooldownTimerRef.current !== null) {
@@ -2743,6 +2729,11 @@ function ReaderContentInner(
             margin-block: ${
               general.removeExtraParagraphSpacing ? "0.65em" : "1em"
             };
+          }
+          .reader-viewport-paged .reader-content p {
+            -webkit-column-break-inside: avoid;
+            break-inside: avoid;
+            page-break-inside: avoid;
           }
           .reader-content strong {
             font-weight: 800;

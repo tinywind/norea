@@ -133,6 +133,7 @@ const CHAPTER_LIST_FALLBACK_ROWS = 14;
 const CHAPTER_DND_PREFIX = "chapter:";
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
 const EMPTY_CHAPTERS: ChapterListRow[] = [];
+const EMPTY_CHAPTER_DND_IDS: string[] = [];
 const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   name: "",
   cover: "",
@@ -767,6 +768,13 @@ function VirtualChapterList({
   );
   const visibleChapters = chapters.slice(startIndex, endIndex);
   const offsetY = startIndex * chapterRowHeight;
+  const sortableChapterIds = useMemo(
+    () =>
+      canReorderChapters
+        ? chapters.map((chapter) => chapterDndId(chapter.id))
+        : EMPTY_CHAPTER_DND_IDS,
+    [canReorderChapters, chapters],
+  );
   useEffect(() => {
     const element = viewportRef.current;
     if (!element) return;
@@ -815,6 +823,51 @@ function VirtualChapterList({
     onReorderChapter(activeChapterId, beforeChapterId);
   };
 
+  const chapterList = (
+    <div
+      className="lnr-novel-chapter-list"
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      ref={viewportRef}
+    >
+      <div
+        className="lnr-novel-chapter-list-spacer"
+        style={{ height: totalHeight }}
+      >
+        <div
+          className="lnr-novel-chapter-list-window"
+          style={{ transform: `translateY(${offsetY}px)` }}
+        >
+          {visibleChapters.map((chapter, index) => {
+            const displayIndex = startIndex + index;
+            return (
+              <ChapterListItem
+                key={chapter.id}
+                chapter={chapter}
+                canDeleteDownload={canDeleteDownloads}
+                canMoveDown={
+                  canReorderChapters && displayIndex < chapters.length - 1
+                }
+                canMoveUp={canReorderChapters && displayIndex > 0}
+                isCurrent={chapter.id === lastReadChapterId}
+                status={statuses.get(chapter.id)}
+                deleteBusy={deletePending && deleteBusyChapterId === chapter.id}
+                opening={openingChapterId === chapter.id}
+                repairBusy={repairPending && repairBusyChapterId === chapter.id}
+                reorderBusy={reorderPending}
+                onOpen={() => onOpen(chapter)}
+                onDownload={() => onDownload(chapter)}
+                onDeleteDownload={() => onDeleteDownload(chapter.id)}
+                onRepairMedia={() => onRepairMedia(chapter)}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!canReorderChapters) return chapterList;
+
   return (
     <DndContext
       collisionDetection={closestCenter}
@@ -822,53 +875,10 @@ function VirtualChapterList({
       sensors={sensors}
     >
       <SortableContext
-        items={chapters.map((chapter) => chapterDndId(chapter.id))}
+        items={sortableChapterIds}
         strategy={verticalListSortingStrategy}
       >
-        <div
-          className="lnr-novel-chapter-list"
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-          ref={viewportRef}
-        >
-          <div
-            className="lnr-novel-chapter-list-spacer"
-            style={{ height: totalHeight }}
-          >
-            <div
-              className="lnr-novel-chapter-list-window"
-              style={{ transform: `translateY(${offsetY}px)` }}
-            >
-              {visibleChapters.map((chapter, index) => {
-                const displayIndex = startIndex + index;
-                return (
-                  <ChapterListItem
-                    key={chapter.id}
-                    chapter={chapter}
-                    canDeleteDownload={canDeleteDownloads}
-                    canMoveDown={
-                      canReorderChapters && displayIndex < chapters.length - 1
-                    }
-                    canMoveUp={canReorderChapters && displayIndex > 0}
-                    isCurrent={chapter.id === lastReadChapterId}
-                    status={statuses.get(chapter.id)}
-                    deleteBusy={
-                      deletePending && deleteBusyChapterId === chapter.id
-                    }
-                    opening={openingChapterId === chapter.id}
-                    repairBusy={
-                      repairPending && repairBusyChapterId === chapter.id
-                    }
-                    reorderBusy={reorderPending}
-                    onOpen={() => onOpen(chapter)}
-                    onDownload={() => onDownload(chapter)}
-                    onDeleteDownload={() => onDeleteDownload(chapter.id)}
-                    onRepairMedia={() => onRepairMedia(chapter)}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        {chapterList}
       </SortableContext>
     </DndContext>
   );

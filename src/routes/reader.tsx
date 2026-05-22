@@ -71,6 +71,9 @@ const FINISHED_PROGRESS = 100;
 const FULL_PAGE_CHROME_HIDE_DELAY_MS = 5000;
 const READER_SEEKBAR_HIDE_DELAY_MS = 1000;
 const READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH = 350_000;
+const READER_CHAPTER_ROW_HEIGHT = 30;
+const READER_CHAPTER_PANEL_FALLBACK_ROWS = 36;
+const READER_CHAPTER_PANEL_OVERSCAN = 12;
 
 type ReaderDocumentState = {
   chapterId: number;
@@ -385,9 +388,50 @@ function ReaderChapterPanel({
   onOpenChapter: (chapter: ChapterListRow) => void;
 }) {
   const { t } = useTranslation();
+  const panelRef = useRef<HTMLElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(
+    READER_CHAPTER_ROW_HEIGHT * READER_CHAPTER_PANEL_FALLBACK_ROWS,
+  );
+  const totalHeight = chapters.length * READER_CHAPTER_ROW_HEIGHT;
+  const startIndex = Math.max(
+    0,
+    Math.floor(scrollTop / READER_CHAPTER_ROW_HEIGHT) -
+      READER_CHAPTER_PANEL_OVERSCAN,
+  );
+  const endIndex = Math.min(
+    chapters.length,
+    Math.ceil((scrollTop + viewportHeight) / READER_CHAPTER_ROW_HEIGHT) +
+      READER_CHAPTER_PANEL_OVERSCAN,
+  );
+  const visibleChapters = chapters.slice(startIndex, endIndex);
+  const offsetY = startIndex * READER_CHAPTER_ROW_HEIGHT;
+
+  useEffect(() => {
+    const element = panelRef.current;
+    if (!element) return;
+
+    const updateViewportHeight = () => {
+      setViewportHeight(element.clientHeight);
+    };
+
+    updateViewportHeight();
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(updateViewportHeight);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   return (
-    <aside className="lnr-reader-chapter-panel" aria-label={t("reader.chapters")}>
+    <aside
+      className="lnr-reader-chapter-panel"
+      aria-label={t("reader.chapters")}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      ref={panelRef}
+    >
       <div className="lnr-reader-panel-kicker">{t("reader.chapters")}</div>
       {loading ? (
         <div className="lnr-reader-panel-empty">{t("reader.loadingIndex")}</div>
@@ -396,34 +440,47 @@ function ReaderChapterPanel({
           {t("reader.noIndexedChapters")}
         </div>
       ) : (
-        <div className="lnr-reader-chapter-list">
-          {chapters.map((item) => {
-            const current = item.id === currentChapterId;
-            const status =
-              item.progress >= FINISHED_PROGRESS
-                ? "done"
-                : item.unread
-                  ? "unread"
-                  : "idle";
-            return (
-              <button
-                aria-current={current ? "true" : undefined}
-                className="lnr-reader-chapter-row"
-                data-current={current}
-                data-status={status}
-                key={item.id}
-                onClick={() => onOpenChapter(item)}
-                title={item.name}
-                type="button"
-              >
-                <span className="lnr-reader-chapter-number">
-                  {getChapterLabel(item, t)}
-                </span>
-                <span className="lnr-reader-chapter-name">{item.name}</span>
-                <span className="lnr-reader-chapter-dot" aria-hidden />
-              </button>
-            );
-          })}
+        <div
+          className="lnr-reader-chapter-list"
+          style={{ display: "block", height: totalHeight, position: "relative" }}
+        >
+          <div
+            style={{
+              left: 0,
+              position: "absolute",
+              right: 0,
+              top: offsetY,
+            }}
+          >
+            {visibleChapters.map((item) => {
+              const current = item.id === currentChapterId;
+              const status =
+                item.progress >= FINISHED_PROGRESS
+                  ? "done"
+                  : item.unread
+                    ? "unread"
+                    : "idle";
+              return (
+                <button
+                  aria-current={current ? "true" : undefined}
+                  className="lnr-reader-chapter-row"
+                  data-current={current}
+                  data-status={status}
+                  key={item.id}
+                  onClick={() => onOpenChapter(item)}
+                  style={{ height: READER_CHAPTER_ROW_HEIGHT }}
+                  title={item.name}
+                  type="button"
+                >
+                  <span className="lnr-reader-chapter-number">
+                    {getChapterLabel(item, t)}
+                  </span>
+                  <span className="lnr-reader-chapter-name">{item.name}</span>
+                  <span className="lnr-reader-chapter-dot" aria-hidden />
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </aside>
