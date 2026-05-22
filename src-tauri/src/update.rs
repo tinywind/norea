@@ -1,7 +1,12 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
+};
+
+#[cfg(not(target_os = "android"))]
+use std::{
+    fs::OpenOptions,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -539,6 +544,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[cfg(not(target_os = "android"))]
 fn create_temp_download_file(
     updates_dir: &Path,
     file_name: &str,
