@@ -110,6 +110,9 @@ const WHEEL_PAGE_DELTA_THRESHOLD = 20;
 const NATIVE_WHEEL_ACTION_LOCK_MS = 240;
 const WHEEL_DELTA_LINE = 1;
 const WHEEL_DELTA_PAGE = 2;
+const PAGED_SCROLL_POSITION_TOLERANCE_PX = 2;
+const PAGED_TRAILING_PAGE_TOLERANCE_MAX_PX = 32;
+const PAGED_TRAILING_PAGE_TOLERANCE_FRACTION = 0.03;
 const READER_MEDIA_EVENT_SELECTOR =
   "img,picture,svg,video,audio,canvas,iframe,figure";
 const READER_MEDIA_PATCH_SELECTOR = [
@@ -1390,10 +1393,9 @@ function applyBionicReading(html: string): string {
 
 function getProgress(node: HTMLElement, pageReader: boolean): number {
   if (pageReader) {
-    const scrollWidth = Math.max(0, node.scrollWidth);
-    if (scrollWidth <= node.clientWidth + 2) return 0;
-    const pageLeft = getPagedLeft(node, getPagedPageIndex(node));
-    return (pageLeft / scrollWidth) * 100;
+    const total = getPagedPageCount(node);
+    if (total <= 1) return 0;
+    return ((getPagedPageIndex(node) - 1) / (total - 1)) * 100;
   }
   const maxTop = node.scrollHeight - node.clientHeight;
   return maxTop <= 0 ? 100 : (node.scrollTop / maxTop) * 100;
@@ -1403,24 +1405,52 @@ function getPagedStep(node: HTMLElement): number {
   return Math.max(1, node.clientWidth);
 }
 
+function getPagedMaxLeft(node: HTMLElement): number {
+  return Math.max(0, node.scrollWidth - node.clientWidth);
+}
+
+function getPagedTrailingTolerance(step: number): number {
+  return Math.max(
+    PAGED_SCROLL_POSITION_TOLERANCE_PX,
+    Math.min(
+      PAGED_TRAILING_PAGE_TOLERANCE_MAX_PX,
+      step * PAGED_TRAILING_PAGE_TOLERANCE_FRACTION,
+    ),
+  );
+}
+
 function getPagedPageCount(node: HTMLElement): number {
-  const maxLeft = Math.max(0, node.scrollWidth - node.clientWidth);
-  if (maxLeft <= 2) return 1;
-  return Math.max(1, Math.ceil(maxLeft / getPagedStep(node)) + 1);
+  const maxLeft = getPagedMaxLeft(node);
+  if (maxLeft <= PAGED_SCROLL_POSITION_TOLERANCE_PX) return 1;
+  const step = getPagedStep(node);
+  const fullSteps = Math.floor(maxLeft / step);
+  const remainder = maxLeft - fullSteps * step;
+  const hasDistinctTrailingPage =
+    remainder > getPagedTrailingTolerance(step);
+  return Math.max(1, fullSteps + 1 + (hasDistinctTrailingPage ? 1 : 0));
 }
 
 function getPagedPageIndex(node: HTMLElement): number {
   const total = getPagedPageCount(node);
-  const maxLeft = Math.max(0, node.scrollWidth - node.clientWidth);
-  if (maxLeft <= 2) return 1;
-  if (node.scrollLeft >= maxLeft - 2) return total;
+  const maxLeft = getPagedMaxLeft(node);
+  if (maxLeft <= PAGED_SCROLL_POSITION_TOLERANCE_PX) return 1;
+  if (node.scrollLeft >= maxLeft - PAGED_SCROLL_POSITION_TOLERANCE_PX) {
+    return total;
+  }
   const current = Math.round(node.scrollLeft / getPagedStep(node)) + 1;
   return Math.max(1, Math.min(total, current));
 }
 
 function getPagedLeft(node: HTMLElement, pageIndex: number): number {
-  const maxLeft = Math.max(0, node.scrollWidth - node.clientWidth);
-  return Math.max(0, Math.min(maxLeft, (pageIndex - 1) * getPagedStep(node)));
+  const total = getPagedPageCount(node);
+  const maxLeft = getPagedMaxLeft(node);
+  if (total <= 1) return 0;
+  const clampedPageIndex = Math.max(1, Math.min(total, pageIndex));
+  if (clampedPageIndex >= total) return maxLeft;
+  return Math.max(
+    0,
+    Math.min(maxLeft, (clampedPageIndex - 1) * getPagedStep(node)),
+  );
 }
 
 function getProgressPageIndex(node: HTMLElement, progress: number): number {
@@ -1428,11 +1458,7 @@ function getProgressPageIndex(node: HTMLElement, progress: number): number {
   if (total <= 1) return 1;
   const ratio = clampProgress(progress) / 100;
   if (ratio >= 1) return total;
-  const targetLeft = node.scrollWidth * ratio;
-  const maxLeft = Math.max(0, node.scrollWidth - node.clientWidth);
-  if (targetLeft >= maxLeft - 2) return total;
-  const pageIndex = Math.round(targetLeft / getPagedStep(node)) + 1;
-  return Math.max(1, Math.min(total, pageIndex));
+  return Math.max(1, Math.min(total, Math.round(ratio * (total - 1)) + 1));
 }
 
 function isAtReadingEnd(node: HTMLElement, pageReader: boolean): boolean {
