@@ -103,6 +103,7 @@ interface ReaderMediaPatchTargetIndex {
 
 const SCROLL_PAGE_FRACTION = 0.9;
 const TWO_PAGE_MIN_COLUMN_WIDTH = 320;
+const PAGED_SCROLL_ANIMATION_MS = 500;
 const PROGRESS_SAVE_DELAY_MS = 350;
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
@@ -320,6 +321,10 @@ function logReaderMediaPipeline(
 
 function dispatchReaderScrollEvent(node: HTMLElement): void {
   node.dispatchEvent(new Event("scroll", { bubbles: true }));
+}
+
+function easeOutCubic(progress: number): number {
+  return 1 - Math.pow(1 - progress, 3);
 }
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
@@ -1557,7 +1562,7 @@ function ReaderContentInner(
     useRef<ReaderInitialProgressRestore | null>(null);
   const restoredLayoutKeyRef = useRef<string | null>(null);
   const scrollActivityVersionRef = useRef(0);
-  const pageScrollTimerRef = useRef<number | null>(null);
+  const pageScrollFrameRef = useRef<number | null>(null);
   const pageScrollAnimatingRef = useRef(false);
   const wheelDeltaRef = useRef(0);
   const wheelCooldownTimerRef = useRef<number | null>(null);
@@ -1684,13 +1689,18 @@ function ReaderContentInner(
   const virtualContentHeight =
     segmentOffsets[segmentOffsets.length - 1] ?? 0;
 
+  const cancelPagedScrollAnimation = useCallback(() => {
+    if (pageScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pageScrollFrameRef.current);
+      pageScrollFrameRef.current = null;
+    }
+    pageScrollAnimatingRef.current = false;
+  }, []);
+
   const scrollPagedTo = useCallback((targetLeft: number) => {
     const node = getActiveScrollNode();
     if (!node) return;
-    if (pageScrollTimerRef.current !== null) {
-      window.clearTimeout(pageScrollTimerRef.current);
-      pageScrollTimerRef.current = null;
-    }
+    cancelPagedScrollAnimation();
     pageScrollAnimatingRef.current = true;
     const startLeft = node.scrollLeft;
     const distance = targetLeft - startLeft;
@@ -1710,17 +1720,30 @@ function ReaderContentInner(
       }));
       return;
     }
-    node.scrollLeft = targetLeft;
-    pageScrollTimerRef.current = window.setTimeout(() => {
+    const startedAt = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min(
+        1,
+        (now - startedAt) / PAGED_SCROLL_ANIMATION_MS,
+      );
+      node.scrollLeft = startLeft + distance * easeOutCubic(progress);
+      if (progress < 1) {
+        pageScrollFrameRef.current = window.requestAnimationFrame(step);
+        return;
+      }
+
+      node.scrollLeft = targetLeft;
       pageScrollAnimatingRef.current = false;
       dispatchReaderScrollEvent(node);
       logReaderInput("page-scroll-complete", () => ({
         targetLeft: Math.round(targetLeft),
         snapshot: getReaderDebugSnapshot(node),
       }));
-      pageScrollTimerRef.current = null;
-    }, 0);
-  }, [getActiveScrollNode]);
+      pageScrollFrameRef.current = null;
+    };
+
+    pageScrollFrameRef.current = window.requestAnimationFrame(step);
+  }, [cancelPagedScrollAnimation, getActiveScrollNode]);
 
   const scrollByPage = useCallback(
     (direction: 1 | -1, source = "imperative") => {
@@ -1874,16 +1897,13 @@ function ReaderContentInner(
       scrollToStart() {
         const node = getActiveScrollNode();
         if (!node) return;
-        if (pageScrollTimerRef.current !== null) {
-          window.clearTimeout(pageScrollTimerRef.current);
-          pageScrollTimerRef.current = null;
-        }
-        pageScrollAnimatingRef.current = false;
+        cancelPagedScrollAnimation();
         node.scrollTo({ top: 0, left: 0, behavior: "auto" });
         dispatchReaderScrollEvent(node);
       },
     }),
     [
+      cancelPagedScrollAnimation,
       flushProgress,
       getActiveScrollNode,
       isPagedReader,
@@ -2388,14 +2408,10 @@ function ReaderContentInner(
       if (wheelCooldownTimerRef.current !== null) {
         window.clearTimeout(wheelCooldownTimerRef.current);
       }
-      if (pageScrollTimerRef.current !== null) {
-        window.clearTimeout(pageScrollTimerRef.current);
-        pageScrollTimerRef.current = null;
-      }
-      pageScrollAnimatingRef.current = false;
+      cancelPagedScrollAnimation();
       flushProgress(latestProgressRef.current);
     },
-    [flushProgress],
+    [cancelPagedScrollAnimation, flushProgress],
   );
 
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
