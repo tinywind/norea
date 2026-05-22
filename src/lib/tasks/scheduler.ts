@@ -269,6 +269,19 @@ function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
   );
 }
 
+function isUiResponsiveSourceKind(kind: TaskKind): boolean {
+  return (
+    isOpenSiteSourceKind(kind) ||
+    isImmediateBrowseSourceKind(kind) ||
+    kind === "source.globalSearch" ||
+    kind === "source.refreshNovel"
+  );
+}
+
+function isInterruptibleDownloadKind(kind: TaskKind): boolean {
+  return kind === "chapter.download" || kind === "chapter.repairMedia";
+}
+
 function shouldUseImmediateExecutor(entry: TaskEntry): boolean {
   if (isOpenSiteSourceKind(entry.record.kind)) return true;
   return (
@@ -544,6 +557,7 @@ export class TaskScheduler {
       const queue = this.sourceQueues.get(sourceId) ?? [];
       queue.push(id);
       this.sourceQueues.set(sourceId, queue);
+      this.handleUiResponsiveSourceEnqueue(entry);
     }
 
     if (spec.kind === "source.openSite") {
@@ -726,7 +740,10 @@ export class TaskScheduler {
     return true;
   }
 
-  private pauseRunningSourceTasks(sourceId?: string): number {
+  private pauseRunningSourceTasks(
+    sourceId?: string,
+    shouldPause: (entry: TaskEntry) => boolean = () => true,
+  ): number {
     let paused = 0;
     for (const entry of this.entries.values()) {
       if (
@@ -734,7 +751,8 @@ export class TaskScheduler {
         entry.record.lane !== "source" ||
         entry.record.status !== "running" ||
         entry.record.kind === "source.openSite" ||
-        (sourceId && entry.record.source?.id !== sourceId)
+        (sourceId && entry.record.source?.id !== sourceId) ||
+        !shouldPause(entry)
       ) {
         continue;
       }
@@ -747,6 +765,63 @@ export class TaskScheduler {
       );
     }
     return paused;
+  }
+
+  private pauseRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
+    if (!this.shouldPromoteForUiResponsiveness(entry)) return 0;
+    const paused = this.pauseRunningSourceTasks(undefined, (candidate) =>
+      isInterruptibleDownloadKind(candidate.record.kind),
+    );
+    if (paused > 0) {
+      this.debug("paused interruptible downloads for UI work", entry, {
+        paused,
+      });
+    }
+    return paused;
+  }
+
+  private handleUiResponsiveSourceEnqueue(entry: TaskEntry): void {
+    if (!this.shouldPromoteForUiResponsiveness(entry)) return;
+    this.promoteQueuedUiSourceEntry(entry);
+    this.promoteSourceQueue(entry.record.source?.id);
+    this.pauseRunningInterruptibleDownloadsForUi(entry);
+  }
+
+  private shouldPromoteForUiResponsiveness(entry: TaskEntry): boolean {
+    return (
+      entry.record.lane === "source" &&
+      entry.record.status === "queued" &&
+      (entry.record.priority === "interactive" ||
+        (entry.record.priority === "user" &&
+          isUiResponsiveSourceKind(entry.record.kind)))
+    );
+  }
+
+  private promoteQueuedUiSourceEntry(entry: TaskEntry): void {
+    const queue = this.queueForEntry(entry);
+    if (!queue) return;
+    this.removeQueuedId(queue, entry.record.id);
+    const insertIndex = this.sourceQueueUiInsertIndex(queue);
+    queue.splice(insertIndex, 0, entry.record.id);
+  }
+
+  private promoteSourceQueue(sourceId: string | undefined): void {
+    if (!sourceId) return;
+    this.ensureSourceQueueOrder(sourceId);
+    const currentIndex = this.sourceQueueOrder.indexOf(sourceId);
+    if (currentIndex <= 0) return;
+    this.sourceQueueOrder.splice(currentIndex, 1);
+    this.sourceQueueOrder.unshift(sourceId);
+  }
+
+  private sourceQueueUiInsertIndex(queue: string[]): number {
+    let index = 0;
+    while (index < queue.length) {
+      const entry = this.entries.get(queue[index]!);
+      if (!entry || !this.shouldPromoteForUiResponsiveness(entry)) break;
+      index += 1;
+    }
+    return index;
   }
 
   private cancelOtherOpenSiteTasks(taskId: string): void {
@@ -1381,7 +1456,10 @@ export class TaskScheduler {
     if (!sourceId) return;
     const queue = this.sourceQueues.get(sourceId) ?? [];
     if (!queue.includes(entry.record.id)) {
-      queue.unshift(entry.record.id);
+      const insertIndex = isInterruptibleDownloadKind(entry.record.kind)
+        ? this.sourceQueueUiInsertIndex(queue)
+        : 0;
+      queue.splice(insertIndex, 0, entry.record.id);
     }
     this.sourceQueues.set(sourceId, queue);
   }

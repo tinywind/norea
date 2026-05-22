@@ -420,6 +420,7 @@ describe("TaskScheduler", () => {
       sourceQueuesPaused: false,
     });
     const order: string[] = [];
+    let downloadRunCount = 0;
     let finishDownload!: () => void;
 
     const download = scheduler.enqueueSource({
@@ -429,8 +430,22 @@ describe("TaskScheduler", () => {
       source: { id: "p", name: "Plugin" },
       run: (context) =>
         new Promise<void>((resolve) => {
-          order.push(`download:${context.executor}:start`);
-          finishDownload = resolve;
+          downloadRunCount += 1;
+          const runNumber = downloadRunCount;
+          order.push(`download:${runNumber}:${context.executor}:start`);
+          const cleanup = () => {
+            context.signal.removeEventListener("abort", handleAbort);
+          };
+          const handleAbort = () => {
+            order.push(`download:${runNumber}:paused`);
+            cleanup();
+            resolve();
+          };
+          context.signal.addEventListener("abort", handleAbort, { once: true });
+          finishDownload = () => {
+            cleanup();
+            resolve();
+          };
         }),
     });
 
@@ -447,9 +462,73 @@ describe("TaskScheduler", () => {
     });
 
     await browse.promise;
+    await settle();
     expect(order).toEqual([
-      "download:pool:0:start",
+      "download:1:pool:0:start",
+      "download:1:paused",
       "browse:immediate:start",
+      "download:2:pool:0:start",
+    ]);
+
+    finishDownload();
+    await download.promise;
+  });
+
+  it("runs queued pool UI work before a paused same-source download resumes", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const order: string[] = [];
+    let downloadRunCount = 0;
+    let finishDownload!: () => void;
+
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Background download",
+      priority: "background",
+      source: { id: "p", name: "Plugin" },
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          downloadRunCount += 1;
+          const runNumber = downloadRunCount;
+          order.push(`download:${runNumber}:${context.executor}:start`);
+          const cleanup = () => {
+            context.signal.removeEventListener("abort", handleAbort);
+          };
+          const handleAbort = () => {
+            order.push(`download:${runNumber}:paused`);
+            cleanup();
+            resolve();
+          };
+          context.signal.addEventListener("abort", handleAbort, { once: true });
+          finishDownload = () => {
+            cleanup();
+            resolve();
+          };
+        }),
+    });
+
+    await settle();
+
+    const search = scheduler.enqueueSource({
+      kind: "source.globalSearch",
+      title: "Search source",
+      priority: "user",
+      source: { id: "p", name: "Plugin" },
+      run: async (context) => {
+        order.push(`search:${context.executor}:start`);
+      },
+    });
+
+    await search.promise;
+    await settle();
+
+    expect(order).toEqual([
+      "download:1:pool:0:start",
+      "download:1:paused",
+      "search:pool:0:start",
+      "download:2:pool:0:start",
     ]);
 
     finishDownload();
