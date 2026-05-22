@@ -21,6 +21,7 @@ import {
 } from "../lib/chapter-media";
 import { formatTimeForLocale, useTranslation, type AppLocale } from "../i18n";
 import {
+  READER_PAGE_TRANSITION_DURATION_DEFAULT_MS,
   useReaderStore,
   type ReaderAppearanceSettings,
   type ReaderGeneralSettings,
@@ -103,7 +104,7 @@ interface ReaderMediaPatchTargetIndex {
 
 const SCROLL_PAGE_FRACTION = 0.9;
 const TWO_PAGE_MIN_COLUMN_WIDTH = 320;
-const PAGED_SCROLL_ANIMATION_MS = 500;
+const PAGED_SCROLL_COMPLETION_BUFFER_MS = 80;
 const PROGRESS_SAVE_DELAY_MS = 350;
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
@@ -1588,7 +1589,8 @@ function ReaderContentInner(
     useRef<ReaderInitialProgressRestore | null>(null);
   const restoredLayoutKeyRef = useRef<string | null>(null);
   const scrollActivityVersionRef = useRef(0);
-  const pageScrollFrameRef = useRef<number | null>(null);
+  const pageScrollCompletionTimerRef = useRef<number | null>(null);
+  const pageScrollCompletionFrameRef = useRef<number | null>(null);
   const pageScrollAnimatingRef = useRef(false);
   const wheelDeltaRef = useRef(0);
   const wheelCooldownTimerRef = useRef<number | null>(null);
@@ -1716,9 +1718,13 @@ function ReaderContentInner(
     segmentOffsets[segmentOffsets.length - 1] ?? 0;
 
   const cancelPagedScrollAnimation = useCallback(() => {
-    if (pageScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pageScrollFrameRef.current);
-      pageScrollFrameRef.current = null;
+    if (pageScrollCompletionTimerRef.current !== null) {
+      window.clearTimeout(pageScrollCompletionTimerRef.current);
+      pageScrollCompletionTimerRef.current = null;
+    }
+    if (pageScrollCompletionFrameRef.current !== null) {
+      window.cancelAnimationFrame(pageScrollCompletionFrameRef.current);
+      pageScrollCompletionFrameRef.current = null;
     }
     pageScrollAnimatingRef.current = false;
   }, []);
@@ -1737,7 +1743,7 @@ function ReaderContentInner(
       snapshot: getReaderDebugSnapshot(node),
     }));
     if (Math.abs(distance) <= 1) {
-      node.scrollLeft = targetLeft;
+      node.scrollTo({ left: targetLeft, behavior: "auto" });
       pageScrollAnimatingRef.current = false;
       dispatchReaderScrollEvent(node);
       logReaderInput("page-scroll-complete", () => ({
@@ -1746,30 +1752,53 @@ function ReaderContentInner(
       }));
       return;
     }
-    const startedAt = performance.now();
-    const step = (now: number) => {
-      const progress = Math.min(
-        1,
-        (now - startedAt) / PAGED_SCROLL_ANIMATION_MS,
-      );
-      node.scrollLeft = startLeft + distance * easeOutCubic(progress);
-      if (progress < 1) {
-        pageScrollFrameRef.current = window.requestAnimationFrame(step);
-        return;
-      }
 
-      node.scrollLeft = targetLeft;
+    const duration = Math.max(
+      0,
+      Math.round(
+        general.pageTransitionDuration ??
+          READER_PAGE_TRANSITION_DURATION_DEFAULT_MS,
+      ),
+    );
+    if (duration <= 0) {
+      node.scrollTo({ left: targetLeft, behavior: "auto" });
       pageScrollAnimatingRef.current = false;
       dispatchReaderScrollEvent(node);
       logReaderInput("page-scroll-complete", () => ({
         targetLeft: Math.round(targetLeft),
         snapshot: getReaderDebugSnapshot(node),
       }));
-      pageScrollFrameRef.current = null;
+      return;
+    }
+
+    const startedAt = performance.now();
+    const step = (now: number) => {
+      const elapsed = now - startedAt;
+      const progress = Math.min(1, elapsed / duration);
+      node.scrollLeft = startLeft + distance * easeOutCubic(progress);
+      if (progress < 1) {
+        pageScrollCompletionFrameRef.current = window.requestAnimationFrame(step);
+        return;
+      }
+
+      pageScrollAnimatingRef.current = false;
+      pageScrollCompletionFrameRef.current = null;
+      pageScrollCompletionTimerRef.current = window.setTimeout(() => {
+        pageScrollCompletionTimerRef.current = null;
+        dispatchReaderScrollEvent(node);
+        logReaderInput("page-scroll-complete", () => ({
+          targetLeft: Math.round(targetLeft),
+          snapshot: getReaderDebugSnapshot(node),
+        }));
+      }, PAGED_SCROLL_COMPLETION_BUFFER_MS);
     };
 
-    pageScrollFrameRef.current = window.requestAnimationFrame(step);
-  }, [cancelPagedScrollAnimation, getActiveScrollNode]);
+    pageScrollCompletionFrameRef.current = window.requestAnimationFrame(step);
+  }, [
+    cancelPagedScrollAnimation,
+    general.pageTransitionDuration,
+    getActiveScrollNode,
+  ]);
 
   const scrollByPage = useCallback(
     (direction: 1 | -1, source = "imperative") => {
