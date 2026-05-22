@@ -431,6 +431,7 @@ fn validate_update_metadata(metadata: &UpdateInstallMetadata) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg(target_os = "android")]
 fn verify_update_bytes(bytes: &[u8], metadata: &UpdateInstallMetadata) -> Result<(), String> {
     validate_update_metadata(metadata)?;
     let size = u64::try_from(bytes.len()).map_err(|_| "update size is too large".to_string())?;
@@ -540,6 +541,7 @@ fn normalize_sha256(value: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
+#[cfg(target_os = "android")]
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
