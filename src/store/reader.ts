@@ -33,6 +33,10 @@ export type ReaderTapZone =
   | "bottomRight";
 export type ReaderTapZoneMap = Record<ReaderTapZone, ReaderTapAction>;
 
+export const READER_PAGE_TRANSITION_DURATION_MIN_MS = 0;
+export const READER_PAGE_TRANSITION_DURATION_MAX_MS = 1000;
+export const READER_PAGE_TRANSITION_DURATION_DEFAULT_MS = 500;
+
 export interface ReaderTapPreset {
   id: ReaderTapPresetId;
   zones: ReaderTapZoneMap;
@@ -92,6 +96,7 @@ export interface ReaderGeneralSettings {
   keepScreenOn: boolean;
   pageReader: boolean;
   twoPageReader: boolean;
+  pageTransitionDuration: number;
   swipeGestures: boolean;
   tapToScroll: boolean;
   showSeekbar: boolean;
@@ -375,6 +380,7 @@ const READER_GENERAL_OVERRIDE_KEYS: Array<keyof ReaderGeneralSettingsOverride> =
     "keepScreenOn",
     "pageReader",
     "twoPageReader",
+    "pageTransitionDuration",
     "swipeGestures",
     "tapToScroll",
     "showSeekbar",
@@ -501,6 +507,7 @@ export const READER_GENERAL_DEFAULTS: ReaderGeneralSettings = {
   keepScreenOn: false,
   pageReader: false,
   twoPageReader: false,
+  pageTransitionDuration: READER_PAGE_TRANSITION_DURATION_DEFAULT_MS,
   swipeGestures: true,
   tapToScroll: true,
   showSeekbar: true,
@@ -564,6 +571,17 @@ function normalizeGeneral(
       ? {
           autoScrollInterval: Math.round(
             clamp(settings.autoScrollInterval, 16, 500),
+          ),
+        }
+      : {}),
+    ...(settings.pageTransitionDuration !== undefined
+      ? {
+          pageTransitionDuration: Math.round(
+            clamp(
+              settings.pageTransitionDuration,
+              READER_PAGE_TRANSITION_DURATION_MIN_MS,
+              READER_PAGE_TRANSITION_DURATION_MAX_MS,
+            ),
           ),
         }
       : {}),
@@ -1218,6 +1236,13 @@ export const useReaderStore = create<ReaderState>()(
         );
         general.htmlImagePagingMode = normalizeHtmlImagePagingMode(
           general.htmlImagePagingMode,
+        );
+        general.pageTransitionDuration = Math.round(
+          clamp(
+            general.pageTransitionDuration,
+            READER_PAGE_TRANSITION_DURATION_MIN_MS,
+            READER_PAGE_TRANSITION_DURATION_MAX_MS,
+          ),
         );
 
         return {

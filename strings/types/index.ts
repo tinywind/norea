@@ -424,6 +424,10 @@ export interface StringMap {
   'readerSettings.notSaved': 'string';
   'readerSettings.openCSSFile': 'string';
   'readerSettings.openJSFile': 'string';
+  'readerSettings.pageTransitionDuration': 'string';
+  'readerSettings.pageTransitionDuration.description': 'string';
+  'readerSettings.pageTransitionDuration.off': 'string';
+  'readerSettings.pageTransitionDuration.value': 'string';
   'readerSettings.preset': 'string';
   'readerSettings.readingMode': 'string';
   'readerSettings.readerTheme': 'string';

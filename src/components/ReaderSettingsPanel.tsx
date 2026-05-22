@@ -22,6 +22,8 @@ import {
 import { TextButton } from "./TextButton";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
+  READER_PAGE_TRANSITION_DURATION_MAX_MS,
+  READER_PAGE_TRANSITION_DURATION_MIN_MS,
   READER_TAP_PRESETS,
   READER_TAP_ZONES,
   READER_CUSTOM_CSS_PRESETS,
@@ -615,6 +617,24 @@ export function ReaderSettingsPanel({
             }}
           />
         </SettingsFieldRow>
+        <SettingSlider
+          label={t("readerSettings.pageTransitionDuration")}
+          description={t("readerSettings.pageTransitionDuration.description")}
+          valueLabel={
+            general.pageTransitionDuration === 0
+              ? t("readerSettings.pageTransitionDuration.off")
+              : t("readerSettings.pageTransitionDuration.value", {
+                  duration: general.pageTransitionDuration,
+                })
+          }
+          min={READER_PAGE_TRANSITION_DURATION_MIN_MS}
+          max={READER_PAGE_TRANSITION_DURATION_MAX_MS}
+          step={50}
+          value={general.pageTransitionDuration}
+          onChange={(pageTransitionDuration) =>
+            setActiveGeneral({ pageTransitionDuration })
+          }
+        />
         <SettingsFieldRow
           label={t("readerSettings.pdfPageFitMode")}
           description={t("readerSettings.pdfPageFitMode.description")}
