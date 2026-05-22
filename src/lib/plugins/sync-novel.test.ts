@@ -111,14 +111,62 @@ describe("syncNovelFromSource", () => {
     ).rejects.toThrow("finite numeric chapterNumber");
   });
 
-  it("rejects duplicate chapterNumber values from a source result", async () => {
+  it("keeps the first duplicate chapterNumber from a source result", async () => {
     const plugin = makePlugin({
-      parseNovel: vi.fn(() => Promise.resolve(makeDetail([1, 1]))),
+      parseNovel: vi.fn(() =>
+        Promise.resolve({
+          ...makeDetail([]),
+          chapters: [
+            {
+              chapterNumber: 1,
+              name: "First",
+              path: "/first",
+            },
+            {
+              chapterNumber: 1,
+              name: "Duplicate",
+              path: "/duplicate",
+            },
+            {
+              chapterNumber: 2,
+              name: "Second",
+              path: "/second",
+            },
+          ],
+        }),
+      ),
     });
 
-    await expect(
-      syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }),
-    ).rejects.toThrow("duplicate chapterNumber 1");
+    const result = await syncNovelFromSource(plugin, {
+      name: "Novel",
+      path: "/novel",
+    });
+
+    expect(result.duplicateChapters).toEqual([
+      {
+        chapterNumber: 1,
+        keptName: "First",
+        keptPath: "/first",
+        discardedCount: 1,
+      },
+    ]);
+    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
+      expect.anything(),
+      [
+        expect.objectContaining({
+          chapterNumber: "1",
+          name: "First",
+          path: "/first",
+          position: 1,
+        }),
+        expect.objectContaining({
+          chapterNumber: "2",
+          name: "Second",
+          path: "/second",
+          position: 2,
+        }),
+      ],
+    );
   });
 
   it("uses parseNovelSince and starts at the anchor position for suffix results", async () => {

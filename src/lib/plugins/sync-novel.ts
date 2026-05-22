@@ -19,11 +19,52 @@ export interface SyncNovelFromSourceOptions {
   preserveMissingMetadata?: boolean;
 }
 
+export interface SourceDuplicateChapterInfo {
+  chapterNumber: number;
+  keptName: string;
+  keptPath: string;
+  discardedCount: number;
+}
+
 export interface SyncNovelFromSourceResult {
   changed: boolean;
   changedChapters: number;
   novelId: number;
   chapterCount: number;
+  duplicateChapters: SourceDuplicateChapterInfo[];
+}
+
+interface SourceChapterListResult {
+  chapters: ChapterItem[];
+  duplicateChapters: SourceDuplicateChapterInfo[];
+}
+
+interface ParsedSourceNovelResult {
+  detail: SourceNovel;
+  duplicateChapters: SourceDuplicateChapterInfo[];
+  startPosition: number;
+}
+
+const sourceDuplicateChaptersByNovelId = new Map<
+  number,
+  SourceDuplicateChapterInfo[]
+>();
+
+export function getSourceDuplicateChapterInfo(
+  novelId: number,
+): readonly SourceDuplicateChapterInfo[] {
+  return sourceDuplicateChaptersByNovelId.get(novelId) ?? [];
+}
+
+function rememberSourceDuplicateChapters(
+  novelId: number,
+  duplicateChapters: SourceDuplicateChapterInfo[],
+): void {
+  if (duplicateChapters.length === 0) {
+    sourceDuplicateChaptersByNovelId.delete(novelId);
+    return;
+  }
+  sourceDuplicateChaptersByNovelId.set(novelId, duplicateChapters);
 }
 
 function optionalText(value: string | undefined | null): string | null {
@@ -67,8 +108,10 @@ function assertSourceChapters(
   pluginId: string,
   method: string,
   chapters: readonly ChapterItem[],
-): ChapterItem[] {
-  const seen = new Set<number>();
+): SourceChapterListResult {
+  const firstByChapterNumber = new Map<number, ChapterItem>();
+  const duplicateChapters = new Map<number, SourceDuplicateChapterInfo>();
+
   for (const chapter of chapters) {
     const chapterNumber = chapter.chapterNumber;
     if (typeof chapterNumber !== "number" || !Number.isFinite(chapterNumber)) {
@@ -76,33 +119,53 @@ function assertSourceChapters(
         `Plugin '${pluginId}' ${method} returned a chapter without a finite numeric chapterNumber.`,
       );
     }
-    if (seen.has(chapterNumber)) {
-      throw new Error(
-        `Plugin '${pluginId}' ${method} returned duplicate chapterNumber ${chapterNumber}.`,
-      );
-    }
+
     pluginChapterContentType(chapter.contentType);
-    seen.add(chapterNumber);
+
+    const keptChapter = firstByChapterNumber.get(chapterNumber);
+    if (keptChapter) {
+      const duplicate = duplicateChapters.get(chapterNumber) ?? {
+        chapterNumber,
+        keptName: keptChapter.name,
+        keptPath: keptChapter.path,
+        discardedCount: 0,
+      };
+      duplicate.discardedCount += 1;
+      duplicateChapters.set(chapterNumber, duplicate);
+      continue;
+    }
+
+    firstByChapterNumber.set(chapterNumber, chapter);
   }
 
-  return [...chapters].sort((left, right) => {
-    return left.chapterNumber - right.chapterNumber;
-  });
+  return {
+    chapters: [...firstByChapterNumber.values()].sort((left, right) => {
+      return left.chapterNumber - right.chapterNumber;
+    }),
+    duplicateChapters: [...duplicateChapters.values()].sort((left, right) => {
+      return left.chapterNumber - right.chapterNumber;
+    }),
+  };
 }
 
 function assertSourceNovel(
   pluginId: string,
   method: string,
   detail: SourceNovel,
-): SourceNovel {
+): { detail: SourceNovel; duplicateChapters: SourceDuplicateChapterInfo[] } {
   if (!Array.isArray(detail.chapters)) {
     throw new Error(
       `Plugin '${pluginId}' ${method} did not return a chapter list.`,
     );
   }
+
+  const chapterList = assertSourceChapters(pluginId, method, detail.chapters);
   return {
-    ...detail,
-    chapters: assertSourceChapters(pluginId, method, detail.chapters),
+    detail: {
+      ...detail,
+      chapters: chapterList.chapters,
+    },
+    duplicateChapters: chapterList.duplicateChapters,
   };
 }
 
@@ -121,13 +184,14 @@ async function resolveExistingNovelId(
 async function parseFullNovel(
   plugin: Plugin,
   path: string,
-): Promise<{ detail: SourceNovel; startPosition: number }> {
+): Promise<ParsedSourceNovelResult> {
+  const parsed = assertSourceNovel(
+    plugin.id,
+    "parseNovel",
+    await plugin.parseNovel(path),
+  );
   return {
-    detail: assertSourceNovel(
-      plugin.id,
-      "parseNovel",
-      await plugin.parseNovel(path),
-    ),
+    ...parsed,
     startPosition: 1,
   };
 }
@@ -136,7 +200,7 @@ async function parseNovelForSync(
   plugin: Plugin,
   item: NovelItem,
   options: SyncNovelFromSourceOptions,
-): Promise<{ detail: SourceNovel; startPosition: number }> {
+): Promise<ParsedSourceNovelResult> {
   if (options.chapterRefreshMode !== "since") {
     return parseFullNovel(plugin, item.path);
   }
@@ -152,20 +216,20 @@ async function parseNovelForSync(
     return parseFullNovel(plugin, item.path);
   }
 
-  const sinceDetail = assertSourceNovel(
+  const sinceResult = assertSourceNovel(
     plugin.id,
     "parseNovelSince",
     await plugin.parseNovelSince(item.path, anchor.chapterNumber),
   );
-  const firstChapter = sinceDetail.chapters[0];
+  const firstChapter = sinceResult.detail.chapters[0];
   if (!firstChapter) {
     return parseFullNovel(plugin, item.path);
   }
   if (firstChapter.chapterNumber < anchor.chapterNumber) {
-    return { detail: sinceDetail, startPosition: 1 };
+    return { ...sinceResult, startPosition: 1 };
   }
   if (firstChapter.chapterNumber === anchor.chapterNumber) {
-    return { detail: sinceDetail, startPosition: anchor.position };
+    return { ...sinceResult, startPosition: anchor.position };
   }
 
   return parseFullNovel(plugin, item.path);
@@ -176,7 +240,7 @@ export async function syncNovelFromSource(
   item: NovelItem,
   options: SyncNovelFromSourceOptions = {},
 ): Promise<SyncNovelFromSourceResult> {
-  const { detail, startPosition } = await parseNovelForSync(
+  const { detail, duplicateChapters, startPosition } = await parseNovelForSync(
     plugin,
     item,
     options,
@@ -252,6 +316,8 @@ export async function syncNovelFromSource(
     };
   });
 
+  rememberSourceDuplicateChapters(result.novelId, duplicateChapters);
+
   const changed = result.novelChanged || result.changedChapters > 0;
   if (changed && (options.notifyUpdatesIndex ?? true)) {
     markUpdatesIndexDirty("novel-sync");
@@ -262,5 +328,6 @@ export async function syncNovelFromSource(
     changedChapters: result.changedChapters,
     novelId: result.novelId,
     chapterCount: detail.chapters.length,
+    duplicateChapters,
   };
 }

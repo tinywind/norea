@@ -832,6 +832,7 @@
   "novel.bookmarked": "북마크됨",
   "novel.downloaded": "다운로드됨",
   "novel.mediaRepairNeeded": "원격 미디어 남음",
+  "novel.sourceDuplicateChapters": "중복 소스 챕터 {count}개 제외됨",
   "novel.retryDownload": "다운로드 다시 시도",
   "novel.downloadChapter": "챕터 다운로드",
   "novel.repairChapterMedia": "챕터 미디어 복구",

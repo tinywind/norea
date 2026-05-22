@@ -88,7 +88,11 @@ import {
 } from "../lib/local-import";
 import { syncLocalChapterStorageAfterOrderChange } from "../lib/local-chapter-storage";
 import { cacheLocalImportedChapterMedia } from "../lib/local-import-media";
-import { syncNovelFromSource } from "../lib/plugins/sync-novel";
+import {
+  getSourceDuplicateChapterInfo,
+  syncNovelFromSource,
+  type SourceDuplicateChapterInfo,
+} from "../lib/plugins/sync-novel";
 import { clearChapterMedia } from "../lib/chapter-media";
 import {
   clearStoredChapterContentMirror,
@@ -134,6 +138,7 @@ const CHAPTER_DND_PREFIX = "chapter:";
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
 const EMPTY_CHAPTERS: ChapterListRow[] = [];
 const EMPTY_CHAPTER_DND_IDS: string[] = [];
+const EMPTY_SOURCE_DUPLICATE_CHAPTER_COUNTS = new Map<number, number>();
 const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   name: "",
   cover: "",
@@ -174,6 +179,27 @@ function novelKey(id: number) {
 
 function chaptersKey(id: number) {
   return ["novel", "detail", id, "chapters"] as const;
+}
+
+function sourceDuplicateChapterCountsById(
+  chapters: readonly ChapterListRow[],
+  duplicates: readonly SourceDuplicateChapterInfo[],
+): ReadonlyMap<number, number> {
+  if (chapters.length === 0 || duplicates.length === 0) {
+    return EMPTY_SOURCE_DUPLICATE_CHAPTER_COUNTS;
+  }
+
+  const duplicatesByChapter = new Map(
+    duplicates.map((duplicate) => [String(duplicate.chapterNumber), duplicate]),
+  );
+  const counts = new Map<number, number>();
+  for (const chapter of chapters) {
+    if (!chapter.chapterNumber) continue;
+    const duplicate = duplicatesByChapter.get(chapter.chapterNumber);
+    if (!duplicate || duplicate.keptPath !== chapter.path) continue;
+    counts.set(chapter.id, duplicate.discardedCount);
+  }
+  return counts;
 }
 
 function normalizeDateText(value: string): string {
@@ -449,6 +475,7 @@ interface ChapterListItemProps {
   canDeleteDownload: boolean;
   canMoveDown: boolean;
   canMoveUp: boolean;
+  duplicateSourceChapterCount: number;
   isCurrent: boolean;
   status: ChapterDownloadStatus | undefined;
   deleteBusy: boolean;
@@ -466,6 +493,7 @@ function ChapterListItem({
   canDeleteDownload,
   canMoveDown,
   canMoveUp,
+  duplicateSourceChapterCount,
   isCurrent,
   status,
   deleteBusy,
@@ -515,11 +543,13 @@ function ChapterListItem({
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
     : null;
+  const hasSourceDuplicateChapter = duplicateSourceChapterCount > 0;
   const hasChapterFlags =
     chapter.bookmark ||
     !chapter.unread ||
     chapter.isDownloaded ||
     chapter.mediaRepairNeeded ||
+    hasSourceDuplicateChapter ||
     showOpeningSpinner ||
     Boolean(status);
   const renderChapterFlags = () => (
@@ -542,6 +572,16 @@ function ChapterListItem({
       {chapter.mediaRepairNeeded ? (
         <ChapterFlag label={t("novel.mediaRepairNeeded")} tone="warning">
           <RetryGlyph />
+        </ChapterFlag>
+      ) : null}
+      {hasSourceDuplicateChapter ? (
+        <ChapterFlag
+          label={t("novel.sourceDuplicateChapters", {
+            count: duplicateSourceChapterCount,
+          })}
+          tone="warning"
+        >
+          <AlertIcon />
         </ChapterFlag>
       ) : null}
       {showOpeningSpinner ? (
@@ -706,6 +746,7 @@ interface VirtualChapterListProps {
   canDeleteDownloads: boolean;
   canReorderChapters: boolean;
   deleteBusyChapterId: number | undefined;
+  duplicateSourceChapterCounts: ReadonlyMap<number, number>;
   deletePending: boolean;
   lastReadChapterId: number | undefined;
   openingChapterId: number | null;
@@ -725,6 +766,7 @@ function VirtualChapterList({
   canDeleteDownloads,
   canReorderChapters,
   deleteBusyChapterId,
+  duplicateSourceChapterCounts,
   deletePending,
   lastReadChapterId,
   openingChapterId,
@@ -848,6 +890,9 @@ function VirtualChapterList({
                   canReorderChapters && displayIndex < chapters.length - 1
                 }
                 canMoveUp={canReorderChapters && displayIndex > 0}
+                duplicateSourceChapterCount={
+                  duplicateSourceChapterCounts.get(chapter.id) ?? 0
+                }
                 isCurrent={chapter.id === lastReadChapterId}
                 status={statuses.get(chapter.id)}
                 deleteBusy={deletePending && deleteBusyChapterId === chapter.id}
@@ -1543,6 +1588,9 @@ export function NovelDetailPage() {
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [localMetadataForm, setLocalMetadataForm] =
     useState<LocalNovelMetadataInput>(EMPTY_LOCAL_NOVEL_FORM);
+  const [sourceDuplicateChapters, setSourceDuplicateChapters] = useState<
+    readonly SourceDuplicateChapterInfo[]
+  >(() => getSourceDuplicateChapterInfo(id));
 
   const novelQuery = useQuery({
     queryKey: novelKey(id),
@@ -1555,6 +1603,10 @@ export function NovelDetailPage() {
     queryFn: () => listChaptersByNovel(id),
     enabled: id > 0,
   });
+
+  useEffect(() => {
+    setSourceDuplicateChapters(getSourceDuplicateChapterInfo(id));
+  }, [id]);
 
   const toggle = useMutation({
     mutationFn: async () => {
@@ -1732,12 +1784,18 @@ export function NovelDetailPage() {
 
   const refreshMetadata = useMutation({
     mutationFn: () => enqueueNovelMetadataRefresh("since"),
-    onSuccess: invalidateNovelMetadataRefresh,
+    onSuccess: (result) => {
+      if (result) setSourceDuplicateChapters(result.duplicateChapters);
+      invalidateNovelMetadataRefresh();
+    },
   });
 
   const fullRefreshMetadata = useMutation({
     mutationFn: () => enqueueNovelMetadataRefresh("full"),
-    onSuccess: invalidateNovelMetadataRefresh,
+    onSuccess: (result) => {
+      if (result) setSourceDuplicateChapters(result.duplicateChapters);
+      invalidateNovelMetadataRefresh();
+    },
   });
 
   const [statuses, setStatuses] = useState<
@@ -1770,6 +1828,10 @@ export function NovelDetailPage() {
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
+  );
+  const sourceDuplicateChapterCounts = useMemo(
+    () => sourceDuplicateChapterCountsById(chapters, sourceDuplicateChapters),
+    [chapters, sourceDuplicateChapters],
   );
   const chapterStats = useMemo(
     () => {
@@ -2145,6 +2207,7 @@ export function NovelDetailPage() {
                 canDeleteDownloads={!novel.isLocal}
                 canReorderChapters={novel.isLocal}
                 deleteBusyChapterId={clearDownload.variables}
+                duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
                 deletePending={clearDownload.isPending}
                 lastReadChapterId={lastReadChapterId}
                 openingChapterId={openingChapterId}

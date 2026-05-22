@@ -832,6 +832,7 @@
   "novel.bookmarked": "Bookmarked",
   "novel.downloaded": "Downloaded",
   "novel.mediaRepairNeeded": "Remote media remains",
+  "novel.sourceDuplicateChapters": "{count} duplicate source chapters skipped",
   "novel.retryDownload": "Retry download",
   "novel.downloadChapter": "Download chapter",
   "novel.repairChapterMedia": "Repair chapter media",

@@ -140,8 +140,10 @@ passed back to the same plugin. `chapterNumber` is a required, stable,
 source-owned numeric order key. It must be unique within one novel and every
 chapter list must be returned in reading order by ascending `chapterNumber`.
 When a source does not expose a number, the plugin must assign a deterministic
-one-based reading-order number. The host rejects missing, non-finite, or
-duplicate `chapterNumber` values from source plugins.
+one-based reading-order number. The host rejects missing or non-finite
+`chapterNumber` values from source plugins. When a plugin returns duplicate
+`chapterNumber` values, the host keeps the first chapter for that number and
+skips the later duplicates for that sync result.
 
 `parseNovel()` returns full metadata and a full chapter list. `parseNovelSince()`
 returns the same metadata fields and may limit `chapters` to
@@ -486,7 +488,7 @@ The host should tolerate plugins that:
 - Return long summaries.
 - Throw from one source operation without breaking unrelated installed plugins.
 
-The host does not tolerate missing `parseNovelSince()` or invalid
+The host does not tolerate missing `parseNovelSince()` or missing/non-finite
 `chapterNumber` values. Those are breaking contract errors.
 
 ## Smoke Test Recipe
