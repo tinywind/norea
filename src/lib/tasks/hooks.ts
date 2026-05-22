@@ -1,9 +1,13 @@
 import { useSyncExternalStore } from "react";
 import { taskScheduler, type TaskSnapshot } from "./scheduler";
 
-export function useTaskSnapshot(): TaskSnapshot {
+function subscribeInactiveTaskSnapshot(): () => void {
+  return () => undefined;
+}
+
+export function useTaskSnapshot(active = true): TaskSnapshot {
   return useSyncExternalStore(
-    taskScheduler.subscribe,
+    active ? taskScheduler.subscribe : subscribeInactiveTaskSnapshot,
     taskScheduler.getSnapshot,
     taskScheduler.getSnapshot,
   );

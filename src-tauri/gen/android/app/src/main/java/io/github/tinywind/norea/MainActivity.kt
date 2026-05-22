@@ -115,20 +115,26 @@ class MainActivity : TauriActivity() {
 
   private fun handleMainWebViewBackPressed(): Boolean {
     val webView = mainWebView ?: return false
-    if (!isMainReaderUrl(webView.url)) return false
-    webView.evaluateJavascript(
-      "window.dispatchEvent(new CustomEvent('norea:android-back'));",
-      null,
-    )
+    val path = mainAppPath(webView.url) ?: return false
+    if (path == "/reader") {
+      webView.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('norea:android-back'));",
+        null,
+      )
+      return true
+    }
+
+    if (!webView.canGoBack()) return false
+    webView.goBack()
     return true
   }
 
-  private fun isMainReaderUrl(url: String?): Boolean {
-    if (url.isNullOrBlank()) return false
+  private fun mainAppPath(url: String?): String? {
+    if (url.isNullOrBlank()) return null
     return runCatching {
       val parsed = Uri.parse(url)
-      parsed.host == "tauri.localhost" && parsed.path == "/reader"
-    }.getOrDefault(false)
+      parsed.path?.takeIf { parsed.host == "tauri.localhost" }
+    }.getOrNull()
   }
 
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

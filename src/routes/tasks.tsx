@@ -660,9 +660,13 @@ function SortableSourceTaskGroup({
   );
 }
 
-export function TasksPage() {
+interface TasksPageProps {
+  active?: boolean;
+}
+
+export function TasksPage({ active = true }: TasksPageProps = {}) {
   const { t } = useTranslation();
-  const snapshot = useTaskSnapshot();
+  const snapshot = useTaskSnapshot(active);
   const [collapsedSourceIds, setCollapsedSourceIds] = useState<Set<string>>(
     () => new Set(),
   );

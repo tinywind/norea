@@ -4,7 +4,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { RootLayout } from "./routes/__root";
-import { BrowsePage } from "./routes/browse";
+import { BrowsePage, type BrowseTab } from "./routes/browse";
 import { DownloadsPage } from "./routes/downloads";
 import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
@@ -28,8 +28,11 @@ const libraryRoute = createRoute({
 export const browseRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/browse",
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { q: string; tab: BrowseTab } => ({
     q: typeof search.q === "string" ? search.q : "",
+    tab: search.tab === "sources" ? "sources" : "search",
   }),
   component: BrowseRoutePage,
 });
@@ -94,7 +97,6 @@ export const sourceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/source",
   validateSearch: (search: Record<string, unknown>) => ({
-    from: search.from === "browse-search" ? "browse-search" : undefined,
     pluginId:
       typeof search.pluginId === "string" ? search.pluginId : "",
     query: typeof search.query === "string" ? search.query : "",
@@ -118,8 +120,8 @@ const routeTree = rootRoute.addChildren([
 export const router = createRouter({ routeTree });
 
 function BrowseRoutePage() {
-  const { q } = browseRoute.useSearch();
-  return <BrowsePage query={q} />;
+  const { q, tab } = browseRoute.useSearch();
+  return <BrowsePage query={q} tab={tab} />;
 }
 
 function SettingsRoutePage() {

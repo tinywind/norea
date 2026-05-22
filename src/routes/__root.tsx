@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import { Anchor, AppShell } from "@mantine/core";
 import {
   Link,
@@ -17,13 +17,21 @@ import {
 import { useAppearanceStore } from "../store/appearance";
 import { useBrowseStore } from "../store/browse";
 import { useReaderStore } from "../store/reader";
-import { BrowsePage } from "./browse";
+import { BrowsePage, type BrowseTab } from "./browse";
 import { DownloadsPage } from "./downloads";
 import { HistoryPage } from "./history";
 import { LibraryPage } from "./library";
 import { SettingsPage } from "./settings";
 import { TasksPage } from "./tasks";
 import { UpdatesPage } from "./updates";
+
+const PersistentLibraryPage = memo(LibraryPage);
+const PersistentBrowsePage = memo(BrowsePage);
+const PersistentUpdatesPage = memo(UpdatesPage);
+const PersistentHistoryPage = memo(HistoryPage);
+const PersistentDownloadsPage = memo(DownloadsPage);
+const PersistentTasksPage = memo(TasksPage);
+const PersistentSettingsPage = memo(SettingsPage);
 
 type NavItem = {
   compactKey: TranslationKey;
@@ -128,6 +136,10 @@ function getSearchString(
 ): string {
   const value = search[key];
   return typeof value === "string" ? value : fallback;
+}
+
+function getBrowseTab(search: Record<string, unknown>): BrowseTab {
+  return search.tab === "sources" ? "sources" : "search";
 }
 
 function asSearchRecord(search: unknown): Record<string, unknown> {
@@ -305,6 +317,9 @@ export function RootLayout() {
   const [lastBrowseQuery, setLastBrowseQuery] = useState(() =>
     getSearchString(search, "q", ""),
   );
+  const [lastBrowseTab, setLastBrowseTab] = useState<BrowseTab>(() =>
+    getBrowseTab(search),
+  );
   const [lastSettingsSection, setLastSettingsSection] = useState(() =>
     getSearchString(search, "section", "app"),
   );
@@ -312,6 +327,8 @@ export function RootLayout() {
     activePersistentPage === "browse"
       ? getSearchString(search, "q", "")
       : lastBrowseQuery;
+  const browseTab =
+    activePersistentPage === "browse" ? getBrowseTab(search) : lastBrowseTab;
   const settingsSection =
     activePersistentPage === "settings"
       ? getSearchString(search, "section", "app")
@@ -330,7 +347,10 @@ export function RootLayout() {
     startDeepLinkListener({
       onRepoAdd: (repoUrl) => {
         useBrowseStore.getState().setPendingRepoUrl(repoUrl);
-        void navigate({ to: "/browse", search: { q: "" } });
+        void navigate({
+          to: "/browse",
+          search: { q: "", tab: "sources" },
+        });
       },
     })
       .then((cleanup) => {
@@ -357,6 +377,10 @@ export function RootLayout() {
       const nextQuery = getSearchString(search, "q", "");
       setLastBrowseQuery((current) =>
         current === nextQuery ? current : nextQuery,
+      );
+      const nextTab = getBrowseTab(search);
+      setLastBrowseTab((current) =>
+        current === nextTab ? current : nextTab,
       );
     }
 
@@ -434,40 +458,47 @@ export function RootLayout() {
       >
         {pageVisited("library") ? (
           <PersistentPageSlot active={activePersistentPage === "library"}>
-            <LibraryPage active={activePersistentPage === "library"} />
+            <PersistentLibraryPage
+              active={activePersistentPage === "library"}
+            />
           </PersistentPageSlot>
         ) : null}
         {pageVisited("browse") ? (
           <PersistentPageSlot active={activePersistentPage === "browse"}>
-            <BrowsePage
+            <PersistentBrowsePage
               active={activePersistentPage === "browse"}
               query={browseQuery}
+              tab={browseTab}
             />
           </PersistentPageSlot>
         ) : null}
         {pageVisited("updates") ? (
           <PersistentPageSlot active={activePersistentPage === "updates"}>
-            <UpdatesPage active={activePersistentPage === "updates"} />
+            <PersistentUpdatesPage
+              active={activePersistentPage === "updates"}
+            />
           </PersistentPageSlot>
         ) : null}
         {pageVisited("history") ? (
           <PersistentPageSlot active={activePersistentPage === "history"}>
-            <HistoryPage />
+            <PersistentHistoryPage />
           </PersistentPageSlot>
         ) : null}
         {pageVisited("downloads") ? (
           <PersistentPageSlot active={activePersistentPage === "downloads"}>
-            <DownloadsPage />
+            <PersistentDownloadsPage
+              active={activePersistentPage === "downloads"}
+            />
           </PersistentPageSlot>
         ) : null}
         {pageVisited("tasks") ? (
           <PersistentPageSlot active={activePersistentPage === "tasks"}>
-            <TasksPage />
+            <PersistentTasksPage active={activePersistentPage === "tasks"} />
           </PersistentPageSlot>
         ) : null}
         {pageVisited("settings") ? (
           <PersistentPageSlot active={activePersistentPage === "settings"}>
-            <SettingsPage section={settingsSection} />
+            <PersistentSettingsPage section={settingsSection} />
           </PersistentPageSlot>
         ) : null}
         {activePersistentPage === null ? <Outlet /> : null}

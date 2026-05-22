@@ -882,7 +882,6 @@
   "novel.released": "Released {time}",
   "source.pluginNotLoaded": "Plugin not loaded",
   "source.pluginNotLoadedMessage": "No plugin matches id {id}. Install it from the Browse tab and try again.",
-  "source.backToGlobalSearch": "Back to global search",
   "source.controls": "Source controls",
   "source.popular": "Popular",
   "source.latest": "Latest",

@@ -1054,7 +1054,6 @@ export function PluginSearchSection({
       void navigate({
         to: "/source",
         search: {
-          from: "browse-search",
           pluginId: row.pluginId,
           query: trimmedQuery,
         },
@@ -1093,7 +1092,6 @@ export function PluginSearchSection({
           void navigate({
             to: "/source",
             search: {
-              from: "browse-search",
               pluginId: plugin.id,
               query: trimmedQuery,
             },

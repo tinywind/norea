@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Box } from "@mantine/core";
 import { StateView } from "../components/AppFrame";
 import {
@@ -551,6 +551,9 @@ export function ReaderPage() {
   const { t } = useTranslation();
   const { chapterId } = readerRoute.useSearch();
   const navigate = useNavigate();
+  const currentHref = useRouterState({
+    select: (state) => state.location.href,
+  });
   const queryClient = useQueryClient();
   const contentRef = useRef<ReaderContentHandle | null>(null);
   const pendingMediaPatchesRef = useRef<
@@ -1107,6 +1110,13 @@ export function ReaderPage() {
   );
 
   const handleReaderBack = useCallback(() => {
+    const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
+    if (target) {
+      trimAppNavigationHistoryTo(target);
+      window.history.go(-target.steps);
+      return;
+    }
+
     const novelId = chapter?.novelId;
     if (novelId) {
       void navigate({ to: "/novel", search: { id: novelId }, replace: true });
@@ -1117,7 +1127,7 @@ export function ReaderPage() {
       return;
     }
     void navigate({ to: "/" });
-  }, [chapter?.novelId, navigate]);
+  }, [chapter?.novelId, currentHref, navigate]);
 
   useEffect(() => {
     window.addEventListener("norea:android-back", handleReaderBack);
@@ -1498,10 +1508,9 @@ export function ReaderPage() {
           },
     [effectiveReaderGeneral, readerSeekbarVisible],
   );
-  const readerOverlayBottom =
-    fullPageReader && !readerChromeVisible
-      ? "calc(var(--lnr-safe-area-bottom) + 0.5rem)"
-      : "calc(var(--lnr-app-bottom-inset) + 2rem)";
+  const readerOverlayBottom = fullPageReader
+    ? "calc(var(--lnr-safe-area-bottom) + 0.5rem)"
+    : "calc(var(--lnr-app-bottom-inset) + 2rem)";
   const sharedFullPageReaderChromeVisible =
     fullPageReader && readerChromeVisible;
   const handleRemoteMediaError = useCallback(() => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Anchor,
   Badge,
@@ -46,6 +46,10 @@ import {
   writeSourceFilters,
 } from "../lib/plugins/source-filter-storage";
 import type { NovelItem, Plugin } from "../lib/plugins/types";
+import {
+  findPreviousAppHistoryEntry,
+  trimAppNavigationHistoryTo,
+} from "../lib/navigation-history";
 import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
@@ -196,7 +200,10 @@ function BackGlyph() {
 
 export function SourcePage() {
   const { t } = useTranslation();
-  const { from, pluginId, query } = sourceRoute.useSearch();
+  const { pluginId, query } = sourceRoute.useSearch();
+  const currentHref = useRouterState({
+    select: (state) => state.location.href,
+  });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -340,6 +347,21 @@ export function SourcePage() {
     ).promise.catch(() => undefined);
   }
 
+  function goBack(): void {
+    const target = findPreviousAppHistoryEntry(currentHref, []);
+    if (target) {
+      trimAppNavigationHistoryTo(target);
+      window.history.go(-target.steps);
+      return;
+    }
+
+    void navigate({
+      to: "/browse",
+      search: { q: "", tab: "search" },
+      replace: true,
+    });
+  }
+
   useEffect(() => {
     const data = listing.data;
     if (!data || data.page !== page || data.scopeKey !== listingScopeKey) {
@@ -435,7 +457,6 @@ export function SourcePage() {
     : listing.isFetching
       ? "active"
       : "done";
-  const backToGlobalSearch = from === "browse-search";
   const activeFilterLabels = isFilterMode && sourceFilters
     ? getActiveFilterLabels(sourceFilters, activeFilters)
     : [];
@@ -458,20 +479,14 @@ export function SourcePage() {
         }
         actions={
           <>
-            {backToGlobalSearch ? (
-              <IconButton
-                label={t("source.backToGlobalSearch")}
-                size="lg"
-                onClick={() => {
-                  void navigate({ to: "/browse", search: { q: query } });
-                }}
-              >
-                <BackGlyph />
-              </IconButton>
-            ) : null}
-            {backToGlobalSearch ? (
-              <span className="lnr-source-header-action-divider" aria-hidden />
-            ) : null}
+            <IconButton
+              label={t("common.back")}
+              size="lg"
+              onClick={goBack}
+            >
+              <BackGlyph />
+            </IconButton>
+            <span className="lnr-source-header-action-divider" aria-hidden />
             <IconButton
               active={readerSettingsDrawerOpen}
               label={t("readerSettings.source.open", { name: plugin.name })}

@@ -469,7 +469,11 @@ function DownloadCacheNovelCard({
   );
 }
 
-export function DownloadsPage() {
+interface DownloadsPageProps {
+  active?: boolean;
+}
+
+export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
   const { locale, t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -480,7 +484,7 @@ export function DownloadsPage() {
   });
 
   useEffect(() => {
-    if (!query.data?.length || scheduledBackfillRef.current) return;
+    if (!active || !query.data?.length || scheduledBackfillRef.current) return;
     scheduledBackfillRef.current = true;
     scheduleDownloadCacheMediaBytesBackfill(undefined, {
       onComplete: (result) => {
@@ -493,7 +497,7 @@ export function DownloadsPage() {
         scheduledBackfillRef.current = false;
       },
     });
-  }, [query.data, queryClient]);
+  }, [active, query.data, queryClient]);
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
   const deleteAll = useMutation({
     mutationFn: async () => {

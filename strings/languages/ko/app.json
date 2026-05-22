@@ -882,7 +882,6 @@
   "novel.released": "공개 {time}",
   "source.pluginNotLoaded": "플러그인을 불러오지 못함",
   "source.pluginNotLoadedMessage": "id {id}와 일치하는 플러그인이 없습니다. 탐색 탭에서 설치한 뒤 다시 시도하세요.",
-  "source.backToGlobalSearch": "통합 검색으로 돌아가기",
   "source.controls": "소스 조작",
   "source.popular": "인기",
   "source.latest": "최신",

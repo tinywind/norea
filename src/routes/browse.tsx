@@ -66,6 +66,8 @@ const INSTALLED_QUERY_KEY = ["plugin", "installed"] as const;
 const MAX_PLUGIN_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_PLUGIN_SOURCE_FILE_SIZE_LABEL = "5 MiB";
 
+export type BrowseTab = "search" | "sources";
+
 interface SourceInstanceForm {
   workTitle: string;
   repository: string;
@@ -131,6 +133,7 @@ interface AvailableResult {
 interface BrowsePageProps {
   active?: boolean;
   query?: string;
+  tab?: BrowseTab;
 }
 
 interface LanguageOption {
@@ -280,7 +283,11 @@ async function fetchAllAvailable(
   return { entries, failures };
 }
 
-export function BrowsePage({ active = true, query: q = "" }: BrowsePageProps) {
+export function BrowsePage({
+  active = true,
+  query: q = "",
+  tab = "search",
+}: BrowsePageProps) {
   const { locale, t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -345,7 +352,7 @@ export function BrowsePage({ active = true, query: q = "" }: BrowsePageProps) {
   const navigateToSource = (pluginId: string) =>
     navigate({
       to: "/source",
-      search: { from: undefined, pluginId, query: "" },
+      search: { pluginId, query: "" },
     });
 
   const installedPlugins = installed.data ?? [];
@@ -586,7 +593,15 @@ export function BrowsePage({ active = true, query: q = "" }: BrowsePageProps) {
       />
 
       <Tabs
-        defaultValue="search"
+        value={tab}
+        onChange={(value) => {
+          const nextTab: BrowseTab = value === "sources" ? "sources" : "search";
+          void navigate({
+            to: "/browse",
+            search: { q, tab: nextTab },
+            replace: true,
+          });
+        }}
         keepMounted
         className="lnr-browse-tabs"
       >
@@ -618,7 +633,7 @@ export function BrowsePage({ active = true, query: q = "" }: BrowsePageProps) {
                 onSearch={(nextQuery) => {
                   void navigate({
                     to: "/browse",
-                    search: { q: nextQuery },
+                    search: { q: nextQuery, tab: "search" },
                   });
                 }}
               />
