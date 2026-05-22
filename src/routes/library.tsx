@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -306,9 +307,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   );
   const unreadOnlyMode = useLibraryStore((s) => s.unreadOnlyMode);
   const setUnreadOnlyMode = useLibraryStore((s) => s.setUnreadOnlyMode);
-  const lastReadChapterByNovel = useReaderStore(
-    (state) => state.lastReadChapterByNovel,
-  );
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
 
   const novels = useInfiniteQuery({
@@ -452,6 +450,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         novel: Pick<LibraryNovel, "id" | "name" | "path" | "pluginId">;
       }> = [];
       let total = 0;
+      const lastReadChapterByNovel =
+        useReaderStore.getState().lastReadChapterByNovel;
 
       for (const novelId of selectedIds) {
         const novel = await getNovelById(novelId);
@@ -642,7 +642,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     downloadedOnlyMode ||
     unreadOnlyMode;
 
-  const rows = novels.data?.pages.flatMap((page) => page.novels) ?? [];
+  const rows = useMemo(
+    () => novels.data?.pages.flatMap((page) => page.novels) ?? [],
+    [novels.data?.pages],
+  );
   const summary = librarySummary.data ?? EMPTY_LIBRARY_SUMMARY;
   const libraryError = novels.error ?? librarySummary.error;
   const isInitialLibraryLoading = novels.isLoading || librarySummary.isLoading;

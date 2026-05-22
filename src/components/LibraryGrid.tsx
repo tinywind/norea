@@ -1,4 +1,5 @@
 import {
+  memo,
   useRef,
   type CSSProperties,
   type KeyboardEvent,
@@ -194,7 +195,7 @@ interface LibraryNovelItemProps extends LibraryTableRowProps {
   showUnreadBadges: boolean;
 }
 
-function LibraryTableRow({
+const LibraryTableRow = memo(function LibraryTableRow({
   index,
   novel,
   onActivate,
@@ -253,9 +254,9 @@ function LibraryTableRow({
       </span>
     </LibraryInteractiveItem>
   );
-}
+});
 
-function LibraryCard({
+const LibraryCard = memo(function LibraryCard({
   displayMode = "comfortable",
   index,
   novel,
@@ -324,7 +325,7 @@ function LibraryCard({
       )}
     </LibraryInteractiveItem>
   );
-}
+});
 
 function getDownloadPercent(novel: LibraryNovel) {
   if (novel.totalChapters <= 0) return 0;

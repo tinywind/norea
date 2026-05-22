@@ -798,6 +798,8 @@
   background: var(--lnr-design-surface);
   border-bottom: 1px solid var(--lnr-design-rule);
   color: var(--lnr-design-ink);
+  contain-intrinsic-size: 3.5625rem;
+  content-visibility: auto;
   cursor: pointer;
   font-family: var(--lnr-font-ui);
   font-size: 0.78125rem;
@@ -981,6 +983,8 @@
   background: var(--lnr-design-surface);
   border: 1px solid var(--lnr-design-rule);
   border-radius: 0.3125rem;
+  contain-intrinsic-size: 10rem 16rem;
+  content-visibility: auto;
   cursor: pointer;
   display: flex;
   flex-direction: column;
