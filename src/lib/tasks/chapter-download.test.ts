@@ -37,6 +37,7 @@ vi.mock("../chapter-media", () => ({
   getStoredChapterMediaBytes: vi.fn(),
   hasRemoteChapterMedia: vi.fn(),
   localChapterMediaSources: vi.fn(),
+  protectRemoteChapterMediaForPartialHtml: vi.fn((html: string) => html),
   storeEmbeddedChapterMedia: vi.fn(),
 }));
 vi.mock("../epub-html", () => ({

@@ -116,6 +116,10 @@ const STYLE_URL_PATTERN =
 const DEFAULT_MEDIA_EXTENSION = "bin";
 const DEFAULT_MEDIA_ACCEPT =
   "image/avif,image/webp,image/apng,image/svg+xml,image/*,video/*,audio/*,*/*;q=0.8";
+const REMOTE_MEDIA_PENDING_PLACEHOLDER_SRC =
+  "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221000%22%20height%3D%221400%22%20viewBox%3D%220%200%201000%201400%22%2F%3E";
+const REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC =
+  "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%2F%3E";
 const CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json";
 type ChapterMediaRequestInit = Pick<HttpInit, "body" | "headers" | "method">;
 
@@ -1200,6 +1204,48 @@ function collectMediaTargets(
   }
 
   return { srcTargets, srcsetTargets, styleTargets, urls };
+}
+
+export function protectRemoteChapterMediaForPartialHtml(
+  html: string,
+  baseUrl?: string | null,
+): string {
+  if (typeof document === "undefined") return html;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const { srcTargets, srcsetTargets, styleTargets, urls } = collectMediaTargets(
+    template.content,
+    baseUrl,
+  );
+  if (urls.length === 0) return html;
+
+  for (const target of srcTargets) {
+    target.element.setAttribute(MEDIA_SOURCE_URL_ATTRIBUTE, target.url);
+    target.element.setAttribute(
+      target.attribute,
+      target.attribute === "src" && target.element instanceof HTMLImageElement
+        ? REMOTE_MEDIA_PENDING_PLACEHOLDER_SRC
+        : REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC,
+    );
+  }
+  for (const target of srcsetTargets) {
+    const rawSrcset = target.element.getAttribute("srcset");
+    if (rawSrcset) {
+      target.element.setAttribute(MEDIA_SRCSET_SOURCE_ATTRIBUTE, rawSrcset);
+    }
+    target.element.setAttribute("srcset", REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC);
+  }
+  for (const target of styleTargets) {
+    target.element.setAttribute(
+      "style",
+      target.style.replace(
+        STYLE_URL_PATTERN,
+        `url("${REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC}")`,
+      ),
+    );
+  }
+
+  return template.innerHTML;
 }
 
 function collectExistingMediaSlots(root: DocumentFragment): ExistingMediaSlots {

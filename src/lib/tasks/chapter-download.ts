@@ -20,6 +20,7 @@ import {
   getStoredChapterMediaBytes,
   hasRemoteChapterMedia,
   localChapterMediaSources,
+  protectRemoteChapterMediaForPartialHtml,
   storeEmbeddedChapterMedia,
   type ChapterMediaElementPatch,
 } from "../chapter-media";
@@ -576,6 +577,20 @@ export function enqueueChapterDownload(
           novelPath: novel?.path ?? job.novelPath,
           sourceId: job.pluginId,
         };
+        const emitPartialHtml = async (partialHtml: string): Promise<void> => {
+          const partialSaveResult = await saveChapterPartialContent(
+            job.id,
+            partialHtml,
+            savedContentType,
+          );
+          if (partialSaveResult.rowsAffected <= 0) {
+            throw missingLocalChapterError(job);
+          }
+          emitChapterPartialContentUpdate({
+            chapterId: job.id,
+            html: partialHtml,
+          });
+        };
         if (isBinaryChapterContentType(contentType)) {
           const bytes = await loadChapterResource(
             plugin,
@@ -656,6 +671,9 @@ export function enqueueChapterDownload(
           const baseUrl = absolutePluginUrl(plugin, job.chapterPath);
           if (hasRemoteChapterMedia(html, baseUrl)) {
             shouldClearMedia = false;
+            await emitPartialHtml(
+              protectRemoteChapterMediaForPartialHtml(html, baseUrl),
+            );
             const media = await cacheHtmlChapterMedia({
               ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
               chapterId: job.id,
@@ -666,20 +684,10 @@ export function enqueueChapterDownload(
               novelId: chapter.novelId,
               novelName: novel?.name ?? job.novelName,
               novelPath: novel?.path ?? job.novelPath,
-              onHtmlUpdate: async (partialHtml) => {
-                const partialSaveResult = await saveChapterPartialContent(
-                  job.id,
-                  partialHtml,
-                  savedContentType,
-                );
-                if (partialSaveResult.rowsAffected <= 0) {
-                  throw missingLocalChapterError(job);
-                }
-                emitChapterPartialContentUpdate({
-                  chapterId: job.id,
-                  html: partialHtml,
-                });
-              },
+              onHtmlUpdate: (partialHtml) =>
+                emitPartialHtml(
+                  protectRemoteChapterMediaForPartialHtml(partialHtml, baseUrl),
+                ),
               onMediaPatch: (patches) => {
                 emitChapterMediaPatchUpdate({
                   chapterId: job.id,
@@ -833,9 +841,13 @@ export function enqueueChapterMediaRepair(
         novelName: storageContext.novelName,
         novelPath: storageContext.novelPath,
         onHtmlUpdate: async (partialHtml) => {
+          const protectedPartialHtml = protectRemoteChapterMediaForPartialHtml(
+            partialHtml,
+            baseUrl,
+          );
           const partialSaveResult = await saveChapterPartialContent(
             chapter.id,
-            partialHtml,
+            protectedPartialHtml,
             contentType,
           );
           if (partialSaveResult.rowsAffected <= 0) {
@@ -843,7 +855,7 @@ export function enqueueChapterMediaRepair(
           }
           emitChapterPartialContentUpdate({
             chapterId: chapter.id,
-            html: partialHtml,
+            html: protectedPartialHtml,
           });
         },
         onMediaPatch: (patches) => {
