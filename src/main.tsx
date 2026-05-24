@@ -117,6 +117,15 @@ const DEFAULT_VIEWPORT_META =
   "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover";
 const ANDROID_MIN_VIEWPORT_WIDTH = 320;
 const ANDROID_MAX_VIEWPORT_WIDTH = 1920;
+const ANDROID_ENTER_BLUR_INPUT_TYPES = new Set([
+  "email",
+  "number",
+  "password",
+  "search",
+  "tel",
+  "text",
+  "url",
+]);
 const MANTINE_XS_MIN_WIDTH = 576;
 const MANTINE_SM_MIN_WIDTH = 768;
 const MANTINE_MD_MIN_WIDTH = 992;
@@ -389,6 +398,27 @@ function applyRuntimeUiScale(
   root.dataset.lnrAndroidLayout = layout.className;
   applyAndroidViewport(layout.viewportWidth);
   root.style.removeProperty("--lnr-mobile-nav-content-height");
+}
+
+function isAndroidEnterBlurInput(
+  target: EventTarget | null,
+): target is HTMLInputElement {
+  return (
+    target instanceof HTMLInputElement &&
+    !target.disabled &&
+    !target.readOnly &&
+    ANDROID_ENTER_BLUR_INPUT_TYPES.has(target.type)
+  );
+}
+
+function blurAndroidInputOnEnter(event: KeyboardEvent): void {
+  if (event.key !== "Enter" || event.isComposing) return;
+  if (!isAndroidEnterBlurInput(event.target)) return;
+
+  const target = event.target;
+  window.setTimeout(() => {
+    if (document.activeElement === target) target.blur();
+  }, 0);
 }
 
 window.__lnrApplyAndroidSafeAreaInsets = (insets) => {
@@ -698,6 +728,15 @@ function AppProviders() {
     applyRuntimeUiScale(fontScalePercent, androidViewScalePercent);
     applyRuntimeSafeAreaInsets();
   }, [androidViewScalePercent, fontScalePercent]);
+
+  useEffect(() => {
+    if (!isAndroidRuntime()) return;
+
+    document.addEventListener("keydown", blurAndroidInputOnEnter, true);
+    return () => {
+      document.removeEventListener("keydown", blurAndroidInputOnEnter, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isAndroidRuntime()) return;
