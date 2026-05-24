@@ -649,7 +649,9 @@ function SearchResultSection({
                   width={74}
                   height={108}
                 />
-                <span title={novel.name}>{novel.name}</span>
+                <span className="lnr-search-preview-title" title={novel.name}>
+                  {novel.name}
+                </span>
               </button>
             );
           })}
@@ -1093,7 +1095,7 @@ export function PluginSearchSection({
             to: "/source",
             search: {
               pluginId: plugin.id,
-              query: trimmedQuery,
+              query: "",
             },
           });
         }}

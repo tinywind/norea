@@ -116,7 +116,7 @@ class MainActivity : TauriActivity() {
   private fun handleMainWebViewBackPressed(): Boolean {
     val webView = mainWebView ?: return false
     val path = mainAppPath(webView.url) ?: return false
-    if (path == "/reader") {
+    if (path == "/reader" || path == "/source") {
       webView.evaluateJavascript(
         "window.dispatchEvent(new CustomEvent('norea:android-back'));",
         null,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -347,8 +347,8 @@ export function SourcePage() {
     ).promise.catch(() => undefined);
   }
 
-  function goBack(): void {
-    const target = findPreviousAppHistoryEntry(currentHref, []);
+  const goBack = useCallback((): void => {
+    const target = findPreviousAppHistoryEntry(currentHref, ["/source"]);
     if (target) {
       trimAppNavigationHistoryTo(target);
       window.history.go(-target.steps);
@@ -360,7 +360,14 @@ export function SourcePage() {
       search: { q: "", tab: "search" },
       replace: true,
     });
-  }
+  }, [currentHref, navigate]);
+
+  useEffect(() => {
+    window.addEventListener("norea:android-back", goBack);
+    return () => {
+      window.removeEventListener("norea:android-back", goBack);
+    };
+  }, [goBack]);
 
   useEffect(() => {
     const data = listing.data;

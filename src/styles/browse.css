@@ -471,7 +471,7 @@
   box-shadow: var(--lnr-focus-ring);
 }
 
-.lnr-search-preview-card span {
+.lnr-search-preview-title {
   font-size: 0.6875rem;
   font-weight: 700;
   line-height: 1.25;
