@@ -743,6 +743,7 @@ export interface LibraryUpdateEntry {
   chapterPath: string;
   novelId: number;
   pluginId: string;
+  pluginName?: string | null;
   novelPath: string;
   chapterName: string;
   contentType: ChapterContentType;
@@ -812,6 +813,7 @@ export async function listLibraryUpdates(
        c.path            AS chapterPath,
        c.novel_id        AS novelId,
        n.plugin_id       AS pluginId,
+       ip.name           AS pluginName,
        n.path            AS novelPath,
        c.name            AS chapterName,
        c.content_type    AS contentType,
@@ -822,6 +824,7 @@ export async function listLibraryUpdates(
        n.cover           AS novelCover
      FROM chapter c
      JOIN novel n ON n.id = c.novel_id
+     LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
      WHERE
        n.in_library = 1
        AND c.unread = 1

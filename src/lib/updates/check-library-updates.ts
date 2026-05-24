@@ -22,6 +22,7 @@ export interface UpdateCheckFailure {
   novelId: number;
   novelName: string;
   pluginId: string;
+  pluginName?: string;
   reason:
     | { kind: "plugin-missing"; pluginId: string }
     | { kind: "error"; message: string };
@@ -153,6 +154,7 @@ async function runLibraryUpdateCheck(
               novelId: novel.id,
               novelName: novel.name,
               pluginId: novel.pluginId,
+              pluginName: plugin.name,
               reason: { kind: "error", message: describeError(error) },
             });
           });
@@ -161,6 +163,7 @@ async function runLibraryUpdateCheck(
           novelId: novel.id,
           novelName: novel.name,
           pluginId: novel.pluginId,
+          pluginName: plugin.name,
           reason: { kind: "error", message: describeError(error) },
         });
       } finally {

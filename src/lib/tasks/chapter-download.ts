@@ -509,11 +509,20 @@ function eventFromTask(task: TaskRecord): ChapterDownloadEvent | null {
   };
 }
 
+function resolveSourceTaskName(
+  pluginId: string,
+  pluginName: string | undefined,
+): string {
+  const trimmedName = pluginName?.trim();
+  if (trimmedName && trimmedName !== pluginId) return trimmedName;
+  return pluginManager.getPlugin(pluginId)?.name ?? trimmedName ?? pluginId;
+}
+
 export function enqueueChapterDownload(
   job: ChapterDownloadJob,
 ): TaskHandle<void> {
-  const sourceName = job.pluginName ?? job.pluginId;
   const sourcePlugin = pluginManager.getPlugin(job.pluginId);
+  const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
   const sourceBaseUrl = sourcePlugin ? getPluginBaseUrl(sourcePlugin) : undefined;
   const sourceCooldownKey = sourceBaseDomainKey(sourceBaseUrl) ?? job.pluginId;
   persistChapterDownloadJob(job);
@@ -764,8 +773,8 @@ export function enqueueChapterDownload(
 export function enqueueChapterMediaRepair(
   job: ChapterMediaRepairJob,
 ): TaskHandle<void> {
-  const sourceName = job.pluginName ?? job.pluginId;
   const sourcePlugin = pluginManager.getPlugin(job.pluginId);
+  const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
   const sourceBaseUrl = sourcePlugin ? getPluginBaseUrl(sourcePlugin) : undefined;
   const sourceCooldownKey = sourceBaseDomainKey(sourceBaseUrl) ?? job.pluginId;
   return taskScheduler.enqueueSource<void>({

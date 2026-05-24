@@ -1285,6 +1285,7 @@ interface NovelWorkspaceProps {
   onRefreshFullMetadata: () => void;
   onRefreshMetadata: () => void;
   onToggleLibrary: () => void;
+  sourceName: string;
   sourceUrl: string | null;
   toggleBusy: boolean;
 }
@@ -1307,6 +1308,7 @@ function NovelWorkspace({
   onRefreshFullMetadata,
   onRefreshMetadata,
   onToggleLibrary,
+  sourceName,
   sourceUrl,
   toggleBusy,
 }: NovelWorkspaceProps) {
@@ -1481,7 +1483,7 @@ function NovelWorkspace({
             ) : null}
             <Text className="lnr-novel-meta">
               {t("novel.source", {
-                name: novel.isLocal ? t("common.local") : novel.pluginId,
+                name: sourceName,
               })}
             </Text>
           </Group>
@@ -2115,7 +2117,7 @@ export function NovelDetailPage() {
     : pluginManager.getPlugin(novel.pluginId);
   const sourceName = novel.isLocal
     ? t("common.local")
-    : (sourcePlugin?.name ?? novel.pluginId);
+    : (novel.pluginName ?? sourcePlugin?.name ?? novel.pluginId);
   const metadataRefreshError =
     refreshMetadata.error ?? fullRefreshMetadata.error;
 
@@ -2141,6 +2143,7 @@ export function NovelDetailPage() {
             onRefreshFullMetadata={() => fullRefreshMetadata.mutate()}
             onRefreshMetadata={() => refreshMetadata.mutate()}
             onToggleLibrary={() => toggle.mutate()}
+            sourceName={sourceName}
             sourceUrl={sourceUrl}
             toggleBusy={toggle.isPending}
           />

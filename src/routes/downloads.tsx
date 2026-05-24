@@ -353,6 +353,7 @@ function DownloadCacheNovelCard({
       "compact",
     ),
   });
+  const sourceName = novel.pluginName ?? novel.pluginId;
   const statusText = [
     t("downloads.chapterCount", {
       cached: novel.chaptersDownloaded,
@@ -364,7 +365,7 @@ function DownloadCacheNovelCard({
     }),
     size,
     updatedLabel,
-    novel.pluginId,
+    sourceName,
   ].join(" / ");
   const deletingNovel =
     deleteNovel.isPending && deleteNovel.variables === novel.novelId;

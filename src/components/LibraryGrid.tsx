@@ -340,7 +340,9 @@ function getSourceLabel(
   novel: LibraryNovel,
   t: (key: TranslationKey) => string,
 ) {
-  return novel.isLocal ? t("library.grid.local") : novel.pluginId;
+  return novel.isLocal
+    ? t("library.grid.local")
+    : (novel.pluginName ?? novel.pluginId);
 }
 
 function getCreatorLabel(

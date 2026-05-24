@@ -13,6 +13,7 @@ export interface DownloadCacheNovel {
   novelName: string;
   novelCover: string | null;
   pluginId: string;
+  pluginName?: string | null;
   inLibrary: boolean;
   chaptersDownloaded: number;
   totalChapters: number;
@@ -78,6 +79,7 @@ export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
        n.name           AS novelName,
        n.cover          AS novelCover,
        n.plugin_id      AS pluginId,
+       ip.name          AS pluginName,
        n.in_library     AS inLibrary,
        COUNT(c.id)      AS chaptersDownloaded,
        (
@@ -95,6 +97,7 @@ export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
        MAX(c.updated_at) AS lastDownloadedAt
      FROM novel n
      JOIN chapter c ON c.novel_id = n.id
+     LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
      WHERE c.is_downloaded = 1
        AND n.is_local = 0
      GROUP BY n.id

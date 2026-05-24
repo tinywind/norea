@@ -27,6 +27,7 @@ export const LOCAL_PLUGIN_ID = "local";
 export interface LibraryNovel {
   id: number;
   pluginId: string;
+  pluginName?: string | null;
   path: string;
   name: string;
   cover: string | null;
@@ -286,6 +287,7 @@ function libraryRowsCte(conditions: readonly string[]): string {
       SELECT
       n.id,
       n.plugin_id    AS pluginId,
+      ip.name        AS pluginName,
       n.path,
       n.name,
       n.cover,
@@ -305,6 +307,7 @@ function libraryRowsCte(conditions: readonly string[]): string {
       END AS lastUpdatedAt
     FROM novel n
     LEFT JOIN novel_stats s ON s.novel_id = n.id
+    LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
     WHERE ${conditions.join(" AND ")}
     )
   `;
@@ -380,6 +383,7 @@ async function selectLibraryNovels(
     SELECT
       id,
       pluginId,
+      pluginName,
       path,
       name,
       cover,
@@ -530,6 +534,7 @@ export async function listLibraryNovelRefreshTargets(
 export interface NovelDetailRecord {
   id: number;
   pluginId: string;
+  pluginName?: string | null;
   path: string;
   name: string;
   cover: string | null;
@@ -553,23 +558,25 @@ interface RawNovelDetail extends Omit<NovelDetailRecord, "inLibrary" | "isLocal"
 
 const SELECT_NOVEL_DETAIL_FIELDS = `
   SELECT
-    id,
-    plugin_id      AS pluginId,
-    path,
-    name,
-    cover,
-    summary,
-    author,
-    artist,
-    status,
-    genres,
-    in_library     AS inLibrary,
-    is_local       AS isLocal,
-    created_at     AS createdAt,
-    updated_at     AS updatedAt,
-    library_added_at AS libraryAddedAt,
-    last_read_at   AS lastReadAt
-  FROM novel
+    n.id,
+    n.plugin_id      AS pluginId,
+    ip.name          AS pluginName,
+    n.path,
+    n.name,
+    n.cover,
+    n.summary,
+    n.author,
+    n.artist,
+    n.status,
+    n.genres,
+    n.in_library     AS inLibrary,
+    n.is_local       AS isLocal,
+    n.created_at     AS createdAt,
+    n.updated_at     AS updatedAt,
+    n.library_added_at AS libraryAddedAt,
+    n.last_read_at   AS lastReadAt
+  FROM novel n
+  LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
 `;
 
 function mapNovelDetail(row: RawNovelDetail): NovelDetailRecord {
@@ -588,7 +595,7 @@ export async function getNovelById(
   const db = await getDb();
   const rows = await db.select<RawNovelDetail[]>(
     `${SELECT_NOVEL_DETAIL_FIELDS}
-     WHERE id = $1`,
+     WHERE n.id = $1`,
     [id],
   );
   const row = rows[0];
@@ -602,8 +609,8 @@ export async function findNovelBySource(
   const db = await getDb();
   const rows = await db.select<RawNovelDetail[]>(
     `${SELECT_NOVEL_DETAIL_FIELDS}
-     WHERE plugin_id = $1
-       AND path = $2`,
+     WHERE n.plugin_id = $1
+       AND n.path = $2`,
     [pluginId, path],
   );
   const row = rows[0];
@@ -616,9 +623,9 @@ export async function findLocalNovelByPath(
   const db = await getDb();
   const rows = await db.select<RawNovelDetail[]>(
     `${SELECT_NOVEL_DETAIL_FIELDS}
-     WHERE plugin_id = $1
-       AND path = $2
-       AND is_local = 1`,
+     WHERE n.plugin_id = $1
+       AND n.path = $2
+       AND n.is_local = 1`,
     [LOCAL_PLUGIN_ID, path],
   );
   const row = rows[0];

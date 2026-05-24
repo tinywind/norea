@@ -148,6 +148,7 @@ interface FailureRowProps {
 
 function FailureRow({ failure, onOpenNovel }: FailureRowProps) {
   const { t } = useTranslation();
+  const sourceName = failure.pluginName ?? failure.pluginId;
   const reason =
     failure.reason.kind === "plugin-missing"
       ? t("updates.pluginMissing", { id: failure.reason.pluginId })
@@ -167,7 +168,7 @@ function FailureRow({ failure, onOpenNovel }: FailureRowProps) {
           </button>
         </Group>
         <Text className="lnr-updates-row-meta" title={reason}>
-          {failure.pluginId} / {reason}
+          {sourceName} / {reason}
         </Text>
       </div>
       <UpdateIconButton label={t("updates.details")} onClick={onOpenNovel}>
@@ -354,7 +355,7 @@ function UpdateRow({
         </Text>
         <Group gap="xs" mt={6} wrap="wrap">
           <span className="lnr-updates-row-flags" aria-label={t("novel.chapterStatus")}>
-            <UpdateFlag label={entry.pluginId}>
+            <UpdateFlag label={entry.pluginName ?? entry.pluginId}>
               <SourceIcon />
             </UpdateFlag>
             <UpdateFlag label={t("library.grid.unread")} tone="accent">
