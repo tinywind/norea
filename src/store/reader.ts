@@ -12,6 +12,7 @@ export type ReaderHtmlImagePagingMode =
   | "fragment";
 export type ReaderCustomCssPresetId =
   | "webtoon"
+  | "webtoon-spaced"
   | "comic-spread"
   | "comic-page"
   | "page-fit-media";
@@ -60,6 +61,73 @@ export interface ReaderThemeDefinition {
   backgroundColor: string;
   textColor: string;
 }
+
+const LEGACY_WEBTOON_STRIP_CSS = `.reader-content {
+  max-width: none !important;
+  width: 100% !important;
+  padding: 0 !important;
+}
+
+.reader-content > :where(p, div, figure, a) {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+}
+
+.reader-content :where(img, picture, svg, video, canvas) {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: 0 auto !important;
+  object-fit: contain !important;
+}
+
+.reader-content picture > img {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+}`;
+
+function createWebtoonStripCss(mediaMargin: string): string {
+  return `.reader-content {
+  max-width: none !important;
+  width: 100% !important;
+  padding: 0 !important;
+}
+
+.reader-content :where(p, figure, a),
+.reader-content div:not(:where(
+  [data-norea-reader-virtual-canvas],
+  [data-norea-reader-virtual-window]
+)) {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  line-height: 0 !important;
+}
+
+.reader-content :where(img, picture, svg, video, canvas) {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: ${mediaMargin} !important;
+  object-fit: contain !important;
+  vertical-align: top !important;
+}
+
+.reader-content picture > img {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: 0 auto !important;
+}`;
+}
+
+const WEBTOON_STRIP_CSS = createWebtoonStripCss("0 auto");
+const WEBTOON_STRIP_SPACED_CSS = createWebtoonStripCss("0 auto 1rem");
 
 const PAGE_FIT_MEDIA_CSS = `.reader-viewport-paged .reader-content {
   --lnr-page-fit-media-height: var(--lnr-reader-page-media-max-height, 100dvh);
@@ -251,32 +319,19 @@ export const READER_CUSTOM_CSS_PRESETS: ReaderCustomCssPreset[] = [
     appearance: {
       padding: 0,
     },
-    css: `.reader-content {
-  max-width: none !important;
-  width: 100% !important;
-  padding: 0 !important;
-}
-
-.reader-content > :where(p, div, figure, a) {
-  margin: 0 !important;
-  padding: 0 !important;
-  width: 100% !important;
-}
-
-.reader-content :where(img, picture, svg, video, canvas) {
-  display: block !important;
-  width: 100% !important;
-  max-width: 100% !important;
-  height: auto !important;
-  margin: 0 auto !important;
-  object-fit: contain !important;
-}
-
-.reader-content picture > img {
-  width: 100% !important;
-  max-width: 100% !important;
-  height: auto !important;
-}`,
+    css: WEBTOON_STRIP_CSS,
+  },
+  {
+    id: "webtoon-spaced",
+    general: {
+      pageReader: false,
+      twoPageReader: false,
+      htmlImagePagingMode: "auto",
+    },
+    appearance: {
+      padding: 0,
+    },
+    css: WEBTOON_STRIP_SPACED_CSS,
   },
   {
     id: "comic-spread",
@@ -655,13 +710,21 @@ function normalizeTapZones(
   return next;
 }
 
+function normalizeCustomCss(customCss: string | undefined): string | undefined {
+  const normalizedCustomCss = customCss?.trim();
+  if (normalizedCustomCss === LEGACY_WEBTOON_STRIP_CSS.trim()) {
+    return WEBTOON_STRIP_CSS;
+  }
+  if (normalizedCustomCss === LEGACY_PAGE_FIT_MEDIA_CSS.trim()) {
+    return PAGE_FIT_MEDIA_CSS;
+  }
+  return customCss;
+}
+
 function normalizeAppearance(
   settings: Partial<ReaderAppearanceSettings>,
 ): Partial<ReaderAppearanceSettings> {
-  const customCss =
-    settings.customCss?.trim() === LEGACY_PAGE_FIT_MEDIA_CSS.trim()
-      ? PAGE_FIT_MEDIA_CSS
-      : settings.customCss;
+  const customCss = normalizeCustomCss(settings.customCss);
   return {
     ...settings,
     ...(customCss !== undefined ? { customCss } : {}),
@@ -1244,15 +1307,22 @@ export const useReaderStore = create<ReaderState>()(
             READER_PAGE_TRANSITION_DURATION_MAX_MS,
           ),
         );
+        const persistedAppearance = isRecord(persisted.appearance)
+          ? (persisted.appearance as Partial<ReaderAppearanceSettings>)
+          : {};
+        const appearance = {
+          ...READER_APPEARANCE_DEFAULTS,
+          ...normalizeAppearance({
+            ...READER_APPEARANCE_DEFAULTS,
+            ...persistedAppearance,
+          }),
+        };
 
         return {
           ...currentState,
           ...persisted,
           general,
-          appearance: {
-            ...READER_APPEARANCE_DEFAULTS,
-            ...persisted.appearance,
-          },
+          appearance,
           readerSettingsByNovel: normalizeReaderSettingsByNovel(
             persisted.readerSettingsByNovel,
           ),

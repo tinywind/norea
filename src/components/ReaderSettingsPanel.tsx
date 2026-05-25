@@ -64,6 +64,7 @@ const CUSTOM_CSS_PRESET_LABEL_KEYS: Record<
   TranslationKey
 > = {
   webtoon: "readerSettings.customCssPreset.webtoon",
+  "webtoon-spaced": "readerSettings.customCssPreset.webtoonSpaced",
   "comic-spread": "readerSettings.customCssPreset.comicSpread",
   "comic-page": "readerSettings.customCssPreset.comicPage",
   "page-fit-media": "readerSettings.customCssPreset.pageFitMedia",

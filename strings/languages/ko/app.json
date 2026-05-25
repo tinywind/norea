@@ -379,6 +379,7 @@
   "readerSettings.customCssPreset.none": "없음",
   "readerSettings.customCssPreset.custom": "사용자 지정",
   "readerSettings.customCssPreset.webtoon": "웹툰 세로 스트립",
+  "readerSettings.customCssPreset.webtoonSpaced": "간격 있는 웹툰 세로 스트립",
   "readerSettings.customCssPreset.comicSpread": "양쪽 페이지 스캔 만화",
   "readerSettings.customCssPreset.comicPage": "한쪽 페이지 스캔 만화",
   "readerSettings.customCssPreset.pageFitMedia": "Page-fit media",

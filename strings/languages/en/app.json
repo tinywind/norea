@@ -379,6 +379,7 @@
   "readerSettings.customCssPreset.none": "None",
   "readerSettings.customCssPreset.custom": "Custom",
   "readerSettings.customCssPreset.webtoon": "Webtoon strip",
+  "readerSettings.customCssPreset.webtoonSpaced": "Webtoon strip with gaps",
   "readerSettings.customCssPreset.comicSpread": "Two-page scanned comic",
   "readerSettings.customCssPreset.comicPage": "Single-page scanned comic",
   "readerSettings.customCssPreset.pageFitMedia": "Page-fit media",
