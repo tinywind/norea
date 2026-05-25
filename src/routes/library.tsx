@@ -91,7 +91,6 @@ import { MAX_ROUTE_QUERY_ROWS } from "../lib/performance-budgets";
 import {
   enqueueChapterDownloadBatch,
   getChapterDownloadStatus,
-  type ChapterDownloadJob,
   type ChapterDownloadStatus,
 } from "../lib/tasks/chapter-download";
 import { refreshLibraryMetadata } from "../lib/updates/refresh-library-metadata";
@@ -475,26 +474,23 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
       if (total === 0) return 0;
 
-      function* chapterDownloadJobs(): Iterable<ChapterDownloadJob> {
-        for (const { chapters, novel } of batchSources) {
-          for (const chapter of chapters) {
-            yield {
-              id: chapter.id,
-              pluginId: novel.pluginId,
-              chapterPath: chapter.path,
-              chapterName: chapter.name,
-              contentType: chapter.contentType,
-              novelId: novel.id,
-              novelName: novel.name,
-              novelPath: novel.path,
-              title: t("tasks.task.downloadChapter", { name: chapter.name }),
-            };
-          }
-        }
-      }
+      const chapterDownloadJobs = batchSources.flatMap(({ chapters, novel }) =>
+        chapters.map((chapter) => ({
+          id: chapter.id,
+          pluginId: novel.pluginId,
+          chapterPath: chapter.path,
+          chapterName: chapter.name,
+          chapterNumber: chapter.chapterNumber ?? undefined,
+          contentType: chapter.contentType,
+          novelId: novel.id,
+          novelName: novel.name,
+          novelPath: novel.path,
+          title: t("tasks.task.downloadChapter", { name: chapter.name }),
+        })),
+      );
 
       const handle = enqueueChapterDownloadBatch({
-        jobs: chapterDownloadJobs(),
+        jobs: chapterDownloadJobs,
         title: t("tasks.task.downloadChapterBatch", { count: total }),
         total,
       });

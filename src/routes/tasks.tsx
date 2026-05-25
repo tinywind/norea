@@ -53,6 +53,12 @@ type SourceTaskGroup = {
   tasks: TaskRecord[];
 };
 
+type ChapterDownloadTaskHeading = {
+  chapterLabel: string;
+  novelName: string;
+  title: string;
+};
+
 type SortableGroupState = {
   attributes: DraggableAttributes;
   isDragging: boolean;
@@ -229,6 +235,27 @@ function progressLabel(task: TaskRecord): string | null {
   return `${progress.current}/${progress.total}`;
 }
 
+function chapterDownloadTaskHeading(
+  task: TaskRecord,
+): ChapterDownloadTaskHeading | null {
+  if (task.kind !== "chapter.download") return null;
+  const novelName = task.subject?.novelName?.trim();
+  const chapterNumber = task.subject?.chapterNumber?.trim();
+  const chapterName = task.subject?.chapterName?.trim();
+  const chapterLabelSource = chapterNumber || chapterName;
+  if (!novelName || !chapterLabelSource) return null;
+  const chapterLabel = chapterNumber
+    ? chapterNumber.startsWith("#")
+      ? chapterNumber
+      : `#${chapterNumber}`
+    : chapterLabelSource;
+  return {
+    chapterLabel,
+    novelName,
+    title: `${novelName} - ${chapterLabel}`,
+  };
+}
+
 function DragHandle({
   attributes,
   draggable,
@@ -364,6 +391,7 @@ function TaskRow({
   const { t } = useTranslation();
   const sourcePaused = isSourceQueuePaused(task, snapshot);
   const label = progressLabel(task);
+  const chapterHeading = chapterDownloadTaskHeading(task);
   const canMove =
     task.status === "queued" &&
     task.queueIndex !== undefined &&
@@ -409,9 +437,23 @@ function TaskRow({
       />
       <div className="lnr-task-row-main">
         <div className="lnr-task-row-heading">
-          <Text className="lnr-task-row-title" lineClamp={1}>
-            {task.title}
-          </Text>
+          {chapterHeading ? (
+            <div
+              className="lnr-task-row-title lnr-task-row-download-title"
+              title={chapterHeading.title}
+            >
+              <span className="lnr-task-row-download-novel">
+                {chapterHeading.novelName}
+              </span>
+              <span className="lnr-task-row-download-chapter">
+                {chapterHeading.chapterLabel}
+              </span>
+            </div>
+          ) : (
+            <Text className="lnr-task-row-title" lineClamp={1}>
+              {task.title}
+            </Text>
+          )}
           {label ? <span className="lnr-task-progress-text">{label}</span> : null}
         </div>
         <Text className="lnr-task-row-meta" lineClamp={1}>

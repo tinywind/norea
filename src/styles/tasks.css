@@ -277,6 +277,30 @@
   min-width: 0;
 }
 
+.lnr-task-row-download-title {
+  align-items: baseline;
+  display: flex;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.lnr-task-row-download-novel {
+  display: block;
+  flex: 0 1 auto;
+  inline-size: min(22rem, 42vw);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lnr-task-row-download-chapter {
+  color: var(--lnr-design-ink-muted);
+  flex: 0 0 auto;
+  font-family: var(--lnr-font-meta);
+  white-space: nowrap;
+}
+
 .lnr-task-progress-text {
   color: var(--lnr-design-ink-muted);
   flex: 0 0 auto;
@@ -350,6 +374,10 @@
 
   .lnr-task-row-title {
     font-size: 0.8125rem;
+  }
+
+  .lnr-task-row-download-novel {
+    inline-size: min(11rem, 34vw);
   }
 
   .lnr-task-progress-text,
