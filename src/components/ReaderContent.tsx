@@ -615,12 +615,8 @@ function protectLocalReaderMediaCached(
 function preprocessReaderHtmlForRender(
   html: string,
   bionicReading: boolean,
-  resolvedLocalMedia?: ReadonlyMap<string, string>,
 ): string {
-  return protectLocalReaderMediaCached(
-    preprocessReaderHtmlShell(html, bionicReading),
-    resolvedLocalMedia,
-  );
+  return preprocessReaderHtmlShell(html, bionicReading);
 }
 
 function setReaderPendingImagePlaceholder(image: HTMLImageElement): void {
@@ -1524,6 +1520,34 @@ function getNormalizedWheelDelta(event: WheelEvent<HTMLElement>): number {
   return primaryDelta;
 }
 
+function virtualScrollAnchorIndex(
+  scrollTop: number,
+  offsets: readonly number[],
+): number {
+  const count = Math.max(0, offsets.length - 1);
+  if (count === 0) return 0;
+  let low = 0;
+  let high = count - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if ((offsets[mid] ?? 0) <= scrollTop) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return low;
+}
+
+function virtualScrollAnchorDelta(
+  scrollTop: number,
+  currentOffsets: readonly number[],
+  nextOffsets: readonly number[],
+): number {
+  const anchorIndex = virtualScrollAnchorIndex(scrollTop, currentOffsets);
+  return (nextOffsets[anchorIndex] ?? 0) - (currentOffsets[anchorIndex] ?? 0);
+}
+
 function getTapZone(
   rect: DOMRect,
   clientX: number,
@@ -1599,6 +1623,10 @@ function ReaderContentInner(
   const wheelCooldownTimerRef = useRef<number | null>(null);
   const wheelPagingLockedRef = useRef(false);
   const nativeWheelActionLockedUntilRef = useRef(0);
+  const pendingVirtualScrollAdjustmentRef = useRef(0);
+  const scrollStepFloorRef = useRef<{ expiresAt: number; top: number } | null>(
+    null,
+  );
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const [progress, setProgress] = useState(clampProgress(initialProgress));
   const setRenderedProgress = useCallback(
@@ -1628,6 +1656,7 @@ function ReaderContentInner(
     height: 0,
   });
   const [segmentHeights, setSegmentHeights] = useState<number[]>([]);
+  const segmentHeightsRef = useRef<number[]>([]);
   const [virtualRange, setVirtualRange] = useState({ start: 0, end: -1 });
   const [resolvedLocalMedia, setResolvedLocalMedia] = useState<
     Record<string, string>
@@ -1667,13 +1696,8 @@ function ReaderContentInner(
   );
 
   const renderedHtml = useMemo(
-    () =>
-      preprocessReaderHtmlForRender(
-        html,
-        general.bionicReading,
-        resolvedLocalMediaMap,
-      ),
-    [general.bionicReading, html, resolvedLocalMediaMap],
+    () => preprocessReaderHtmlForRender(html, general.bionicReading),
+    [general.bionicReading, html],
   );
   const virtualDocument = useMemo(
     () => buildReaderVirtualDocumentCached(renderedHtml),
@@ -1736,6 +1760,10 @@ function ReaderContentInner(
   const virtualContentHeight =
     segmentOffsets[segmentOffsets.length - 1] ?? 0;
 
+  useEffect(() => {
+    segmentHeightsRef.current = segmentHeights;
+  }, [segmentHeights]);
+
   const cancelPagedScrollAnimation = useCallback(() => {
     if (pageScrollCompletionTimerRef.current !== null) {
       window.clearTimeout(pageScrollCompletionTimerRef.current);
@@ -1747,6 +1775,43 @@ function ReaderContentInner(
     }
     pageScrollAnimatingRef.current = false;
   }, []);
+
+  const enforceScrollStepFloor = useCallback(() => {
+    const floor = scrollStepFloorRef.current;
+    if (!floor) return;
+    if (performance.now() > floor.expiresAt) {
+      scrollStepFloorRef.current = null;
+      return;
+    }
+    const node = viewportRef.current;
+    if (!node) return;
+    const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    const targetTop = Math.min(floor.top, maxTop);
+    if (node.scrollTop + 1 < targetTop) {
+      node.scrollTop = targetTop;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (isPagedReader) {
+      pendingVirtualScrollAdjustmentRef.current = 0;
+      return;
+    }
+    const adjustment = pendingVirtualScrollAdjustmentRef.current;
+    pendingVirtualScrollAdjustmentRef.current = 0;
+    if (Math.abs(adjustment) < 0.5) {
+      enforceScrollStepFloor();
+      return;
+    }
+    const node = viewportRef.current;
+    if (!node) return;
+    const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    node.scrollTop = Math.max(
+      0,
+      Math.min(maxTop, node.scrollTop + adjustment),
+    );
+    enforceScrollStepFloor();
+  }, [enforceScrollStepFloor, isPagedReader, segmentOffsets]);
 
   const scrollPagedTo = useCallback((targetLeft: number) => {
     const node = getActiveScrollNode();
@@ -1880,15 +1945,30 @@ function ReaderContentInner(
         return;
       }
       const amount = node.clientHeight * SCROLL_PAGE_FRACTION;
+      const targetTop = Math.max(
+        0,
+        Math.min(axisMax, current + amount * direction),
+      );
       logReaderInput("page-step-scroll", () => ({
         source,
         direction,
         amount: Math.round(amount),
+        targetTop: Math.round(targetTop),
         snapshot: getReaderDebugSnapshot(node),
       }));
-      node.scrollBy({ top: amount * direction, behavior: "auto" });
+      node.scrollTo({ top: targetTop, behavior: "auto" });
+      if (direction === 1) {
+        scrollStepFloorRef.current = {
+          expiresAt: performance.now() + 250,
+          top: targetTop,
+        };
+        window.requestAnimationFrame(enforceScrollStepFloor);
+      } else {
+        scrollStepFloorRef.current = null;
+      }
     },
     [
+      enforceScrollStepFloor,
       isPagedReader,
       onBoundaryPage,
       getActiveScrollNode,
@@ -2053,6 +2133,9 @@ function ReaderContentInner(
     if (!node) return;
     if (completedForNavigationRef.current) return;
     if (isPagedReader && pageScrollAnimatingRef.current) return;
+    if (!isPagedReader) {
+      enforceScrollStepFloor();
+    }
     scrollActivityVersionRef.current += 1;
     if (pendingInitialProgressRestoreRef.current?.contentKey === contentKey) {
       pendingInitialProgressRestoreRef.current = null;
@@ -2078,6 +2161,7 @@ function ReaderContentInner(
   }, [
     applyPageInfo,
     contentKey,
+    enforceScrollStepFloor,
     getActiveScrollNode,
     isPagedReader,
     scheduleProgressSave,
@@ -2134,6 +2218,8 @@ function ReaderContentInner(
   );
 
   useEffect(() => {
+    segmentHeightsRef.current = [];
+    pendingVirtualScrollAdjustmentRef.current = 0;
     setSegmentHeights([]);
     setVirtualRange({ start: 0, end: -1 });
   }, [virtualDocument]);
@@ -2307,6 +2393,8 @@ function ReaderContentInner(
     let frame = 0;
     const measure = () => {
       frame = 0;
+      const scrollNode = viewportRef.current;
+      const scrollTop = scrollNode?.scrollTop ?? 0;
       const measurements = [...content.querySelectorAll<HTMLElement>(
         `[${READER_SEGMENT_INDEX_ATTRIBUTE}]`,
       )].map((element) => {
@@ -2323,18 +2411,42 @@ function ReaderContentInner(
         );
         return height > 0 ? { height, index } : null;
       });
-      setSegmentHeights((current) => {
-        const next = [...current];
-        let changed = false;
-        for (const measurement of measurements) {
-          if (!measurement || next[measurement.index] === measurement.height) {
-            continue;
-          }
-          next[measurement.index] = measurement.height;
-          changed = true;
+      const currentHeights = segmentHeightsRef.current;
+      const nextHeights = [...currentHeights];
+      let changed = false;
+      for (const measurement of measurements) {
+        if (
+          !measurement ||
+          nextHeights[measurement.index] === measurement.height
+        ) {
+          continue;
         }
-        return changed ? next : current;
-      });
+        nextHeights[measurement.index] = measurement.height;
+        changed = true;
+      }
+      if (!changed) return;
+
+      if (scrollNode) {
+        const currentEffectiveHeights = virtualDocument.segments.map(
+          (segment) => currentHeights[segment.index] ?? segment.estimatedHeight,
+        );
+        const nextEffectiveHeights = virtualDocument.segments.map(
+          (segment) => nextHeights[segment.index] ?? segment.estimatedHeight,
+        );
+        const currentOffsets = prefixSegmentHeights(currentEffectiveHeights);
+        const nextOffsets = prefixSegmentHeights(nextEffectiveHeights);
+        const adjustment = virtualScrollAnchorDelta(
+          scrollTop,
+          currentOffsets,
+          nextOffsets,
+        );
+        if (adjustment >= 0.5) {
+          pendingVirtualScrollAdjustmentRef.current += adjustment;
+        }
+      }
+
+      segmentHeightsRef.current = nextHeights;
+      setSegmentHeights(nextHeights);
     };
     const scheduleMeasure = () => {
       if (frame !== 0) return;
@@ -2357,7 +2469,13 @@ function ReaderContentInner(
       if (frame !== 0) window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [isPagedReader, virtualRange.end, virtualRange.start, viewportSize.width]);
+  }, [
+    isPagedReader,
+    viewportSize.width,
+    virtualDocument.segments,
+    virtualRange.end,
+    virtualRange.start,
+  ]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -2795,7 +2913,9 @@ function ReaderContentInner(
             page-break-inside: avoid;
           }
           .reader-content,
-          .reader-content [data-norea-reader-virtual-spacer] {
+          .reader-viewport-scroll,
+          .reader-content [data-norea-reader-virtual-canvas],
+          .reader-content [data-norea-reader-virtual-window] {
             overflow-anchor: none;
           }
           ${autoMediaSelector} {
@@ -2929,8 +3049,8 @@ function ReaderContentInner(
       protectLocalReaderMediaCached(
         [
           displayStaticHtml,
-          '<div data-norea-reader-virtual-canvas style="height:var(--norea-reader-content-height,0px);position:relative;width:100%">',
-          '<div data-norea-reader-virtual-window style="left:0;position:absolute;right:0;top:var(--norea-reader-top-spacer-height,0px)">',
+          '<div data-norea-reader-virtual-canvas style="height:var(--norea-reader-content-height,0px);overflow-anchor:none;position:relative;width:100%">',
+          '<div data-norea-reader-virtual-window style="left:0;overflow-anchor:none;position:absolute;right:0;top:var(--norea-reader-top-spacer-height,0px)">',
           visibleSegmentsHtml,
           "</div></div>",
         ].join(""),
@@ -3009,6 +3129,7 @@ function ReaderContentInner(
           height: "100%",
           overflowX: "hidden",
           overflowY: isPagedReader ? "hidden" : "auto",
+          overflowAnchor: "none",
           color: appearance.textColor,
           cursor: "pointer",
           scrollBehavior: "auto",
