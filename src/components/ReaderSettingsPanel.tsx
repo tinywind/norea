@@ -302,7 +302,10 @@ export function ReaderSettingsPanel({
       ? "two-page"
       : "paged"
     : "scroll";
-  const customCssPresetValue = getCustomCssPresetValue(appearance.customCss);
+  const customCssPresetValue = getCustomCssPresetValue(
+    appearance.customCss,
+    general,
+  );
   const customCssPresetOptions = useMemo(
     () => [
       {
@@ -1041,13 +1044,37 @@ export function ReaderSettingsPanel({
 
 function getCustomCssPresetValue(
   customCss: string,
+  general: ReaderGeneralSettings,
 ): ReaderCustomCssPresetSelectValue {
   const normalizedCustomCss = customCss.trim();
   if (!normalizedCustomCss) return "none";
   const preset = READER_CUSTOM_CSS_PRESETS.find(
-    (entry) => entry.css.trim() === normalizedCustomCss,
+    (entry) =>
+      entry.css.trim() === normalizedCustomCss &&
+      customCssPresetGeneralMatches(general, entry.general),
   );
   return preset?.id ?? "custom";
+}
+
+function customCssPresetGeneralMatches(
+  general: ReaderGeneralSettings,
+  presetGeneral:
+    | {
+        htmlImagePagingMode?: ReaderHtmlImagePagingMode;
+        pageReader?: boolean;
+        twoPageReader?: boolean;
+      }
+    | undefined,
+): boolean {
+  if (!presetGeneral) return true;
+  return (
+    (presetGeneral.pageReader === undefined ||
+      presetGeneral.pageReader === general.pageReader) &&
+    (presetGeneral.twoPageReader === undefined ||
+      presetGeneral.twoPageReader === general.twoPageReader) &&
+    (presetGeneral.htmlImagePagingMode === undefined ||
+      presetGeneral.htmlImagePagingMode === general.htmlImagePagingMode)
+  );
 }
 
 function SettingSlider({

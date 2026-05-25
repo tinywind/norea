@@ -337,7 +337,7 @@ export const READER_CUSTOM_CSS_PRESETS: ReaderCustomCssPreset[] = [
     id: "comic-spread",
     general: {
       pageReader: true,
-      twoPageReader: false,
+      twoPageReader: true,
       htmlImagePagingMode: "single-image",
     },
     appearance: {
