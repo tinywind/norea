@@ -741,6 +741,66 @@ describe("TaskScheduler", () => {
     expect(scheduler.getTask(download.id)?.status).toBe("succeeded");
   });
 
+  it("requeues only running interruptible downloads", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 2,
+      sourceQueuesPaused: false,
+    });
+    let downloadRunCount = 0;
+    let finishDownload!: () => void;
+    let finishSearch!: () => void;
+    let searchAborted = false;
+
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Download",
+      priority: "background",
+      source: { id: "download-source", name: "Download Source" },
+      run: (context) => {
+        downloadRunCount += 1;
+        if (downloadRunCount > 1) {
+          return new Promise<void>((resolve) => {
+            finishDownload = resolve;
+          });
+        }
+
+        return new Promise<void>((_resolve, reject) => {
+          context.signal.addEventListener(
+            "abort",
+            () =>
+              reject(new DOMException("Task was cancelled.", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    });
+    const search = scheduler.enqueueSource({
+      kind: "source.search",
+      title: "Search",
+      priority: "normal",
+      source: { id: "search-source", name: "Search Source" },
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          finishSearch = resolve;
+          context.signal.addEventListener("abort", () => {
+            searchAborted = true;
+          });
+        }),
+    });
+
+    await settle();
+
+    expect(scheduler.requeueRunningInterruptibleDownloads()).toBe(1);
+    await settle();
+
+    expect(downloadRunCount).toBe(2);
+    expect(searchAborted).toBe(false);
+
+    finishDownload();
+    finishSearch();
+    await Promise.all([download.promise, search.promise]);
+  });
+
   it("limits background work inside the shared pool", async () => {
     const scheduler = new TaskScheduler({
       sourceBackgroundConcurrency: 1,

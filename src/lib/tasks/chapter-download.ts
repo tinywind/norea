@@ -37,6 +37,7 @@ import {
   type TaskEvent,
   type TaskHandle,
   type TaskPriority,
+  type TaskProgress,
   type TaskRecord,
 } from "./scheduler";
 import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
@@ -50,6 +51,7 @@ export interface ChapterDownloadJob {
   pluginName?: string;
   chapterPath: string;
   chapterName?: string;
+  chapterNumber?: string;
   contentType?: ChapterContentType;
   novelId?: number;
   novelName?: string;
@@ -130,8 +132,35 @@ export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
   100,
   MAX_SCHEDULER_MATERIALIZED_TASKS,
 );
+const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 
 let restorePersistedChapterDownloadsStarted = false;
+let chapterDownloadLifecycleSuspending = false;
+let chapterDownloadLifecycleListenersInstalled = false;
+
+function createChapterDownloadProgressReporter(
+  setProgress: (progress: TaskProgress) => void,
+): (progress: TaskProgress, options?: { force?: boolean }) => void {
+  let lastPublishedAt = 0;
+  return (progress, options) => {
+    const terminal =
+      progress.total !== undefined && progress.current >= progress.total;
+    const now = Date.now();
+    if (
+      !options?.force &&
+      !terminal &&
+      now - lastPublishedAt < CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS
+    ) {
+      return;
+    }
+    lastPublishedAt = now;
+    setProgress(progress);
+  };
+}
+
+function shouldEmitLiveChapterDownloadUpdates(job: ChapterDownloadJob): boolean {
+  return job.priority === "interactive";
+}
 
 interface PersistedChapterDownloadQueue {
   jobs: ChapterDownloadJob[];
@@ -284,7 +313,10 @@ function normalizeChapterDownloadBatchWindowSize(
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+  return (
+    error instanceof DOMException ||
+    (error !== null && typeof error === "object" && "name" in error)
+  ) && (error as { name?: unknown }).name === "AbortError";
 }
 
 function isPauseAbort(signal: AbortSignal): boolean {
@@ -353,6 +385,7 @@ function normalizePersistedChapterDownloadJob(
     pluginName: readStringField(record, "pluginName"),
     chapterPath,
     chapterName: readStringField(record, "chapterName"),
+    chapterNumber: readStringField(record, "chapterNumber"),
     contentType: normalizeChapterContentType(
       readStringField(record, "contentType"),
     ),
@@ -392,6 +425,7 @@ function readPersistedChapterDownloadJobs(): ChapterDownloadJob[] {
 
 function writePersistedChapterDownloadJobs(jobs: ChapterDownloadJob[]): void {
   if (typeof window === "undefined") return;
+  installChapterDownloadLifecycleListeners();
   try {
     if (jobs.length === 0) {
       window.localStorage.removeItem(CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY);
@@ -410,19 +444,56 @@ function writePersistedChapterDownloadJobs(jobs: ChapterDownloadJob[]): void {
 }
 
 function persistChapterDownloadJob(job: ChapterDownloadJob): void {
-  const persisted = normalizePersistedChapterDownloadJob(job);
-  if (!persisted) return;
-  const jobsById = new Map<number, ChapterDownloadJob>();
-  for (const existing of readPersistedChapterDownloadJobs()) {
-    jobsById.set(existing.id, existing);
-  }
-  jobsById.set(persisted.id, persisted);
-  writePersistedChapterDownloadJobs([...jobsById.values()]);
+  persistChapterDownloadJobs([job]);
 }
 
 function removePersistedChapterDownloadJob(chapterId: number): void {
   writePersistedChapterDownloadJobs(
     readPersistedChapterDownloadJobs().filter((job) => job.id !== chapterId),
+  );
+}
+
+function persistChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
+  const jobsById = new Map<number, ChapterDownloadJob>();
+  for (const existing of readPersistedChapterDownloadJobs()) {
+    jobsById.set(existing.id, existing);
+  }
+  for (const job of jobs) {
+    const persisted = normalizePersistedChapterDownloadJob(job);
+    if (persisted) jobsById.set(persisted.id, persisted);
+  }
+  writePersistedChapterDownloadJobs([...jobsById.values()]);
+}
+
+function installChapterDownloadLifecycleListeners(): void {
+  if (
+    chapterDownloadLifecycleListenersInstalled ||
+    typeof window === "undefined"
+  ) {
+    return;
+  }
+  chapterDownloadLifecycleListenersInstalled = true;
+  window.addEventListener("pagehide", () => {
+    chapterDownloadLifecycleSuspending = true;
+  });
+  window.addEventListener("beforeunload", () => {
+    chapterDownloadLifecycleSuspending = true;
+  });
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      chapterDownloadLifecycleSuspending =
+        document.visibilityState === "hidden";
+    });
+  }
+}
+
+function shouldKeepPersistedChapterDownloadJobAfterRejection(
+  error: unknown,
+): boolean {
+  if (!isAbortError(error)) return false;
+  if (chapterDownloadLifecycleSuspending) return true;
+  return (
+    typeof document !== "undefined" && document.visibilityState === "hidden"
   );
 }
 
@@ -500,6 +571,7 @@ function eventFromTask(task: TaskRecord): ChapterDownloadEvent | null {
       pluginName: task.source?.name,
       chapterPath,
       chapterName: task.subject?.chapterName,
+      chapterNumber: task.subject?.chapterNumber,
       contentType: normalizeChapterContentType(task.subject?.contentType),
       novelId: task.subject?.novelId,
       novelName: task.subject?.novelName,
@@ -534,6 +606,7 @@ export function enqueueChapterDownload(
     subject: {
       chapterId: job.id,
       chapterName: job.chapterName,
+      chapterNumber: job.chapterNumber,
       contentType: job.contentType,
       novelId: job.novelId,
       novelName: job.novelName,
@@ -547,8 +620,10 @@ export function enqueueChapterDownload(
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
     run: async ({ executor, setDetail, setProgress, signal }) => {
+      const reportProgress = createChapterDownloadProgressReporter(setProgress);
+      const liveReaderUpdates = shouldEmitLiveChapterDownloadUpdates(job);
       let progressTotal = 1;
-      setProgress({ current: 0, total: progressTotal });
+      reportProgress({ current: 0, total: progressTotal }, { force: true });
       try {
         if (isTauriRuntime()) {
           await pluginManager.loadInstalledFromDb();
@@ -623,7 +698,10 @@ export function enqueueChapterDownload(
             await mirrorStoredChapterContent(job.id);
             await clearChapterMedia(job.id, storageContext);
             settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
-            setProgress({ current: progressTotal, total: progressTotal });
+            reportProgress(
+              { current: progressTotal, total: progressTotal },
+              { force: true },
+            );
             return;
           }
 
@@ -663,7 +741,10 @@ export function enqueueChapterDownload(
             await clearChapterMedia(job.id, storageContext);
           }
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
-          setProgress({ current: progressTotal, total: progressTotal });
+          reportProgress(
+            { current: progressTotal, total: progressTotal },
+            { force: true },
+          );
           return;
         }
         const rawContent = await plugin.parseChapter(job.chapterPath);
@@ -680,9 +761,11 @@ export function enqueueChapterDownload(
           const baseUrl = absolutePluginUrl(plugin, job.chapterPath);
           if (hasRemoteChapterMedia(html, baseUrl)) {
             shouldClearMedia = false;
-            await emitPartialHtml(
-              protectRemoteChapterMediaForPartialHtml(html, baseUrl),
-            );
+            if (liveReaderUpdates) {
+              await emitPartialHtml(
+                protectRemoteChapterMediaForPartialHtml(html, baseUrl),
+              );
+            }
             const media = await cacheHtmlChapterMedia({
               ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
               chapterId: job.id,
@@ -693,19 +776,26 @@ export function enqueueChapterDownload(
               novelId: chapter.novelId,
               novelName: novel?.name ?? job.novelName,
               novelPath: novel?.path ?? job.novelPath,
-              onHtmlUpdate: (partialHtml) =>
-                emitPartialHtml(
-                  protectRemoteChapterMediaForPartialHtml(partialHtml, baseUrl),
-                ),
-              onMediaPatch: (patches) => {
-                emitChapterMediaPatchUpdate({
-                  chapterId: job.id,
-                  patches,
-                });
-              },
+              onHtmlUpdate: liveReaderUpdates
+                ? (partialHtml) =>
+                    emitPartialHtml(
+                      protectRemoteChapterMediaForPartialHtml(
+                        partialHtml,
+                        baseUrl,
+                      ),
+                    )
+                : undefined,
+              onMediaPatch: liveReaderUpdates
+                ? (patches) => {
+                    emitChapterMediaPatchUpdate({
+                      chapterId: job.id,
+                      patches,
+                    });
+                  }
+                : undefined,
               onProgress: ({ current, total }) => {
                 progressTotal = total + 1;
-                setProgress({ current, total: progressTotal });
+                reportProgress({ current, total: progressTotal });
               },
               previousHtml: chapter.content,
               requestInit: plugin.imageRequestInit,
@@ -750,7 +840,10 @@ export function enqueueChapterDownload(
           });
         }
         settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
-        setProgress({ current: progressTotal, total: progressTotal });
+        reportProgress(
+          { current: progressTotal, total: progressTotal },
+          { force: true },
+        );
       } catch (error) {
         if (!isPauseAbort(signal)) {
           settleChapterDownloadBatchJob(
@@ -765,7 +858,10 @@ export function enqueueChapterDownload(
   });
   void handle.promise.then(
     () => removePersistedChapterDownloadJob(job.id),
-    () => removePersistedChapterDownloadJob(job.id),
+    (error) => {
+      if (shouldKeepPersistedChapterDownloadJobAfterRejection(error)) return;
+      removePersistedChapterDownloadJob(job.id);
+    },
   );
   return handle;
 }
@@ -790,8 +886,9 @@ export function enqueueChapterMediaRepair(
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
     run: async ({ executor, setDetail, setProgress, signal }) => {
+      const reportProgress = createChapterDownloadProgressReporter(setProgress);
       let progressTotal = 1;
-      setProgress({ current: 0, total: progressTotal });
+      reportProgress({ current: 0, total: progressTotal }, { force: true });
       if (isTauriRuntime()) {
         await pluginManager.loadInstalledFromDb();
       }
@@ -810,7 +907,10 @@ export function enqueueChapterMediaRepair(
         !chapter.content
       ) {
         setDetail("No downloaded media to repair");
-        setProgress({ current: progressTotal, total: progressTotal });
+        reportProgress(
+          { current: progressTotal, total: progressTotal },
+          { force: true },
+        );
         return;
       }
       const baseUrl = absolutePluginUrl(plugin, chapter.path);
@@ -824,7 +924,10 @@ export function enqueueChapterMediaRepair(
         localChapterMediaSources(chapter.content).length === 0
       ) {
         setDetail("No remote media to repair");
-        setProgress({ current: progressTotal, total: progressTotal });
+        reportProgress(
+          { current: progressTotal, total: progressTotal },
+          { force: true },
+        );
         return;
       }
       const novel = await getNovelById(chapter.novelId);
@@ -875,7 +978,7 @@ export function enqueueChapterMediaRepair(
         },
         onProgress: ({ current, total }) => {
           progressTotal = total + 1;
-          setProgress({ current, total: progressTotal });
+          reportProgress({ current, total: progressTotal });
         },
         previousHtml: chapter.content,
         requestInit: plugin.imageRequestInit,
@@ -909,7 +1012,10 @@ export function enqueueChapterMediaRepair(
       } else {
         setDetail(`${media.storedMediaCount} media assets repaired`);
       }
-      setProgress({ current: progressTotal, total: progressTotal });
+      reportProgress(
+        { current: progressTotal, total: progressTotal },
+        { force: true },
+      );
     },
   });
 }
@@ -925,6 +1031,9 @@ export function enqueueChapterDownloadBatch({
   const windowSize = normalizeChapterDownloadBatchWindowSize(
     requestedWindowSize,
   );
+  if (Array.isArray(jobs)) {
+    persistChapterDownloadJobs(jobs);
+  }
   chapterDownloadBatchStates.set(batchId, {
     cancelled: 0,
     failed: 0,
@@ -1065,7 +1174,6 @@ export async function restorePersistedChapterDownloads(): Promise<void> {
       "[chapter-download] failed to load plugins for restore:",
       error,
     );
-    return;
   }
 
   for (const job of pendingJobs) {

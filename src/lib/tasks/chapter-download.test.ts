@@ -82,15 +82,19 @@ import {
   storeEmbeddedChapterMedia,
 } from "../chapter-media";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
+import { isTauriRuntime } from "../tauri-runtime";
 import {
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
   MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+  restorePersistedChapterDownloads,
   type ChapterDownloadJob,
 } from "./chapter-download";
 
 let capturedSpec: SourceTaskSpec<void> | null = null;
+const localStorageValues = new Map<string, string>();
+const CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY = "chapter-download-queue";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -114,9 +118,44 @@ async function flushMicrotasks(count = 20): Promise<void> {
   }
 }
 
+function installBrowserStorageHarness(): void {
+  const localStorage = {
+    getItem: (key: string) => localStorageValues.get(key) ?? null,
+    removeItem: (key: string) => {
+      localStorageValues.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      localStorageValues.set(key, value);
+    },
+  } as Storage;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      addEventListener: vi.fn(),
+      localStorage,
+    },
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      addEventListener: vi.fn(),
+      visibilityState: "visible",
+    },
+  });
+}
+
+function persistedChapterDownloadJobs(): ChapterDownloadJob[] {
+  const raw = localStorageValues.get(CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY);
+  if (!raw) return [];
+  return JSON.parse(raw).jobs as ChapterDownloadJob[];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorageValues.clear();
+  installBrowserStorageHarness();
   capturedSpec = null;
+  vi.mocked(isTauriRuntime).mockReturnValue(false);
   schedulerMocks.enqueueSource.mockImplementation(
     (spec: SourceTaskSpec<void>) => {
       capturedSpec = spec;
@@ -215,6 +254,44 @@ describe("enqueueChapterDownloadBatch", () => {
     expect(capturedSpec?.subject?.batchTitle).toBe("Download 10k chapters");
   });
 
+  it("persists every array batch job before bounded scheduler materialization", async () => {
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+    const jobs = [1, 2, 3, 4].map((id) => ({
+      id,
+      pluginId: "source-a",
+      chapterPath: `/chapter/${id}`,
+      title: `Chapter ${id}`,
+    }));
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs,
+      title: "Download 4 chapters",
+      total: 4,
+      windowSize: 2,
+    });
+    void handle.promise.catch(() => undefined);
+
+    expect(persistedChapterDownloadJobs().map((job) => job.id)).toEqual([
+      1, 2, 3, 4,
+    ]);
+
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
+    expect(capturedSpec?.subject?.batchTitle).toBe("Download 4 chapters");
+  });
+
   it("refills the bounded batch window after a cancelled task settles", async () => {
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(
@@ -266,6 +343,44 @@ describe("enqueueChapterDownloadBatch", () => {
       succeeded: 3,
       total: 4,
     });
+  });
+});
+
+describe("restorePersistedChapterDownloads", () => {
+  it("re-enqueues persisted incomplete downloads", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    localStorageValues.set(
+      CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY,
+      JSON.stringify({
+        jobs: [
+          {
+            id: 7,
+            pluginId: "source-a",
+            chapterPath: "/chapter/7",
+            chapterName: "Chapter 7",
+            novelId: 11,
+            novelName: "Novel",
+            novelPath: "/novel",
+            title: "Chapter 7",
+          },
+        ],
+        version: 1,
+      }),
+    );
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      id: 7,
+      isDownloaded: false,
+    } as never);
+    pluginMocks.loadInstalledFromDb.mockRejectedValueOnce(
+      new Error("database is not ready"),
+    );
+
+    await restorePersistedChapterDownloads();
+
+    expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledTimes(1);
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(1);
+    expect(capturedSpec?.kind).toBe("chapter.download");
+    expect(capturedSpec?.subject?.chapterId).toBe(7);
   });
 });
 

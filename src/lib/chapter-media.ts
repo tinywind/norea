@@ -1669,7 +1669,8 @@ async function emitHtmlUpdate(
   onHtmlUpdate: CacheChapterMediaOptions["onHtmlUpdate"],
   template: HTMLTemplateElement,
 ): Promise<void> {
-  await onHtmlUpdate?.(safeChapterMediaHtml(template));
+  if (!onHtmlUpdate) return;
+  await onHtmlUpdate(safeChapterMediaHtml(template));
 }
 
 function collectMediaElementPatches(
@@ -1724,9 +1725,10 @@ async function emitMediaPatchUpdate(
   template: HTMLTemplateElement,
   changedElements: Set<Element>,
 ): Promise<void> {
+  if (!onMediaPatch) return;
   const patches = collectMediaElementPatches(template.content, changedElements);
   if (patches.length > 0) {
-    await onMediaPatch?.(patches);
+    await onMediaPatch(patches);
   }
 }
 

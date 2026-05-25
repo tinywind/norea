@@ -1,5 +1,6 @@
 package io.github.tinywind.norea
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,9 +10,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 class TaskForegroundService : Service() {
+  private var wakeLock: PowerManager.WakeLock? = null
+
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onCreate() {
@@ -27,14 +31,21 @@ class TaskForegroundService : Service() {
         val current = intent.getIntExtra(EXTRA_CURRENT, -1)
         val total = intent.getIntExtra(EXTRA_TOTAL, -1)
         val notification = buildNotification(title, body, current, total)
+        acquireWakeLock()
         startForeground(NOTIFICATION_ID, notification)
       }
       ACTION_STOP -> {
         stopForegroundCompat()
+        releaseWakeLock()
         stopSelf()
       }
     }
     return START_NOT_STICKY
+  }
+
+  override fun onDestroy() {
+    releaseWakeLock()
+    super.onDestroy()
   }
 
   private fun ensureChannel() {
@@ -84,6 +95,28 @@ class TaskForegroundService : Service() {
 
   private fun notificationManager(): NotificationManager =
     getSystemService(NotificationManager::class.java)
+
+  @SuppressLint("WakelockTimeout")
+  private fun acquireWakeLock() {
+    val current = wakeLock
+    if (current?.isHeld == true) return
+
+    wakeLock = getSystemService(PowerManager::class.java)
+      .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:TaskForegroundService")
+      .apply {
+        setReferenceCounted(false)
+        acquire()
+      }
+  }
+
+  private fun releaseWakeLock() {
+    wakeLock?.let { lock ->
+      if (lock.isHeld) {
+        lock.release()
+      }
+    }
+    wakeLock = null
+  }
 
   private fun stopForegroundCompat() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {

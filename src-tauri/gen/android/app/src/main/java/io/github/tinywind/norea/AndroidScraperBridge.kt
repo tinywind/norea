@@ -252,6 +252,22 @@ class AndroidScraperBridge(
     }
   }
 
+  fun resumeBackgroundWorkWebViews() {
+    val resume = Runnable {
+      queues.values.forEach { state ->
+        state.webView?.let { webView ->
+          webView.resumeTimers()
+          webView.onResume()
+        }
+      }
+    }
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      resume.run()
+    } else {
+      mainHandler.post(resume)
+    }
+  }
+
   private fun parseCommand(
     payload: String,
     capability: String,

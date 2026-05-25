@@ -37,6 +37,7 @@ class MainActivity : TauriActivity() {
   private var mainWebView: WebView? = null
   private var notificationPermissionRequested = false
   private var pendingStorageRootRequestId: String? = null
+  private var taskForegroundServiceActive = false
   @Volatile
   private var safeAreaInsetsJson = insetsJson(Insets.NONE)
 
@@ -44,6 +45,16 @@ class MainActivity : TauriActivity() {
     RustlsPlatformVerifierBridge.init(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+  }
+
+  override fun onPause() {
+    super.onPause()
+    resumeTaskWebViewsForBackgroundWork()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    resumeTaskWebViewsForBackgroundWork()
   }
 
   override fun onWebViewCreate(webView: WebView) {
@@ -127,6 +138,15 @@ class MainActivity : TauriActivity() {
     if (!webView.canGoBack()) return false
     webView.goBack()
     return true
+  }
+
+  private fun resumeTaskWebViewsForBackgroundWork() {
+    if (!taskForegroundServiceActive) return
+    mainWebView?.post {
+      mainWebView?.resumeTimers()
+      mainWebView?.onResume()
+      androidScraperBridge?.resumeBackgroundWorkWebViews()
+    }
   }
 
   private fun mainAppPath(url: String?): String? {
@@ -223,6 +243,7 @@ class MainActivity : TauriActivity() {
           val progress = json.optJSONObject("progress")
           val current = progress?.takeIf { it.has("current") }?.optInt("current")
           val total = progress?.takeIf { it.has("total") }?.optInt("total")
+          taskForegroundServiceActive = true
           TaskForegroundService.update(
             this@MainActivity,
             json.optString("title", "Norea tasks"),
@@ -230,6 +251,7 @@ class MainActivity : TauriActivity() {
             current,
             total,
           )
+          resumeTaskWebViewsForBackgroundWork()
         } catch (_: Throwable) {
           // Ignore malformed bridge payloads so task execution is not affected.
         }
@@ -240,6 +262,7 @@ class MainActivity : TauriActivity() {
     fun stop() {
       runOnUiThread {
         try {
+          taskForegroundServiceActive = false
           TaskForegroundService.stop(this@MainActivity)
         } catch (_: Throwable) {
           // The service may already be stopped by Android.

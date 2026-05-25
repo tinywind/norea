@@ -104,6 +104,7 @@ export interface TaskSubject {
   batchTitle?: string;
   chapterId?: number;
   chapterName?: string;
+  chapterNumber?: string;
   contentType?: string;
   categoryId?: number | null;
   novelId?: number;
@@ -612,6 +613,18 @@ export class TaskScheduler {
     }
 
     return cancelled;
+  }
+
+  requeueRunningInterruptibleDownloads(): number {
+    const requeued = this.pauseRunningSourceTasks(undefined, (entry) =>
+      isInterruptibleDownloadKind(entry.record.kind),
+    );
+    if (requeued > 0) {
+      this.debug("requeued running interruptible downloads", undefined, {
+        requeued,
+      });
+    }
+    return requeued;
   }
 
   moveQueuedTask(id: string, target: TaskMoveTarget): boolean {
