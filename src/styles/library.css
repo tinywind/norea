@@ -460,6 +460,13 @@
   color: var(--lnr-design-ink);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .lnr-library-filter-button:hover:not([data-active="true"]) {
+    background: var(--lnr-design-surface);
+    color: var(--lnr-design-ink-subtle);
+  }
+}
+
 .lnr-library-icon-button {
   border: 1px solid var(--lnr-design-rule-strong);
   border-radius: 0.25rem;
