@@ -17,6 +17,7 @@ const androidStorageMocks = vi.hoisted(() => ({
   extractAndroidStorageZip: vi.fn(),
   readAndroidStorageDataUrl: vi.fn(),
   readAndroidStorageText: vi.fn(),
+  readAndroidStorageZipEntriesDataUrls: vi.fn(),
   readAndroidStorageZipEntryDataUrl: vi.fn(),
   renameAndroidStoragePath: vi.fn(),
   writeAndroidStorageBytes: vi.fn(),
@@ -1465,6 +1466,71 @@ describe("resolveLocalChapterMedia", () => {
 });
 
 describe("resolveLocalChapterMediaPatches", () => {
+  it("resolves Android archive media with one batched zip read", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Android" });
+    androidStorageMocks.androidStoragePathSize.mockResolvedValue(0);
+    androidStorageMocks.readAndroidStorageZipEntriesDataUrls.mockResolvedValue(
+      new Map([
+        ["page.png", "data:image/png;base64,page.png"],
+        ["large.png", "data:image/png;base64,large.png"],
+      ]),
+    );
+
+    const repeated = "norea-media://chapter/42/page.png";
+    const patches = await resolveLocalChapterMediaPatches(
+      [
+        {
+          attributes: {
+            src: repeated,
+          },
+          index: 0,
+          sourceAttributes: {
+            src: repeated,
+          },
+        },
+        {
+          attributes: {
+            srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+            style: `background-image:url('${repeated}')`,
+          },
+          index: 1,
+          sourceAttributes: {
+            srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+            style: `background-image:url('${repeated}')`,
+          },
+        },
+      ],
+      { chapterId: 42 },
+    );
+
+    expect(androidStorageMocks.readAndroidStorageDataUrl).not.toHaveBeenCalled();
+    expect(
+      androidStorageMocks.readAndroidStorageZipEntryDataUrl,
+    ).not.toHaveBeenCalled();
+    expect(
+      androidStorageMocks.readAndroidStorageZipEntriesDataUrls,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      androidStorageMocks.readAndroidStorageZipEntriesDataUrls,
+    ).toHaveBeenCalledWith("chapter-media/42/media.zip", [
+      "page.png",
+      "large.png",
+    ]);
+    expect(patches).toHaveLength(2);
+    expect(patches[0]?.attributes.src).toBe(
+      "data:image/png;base64,page.png",
+    );
+    expect(patches[1]?.attributes.srcset).toContain(
+      "data:image/png;base64,page.png 1x",
+    );
+    expect(patches[1]?.attributes.srcset).toContain(
+      "data:image/png;base64,large.png 2x",
+    );
+    expect(patches[1]?.attributes.style).toContain(
+      'url("data:image/png;base64,page.png")',
+    );
+  });
+
   it("deduplicates repeated cached media sources across a patch batch", async () => {
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_path") {

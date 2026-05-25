@@ -30,6 +30,11 @@ interface AndroidStorageBridge {
     archiveRelativePath: string,
     entryName: string,
   ) => string;
+  readZipEntriesBase64?: (
+    rootUri: string,
+    archiveRelativePath: string,
+    entryNamesJson: string,
+  ) => string;
   extractZip: (
     rootUri: string,
     archiveRelativePath: string,
@@ -91,6 +96,10 @@ interface AndroidStorageTextResponse extends AndroidStorageResponse {
 interface AndroidStorageBase64Response extends AndroidStorageResponse {
   base64?: string;
   mimeType?: string;
+}
+
+interface AndroidStorageZipEntriesResponse extends AndroidStorageResponse {
+  entries?: Record<string, { base64?: string; mimeType?: string } | undefined>;
 }
 
 interface AndroidStorageSizeResponse extends AndroidStorageResponse {
@@ -414,6 +423,51 @@ export async function readAndroidStorageZipEntryDataUrl(
     if (error instanceof Error && /not found/i.test(error.message)) return null;
     throw error;
   }
+}
+
+export async function readAndroidStorageZipEntriesDataUrls(
+  archiveRelativePath: string,
+  entryNames: readonly string[],
+): Promise<Map<string, string>> {
+  const uniqueEntryNames = [...new Set(entryNames)].filter(
+    (entryName) => entryName.trim() !== "",
+  );
+  if (uniqueEntryNames.length === 0) return new Map();
+
+  const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
+  if (!bridge.readZipEntriesBase64) {
+    const entries = new Map<string, string>();
+    await Promise.all(
+      uniqueEntryNames.map(async (entryName) => {
+        const dataUrl = await readAndroidStorageZipEntryDataUrl(
+          archiveRelativePath,
+          entryName,
+        );
+        if (dataUrl) entries.set(entryName, dataUrl);
+      }),
+    );
+    return entries;
+  }
+
+  const response = parseStorageResponse<AndroidStorageZipEntriesResponse>(
+    bridge.readZipEntriesBase64(
+      root,
+      archiveRelativePath,
+      JSON.stringify(uniqueEntryNames),
+    ),
+  );
+  const entries = new Map<string, string>();
+  for (const [entryName, entry] of Object.entries(response.entries ?? {})) {
+    if (!entry?.base64) continue;
+    entries.set(
+      entryName,
+      `data:${entry.mimeType ?? "application/octet-stream"};base64,${
+        entry.base64
+      }`,
+    );
+  }
+  return entries;
 }
 
 export async function extractAndroidStorageZip(

@@ -10,6 +10,7 @@ import {
   extractAndroidStorageZip,
   readAndroidStorageDataUrl,
   readAndroidStorageText,
+  readAndroidStorageZipEntriesDataUrls,
   readAndroidStorageZipEntryDataUrl,
   writeAndroidStorageBytes,
   writeAndroidStorageText,
@@ -2267,6 +2268,153 @@ function chapterMediaInvokeArgs(
   };
 }
 
+function collectLocalChapterMediaSources(
+  patches: ChapterMediaElementPatch[],
+): string[] {
+  const sources = new Set<string>();
+  for (const patch of patches) {
+    for (const [attribute, value] of Object.entries(patch.attributes)) {
+      if (attribute === "srcset" && value.includes(LOCAL_MEDIA_SRC_PREFIX)) {
+        for (const candidate of parseSrcset(value)) {
+          if (candidate.source.startsWith(LOCAL_MEDIA_SRC_PREFIX)) {
+            sources.add(candidate.source);
+          }
+        }
+        continue;
+      }
+      if (attribute === "style" && value.includes(LOCAL_MEDIA_SRC_PREFIX)) {
+        for (const source of localStyleMediaSources(value)) {
+          sources.add(source);
+        }
+        continue;
+      }
+      if (value.startsWith(LOCAL_MEDIA_SRC_PREFIX)) {
+        sources.add(value);
+      }
+    }
+  }
+  return [...sources];
+}
+
+function androidMediaPathCacheKey(paths: readonly string[]): string {
+  return paths.join("\u0000");
+}
+
+async function androidDirectMediaAvailable(
+  context: ChapterMediaStorageContext | null | undefined,
+  cache: Map<string, Promise<boolean>>,
+): Promise<boolean> {
+  const paths = androidChapterMediaRelativePathCandidates(context);
+  const key = androidMediaPathCacheKey(paths);
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const result = (async () => {
+    for (const path of paths) {
+      if ((await androidStoragePathSize(path)) > 0) return true;
+    }
+    return false;
+  })();
+  cache.set(key, result);
+  return result;
+}
+
+async function resolveAndroidLocalChapterMediaSources(
+  sources: string[],
+  context?: ChapterMediaStorageContext,
+): Promise<Map<string, string | null>> {
+  const resolved = new Map<string, string | null>();
+  const unresolved = new Map<
+    string,
+    {
+      archivePaths: string[];
+      fileName: string;
+    }
+  >();
+  const directAvailability = new Map<string, Promise<boolean>>();
+
+  await Promise.all(
+    sources.map(async (source) => {
+      const parsed = parseLocalChapterMediaSrc(source);
+      if (!parsed) {
+        resolved.set(source, null);
+        return;
+      }
+      const resolvedContext =
+        context?.chapterId === parsed.chapterId
+          ? context
+          : await storageContextForChapter(parsed.chapterId);
+      const lookupContext = resolvedContext ?? { chapterId: parsed.chapterId };
+      if (await androidDirectMediaAvailable(lookupContext, directAvailability)) {
+        for (const relativePath of await androidRelativePathsFromLocalMediaSrc(
+          source,
+          lookupContext,
+        )) {
+          const directDataUrl = await readAndroidStorageDataUrl(relativePath);
+          if (directDataUrl) {
+            resolved.set(source, directDataUrl);
+            return;
+          }
+        }
+      }
+      unresolved.set(source, {
+        archivePaths: androidChapterMediaArchiveRelativePathCandidates(
+          lookupContext,
+        ),
+        fileName: parsed.fileName,
+      });
+    }),
+  );
+
+  const pendingSources = new Set(unresolved.keys());
+  const maxArchiveCandidates = Math.max(
+    0,
+    ...[...unresolved.values()].map((entry) => entry.archivePaths.length),
+  );
+  for (
+    let archiveIndex = 0;
+    archiveIndex < maxArchiveCandidates && pendingSources.size > 0;
+    archiveIndex += 1
+  ) {
+    const archiveEntries = new Map<
+      string,
+      Array<{ fileName: string; source: string }>
+    >();
+    for (const source of pendingSources) {
+      const pending = unresolved.get(source);
+      const archivePath = pending?.archivePaths[archiveIndex];
+      if (!pending || !archivePath) continue;
+      const entries = archiveEntries.get(archivePath);
+      if (entries) {
+        entries.push({ fileName: pending.fileName, source });
+      } else {
+        archiveEntries.set(archivePath, [
+          { fileName: pending.fileName, source },
+        ]);
+      }
+    }
+
+    await Promise.all(
+      [...archiveEntries].map(async ([archivePath, entries]) => {
+        const dataUrls = await readAndroidStorageZipEntriesDataUrls(
+          archivePath,
+          entries.map((entry) => entry.fileName),
+        );
+        for (const entry of entries) {
+          const dataUrl = dataUrls.get(entry.fileName);
+          if (!dataUrl) continue;
+          resolved.set(entry.source, dataUrl);
+          pendingSources.delete(entry.source);
+        }
+      }),
+    );
+  }
+
+  for (const source of pendingSources) {
+    resolved.set(source, null);
+  }
+  return resolved;
+}
+
 export async function resolveLocalChapterMediaSrc(
   src: string,
   context?: ChapterMediaStorageContext,
@@ -2280,9 +2428,10 @@ export async function resolveLocalChapterMediaSrc(
       context?.chapterId === parsed.chapterId
         ? context
         : await storageContextForChapter(parsed.chapterId);
+    const lookupContext = resolvedContext ?? { chapterId: parsed.chapterId };
     const relativePaths = await androidRelativePathsFromLocalMediaSrc(
       src,
-      resolvedContext ?? undefined,
+      lookupContext,
     );
     for (const relativePath of relativePaths) {
       const directDataUrl = await readAndroidStorageDataUrl(relativePath);
@@ -2290,7 +2439,7 @@ export async function resolveLocalChapterMediaSrc(
     }
 
     for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-      resolvedContext,
+      lookupContext,
     )) {
       const archivedDataUrl = await readAndroidStorageZipEntryDataUrl(
         archivePath,
@@ -2341,6 +2490,15 @@ export async function resolveLocalChapterMediaPatches(
   context?: ChapterMediaStorageContext,
 ): Promise<ChapterMediaElementPatch[]> {
   const resolvedMedia = new Map<string, Promise<string | null>>();
+  if (isTauriRuntime() && isAndroidRuntime()) {
+    const androidResolvedMedia = await resolveAndroidLocalChapterMediaSources(
+      collectLocalChapterMediaSources(patches),
+      context,
+    );
+    for (const [source, resolved] of androidResolvedMedia) {
+      resolvedMedia.set(source, Promise.resolve(resolved));
+    }
+  }
   const resolvedPatches = await Promise.all(
     patches.map(async (patch) => {
       const attributes: Record<string, string> = {};

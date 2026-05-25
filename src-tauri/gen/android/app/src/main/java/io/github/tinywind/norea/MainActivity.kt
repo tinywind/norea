@@ -634,6 +634,71 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
+    fun readZipEntriesBase64(
+      rootUri: String,
+      archiveRelativePath: String,
+      entryNamesJson: String,
+    ): String = storageResponse {
+      val requested = JSONArray(entryNamesJson)
+      val requestedNames = linkedSetOf<String>()
+      for (index in 0 until requested.length()) {
+        val entryName = safeZipEntryName(requested.optString(index))
+        if (entryName != null) requestedNames.add(entryName)
+      }
+      val entries = JSONObject()
+      if (requestedNames.isEmpty()) {
+        return@storageResponse JSONObject()
+          .put("ok", true)
+          .put("entries", entries)
+      }
+      val archive = storageDocumentAt(rootUri, archiveRelativePath)
+        ?: return@storageResponse JSONObject()
+          .put("ok", true)
+          .put("entries", entries)
+      require(archive.isFile) {
+        "Android storage archive is not a file: $archiveRelativePath"
+      }
+
+      contentResolver.openInputStream(archive.uri)?.use { input ->
+        ZipInputStream(input.buffered()).use { zip ->
+          val remaining = requestedNames.toMutableSet()
+          var entry = zip.nextEntry
+          var entryCount = 0
+          var totalBytes = 0L
+          while (entry != null && remaining.isNotEmpty()) {
+            entryCount = nextZipEntryCount(entryCount, "Media archive")
+            val currentName = safeZipEntryName(entry.name)
+            if (
+              !entry.isDirectory &&
+              currentName != null &&
+              remaining.contains(currentName)
+            ) {
+              requireZipEntrySize(entry, "Media archive entry")
+              val bytes = readBytesWithLimit(zip, MAX_ZIP_ENTRY_BYTES)
+              totalBytes = addZipTotalBytes(
+                totalBytes,
+                bytes.size.toLong(),
+                "Media archive read",
+              )
+              entries.put(
+                currentName,
+                JSONObject()
+                  .put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                  .put("mimeType", mimeTypeForPath(currentName, "")),
+              )
+              remaining.remove(currentName)
+            }
+            zip.closeEntry()
+            entry = zip.nextEntry
+          }
+        }
+      }
+      JSONObject()
+        .put("ok", true)
+        .put("entries", entries)
+    }
+
+    @JavascriptInterface
     fun zipEntryExists(rootUri: String, archiveRelativePath: String, entryName: String): String =
       storageResponse {
         val safeEntryName = safeZipEntryName(entryName)
