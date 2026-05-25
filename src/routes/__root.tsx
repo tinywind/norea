@@ -450,58 +450,61 @@ export function RootLayout() {
       </AppShell.Navbar>
       <AppShell.Main
         className="lnr-app-main"
+        data-reader-full-page={readerFullPageActive}
         style={{
           background: "var(--lnr-design-bg)",
           color: "var(--lnr-design-ink)",
           padding: readerFullPageActive ? 0 : undefined,
         }}
       >
-        {pageVisited("library") ? (
-          <PersistentPageSlot active={activePersistentPage === "library"}>
-            <PersistentLibraryPage
-              active={activePersistentPage === "library"}
-            />
-          </PersistentPageSlot>
-        ) : null}
-        {pageVisited("browse") ? (
-          <PersistentPageSlot active={activePersistentPage === "browse"}>
-            <PersistentBrowsePage
-              active={activePersistentPage === "browse"}
-              query={browseQuery}
-              tab={browseTab}
-            />
-          </PersistentPageSlot>
-        ) : null}
-        {pageVisited("updates") ? (
-          <PersistentPageSlot active={activePersistentPage === "updates"}>
-            <PersistentUpdatesPage
-              active={activePersistentPage === "updates"}
-            />
-          </PersistentPageSlot>
-        ) : null}
-        {pageVisited("history") ? (
-          <PersistentPageSlot active={activePersistentPage === "history"}>
-            <PersistentHistoryPage />
-          </PersistentPageSlot>
-        ) : null}
-        {pageVisited("downloads") ? (
-          <PersistentPageSlot active={activePersistentPage === "downloads"}>
-            <PersistentDownloadsPage
-              active={activePersistentPage === "downloads"}
-            />
-          </PersistentPageSlot>
-        ) : null}
-        {pageVisited("tasks") ? (
-          <PersistentPageSlot active={activePersistentPage === "tasks"}>
-            <PersistentTasksPage active={activePersistentPage === "tasks"} />
-          </PersistentPageSlot>
-        ) : null}
-        {pageVisited("settings") ? (
-          <PersistentPageSlot active={activePersistentPage === "settings"}>
-            <PersistentSettingsPage section={settingsSection} />
-          </PersistentPageSlot>
-        ) : null}
-        {activePersistentPage === null ? <Outlet /> : null}
+        <div className="lnr-app-scroll">
+          {pageVisited("library") ? (
+            <PersistentPageSlot active={activePersistentPage === "library"}>
+              <PersistentLibraryPage
+                active={activePersistentPage === "library"}
+              />
+            </PersistentPageSlot>
+          ) : null}
+          {pageVisited("browse") ? (
+            <PersistentPageSlot active={activePersistentPage === "browse"}>
+              <PersistentBrowsePage
+                active={activePersistentPage === "browse"}
+                query={browseQuery}
+                tab={browseTab}
+              />
+            </PersistentPageSlot>
+          ) : null}
+          {pageVisited("updates") ? (
+            <PersistentPageSlot active={activePersistentPage === "updates"}>
+              <PersistentUpdatesPage
+                active={activePersistentPage === "updates"}
+              />
+            </PersistentPageSlot>
+          ) : null}
+          {pageVisited("history") ? (
+            <PersistentPageSlot active={activePersistentPage === "history"}>
+              <PersistentHistoryPage />
+            </PersistentPageSlot>
+          ) : null}
+          {pageVisited("downloads") ? (
+            <PersistentPageSlot active={activePersistentPage === "downloads"}>
+              <PersistentDownloadsPage
+                active={activePersistentPage === "downloads"}
+              />
+            </PersistentPageSlot>
+          ) : null}
+          {pageVisited("tasks") ? (
+            <PersistentPageSlot active={activePersistentPage === "tasks"}>
+              <PersistentTasksPage active={activePersistentPage === "tasks"} />
+            </PersistentPageSlot>
+          ) : null}
+          {pageVisited("settings") ? (
+            <PersistentPageSlot active={activePersistentPage === "settings"}>
+              <PersistentSettingsPage section={settingsSection} />
+            </PersistentPageSlot>
+          ) : null}
+          {activePersistentPage === null ? <Outlet /> : null}
+        </div>
       </AppShell.Main>
       <nav
         className="lnr-mobile-nav"

@@ -60,6 +60,33 @@ const UPDATES_PAGE_SIZE = 100;
 const UPDATES_INDEX_REFRESH_DEBOUNCE_MS = 500;
 const UPDATES_INDEX_REFRESH_LIMIT = UPDATES_PAGE_SIZE;
 const LOAD_MORE_THRESHOLD_PX = 480;
+const APP_SCROLL_SELECTOR = ".lnr-app-scroll";
+
+function getUpdatesScrollElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(APP_SCROLL_SELECTOR);
+}
+
+function getUpdatesScrollMetrics(): {
+  clientHeight: number;
+  scrollHeight: number;
+  scrollTop: number;
+} {
+  const scrollContainer = getUpdatesScrollElement();
+  if (scrollContainer) {
+    return {
+      clientHeight: scrollContainer.clientHeight,
+      scrollHeight: scrollContainer.scrollHeight,
+      scrollTop: scrollContainer.scrollTop,
+    };
+  }
+
+  const scrollElement = document.scrollingElement ?? document.documentElement;
+  return {
+    clientHeight: window.innerHeight,
+    scrollHeight: scrollElement.scrollHeight,
+    scrollTop: scrollElement.scrollTop,
+  };
+}
 
 function formatDateTime(epochSeconds: number, locale: AppLocale): string {
   return formatDateTimeForLocale(locale, epochSeconds * 1000);
@@ -552,9 +579,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       return;
     }
 
-    const scrollElement = document.scrollingElement ?? document.documentElement;
+    const scrollMetrics = getUpdatesScrollMetrics();
     const distanceToBottom =
-      scrollElement.scrollHeight - window.innerHeight - scrollElement.scrollTop;
+      scrollMetrics.scrollHeight -
+      scrollMetrics.clientHeight -
+      scrollMetrics.scrollTop;
 
     if (distanceToBottom <= LOAD_MORE_THRESHOLD_PX) {
       loadMorePage(nextUpdateCursor);
@@ -681,10 +710,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
 
   useEffect(() => {
     if (!active) return;
-    window.addEventListener("scroll", loadMoreIfNeeded, { passive: true });
+    const scrollTarget = getUpdatesScrollElement() ?? window;
+    scrollTarget.addEventListener("scroll", loadMoreIfNeeded, {
+      passive: true,
+    });
     window.addEventListener("resize", loadMoreIfNeeded);
     return () => {
-      window.removeEventListener("scroll", loadMoreIfNeeded);
+      scrollTarget.removeEventListener("scroll", loadMoreIfNeeded);
       window.removeEventListener("resize", loadMoreIfNeeded);
     };
   }, [active, loadMoreIfNeeded]);

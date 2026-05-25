@@ -673,10 +673,27 @@
 }
 
 @media (max-width: 991px) {
+  .lnr-novel-page {
+    height: var(--lnr-app-content-height);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .lnr-novel-page > .lnr-page-frame-stack,
+  .lnr-novel-layout {
+    height: 100%;
+    min-height: 0;
+  }
+
   .lnr-novel-workspace {
     --lnr-novel-hero-height: auto;
     --lnr-novel-mobile-cover-height: 12.75rem;
     --lnr-novel-mobile-cover-width: 8.5rem;
+    flex: 0 0 auto;
+  }
+
+  .lnr-novel-chapters-panel {
+    flex: 1 1 auto;
   }
 
   .lnr-novel-hero-desktop {

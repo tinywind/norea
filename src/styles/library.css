@@ -261,6 +261,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  min-height: 0;
   min-width: 0;
 }
 
@@ -1111,14 +1112,15 @@
 
 @media (max-width: 767px) {
   .lnr-library-page {
-    height: auto;
-    min-height: var(--lnr-app-content-height);
-    overflow: visible;
+    height: var(--lnr-app-content-height);
+    min-height: 0;
+    overflow: hidden;
   }
 
   .lnr-library-page > :where(div),
   .lnr-library-shell {
-    min-height: var(--lnr-app-content-height);
+    height: 100%;
+    min-height: 0;
   }
 
   .lnr-library-main-header {
@@ -1221,6 +1223,8 @@
   }
 
   .lnr-library-body {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
   }
 

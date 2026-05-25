@@ -81,7 +81,9 @@ html {
 html,
 body,
 #root {
+  height: 100%;
   min-height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -97,8 +99,10 @@ body {
   align-items: center;
   box-sizing: border-box;
   display: flex;
+  height: var(--lnr-viewport-height);
   justify-content: center;
-  min-height: var(--lnr-viewport-height);
+  min-height: 0;
+  overflow: auto;
   padding: calc(var(--lnr-safe-area-top) + 1rem)
     calc(var(--lnr-safe-area-right) + 1rem)
     calc(var(--lnr-safe-area-bottom) + 1rem)
@@ -263,7 +267,11 @@ a {
 
 .lnr-app-main {
   box-sizing: border-box;
-  min-height: var(--lnr-viewport-height);
+  display: flex;
+  flex-direction: column;
+  height: var(--lnr-viewport-height);
+  min-height: 0;
+  overflow: hidden;
   padding-block-start: calc(
     var(--app-shell-header-offset, 0rem) + var(--lnr-safe-area-top)
   );
@@ -275,6 +283,49 @@ a {
   );
   padding-inline-end: calc(
     var(--app-shell-aside-offset, 0rem) + var(--lnr-safe-area-right)
+  );
+}
+
+.lnr-app-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  width: 100%;
+}
+
+.lnr-app-main[data-reader-full-page="true"] .lnr-app-scroll {
+  overflow: hidden;
+}
+
+.mantine-Modal-root:not([data-full-screen]) .mantine-Modal-inner {
+  padding-block-end: max(5dvh, var(--lnr-safe-area-bottom));
+  padding-block-start: max(5dvh, var(--lnr-safe-area-top));
+  padding-inline-end: max(5vw, var(--lnr-safe-area-right));
+  padding-inline-start: max(5vw, var(--lnr-safe-area-left));
+}
+
+.mantine-Modal-root:not([data-full-screen]) .mantine-Modal-content {
+  max-height: calc(
+    var(--lnr-viewport-height) - max(5dvh, var(--lnr-safe-area-top)) -
+      max(5dvh, var(--lnr-safe-area-bottom))
+  );
+}
+
+.mantine-Drawer-content {
+  height: calc(
+    var(--lnr-viewport-height) - var(--lnr-safe-area-top) -
+      var(--lnr-safe-area-bottom)
+  );
+  margin: var(--lnr-safe-area-top) var(--lnr-safe-area-right)
+    var(--lnr-safe-area-bottom) var(--lnr-safe-area-left);
+  max-height: calc(
+    var(--lnr-viewport-height) - var(--lnr-safe-area-top) -
+      var(--lnr-safe-area-bottom)
+  );
+  max-width: calc(
+    100% - var(--lnr-safe-area-left) - var(--lnr-safe-area-right)
   );
 }
 
@@ -364,10 +415,15 @@ a {
 }
 
 .lnr-page-frame {
+  box-sizing: border-box;
   margin-inline: auto;
   max-width: var(--lnr-page-max-width);
   padding: var(--lnr-page-block) var(--lnr-page-gutter);
   width: 100%;
+}
+
+.lnr-page-frame-stack {
+  min-height: 0;
 }
 
 .lnr-page-frame--narrow {

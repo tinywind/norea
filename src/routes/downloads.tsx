@@ -588,40 +588,45 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
         }
       />
 
-      {query.isLoading ? (
-        <DownloadCacheLoadingState />
-      ) : query.error ? (
-        <DownloadCacheErrorState
-          error={query.error}
-          onRetry={() => {
-            void query.refetch();
-          }}
-        />
-      ) : rows.length === 0 ? (
-        <StateView
-          color="blue"
-          title={t("downloads.empty.title")}
-          message={t("downloads.empty.message")}
-        />
-      ) : visibleRows.length === 0 ? (
-        <StateView
-          color="blue"
-          title={t("downloads.emptyFiltered.title")}
-          message={t("downloads.emptyFiltered.message")}
-        />
-      ) : (
-        <Stack gap="xs">
-          {visibleRows.map((novel) => (
-            <DownloadCacheNovelCard
-              key={novel.novelId}
-              novel={novel}
-              onOpenNovel={() => {
-                void navigate({ to: "/novel", search: { id: novel.novelId } });
-              }}
-            />
-          ))}
-        </Stack>
-      )}
+      <div className="lnr-downloads-body">
+        {query.isLoading ? (
+          <DownloadCacheLoadingState />
+        ) : query.error ? (
+          <DownloadCacheErrorState
+            error={query.error}
+            onRetry={() => {
+              void query.refetch();
+            }}
+          />
+        ) : rows.length === 0 ? (
+          <StateView
+            color="blue"
+            title={t("downloads.empty.title")}
+            message={t("downloads.empty.message")}
+          />
+        ) : visibleRows.length === 0 ? (
+          <StateView
+            color="blue"
+            title={t("downloads.emptyFiltered.title")}
+            message={t("downloads.emptyFiltered.message")}
+          />
+        ) : (
+          <Stack gap="xs">
+            {visibleRows.map((novel) => (
+              <DownloadCacheNovelCard
+                key={novel.novelId}
+                novel={novel}
+                onOpenNovel={() => {
+                  void navigate({
+                    to: "/novel",
+                    search: { id: novel.novelId },
+                  });
+                }}
+              />
+            ))}
+          </Stack>
+        )}
+      </div>
     </PageFrame>
   );
 }

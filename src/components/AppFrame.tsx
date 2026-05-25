@@ -34,7 +34,9 @@ export function PageFrame({
 
   return (
     <main className={classNames}>
-      <Stack gap="lg">{children}</Stack>
+      <Stack className="lnr-page-frame-stack" gap="lg">
+        {children}
+      </Stack>
     </main>
   );
 }

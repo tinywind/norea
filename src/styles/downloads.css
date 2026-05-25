@@ -1,5 +1,22 @@
 .lnr-downloads-page {
   --lnr-page-max-width: 80rem;
+  height: var(--lnr-app-content-height);
+  overflow: hidden;
+}
+
+.lnr-downloads-page > .lnr-page-frame-stack {
+  height: 100%;
+  min-height: 0;
+}
+
+.lnr-downloads-page .lnr-page-header {
+  flex: 0 0 auto;
+}
+
+.lnr-downloads-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .lnr-downloads-header-button svg,
