@@ -346,6 +346,84 @@ describe("pluginMediaFetch", () => {
     }
   });
 
+  it("retries native-first media fetches in the WebView on session-sensitive HTTP errors", async () => {
+    const debugSpy = vi
+      .spyOn(console, "debug")
+      .mockImplementation(() => undefined);
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    invokeMock
+      .mockResolvedValueOnce(
+        wireOk("blocked", {
+          status: 403,
+          statusText: "Forbidden",
+          finalUrl: "https://image-comic.pstatic.net/page.jpg",
+        }),
+      )
+      .mockResolvedValueOnce(
+        wireOk("image", {
+          finalUrl: "https://image-comic.pstatic.net/page.jpg",
+          headers: { "content-type": "image/jpeg" },
+        }),
+      );
+
+    try {
+      const response = await pluginMediaFetch(
+        "https://image-comic.pstatic.net/page.jpg",
+        {
+          contextUrl: "https://m.comic.naver.com/webtoon/detail",
+          headers: {
+            Referer: "https://m.comic.naver.com/",
+          },
+          scraperExecutor: "pool:0",
+          sourceId: "naverwebtoon",
+        },
+      );
+
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "scraper_media_fetch", {
+        url: "https://image-comic.pstatic.net/page.jpg",
+        init: {
+          headers: {
+            Referer: "https://m.comic.naver.com/",
+          },
+          method: undefined,
+          body: undefined,
+        },
+        timeoutMs: 30_000,
+        userAgent: globalThis.navigator?.userAgent ?? null,
+      });
+      expect(invokeMock).toHaveBeenNthCalledWith(2, "webview_fetch", {
+        url: "https://image-comic.pstatic.net/page.jpg",
+        init: {
+          headers: {
+            Referer: "https://m.comic.naver.com/",
+          },
+          method: undefined,
+          body: undefined,
+        },
+        contextUrl: "https://m.comic.naver.com/webtoon/detail",
+        queue: "pool:0",
+        timeoutMs: 30_000,
+        userAgent: globalThis.navigator?.userAgent ?? null,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[plugin-media-fetch] native fetch returned retryable status; trying WebView",
+        expect.objectContaining({
+          host: "image-comic.pstatic.net",
+          nativeError: "HTTP 403 Forbidden",
+          scraperExecutor: "pool:0",
+          sourceId: "naverwebtoon",
+          status: 403,
+        }),
+      );
+      expect(await response.text()).toBe("image");
+    } finally {
+      debugSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   it("falls back to native media fetch when the WebView cannot read media bytes", async () => {
     const debugSpy = vi
       .spyOn(console, "debug")

@@ -205,6 +205,15 @@ function shouldPreferNativeMediaFetch(url: string, init: HttpInit): boolean {
   return host !== "" && contextHost !== "" && host !== contextHost;
 }
 
+function shouldRetryNativeMediaWithBrowser(response: Response): boolean {
+  return (
+    response.status === 401 ||
+    response.status === 403 ||
+    response.status === 429 ||
+    response.status >= 500
+  );
+}
+
 function fetchErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -538,7 +547,27 @@ export async function pluginMediaFetch(
   if (shouldPreferNativeMediaFetch(url, init)) {
     let nativeError: unknown;
     try {
-      return await nativeMediaResponse(url, init, scraperExecutor);
+      const nativeResponse = await nativeMediaResponse(
+        url,
+        init,
+        scraperExecutor,
+      );
+      if (!shouldRetryNativeMediaWithBrowser(nativeResponse)) {
+        return nativeResponse;
+      }
+      nativeError = `HTTP ${nativeResponse.status} ${nativeResponse.statusText}`;
+      console.warn(
+        "[plugin-media-fetch] native fetch returned retryable status; trying WebView",
+        {
+          ...mediaFallbackLogContext(
+            url,
+            init,
+            scraperExecutor,
+            nativeResponse.status,
+          ),
+          nativeError,
+        },
+      );
     } catch (error) {
       if (isRequestAbortError(error)) {
         throw error;
