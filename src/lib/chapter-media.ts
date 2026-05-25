@@ -1459,6 +1459,31 @@ async function collectStoredManifestMediaSources({
   });
 }
 
+function collectManifestMediaSources({
+  chapterId,
+  manifest,
+  urls,
+}: {
+  chapterId: number;
+  manifest: ChapterMediaManifest;
+  urls: string[];
+}): Map<string, string> {
+  const requestedUrls = new Set(urls);
+  const existing = new Map<string, string>();
+  for (const file of manifest.media.files) {
+    if (
+      file.status !== "stored" ||
+      file.bytes <= 0 ||
+      !requestedUrls.has(file.sourceUrl) ||
+      !isFetchableMediaUrl(file.sourceUrl)
+    ) {
+      continue;
+    }
+    existing.set(file.sourceUrl, localChapterMediaSrc(chapterId, file.fileName));
+  }
+  return existing;
+}
+
 async function collectStoredMediaFileSources({
   chapterId,
   context,
@@ -1873,12 +1898,18 @@ export async function cacheHtmlChapterMedia({
         storageContext,
       )
     : new Map<string, string>();
-  const manifestSources = await collectStoredManifestMediaSources({
-    chapterId,
-    context: storageContext,
-    manifest: previousManifest,
-    urls,
-  });
+  const manifestSources = repair
+    ? await collectStoredManifestMediaSources({
+        chapterId,
+        context: storageContext,
+        manifest: previousManifest,
+        urls,
+      })
+    : collectManifestMediaSources({
+        chapterId,
+        manifest: previousManifest,
+        urls,
+      });
   const missingManifestSources = repair
     ? await collectMissingManifestMediaSources({
         chapterId,
@@ -1931,26 +1962,6 @@ export async function cacheHtmlChapterMedia({
         status: "remote",
         updatedAt: Date.now(),
       });
-    }
-  }
-  if (!repair) {
-    const targetFileSources = await collectStoredMediaFileSources({
-      chapterId,
-      context: storageContext,
-      files: [...mediaFilesBySourceUrl.values()],
-      urls,
-    });
-    for (const [url, src] of targetFileSources) {
-      if (!localSources.has(url)) {
-        localSources.set(url, src);
-      }
-      const existing = mediaFilesBySourceUrl.get(url);
-      if (existing) {
-        mediaFilesBySourceUrl.set(url, {
-          ...existing,
-          status: "stored",
-        });
-      }
     }
   }
   const downloadUrls = [

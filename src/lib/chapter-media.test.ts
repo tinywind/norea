@@ -330,13 +330,13 @@ describe("cacheHtmlChapterMedia", () => {
   });
 
   it("falls back to legacy desktop media store when the handle command is missing", async () => {
-    pluginMediaFetchMock.mockResolvedValue(
-      new Response(new Uint8Array([4, 5]), {
+    pluginMediaFetchMock.mockImplementation(async () => {
+      return new Response(new Uint8Array([4, 5]), {
         headers: { "content-type": "image/png" },
         status: 200,
         statusText: "OK",
-      }),
-    );
+      });
+    });
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
@@ -1076,20 +1076,19 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).toContain("norea-media://chapter/42/0003-page-3.png");
   });
 
-  it("reuses existing target files before a manifest has been written", async () => {
-    pluginMediaFetchMock.mockResolvedValue(
-      new Response(new Uint8Array([4, 5]), {
+  it("starts chapter downloads without scanning every target file", async () => {
+    pluginMediaFetchMock.mockImplementation(async () => {
+      return new Response(new Uint8Array([4, 5]), {
         headers: { "content-type": "image/png" },
         status: 200,
         statusText: "OK",
-      }),
-    );
+      });
+    });
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_total_size") {
-        const [mediaSrc] = (args as { mediaSrcs: string[] }).mediaSrcs;
-        return (mediaSrc ?? "").includes("0001-page-1.png") ? 7 : 0;
+        throw new Error("chapter downloads must not scan every target file");
       }
       if (command === "chapter_media_archive_cache") return 12;
       if (command === "chapter_media_write_manifest") return null;
@@ -1112,7 +1111,11 @@ describe("cacheHtmlChapterMedia", () => {
       ].join(""),
     });
 
-    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
+      "https://source.test/page-1.png",
+      expect.anything(),
+    );
     expect(pluginMediaFetchMock).toHaveBeenCalledWith(
       "https://source.test/page-2.png",
       expect.anything(),
@@ -1120,10 +1123,10 @@ describe("cacheHtmlChapterMedia", () => {
     expect(invokeMock).toHaveBeenCalledWith(
       "chapter_media_store",
       expect.objectContaining({
-        fileName: "0002-page-2.png",
+        fileName: "0001-page-1.png",
       }),
     );
-    expect(result.storedMediaCount).toBe(1);
+    expect(result.storedMediaCount).toBe(2);
     expect(result.mediaBytes).toBe(12);
     expect(result.html).toContain("norea-media://chapter/42/0001-page-1.png");
     expect(result.html).toContain("norea-media://chapter/42/0002-page-2.png");
