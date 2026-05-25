@@ -305,6 +305,50 @@
   position: relative;
 }
 
+.lnr-novel-selection-strip {
+  align-items: center;
+  background: var(--lnr-design-accent-soft);
+  border-bottom: 1px solid var(--lnr-design-rule);
+  color: var(--lnr-design-accent);
+  display: flex;
+  flex: 0 0 1.875rem;
+  font-family: var(--lnr-font-meta);
+  font-size: 0.6875rem;
+  gap: 0.75rem;
+  justify-content: space-between;
+  margin-top: 0.75rem;
+  padding: 0 1rem;
+}
+
+.lnr-novel-selection-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
+.lnr-novel-selection-icon {
+  align-items: center;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  display: inline-flex;
+  justify-content: center;
+  opacity: 0.85;
+}
+
+.lnr-novel-selection-icon:hover {
+  background: var(--lnr-design-selection-hover-overlay);
+  opacity: 1;
+}
+
+.lnr-novel-selection-icon:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.lnr-novel-selection-strip ~ .lnr-novel-chapter-list {
+  margin-top: 0;
+}
+
 .lnr-novel-local-error {
   display: block;
   margin-top: 0.5rem;
@@ -329,16 +373,16 @@
   cursor: pointer;
   display: grid;
   gap: 0.625rem;
-  grid-template-areas: "position main flags progress actions";
-  grid-template-columns: 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr) auto;
+  grid-template-areas: "selection position main flags progress actions";
+  grid-template-columns: 2rem 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr) auto;
   height: 3.375rem;
   min-height: 3.375rem;
   padding: 0.375rem 0 0.375rem 0.5rem;
 }
 
 .lnr-novel-chapter-row[data-has-drag="true"] {
-  grid-template-areas: "drag position main flags progress actions";
-  grid-template-columns: 2rem 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr) auto;
+  grid-template-areas: "drag selection position main flags progress actions";
+  grid-template-columns: 2rem 2rem 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr) auto;
 }
 
 .lnr-novel-chapter-row[data-dragging="true"] {
@@ -346,7 +390,8 @@
 }
 
 .lnr-novel-chapter-row:hover,
-.lnr-novel-chapter-row--current {
+.lnr-novel-chapter-row--current,
+.lnr-novel-chapter-row[data-selected="true"] {
   background: var(--lnr-design-accent-soft);
 }
 
@@ -361,6 +406,22 @@
 .lnr-novel-chapter-row:focus-visible {
   outline: 0.125rem solid var(--lnr-design-accent);
   outline-offset: 0.125rem;
+}
+
+.lnr-novel-chapter-selection {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  grid-area: selection;
+  justify-content: center;
+}
+
+.lnr-novel-chapter-selection input {
+  accent-color: var(--lnr-design-accent);
+  cursor: pointer;
+  height: 1rem;
+  margin: 0;
+  width: 1rem;
 }
 
 .lnr-novel-chapter-drag-handle {
@@ -885,6 +946,25 @@
     grid-template-columns: 2rem 2.625rem minmax(0, 1fr) auto auto;
   }
 
+  .lnr-novel-chapter-selection {
+    display: none;
+  }
+
+  .lnr-novel-chapter-row[data-selection-mode="true"] {
+    grid-template-areas: "selection position main flags actions";
+    grid-template-columns: 2rem 2.625rem minmax(0, 1fr) auto auto;
+  }
+
+  .lnr-novel-chapter-row[data-selection-mode="true"][data-has-drag="true"] {
+    grid-template-areas: "drag selection position main flags actions";
+    grid-template-columns: 2rem 2rem 2.625rem minmax(0, 1fr) auto auto;
+  }
+
+  .lnr-novel-chapter-row[data-selection-mode="true"]
+    .lnr-novel-chapter-selection {
+    display: flex;
+  }
+
   .lnr-novel-chapter-percent--inline {
     display: inline;
   }
@@ -922,6 +1002,15 @@
   .lnr-novel-title-actions {
     gap: 0.25rem;
     justify-content: flex-end;
+  }
+
+  .lnr-novel-selection-strip {
+    padding-inline: 0.5rem;
+  }
+
+  .lnr-novel-selection-actions {
+    gap: 0.25rem;
+    overflow-x: auto;
   }
 
   .lnr-novel-title {

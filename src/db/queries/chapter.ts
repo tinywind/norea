@@ -183,6 +183,7 @@ export interface BulkChapterMutationResult extends ChapterMutationResult {
 
 type DbHandle = Awaited<ReturnType<typeof getDb>>;
 
+const FINISHED_PROGRESS = 100;
 const SQLITE_BIND_PARAMETER_BUDGET = 900;
 const SOURCE_CHAPTER_PARAM_COUNT = 8;
 const DOWNLOADED_CHAPTER_PARAM_COUNT = 10;
@@ -199,6 +200,10 @@ const DOWNLOADED_CHAPTER_CHUNK_SIZE = Math.max(
     MAX_ROUTE_QUERY_ROWS,
     Math.floor(SQLITE_BIND_PARAMETER_BUDGET / DOWNLOADED_CHAPTER_PARAM_COUNT),
   ),
+);
+const CHAPTER_ID_CHUNK_SIZE = Math.max(
+  1,
+  Math.min(MAX_ROUTE_QUERY_ROWS, SQLITE_BIND_PARAMETER_BUDGET - 2),
 );
 
 function assertChapterTextBudget(
@@ -324,6 +329,13 @@ function chapterChunks<T>(
     chunks.push(inputs.slice(index, index + chunkSize));
   }
   return chunks;
+}
+
+function chapterIdPlaceholders(startParam: number, count: number): string {
+  return Array.from(
+    { length: count },
+    (_, index) => `$${startParam + index}`,
+  ).join(", ");
 }
 
 async function executeSourceChapterChunk(
@@ -584,6 +596,40 @@ export async function updateChapterProgress(
      WHERE id = $1`,
     [chapterId, clamped],
   );
+}
+
+export async function setChaptersReadState(
+  chapterIds: readonly number[],
+  unread: boolean,
+): Promise<BulkChapterMutationResult> {
+  const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
+    (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
+  );
+  if (uniqueChapterIds.length === 0) return { rowsAffected: 0, chunks: 0 };
+  assertChapterBulkCount(uniqueChapterIds.length, "Chapter read state update");
+
+  const unreadFlag = unread ? 1 : 0;
+  const progress = unread ? 0 : FINISHED_PROGRESS;
+  return runDatabaseTransaction(async (db) => {
+    let rowsAffected = 0;
+    let chunks = 0;
+
+    for (const chunk of chapterChunks(uniqueChapterIds, CHAPTER_ID_CHUNK_SIZE)) {
+      const result = await db.execute(
+        `UPDATE chapter
+         SET
+           progress   = $1,
+           unread     = $2,
+           updated_at = unixepoch()
+         WHERE id IN (${chapterIdPlaceholders(3, chunk.length)})`,
+        [progress, unreadFlag, ...chunk],
+      );
+      rowsAffected += result.rowsAffected;
+      chunks += 1;
+    }
+
+    return { rowsAffected, chunks };
+  });
 }
 
 export async function markChapterOpened(chapterId: number): Promise<void> {

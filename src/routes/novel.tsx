@@ -2,6 +2,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
   type FormEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
   useMemo,
@@ -41,6 +42,8 @@ import {
 } from "@mantine/core";
 import {
   DetailsGlyph,
+  CheckGlyph,
+  CloseGlyph,
   DownloadGlyph,
   DownloadedGlyph,
   DragHandleGlyph,
@@ -70,6 +73,7 @@ import { TextButton } from "../components/TextButton";
 import {
   clearChapterContent,
   listChaptersByNovel,
+  setChaptersReadState,
   type ChapterListRow,
 } from "../db/queries/chapter";
 import {
@@ -470,6 +474,17 @@ function resolveNovelSourceUrl(novel: NovelDetailRecord): string | null {
   }
 }
 
+function isChapterInteractiveTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(
+      target.closest(
+        "button, input, .lnr-novel-chapter-drag-handle, .lnr-novel-chapter-selection",
+      ),
+    )
+  );
+}
+
 interface ChapterListItemProps {
   chapter: ChapterListRow;
   canDeleteDownload: boolean;
@@ -477,6 +492,8 @@ interface ChapterListItemProps {
   canMoveUp: boolean;
   duplicateSourceChapterCount: number;
   isCurrent: boolean;
+  isSelected: boolean;
+  selectionMode: boolean;
   status: ChapterDownloadStatus | undefined;
   deleteBusy: boolean;
   opening: boolean;
@@ -486,6 +503,7 @@ interface ChapterListItemProps {
   onDownload: () => void;
   onDeleteDownload: () => void;
   onRepairMedia: () => void;
+  onToggleSelected: () => void;
 }
 
 function ChapterListItem({
@@ -495,6 +513,8 @@ function ChapterListItem({
   canMoveUp,
   duplicateSourceChapterCount,
   isCurrent,
+  isSelected,
+  selectionMode,
   status,
   deleteBusy,
   opening,
@@ -504,6 +524,7 @@ function ChapterListItem({
   onDownload,
   onDeleteDownload,
   onRepairMedia,
+  onToggleSelected,
 }: ChapterListItemProps) {
   const { t } = useTranslation();
   const canDrag = (canMoveUp || canMoveDown) && !reorderBusy;
@@ -533,6 +554,8 @@ function ChapterListItem({
     !chapter.isDownloaded && !opening && !isQueued && !isRunning;
   const showOpeningSpinner =
     opening && !chapter.isDownloaded && !isQueued && !isRunning;
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const progress = getChapterReadingProgress(chapter);
   const progressStatus =
     progress >= FINISHED_PROGRESS
@@ -592,6 +615,27 @@ function ChapterListItem({
       {status ? <ChapterDownloadStatusIcon status={status} /> : null}
     </>
   );
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current === null) return;
+    window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  };
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (isChapterInteractiveTarget(event.target)) return;
+
+    clearLongPressTimer();
+    longPressTriggeredRef.current = false;
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      onToggleSelected();
+    }, 450);
+  };
+  const handlePointerEnd = () => {
+    clearLongPressTimer();
+  };
+
+  useEffect(() => clearLongPressTimer, []);
 
   return (
     <div
@@ -602,24 +646,72 @@ function ChapterListItem({
       role="button"
       tabIndex={0}
       aria-busy={opening || isRunning}
-      aria-label={t("novel.openChapter", { name: chapter.name })}
+      aria-label={
+        selectionMode
+          ? t("novel.toggleChapterSelection", { name: chapter.name })
+          : t("novel.openChapter", { name: chapter.name })
+      }
+      aria-selected={selectionMode ? isSelected : undefined}
       data-dragging={isDragging ? "true" : undefined}
       data-has-drag={hasReorderControls ? "true" : undefined}
       data-opening={opening}
-      onClick={onOpen}
+      data-selected={isSelected ? "true" : undefined}
+      data-selection-mode={selectionMode ? "true" : undefined}
+      onClick={() => {
+        if (longPressTriggeredRef.current) {
+          longPressTriggeredRef.current = false;
+          return;
+        }
+        if (selectionMode) {
+          onToggleSelected();
+          return;
+        }
+        onOpen();
+      }}
+      onContextMenu={(event) => {
+        if (isChapterInteractiveTarget(event.target)) return;
+        event.preventDefault();
+        if (longPressTriggeredRef.current) {
+          return;
+        }
+        onToggleSelected();
+      }}
       onKeyDown={(event) => {
         if (
           event.target instanceof HTMLElement &&
-          event.target.closest(".lnr-novel-chapter-drag-handle")
+          event.target.closest(
+            ".lnr-novel-chapter-drag-handle, .lnr-novel-chapter-selection",
+          )
         ) {
           return;
         }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
+        if (selectionMode) {
+          onToggleSelected();
+          return;
+        }
         onOpen();
       }}
+      onPointerCancel={handlePointerEnd}
+      onPointerDown={handlePointerDown}
+      onPointerLeave={handlePointerEnd}
+      onPointerUp={handlePointerEnd}
       style={style}
     >
+      <label
+        className="lnr-novel-chapter-selection"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <input
+          aria-label={t("novel.toggleChapterSelection", {
+            name: chapter.name,
+          })}
+          checked={isSelected}
+          onChange={onToggleSelected}
+          type="checkbox"
+        />
+      </label>
       {hasReorderControls ? (
         <span
           {...(canDrag ? attributes : undefined)}
@@ -753,12 +845,15 @@ interface VirtualChapterListProps {
   repairBusyChapterId: number | undefined;
   repairPending: boolean;
   reorderPending: boolean;
+  selectedChapterIds: ReadonlySet<number>;
+  selectionMode: boolean;
   statuses: ReadonlyMap<number, ChapterDownloadStatus>;
   onDeleteDownload: (chapterId: number) => void;
   onDownload: (chapter: ChapterListRow) => void;
   onOpen: (chapter: ChapterListRow) => void;
   onRepairMedia: (chapter: ChapterListRow) => void;
   onReorderChapter: (chapterId: number, beforeChapterId: number | null) => void;
+  onToggleSelected: (chapterId: number) => void;
 }
 
 function VirtualChapterList({
@@ -773,12 +868,15 @@ function VirtualChapterList({
   repairBusyChapterId,
   repairPending,
   reorderPending,
+  selectedChapterIds,
+  selectionMode,
   statuses,
   onDeleteDownload,
   onDownload,
   onOpen,
   onRepairMedia,
   onReorderChapter,
+  onToggleSelected,
 }: VirtualChapterListProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const sensors = useSensors(
@@ -894,6 +992,8 @@ function VirtualChapterList({
                   duplicateSourceChapterCounts.get(chapter.id) ?? 0
                 }
                 isCurrent={chapter.id === lastReadChapterId}
+                isSelected={selectedChapterIds.has(chapter.id)}
+                selectionMode={selectionMode}
                 status={statuses.get(chapter.id)}
                 deleteBusy={deletePending && deleteBusyChapterId === chapter.id}
                 opening={openingChapterId === chapter.id}
@@ -903,6 +1003,7 @@ function VirtualChapterList({
                 onDownload={() => onDownload(chapter)}
                 onDeleteDownload={() => onDeleteDownload(chapter.id)}
                 onRepairMedia={() => onRepairMedia(chapter)}
+                onToggleSelected={() => onToggleSelected(chapter.id)}
               />
             );
           })}
@@ -1224,6 +1325,26 @@ function ReadIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M4 12l5 5L20 6" />
+    </svg>
+  );
+}
+
+function UnreadIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M5 5h14v14H5z" />
+      <path d="M8 10h6" />
+      <path d="M8 14h5" />
+      <circle cx="17" cy="7" r="2" />
+    </svg>
+  );
+}
+
+function SelectionClearIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M5 5h14v14H5z" />
+      <path d="M8 12h8" />
     </svg>
   );
 }
@@ -1593,6 +1714,11 @@ export function NovelDetailPage() {
   const [sourceDuplicateChapters, setSourceDuplicateChapters] = useState<
     readonly SourceDuplicateChapterInfo[]
   >(() => getSourceDuplicateChapterInfo(id));
+  const [chapterSelectionMode, setChapterSelectionMode] = useState(false);
+  const [selectedChapterIds, setSelectedChapterIds] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
+  const chapterSelectionGuardRef = useRef(false);
 
   const novelQuery = useQuery({
     queryKey: novelKey(id),
@@ -1629,6 +1755,44 @@ export function NovelDetailPage() {
       await clearStoredChapterContentMirror(chapterId);
     },
     onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: chaptersKey(id),
+      });
+      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+    },
+  });
+
+  const clearSelectedDownloads = useMutation({
+    mutationFn: async (chapterIds: readonly number[]) => {
+      const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
+        (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
+      );
+      for (const chapterId of uniqueChapterIds) {
+        await clearChapterContent(chapterId);
+        await clearChapterMedia(chapterId);
+        await clearStoredChapterContentMirror(chapterId);
+      }
+      return uniqueChapterIds.length;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: chaptersKey(id),
+      });
+      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+    },
+  });
+
+  const setSelectedChapterReadState = useMutation({
+    mutationFn: ({
+      chapterIds,
+      unread,
+    }: {
+      chapterIds: readonly number[];
+      unread: boolean;
+    }) => setChaptersReadState(chapterIds, unread),
+    onSuccess: () => {
+      markUpdatesIndexDirty("read-progress");
       void queryClient.invalidateQueries({
         queryKey: chaptersKey(id),
       });
@@ -1847,12 +2011,102 @@ export function NovelDetailPage() {
     },
     [rows],
   );
+  const selectedChapters = useMemo(
+    () => chapters.filter((chapter) => selectedChapterIds.has(chapter.id)),
+    [chapters, selectedChapterIds],
+  );
+  const selectedChapterIdList = useMemo(
+    () => selectedChapters.map((chapter) => chapter.id),
+    [selectedChapters],
+  );
+  const selectedDownloadTargets = useMemo(
+    () =>
+      buildBatchDownloadTargets(
+        selectedChapters,
+        lastReadChapterId,
+        statuses,
+      ).all,
+    [lastReadChapterId, selectedChapters, statuses],
+  );
+  const selectedDownloadedChapterIds = useMemo(
+    () =>
+      selectedChapters
+        .filter((chapter) => chapter.isDownloaded)
+        .map((chapter) => chapter.id),
+    [selectedChapters],
+  );
+  const selectedUnreadCount = selectedChapters.filter(
+    (chapter) => chapter.unread || chapter.progress < FINISHED_PROGRESS,
+  ).length;
+  const selectedReadCount = selectedChapters.filter(
+    (chapter) => !chapter.unread || chapter.progress > 0,
+  ).length;
+  const selectedChapterCount = selectedChapters.length;
+  const allChaptersSelected =
+    chapters.length > 0 && selectedChapterCount === chapters.length;
+  const chapterSelectionBusy =
+    clearSelectedDownloads.isPending || setSelectedChapterReadState.isPending;
 
   useEffect(() => {
     const novel = novelQuery.data;
     if (!novel?.isLocal) return;
     setLocalMetadataForm(localMetadataFromNovel(novel));
   }, [novelQuery.data]);
+
+  useEffect(() => {
+    setChapterSelectionMode(false);
+    setSelectedChapterIds(new Set());
+    chapterSelectionGuardRef.current = false;
+  }, [id]);
+
+  useEffect(() => {
+    if (rows.length === 0) {
+      setChapterSelectionMode(false);
+      setSelectedChapterIds(new Set());
+      return;
+    }
+
+    const availableChapterIds = new Set(rows.map((chapter) => chapter.id));
+    setSelectedChapterIds((current) => {
+      let changed = false;
+      const next = new Set<number>();
+      for (const chapterId of current) {
+        if (availableChapterIds.has(chapterId)) {
+          next.add(chapterId);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [rows]);
+
+  useEffect(() => {
+    if (!chapterSelectionMode) return;
+
+    if (!chapterSelectionGuardRef.current) {
+      const currentState =
+        window.history.state && typeof window.history.state === "object"
+          ? window.history.state
+          : {};
+      window.history.pushState(
+        { ...currentState, noreaChapterSelection: true },
+        "",
+        currentHref,
+      );
+      chapterSelectionGuardRef.current = true;
+    }
+
+    const handlePopState = () => {
+      if (!chapterSelectionGuardRef.current) return;
+      chapterSelectionGuardRef.current = false;
+      setSelectedChapterIds(new Set());
+      setChapterSelectionMode(false);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [chapterSelectionMode, currentHref]);
 
   useEffect(() => {
     if (rows.length === 0) return;
@@ -1875,7 +2129,47 @@ export function NovelDetailPage() {
     });
   }, [rows]);
 
+  function clearChapterSelectionState(): void {
+    setSelectedChapterIds(new Set());
+    setChapterSelectionMode(false);
+  }
+
+  function closeChapterSelectionMode(): void {
+    if (chapterSelectionGuardRef.current) {
+      window.history.back();
+      return;
+    }
+    clearChapterSelectionState();
+  }
+
+  function toggleChapterSelected(chapterId: number): void {
+    setChapterSelectionMode(true);
+    setSelectedChapterIds((current) => {
+      const next = new Set(current);
+      if (next.has(chapterId)) {
+        next.delete(chapterId);
+      } else {
+        next.add(chapterId);
+      }
+      return next;
+    });
+  }
+
+  function selectAllChapters(): void {
+    setChapterSelectionMode(true);
+    setSelectedChapterIds(new Set(chapters.map((chapter) => chapter.id)));
+  }
+
+  function clearSelectedChapters(): void {
+    setSelectedChapterIds(new Set());
+  }
+
   function goBack() {
+    if (chapterSelectionMode) {
+      closeChapterSelectionMode();
+      return;
+    }
+
     const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
     if (target) {
       trimAppNavigationHistoryTo(target);
@@ -1904,6 +2198,7 @@ export function NovelDetailPage() {
       pluginId: novel.pluginId,
       chapterPath: chapter.path,
       chapterName: chapter.name,
+      chapterNumber: chapter.chapterNumber ?? undefined,
       contentType: chapter.contentType,
       novelId: novel.id,
       novelName: novel.name,
@@ -1947,6 +2242,7 @@ export function NovelDetailPage() {
       pluginId: novel.pluginId,
       chapterPath: chapter.path,
       chapterName: chapter.name,
+      chapterNumber: chapter.chapterNumber ?? undefined,
       contentType: chapter.contentType,
       novelId: novel.id,
       novelName: novel.name,
@@ -1960,25 +2256,21 @@ export function NovelDetailPage() {
     const novel = novelQuery.data;
     if (!novel || chaptersToDownload.length === 0) return;
     const batchNovel = novel;
-
-    function* chapterDownloadJobs() {
-      for (const chapter of chaptersToDownload) {
-        yield {
-          id: chapter.id,
-          pluginId: batchNovel.pluginId,
-          chapterPath: chapter.path,
-          chapterName: chapter.name,
-          contentType: chapter.contentType,
-          novelId: batchNovel.id,
-          novelName: batchNovel.name,
-          novelPath: batchNovel.path,
-          title: t("tasks.task.downloadChapter", { name: chapter.name }),
-        };
-      }
-    }
+    const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
+      id: chapter.id,
+      pluginId: batchNovel.pluginId,
+      chapterPath: chapter.path,
+      chapterName: chapter.name,
+      chapterNumber: chapter.chapterNumber ?? undefined,
+      contentType: chapter.contentType,
+      novelId: batchNovel.id,
+      novelName: batchNovel.name,
+      novelPath: batchNovel.path,
+      title: t("tasks.task.downloadChapter", { name: chapter.name }),
+    }));
 
     void enqueueChapterDownloadBatch({
-      jobs: chapterDownloadJobs(),
+      jobs: chapterDownloadJobs,
       title: t("tasks.task.downloadChapterBatch", {
         count: chaptersToDownload.length,
       }),
@@ -2165,6 +2457,145 @@ export function NovelDetailPage() {
               })}
             />
 
+            {chapterSelectionMode ? (
+              <div className="lnr-novel-selection-strip">
+                <span>
+                  {t("novel.selection.selectedCount", {
+                    count: selectedChapterCount,
+                  })}
+                </span>
+                <div className="lnr-novel-selection-actions">
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    disabled={allChaptersSelected}
+                    label={t("novel.selection.selectAll")}
+                    onClick={selectAllChapters}
+                    size="sm"
+                    title={t("novel.selection.selectAll")}
+                  >
+                    <CheckGlyph />
+                  </IconButton>
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    disabled={selectedChapterCount === 0}
+                    label={t("novel.selection.clearSelected")}
+                    onClick={clearSelectedChapters}
+                    size="sm"
+                    title={t("novel.selection.clearSelected")}
+                  >
+                    <SelectionClearIcon />
+                  </IconButton>
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    disabled={
+                      selectedDownloadTargets.length === 0 || chapterSelectionBusy
+                    }
+                    label={
+                      selectedDownloadTargets.length > 0
+                        ? t("novel.selection.downloadSelected")
+                        : t("novel.selection.downloadSelectedUnavailable")
+                    }
+                    onClick={() => downloadChapters(selectedDownloadTargets)}
+                    size="sm"
+                    title={
+                      selectedDownloadTargets.length > 0
+                        ? t("novel.selection.downloadSelected")
+                        : t("novel.selection.downloadSelectedUnavailable")
+                    }
+                  >
+                    <DownloadGlyph />
+                  </IconButton>
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    disabled={
+                      novel.isLocal ||
+                      selectedDownloadedChapterIds.length === 0 ||
+                      chapterSelectionBusy
+                    }
+                    label={
+                      selectedDownloadedChapterIds.length > 0
+                        ? t("novel.selection.deleteDownloads")
+                        : t("novel.selection.deleteDownloadsUnavailable")
+                    }
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          t("novel.selection.deleteDownloadsConfirm", {
+                            count: selectedDownloadedChapterIds.length,
+                          }),
+                        )
+                      ) {
+                        return;
+                      }
+                      clearSelectedDownloads.mutate(selectedDownloadedChapterIds);
+                    }}
+                    size="sm"
+                    title={
+                      selectedDownloadedChapterIds.length > 0
+                        ? t("novel.selection.deleteDownloads")
+                        : t("novel.selection.deleteDownloadsUnavailable")
+                    }
+                    tone="danger"
+                  >
+                    {clearSelectedDownloads.isPending ? (
+                      <Loader size={14} />
+                    ) : (
+                      <DownloadedGlyph />
+                    )}
+                  </IconButton>
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    disabled={selectedUnreadCount === 0 || chapterSelectionBusy}
+                    label={t("novel.selection.markRead")}
+                    onClick={() =>
+                      setSelectedChapterReadState.mutate({
+                        chapterIds: selectedChapterIdList,
+                        unread: false,
+                      })
+                    }
+                    size="sm"
+                    title={t("novel.selection.markRead")}
+                  >
+                    {setSelectedChapterReadState.isPending &&
+                    setSelectedChapterReadState.variables?.unread === false ? (
+                      <Loader size={14} />
+                    ) : (
+                      <ReadIcon />
+                    )}
+                  </IconButton>
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    disabled={selectedReadCount === 0 || chapterSelectionBusy}
+                    label={t("novel.selection.markUnread")}
+                    onClick={() =>
+                      setSelectedChapterReadState.mutate({
+                        chapterIds: selectedChapterIdList,
+                        unread: true,
+                      })
+                    }
+                    size="sm"
+                    title={t("novel.selection.markUnread")}
+                  >
+                    {setSelectedChapterReadState.isPending &&
+                    setSelectedChapterReadState.variables?.unread === true ? (
+                      <Loader size={14} />
+                    ) : (
+                      <UnreadIcon />
+                    )}
+                  </IconButton>
+                  <IconButton
+                    className="lnr-novel-selection-icon"
+                    label={t("novel.selection.close")}
+                    onClick={closeChapterSelectionMode}
+                    size="sm"
+                    title={t("novel.selection.close")}
+                  >
+                    <CloseGlyph />
+                  </IconButton>
+                </div>
+              </div>
+            ) : null}
+
             {localChapterError ? (
               <Text c="red" className="lnr-novel-local-error" size="sm">
                 {localChapterError}
@@ -2217,6 +2648,8 @@ export function NovelDetailPage() {
                 repairBusyChapterId={repairMedia.variables?.id}
                 repairPending={repairMedia.isPending}
                 reorderPending={reorderLocalChapters.isPending}
+                selectedChapterIds={selectedChapterIds}
+                selectionMode={chapterSelectionMode}
                 statuses={statuses}
                 onOpen={(chapter) => {
                   void openChapter(chapter);
@@ -2224,6 +2657,7 @@ export function NovelDetailPage() {
                 onDownload={downloadChapter}
                 onRepairMedia={(chapter) => repairMedia.mutate(chapter)}
                 onReorderChapter={reorderLocalChapter}
+                onToggleSelected={toggleChapterSelected}
                 onDeleteDownload={(chapterId) => {
                   if (novel.isLocal) return;
                   clearDownload.mutate(chapterId);
