@@ -67,7 +67,7 @@ import "../styles/reader.css";
 
 const FINISHED_PROGRESS = 100;
 const FULL_PAGE_CHROME_HIDE_DELAY_MS = 5000;
-const READER_SEEKBAR_HIDE_DELAY_MS = 1000;
+const READER_SEEKBAR_HIDE_DELAY_MS = 2000;
 const READER_ACTIVITY_THROTTLE_MS = 250;
 const READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH = 350_000;
 const READER_CHAPTER_ROW_HEIGHT = 30;
@@ -829,8 +829,7 @@ export function ReaderPage() {
   const handleReaderActivity = useCallback(() => {
     lastReaderActivityAtRef.current = performance.now();
     handleFullPageActivity();
-    showReaderSeekbarForActivity();
-  }, [handleFullPageActivity, showReaderSeekbarForActivity]);
+  }, [handleFullPageActivity]);
 
   const handleFrequentReaderActivity = useCallback(() => {
     const now = performance.now();
@@ -853,7 +852,8 @@ export function ReaderPage() {
     [clearReaderSeekbarHideTimer, showReaderSeekbarForActivity],
   );
 
-  const handleToggleFullPageChrome = useCallback(() => {
+  const handleReaderMenuTap = useCallback(() => {
+    showReaderSeekbarForActivity();
     if (!fullPageReader) return;
     if (fullPageChromeVisible) {
       clearFullPageChromeTimer();
@@ -867,6 +867,7 @@ export function ReaderPage() {
     fullPageChromeVisible,
     fullPageReader,
     scheduleFullPageChromeHide,
+    showReaderSeekbarForActivity,
   ]);
 
   const openReaderSettingsPanel = useCallback(() => {
@@ -1560,9 +1561,7 @@ export function ReaderPage() {
         generalSettings={readerContentGeneral}
         initialProgress={readerProgress}
         localMediaContext={readerLocalMediaContext}
-        onToggleChrome={
-          readerChromeAutoHide ? handleToggleFullPageChrome : undefined
-        }
+        onToggleChrome={handleReaderMenuTap}
         onProgressChange={handleProgressChange}
         onPageIndexChange={handlePageIndexChange}
         onBoundaryPage={handleBoundaryPage}
@@ -1581,9 +1580,7 @@ export function ReaderPage() {
         html={content}
         initialProgress={readerProgress}
         localMediaContext={readerLocalMediaContext}
-        onToggleChrome={
-          readerChromeAutoHide ? handleToggleFullPageChrome : undefined
-        }
+        onToggleChrome={handleReaderMenuTap}
         onProgressChange={handleProgressChange}
         onPageIndexChange={handlePageIndexChange}
         onBoundaryPage={handleBoundaryPage}
