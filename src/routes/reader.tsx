@@ -68,6 +68,7 @@ import "../styles/reader.css";
 const FINISHED_PROGRESS = 100;
 const FULL_PAGE_CHROME_HIDE_DELAY_MS = 5000;
 const READER_SEEKBAR_HIDE_DELAY_MS = 2000;
+const READER_SEEKBAR_FADE_OUT_MS = 500;
 const READER_ACTIVITY_THROTTLE_MS = 250;
 const READER_FULL_MEDIA_PATCH_MAX_HTML_LENGTH = 350_000;
 const READER_CHAPTER_ROW_HEIGHT = 30;
@@ -563,12 +564,16 @@ export function ReaderPage() {
   const autoDownloadingChapterRef = useRef<number | null>(null);
   const chromeHideTimerRef = useRef<number | null>(null);
   const readerSeekbarHideTimerRef = useRef<number | null>(null);
+  const readerSeekbarFadeTimerRef = useRef<number | null>(null);
   const readerSeekbarEnabledRef = useRef(false);
+  const readerSeekbarPinnedByChromeRef = useRef(false);
   const readerSeekbarActiveRef = useRef(false);
   const lastReaderActivityAtRef = useRef(-READER_ACTIVITY_THROTTLE_MS);
   const readerWriteQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [fullPageChromeVisible, setFullPageChromeVisible] = useState(false);
   const [readerSeekbarActivityVisible, setReaderSeekbarActivityVisible] =
+    useState(false);
+  const [readerSeekbarRenderMounted, setReaderSeekbarRenderMounted] =
     useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [autoDownloadingChapterId, setAutoDownloadingChapterId] = useState<
@@ -805,20 +810,57 @@ export function ReaderPage() {
     }
   }, []);
 
+  const clearReaderSeekbarFadeTimer = useCallback(() => {
+    if (readerSeekbarFadeTimerRef.current !== null) {
+      window.clearTimeout(readerSeekbarFadeTimerRef.current);
+      readerSeekbarFadeTimerRef.current = null;
+    }
+  }, []);
+
+  const fadeOutReaderSeekbar = useCallback(() => {
+    clearReaderSeekbarFadeTimer();
+    setReaderSeekbarActivityVisible(false);
+    readerSeekbarFadeTimerRef.current = window.setTimeout(() => {
+      readerSeekbarFadeTimerRef.current = null;
+      if (
+        !readerSeekbarEnabledRef.current ||
+        (!readerSeekbarActiveRef.current &&
+          !readerSeekbarPinnedByChromeRef.current)
+      ) {
+        setReaderSeekbarRenderMounted(false);
+      }
+    }, READER_SEEKBAR_FADE_OUT_MS);
+  }, [clearReaderSeekbarFadeTimer]);
+
   const scheduleReaderSeekbarHide = useCallback(() => {
     clearReaderSeekbarHideTimer();
     readerSeekbarHideTimerRef.current = window.setTimeout(() => {
       readerSeekbarHideTimerRef.current = null;
-      if (readerSeekbarActiveRef.current) return;
-      setReaderSeekbarActivityVisible(false);
+      if (
+        readerSeekbarActiveRef.current ||
+        readerSeekbarPinnedByChromeRef.current
+      ) {
+        return;
+      }
+      fadeOutReaderSeekbar();
     }, READER_SEEKBAR_HIDE_DELAY_MS);
-  }, [clearReaderSeekbarHideTimer]);
+  }, [clearReaderSeekbarHideTimer, fadeOutReaderSeekbar]);
 
   const showReaderSeekbarForActivity = useCallback(() => {
     if (!readerSeekbarEnabledRef.current) return;
+    clearReaderSeekbarFadeTimer();
+    setReaderSeekbarRenderMounted(true);
     setReaderSeekbarActivityVisible(true);
+    if (readerSeekbarPinnedByChromeRef.current) {
+      clearReaderSeekbarHideTimer();
+      return;
+    }
     scheduleReaderSeekbarHide();
-  }, [scheduleReaderSeekbarHide]);
+  }, [
+    clearReaderSeekbarFadeTimer,
+    clearReaderSeekbarHideTimer,
+    scheduleReaderSeekbarHide,
+  ]);
 
   const handleFullPageActivity = useCallback(() => {
     if (fullPageReader && fullPageChromeVisible) {
@@ -843,13 +885,19 @@ export function ReaderPage() {
     (active: boolean) => {
       readerSeekbarActiveRef.current = active;
       if (active) {
+        clearReaderSeekbarFadeTimer();
         clearReaderSeekbarHideTimer();
+        setReaderSeekbarRenderMounted(true);
         setReaderSeekbarActivityVisible(true);
         return;
       }
       showReaderSeekbarForActivity();
     },
-    [clearReaderSeekbarHideTimer, showReaderSeekbarForActivity],
+    [
+      clearReaderSeekbarFadeTimer,
+      clearReaderSeekbarHideTimer,
+      showReaderSeekbarForActivity,
+    ],
   );
 
   const handleReaderMenuTap = useCallback(() => {
@@ -1040,6 +1088,7 @@ export function ReaderPage() {
             pluginId: novel.pluginId,
             chapterPath: targetChapter.path,
             chapterName: targetChapter.name,
+            chapterNumber: targetChapter.chapterNumber ?? undefined,
             contentType: targetChapter.contentType,
             novelId: novel.id,
             novelName: novel.name,
@@ -1416,17 +1465,23 @@ export function ReaderPage() {
   const readerChromeVisible = !readerChromeAutoHide || fullPageChromeVisible;
   const readerSeekbarEnabled =
     effectiveReaderGeneral.showSeekbar && !readerStateVisible;
+  const readerSeekbarPinnedByChrome =
+    readerSeekbarEnabled && readerChromeAutoHide && readerChromeVisible;
   const readerSeekbarVisible =
-    readerSeekbarEnabled && readerSeekbarActivityVisible;
+    readerSeekbarEnabled &&
+    (readerSeekbarActivityVisible || readerSeekbarPinnedByChrome);
+  const readerSeekbarMounted =
+    readerSeekbarEnabled &&
+    (readerSeekbarRenderMounted || readerSeekbarVisible);
   const readerContentGeneral = useMemo(
     () =>
-      effectiveReaderGeneral.showSeekbar === readerSeekbarVisible
+      effectiveReaderGeneral.showSeekbar === readerSeekbarMounted
         ? effectiveReaderGeneral
         : {
             ...effectiveReaderGeneral,
-            showSeekbar: readerSeekbarVisible,
+            showSeekbar: readerSeekbarMounted,
           },
-    [effectiveReaderGeneral, readerSeekbarVisible],
+    [effectiveReaderGeneral, readerSeekbarMounted],
   );
   const readerOverlayBottom = fullPageReader
     ? "calc(var(--lnr-safe-area-bottom) + 0.5rem)"
@@ -1439,16 +1494,49 @@ export function ReaderPage() {
 
   useEffect(() => {
     readerSeekbarEnabledRef.current = readerSeekbarEnabled;
+    readerSeekbarPinnedByChromeRef.current = readerSeekbarPinnedByChrome;
     if (!readerSeekbarEnabled) {
       clearReaderSeekbarHideTimer();
+      clearReaderSeekbarFadeTimer();
       readerSeekbarActiveRef.current = false;
       setReaderSeekbarActivityVisible(false);
+      setReaderSeekbarRenderMounted(false);
       return;
     }
+    if (readerSeekbarPinnedByChrome) {
+      clearReaderSeekbarHideTimer();
+      clearReaderSeekbarFadeTimer();
+      setReaderSeekbarRenderMounted(true);
+      setReaderSeekbarActivityVisible(true);
+      return;
+    }
+    if (readerSeekbarActivityVisible) {
+      scheduleReaderSeekbarHide();
+    }
+  }, [
+    clearReaderSeekbarFadeTimer,
+    clearReaderSeekbarHideTimer,
+    readerSeekbarActivityVisible,
+    readerSeekbarEnabled,
+    readerSeekbarPinnedByChrome,
+    scheduleReaderSeekbarHide,
+  ]);
+
+  useEffect(() => {
+    if (!readerSeekbarEnabled) {
+      return;
+    }
+    clearReaderSeekbarFadeTimer();
+    setReaderSeekbarRenderMounted(true);
     setReaderSeekbarActivityVisible(true);
+    if (readerSeekbarPinnedByChromeRef.current) {
+      clearReaderSeekbarHideTimer();
+      return;
+    }
     scheduleReaderSeekbarHide();
   }, [
     chapterId,
+    clearReaderSeekbarFadeTimer,
     clearReaderSeekbarHideTimer,
     readerSeekbarEnabled,
     scheduleReaderSeekbarHide,
@@ -1457,8 +1545,9 @@ export function ReaderPage() {
   useEffect(
     () => () => {
       clearReaderSeekbarHideTimer();
+      clearReaderSeekbarFadeTimer();
     },
-    [clearReaderSeekbarHideTimer],
+    [clearReaderSeekbarFadeTimer, clearReaderSeekbarHideTimer],
   );
 
   useEffect(() => {
@@ -1567,6 +1656,7 @@ export function ReaderPage() {
         onBoundaryPage={handleBoundaryPage}
         onSeekbarActivity={showReaderSeekbarForActivity}
         onSeekbarActiveChange={handleReaderSeekbarActiveChange}
+        seekbarVisible={readerSeekbarVisible}
         viewportHeight="100%"
       />
     ) : (
@@ -1587,6 +1677,7 @@ export function ReaderPage() {
         onMediaError={handleRemoteMediaError}
         onSeekbarActivity={showReaderSeekbarForActivity}
         onSeekbarActiveChange={handleReaderSeekbarActiveChange}
+        seekbarVisible={readerSeekbarVisible}
         viewportHeight="100%"
       />
     );

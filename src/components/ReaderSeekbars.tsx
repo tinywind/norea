@@ -18,6 +18,7 @@ interface ReaderSeekbarsProps {
   progress: number;
   showHorizontal: boolean;
   showVertical: boolean;
+  visible?: boolean;
 }
 
 interface ReaderSeekbarProps {
@@ -276,6 +277,7 @@ export function ReaderSeekbars({
   progress,
   showHorizontal,
   showVertical,
+  visible = true,
 }: ReaderSeekbarsProps) {
   if (!showHorizontal && !showVertical) return null;
 
@@ -284,6 +286,7 @@ export function ReaderSeekbars({
   return (
     <div
       className="lnr-reader-seekbars"
+      data-visible={visible}
       style={
         {
           "--lnr-reader-seek-bottom":

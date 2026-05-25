@@ -57,6 +57,7 @@ interface ReaderContentProps {
   onSeekbarActiveChange?: (active: boolean) => void;
   onToggleChrome?: () => void;
   onBoundaryPage?: (direction: 1 | -1) => void;
+  seekbarVisible?: boolean;
   viewportHeight?: string;
 }
 
@@ -198,6 +199,9 @@ const READER_LOCAL_MEDIA_SRC_PREFIX = "norea-media://chapter/";
 const READER_STYLE_URL_PATTERN =
   /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")]*?))\s*\)/gi;
 const READER_SCROLL_OVERSCAN_PX = 1800;
+const READER_SCROLL_MEDIA_OVERSCAN_VIEWPORTS = 8;
+const READER_SCROLL_MEDIA_OVERSCAN_MIN_PX = 12_000;
+const READER_SCROLL_MEDIA_OVERSCAN_MAX_PX = 24_000;
 const READER_SEGMENT_DEFAULT_HEIGHT = 96;
 const READER_SEGMENT_MEDIA_HEIGHT = 520;
 const READER_DOM_PREPROCESS_MAX_HTML_LENGTH = 350_000;
@@ -957,6 +961,10 @@ function nodeSegmentHtml(node: Node, index: number): string | null {
   return serializeNode(element);
 }
 
+function readerVirtualSegmentHasMedia(segment: ReaderVirtualSegment): boolean {
+  return /<(?:img|picture|svg|video|canvas|iframe)\b/i.test(segment.html);
+}
+
 function readerContentClassFromRoot(root: Element | null): string {
   const classes = new Set(["reader-content"]);
   for (const className of root?.classList ?? []) {
@@ -1584,6 +1592,7 @@ function ReaderContentInner(
     onSeekbarActiveChange,
     onToggleChrome,
     onBoundaryPage,
+    seekbarVisible = true,
     viewportHeight: requestedViewportHeight,
     appearanceSettings,
     generalSettings,
@@ -1731,6 +1740,24 @@ function ReaderContentInner(
   const overlayBottom = bottomOverlayOffset ?? "0.5rem";
   const isPagedReader = general.pageReader;
   const requestedPageColumnsPerSpread = general.twoPageReader ? 2 : 1;
+  const scrollOverscanPx = useMemo(() => {
+    const hasMediaSegments = virtualDocument.segments.some(
+      readerVirtualSegmentHasMedia,
+    );
+    if (isPagedReader || !hasMediaSegments) return READER_SCROLL_OVERSCAN_PX;
+    const viewportOverscan =
+      viewportHeightPx > 0
+        ? viewportHeightPx * READER_SCROLL_MEDIA_OVERSCAN_VIEWPORTS
+        : 0;
+    return Math.min(
+      READER_SCROLL_MEDIA_OVERSCAN_MAX_PX,
+      Math.max(
+        READER_SCROLL_OVERSCAN_PX,
+        READER_SCROLL_MEDIA_OVERSCAN_MIN_PX,
+        Math.ceil(viewportOverscan),
+      ),
+    );
+  }, [isPagedReader, viewportHeightPx, virtualDocument.segments]);
   const availablePageColumnsPerSpread = Math.max(
     1,
     Math.floor(viewportWidth / TWO_PAGE_MIN_COLUMN_WIDTH),
@@ -1812,6 +1839,24 @@ function ReaderContentInner(
     );
     enforceScrollStepFloor();
   }, [enforceScrollStepFloor, isPagedReader, segmentOffsets]);
+
+  const syncScrollVirtualRange = useCallback(
+    (scrollTop: number, clientHeight: number) => {
+      if (isPagedReader) return;
+      const nextRange = virtualRangeForScroll(
+        scrollTop,
+        clientHeight,
+        segmentOffsets,
+        scrollOverscanPx,
+      );
+      setVirtualRange((current) =>
+        current.start === nextRange.start && current.end === nextRange.end
+          ? current
+          : nextRange,
+      );
+    },
+    [isPagedReader, scrollOverscanPx, segmentOffsets],
+  );
 
   const scrollPagedTo = useCallback((targetLeft: number) => {
     const node = getActiveScrollNode();
@@ -1957,6 +2002,7 @@ function ReaderContentInner(
         snapshot: getReaderDebugSnapshot(node),
       }));
       node.scrollTo({ top: targetTop, behavior: "auto" });
+      syncScrollVirtualRange(targetTop, node.clientHeight);
       if (direction === 1) {
         scrollStepFloorRef.current = {
           expiresAt: performance.now() + 250,
@@ -1973,6 +2019,7 @@ function ReaderContentInner(
       onBoundaryPage,
       getActiveScrollNode,
       scrollPagedTo,
+      syncScrollVirtualRange,
     ],
   );
 
@@ -2063,6 +2110,7 @@ function ReaderContentInner(
         if (!node) return;
         cancelPagedScrollAnimation();
         node.scrollTo({ top: 0, left: 0, behavior: "auto" });
+        syncScrollVirtualRange(0, node.clientHeight);
         dispatchReaderScrollEvent(node);
       },
     }),
@@ -2074,6 +2122,7 @@ function ReaderContentInner(
       patchMediaElements,
       scrollByPage,
       setRenderedProgress,
+      syncScrollVirtualRange,
     ],
   );
 
@@ -2108,6 +2157,7 @@ function ReaderContentInner(
         return;
       }
       scrollToProgress(node, value, false, "auto");
+      syncScrollVirtualRange(node.scrollTop, node.clientHeight);
       if (!completedForNavigationRef.current) {
         const restoredProgress = clampProgress(getProgress(node, false));
         latestProgressRef.current = restoredProgress;
@@ -2120,6 +2170,7 @@ function ReaderContentInner(
       getActiveScrollNode,
       isPagedReader,
       setRenderedProgress,
+      syncScrollVirtualRange,
     ],
   );
   const restoreProgressPositionRef = useRef(restoreProgressPosition);
@@ -2141,17 +2192,7 @@ function ReaderContentInner(
       pendingInitialProgressRestoreRef.current = null;
     }
     if (!isPagedReader) {
-      const nextRange = virtualRangeForScroll(
-        node.scrollTop,
-        node.clientHeight,
-        segmentOffsets,
-        READER_SCROLL_OVERSCAN_PX,
-      );
-      setVirtualRange((current) =>
-        current.start === nextRange.start && current.end === nextRange.end
-          ? current
-          : nextRange,
-      );
+      syncScrollVirtualRange(node.scrollTop, node.clientHeight);
     }
     const nextProgress = clampProgress(getProgress(node, isPagedReader));
     latestProgressRef.current = nextProgress;
@@ -2165,8 +2206,8 @@ function ReaderContentInner(
     getActiveScrollNode,
     isPagedReader,
     scheduleProgressSave,
-    segmentOffsets,
     setRenderedProgress,
+    syncScrollVirtualRange,
   ]);
 
   useEffect(() => {
@@ -2480,15 +2521,8 @@ function ReaderContentInner(
   useEffect(() => {
     const node = viewportRef.current;
     if (!node || isPagedReader) return;
-    setVirtualRange(
-      virtualRangeForScroll(
-        node.scrollTop,
-        node.clientHeight,
-        segmentOffsets,
-        READER_SCROLL_OVERSCAN_PX,
-      ),
-    );
-  }, [isPagedReader, segmentOffsets, viewportSize.height]);
+    syncScrollVirtualRange(node.scrollTop, node.clientHeight);
+  }, [isPagedReader, syncScrollVirtualRange, viewportSize.height]);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -2726,6 +2760,7 @@ function ReaderContentInner(
         return;
       }
       scrollToProgress(node, clamped, false, "auto");
+      syncScrollVirtualRange(node.scrollTop, node.clientHeight);
       const nextProgress = clampProgress(getProgress(node, false));
       latestProgressRef.current = nextProgress;
       setRenderedProgress(nextProgress, { force: true });
@@ -2738,6 +2773,7 @@ function ReaderContentInner(
       isPagedReader,
       scheduleProgressSave,
       setRenderedProgress,
+      syncScrollVirtualRange,
     ],
   );
 
@@ -3195,6 +3231,7 @@ function ReaderContentInner(
         progress={progress}
         showHorizontal={general.showSeekbar}
         showVertical={general.showSeekbar && general.verticalSeekbar}
+        visible={seekbarVisible}
       />
     </Box>
   );

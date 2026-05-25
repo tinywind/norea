@@ -55,6 +55,7 @@ interface PdfReaderContentProps {
   onSeekbarActivity?: () => void;
   onSeekbarActiveChange?: (active: boolean) => void;
   onToggleChrome?: () => void;
+  seekbarVisible?: boolean;
   viewportHeight?: string;
 }
 
@@ -492,6 +493,7 @@ function PdfReaderContentInner(
     onSeekbarActiveChange,
     onToggleChrome,
     localMediaContext,
+    seekbarVisible = true,
     viewportHeight: requestedViewportHeight,
     appearanceSettings,
     generalSettings,
@@ -1525,6 +1527,7 @@ function PdfReaderContentInner(
         progress={progress}
         showHorizontal={general.showSeekbar}
         showVertical={general.showSeekbar && general.verticalSeekbar}
+        visible={seekbarVisible}
       />
     </Box>
   );
