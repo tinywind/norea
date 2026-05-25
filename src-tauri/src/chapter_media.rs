@@ -1290,6 +1290,7 @@ pub async fn chapter_media_prepare_workspace(
     app: AppHandle,
     chapter_id: i64,
     repair: bool,
+    preserve_existing: Option<bool>,
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
@@ -1303,6 +1304,7 @@ pub async fn chapter_media_prepare_workspace(
             app,
             chapter_id,
             repair,
+            preserve_existing.unwrap_or(false),
             novel_id,
             source_id,
             novel_name,
@@ -1319,6 +1321,7 @@ fn chapter_media_prepare_workspace_sync(
     app: AppHandle,
     chapter_id: i64,
     repair: bool,
+    preserve_existing: bool,
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
@@ -1339,7 +1342,7 @@ fn chapter_media_prepare_workspace_sync(
         chapter_position,
     )?;
     let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
-    if repair {
+    if repair || preserve_existing {
         extract_media_archive_to_dir(&chapter_dir.join(MEDIA_ARCHIVE_FILE), &media_dir)?;
     } else {
         if media_dir.exists() {

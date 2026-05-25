@@ -1034,10 +1034,11 @@ async function archiveChapterMediaCache({
 async function prepareChapterMediaWorkspace(
   context: ChapterMediaStorageContext,
   repair: boolean,
+  { preserveExisting = false }: { preserveExisting?: boolean } = {},
 ): Promise<void> {
   if (isAndroidRuntime()) {
     const mediaPath = androidChapterMediaRelativePathForContext(context);
-    if (repair) {
+    if (repair || preserveExisting) {
       for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
         context,
       )) {
@@ -1062,29 +1063,7 @@ async function prepareChapterMediaWorkspace(
   }
   await invoke("chapter_media_prepare_workspace", {
     repair,
-    chapterId: context.chapterId,
-    ...(context.chapterName ? { chapterName: context.chapterName } : {}),
-    ...(context.chapterNumber ? { chapterNumber: context.chapterNumber } : {}),
-    ...(context.chapterPosition
-      ? { chapterPosition: context.chapterPosition }
-      : {}),
-    ...(context.novelId ? { novelId: context.novelId } : {}),
-    ...(context.novelName ? { novelName: context.novelName } : {}),
-    ...(context.novelPath ? { novelPath: context.novelPath } : {}),
-    ...(context.sourceId ? { sourceId: context.sourceId } : {}),
-  });
-}
-
-async function cleanupChapterMediaWorkspace(
-  context: ChapterMediaStorageContext,
-): Promise<void> {
-  if (isAndroidRuntime()) {
-    for (const path of androidChapterMediaRelativePathCandidates(context)) {
-      await deleteAndroidStoragePath(path);
-    }
-    return;
-  }
-  await invoke("chapter_media_cleanup_workspace", {
+    preserveExisting,
     chapterId: context.chapterId,
     ...(context.chapterName ? { chapterName: context.chapterName } : {}),
     ...(context.chapterNumber ? { chapterNumber: context.chapterNumber } : {}),
@@ -1472,9 +1451,28 @@ async function collectStoredManifestMediaSources({
   manifest: ChapterMediaManifest;
   urls: string[];
 }): Promise<Map<string, string>> {
+  return collectStoredMediaFileSources({
+    chapterId,
+    context,
+    files: manifest.media.files,
+    urls,
+  });
+}
+
+async function collectStoredMediaFileSources({
+  chapterId,
+  context,
+  files,
+  urls,
+}: {
+  chapterId: number;
+  context: ChapterMediaStorageContext;
+  files: ChapterMediaManifestFile[];
+  urls: string[];
+}): Promise<Map<string, string>> {
   const requestedUrls = new Set(urls);
   const existing = new Map<string, string>();
-  for (const file of manifest.media.files) {
+  for (const file of files) {
     if (
       !requestedUrls.has(file.sourceUrl) ||
       !isFetchableMediaUrl(file.sourceUrl)
@@ -1865,9 +1863,7 @@ export async function cacheHtmlChapterMedia({
         })
     : new Map<string, string>();
   const mediaFailures: ChapterMediaFailure[] = [];
-  const previousManifest = repair
-    ? await readChapterMediaManifest(storageContext)
-    : emptyChapterMediaManifest();
+  const previousManifest = await readChapterMediaManifest(storageContext);
   if (repair) {
     await prepareChapterMediaWorkspace(storageContext, repair);
   }
@@ -1877,14 +1873,12 @@ export async function cacheHtmlChapterMedia({
         storageContext,
       )
     : new Map<string, string>();
-  const manifestSources = repair
-    ? await collectStoredManifestMediaSources({
-        chapterId,
-        context: storageContext,
-        manifest: previousManifest,
-        urls,
-      })
-    : new Map<string, string>();
+  const manifestSources = await collectStoredManifestMediaSources({
+    chapterId,
+    context: storageContext,
+    manifest: previousManifest,
+    urls,
+  });
   const missingManifestSources = repair
     ? await collectMissingManifestMediaSources({
         chapterId,
@@ -1939,6 +1933,26 @@ export async function cacheHtmlChapterMedia({
       });
     }
   }
+  if (!repair) {
+    const targetFileSources = await collectStoredMediaFileSources({
+      chapterId,
+      context: storageContext,
+      files: [...mediaFilesBySourceUrl.values()],
+      urls,
+    });
+    for (const [url, src] of targetFileSources) {
+      if (!localSources.has(url)) {
+        localSources.set(url, src);
+      }
+      const existing = mediaFilesBySourceUrl.get(url);
+      if (existing) {
+        mediaFilesBySourceUrl.set(url, {
+          ...existing,
+          status: "stored",
+        });
+      }
+    }
+  }
   const downloadUrls = [
     ...new Set(
       [
@@ -1968,7 +1982,15 @@ export async function cacheHtmlChapterMedia({
     await emitMediaPatchUpdate(onMediaPatch, template, reusableChangedElements);
   }
   if (!repair) {
-    await prepareChapterMediaWorkspace(storageContext, repair);
+    await prepareChapterMediaWorkspace(storageContext, repair, {
+      preserveExisting: true,
+    });
+  }
+  if (downloadUrls.length > 0) {
+    await writeChapterMediaManifest({
+      context: storageContext,
+      files: [...mediaFilesBySourceUrl.values()],
+    });
   }
 
   for (let index = 0; index < downloadUrls.length; index += 1) {
@@ -2052,6 +2074,10 @@ export async function cacheHtmlChapterMedia({
           status: "stored",
           updatedAt: Date.now(),
         });
+        await writeChapterMediaManifest({
+          context: storageContext,
+          files: [...mediaFilesBySourceUrl.values()],
+        });
         storedMediaCount += 1;
         const changedElements = applyResolvedMediaSource({
           baseUrl,
@@ -2094,7 +2120,6 @@ export async function cacheHtmlChapterMedia({
   });
 
   if (localSources.size === 0) {
-    await cleanupChapterMediaWorkspace(storageContext).catch(() => undefined);
     clearMediaSourceMetadata(template.content);
     return {
       html: template.innerHTML,

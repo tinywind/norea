@@ -273,6 +273,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
       if (command === "native_stream_create") return nativeStreamInfo("media-1");
       if (command === "native_stream_write_chunk") {
         const chunk = (args as { chunk: number[] }).chunk;
@@ -290,6 +291,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_total_size") return 0;
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -337,6 +339,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
       if (command === "native_stream_create") return nativeStreamInfo("media-1");
       if (command === "native_stream_write_chunk") {
         return nativeStreamInfo("media-1", 2);
@@ -357,6 +360,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 2;
       if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_total_size") return 0;
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -712,11 +716,13 @@ describe("cacheHtmlChapterMedia", () => {
     });
     invokeMock.mockImplementation(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
       if (command === "native_stream_create") {
         throw new Error("unknown command: native_stream_create");
       }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_total_size") return 0;
       const input = args as {
         chapterId: number;
         fileName: string;
@@ -1070,6 +1076,252 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).toContain("norea-media://chapter/42/0003-page-3.png");
   });
 
+  it("reuses existing target files before a manifest has been written", async () => {
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response(new Uint8Array([4, 5]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      }),
+    );
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_total_size") {
+        const [mediaSrc] = (args as { mediaSrcs: string[] }).mediaSrcs;
+        return (mediaSrc ?? "").includes("0001-page-1.png") ? 7 : 0;
+      }
+      if (command === "chapter_media_archive_cache") return 12;
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_store") {
+        const input = args as {
+          chapterId: number;
+          fileName: string;
+        };
+        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      }
+      return null;
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: [
+        `<img src="https://source.test/page-1.png">`,
+        `<img src="https://source.test/page-2.png">`,
+      ].join(""),
+    });
+
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
+      "https://source.test/page-2.png",
+      expect.anything(),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_media_store",
+      expect.objectContaining({
+        fileName: "0002-page-2.png",
+      }),
+    );
+    expect(result.storedMediaCount).toBe(1);
+    expect(result.mediaBytes).toBe(12);
+    expect(result.html).toContain("norea-media://chapter/42/0001-page-1.png");
+    expect(result.html).toContain("norea-media://chapter/42/0002-page-2.png");
+  });
+
+  it("reuses stored manifest media during chapter downloads", async () => {
+    const manifest = {
+      media: {
+        files: [
+          {
+            bytes: 3,
+            fileName: "0001-page-1.png",
+            path: "media/0001-page-1.png",
+            sourceUrl: "https://source.test/page-1.png",
+            status: "stored",
+            updatedAt: 1,
+          },
+          {
+            bytes: 0,
+            fileName: "0002-page-2.png",
+            path: "media/0002-page-2.png",
+            sourceUrl: "https://source.test/page-2.png",
+            status: "remote",
+            updatedAt: 1,
+          },
+          {
+            bytes: 3,
+            fileName: "0003-page-3.png",
+            path: "media/0003-page-3.png",
+            sourceUrl: "https://source.test/page-3.png",
+            status: "stored",
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+      version: 1,
+    };
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response(new Uint8Array([4, 5]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      }),
+    );
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") {
+        return JSON.stringify(manifest);
+      }
+      if (command === "chapter_media_total_size") {
+        const [mediaSrc] = (args as { mediaSrcs: string[] }).mediaSrcs;
+        return (mediaSrc ?? "").includes("0002-page-2.png") ? 0 : 7;
+      }
+      if (command === "chapter_media_archive_cache") return 15;
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_store") {
+        const input = args as {
+          chapterId: number;
+          fileName: string;
+        };
+        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      }
+      return null;
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: [
+        `<img src="https://source.test/page-1.png">`,
+        `<img src="https://source.test/page-2.png">`,
+        `<img src="https://source.test/page-3.png">`,
+      ].join(""),
+      repair: false,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_media_prepare_workspace",
+      expect.objectContaining({
+        chapterId: 42,
+        preserveExisting: true,
+        repair: false,
+      }),
+    );
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
+      "https://source.test/page-2.png",
+      expect.anything(),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_media_store",
+      expect.objectContaining({
+        fileName: "0002-page-2.png",
+      }),
+    );
+    const manifestWrites = invokeMock.mock.calls.filter(
+      ([command]) => command === "chapter_media_write_manifest",
+    );
+    expect(manifestWrites.at(-1)?.[1]).toEqual(
+      expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            fileName: "0001-page-1.png",
+            status: "stored",
+          }),
+          expect.objectContaining({
+            bytes: 2,
+            fileName: "0002-page-2.png",
+            sourceUrl: "https://source.test/page-2.png",
+            status: "stored",
+          }),
+          expect.objectContaining({
+            fileName: "0003-page-3.png",
+            status: "stored",
+          }),
+        ]),
+      }),
+    );
+    expect(result.storedMediaCount).toBe(1);
+    expect(result.mediaBytes).toBe(15);
+    expect(result.html).toContain("norea-media://chapter/42/0001-page-1.png");
+    expect(result.html).toContain("norea-media://chapter/42/0002-page-2.png");
+    expect(result.html).toContain("norea-media://chapter/42/0003-page-3.png");
+  });
+
+  it("writes a resumable manifest before aborted chapter downloads stop", async () => {
+    const controller = new AbortController();
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      }),
+    );
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_store") {
+        const input = args as {
+          chapterId: number;
+          fileName: string;
+        };
+        controller.abort();
+        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      }
+      return null;
+    });
+
+    await expect(
+      cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/chapter/1",
+        chapterId: 42,
+        html: [
+          `<img src="https://source.test/page-1.png">`,
+          `<img src="https://source.test/page-2.png">`,
+        ].join(""),
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+    const manifestWrites = invokeMock.mock.calls.filter(
+      ([command]) => command === "chapter_media_write_manifest",
+    );
+    expect(manifestWrites).toHaveLength(2);
+    expect(manifestWrites[0]?.[1]).toEqual(
+      expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            fileName: "0001-page-1.png",
+            status: "remote",
+          }),
+          expect.objectContaining({
+            fileName: "0002-page-2.png",
+            status: "remote",
+          }),
+        ]),
+      }),
+    );
+    expect(manifestWrites[1]?.[1]).toEqual(
+      expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            bytes: 3,
+            fileName: "0001-page-1.png",
+            status: "stored",
+          }),
+          expect.objectContaining({
+            fileName: "0002-page-2.png",
+            status: "remote",
+          }),
+        ]),
+      }),
+    );
+  });
+
   it("reuses legacy Android media archives during contextual media repair", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
     const manifest = {
@@ -1187,6 +1439,7 @@ describe("cacheHtmlChapterMedia", () => {
       "image/jpeg",
     );
     expect(androidStorageMocks.renameAndroidStoragePath).not.toHaveBeenCalled();
+    expect(androidStorageMocks.deleteAndroidStoragePath).not.toHaveBeenCalled();
     expect(result.storedMediaCount).toBe(1);
     expect(result.html).toContain("norea-media://chapter/42/0001-page-1.jpg");
   });
