@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db/queries/chapter", () => ({
   listChaptersByNovel: vi.fn(),
-  saveChapterContent: vi.fn(),
+}));
+vi.mock("./chapter-content-storage", () => ({
+  saveStoredChapterContent: vi.fn(),
 }));
 vi.mock("./chapter-media", () => ({
   cacheHtmlChapterMedia: vi.fn(),
@@ -11,10 +13,8 @@ vi.mock("./chapter-media", () => ({
   storeEmbeddedChapterMedia: vi.fn(),
 }));
 
-import {
-  listChaptersByNovel,
-  saveChapterContent,
-} from "../db/queries/chapter";
+import { listChaptersByNovel } from "../db/queries/chapter";
+import { saveStoredChapterContent } from "./chapter-content-storage";
 import {
   cacheHtmlChapterMedia,
   clearChapterMedia,
@@ -24,7 +24,7 @@ import {
 import { cacheLocalImportedChapterMedia } from "./local-import-media";
 
 const listChaptersByNovelMock = vi.mocked(listChaptersByNovel);
-const saveChapterContentMock = vi.mocked(saveChapterContent);
+const saveStoredChapterContentMock = vi.mocked(saveStoredChapterContent);
 const cacheHtmlChapterMediaMock = vi.mocked(cacheHtmlChapterMedia);
 const clearChapterMediaMock = vi.mocked(clearChapterMedia);
 const hasRemoteChapterMediaMock = vi.mocked(hasRemoteChapterMedia);
@@ -41,7 +41,7 @@ beforeEach(() => {
       position: 1,
     },
   ] as never);
-  saveChapterContentMock.mockResolvedValue({ rowsAffected: 1 });
+  saveStoredChapterContentMock.mockResolvedValue({ rowsAffected: 1 });
   cacheHtmlChapterMediaMock.mockResolvedValue({
     html: `<img src="norea-media://reader-asset/0001-page.png">`,
     mediaBytes: 12,
@@ -83,7 +83,7 @@ describe("cacheLocalImportedChapterMedia", () => {
         sourceId: "local",
       }),
     );
-    expect(saveChapterContentMock).toHaveBeenCalledWith(
+    expect(saveStoredChapterContentMock).toHaveBeenCalledWith(
       99,
       `<img src="norea-media://reader-asset/0001-page.png">`,
       "html",
@@ -111,7 +111,7 @@ describe("cacheLocalImportedChapterMedia", () => {
     });
 
     expect(cacheHtmlChapterMediaMock).not.toHaveBeenCalled();
-    expect(saveChapterContentMock).toHaveBeenCalledWith(
+    expect(saveStoredChapterContentMock).toHaveBeenCalledWith(
       99,
       `<p>No media</p>`,
       "html",
@@ -170,7 +170,7 @@ describe("cacheLocalImportedChapterMedia", () => {
     );
     expect(cacheHtmlChapterMediaMock).not.toHaveBeenCalled();
     expect(clearChapterMediaMock).not.toHaveBeenCalled();
-    expect(saveChapterContentMock).toHaveBeenCalledWith(
+    expect(saveStoredChapterContentMock).toHaveBeenCalledWith(
       99,
       `<img src="norea-media://reader-asset/0001-page.png">`,
       "epub",
@@ -232,7 +232,7 @@ describe("cacheLocalImportedChapterMedia", () => {
       }),
     );
     expect(cacheHtmlChapterMediaMock).not.toHaveBeenCalled();
-    expect(saveChapterContentMock).toHaveBeenCalledWith(
+    expect(saveStoredChapterContentMock).toHaveBeenCalledWith(
       99,
       "norea-media://reader-asset/Manual.pdf",
       "pdf",

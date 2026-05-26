@@ -13,8 +13,17 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("../chapter-content-storage", () => ({
+  readStoredChapterContentMirror: vi.fn(),
+  writeStoredChapterContentMirror: vi.fn(),
+}));
+
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db/client";
+import {
+  readStoredChapterContentMirror,
+  writeStoredChapterContentMirror,
+} from "../chapter-content-storage";
 import {
   BACKUP_FORMAT_VERSION,
   encodeBackupManifest,
@@ -25,6 +34,12 @@ import { attachBackupChapterMediaFiles } from "./unpack";
 
 const mockedGetDb = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
+const readStoredChapterContentMirrorMock = vi.mocked(
+  readStoredChapterContentMirror,
+);
+const writeStoredChapterContentMirrorMock = vi.mocked(
+  writeStoredChapterContentMirror,
+);
 let mockSelect: ReturnType<typeof vi.fn>;
 let mockExecute: ReturnType<typeof vi.fn>;
 const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(
@@ -49,6 +64,8 @@ beforeEach(() => {
     execute: mockExecute,
   } as never);
   invokeMock.mockResolvedValue(undefined);
+  readStoredChapterContentMirrorMock.mockResolvedValue("<p>hi</p>");
+  writeStoredChapterContentMirrorMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -158,7 +175,6 @@ const RAW_CHAPTER = {
   progress: 0,
   isDownloaded: 1,
   contentType: "html",
-  content: "<p>hi</p>",
   mediaBytes: 5,
   releaseTime: null,
   readAt: null,
@@ -208,6 +224,7 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.chapters[0]?.unread).toBe(true);
     expect(manifest.chapters[0]?.isDownloaded).toBe(true);
     expect(manifest.chapters[0]?.contentType).toBe("html");
+    expect(manifest.chapters[0]?.content).toBe("<p>hi</p>");
     expect(manifest.chapters[0]?.mediaBytes).toBe(5);
     expect(manifest.categories[0]?.isSystem).toBe(true);
   });
@@ -272,6 +289,10 @@ describe("applyBackupSnapshot", () => {
       manifestJson: encodeBackupManifest(manifest),
       mediaBytesByChapterId: {},
     });
+    expect(writeStoredChapterContentMirrorMock).toHaveBeenCalledWith(
+      10,
+      "<p>hi</p>",
+    );
   });
 
   it("restores backed up settings without touching unrelated localStorage", async () => {

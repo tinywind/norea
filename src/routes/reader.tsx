@@ -30,7 +30,7 @@ import {
   type ChapterMediaElementPatch,
 } from "../lib/chapter-media";
 import { isHtmlLikeChapterContentType } from "../lib/chapter-content";
-import { restoreChapterContentStorageMirror } from "../lib/chapter-content-storage";
+import { readStoredChapterContentMirror } from "../lib/chapter-content-storage";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
@@ -79,6 +79,10 @@ type ReaderDocumentState = {
   chapterId: number;
   contentType: ChapterRow["contentType"];
   html: string;
+};
+
+type ReaderChapterRow = ChapterRow & {
+  content: string | null;
 };
 
 const READER_RENDERABLE_MEDIA_SELECTOR =
@@ -590,18 +594,12 @@ export function ReaderPage() {
   const chapterQuery = useQuery({
     queryKey: chapterDetailQueryKey(chapterId),
     queryFn: async () => {
-      let chapter = await getChapterById(chapterId);
-      if (chapter && !chapter.content) {
-        const restored = await restoreChapterContentStorageMirror({
-          chapterIds: new Set([chapterId]),
-          contentOnly: true,
-          limit: 1,
-        });
-        if (restored.chapters > 0) {
-          chapter = await getChapterById(chapterId);
-        }
-      }
-      return chapter;
+      const chapter = await getChapterById(chapterId);
+      if (!chapter) return null;
+      const content = chapter.isDownloaded
+        ? await readStoredChapterContentMirror(chapter.id)
+        : null;
+      return { ...chapter, content } satisfies ReaderChapterRow;
     },
     enabled: chapterId > 0,
   });

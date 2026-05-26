@@ -28,7 +28,6 @@ export interface ChapterRow {
   unread: boolean;
   progress: number;
   isDownloaded: boolean;
-  content: string | null;
   contentType: ChapterContentType;
   contentBytes: number;
   mediaBytes: number;
@@ -40,7 +39,7 @@ export interface ChapterRow {
   updatedAt: number;
 }
 
-export type ChapterListRow = Omit<ChapterRow, "content">;
+export type ChapterListRow = ChapterRow;
 
 type RawChapterListRow = Omit<
   ChapterListRow,
@@ -53,9 +52,7 @@ type RawChapterListRow = Omit<
   mediaRepairNeeded: unknown;
 };
 
-type RawChapterRow = RawChapterListRow & {
-  content: string | null;
-};
+type RawChapterRow = RawChapterListRow;
 
 const CHAPTER_LIST_SELECT_FIELDS = `
   id,
@@ -80,10 +77,7 @@ const CHAPTER_LIST_SELECT_FIELDS = `
   updated_at     AS updatedAt
 `;
 
-const CHAPTER_DETAIL_SELECT_FIELDS = `
-  ${CHAPTER_LIST_SELECT_FIELDS},
-  content
-`;
+const CHAPTER_DETAIL_SELECT_FIELDS = CHAPTER_LIST_SELECT_FIELDS;
 
 function getUtf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -114,10 +108,7 @@ function normalizeChapterListRow(row: RawChapterListRow): ChapterListRow {
 }
 
 function normalizeChapterRow(row: RawChapterRow): ChapterRow {
-  return {
-    ...normalizeChapterListRow(row),
-    content: row.content,
-  };
+  return normalizeChapterListRow(row);
 }
 
 export async function listChaptersByNovel(
@@ -173,7 +164,6 @@ export interface SaveChapterContentOptions {
 }
 
 export interface DownloadedChapterUpsertInput extends InsertChapterInput {
-  content: string;
   contentBytes?: number;
 }
 
@@ -186,7 +176,7 @@ type DbHandle = Awaited<ReturnType<typeof getDb>>;
 const FINISHED_PROGRESS = 100;
 const SQLITE_BIND_PARAMETER_BUDGET = 900;
 const SOURCE_CHAPTER_PARAM_COUNT = 8;
-const DOWNLOADED_CHAPTER_PARAM_COUNT = 10;
+const DOWNLOADED_CHAPTER_PARAM_COUNT = 9;
 const SOURCE_CHAPTER_CHUNK_SIZE = Math.max(
   1,
   Math.min(
@@ -246,16 +236,14 @@ function normalizedDownloadedChapterInput(
   input: DownloadedChapterUpsertInput,
 ): DownloadedChapterUpsertInput & { contentBytes: number } {
   assertChapterMetadataBudget(input, "Downloaded chapter");
-  const contentBytes = getUtf8ByteLength(input.content);
-  assertByteBudget(contentBytes, MAX_INLINE_IPC_BYTES, "Downloaded chapter content");
+  const contentBytes = input.contentBytes ?? 0;
   if (
-    input.contentBytes !== undefined &&
-    (!Number.isFinite(input.contentBytes) ||
-      input.contentBytes < 0 ||
-      input.contentBytes > MAX_INLINE_IPC_BYTES)
+    !Number.isFinite(contentBytes) ||
+    contentBytes < 0 ||
+    contentBytes > MAX_INLINE_IPC_BYTES
   ) {
     assertByteBudget(
-      Number.isFinite(input.contentBytes) ? input.contentBytes : -1,
+      Number.isFinite(contentBytes) ? contentBytes : -1,
       MAX_INLINE_IPC_BYTES,
       "Downloaded chapter content",
     );
@@ -298,7 +286,7 @@ function downloadedChapterValuesSql(
   return inputs
     .map((_, index) => {
       const param = index * DOWNLOADED_CHAPTER_PARAM_COUNT + 1;
-      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, $${param + 8}, $${param + 9}, 0, 1, unixepoch(), unixepoch())`;
+      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, $${param + 8}, 0, 1, unixepoch(), unixepoch())`;
     })
     .join(", ");
 }
@@ -315,7 +303,6 @@ function downloadedChapterParams(
     input.page ?? "1",
     input.releaseTime ?? null,
     storedChapterContentType(normalizeChapterContentType(input.contentType)),
-    input.content,
     input.contentBytes,
   ]);
 }
@@ -372,7 +359,7 @@ async function executeDownloadedChapterChunk(
 ): Promise<number> {
   const result = await db.execute(
     `INSERT INTO chapter
-       (novel_id, path, name, position, chapter_number, page, release_time, content_type, content, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
+       (novel_id, path, name, position, chapter_number, page, release_time, content_type, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
      VALUES ${downloadedChapterValuesSql(chunk)}
      ON CONFLICT(novel_id, path) DO UPDATE SET
        name           = excluded.name,
@@ -381,7 +368,6 @@ async function executeDownloadedChapterChunk(
        page           = excluded.page,
        release_time   = excluded.release_time,
        content_type   = excluded.content_type,
-       content        = excluded.content,
        content_bytes  = excluded.content_bytes,
        media_repair_needed = 0,
        media_bytes_checked_at = NULL,
@@ -394,7 +380,6 @@ async function executeDownloadedChapterChunk(
         OR page IS NOT excluded.page
         OR release_time IS NOT excluded.release_time
         OR content_type IS NOT excluded.content_type
-        OR content IS NOT excluded.content
         OR content_bytes IS NOT excluded.content_bytes
         OR media_repair_needed IS NOT 0
         OR is_downloaded IS NOT 1`,
@@ -680,7 +665,7 @@ export async function setChapterBookmark(
   );
 }
 
-export async function saveChapterContent(
+export async function saveChapterContentMetadata(
   chapterId: number,
   html: string,
   contentType: ChapterContentType = DEFAULT_CHAPTER_CONTENT_TYPE,
@@ -693,18 +678,16 @@ export async function saveChapterContent(
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content        = $2,
-       content_type   = $3,
-       content_bytes  = $4,
-       media_bytes    = $5,
-       media_repair_needed = $6,
-       media_bytes_checked_at = CASE WHEN $7 = 1 THEN unixepoch() ELSE NULL END,
+       content_type   = $2,
+       content_bytes  = $3,
+       media_bytes    = $4,
+       media_repair_needed = $5,
+       media_bytes_checked_at = CASE WHEN $6 = 1 THEN unixepoch() ELSE NULL END,
        is_downloaded  = 1,
        updated_at     = unixepoch()
      WHERE id = $1`,
     [
       chapterId,
-      html,
       normalizedContentType,
       getUtf8ByteLength(html),
       options.mediaBytes ?? 0,
@@ -715,7 +698,7 @@ export async function saveChapterContent(
   return { rowsAffected: result.rowsAffected };
 }
 
-export async function saveChapterPartialContent(
+export async function saveChapterPartialContentMetadata(
   chapterId: number,
   html: string,
   contentType: ChapterContentType = DEFAULT_CHAPTER_CONTENT_TYPE,
@@ -727,33 +710,20 @@ export async function saveChapterPartialContent(
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content        = $2,
-       content_type   = $3,
-       content_bytes  = $4,
-       media_repair_needed = $5,
+       content_type   = $2,
+       content_bytes  = $3,
+       media_repair_needed = $4,
        media_bytes_checked_at = NULL,
        updated_at     = unixepoch()
      WHERE id = $1`,
     [
       chapterId,
-      html,
       normalizedContentType,
       getUtf8ByteLength(html),
       chapterMediaRepairFlag(html, normalizedContentType),
     ],
   );
   return { rowsAffected: result.rowsAffected };
-}
-
-export async function getChapterContent(
-  chapterId: number,
-): Promise<string | null> {
-  const db = await getDb();
-  const rows = await db.select<{ content: string | null }[]>(
-    `SELECT content FROM chapter WHERE id = $1`,
-    [chapterId],
-  );
-  return rows[0]?.content ?? null;
 }
 
 export async function clearChapterContent(
@@ -763,7 +733,6 @@ export async function clearChapterContent(
   await db.execute(
     `UPDATE chapter
      SET
-       content        = NULL,
        content_bytes  = 0,
        media_bytes    = 0,
        media_repair_needed = 0,

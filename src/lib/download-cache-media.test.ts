@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db/queries/download-cache", () => ({
-  getDownloadCacheMediaBackfillCandidateContent: vi.fn(),
   listDownloadCacheMediaBackfillCandidates: vi.fn(),
   updateDownloadCacheChapterMediaBytes: vi.fn(),
+}));
+
+vi.mock("./chapter-content-storage", () => ({
+  readStoredChapterContentMirror: vi.fn(),
 }));
 
 vi.mock("./chapter-media", () => ({
@@ -20,10 +23,10 @@ vi.mock("./tauri-runtime", () => ({
 }));
 
 import {
-  getDownloadCacheMediaBackfillCandidateContent,
   listDownloadCacheMediaBackfillCandidates,
   updateDownloadCacheChapterMediaBytes,
 } from "../db/queries/download-cache";
+import { readStoredChapterContentMirror } from "./chapter-content-storage";
 import { getStoredChapterMediaBytes } from "./chapter-media";
 import { MAX_BACKFILL_PER_RUN } from "./performance-budgets";
 import { isTauriRuntime } from "./tauri-runtime";
@@ -31,7 +34,7 @@ import { backfillDownloadCacheMediaBytes } from "./download-cache-media";
 
 const mockedIsTauriRuntime = vi.mocked(isTauriRuntime);
 const mockedListCandidates = vi.mocked(listDownloadCacheMediaBackfillCandidates);
-const mockedGetContent = vi.mocked(getDownloadCacheMediaBackfillCandidateContent);
+const mockedReadStoredContent = vi.mocked(readStoredChapterContentMirror);
 const mockedGetStoredMediaBytes = vi.mocked(getStoredChapterMediaBytes);
 const mockedUpdateMediaBytes = vi.mocked(updateDownloadCacheChapterMediaBytes);
 
@@ -55,7 +58,7 @@ describe("download cache media backfill", () => {
         updatedAt: 100,
       },
     ]);
-    mockedGetContent.mockResolvedValueOnce(
+    mockedReadStoredContent.mockResolvedValueOnce(
       '<img src="norea-media://reader-asset/page.png">',
     );
     mockedGetStoredMediaBytes.mockResolvedValueOnce(12);
@@ -64,7 +67,7 @@ describe("download cache media backfill", () => {
     const result = await backfillDownloadCacheMediaBytes(3);
 
     expect(mockedListCandidates).toHaveBeenCalledWith(3, MAX_BACKFILL_PER_RUN);
-    expect(mockedGetContent).toHaveBeenCalledWith(7);
+    expect(mockedReadStoredContent).toHaveBeenCalledWith(7);
     expect(mockedGetStoredMediaBytes).toHaveBeenCalledWith(
       '<img src="norea-media://reader-asset/page.png">',
       expect.objectContaining({ chapterId: 7, novelId: 3 }),
@@ -84,7 +87,7 @@ describe("download cache media backfill", () => {
     const result = await backfillDownloadCacheMediaBytes();
 
     expect(mockedListCandidates).not.toHaveBeenCalled();
-    expect(mockedGetContent).not.toHaveBeenCalled();
+    expect(mockedReadStoredContent).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       candidateCount: 0,
       processedChapters: 0,

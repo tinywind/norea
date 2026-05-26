@@ -5,7 +5,6 @@ import {
   readAndroidContentUriBytes,
   writeAndroidContentUriFile,
 } from "../android-storage";
-import { restoreChapterContentStorageMirror } from "../chapter-content-storage";
 import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
@@ -70,8 +69,7 @@ export async function exportBackupToFile(): Promise<string | null> {
 }
 
 /**
- * Run the full import flow: file picker, zip unpack, DB apply, then
- * storage-folder content restore.
+ * Run the full import flow: file picker, zip unpack, then DB and storage apply.
  *
  * Destructive; replaces the backup-managed database rows. The
  * caller is expected to confirm intent before invoking this.
@@ -94,14 +92,6 @@ export async function importBackupFromFile(): Promise<string | null> {
       ? await unpackAndroidBackupContentUri(selected)
       : await unpackBackup(selected);
   await applyBackupSnapshot(manifest);
-  await restoreChapterContentStorageMirror({
-    chapterIds: new Set(
-      manifest.chapters
-        .filter((chapter) => chapter.content === null)
-        .map((chapter) => chapter.id),
-    ),
-    contentOnly: true,
-  });
   return selected;
 }
 

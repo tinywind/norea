@@ -32,6 +32,11 @@ import {
   clearAllChapterMedia,
   clearChapterMedia,
 } from "../lib/chapter-media";
+import {
+  clearAllStoredChapterContentMirrors,
+  clearStoredChapterContentMirror,
+  clearStoredNovelChapterContentMirrors,
+} from "../lib/chapter-content-storage";
 import { scheduleDownloadCacheMediaBytesBackfill } from "../lib/download-cache-media";
 import {
   loadDownloadCacheChapters,
@@ -245,6 +250,7 @@ function DownloadCacheChapters({
   });
   const deleteChapter = useMutation({
     mutationFn: async (chapterId: number) => {
+      await clearStoredChapterContentMirror(chapterId);
       const result = await deleteDownloadCacheChapter(chapterId);
       await clearChapterMedia(chapterId);
       return result;
@@ -334,6 +340,7 @@ function DownloadCacheNovelCard({
   const deleteNovel = useMutation({
     mutationFn: async (novelId: number) => {
       const chapters = await listDownloadCacheChapters(novelId);
+      await clearStoredNovelChapterContentMirrors(novelId);
       const result = await deleteDownloadCacheNovel(novelId);
       await Promise.all(
         chapters.map((chapter) => clearChapterMedia(chapter.id)),
@@ -502,6 +509,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
   const deleteAll = useMutation({
     mutationFn: async () => {
+      await clearAllStoredChapterContentMirrors();
       const result = await deleteAllDownloadCache();
       await clearAllChapterMedia();
       return result;

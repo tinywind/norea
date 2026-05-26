@@ -626,9 +626,10 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun readText(rootUri: String, relativePath: String): String = storageResponse {
+      Log.d(TAG, "Android storage readText path=$relativePath root=$rootUri")
       val text = openStorageInputStream(rootUri, relativePath)?.use { input ->
         input.readBytes().toString(Charsets.UTF_8)
-      } ?: throw IllegalStateException("Cannot open storage file for reading.")
+      } ?: throw IllegalStateException(storageReadFailureMessage(rootUri, relativePath))
       JSONObject()
         .put("ok", true)
         .put("text", text)
@@ -636,9 +637,10 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun readBase64(rootUri: String, relativePath: String): String = storageResponse {
+      Log.d(TAG, "Android storage readBase64 path=$relativePath root=$rootUri")
       val bytes = openStorageInputStream(rootUri, relativePath)?.use { input ->
         input.readBytes()
-      } ?: throw IllegalStateException("Cannot open storage file for reading.")
+      } ?: throw IllegalStateException(storageReadFailureMessage(rootUri, relativePath))
       JSONObject()
         .put("ok", true)
         .put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
@@ -1326,22 +1328,67 @@ class MainActivity : TauriActivity() {
       ?: runCatching { contentResolver.openInputStream(document.uri) }.getOrNull()
 
   private fun openStorageInputStream(rootUri: String, relativePath: String): InputStream? {
-    val direct = runCatching {
+    val directFile = runCatching {
       externalStorageFile(rootUri, relativePath)
-        ?.takeIf { it.isFile }
-        ?.inputStream()
-    }.getOrNull()
+    }.getOrElse { error ->
+      Log.w(TAG, "Android storage direct path failed. path=$relativePath root=$rootUri", error)
+      null
+    }
+    val direct = directFile?.takeIf { it.isFile }?.let { file ->
+      runCatching { file.inputStream() }.getOrElse { error ->
+        Log.w(
+          TAG,
+          "Android storage direct read failed. path=$relativePath file=${file.absolutePath}",
+          error,
+        )
+        null
+      }
+    }
     if (direct != null) return direct
 
-    val documentUri = runCatching { storageDocumentUri(rootUri, relativePath) }.getOrNull()
+    val documentUri = runCatching {
+      storageDocumentUri(rootUri, relativePath)
+    }.getOrElse { error ->
+      Log.w(
+        TAG,
+        "Android storage document uri failed. path=$relativePath root=$rootUri",
+        error,
+      )
+      null
+    }
     val documentStream = documentUri?.let { uri ->
-      runCatching { contentResolver.openInputStream(uri) }.getOrNull()
+      runCatching { contentResolver.openInputStream(uri) }.getOrElse { error ->
+        Log.w(
+          TAG,
+          "Android storage document read failed. path=$relativePath uri=$uri",
+          error,
+        )
+        null
+      }
     }
     if (documentStream != null) return documentStream
 
     val document = storageDocumentAt(rootUri, relativePath) ?: return null
     if (!document.isFile) return null
-    return runCatching { contentResolver.openInputStream(document.uri) }.getOrNull()
+    return runCatching { contentResolver.openInputStream(document.uri) }.getOrElse { error ->
+      Log.w(
+        TAG,
+        "Android storage fallback document read failed. path=$relativePath uri=${document.uri}",
+        error,
+      )
+      null
+    }
+  }
+
+  private fun storageReadFailureMessage(rootUri: String, relativePath: String): String {
+    val document = runCatching { storageDocumentAt(rootUri, relativePath) }.getOrNull()
+    val message = when {
+      document == null -> "Android storage file not found: $relativePath"
+      !document.isFile -> "Android storage path is not a file: $relativePath"
+      else -> "Cannot open storage file for reading: $relativePath"
+    }
+    Log.w(TAG, "$message root=$rootUri")
+    return message
   }
 
   private fun storageDocumentUri(rootUri: String, relativePath: String): Uri {

@@ -1,8 +1,4 @@
-import {
-  getChapterById,
-  saveChapterContent,
-  saveChapterPartialContent,
-} from "../../db/queries/chapter";
+import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { useBrowseStore } from "../../store/browse";
 import {
@@ -24,7 +20,11 @@ import {
   storeEmbeddedChapterMedia,
   type ChapterMediaElementPatch,
 } from "../chapter-media";
-import { mirrorStoredChapterContent } from "../chapter-content-storage";
+import {
+  readStoredChapterContentMirror,
+  saveStoredChapterContent,
+  saveStoredChapterPartialContent,
+} from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { getPluginBaseUrl } from "../plugins/base-url";
 import { pluginManager } from "../plugins/manager";
@@ -636,6 +636,9 @@ export function enqueueChapterDownload(
         if (!chapter) {
           throw missingLocalChapterError(job);
         }
+        const previousHtml = chapter.isDownloaded
+          ? await readStoredChapterContentMirror(job.id)
+          : null;
         const novel =
           job.novelPath && job.novelName && job.novelId
             ? {
@@ -662,7 +665,7 @@ export function enqueueChapterDownload(
           sourceId: job.pluginId,
         };
         const emitPartialHtml = async (partialHtml: string): Promise<void> => {
-          const partialSaveResult = await saveChapterPartialContent(
+          const partialSaveResult = await saveStoredChapterPartialContent(
             job.id,
             partialHtml,
             savedContentType,
@@ -686,7 +689,7 @@ export function enqueueChapterDownload(
           }
           if (contentType === "pdf") {
             const dataUrl = `data:${CHAPTER_BINARY_RESOURCE_MEDIA_TYPES.pdf};base64,${bytesToBase64(bytes)}`;
-            const saveResult = await saveChapterContent(
+            const saveResult = await saveStoredChapterContent(
               job.id,
               dataUrl,
               contentType,
@@ -695,7 +698,6 @@ export function enqueueChapterDownload(
             if (saveResult.rowsAffected <= 0) {
               throw missingLocalChapterError(job);
             }
-            await mirrorStoredChapterContent(job.id);
             await clearChapterMedia(job.id, storageContext);
             settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
             reportProgress(
@@ -725,7 +727,7 @@ export function enqueueChapterDownload(
               })),
             ),
           });
-          const saveResult = await saveChapterContent(
+          const saveResult = await saveStoredChapterContent(
             job.id,
             embedded.html,
             contentType,
@@ -736,7 +738,6 @@ export function enqueueChapterDownload(
           if (saveResult.rowsAffected <= 0) {
             throw missingLocalChapterError(job);
           }
-          await mirrorStoredChapterContent(job.id);
           if (embedded.storedMediaCount === 0) {
             await clearChapterMedia(job.id, storageContext);
           }
@@ -797,7 +798,7 @@ export function enqueueChapterDownload(
                 progressTotal = total + 1;
                 reportProgress({ current, total: progressTotal });
               },
-              previousHtml: chapter.content,
+              previousHtml,
               requestInit: plugin.imageRequestInit,
               repair: false,
               scraperExecutor: executor ?? "immediate",
@@ -815,7 +816,7 @@ export function enqueueChapterDownload(
             }
           }
         }
-        const saveResult = await saveChapterContent(
+        const saveResult = await saveStoredChapterContent(
           job.id,
           html,
           savedContentType,
@@ -826,7 +827,6 @@ export function enqueueChapterDownload(
         if (saveResult.rowsAffected <= 0) {
           throw missingLocalChapterError(job);
         }
-        await mirrorStoredChapterContent(job.id);
         if (shouldClearMedia) {
           await clearChapterMedia(job.id, {
             chapterId: job.id,
@@ -901,10 +901,13 @@ export function enqueueChapterMediaRepair(
         throw missingRepairChapterError(job);
       }
       const contentType = normalizeChapterContentType(chapter.contentType);
+      const content = chapter.isDownloaded
+        ? await readStoredChapterContentMirror(chapter.id)
+        : null;
       if (
         !chapter.isDownloaded ||
         !isHtmlLikeChapterContentType(contentType) ||
-        !chapter.content
+        !content
       ) {
         setDetail("No downloaded media to repair");
         reportProgress(
@@ -928,8 +931,8 @@ export function enqueueChapterMediaRepair(
         sourceId: job.pluginId,
       };
       if (
-        !hasRemoteChapterMedia(chapter.content, baseUrl) &&
-        localChapterMediaSources(chapter.content, repairProbeContext).length ===
+        !hasRemoteChapterMedia(content, baseUrl) &&
+        localChapterMediaSources(content, repairProbeContext).length ===
           0
       ) {
         setDetail("No remote media to repair");
@@ -957,7 +960,7 @@ export function enqueueChapterMediaRepair(
         chapterNumber: chapter.chapterNumber ?? String(chapter.position),
         chapterPosition: chapter.position,
         contextUrl: baseUrl,
-        html: chapter.content,
+        html: content,
         novelId: storageContext.novelId,
         novelName: storageContext.novelName,
         novelPath: storageContext.novelPath,
@@ -966,7 +969,7 @@ export function enqueueChapterMediaRepair(
             partialHtml,
             baseUrl,
           );
-          const partialSaveResult = await saveChapterPartialContent(
+          const partialSaveResult = await saveStoredChapterPartialContent(
             chapter.id,
             protectedPartialHtml,
             contentType,
@@ -989,7 +992,7 @@ export function enqueueChapterMediaRepair(
           progressTotal = total + 1;
           reportProgress({ current, total: progressTotal });
         },
-        previousHtml: chapter.content,
+        previousHtml: content,
         requestInit: plugin.imageRequestInit,
         repair: true,
         scraperExecutor: executor ?? "immediate",
@@ -1000,7 +1003,7 @@ export function enqueueChapterMediaRepair(
         media.html,
         storageContext,
       );
-      const saveResult = await saveChapterContent(
+      const saveResult = await saveStoredChapterContent(
         chapter.id,
         media.html,
         contentType,
@@ -1011,7 +1014,6 @@ export function enqueueChapterMediaRepair(
       if (saveResult.rowsAffected <= 0) {
         throw missingRepairChapterError(job);
       }
-      await mirrorStoredChapterContent(chapter.id);
       if (media.mediaFailures.length > 0) {
         setDetail(
           `${media.mediaFailures.length} media assets using remote fallback`,

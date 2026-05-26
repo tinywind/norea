@@ -12,7 +12,6 @@ import {
   clearNovelHistory,
   getAdjacentChapter,
   getChapterById,
-  getChapterContent,
   getLatestSourceChapterAnchor,
   insertChapterIfAbsent,
   listChaptersByNovel,
@@ -20,7 +19,7 @@ import {
   listLibraryUpdatesPage,
   listRecentlyRead,
   markChapterOpened,
-  saveChapterContent,
+  saveChapterContentMetadata,
   setChapterBookmark,
   updateChapterProgress,
   upsertChapter,
@@ -68,7 +67,7 @@ describe("getChapterById", () => {
     mockSelect.mockResolvedValueOnce([{ id: 7, novelId: 1 }]);
     const row = await getChapterById(7);
     const [sql] = mockSelect.mock.calls[0]!;
-    expect(sql).toMatch(/\bcontent\b/);
+    expect(sql).not.toContain("content,");
     expect(row).toMatchObject({ id: 7, novelId: 1 });
   });
 
@@ -291,7 +290,7 @@ describe("upsertSourceChapters", () => {
 });
 
 describe("upsertDownloadedChapters", () => {
-  it("bulk upserts downloaded chapter content and recomputes content bytes", async () => {
+  it("bulk upserts downloaded chapter metadata", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
 
     const result = await upsertDownloadedChapters([
@@ -300,7 +299,6 @@ describe("upsertDownloadedChapters", () => {
         path: "local:txt:hash/chapter-0001",
         name: "Chapter 1",
         position: 1,
-        content: "Chapter body",
         contentBytes: 1,
         contentType: "text",
       },
@@ -321,8 +319,7 @@ describe("upsertDownloadedChapters", () => {
       "1",
       null,
       "html",
-      "Chapter body",
-      12,
+      1,
     ]);
     expect(result).toEqual({ rowsAffected: 1, chunks: 1 });
   });
@@ -418,86 +415,61 @@ describe("setChapterBookmark", () => {
   });
 });
 
-describe("saveChapterContent", () => {
-  it("UPDATEs content + flips is_downloaded=1 + bumps updated_at", async () => {
+describe("saveChapterContentMetadata", () => {
+  it("updates content metadata + flips is_downloaded=1 + bumps updated_at", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
-    const result = await saveChapterContent(7, "<p>hello</p>");
+    const result = await saveChapterContentMetadata(7, "<p>hello</p>");
     const [sql, params] = mockExecute.mock.calls[0]!;
     expect(sql).toContain("UPDATE chapter");
-    expect(sql).toContain("content");
-    expect(sql).toContain("content_type   = $3");
-    expect(sql).toContain("content_bytes  = $4");
-    expect(sql).toContain("media_bytes    = $5");
-    expect(sql).toContain("media_repair_needed = $6");
+    expect(sql).not.toContain("content        =");
+    expect(sql).toContain("content_type   = $2");
+    expect(sql).toContain("content_bytes  = $3");
+    expect(sql).toContain("media_bytes    = $4");
+    expect(sql).toContain("media_repair_needed = $5");
     expect(sql).toContain(
-      "media_bytes_checked_at = CASE WHEN $7 = 1 THEN unixepoch() ELSE NULL END",
+      "media_bytes_checked_at = CASE WHEN $6 = 1 THEN unixepoch() ELSE NULL END",
     );
     expect(sql).toContain("is_downloaded  = 1");
     expect(sql).toContain("updated_at     = unixepoch()");
-    expect(params).toEqual([7, "<p>hello</p>", "html", 12, 0, 0, 0]);
+    expect(params).toEqual([7, "html", 12, 0, 0, 0]);
     expect(result).toEqual({ rowsAffected: 1 });
   });
 
   it("stores converted text chapters as html", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
-    await saveChapterContent(
+    await saveChapterContentMetadata(
       7,
       '<section class="reader-text-content"><p>hello</p></section>',
       "text",
     );
     const [, params] = mockExecute.mock.calls[0]!;
-    expect(params?.[2]).toBe("html");
+    expect(params?.[1]).toBe("html");
   });
 
   it("marks HTML with remote media as repairable", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
-    await saveChapterContent(7, '<img src="https://cdn.example/a.jpg">');
+    await saveChapterContentMetadata(7, '<img src="https://cdn.example/a.jpg">');
     const [, params] = mockExecute.mock.calls[0]!;
-    expect(params).toEqual([
-      7,
-      '<img src="https://cdn.example/a.jpg">',
-      "html",
-      37,
-      0,
-      1,
-      0,
-    ]);
+    expect(params).toEqual([7, "html", 37, 0, 1, 0]);
   });
 
   it("does not mark local chapter media as repairable", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
-    await saveChapterContent(
+    await saveChapterContentMetadata(
       7,
       '<img src="norea-media://reader-asset/page.png">',
     );
     const [, params] = mockExecute.mock.calls[0]!;
-    expect(params?.[5]).toBe(0);
-  });
-});
-
-describe("getChapterContent", () => {
-  it("returns the content string when row exists with content", async () => {
-    mockSelect.mockResolvedValueOnce([{ content: "<p>x</p>" }]);
-    expect(await getChapterContent(7)).toBe("<p>x</p>");
-  });
-
-  it("returns null when row content is null", async () => {
-    mockSelect.mockResolvedValueOnce([{ content: null }]);
-    expect(await getChapterContent(7)).toBeNull();
-  });
-
-  it("returns null when no row matches", async () => {
-    mockSelect.mockResolvedValueOnce([]);
-    expect(await getChapterContent(7)).toBeNull();
+    expect(params?.[4]).toBe(0);
   });
 });
 
 describe("clearChapterContent", () => {
-  it("nulls content and resets is_downloaded", async () => {
+  it("resets content metadata and is_downloaded", async () => {
     mockExecute.mockResolvedValueOnce(undefined);
     await clearChapterContent(7);
     const [sql, params] = mockExecute.mock.calls[0]!;
-    expect(sql).toContain("content        = NULL");
+    expect(sql).not.toContain("content        = NULL");
     expect(sql).toContain("content_bytes  = 0");
     expect(sql).toContain("media_bytes    = 0");
     expect(sql).toContain("media_repair_needed = 0");

@@ -4,16 +4,13 @@ import { startPerformanceObservation } from "../lib/observability";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
+const CHAPTER_CONTENT_COLUMN = "content";
 const MEDIA_REPAIR_NEEDED_COLUMN = "media_repair_needed";
 const MEDIA_BYTES_CHECKED_AT_COLUMN = "media_bytes_checked_at";
 
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
 let dbOperationQueue: Promise<void> = Promise.resolve();
-
-function querySelectsContent(query: string): boolean {
-  return /\b(?:\w+\.)?content\b/i.test(query);
-}
 
 function observationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -30,35 +27,6 @@ async function ensureMediaRepairNeededColumn(db: Database): Promise<void> {
   await db.execute(
     `ALTER TABLE chapter
      ADD COLUMN media_repair_needed integer DEFAULT false NOT NULL`,
-  );
-  await db.execute(
-    `UPDATE chapter
-     SET media_repair_needed = CASE
-       WHEN content_type IN ('html', 'markdown')
-        AND content IS NOT NULL
-        AND (
-          content LIKE '%<img%http://%'
-          OR content LIKE '%<img%https://%'
-          OR content LIKE '%<source%http://%'
-          OR content LIKE '%<source%https://%'
-          OR content LIKE '%<video%http://%'
-          OR content LIKE '%<video%https://%'
-          OR content LIKE '%<audio%http://%'
-          OR content LIKE '%<audio%https://%'
-          OR content LIKE '%<track%http://%'
-          OR content LIKE '%<track%https://%'
-          OR content LIKE '%<iframe%http://%'
-          OR content LIKE '%<iframe%https://%'
-          OR content LIKE '%<embed%http://%'
-          OR content LIKE '%<embed%https://%'
-          OR content LIKE '%<object%http://%'
-          OR content LIKE '%<object%https://%'
-          OR content LIKE '%url(%http://%'
-          OR content LIKE '%url(%https://%'
-        )
-       THEN 1
-       ELSE 0
-     END`,
   );
 }
 
@@ -83,10 +51,22 @@ async function ensureMediaBytesCheckedAtColumn(db: Database): Promise<void> {
   );
 }
 
+async function ensureNoChapterContentColumn(db: Database): Promise<void> {
+  const columns = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(chapter)",
+  );
+  if (!columns.some((column) => column.name === CHAPTER_CONTENT_COLUMN)) {
+    return;
+  }
+
+  await db.execute("ALTER TABLE chapter DROP COLUMN content");
+}
+
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   await ensureMediaRepairNeededColumn(db);
   await ensureMediaBytesCheckedAtColumn(db);
+  await ensureNoChapterContentColumn(db);
   return db;
 }
 
@@ -114,7 +94,6 @@ function serializedDb(rawDb: Database): Database {
     execute(query: string, bindValues?: unknown[]): Promise<QueryResult> {
       const finish = startPerformanceObservation("db.execute", {
         bindValueCount: bindValues?.length ?? 0,
-        selectsContent: querySelectsContent(query),
       });
       return queueDbOperation(async () => {
         try {
@@ -130,7 +109,6 @@ function serializedDb(rawDb: Database): Database {
     select<T>(query: string, bindValues?: unknown[]): Promise<T> {
       const finish = startPerformanceObservation("db.select", {
         bindValueCount: bindValues?.length ?? 0,
-        selectsContent: querySelectsContent(query),
       });
       return queueDbOperation(async () => {
         try {

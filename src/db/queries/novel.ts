@@ -1030,7 +1030,6 @@ export async function upsertLocalNovelChapters(
         contentType: storedChapterContentType(
           normalizeChapterContentType(chapter.contentType),
         ),
-        content: chapter.content,
         contentBytes: chapter.contentBytes,
       })),
     );
@@ -1229,7 +1228,6 @@ export async function upsertLocalNovel(
         contentType: storedChapterContentType(
           normalizeChapterContentType(chapter.contentType),
         ),
-        content: chapter.content,
         contentBytes: chapter.contentBytes,
       })),
     );

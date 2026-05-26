@@ -33,7 +33,6 @@ CREATE TABLE `chapter` (
   `unread` integer DEFAULT true NOT NULL,
   `progress` integer DEFAULT 0 NOT NULL,
   `is_downloaded` integer DEFAULT false NOT NULL,
-  `content` text,
   `content_type` text DEFAULT 'html' NOT NULL,
   `content_bytes` integer DEFAULT 0 NOT NULL,
   `media_bytes` integer DEFAULT 0 NOT NULL,

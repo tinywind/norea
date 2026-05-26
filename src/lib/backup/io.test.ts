@@ -18,10 +18,6 @@ vi.mock("../android-storage", () => ({
   writeAndroidContentUriFile: vi.fn(),
 }));
 
-vi.mock("../chapter-content-storage", () => ({
-  restoreChapterContentStorageMirror: vi.fn(),
-}));
-
 vi.mock("../tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(() => false),
 }));
@@ -43,7 +39,6 @@ import {
   readAndroidContentUriBytes,
   writeAndroidContentUriFile,
 } from "../android-storage";
-import { restoreChapterContentStorageMirror } from "../chapter-content-storage";
 import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
 import { isAndroidRuntime } from "../tauri-runtime";
 import {
@@ -70,9 +65,6 @@ const packBackupMock = vi.mocked(packBackup);
 const packBackupTempFileMock = vi.mocked(packBackupTempFile);
 const applyBackupSnapshotMock = vi.mocked(applyBackupSnapshot);
 const gatherBackupSnapshotMock = vi.mocked(gatherBackupSnapshot);
-const restoreChapterContentStorageMirrorMock = vi.mocked(
-  restoreChapterContentStorageMirror,
-);
 const copyAndroidContentUriToTempFileMock = vi.mocked(
   copyAndroidContentUriToTempFile,
 );
@@ -114,7 +106,7 @@ function makeManifest(): BackupManifest {
         id: 11,
         novelId: 1,
         path: "/c/2",
-        name: "Legacy Chapter",
+        name: "Downloaded Chapter",
         chapterNumber: "2",
         position: 2,
         page: "1",
@@ -123,7 +115,7 @@ function makeManifest(): BackupManifest {
         progress: 0,
         isDownloaded: true,
         contentType: "html",
-        content: "<p>legacy</p>",
+        content: "<p>downloaded</p>",
         releaseTime: null,
         readAt: null,
         createdAt: 1_700_000_000,
@@ -160,10 +152,6 @@ beforeEach(() => {
   copyAndroidContentUriToTempFileMock.mockResolvedValue(null);
   deleteAndroidContentUriTempFileMock.mockResolvedValue(undefined);
   readAndroidContentUriBytesMock.mockResolvedValue([4, 5, 6]);
-  restoreChapterContentStorageMirrorMock.mockResolvedValue({
-    chapters: 0,
-    novels: 0,
-  });
 });
 
 describe("defaultBackupFilename", () => {
@@ -240,10 +228,6 @@ describe("backup import/export flow", () => {
     });
     expect(unpackBackupMock).toHaveBeenCalledWith("C:\\backup.zip");
     expect(applyBackupSnapshotMock).toHaveBeenCalledWith(manifest);
-    expect(restoreChapterContentStorageMirrorMock).toHaveBeenCalledWith({
-      chapterIds: new Set([10]),
-      contentOnly: true,
-    });
   });
 
   it("imports Android content URI backups through the temp file bridge", async () => {
@@ -324,7 +308,6 @@ describe("backup import/export flow", () => {
     expect(path).toBeNull();
     expect(unpackBackupMock).not.toHaveBeenCalled();
     expect(applyBackupSnapshotMock).not.toHaveBeenCalled();
-    expect(restoreChapterContentStorageMirrorMock).not.toHaveBeenCalled();
   });
 
   it("skips import work when an unexpected array result narrows out", async () => {
@@ -338,6 +321,5 @@ describe("backup import/export flow", () => {
     expect(path).toBeNull();
     expect(unpackBackupMock).not.toHaveBeenCalled();
     expect(applyBackupSnapshotMock).not.toHaveBeenCalled();
-    expect(restoreChapterContentStorageMirrorMock).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,8 @@
 import {
-  getDownloadCacheMediaBackfillCandidateContent,
   listDownloadCacheMediaBackfillCandidates,
   updateDownloadCacheChapterMediaBytes,
 } from "../db/queries/download-cache";
+import { readStoredChapterContentMirror } from "./chapter-content-storage";
 import { getStoredChapterMediaBytes } from "./chapter-media";
 import {
   MAX_BACKFILL_PER_RUN,
@@ -62,9 +62,7 @@ export async function backfillDownloadCacheMediaBytes(
   );
   for (const candidate of candidates) {
     try {
-      const content = await getDownloadCacheMediaBackfillCandidateContent(
-        candidate.id,
-      );
+      const content = await readStoredChapterContentMirror(candidate.id);
       if (content === null) {
         continue;
       }

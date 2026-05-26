@@ -1,5 +1,5 @@
 import { LOCAL_PLUGIN_ID } from "./plugins/types";
-import { listChaptersByNovel, saveChapterContent } from "../db/queries/chapter";
+import { listChaptersByNovel } from "../db/queries/chapter";
 import type { LocalNovelImportChapterInput } from "../db/queries/novel";
 import {
   cacheHtmlChapterMedia,
@@ -11,6 +11,7 @@ import {
   isHtmlLikeChapterContentType,
   storedChapterContentType,
 } from "./chapter-content";
+import { saveStoredChapterContent } from "./chapter-content-storage";
 
 interface CacheLocalImportedChapterMediaInput {
   chapters: LocalNovelImportChapterInput[];
@@ -80,7 +81,7 @@ export async function cacheLocalImportedChapterMedia({
         ],
         sourceId: LOCAL_PLUGIN_ID,
       });
-      await saveChapterContent(row.id, embedded.html, contentType, {
+      await saveStoredChapterContent(row.id, embedded.html, contentType, {
         mediaBytes: embedded.mediaBytes,
       });
       continue;
@@ -111,7 +112,7 @@ export async function cacheLocalImportedChapterMedia({
     }
 
     if (!hasRemoteChapterMedia(content)) {
-      await saveChapterContent(row.id, content, contentType, {
+      await saveStoredChapterContent(row.id, content, contentType, {
         mediaBytes,
       });
       if (mediaResources.length === 0) {
@@ -121,7 +122,7 @@ export async function cacheLocalImportedChapterMedia({
     }
 
     if (mediaResources.length > 0) {
-      await saveChapterContent(row.id, content, contentType, {
+      await saveStoredChapterContent(row.id, content, contentType, {
         mediaBytes,
       });
       continue;
@@ -138,7 +139,7 @@ export async function cacheLocalImportedChapterMedia({
       novelPath,
       sourceId: LOCAL_PLUGIN_ID,
     });
-    await saveChapterContent(row.id, media.html, contentType, {
+    await saveStoredChapterContent(row.id, media.html, contentType, {
       mediaBytes: media.mediaBytes,
     });
   }

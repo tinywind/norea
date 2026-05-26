@@ -151,7 +151,6 @@ export async function deleteDownloadCacheChapter(
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content       = NULL,
        content_bytes = 0,
        media_bytes   = 0,
        media_repair_needed = 0,
@@ -177,7 +176,6 @@ export async function deleteDownloadCacheNovel(
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content       = NULL,
        content_bytes = 0,
        media_bytes   = 0,
        media_repair_needed = 0,
@@ -201,7 +199,6 @@ export async function deleteAllDownloadCache(): Promise<DownloadCacheResult> {
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content       = NULL,
        content_bytes = 0,
        media_bytes   = 0,
        media_repair_needed = 0,
@@ -242,32 +239,12 @@ export async function listDownloadCacheMediaBackfillCandidates(
      WHERE c.is_downloaded = 1
        AND c.media_bytes = 0
        AND c.media_bytes_checked_at IS NULL
-       AND c.content LIKE '%norea-media://reader-asset/%'
        AND n.is_local = 0
        ${novelFilter}
      ORDER BY c.updated_at ASC, c.id ASC
      LIMIT ${limitParam}`,
     novelId === undefined ? [normalizedLimit] : [novelId, normalizedLimit],
   );
-}
-
-export async function getDownloadCacheMediaBackfillCandidateContent(
-  chapterId: number,
-): Promise<string | null> {
-  const db = await getDb();
-  const rows = await db.select<Array<{ content: string | null }>>(
-    `SELECT c.content
-     FROM chapter c
-     JOIN novel n ON n.id = c.novel_id
-     WHERE c.id = $1
-       AND c.is_downloaded = 1
-       AND c.media_bytes = 0
-       AND c.media_bytes_checked_at IS NULL
-       AND c.content LIKE '%norea-media://reader-asset/%'
-       AND n.is_local = 0`,
-    [chapterId],
-  );
-  return rows[0]?.content ?? null;
 }
 
 export async function updateDownloadCacheChapterMediaBytes(

@@ -23,7 +23,6 @@ export async function clearDownloadedChapterContent(): Promise<MaintenanceResult
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content = NULL,
        content_bytes = 0,
        media_bytes = 0,
        media_repair_needed = 0,
@@ -31,8 +30,7 @@ export async function clearDownloadedChapterContent(): Promise<MaintenanceResult
        is_downloaded = 0,
        updated_at = unixepoch()
      WHERE (
-         content IS NOT NULL
-         OR content_bytes > 0
+         content_bytes > 0
          OR media_bytes > 0
          OR media_repair_needed = 1
          OR is_downloaded = 1

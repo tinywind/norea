@@ -25,7 +25,7 @@ describe("clearDownloadedChapterContent", () => {
     const result = await clearDownloadedChapterContent();
 
     const [sql] = mockExecute.mock.calls[0]!;
-    expect(sql).toContain("content = NULL");
+    expect(sql).not.toContain("content = NULL");
     expect(sql).toContain("content_bytes = 0");
     expect(sql).toContain("media_bytes = 0");
     expect(sql).toContain("media_repair_needed = 0");

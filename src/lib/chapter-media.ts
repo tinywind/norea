@@ -678,6 +678,21 @@ function androidChapterMediaManifestRelativePathCandidates(
   ]);
 }
 
+function chapterMediaManifestLogContext(context: ChapterMediaStorageContext) {
+  return {
+    chapterId: context.chapterId,
+    chapterName: context.chapterName,
+    chapterNumber: context.chapterNumber,
+    chapterPosition: context.chapterPosition,
+    hasStorageContext: hasStorageContext(context),
+    manifestPaths: androidChapterMediaManifestRelativePathCandidates(context),
+    novelId: context.novelId,
+    novelName: context.novelName,
+    novelPath: context.novelPath,
+    sourceId: context.sourceId,
+  };
+}
+
 function emptyChapterMediaManifest(): ChapterMediaManifest {
   return {
     complete: false,
@@ -752,6 +767,12 @@ async function writeChapterMediaManifest({
 }): Promise<void> {
   const manifestPath = androidChapterMediaManifestRelativePath(context);
   if (isAndroidRuntime()) {
+    console.info("[chapter-media] write media manifest", {
+      complete,
+      fileCount: files.length,
+      manifestPath,
+      ...chapterMediaManifestLogContext(context),
+    });
     await writeAndroidStorageText(
       manifestPath,
       serializeChapterMediaManifest(files, complete),
@@ -778,12 +799,44 @@ async function readChapterMediaManifest(
   context: ChapterMediaStorageContext,
 ): Promise<ChapterMediaManifest> {
   if (isAndroidRuntime()) {
-    for (const manifestPath of androidChapterMediaManifestRelativePathCandidates(
+    const manifestPaths = androidChapterMediaManifestRelativePathCandidates(
       context,
-    )) {
-      const raw = await readAndroidStorageText(manifestPath);
-      if (raw !== null) return parseChapterMediaManifest(raw);
+    );
+    console.info("[chapter-media] read media manifest candidates", {
+      ...chapterMediaManifestLogContext(context),
+      manifestPaths,
+    });
+    for (const manifestPath of manifestPaths) {
+      let raw: string | null;
+      try {
+        raw = await readAndroidStorageText(manifestPath);
+      } catch (error) {
+        console.warn("[chapter-media] read media manifest failed", {
+          error,
+          manifestPath,
+          ...chapterMediaManifestLogContext(context),
+        });
+        throw error;
+      }
+      if (raw !== null) {
+        const manifest = parseChapterMediaManifest(raw);
+        console.info("[chapter-media] read media manifest hit", {
+          complete: manifest.complete,
+          fileCount: manifest.media.files.length,
+          manifestPath,
+          ...chapterMediaManifestLogContext(context),
+        });
+        return manifest;
+      }
+      console.info("[chapter-media] read media manifest miss", {
+        manifestPath,
+        ...chapterMediaManifestLogContext(context),
+      });
     }
+    console.info("[chapter-media] read media manifest empty", {
+      ...chapterMediaManifestLogContext(context),
+      manifestPaths,
+    });
     return emptyChapterMediaManifest();
   }
   const raw = await invoke<string | null>("chapter_media_read_manifest", {

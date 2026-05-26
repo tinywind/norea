@@ -865,7 +865,6 @@ describe("upsertLocalNovelChapters", () => {
       "1",
       null,
       "html",
-      "Chapter body",
       12,
     ]);
 
@@ -1107,7 +1106,6 @@ describe("upsertLocalNovel", () => {
       "1",
       "2026-01-01",
       "html",
-      "Chapter body",
       12,
     ]);
 

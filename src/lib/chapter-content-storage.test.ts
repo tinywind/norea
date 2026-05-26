@@ -8,14 +8,15 @@ vi.mock("../db/client", () => ({
   getDb: vi.fn(),
 }));
 
+vi.mock("../db/queries/chapter", () => ({
+  saveChapterContentMetadata: vi.fn(),
+  saveChapterPartialContentMetadata: vi.fn(),
+}));
+
 vi.mock("./android-storage", () => ({
   deleteAndroidStoragePath: vi.fn(),
   readAndroidStorageText: vi.fn(),
   writeAndroidStorageText: vi.fn(),
-}));
-
-vi.mock("./chapter-media", () => ({
-  getStoredChapterMediaBytes: vi.fn(),
 }));
 
 vi.mock("./tauri-runtime", () => ({
@@ -25,27 +26,33 @@ vi.mock("./tauri-runtime", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../db/client";
-import { getStoredChapterMediaBytes } from "./chapter-media";
+import {
+  saveChapterContentMetadata,
+  saveChapterPartialContentMetadata,
+} from "../db/queries/chapter";
 import {
   deleteAndroidStoragePath,
   readAndroidStorageText,
+  writeAndroidStorageText,
 } from "./android-storage";
 import {
-  mirrorAllStoredChapterContent,
-  mirrorStoredNovelChapters,
-  restoreChapterContentStorageMirror,
-  startChapterContentStorageMirrorSweep,
+  clearStoredChapterContentMirror,
+  readStoredChapterContentMirror,
+  saveStoredChapterContent,
+  saveStoredChapterPartialContent,
+  writeStoredChapterContentMirror,
 } from "./chapter-content-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
 const getDbMock = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
-const getStoredChapterMediaBytesMock = vi.mocked(getStoredChapterMediaBytes);
+const saveChapterContentMetadataMock = vi.mocked(saveChapterContentMetadata);
+const saveChapterPartialContentMetadataMock = vi.mocked(saveChapterPartialContentMetadata);
 const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
 const readAndroidStorageTextMock = vi.mocked(readAndroidStorageText);
+const writeAndroidStorageTextMock = vi.mocked(writeAndroidStorageText);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
-let executeMock: ReturnType<typeof vi.fn>;
 let selectMock: ReturnType<typeof vi.fn>;
 
 function chapterRow(overrides: Record<string, unknown> = {}) {
@@ -60,7 +67,6 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
     chapterNumber: "1",
     chapterPath: "/c/1",
     chapterUpdatedAt: 1_700_000_000,
-    content: "<p>one</p>",
     contentBytes: 10,
     contentType: "html",
     cover: null,
@@ -90,188 +96,95 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.useRealTimers();
-  executeMock = vi.fn();
-  selectMock = vi.fn();
-  getDbMock.mockResolvedValue({
-    execute: executeMock,
-    select: selectMock,
-  } as never);
+  selectMock = vi.fn().mockResolvedValue([chapterRow()]);
+  getDbMock.mockResolvedValue({ select: selectMock } as never);
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
-  getStoredChapterMediaBytesMock.mockResolvedValue(0);
-  deleteAndroidStoragePathMock.mockResolvedValue(undefined);
   invokeMock.mockResolvedValue(undefined);
+  saveChapterContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
+  saveChapterPartialContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
 });
 
-describe("chapter content storage mirror", () => {
-  it("mirrors all stored chapters from one full-row query", async () => {
-    selectMock.mockResolvedValue([
-      chapterRow(),
-      chapterRow({
-        chapterId: 11,
-        chapterName: "Chapter 2",
-        chapterNumber: "2",
-        chapterPath: "/c/2",
-        content: "<p>two</p>",
-        position: 2,
-      }),
+describe("chapter content storage", () => {
+  it("reads chapter content from the storage file", async () => {
+    invokeMock.mockResolvedValueOnce("<p>stored</p>");
+
+    await expect(readStoredChapterContentMirror(10)).resolves.toBe(
+      "<p>stored</p>",
+    );
+
+    expect(selectMock).toHaveBeenCalledWith(expect.stringContaining("FROM chapter c"), [
+      10,
     ]);
-
-    await expect(mirrorAllStoredChapterContent()).resolves.toBe(2);
-
-    expect(selectMock).toHaveBeenCalledTimes(1);
-    expect(selectMock.mock.calls[0]?.[0]).toContain(
-      "WHERE c.is_downloaded = 1",
-    );
-    expect(invokeMock).toHaveBeenCalledTimes(2);
-    expect(invokeMock).toHaveBeenNthCalledWith(
-      1,
-      "chapter_content_mirror_store",
-      expect.objectContaining({
-        chapterId: 10,
-        content: "<p>one</p>",
-        metadata: expect.objectContaining({
-          chapter: expect.objectContaining({ id: 10, name: "Chapter 1" }),
-          novel: expect.objectContaining({ id: 1, name: "Sample Novel" }),
-        }),
-      }),
-    );
-    expect(invokeMock).toHaveBeenNthCalledWith(
-      2,
-      "chapter_content_mirror_store",
-      expect.objectContaining({
-        chapterId: 11,
-        content: "<p>two</p>",
-      }),
-    );
+    expect(invokeMock).toHaveBeenCalledWith("chapter_content_mirror_read_file", {
+      contentFile: expect.stringContaining("content.html"),
+    });
   });
 
-  it("mirrors stored novel chapters from one scoped full-row query", async () => {
-    selectMock.mockResolvedValue([
-      chapterRow({
-        chapterId: 12,
-        content: "<p>novel</p>",
+  it("writes chapter content to the storage file and saves metadata", async () => {
+    const result = await saveStoredChapterContent(10, "<p>stored</p>", "html", {
+      mediaBytes: 12,
+    });
+
+    expect(saveChapterContentMetadataMock).toHaveBeenCalledWith(
+      10,
+      "<p>stored</p>",
+      "html",
+      { mediaBytes: 12 },
+    );
+    expect(invokeMock).toHaveBeenCalledWith("chapter_content_mirror_store", {
+      chapterId: 10,
+      content: "<p>stored</p>",
+      metadata: expect.objectContaining({
+        chapter: expect.objectContaining({ id: 10, name: "Chapter 1" }),
+        novel: expect.objectContaining({ id: 1, name: "Sample Novel" }),
       }),
-    ]);
+    });
+    expect(result).toEqual({ rowsAffected: 1 });
+  });
 
-    await mirrorStoredNovelChapters(1);
+  it("writes partial chapter content to the storage file and saves metadata", async () => {
+    await saveStoredChapterPartialContent(10, "<p>partial</p>", "html");
 
-    expect(selectMock).toHaveBeenCalledTimes(1);
-    expect(selectMock.mock.calls[0]?.[0]).toContain("WHERE c.novel_id = $1");
-    expect(selectMock.mock.calls[0]?.[1]).toEqual([1]);
+    expect(saveChapterPartialContentMetadataMock).toHaveBeenCalledWith(
+      10,
+      "<p>partial</p>",
+      "html",
+    );
     expect(invokeMock).toHaveBeenCalledWith(
       "chapter_content_mirror_store",
-      expect.objectContaining({
-        chapterId: 12,
-        content: "<p>novel</p>",
-      }),
+      expect.objectContaining({ content: "<p>partial</p>" }),
     );
   });
 
-  it("restores one requested chapter without scanning every restorable row", async () => {
-    selectMock.mockResolvedValueOnce([
-      chapterRow({
-        chapterId: 17,
-        chapterName: "Restored",
-        content: null,
-      }),
-    ]);
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "chapter_content_mirror_read_file") {
-        return "<p>restored</p>";
-      }
-      return undefined;
-    });
-
-    await expect(
-      restoreChapterContentStorageMirror({
-        chapterIds: new Set([17]),
-        contentOnly: true,
-        limit: 1,
-      }),
-    ).resolves.toEqual({
-      chapters: 1,
-      cursorChapterId: 17,
-      novels: 0,
-      scannedChapters: 1,
-    });
-
-    const [sql, params] = selectMock.mock.calls[0]!;
-    expect(sql).toContain("c.content IS NULL");
-    expect(sql).toContain("c.id IN ($1)");
-    expect(sql).toContain("LIMIT $2");
-    expect(params).toEqual([17, 1]);
-      expect(executeMock).toHaveBeenCalledWith(
-        expect.stringContaining("media_bytes_checked_at = unixepoch()"),
-        ["<p>restored</p>", 15, 0, 0, "html", 17],
-      );
-  });
-
-  it("does not fall back to a full sweep for an empty requested chapter set", async () => {
-    await expect(
-      restoreChapterContentStorageMirror({
-        chapterIds: new Set(),
-        contentOnly: true,
-      }),
-    ).resolves.toEqual({
-      chapters: 0,
-      cursorChapterId: null,
-      novels: 0,
-      scannedChapters: 0,
-    });
-
-    expect(selectMock).not.toHaveBeenCalled();
-    expect(invokeMock).not.toHaveBeenCalled();
-  });
-
-  it("runs startup mirror restore as a small cursor sweep", async () => {
-    vi.useFakeTimers();
-    selectMock
-      .mockResolvedValueOnce([chapterRow({ chapterId: 10, content: null })])
-      .mockResolvedValueOnce([]);
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "chapter_content_mirror_read_file") return null;
-      return undefined;
-    });
-
-    const stop = startChapterContentStorageMirrorSweep({
-      batchSize: 1,
-      delayMs: 1,
-    });
-
-    await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(1);
-    stop();
-
-    expect(selectMock).toHaveBeenCalledTimes(2);
-    expect(selectMock.mock.calls[0]?.[1]).toEqual([1]);
-    expect(selectMock.mock.calls[1]?.[1]).toEqual([10, 1]);
-    vi.useRealTimers();
-  });
-
-  it("treats inaccessible Android mirror files as missing during restore", async () => {
+  it("uses Android storage APIs on Android", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
-    selectMock.mockResolvedValueOnce([
-      chapterRow({ chapterId: 20, content: null }),
-    ]);
-    readAndroidStorageTextMock.mockRejectedValue(
-      new Error("Permission to access file is denied"),
+    readAndroidStorageTextMock.mockResolvedValueOnce("<p>android</p>");
+
+    await expect(readStoredChapterContentMirror(10)).resolves.toBe(
+      "<p>android</p>",
+    );
+    await writeStoredChapterContentMirror(10, "<p>android</p>");
+    await clearStoredChapterContentMirror(10);
+
+    expect(readAndroidStorageTextMock).toHaveBeenCalledWith(
+      expect.stringContaining("content.html"),
+    );
+    expect(writeAndroidStorageTextMock).toHaveBeenCalledWith(
+      expect.stringContaining("content.html"),
+      "<p>android</p>",
+    );
+    expect(deleteAndroidStoragePathMock).toHaveBeenCalledWith(
+      expect.stringContaining("content.html"),
+    );
+  });
+
+  it("returns null for optional Android storage read failures", async () => {
+    isAndroidRuntimeMock.mockReturnValue(true);
+    readAndroidStorageTextMock.mockRejectedValueOnce(
+      new Error("Cannot open storage file for reading."),
     );
 
-    await expect(
-      restoreChapterContentStorageMirror({
-        contentOnly: true,
-        limit: 1,
-      }),
-    ).resolves.toEqual({
-      chapters: 0,
-      cursorChapterId: 20,
-      novels: 0,
-      scannedChapters: 1,
-    });
-
-    expect(executeMock).not.toHaveBeenCalled();
-    expect(getStoredChapterMediaBytesMock).not.toHaveBeenCalled();
+    await expect(readStoredChapterContentMirror(10)).resolves.toBeNull();
   });
 });

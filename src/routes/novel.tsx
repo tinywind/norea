@@ -100,7 +100,6 @@ import {
 import { clearChapterMedia } from "../lib/chapter-media";
 import {
   clearStoredChapterContentMirror,
-  mirrorStoredNovelChapters,
 } from "../lib/chapter-content-storage";
 import {
   findPreviousAppHistoryEntry,
@@ -1850,7 +1849,6 @@ export function NovelDetailPage() {
           novelPath: novel.path,
         });
       }
-      await mirrorStoredNovelChapters(id);
       return result;
     },
     onSuccess: () => {

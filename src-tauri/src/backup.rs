@@ -514,10 +514,10 @@ async fn execute_restore_snapshot(
         sqlx::query(
             "INSERT INTO chapter (
                 id, novel_id, path, name, chapter_number, position, page,
-                bookmark, unread, progress, is_downloaded, content, content_bytes,
+                bookmark, unread, progress, is_downloaded, content_bytes,
                 media_bytes, media_repair_needed, content_type, release_time,
                 read_at, created_at, found_at, updated_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
         )
         .bind(chapter.id)
         .bind(chapter.novel_id)
@@ -530,7 +530,6 @@ async fn execute_restore_snapshot(
         .bind(bool_to_int(chapter.unread))
         .bind(chapter.progress)
         .bind(bool_to_int(restored_downloaded))
-        .bind(chapter.content.as_deref())
         .bind(content_byte_len(chapter.content.as_deref()))
         .bind(restored_media_bytes)
         .bind(chapter_media_repair_needed(

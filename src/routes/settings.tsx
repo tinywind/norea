@@ -41,10 +41,7 @@ import {
   importBackupFromFile,
 } from "../lib/backup/io";
 import { clearAllChapterMedia } from "../lib/chapter-media";
-import {
-  mirrorAllStoredChapterContent,
-  restoreChapterContentStorageMirror,
-} from "../lib/chapter-content-storage";
+import { clearAllStoredChapterContentMirrors } from "../lib/chapter-content-storage";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -128,6 +125,7 @@ const SETTINGS_TOAST_AUTO_CLOSE_MS = 5000;
 async function clearDownloadedChapterContentAndMedia(): Promise<{
   rowsAffected: number;
 }> {
+  await clearAllStoredChapterContentMirrors();
   const result = await clearDownloadedChapterContent();
   await clearAllChapterMedia();
   return result;
@@ -255,18 +253,10 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
     try {
       const root = await selectChapterMediaStorageRoot();
       if (root) {
-        const result = await restoreChapterContentStorageMirror();
         setMediaStorageRoot(root);
-        const restoredItems = result.chapters + result.novels;
         showSettingsToast(
           "green",
           t("settings.toast.saved"),
-          restoredItems > 0
-            ? t("settings.data.mediaStorage.restore.done", {
-                chapters: result.chapters,
-                novels: result.novels,
-              })
-            : undefined,
         );
         void queryClient.invalidateQueries({ queryKey: ["novel"] });
         void queryClient.invalidateQueries({ queryKey: ["category"] });
@@ -1217,10 +1207,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       const path = await enqueueMainTask({
         kind: "backup.export",
         title: t("settings.data.exportBackup"),
-        run: async () => {
-          await mirrorAllStoredChapterContent();
-          return exportBackupToFile();
-        },
+        run: exportBackupToFile,
       }).promise;
       if (path) {
         updateSettingsToast(

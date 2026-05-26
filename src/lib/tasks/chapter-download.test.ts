@@ -20,8 +20,6 @@ const epubMocks = vi.hoisted(() => ({
 
 vi.mock("../../db/queries/chapter", () => ({
   getChapterById: vi.fn(),
-  saveChapterContent: vi.fn(),
-  saveChapterPartialContent: vi.fn(),
 }));
 vi.mock("../../db/queries/novel", () => ({
   getNovelById: vi.fn(),
@@ -39,6 +37,11 @@ vi.mock("../chapter-media", () => ({
   localChapterMediaSources: vi.fn(),
   protectRemoteChapterMediaForPartialHtml: vi.fn((html: string) => html),
   storeEmbeddedChapterMedia: vi.fn(),
+}));
+vi.mock("../chapter-content-storage", () => ({
+  readStoredChapterContentMirror: vi.fn(),
+  saveStoredChapterContent: vi.fn(),
+  saveStoredChapterPartialContent: vi.fn(),
 }));
 vi.mock("../epub-html", () => ({
   convertEpubToHtml: epubMocks.convertEpubToHtml,
@@ -67,11 +70,7 @@ vi.mock("./scheduler", () => ({
   },
 }));
 
-import {
-  getChapterById,
-  saveChapterContent,
-  saveChapterPartialContent,
-} from "../../db/queries/chapter";
+import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import {
   cacheHtmlChapterMedia,
@@ -81,6 +80,11 @@ import {
   localChapterMediaSources,
   storeEmbeddedChapterMedia,
 } from "../chapter-media";
+import {
+  readStoredChapterContentMirror,
+  saveStoredChapterContent,
+  saveStoredChapterPartialContent,
+} from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
@@ -194,8 +198,9 @@ beforeEach(() => {
   vi.mocked(getStoredChapterMediaBytes).mockResolvedValue(3);
   vi.mocked(hasRemoteChapterMedia).mockReturnValue(true);
   vi.mocked(localChapterMediaSources).mockReturnValue([]);
-  vi.mocked(saveChapterContent).mockResolvedValue({ rowsAffected: 1 });
-  vi.mocked(saveChapterPartialContent).mockResolvedValue({ rowsAffected: 1 });
+  vi.mocked(readStoredChapterContentMirror).mockResolvedValue(null);
+  vi.mocked(saveStoredChapterContent).mockResolvedValue({ rowsAffected: 1 });
+  vi.mocked(saveStoredChapterPartialContent).mockResolvedValue({ rowsAffected: 1 });
   vi.mocked(convertEpubToHtml).mockResolvedValue({
     sections: [],
     title: "EPUB",
@@ -385,7 +390,7 @@ describe("restorePersistedChapterDownloads", () => {
 });
 
 describe("enqueueChapterDownload", () => {
-  it("carries contentType through the task subject and saveChapterContent", async () => {
+  it("carries contentType through the task subject and saveStoredChapterContent", async () => {
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
 
     enqueueChapterDownload({
@@ -407,7 +412,7 @@ describe("enqueueChapterDownload", () => {
       taskId: "task-1",
     });
 
-    expect(saveChapterContent).toHaveBeenCalledWith(
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(
       7,
       `<article class="reader-text-content" data-source-format="text"><section class="reader-text-section" data-section-index="0"><p class="reader-text-paragraph" data-paragraph-index="0"><span class="reader-text-line" data-line-index="0">plain &lt;chapter&gt;</span></p></section></article>`,
       "html",
@@ -421,10 +426,13 @@ describe("enqueueChapterDownload", () => {
 
   it("keeps chapter media downloads on the assigned scraper executor", async () => {
     pluginMocks.parseChapter.mockResolvedValueOnce(`<img src="/page.png">`);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(
+      `<img src="norea-media://reader-asset/page.png">`,
+    );
     vi.mocked(getChapterById).mockResolvedValueOnce({
-      content: `<img src="norea-media://reader-asset/page.png">`,
       contentType: "html",
       id: 7,
+      isDownloaded: true,
     } as never);
 
     enqueueChapterDownload({
@@ -452,7 +460,7 @@ describe("enqueueChapterDownload", () => {
         sourceId: "source-a",
       }),
     );
-    expect(saveChapterContent).toHaveBeenCalledWith(7, "<img>", "html", {
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<img>", "html", {
       mediaBytes: 3,
     });
   });
@@ -502,7 +510,7 @@ describe("enqueueChapterDownload", () => {
         sourceId: "source-a",
       }),
     );
-    expect(saveChapterContent).toHaveBeenCalledWith(
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(
       7,
       expect.stringContaining("norea-media://reader-asset/page.png"),
       "html",
@@ -545,7 +553,7 @@ describe("enqueueChapterDownload", () => {
       "/chapter/7.pdf",
     );
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
-    expect(saveChapterContent).toHaveBeenCalledWith(
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(
       7,
       "data:application/pdf;base64,JVBERg==",
       "pdf",
@@ -639,7 +647,7 @@ describe("enqueueChapterDownload", () => {
         sourceId: "source-a",
       }),
     );
-    expect(saveChapterContent).toHaveBeenCalledWith(
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(
       7,
       `<article><img src="norea-media://reader-asset/0001-page.png"></article>`,
       "epub",
@@ -681,7 +689,7 @@ describe("enqueueChapterDownload", () => {
     ).rejects.toThrow("parseChapterResource");
 
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
-    expect(saveChapterContent).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("fails binary downloads when resource metadata does not match the chapter type", async () => {
@@ -717,7 +725,7 @@ describe("enqueueChapterDownload", () => {
     ).rejects.toThrow("mediaType");
 
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
-    expect(saveChapterContent).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("fails binary downloads when resource bytes are empty", async () => {
@@ -753,7 +761,7 @@ describe("enqueueChapterDownload", () => {
     ).rejects.toThrow("bytes are empty");
 
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
-    expect(saveChapterContent).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("fails binary downloads when declared byteLength does not match bytes", async () => {
@@ -789,7 +797,7 @@ describe("enqueueChapterDownload", () => {
     ).rejects.toThrow("byteLength");
 
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
-    expect(saveChapterContent).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("records media fallback detail without failing the chapter download", async () => {
@@ -831,7 +839,7 @@ describe("enqueueChapterDownload", () => {
     expect(setDetail).toHaveBeenCalledWith(
       "1 media assets using remote fallback",
     );
-    expect(saveChapterContent).toHaveBeenCalledWith(
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(
       7,
       `<img src="https://source.test/page.png">`,
       "html",
@@ -862,11 +870,11 @@ describe("enqueueChapterDownload", () => {
     );
 
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
-    expect(saveChapterContent).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("fails when saving downloaded content does not update a chapter row", async () => {
-    vi.mocked(saveChapterContent).mockResolvedValueOnce({ rowsAffected: 0 });
+    vi.mocked(saveStoredChapterContent).mockResolvedValueOnce({ rowsAffected: 0 });
 
     enqueueChapterDownload({
       id: 7,
@@ -896,6 +904,7 @@ describe("enqueueChapterMediaRepair", () => {
     const setDetail = vi.fn();
     const storedHtml = `<img src="https://cdn.test/page.png">`;
     const repairedHtml = `<img src="norea-media://reader-asset/page.png">`;
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
     vi.mocked(getChapterById).mockResolvedValueOnce({
       chapterNumber: "7",
       content: storedHtml,
@@ -945,7 +954,7 @@ describe("enqueueChapterMediaRepair", () => {
         sourceId: "source-a",
       }),
     );
-    expect(saveChapterContent).toHaveBeenCalledWith(7, repairedHtml, "html", {
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, repairedHtml, "html", {
       mediaBytes: 8,
     });
     expect(setDetail).toHaveBeenCalledWith("1 media assets repaired");
@@ -954,6 +963,7 @@ describe("enqueueChapterMediaRepair", () => {
   it("runs media repair when stored HTML only has local media refs", async () => {
     const setDetail = vi.fn();
     const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
     vi.mocked(localChapterMediaSources).mockReturnValueOnce([
       "norea-media://reader-asset/0001-page.png",
@@ -1004,7 +1014,7 @@ describe("enqueueChapterMediaRepair", () => {
         repair: true,
       }),
     );
-    expect(saveChapterContent).toHaveBeenCalledWith(7, storedHtml, "html", {
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, storedHtml, "html", {
       mediaBytes: 8,
     });
     expect(setDetail).toHaveBeenCalledWith("1 media assets repaired");
@@ -1012,6 +1022,9 @@ describe("enqueueChapterMediaRepair", () => {
 
   it("succeeds without work when downloaded HTML has no remote media", async () => {
     const setDetail = vi.fn();
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(
+      `<p>plain chapter</p>`,
+    );
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
     vi.mocked(localChapterMediaSources).mockReturnValueOnce([]);
     vi.mocked(getChapterById).mockResolvedValueOnce({
@@ -1042,6 +1055,6 @@ describe("enqueueChapterMediaRepair", () => {
     expect(setDetail).toHaveBeenCalledWith("No remote media to repair");
     expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
     expect(cacheHtmlChapterMedia).not.toHaveBeenCalled();
-    expect(saveChapterContent).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 });

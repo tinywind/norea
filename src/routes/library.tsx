@@ -76,6 +76,7 @@ import {
   listDownloadCacheChapters,
 } from "../db/queries/download-cache";
 import { clearChapterMedia } from "../lib/chapter-media";
+import { clearStoredNovelChapterContentMirrors } from "../lib/chapter-content-storage";
 import {
   analyzeLocalImportFile,
   clearLocalImportFileCache,
@@ -86,7 +87,6 @@ import {
 } from "../lib/local-import";
 import { cacheLocalImportedChapterMedia } from "../lib/local-import-media";
 import { syncLocalChapterStorageAfterOrderChange } from "../lib/local-chapter-storage";
-import { mirrorStoredNovelChapters } from "../lib/chapter-content-storage";
 import { MAX_ROUTE_QUERY_ROWS } from "../lib/performance-budgets";
 import {
   enqueueChapterDownloadBatch,
@@ -509,6 +509,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
       for (const novelId of novelIds) {
         const chapters = await listDownloadCacheChapters(novelId);
+        await clearStoredNovelChapterContentMirrors(novelId);
         const result = await deleteDownloadCacheNovel(novelId);
         deletedChapters += result.rowsAffected;
         await Promise.all(
@@ -2323,7 +2324,6 @@ async function importLocalFileToLibrary(
     novelName: conversion.novel.name,
     novelPath: conversion.novel.path,
   });
-  await mirrorStoredNovelChapters(result.novelId);
   return result;
 }
 
