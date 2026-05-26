@@ -8,10 +8,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.DocumentsContract
 import android.util.Base64
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.MimeTypeMap
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -22,6 +25,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -518,7 +522,7 @@ class MainActivity : TauriActivity() {
       contentResolver.openOutputStream(tempArchive.uri, "wt")?.use { output ->
         ZipOutputStream(output.buffered()).use { zip ->
           if (existingArchive != null) {
-            contentResolver.openInputStream(existingArchive.uri)?.use { input ->
+            openStorageInputStream(rootUri, archiveRelativePath, existingArchive)?.use { input ->
               ZipInputStream(input.buffered()).use { previousZip ->
                 var entry = previousZip.nextEntry
                 while (entry != null) {
@@ -564,7 +568,11 @@ class MainActivity : TauriActivity() {
               "Media archive",
             )
             zip.putNextEntry(ZipEntry(entryName))
-            val copied = contentResolver.openInputStream(file.uri)?.use { input ->
+            val copied = openStorageInputStream(
+              rootUri,
+              "$sourceRelativePath/$entryName",
+              file,
+            )?.use { input ->
               copyToWithLimit(input, zip, MAX_ZIP_ENTRY_BYTES)
             } ?: throw IllegalStateException("Cannot open media file for archiving.")
             writtenZipBytes = addZipTotalBytes(
@@ -618,9 +626,7 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun readText(rootUri: String, relativePath: String): String = storageResponse {
-      val file = storageDocumentAt(rootUri, relativePath)
-        ?: throw IllegalArgumentException("Android storage path not found: $relativePath")
-      val text = contentResolver.openInputStream(file.uri)?.use { input ->
+      val text = openStorageInputStream(rootUri, relativePath)?.use { input ->
         input.readBytes().toString(Charsets.UTF_8)
       } ?: throw IllegalStateException("Cannot open storage file for reading.")
       JSONObject()
@@ -630,9 +636,7 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun readBase64(rootUri: String, relativePath: String): String = storageResponse {
-      val file = storageDocumentAt(rootUri, relativePath)
-        ?: throw IllegalArgumentException("Android storage path not found: $relativePath")
-      val bytes = contentResolver.openInputStream(file.uri)?.use { input ->
+      val bytes = openStorageInputStream(rootUri, relativePath)?.use { input ->
         input.readBytes()
       } ?: throw IllegalStateException("Cannot open storage file for reading.")
       JSONObject()
@@ -675,15 +679,7 @@ class MainActivity : TauriActivity() {
           .put("ok", true)
           .put("entries", entries)
       }
-      val archive = storageDocumentAt(rootUri, archiveRelativePath)
-        ?: return@storageResponse JSONObject()
-          .put("ok", true)
-          .put("entries", entries)
-      require(archive.isFile) {
-        "Android storage archive is not a file: $archiveRelativePath"
-      }
-
-      contentResolver.openInputStream(archive.uri)?.use { input ->
+      openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
         ZipInputStream(input.buffered()).use { zip ->
           val remaining = requestedNames.toMutableSet()
           var entry = zip.nextEntry
@@ -727,16 +723,7 @@ class MainActivity : TauriActivity() {
       storageResponse {
         val safeEntryName = safeZipEntryName(entryName)
           ?: throw IllegalArgumentException("Android storage zip entry is invalid: $entryName")
-        val archive = storageDocumentAt(rootUri, archiveRelativePath)
-          ?: return@storageResponse JSONObject()
-            .put("ok", true)
-            .put("exists", false)
-        if (!archive.isFile) {
-          return@storageResponse JSONObject()
-            .put("ok", true)
-            .put("exists", false)
-        }
-        val exists = contentResolver.openInputStream(archive.uri)?.use { input ->
+        val exists = openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
           var found = false
           ZipInputStream(input.buffered()).use { zip ->
             var entry = zip.nextEntry
@@ -765,13 +752,8 @@ class MainActivity : TauriActivity() {
       archiveRelativePath: String,
       targetRelativePath: String,
     ): String = storageResponse {
-      val archive = storageDocumentAt(rootUri, archiveRelativePath)
-        ?: return@storageResponse JSONObject()
-          .put("ok", true)
-          .put("bytes", 0L)
-      require(archive.isFile) { "Android storage archive is not a file: $archiveRelativePath" }
       var bytes = 0L
-      contentResolver.openInputStream(archive.uri)?.use { input ->
+      openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
         ZipInputStream(input.buffered()).use { zip ->
           var entry = zip.nextEntry
           var entryCount = 0
@@ -812,8 +794,53 @@ class MainActivity : TauriActivity() {
       val document = storageDocumentAt(rootUri, relativePath)
       JSONObject()
         .put("ok", true)
-        .put("bytes", document?.let(::storageDocumentSize) ?: 0L)
+        .put(
+          "bytes",
+          document?.let { storageDocumentSize(rootUri, relativePath, it) }
+            ?: externalStorageFile(rootUri, relativePath)
+              ?.takeIf { it.isFile }
+              ?.length()
+              ?.coerceAtLeast(0L)
+            ?: 0L,
+        )
     }
+
+    @JavascriptInterface
+    fun prepareReaderMediaCache(rootUri: String, archiveRelativePath: String): String =
+      storageResponse {
+        val cacheRoot = resetReaderMediaCacheRoot()
+        var entryCount = 0
+        var totalBytes = 0L
+        openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
+          ZipInputStream(input.buffered()).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+              entryCount = nextZipEntryCount(entryCount, "Reader media archive")
+              val entryName = safeZipEntryName(entry.name)
+              if (!entry.isDirectory && entryName != null) {
+                requireZipEntrySize(entry, "Reader media archive entry")
+                val target = containedReaderMediaCacheFile(entryName)
+                target.parentFile?.mkdirs()
+                target.outputStream().use { output ->
+                  val copied = copyToWithLimit(zip, output, MAX_ZIP_ENTRY_BYTES)
+                  totalBytes = addZipTotalBytes(
+                    totalBytes,
+                    copied,
+                    "Reader media archive",
+                  )
+                }
+              }
+              zip.closeEntry()
+              entry = zip.nextEntry
+            }
+          }
+        } ?: throw IllegalStateException("Cannot open reader media archive.")
+
+        JSONObject()
+          .put("ok", true)
+          .put("bytes", totalBytes)
+          .put("count", entryCount)
+      }
 
     @JavascriptInterface
     fun deletePath(rootUri: String, relativePath: String): String = storageResponse {
@@ -835,14 +862,6 @@ class MainActivity : TauriActivity() {
           throw IllegalStateException("Cannot backup Android media contents.")
         }
       }
-      val nomedia = ensureStorageFile(
-        rootUri,
-        "contents/.nomedia",
-        "application/octet-stream",
-      )
-      contentResolver.openOutputStream(nomedia.uri, "wt")?.use {
-        // Truncate/create the marker file inside the fresh restore root.
-      } ?: throw IllegalStateException("Cannot create Android media marker.")
       JSONObject().put("ok", true)
     }
 
@@ -1087,6 +1106,185 @@ class MainActivity : TauriActivity() {
       },
     )
 
+  private fun configuredStorageRootUri(): String? {
+    val roots = listOfNotNull(
+      File(applicationInfo.dataDir, STORAGE_ROOT_CONFIG_FILE),
+      filesDir.parentFile?.let { File(it, STORAGE_ROOT_CONFIG_FILE) },
+    ).distinctBy { it.absolutePath }
+    for (root in roots) {
+      val value = runCatching { root.readText().trim() }.getOrNull()
+      if (!value.isNullOrBlank() && value.startsWith("content://")) {
+        return value
+      }
+    }
+    return null
+  }
+
+  fun androidLocalMediaResponse(uri: Uri): WebResourceResponse? {
+    if (uri.scheme == NOREA_MEDIA_SCHEME) {
+      return runCatching {
+        androidReaderMediaResponse(uri)
+      }.getOrElse { error ->
+        Log.w(TAG, "Android reader media request failed. uri=$uri", error)
+        androidLocalMediaErrorResponse(500, "Android reader media request failed.")
+      }
+    }
+
+    val normalizedPath = uri.path?.trim('/') ?: return null
+    if (
+      normalizedPath != ANDROID_LOCAL_MEDIA_PATH &&
+      !normalizedPath.startsWith("$ANDROID_LOCAL_MEDIA_PATH/")
+    ) {
+      return null
+    }
+
+    return runCatching {
+      val parts = androidLocalMediaPathParts(normalizedPath)
+      val rootUri = configuredStorageRootUri()
+        ?: return@runCatching androidLocalMediaErrorResponse(
+          404,
+          "Android media storage is not selected.",
+        )
+      when (parts.getOrNull(0)) {
+        ANDROID_DIRECT_MEDIA_PATH -> androidDirectLocalMediaResponse(rootUri, parts)
+        ANDROID_ZIP_MEDIA_PATH -> androidZipLocalMediaResponse(rootUri, parts)
+        else -> androidLocalMediaErrorResponse(
+          404,
+          "Android media source was not found.",
+        )
+      }
+    }.getOrElse { error ->
+      Log.w(TAG, "Android local media request failed. path=$normalizedPath", error)
+      androidLocalMediaErrorResponse(500, "Android media request failed.")
+    }
+  }
+
+  private fun androidReaderMediaResponse(uri: Uri): WebResourceResponse? {
+    if (uri.host != NOREA_MEDIA_HOST) return null
+    val fileName = uri.pathSegments.lastOrNull()
+      ?: return androidLocalMediaErrorResponse(
+        400,
+        "Android reader media file is missing.",
+      )
+    val safeName = safeZipEntryName(fileName)
+      ?: return androidLocalMediaErrorResponse(
+        400,
+        "Android reader media file is invalid.",
+      )
+    val file = containedReaderMediaCacheFile(safeName)
+    if (!file.isFile) {
+      return androidLocalMediaErrorResponse(
+        404,
+        "Android reader media file was not found.",
+      )
+    }
+    return androidLocalMediaResponse(
+      mimeTypeForPath(safeName, ""),
+      file.inputStream(),
+    )
+  }
+
+  private fun androidDirectLocalMediaResponse(
+    rootUri: String,
+    parts: List<String>,
+  ): WebResourceResponse {
+      val relativePath = decodeAndroidMediaUrlPart(parts.getOrNull(1))
+        ?: return androidLocalMediaErrorResponse(
+          400,
+          "Android media path is missing.",
+        )
+      val input = openStorageInputStream(rootUri, relativePath)
+        ?: return androidLocalMediaErrorResponse(
+          404,
+          "Android media file cannot be opened.",
+      )
+    return androidLocalMediaResponse(
+      mimeTypeForPath(relativePath, ""),
+      input,
+    )
+  }
+
+  private fun androidZipLocalMediaResponse(
+    rootUri: String,
+    parts: List<String>,
+  ): WebResourceResponse {
+    val archivePath = decodeAndroidMediaUrlPart(parts.getOrNull(1))
+      ?: return androidLocalMediaErrorResponse(
+        400,
+        "Android media archive path is missing.",
+      )
+    val entryName = decodeAndroidMediaUrlPart(parts.getOrNull(2))
+      ?: return androidLocalMediaErrorResponse(
+        400,
+        "Android media archive entry is missing.",
+      )
+    val safeEntryName = safeZipEntryName(entryName)
+      ?: return androidLocalMediaErrorResponse(
+        400,
+        "Android media archive entry is invalid.",
+      )
+    val bytes = readZipEntryBytes(rootUri, archivePath, safeEntryName)
+      ?: return androidLocalMediaErrorResponse(
+        404,
+        "Android media archive entry was not found.",
+      )
+    return androidLocalMediaResponse(
+      mimeTypeForPath(safeEntryName, ""),
+      ByteArrayInputStream(bytes),
+    )
+  }
+
+  private fun androidLocalMediaPathParts(path: String): List<String> {
+    val prefix = ANDROID_LOCAL_MEDIA_PATH
+    val normalized = path
+      .trim('/')
+      .removePrefix(prefix)
+      .trim('/')
+    return normalized
+      .split('/')
+      .filter { it.isNotBlank() }
+  }
+
+  private fun decodeAndroidMediaUrlPart(value: String?): String? {
+    if (value.isNullOrBlank()) return null
+    val padding = "=".repeat((4 - value.length % 4) % 4)
+    return runCatching {
+      String(
+        Base64.decode(value + padding, Base64.URL_SAFE or Base64.NO_WRAP),
+        Charsets.UTF_8,
+      )
+    }.getOrNull()
+  }
+
+  private fun androidLocalMediaResponse(
+    mimeType: String,
+    input: InputStream,
+  ): WebResourceResponse =
+    WebResourceResponse(
+      mimeType,
+      null,
+      200,
+      "OK",
+      mapOf(
+        "Access-Control-Allow-Origin" to "*",
+        "Cache-Control" to "no-store",
+      ),
+      input,
+    )
+
+  private fun androidLocalMediaErrorResponse(
+    statusCode: Int,
+    message: String,
+  ): WebResourceResponse =
+    WebResourceResponse(
+      "text/plain",
+      "utf-8",
+      statusCode,
+      if (statusCode == 404) "Not Found" else "Error",
+      mapOf("Cache-Control" to "no-store"),
+      ByteArrayInputStream(message.toByteArray(Charsets.UTF_8)),
+    )
+
   private fun storageRoot(rootUri: String): DocumentFile =
     DocumentFile.fromTreeUri(this, Uri.parse(rootUri))
       ?: throw IllegalArgumentException("Android storage folder is unavailable.")
@@ -1112,6 +1310,70 @@ class MainActivity : TauriActivity() {
       current = current.findFile(segment) ?: return null
     }
     return current
+  }
+
+  private fun openStorageInputStream(
+    rootUri: String,
+    relativePath: String,
+    document: DocumentFile,
+  ): InputStream? =
+    runCatching {
+      externalStorageFile(rootUri, relativePath)
+        ?.takeIf { it.isFile }
+        ?.inputStream()
+    }.getOrNull()
+      ?: runCatching { contentResolver.openInputStream(document.uri) }.getOrNull()
+
+  private fun openStorageInputStream(rootUri: String, relativePath: String): InputStream? {
+    val direct = runCatching {
+      externalStorageFile(rootUri, relativePath)
+        ?.takeIf { it.isFile }
+        ?.inputStream()
+    }.getOrNull()
+    if (direct != null) return direct
+
+    val documentUri = runCatching { storageDocumentUri(rootUri, relativePath) }.getOrNull()
+    val documentStream = documentUri?.let { uri ->
+      runCatching { contentResolver.openInputStream(uri) }.getOrNull()
+    }
+    if (documentStream != null) return documentStream
+
+    val document = storageDocumentAt(rootUri, relativePath) ?: return null
+    if (!document.isFile) return null
+    return runCatching { contentResolver.openInputStream(document.uri) }.getOrNull()
+  }
+
+  private fun storageDocumentUri(rootUri: String, relativePath: String): Uri {
+    val root = Uri.parse(rootUri)
+    val treeId = DocumentsContract.getTreeDocumentId(root)
+    val relative = safeStorageSegments(relativePath).joinToString("/")
+    val documentId = listOf(treeId, relative)
+      .filter { it.isNotBlank() }
+      .joinToString("/")
+    return DocumentsContract.buildDocumentUriUsingTree(root, documentId)
+  }
+
+  private fun externalStorageFile(rootUri: String, relativePath: String): File? {
+    val root = Uri.parse(rootUri)
+    if (root.authority != "com.android.externalstorage.documents") return null
+    val treeId = runCatching { DocumentsContract.getTreeDocumentId(root) }.getOrNull()
+      ?: return null
+    val separator = treeId.indexOf(':')
+    val volume = if (separator >= 0) treeId.substring(0, separator) else treeId
+    val treePath = if (separator >= 0) treeId.substring(separator + 1) else ""
+    val base = if (volume == "primary") {
+      Environment.getExternalStorageDirectory()
+    } else {
+      File("/storage/$volume")
+    }
+    val storagePath = listOf(treePath, relativePath)
+      .filter { it.isNotBlank() }
+      .joinToString("/")
+    var file = base
+    for (segment in safeStorageSegments(storagePath)) {
+      file = File(file, segment)
+    }
+    return file
   }
 
   private fun restoreBackupDirectoryName(token: String): String {
@@ -1229,6 +1491,36 @@ class MainActivity : TauriActivity() {
     return file
   }
 
+  private fun readerMediaCacheRoot(): File {
+    val root = File(cacheDir, READER_MEDIA_CACHE_DIR).canonicalFile
+    if (!root.exists() && !root.mkdirs()) {
+      throw IllegalStateException("Cannot create reader media cache folder.")
+    }
+    require(root.isDirectory) { "Reader media cache path is not a folder." }
+    return root
+  }
+
+  private fun resetReaderMediaCacheRoot(): File {
+    val root = readerMediaCacheRoot()
+    root.listFiles()?.forEach { child ->
+      if (!child.deleteRecursively()) {
+        throw IllegalStateException("Cannot clear reader media cache.")
+      }
+    }
+    return root
+  }
+
+  private fun containedReaderMediaCacheFile(fileName: String): File {
+    val safeName = safeZipEntryName(fileName)
+      ?: throw IllegalArgumentException("Reader media file name is invalid.")
+    val root = readerMediaCacheRoot()
+    val file = File(root, safeName).canonicalFile
+    require(file.path.startsWith(root.path + File.separator)) {
+      "Reader media file is outside the cache folder."
+    }
+    return file
+  }
+
   private fun containedAppCacheFile(path: String): File {
     val root = cacheDir.canonicalFile
     val file = File(path).canonicalFile
@@ -1275,7 +1567,7 @@ class MainActivity : TauriActivity() {
   ): ByteArray? {
     val archive = storageDocumentAt(rootUri, archiveRelativePath) ?: return null
     if (!archive.isFile) return null
-    return contentResolver.openInputStream(archive.uri)?.use { input ->
+    return openStorageInputStream(rootUri, archiveRelativePath, archive)?.use { input ->
       var body: ByteArray? = null
       ZipInputStream(input.buffered()).use { zip ->
         var entry = zip.nextEntry
@@ -1339,6 +1631,22 @@ class MainActivity : TauriActivity() {
       ?: "application/octet-stream"
   }
 
+  private fun storageDocumentSize(
+    rootUri: String,
+    relativePath: String,
+    document: DocumentFile,
+  ): Long =
+    if (document.isDirectory) {
+      document.listFiles().sumOf(::storageDocumentSize)
+    } else {
+      externalStorageFile(rootUri, relativePath)
+        ?.takeIf { it.isFile }
+        ?.length()
+        ?.coerceAtLeast(0L)
+        ?.takeIf { it > 0L }
+        ?: document.length().coerceAtLeast(0L)
+    }
+
   private fun storageDocumentSize(document: DocumentFile): Long =
     if (document.isDirectory) {
       document.listFiles().sumOf(::storageDocumentSize)
@@ -1363,14 +1671,21 @@ class MainActivity : TauriActivity() {
 
   companion object {
     private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+    private const val ANDROID_DIRECT_MEDIA_PATH = "file"
+    private const val ANDROID_LOCAL_MEDIA_PATH = "__norea_android_media__"
+    private const val ANDROID_ZIP_MEDIA_PATH = "zip"
     private const val BYTES_PER_MIB = 1024L * 1024L
     private const val DEFAULT_STORAGE_COPY_BUFFER_BYTES = 64 * 1024
+    private const val STORAGE_ROOT_CONFIG_FILE = "chapter-media-storage-root.txt"
     private const val TAG = "NoreaStorage"
     private const val MAX_ANDROID_TEMP_BYTES = 2L * 1024L * BYTES_PER_MIB
     private const val MAX_UPDATE_BYTES = 512L * BYTES_PER_MIB
     private const val MAX_ZIP_ENTRY_BYTES = 256L * BYTES_PER_MIB
     private const val MAX_ZIP_ENTRIES = 100_000
     private const val MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2L * 1024L * BYTES_PER_MIB
+    private const val NOREA_MEDIA_HOST = "chapter"
+    private const val NOREA_MEDIA_SCHEME = "norea-media"
+    private const val READER_MEDIA_CACHE_DIR = "reader-media"
     private const val REQUEST_MEDIA_STORAGE_ROOT = 1001
     private const val REQUEST_POST_NOTIFICATIONS = 1002
     private const val STORAGE_TEMP_DIR = "android-storage-bridge"

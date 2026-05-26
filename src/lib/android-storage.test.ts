@@ -4,18 +4,31 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
 import {
+  clearAndroidStorageRoot,
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
+  prepareAndroidReaderMediaCache,
+  readAndroidStorageText,
+  selectAndroidStorageRoot,
   writeAndroidContentUriFile,
 } from "./android-storage";
 
 type TestBridge = {
+  deleteRootChildren?: ReturnType<typeof vi.fn>;
+  deletePath?: ReturnType<typeof vi.fn>;
   deleteTempFile?: ReturnType<typeof vi.fn>;
+  pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
+  prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
+  readText?: ReturnType<typeof vi.fn>;
+  writeBytes?: ReturnType<typeof vi.fn>;
   writeContentUriFile?: ReturnType<typeof vi.fn>;
   writeContentUriFileCapped?: ReturnType<typeof vi.fn>;
 };
+
+const invokeMock = vi.mocked(invoke);
 
 function installBridge(bridge: TestBridge): void {
   Object.defineProperty(globalThis, "window", {
@@ -27,6 +40,7 @@ function installBridge(bridge: TestBridge): void {
 }
 
 beforeEach(() => {
+  invokeMock.mockReset();
   installBridge({});
 });
 
@@ -115,6 +129,112 @@ describe("android storage bridge facade", () => {
 
     expect(deleteTempFile).toHaveBeenCalledWith(
       "/cache/android-storage-bridge/a.tmp",
+    );
+  });
+
+  it("does not create .nomedia while reading from the selected storage root", async () => {
+    const root = "content://tree/primary%3ANorea";
+    const readText = vi.fn(() =>
+      JSON.stringify({ ok: true, text: "<html></html>" }),
+    );
+    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
+    invokeMock.mockResolvedValue(root);
+    installBridge({ readText, writeBytes });
+
+    await expect(
+      readAndroidStorageText("contents/demo/chapter/content.html"),
+    ).resolves.toBe("<html></html>");
+
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_get_storage_root");
+    expect(readText).toHaveBeenCalledWith(
+      root,
+      "contents/demo/chapter/content.html",
+    );
+    expect(writeBytes).not.toHaveBeenCalled();
+  });
+
+  it("does not create .nomedia after selecting a storage root", async () => {
+    const root = "content://tree/primary%3ANoreaSelect";
+    const deletePath = vi.fn(() => JSON.stringify({ ok: true }));
+    const pickMediaStorageRoot = vi.fn((requestId: string) => {
+      window.__lnrResolveAndroidStoragePick?.(requestId, { ok: true, root });
+    });
+    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deletePath, pickMediaStorageRoot, writeBytes });
+
+    await expect(selectAndroidStorageRoot()).resolves.toBe(root);
+
+    expect(pickMediaStorageRoot).toHaveBeenCalledWith(expect.any(String));
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_set_storage_root", {
+      root,
+    });
+    expect(writeBytes).not.toHaveBeenCalled();
+  });
+
+  it("cleans up legacy .nomedia after selecting a storage root", async () => {
+    const root = "content://tree/primary%3ANoreaSelectCleanup";
+    const deletePath = vi.fn(() => JSON.stringify({ ok: true }));
+    const pickMediaStorageRoot = vi.fn((requestId: string) => {
+      window.__lnrResolveAndroidStoragePick?.(requestId, { ok: true, root });
+    });
+    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deletePath, pickMediaStorageRoot, writeBytes });
+
+    await expect(selectAndroidStorageRoot()).resolves.toBe(root);
+
+    expect(deletePath).toHaveBeenCalledWith(root, "contents/.nomedia");
+    expect(writeBytes).not.toHaveBeenCalled();
+  });
+
+  it("does not recreate .nomedia after clearing the storage root", async () => {
+    const root = "content://tree/primary%3ANorea";
+    const deleteRootChildren = vi.fn(() => JSON.stringify({ ok: true }));
+    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deleteRootChildren, writeBytes });
+
+    await clearAndroidStorageRoot();
+
+    expect(deleteRootChildren).toHaveBeenCalledWith(root);
+    expect(writeBytes).not.toHaveBeenCalled();
+  });
+
+  it("cleans up legacy .nomedia before preparing reader media cache", async () => {
+    const root = "content://tree/primary%3ANoreaPrepare";
+    const deletePath = vi.fn(() => JSON.stringify({ ok: true }));
+    const prepareReaderMediaCache = vi.fn(() =>
+      JSON.stringify({ bytes: 12, ok: true }),
+    );
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deletePath, prepareReaderMediaCache });
+
+    await prepareAndroidReaderMediaCache("contents/demo/chapter/media.zip");
+
+    expect(deletePath).toHaveBeenCalledWith(root, "contents/.nomedia");
+    expect(prepareReaderMediaCache).toHaveBeenCalledWith(
+      root,
+      "contents/demo/chapter/media.zip",
+    );
+  });
+
+  it("keeps preparing reader media when legacy .nomedia cleanup fails", async () => {
+    const root = "content://tree/primary%3ANoreaPrepareAfterCleanupFailure";
+    const deletePath = vi.fn(() =>
+      JSON.stringify({ error: "not found", ok: false }),
+    );
+    const prepareReaderMediaCache = vi.fn(() =>
+      JSON.stringify({ bytes: 12, ok: true }),
+    );
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deletePath, prepareReaderMediaCache });
+
+    await prepareAndroidReaderMediaCache("contents/demo/chapter/media.zip");
+
+    expect(prepareReaderMediaCache).toHaveBeenCalledWith(
+      root,
+      "contents/demo/chapter/media.zip",
     );
   });
 });

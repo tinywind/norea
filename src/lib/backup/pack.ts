@@ -7,6 +7,7 @@ import { encodeBackupManifest, type BackupManifest } from "./format";
 
 interface BackupChapterMediaFilePayload {
   media_src: string;
+  chapter_id?: number | null;
   novel_id?: number | null;
   source_id?: string | null;
   novel_name?: string | null;
@@ -40,8 +41,9 @@ function backupChapterMediaSources(
       sourceId: novel?.pluginId,
     };
     for (const mediaSrc of localChapterMediaSources(chapter.content, context)) {
-      if (!mediaSources.has(mediaSrc)) {
-        mediaSources.set(mediaSrc, { context, mediaSrc });
+      const key = `${context.chapterId}\u0000${mediaSrc}`;
+      if (!mediaSources.has(key)) {
+        mediaSources.set(key, { context, mediaSrc });
       }
     }
   }
@@ -52,15 +54,16 @@ function backupChapterMediaFilePayloads(
   manifest: BackupManifest,
 ): BackupChapterMediaFilePayload[] {
   return backupChapterMediaSources(manifest).map((source) => ({
-      media_src: source.mediaSrc,
-      novel_id: source.context.novelId,
-      source_id: source.context.sourceId,
-      novel_name: source.context.novelName,
-      novel_path: source.context.novelPath,
-      chapter_number: source.context.chapterNumber,
-      chapter_name: source.context.chapterName,
-      chapter_position: source.context.chapterPosition,
-    }));
+    media_src: source.mediaSrc,
+    chapter_id: source.context.chapterId,
+    novel_id: source.context.novelId,
+    source_id: source.context.sourceId,
+    novel_name: source.context.novelName,
+    novel_path: source.context.novelPath,
+    chapter_number: source.context.chapterNumber,
+    chapter_name: source.context.chapterName,
+    chapter_position: source.context.chapterPosition,
+  }));
 }
 
 /**

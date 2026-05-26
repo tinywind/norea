@@ -261,6 +261,24 @@ async function readStoredChapterContentFile(
   });
 }
 
+function isOptionalAndroidStorageReadFailure(error: unknown): boolean {
+  if (!isAndroidRuntime() || !(error instanceof Error)) return false;
+  return /permission|denied|hidden|not accessible|unavailable|cannot open storage file/i.test(
+    error.message,
+  );
+}
+
+async function readRestorableChapterContentFile(
+  contentFile: string,
+): Promise<string | null> {
+  try {
+    return await readStoredChapterContentFile(contentFile);
+  } catch (error) {
+    if (isOptionalAndroidStorageReadFailure(error)) return null;
+    throw error;
+  }
+}
+
 async function restoreStoredChapterContentRows(
   options: ChapterStorageRestoreOptions,
 ): Promise<ChapterStorageRestoreResult> {
@@ -308,7 +326,7 @@ async function restoreStoredChapterContentRows(
       metadata.novel,
       metadata.chapter,
     );
-    const content = await readStoredChapterContentFile(contentFile);
+    const content = await readRestorableChapterContentFile(contentFile);
     if (content === null) continue;
     const contentType = normalizeChapterContentType(
       metadata.chapter.contentType ?? DEFAULT_CHAPTER_CONTENT_TYPE,

@@ -152,7 +152,8 @@ describe("unpackBackup", () => {
       chapter_media: [
         {
           bytes: 3,
-          media_src: "norea-media://chapter/10/image.png",
+          chapter_id: 10,
+          media_src: "norea-media://chapter/image.png",
           staged_ref: "media-0.bin",
         },
       ],
@@ -164,7 +165,8 @@ describe("unpackBackup", () => {
     expect(restored.chapters[0]?.mediaBytes).toBe(3);
     expect(getBackupChapterMediaFiles(restored)).toEqual([
       {
-        mediaSrc: "norea-media://chapter/10/image.png",
+        chapterId: 10,
+        mediaSrc: "norea-media://chapter/image.png",
         bytes: 3,
         stagedRef: "media-0.bin",
         stagingId: "stage-1",
@@ -182,7 +184,8 @@ describe("unpackBackup", () => {
         chapters: [],
         chapter_media: [
           {
-            media_src: "norea-media://chapter/10/image.png",
+            chapter_id: 10,
+            media_src: "norea-media://chapter/image.png",
             body: [1, 2, 3],
           },
         ],
@@ -198,7 +201,8 @@ describe("unpackBackup", () => {
     });
     expect(getBackupChapterMediaFiles(restored)).toEqual([
       {
-        mediaSrc: "norea-media://chapter/10/image.png",
+        chapterId: 10,
+        mediaSrc: "norea-media://chapter/image.png",
         body: [1, 2, 3],
         bytes: 3,
       },
@@ -213,7 +217,8 @@ describe("unpackBackup", () => {
       chapter_media: [
         {
           bytes: 5,
-          media_src: "norea-media://chapter/10/large.png",
+          chapter_id: 10,
+          media_src: "norea-media://chapter/large.png",
           staged_ref: "media-0.bin",
         },
       ],

@@ -129,7 +129,7 @@ const BACKUP_SETTING_KEYS = new Set([
 
 const BACKUP_SETTING_PREFIXES = ["plugin:", "source-filters:"];
 const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
-  /^norea-media:\/\/chapter\/([1-9]\d*)\/([A-Za-z0-9._-]+)$/;
+  /^norea-media:\/\/chapter\/(?:([1-9]\d*)\/)?([A-Za-z0-9._-]+)$/;
 
 const SELECT_NOVELS = `
   SELECT
@@ -307,7 +307,10 @@ function toChapter(row: RawChapterRow): BackupChapter {
   };
 }
 
-function parseBackupChapterMediaSource(mediaSrc: string): {
+function parseBackupChapterMediaSource(
+  mediaSrc: string,
+  fallbackChapterId?: number,
+): {
   chapterId: number;
   fileName: string;
 } {
@@ -315,8 +318,14 @@ function parseBackupChapterMediaSource(mediaSrc: string): {
   if (!match) {
     throw new Error(`Invalid backup chapter media reference: ${mediaSrc}`);
   }
+  const chapterId = match[1]
+    ? Number.parseInt(match[1], 10)
+    : fallbackChapterId;
+  if (!chapterId || chapterId <= 0) {
+    throw new Error(`Invalid backup chapter media reference: ${mediaSrc}`);
+  }
   return {
-    chapterId: Number.parseInt(match[1]!, 10),
+    chapterId,
     fileName: match[2]!,
   };
 }
@@ -360,6 +369,7 @@ async function restoreBackupChapterMediaFiles(
     );
     const { chapterId, fileName } = parseBackupChapterMediaSource(
       file.mediaSrc,
+      file.chapterId,
     );
     const chapter = chaptersById.get(chapterId);
     const novel = chapter ? novelsById.get(chapter.novelId) : undefined;

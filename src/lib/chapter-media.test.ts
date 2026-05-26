@@ -15,6 +15,7 @@ const androidStorageMocks = vi.hoisted(() => ({
   clearAndroidStorageRoot: vi.fn(),
   deleteAndroidStoragePath: vi.fn(),
   extractAndroidStorageZip: vi.fn(),
+  prepareAndroidReaderMediaCache: vi.fn(),
   readAndroidStorageDataUrl: vi.fn(),
   readAndroidStorageText: vi.fn(),
   readAndroidStorageZipEntriesDataUrls: vi.fn(),
@@ -33,6 +34,8 @@ vi.mock("../db/queries/novel", () => ({
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { pluginMediaFetch } from "./http";
+import { getChapterById } from "../db/queries/chapter";
+import { getNovelById } from "../db/queries/novel";
 import {
   cacheHtmlChapterMedia,
   getStoredChapterMediaBytes,
@@ -44,6 +47,8 @@ import {
 const invokeMock = vi.mocked(invoke);
 const convertFileSrcMock = vi.mocked(convertFileSrc);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
+const getChapterByIdMock = vi.mocked(getChapterById);
+const getNovelByIdMock = vi.mocked(getNovelById);
 
 function nativeStreamInfo(handle: string, size = 0, finished = false) {
   return {
@@ -139,6 +144,8 @@ beforeEach(() => {
   convertFileSrcMock.mockReset();
   convertFileSrcMock.mockImplementation((path) => `asset://localhost/${path}`);
   pluginMediaFetchMock.mockReset();
+  getChapterByIdMock.mockReset();
+  getNovelByIdMock.mockReset();
   Object.values(androidStorageMocks).forEach((mock) => mock.mockReset());
   vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
   installTemplateDocument();
@@ -167,7 +174,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -287,7 +294,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
@@ -356,7 +363,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       if (command === "chapter_media_archive_cache") return 2;
       if (command === "chapter_media_write_manifest") return null;
@@ -397,7 +404,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -440,7 +447,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -486,7 +493,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -549,7 +556,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -616,7 +623,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     try {
@@ -670,7 +677,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     try {
@@ -722,7 +729,7 @@ describe("cacheHtmlChapterMedia", () => {
       if (input.fileName.includes("broken")) {
         throw new Error("write failed");
       }
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     try {
@@ -825,7 +832,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -919,7 +926,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       return null;
     });
@@ -1037,7 +1044,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       return null;
     });
@@ -1090,7 +1097,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       return null;
     });
@@ -1182,7 +1189,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       return null;
     });
@@ -1297,7 +1304,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       return null;
     });
@@ -1341,7 +1348,7 @@ describe("cacheHtmlChapterMedia", () => {
           fileName: string;
         };
         controller.abort();
-        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+        return `norea-media://chapter/${input.fileName}`;
       }
       return null;
     });
@@ -1537,7 +1544,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -1571,7 +1578,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -1613,7 +1620,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      return `norea-media://chapter/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -1710,9 +1717,9 @@ describe("stored chapter media byte stats", () => {
 
     expect(new Set(localChapterMediaSources(html, context))).toEqual(
       new Set([
-        "norea-media://chapter/27/page.png",
-        "norea-media://chapter/27/old.png",
-        "norea-media://chapter/27/cover.png",
+        "norea-media://chapter/page.png",
+        "norea-media://chapter/old.png",
+        "norea-media://chapter/cover.png",
       ]),
     );
 
@@ -1723,7 +1730,8 @@ describe("stored chapter media byte stats", () => {
     expect(invokeMock).toHaveBeenCalledWith(
       "chapter_media_total_size",
       expect.objectContaining({
-        mediaSrcs: ["norea-media://chapter/27/page.png"],
+        chapterId: 27,
+        mediaSrcs: ["norea-media://chapter/page.png"],
       }),
     );
   });
@@ -1739,6 +1747,68 @@ describe("stored chapter media byte stats", () => {
 });
 
 describe("resolveLocalChapterMedia", () => {
+  it("loads Android archives from stored chapter context for legacy media URLs", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Android" });
+    getChapterByIdMock.mockResolvedValue({
+      bookmark: false,
+      chapterNumber: "12",
+      content: null,
+      contentBytes: 0,
+      contentType: "html",
+      createdAt: 1,
+      foundAt: 1,
+      id: 95,
+      isDownloaded: true,
+      mediaBytes: 12,
+      mediaRepairNeeded: false,
+      name: "Episode",
+      novelId: 7,
+      page: "",
+      path: "chapter/12",
+      position: 12,
+      progress: 0,
+      readAt: null,
+      releaseTime: null,
+      unread: true,
+      updatedAt: 1,
+    });
+    getNovelByIdMock.mockResolvedValue({
+      artist: null,
+      author: null,
+      cover: null,
+      createdAt: 1,
+      genres: null,
+      id: 7,
+      inLibrary: true,
+      isLocal: false,
+      lastReadAt: null,
+      libraryAddedAt: 1,
+      name: "Sample Novel",
+      path: "series/path",
+      pluginId: "demo-source",
+      pluginName: "Demo",
+      status: null,
+      summary: null,
+      updatedAt: 1,
+    });
+    androidStorageMocks.prepareAndroidReaderMediaCache.mockResolvedValue(
+      undefined,
+    );
+
+    const html = await resolveLocalChapterMedia(
+      `<img src="norea-media://chapter/95/page.png">`,
+    );
+
+    expect(getChapterByIdMock).toHaveBeenCalledWith(95);
+    expect(getNovelByIdMock).toHaveBeenCalledWith(7);
+    expect(
+      androidStorageMocks.prepareAndroidReaderMediaCache,
+    ).toHaveBeenCalledWith(
+      "contents/demo-source/Sample-Novel-series-path/12-Episode/media.zip",
+    );
+    expect(html).toContain('src="norea-media://chapter/page.png"');
+  });
+
   it("prefers desktop asset URLs from stored media paths", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_media_path") {
@@ -1849,15 +1919,12 @@ describe("resolveLocalChapterMedia", () => {
 });
 
 describe("resolveLocalChapterMediaPatches", () => {
-  it("resolves Android archive media with one batched zip read", async () => {
+  it("resolves Android archive media to local resource URLs", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
-    androidStorageMocks.androidStoragePathSize.mockResolvedValue(0);
-    androidStorageMocks.readAndroidStorageZipEntriesDataUrls.mockResolvedValue(
-      new Map([
-        ["page.png", "data:image/png;base64,page.png"],
-        ["large.png", "data:image/png;base64,large.png"],
-      ]),
+    androidStorageMocks.androidStoragePathSize.mockImplementation(
+      async (path: string) => (path.endsWith("/media.zip") ? 12 : 0),
     );
+    androidStorageMocks.androidStorageZipEntryExists.mockResolvedValue(true);
 
     const repeated = "norea-media://chapter/42/page.png";
     const patches = await resolveLocalChapterMediaPatches(
@@ -1891,38 +1958,27 @@ describe("resolveLocalChapterMediaPatches", () => {
       androidStorageMocks.readAndroidStorageZipEntryDataUrl,
     ).not.toHaveBeenCalled();
     expect(
-      androidStorageMocks.readAndroidStorageZipEntriesDataUrls,
-    ).toHaveBeenCalledTimes(1);
-    expect(
-      androidStorageMocks.readAndroidStorageZipEntriesDataUrls,
-    ).toHaveBeenCalledWith("chapter-media/42/media.zip", [
-      "page.png",
-      "large.png",
-    ]);
+      androidStorageMocks.prepareAndroidReaderMediaCache,
+    ).toHaveBeenCalledWith("chapter-media/42/media.zip");
     expect(patches).toHaveLength(2);
-    expect(patches[0]?.attributes.src).toBe(
-      "data:image/png;base64,page.png",
+    expect(patches[0]?.attributes.src).toBe("norea-media://chapter/page.png");
+    expect(patches[1]?.attributes.srcset).toContain(
+      "norea-media://chapter/page.png 1x",
     );
     expect(patches[1]?.attributes.srcset).toContain(
-      "data:image/png;base64,page.png 1x",
-    );
-    expect(patches[1]?.attributes.srcset).toContain(
-      "data:image/png;base64,large.png 2x",
+      "norea-media://chapter/large.png 2x",
     );
     expect(patches[1]?.attributes.style).toContain(
-      'url("data:image/png;base64,page.png")',
+      'url("norea-media://chapter/page.png")',
     );
   });
 
   it("resolves relative and stale Android archive refs against the current context", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
-    androidStorageMocks.androidStoragePathSize.mockResolvedValue(0);
-    androidStorageMocks.readAndroidStorageZipEntriesDataUrls.mockResolvedValue(
-      new Map([
-        ["page.png", "data:image/png;base64,page.png"],
-        ["large.png", "data:image/png;base64,large.png"],
-      ]),
+    androidStorageMocks.androidStoragePathSize.mockImplementation(
+      async (path: string) => (path.endsWith("/media.zip") ? 12 : 0),
     );
+    androidStorageMocks.androidStorageZipEntryExists.mockResolvedValue(true);
 
     const patches = await resolveLocalChapterMediaPatches(
       [
@@ -1949,16 +2005,11 @@ describe("resolveLocalChapterMediaPatches", () => {
     );
 
     expect(
-      androidStorageMocks.readAndroidStorageZipEntriesDataUrls,
-    ).toHaveBeenCalledWith("chapter-media/27/media.zip", [
-      "page.png",
-      "large.png",
-    ]);
-    expect(patches[0]?.attributes.src).toBe(
-      "data:image/png;base64,page.png",
-    );
+      androidStorageMocks.prepareAndroidReaderMediaCache,
+    ).toHaveBeenCalledWith("chapter-media/27/media.zip");
+    expect(patches[0]?.attributes.src).toBe("norea-media://chapter/page.png");
     expect(patches[1]?.attributes.srcset).toContain(
-      "data:image/png;base64,large.png 2x",
+      "norea-media://chapter/large.png 2x",
     );
   });
 

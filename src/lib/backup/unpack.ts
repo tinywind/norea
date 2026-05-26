@@ -11,7 +11,11 @@ interface LegacyUnpackedBackupRaw {
   /** Snake-case to match the Rust serde default — see `cf_webview.ts`. */
   manifest_json: string;
   chapters: Array<{ id: number; html: string }>;
-  chapter_media?: Array<{ media_src: string; body: number[] }>;
+  chapter_media?: Array<{
+    body: number[];
+    chapter_id?: number | null;
+    media_src: string;
+  }>;
 }
 
 interface StagedUnpackedBackupRaw {
@@ -19,6 +23,7 @@ interface StagedUnpackedBackupRaw {
   chapters: Array<{ id: number; html: string }>;
   chapter_media?: Array<{
     bytes: number;
+    chapter_id?: number | null;
     media_src: string;
     staged_ref: string;
   }>;
@@ -28,6 +33,7 @@ interface StagedUnpackedBackupRaw {
 export interface BackupChapterMediaFile {
   body?: number[];
   bytes: number;
+  chapterId?: number;
   mediaSrc: string;
   stagedRef?: string;
   stagingId?: string;
@@ -35,7 +41,7 @@ export interface BackupChapterMediaFile {
 
 const BACKUP_CHAPTER_MEDIA_FILES = Symbol("backupChapterMediaFiles");
 const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
-  /^norea-media:\/\/chapter\/([1-9]\d*)\/[A-Za-z0-9._-]+$/;
+  /^norea-media:\/\/chapter\/(?:([1-9]\d*)\/)?([A-Za-z0-9._-]+)$/;
 
 type BackupManifestWithChapterMedia = BackupManifest & {
   [BACKUP_CHAPTER_MEDIA_FILES]?: readonly BackupChapterMediaFile[];
@@ -68,24 +74,39 @@ export function getBackupChapterMediaFiles(
   );
 }
 
+function parseBackupChapterMediaSource(
+  mediaSrc: string,
+  fallbackChapterId?: number,
+): { chapterId: number; fileName: string } | null {
+  const match = LOCAL_CHAPTER_MEDIA_SRC_PATTERN.exec(mediaSrc);
+  if (!match) return null;
+  const chapterId = match[1]
+    ? Number.parseInt(match[1], 10)
+    : fallbackChapterId;
+  if (!chapterId || chapterId <= 0) return null;
+  return {
+    chapterId,
+    fileName: match[2]!,
+  };
+}
+
 function chapterMediaByteCounts(
   files: readonly BackupChapterMediaFile[],
 ): Map<number, number> {
   const bytesByChapterId = new Map<number, number>();
   for (const file of files) {
-    const match = LOCAL_CHAPTER_MEDIA_SRC_PATTERN.exec(file.mediaSrc);
-    if (!match) continue;
-    const chapterId = Number.parseInt(match[1]!, 10);
+    const parsed = parseBackupChapterMediaSource(file.mediaSrc, file.chapterId);
+    if (!parsed) continue;
     bytesByChapterId.set(
-      chapterId,
-      (bytesByChapterId.get(chapterId) ?? 0) + file.bytes,
+      parsed.chapterId,
+      (bytesByChapterId.get(parsed.chapterId) ?? 0) + file.bytes,
     );
   }
   return bytesByChapterId;
 }
 
 function parseLegacyChapterMediaFiles(
-  files: readonly { media_src: string; body: number[] }[],
+  files: NonNullable<LegacyUnpackedBackupRaw["chapter_media"]>,
 ): BackupChapterMediaFile[] {
   let totalBytes = 0;
   return files.map((file) => {
@@ -103,17 +124,14 @@ function parseLegacyChapterMediaFiles(
     return {
       body: file.body,
       bytes: file.body.length,
+      ...(file.chapter_id ? { chapterId: file.chapter_id } : {}),
       mediaSrc: file.media_src,
     };
   });
 }
 
 function parseStagedChapterMediaFiles(
-  files: readonly {
-    bytes: number;
-    media_src: string;
-    staged_ref: string;
-  }[],
+  files: NonNullable<StagedUnpackedBackupRaw["chapter_media"]>,
   stagingId: string | null | undefined,
 ): BackupChapterMediaFile[] {
   if (files.length === 0) return [];
@@ -138,6 +156,7 @@ function parseStagedChapterMediaFiles(
     }
     return {
       bytes: file.bytes,
+      ...(file.chapter_id ? { chapterId: file.chapter_id } : {}),
       mediaSrc: file.media_src,
       stagedRef: file.staged_ref,
       stagingId,

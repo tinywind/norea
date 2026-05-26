@@ -8,8 +8,21 @@ export function isTauriRuntime(): boolean {
 export function isAndroidRuntime(): boolean {
   return (
     isTauriRuntime() &&
-    typeof navigator !== "undefined" &&
-    /\bAndroid\b/i.test(navigator.userAgent)
+    (hasAndroidUserAgent() || hasAndroidStorageBridge())
+  );
+}
+
+function hasAndroidUserAgent(): boolean {
+  return (
+    typeof navigator !== "undefined" && /\bAndroid\b/i.test(navigator.userAgent)
+  );
+}
+
+function hasAndroidStorageBridge(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "__NoreaAndroidStorage" in
+      (window as Window & { __NoreaAndroidStorage?: unknown })
   );
 }
 

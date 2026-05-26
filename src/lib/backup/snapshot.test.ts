@@ -349,7 +349,8 @@ describe("applyBackupSnapshot", () => {
       parseBackupManifest(encodeBackupManifest(await gatherForTest())),
       [
         {
-          mediaSrc: "norea-media://chapter/10/image.png",
+          chapterId: 10,
+          mediaSrc: "norea-media://chapter/image.png",
           bytes: 3,
           stagedRef: "media-0.bin",
           stagingId: "stage-1",
@@ -388,7 +389,7 @@ describe("applyBackupSnapshot", () => {
           bytes: 3,
           fileName: "image.png",
           path: "media/image.png",
-          sourceUrl: "norea-media://chapter/10/image.png",
+          sourceUrl: "norea-media://chapter/image.png",
           status: "stored",
         }),
       ],
@@ -434,7 +435,8 @@ describe("applyBackupSnapshot", () => {
       parseBackupManifest(encodeBackupManifest(await gatherForTest())),
       [
         {
-          mediaSrc: "norea-media://chapter/10/image.png",
+          chapterId: 10,
+          mediaSrc: "norea-media://chapter/image.png",
           body: [1, 2, 3],
           bytes: 3,
         },
@@ -484,7 +486,8 @@ describe("applyBackupSnapshot", () => {
       parseBackupManifest(encodeBackupManifest(await gatherForTest())),
       [
         {
-          mediaSrc: "norea-media://chapter/10/image.png",
+          chapterId: 10,
+          mediaSrc: "norea-media://chapter/image.png",
           bytes: 3,
           stagedRef: "media-0.bin",
           stagingId: "stage-1",

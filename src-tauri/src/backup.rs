@@ -25,7 +25,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::chapter_media::{
-    chapter_media_body_from_src_with_context, chapter_media_src_from_backup_entry,
+    chapter_media_body_from_src_with_context, chapter_media_from_backup_entry,
     store_chapter_media_file_source,
 };
 
@@ -154,6 +154,7 @@ pub struct ChapterContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterMediaContent {
     pub media_src: String,
+    pub chapter_id: Option<i64>,
     pub body: Vec<u8>,
 }
 
@@ -161,6 +162,7 @@ pub struct ChapterMediaContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterMediaFileRef {
     pub media_src: String,
+    pub chapter_id: Option<i64>,
     pub novel_id: Option<i64>,
     pub source_id: Option<String>,
     pub novel_name: Option<String>,
@@ -183,6 +185,7 @@ pub struct UnpackedBackup {
 #[derive(Debug, Clone, Serialize)]
 pub struct StagedChapterMediaContent {
     pub media_src: String,
+    pub chapter_id: Option<i64>,
     pub staged_ref: String,
     pub bytes: u64,
 }
@@ -574,24 +577,31 @@ fn write_manifest_entry<W: Write + Seek>(
     Ok(())
 }
 
-fn media_backup_entry_name(media_src: &str) -> Result<String, String> {
+fn media_backup_entry_name(
+    media_src: &str,
+    context_chapter_id: Option<i64>,
+) -> Result<String, String> {
     let payload = media_src
         .strip_prefix("norea-media://chapter/")
         .ok_or_else(|| "backup_pack: unsupported chapter media uri".to_string())?;
-    let mut parts = payload.split('/');
-    let chapter_id = parts
-        .next()
-        .ok_or_else(|| "backup_pack: missing chapter media id".to_string())?
-        .parse::<i64>()
-        .map_err(|err| format!("backup_pack: invalid chapter media id: {err}"))?;
+    let parts = payload.split('/').collect::<Vec<_>>();
+    let (uri_chapter_id, file_name) = match parts.as_slice() {
+        [file_name] => (None, *file_name),
+        [raw_chapter_id, file_name] => {
+            let chapter_id = raw_chapter_id
+                .parse::<i64>()
+                .map_err(|err| format!("backup_pack: invalid chapter media id: {err}"))?;
+            (Some(chapter_id), *file_name)
+        }
+        _ => return Err("backup_pack: invalid chapter media uri".to_string()),
+    };
+    let chapter_id = uri_chapter_id
+        .or(context_chapter_id)
+        .ok_or_else(|| "backup_pack: missing chapter media id".to_string())?;
     if chapter_id <= 0 {
         return Err("backup_pack: chapter media id must be positive".to_string());
     }
-    let file_name = parts
-        .next()
-        .ok_or_else(|| "backup_pack: missing chapter media file name".to_string())?;
-    if parts.next().is_some()
-        || file_name.is_empty()
+    if file_name.is_empty()
         || file_name == "."
         || file_name == ".."
         || file_name.contains('\0')
@@ -617,7 +627,7 @@ fn write_chapter_media_entries<W: Write + Seek>(
         .unix_permissions(0o644);
     let mut written = HashSet::new();
     for file in chapter_media {
-        let entry_name = media_backup_entry_name(&file.media_src)?;
+        let entry_name = media_backup_entry_name(&file.media_src, file.chapter_id)?;
         if !written.insert(entry_name.clone()) {
             continue;
         }
@@ -673,13 +683,14 @@ fn write_chapter_media_file_ref_entries<W: Write + Seek>(
         .unix_permissions(0o644);
     let mut written = HashSet::new();
     for file in chapter_media_files {
-        let entry_name = media_backup_entry_name(&file.media_src)?;
+        let entry_name = media_backup_entry_name(&file.media_src, file.chapter_id)?;
         if !written.insert(entry_name.clone()) {
             continue;
         }
         let (body, _) = chapter_media_body_from_src_with_context(
             app,
             &file.media_src,
+            file.chapter_id,
             file.novel_id,
             file.source_id.as_deref(),
             file.novel_path.as_deref(),
@@ -1204,7 +1215,7 @@ fn read_backup_archive_with_limits<R: Read + Seek>(
             continue;
         }
 
-        if let Some(media_src) = chapter_media_src_from_backup_entry(&name) {
+        if let Some((chapter_id, media_src)) = chapter_media_from_backup_entry(&name) {
             ensure_entry_declared_size(
                 &name,
                 "chapter media",
@@ -1213,7 +1224,11 @@ fn read_backup_archive_with_limits<R: Read + Seek>(
             )?;
             let body = read_limited_bytes(&mut entry, limits.max_media_entry_bytes, &name)?;
             budget.validate_actual_entry_size(&name, declared_size, body.len() as u64)?;
-            chapter_media.push(ChapterMediaContent { media_src, body });
+            chapter_media.push(ChapterMediaContent {
+                media_src,
+                chapter_id: Some(chapter_id),
+                body,
+            });
         }
     }
 
@@ -1355,7 +1370,7 @@ fn read_backup_archive_staged_with_limits<R: Read + Seek>(
             continue;
         }
 
-        if let Some(media_src) = chapter_media_src_from_backup_entry(&name) {
+        if let Some((chapter_id, media_src)) = chapter_media_from_backup_entry(&name) {
             ensure_entry_declared_size(
                 &name,
                 "chapter media",
@@ -1373,6 +1388,7 @@ fn read_backup_archive_staged_with_limits<R: Read + Seek>(
             budget.validate_actual_entry_size(&name, declared_size, bytes)?;
             chapter_media.push(StagedChapterMediaContent {
                 media_src,
+                chapter_id: Some(chapter_id),
                 staged_ref,
                 bytes,
             });
@@ -1633,7 +1649,8 @@ mod tests {
             None,
             manifest_json.clone(),
             vec![ChapterMediaContent {
-                media_src: "norea-media://chapter/10/image.png".to_string(),
+                media_src: "norea-media://chapter/image.png".to_string(),
+                chapter_id: Some(10),
                 body: vec![1, 2, 3, 4],
             }],
             Vec::new(),
@@ -1646,8 +1663,9 @@ mod tests {
         assert_eq!(unpacked.chapter_media.len(), 1);
         assert_eq!(
             unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://chapter/10/image.png"
+            "norea-media://chapter/image.png"
         );
+        assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
         assert_eq!(unpacked.chapter_media[0].body.as_slice(), &[1, 2, 3, 4]);
     }
 
@@ -1672,8 +1690,9 @@ mod tests {
         assert_eq!(unpacked.chapter_media.len(), 1);
         assert_eq!(
             unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://chapter/10/image.png"
+            "norea-media://chapter/image.png"
         );
+        assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
         assert_eq!(unpacked.chapter_media[0].body.as_slice(), &[1, 2, 3, 4]);
     }
 
@@ -1699,8 +1718,9 @@ mod tests {
         assert_eq!(unpacked.chapter_media.len(), 1);
         assert_eq!(
             unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://chapter/10/image.png"
+            "norea-media://chapter/image.png"
         );
+        assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
         assert_eq!(unpacked.chapter_media[0].staged_ref.as_str(), "media-0.bin");
         assert_eq!(unpacked.chapter_media[0].bytes, 4);
         assert_eq!(

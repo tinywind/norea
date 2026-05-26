@@ -177,4 +177,41 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
 
+val patchRustWebViewClient by tasks.registering {
+    val source = layout.projectDirectory.file(
+        "src/main/java/io/github/tinywind/norea/generated/RustWebViewClient.kt"
+    )
+    inputs.file(source)
+    outputs.file(source)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val file = source.asFile
+        if (!file.exists()) return@doLast
+
+        val original = file.readText()
+        val hook =
+            "        (view.context as? MainActivity)?.androidLocalMediaResponse(request.url)?.let { return it }"
+        if (original.contains(hook)) return@doLast
+
+        val target = "    ): WebResourceResponse? {\n        pendingUrlRedirect?.let {\n"
+        val replacement =
+            "    ): WebResourceResponse? {\n$hook\n\n        pendingUrlRedirect?.let {\n"
+        check(original.contains(target)) {
+            "RustWebViewClient request interception hook target was not found."
+        }
+        file.writeText(original.replace(target, replacement))
+    }
+}
+
+tasks.matching {
+    it.name.startsWith("compile") && it.name.endsWith("Kotlin")
+}.configureEach {
+    dependsOn(patchRustWebViewClient)
+}
+
+patchRustWebViewClient.configure {
+    mustRunAfter(tasks.matching { it.name.startsWith("rustBuild") })
+}
+
 apply(from = "tauri.build.gradle.kts")

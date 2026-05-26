@@ -27,6 +27,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../db/client";
 import { getStoredChapterMediaBytes } from "./chapter-media";
 import {
+  deleteAndroidStoragePath,
+  readAndroidStorageText,
+} from "./android-storage";
+import {
   mirrorAllStoredChapterContent,
   mirrorStoredNovelChapters,
   restoreChapterContentStorageMirror,
@@ -37,6 +41,8 @@ import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 const getDbMock = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
 const getStoredChapterMediaBytesMock = vi.mocked(getStoredChapterMediaBytes);
+const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
+const readAndroidStorageTextMock = vi.mocked(readAndroidStorageText);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
 let executeMock: ReturnType<typeof vi.fn>;
@@ -94,6 +100,7 @@ beforeEach(() => {
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
   getStoredChapterMediaBytesMock.mockResolvedValue(0);
+  deleteAndroidStoragePathMock.mockResolvedValue(undefined);
   invokeMock.mockResolvedValue(undefined);
 });
 
@@ -241,5 +248,30 @@ describe("chapter content storage mirror", () => {
     expect(selectMock.mock.calls[0]?.[1]).toEqual([1]);
     expect(selectMock.mock.calls[1]?.[1]).toEqual([10, 1]);
     vi.useRealTimers();
+  });
+
+  it("treats inaccessible Android mirror files as missing during restore", async () => {
+    isAndroidRuntimeMock.mockReturnValue(true);
+    selectMock.mockResolvedValueOnce([
+      chapterRow({ chapterId: 20, content: null }),
+    ]);
+    readAndroidStorageTextMock.mockRejectedValue(
+      new Error("Permission to access file is denied"),
+    );
+
+    await expect(
+      restoreChapterContentStorageMirror({
+        contentOnly: true,
+        limit: 1,
+      }),
+    ).resolves.toEqual({
+      chapters: 0,
+      cursorChapterId: 20,
+      novels: 0,
+      scannedChapters: 1,
+    });
+
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(getStoredChapterMediaBytesMock).not.toHaveBeenCalled();
   });
 });

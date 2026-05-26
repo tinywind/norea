@@ -167,11 +167,11 @@ describe("packBackup", () => {
     manifest.chapters[0] = {
       ...manifest.chapters[0]!,
       content:
-        '<img src="norea-media://chapter/10/image.png"><img src="norea-media://chapter/10/image.png">',
+        '<img src="norea-media://chapter/image.png"><img src="norea-media://chapter/image.png">',
     };
     localChapterMediaSourcesMock.mockReturnValue([
-      "norea-media://chapter/10/image.png",
-      "norea-media://chapter/10/image.png",
+      "norea-media://chapter/image.png",
+      "norea-media://chapter/image.png",
     ]);
     await packBackup(manifest, "C:\\backup.zip");
 
@@ -180,7 +180,8 @@ describe("packBackup", () => {
       chapterMedia: [],
       chapterMediaFiles: [
         {
-          media_src: "norea-media://chapter/10/image.png",
+          media_src: "norea-media://chapter/image.png",
+          chapter_id: 10,
           novel_id: 1,
           source_id: "demo",
           novel_name: "Sample Novel",
@@ -197,10 +198,10 @@ describe("packBackup", () => {
     const manifest = makeManifest();
     manifest.chapters[0] = {
       ...manifest.chapters[0]!,
-      content: '<img src="norea-media://chapter/10/large.png">',
+      content: '<img src="norea-media://chapter/large.png">',
     };
     localChapterMediaSourcesMock.mockReturnValue([
-      "norea-media://chapter/10/large.png",
+      "norea-media://chapter/large.png",
     ]);
     await packBackup(manifest, "C:\\backup.zip");
 
@@ -209,7 +210,8 @@ describe("packBackup", () => {
       chapterMedia: [],
       chapterMediaFiles: [
         {
-          media_src: "norea-media://chapter/10/large.png",
+          media_src: "norea-media://chapter/large.png",
+          chapter_id: 10,
         },
       ],
     });

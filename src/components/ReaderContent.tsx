@@ -2441,7 +2441,6 @@ function ReaderContentInner(
                 if (
                   !source ||
                   !resolved ||
-                  resolved.includes(READER_LOCAL_MEDIA_SRC_PREFIX) ||
                   next[source] === resolved
                 ) {
                   continue;

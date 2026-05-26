@@ -574,29 +574,51 @@ fn remove_stored_chapter_content_files(
     Ok(())
 }
 
-fn parse_media_src(media_src: &str) -> Result<(i64, String), String> {
+#[derive(Debug)]
+struct ParsedMediaSrc {
+    chapter_id: Option<i64>,
+    file_name: String,
+}
+
+fn parse_media_src(media_src: &str) -> Result<ParsedMediaSrc, String> {
     let payload = media_src
         .strip_prefix(MEDIA_URI_PREFIX)
         .ok_or_else(|| "chapter media: unsupported media uri".to_string())?;
-    let mut parts = payload.split('/');
-    let chapter_id = parts
-        .next()
-        .ok_or_else(|| "chapter media: missing chapter id".to_string())?
-        .parse::<i64>()
-        .map_err(|err| format!("chapter media: invalid chapter id: {err}"))?;
+    let parts = payload.split('/').collect::<Vec<_>>();
+    let (chapter_id, file_name) = match parts.as_slice() {
+        [file_name] => (None, *file_name),
+        [raw_chapter_id, file_name] => {
+            let chapter_id = raw_chapter_id
+                .parse::<i64>()
+                .map_err(|err| format!("chapter media: invalid chapter id: {err}"))?;
+            if chapter_id <= 0 {
+                return Err("chapter media: chapter id must be positive".to_string());
+            }
+            (Some(chapter_id), *file_name)
+        }
+        _ => return Err("chapter media: unexpected media uri segment".to_string()),
+    };
+    if file_name.is_empty() {
+        return Err("chapter media: missing file name".to_string());
+    }
+    Ok(ParsedMediaSrc {
+        chapter_id,
+        file_name: safe_segment(file_name, "media"),
+    })
+}
+
+fn media_src_chapter_id(
+    parsed: &ParsedMediaSrc,
+    context_chapter_id: Option<i64>,
+) -> Result<i64, String> {
+    let chapter_id = parsed
+        .chapter_id
+        .or(context_chapter_id)
+        .ok_or_else(|| "chapter media: missing chapter id context".to_string())?;
     if chapter_id <= 0 {
         return Err("chapter media: chapter id must be positive".to_string());
     }
-    let file_name = safe_segment(
-        parts
-            .next()
-            .ok_or_else(|| "chapter media: missing file name".to_string())?,
-        "media",
-    );
-    if parts.next().is_some() {
-        return Err("chapter media: unexpected media uri segment".to_string());
-    }
-    Ok((chapter_id, file_name))
+    Ok(chapter_id)
 }
 
 fn content_chapter_dir_from_context(
@@ -707,6 +729,7 @@ fn media_body_from_chapter_dir(
 fn chapter_media_path_from_src_with_context(
     app: &AppHandle,
     media_src: &str,
+    context_chapter_id: Option<i64>,
     novel_id: Option<i64>,
     source_id: Option<&str>,
     novel_path: Option<&str>,
@@ -715,7 +738,9 @@ fn chapter_media_path_from_src_with_context(
     chapter_name: Option<&str>,
     chapter_position: Option<i64>,
 ) -> Result<PathBuf, String> {
-    let (chapter_id, file_name) = parse_media_src(media_src)?;
+    let parsed = parse_media_src(media_src)?;
+    let chapter_id = media_src_chapter_id(&parsed, context_chapter_id)?;
+    let file_name = parsed.file_name;
     let roots = media_roots_for_lookup(app)?;
     for root in &roots {
         if let Some(chapter_dir) = content_chapter_dir_from_context(
@@ -749,6 +774,7 @@ fn chapter_media_path_from_src_with_context(
 pub(crate) fn chapter_media_body_from_src_with_context(
     app: &AppHandle,
     media_src: &str,
+    context_chapter_id: Option<i64>,
     novel_id: Option<i64>,
     source_id: Option<&str>,
     novel_path: Option<&str>,
@@ -757,7 +783,9 @@ pub(crate) fn chapter_media_body_from_src_with_context(
     chapter_name: Option<&str>,
     chapter_position: Option<i64>,
 ) -> Result<(Vec<u8>, String), String> {
-    let (chapter_id, file_name) = parse_media_src(media_src)?;
+    let parsed = parse_media_src(media_src)?;
+    let chapter_id = media_src_chapter_id(&parsed, context_chapter_id)?;
+    let file_name = parsed.file_name;
     let roots = media_roots_for_lookup(app)?;
     for root in &roots {
         if let Some(chapter_dir) = content_chapter_dir_from_context(
@@ -786,7 +814,7 @@ pub(crate) fn chapter_media_body_from_src_with_context(
     Err("chapter media: file not found".to_string())
 }
 
-pub(crate) fn chapter_media_src_from_backup_entry(entry_name: &str) -> Option<String> {
+pub(crate) fn chapter_media_from_backup_entry(entry_name: &str) -> Option<(i64, String)> {
     let rest = entry_name.strip_prefix(&format!("{MEDIA_ROOT_DIR}/"))?;
     let mut parts = rest.split('/');
     let chapter_id = parts.next()?.parse::<i64>().ok()?;
@@ -797,9 +825,9 @@ pub(crate) fn chapter_media_src_from_backup_entry(entry_name: &str) -> Option<St
     if parts.next().is_some() || file_name.is_empty() {
         return None;
     }
-    Some(format!(
-        "{MEDIA_URI_PREFIX}{chapter_id}/{}",
-        safe_segment(file_name, "media")
+    Some((
+        chapter_id,
+        format!("{MEDIA_URI_PREFIX}{}", safe_segment(file_name, "media")),
     ))
 }
 
@@ -894,10 +922,7 @@ fn store_chapter_media_at_root(
     }
     fs::rename(&part_path, &final_path)
         .map_err(|err| format!("chapter media: move media file: {err}"))?;
-    Ok(format!(
-        "{MEDIA_URI_PREFIX}{}/{file_name}",
-        input.chapter_id
-    ))
+    Ok(format!("{MEDIA_URI_PREFIX}{file_name}"))
 }
 
 fn store_chapter_media(
@@ -1604,6 +1629,7 @@ fn media_mime_type(path: &Path) -> &'static str {
 pub fn chapter_media_path(
     app: AppHandle,
     media_src: String,
+    chapter_id: Option<i64>,
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
@@ -1615,6 +1641,7 @@ pub fn chapter_media_path(
     let path = chapter_media_path_from_src_with_context(
         &app,
         &media_src,
+        chapter_id,
         novel_id,
         source_id.as_deref(),
         novel_path.as_deref(),
@@ -1633,6 +1660,7 @@ pub fn chapter_media_path(
 pub async fn chapter_media_data_url(
     app: AppHandle,
     media_src: String,
+    chapter_id: Option<i64>,
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
@@ -1643,9 +1671,11 @@ pub async fn chapter_media_data_url(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         match parse_media_src(&media_src) {
-            Ok((chapter_id, file_name)) => {
+            Ok(parsed) => {
                 log::debug!(
-                    "[chapter-media:data-url] request chapter_id={chapter_id} file={file_name}"
+                    "[chapter-media:data-url] request chapter_id={:?} file={}",
+                    parsed.chapter_id.or(chapter_id),
+                    parsed.file_name
                 );
             }
             Err(err) => {
@@ -1655,6 +1685,7 @@ pub async fn chapter_media_data_url(
         let (body, file_name) = chapter_media_body_from_src_with_context(
             &app,
             &media_src,
+            chapter_id,
             novel_id,
             source_id.as_deref(),
             novel_path.as_deref(),
@@ -1677,6 +1708,7 @@ pub async fn chapter_media_data_url(
 pub async fn chapter_media_total_size(
     app: AppHandle,
     media_srcs: Vec<String>,
+    chapter_id: Option<i64>,
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
@@ -1689,6 +1721,7 @@ pub async fn chapter_media_total_size(
         chapter_media_total_size_sync(
             app,
             media_srcs,
+            chapter_id,
             novel_id,
             source_id,
             novel_name,
@@ -1704,6 +1737,7 @@ pub async fn chapter_media_total_size(
 fn chapter_media_total_size_sync(
     app: AppHandle,
     media_srcs: Vec<String>,
+    context_chapter_id: Option<i64>,
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
@@ -1715,7 +1749,9 @@ fn chapter_media_total_size_sync(
     let mut total = 0;
     let mut counted_archives = HashSet::new();
     for media_src in media_srcs {
-        let (chapter_id, file_name) = parse_media_src(&media_src)?;
+        let parsed = parse_media_src(&media_src)?;
+        let chapter_id = media_src_chapter_id(&parsed, context_chapter_id)?;
+        let file_name = parsed.file_name;
         for root in media_roots_for_lookup(&app)? {
             let mut found = false;
             if let Some(chapter_dir) = content_chapter_dir_from_context(
@@ -2303,7 +2339,7 @@ mod tests {
         )
         .expect("store media");
 
-        assert_eq!(src, "norea-media://chapter/42/page.png");
+        assert_eq!(src, "norea-media://chapter/page.png");
         assert_eq!(
             fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
             vec![1, 2, 3]
@@ -2328,7 +2364,7 @@ mod tests {
         )
         .expect("store media handle");
 
-        assert_eq!(src, "norea-media://chapter/42/page.png");
+        assert_eq!(src, "norea-media://chapter/page.png");
         assert!(!source_path.exists());
         assert_eq!(
             fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
