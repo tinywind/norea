@@ -382,6 +382,7 @@ describe("applyBackupSnapshot", () => {
       chapterName: "Chapter 1",
       chapterNumber: "1",
       chapterPosition: 1,
+      complete: true,
       files: [
         expect.objectContaining({
           bytes: 3,

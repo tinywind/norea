@@ -640,62 +640,11 @@ fn media_path_in_chapter_dir(chapter_dir: &Path, file_name: &str) -> Option<Path
     None
 }
 
-fn extract_media_archive_entry_to_dir(
-    archive_path: &Path,
-    file_name: &str,
-    media_dir: &Path,
-) -> Result<Option<PathBuf>, String> {
-    if !archive_path.is_file() {
-        return Ok(None);
-    }
-
-    let archive_file =
-        File::open(archive_path).map_err(|err| format!("chapter media: open archive: {err}"))?;
-    let mut archive = ZipArchive::new(BufReader::new(archive_file))
-        .map_err(|err| format!("chapter media: read archive: {err}"))?;
-    let mut entry = match archive.by_name(file_name) {
-        Ok(entry) => entry,
-        Err(ZipError::FileNotFound) => return Ok(None),
-        Err(err) => return Err(format!("chapter media: open archive entry: {err}")),
-    };
-    if !entry.is_file() {
-        return Err("chapter media: archive entry is not a file".to_string());
-    }
-
-    fs::create_dir_all(media_dir)
-        .map_err(|err| format!("chapter media: create extracted media dir: {err}"))?;
-    let output_path = media_dir.join(file_name);
-    if output_path.is_file() {
-        return Ok(Some(output_path));
-    }
-    let temp_path = media_dir.join(format!("{file_name}.tmp"));
-    {
-        let mut output = File::create(&temp_path)
-            .map_err(|err| format!("chapter media: create extracted media: {err}"))?;
-        io::copy(&mut entry, &mut output)
-            .map_err(|err| format!("chapter media: extract archive entry: {err}"))?;
-    }
-    if output_path.is_file() {
-        let _ = fs::remove_file(&temp_path);
-        return Ok(Some(output_path));
-    }
-    fs::rename(&temp_path, &output_path)
-        .map_err(|err| format!("chapter media: move extracted media: {err}"))?;
-    Ok(Some(output_path))
-}
-
 fn media_path_from_chapter_dir(
     chapter_dir: &Path,
     file_name: &str,
 ) -> Result<Option<PathBuf>, String> {
-    if let Some(path) = media_path_in_chapter_dir(chapter_dir, file_name) {
-        return Ok(Some(path));
-    }
-    extract_media_archive_entry_to_dir(
-        &chapter_dir.join(MEDIA_ARCHIVE_FILE),
-        file_name,
-        &chapter_dir.join(MEDIA_DOWNLOAD_DIR),
-    )
+    Ok(media_path_in_chapter_dir(chapter_dir, file_name))
 }
 
 fn media_body_from_archive(
@@ -1190,7 +1139,36 @@ fn chapter_media_archive_cache_sync(
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
+    let new_entry_names: HashSet<String> =
+        entries.iter().map(|(entry_name, _)| entry_name.clone()).collect();
     let mut written_entry_names = HashSet::new();
+
+    if archive_path.is_file() {
+        let archive_file = File::open(&archive_path)
+            .map_err(|err| format!("chapter media: open existing archive: {err}"))?;
+        let mut existing_archive = ZipArchive::new(BufReader::new(archive_file))
+            .map_err(|err| format!("chapter media: read existing archive: {err}"))?;
+        for index in 0..existing_archive.len() {
+            let mut entry = existing_archive
+                .by_index(index)
+                .map_err(|err| format!("chapter media: open existing archive entry: {err}"))?;
+            if !entry.is_file() {
+                continue;
+            }
+            let entry_name = safe_segment(entry.name(), "media");
+            if entry_name.ends_with(".part")
+                || new_entry_names.contains(&entry_name)
+                || !written_entry_names.insert(entry_name.clone())
+            {
+                continue;
+            }
+            archive
+                .start_file(&entry_name, options)
+                .map_err(|err| format!("chapter media: start archive entry: {err}"))?;
+            io::copy(&mut entry, &mut archive)
+                .map_err(|err| format!("chapter media: copy existing archive entry: {err}"))?;
+        }
+    }
 
     for (entry_name, path) in entries {
         if !written_entry_names.insert(entry_name.clone()) {
@@ -1254,37 +1232,6 @@ fn required_content_chapter_dir(
     )
 }
 
-fn extract_media_archive_to_dir(archive_path: &Path, media_dir: &Path) -> Result<u64, String> {
-    if !archive_path.is_file() {
-        return Ok(0);
-    }
-    fs::create_dir_all(media_dir)
-        .map_err(|err| format!("chapter media: create media dir: {err}"))?;
-    let archive_file =
-        File::open(archive_path).map_err(|err| format!("chapter media: open archive: {err}"))?;
-    let mut archive = ZipArchive::new(BufReader::new(archive_file))
-        .map_err(|err| format!("chapter media: read archive: {err}"))?;
-    let mut bytes = 0_u64;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|err| format!("chapter media: open archive entry: {err}"))?;
-        if !entry.is_file() {
-            continue;
-        }
-        let entry_name = safe_segment(entry.name(), "media");
-        let output_path = media_dir.join(entry_name);
-        if output_path.is_file() {
-            continue;
-        }
-        let mut output = File::create(&output_path)
-            .map_err(|err| format!("chapter media: create extracted media: {err}"))?;
-        bytes += io::copy(&mut entry, &mut output)
-            .map_err(|err| format!("chapter media: extract archive entry: {err}"))?;
-    }
-    Ok(bytes)
-}
-
 #[tauri::command]
 pub async fn chapter_media_prepare_workspace(
     app: AppHandle,
@@ -1341,10 +1288,8 @@ fn chapter_media_prepare_workspace_sync(
         chapter_name.as_deref(),
         chapter_position,
     )?;
-    let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
-    if repair || preserve_existing {
-        extract_media_archive_to_dir(&chapter_dir.join(MEDIA_ARCHIVE_FILE), &media_dir)?;
-    } else {
+    if !repair && !preserve_existing {
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
         if media_dir.exists() {
             fs::remove_dir_all(&media_dir)
                 .map_err(|err| format!("chapter media: remove media dir: {err}"))?;
@@ -1425,6 +1370,7 @@ fn chapter_media_cleanup_workspace_sync(
 pub fn chapter_media_write_manifest(
     app: AppHandle,
     chapter_id: i64,
+    complete: Option<bool>,
     files: serde_json::Value,
     novel_id: Option<i64>,
     source_id: Option<String>,
@@ -1455,6 +1401,7 @@ pub fn chapter_media_write_manifest(
         .unwrap_or(0);
     let manifest = serde_json::json!({
         "version": 1,
+        "complete": complete.unwrap_or(false),
         "updatedAt": now,
         "media": {
             "files": files
@@ -2390,7 +2337,7 @@ mod tests {
     }
 
     #[test]
-    fn media_path_from_chapter_dir_extracts_archived_media_on_demand() {
+    fn media_path_from_chapter_dir_does_not_extract_archived_media() {
         let dir = tempfile::tempdir().expect("tempdir");
         let chapter_dir = dir.path().join("chapter");
         fs::create_dir_all(&chapter_dir).expect("create chapter dir");
@@ -2406,10 +2353,13 @@ mod tests {
         }
 
         let path = media_path_from_chapter_dir(&chapter_dir, "page.png")
-            .expect("resolve archived media")
-            .expect("archived media path");
+            .expect("resolve archived media");
+        let body = media_body_from_chapter_dir(&chapter_dir, "page.png")
+            .expect("read archived media")
+            .expect("archived media body");
 
-        assert_eq!(path, chapter_dir.join(MEDIA_DOWNLOAD_DIR).join("page.png"));
-        assert_eq!(fs::read(path).expect("read extracted media"), b"image-body");
+        assert!(path.is_none());
+        assert_eq!(body, b"image-body");
+        assert!(!chapter_dir.join(MEDIA_DOWNLOAD_DIR).join("page.png").exists());
     }
 }

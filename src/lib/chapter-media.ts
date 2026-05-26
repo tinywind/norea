@@ -7,7 +7,6 @@ import {
   androidStoragePathSize,
   clearAndroidStorageRoot,
   deleteAndroidStoragePath,
-  extractAndroidStorageZip,
   readAndroidStorageDataUrl,
   readAndroidStorageText,
   readAndroidStorageZipEntriesDataUrls,
@@ -221,6 +220,7 @@ interface ChapterMediaManifestFile {
 }
 
 interface ChapterMediaManifest {
+  complete: boolean;
   media: {
     files: ChapterMediaManifestFile[];
   };
@@ -630,6 +630,7 @@ function androidChapterMediaManifestRelativePathCandidates(
 
 function emptyChapterMediaManifest(): ChapterMediaManifest {
   return {
+    complete: false,
     media: {
       files: [],
     },
@@ -646,6 +647,7 @@ function parseChapterMediaManifest(raw: string | null): ChapterMediaManifest {
       ? parsed.media.files
       : [];
     return {
+      complete: parsed.complete === true,
       media: {
         files: files.filter(
           (file): file is ChapterMediaManifestFile =>
@@ -670,10 +672,12 @@ function parseChapterMediaManifest(raw: string | null): ChapterMediaManifest {
 
 function serializeChapterMediaManifest(
   files: ChapterMediaManifestFile[],
+  complete: boolean,
 ): string {
   const now = Date.now();
   return `${JSON.stringify(
     {
+      complete,
       media: {
         files: [...files].sort((left, right) =>
           left.fileName.localeCompare(right.fileName),
@@ -688,9 +692,11 @@ function serializeChapterMediaManifest(
 }
 
 async function writeChapterMediaManifest({
+  complete = false,
   context,
   files,
 }: {
+  complete?: boolean;
   context: ChapterMediaStorageContext;
   files: ChapterMediaManifestFile[];
 }): Promise<void> {
@@ -698,11 +704,12 @@ async function writeChapterMediaManifest({
   if (isAndroidRuntime()) {
     await writeAndroidStorageText(
       manifestPath,
-      serializeChapterMediaManifest(files),
+      serializeChapterMediaManifest(files, complete),
     );
     return;
   }
   await invoke("chapter_media_write_manifest", {
+    complete,
     files,
     ...(context.chapterId ? { chapterId: context.chapterId } : {}),
     ...(context.chapterName ? { chapterName: context.chapterName } : {}),
@@ -1037,14 +1044,7 @@ async function prepareChapterMediaWorkspace(
   { preserveExisting = false }: { preserveExisting?: boolean } = {},
 ): Promise<void> {
   if (isAndroidRuntime()) {
-    const mediaPath = androidChapterMediaRelativePathForContext(context);
-    if (repair || preserveExisting) {
-      for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-        context,
-      )) {
-        await extractAndroidStorageZip(archivePath, mediaPath);
-      }
-    } else {
+    if (!repair && !preserveExisting) {
       for (const path of androidChapterMediaRelativePathCandidates(context)) {
         await deleteAndroidStoragePath(path);
       }
@@ -1468,6 +1468,7 @@ function collectManifestMediaSources({
   manifest: ChapterMediaManifest;
   urls: string[];
 }): Map<string, string> {
+  if (!manifest.complete) return new Map();
   const requestedUrls = new Set(urls);
   const existing = new Map<string, string>();
   for (const file of manifest.media.files) {
@@ -1898,18 +1899,19 @@ export async function cacheHtmlChapterMedia({
         storageContext,
       )
     : new Map<string, string>();
-  const manifestSources = repair
-    ? await collectStoredManifestMediaSources({
-        chapterId,
-        context: storageContext,
-        manifest: previousManifest,
-        urls,
-      })
-    : collectManifestMediaSources({
-        chapterId,
-        manifest: previousManifest,
-        urls,
-      });
+  const manifestSources =
+    repair || !previousManifest.complete
+      ? await collectStoredManifestMediaSources({
+          chapterId,
+          context: storageContext,
+          manifest: previousManifest,
+          urls,
+        })
+      : collectManifestMediaSources({
+          chapterId,
+          manifest: previousManifest,
+          urls,
+        });
   const missingManifestSources = repair
     ? await collectMissingManifestMediaSources({
         chapterId,
@@ -2131,6 +2133,11 @@ export async function cacheHtmlChapterMedia({
   });
 
   if (localSources.size === 0) {
+    await writeChapterMediaManifest({
+      complete: true,
+      context: storageContext,
+      files: [...mediaFilesBySourceUrl.values()],
+    });
     clearMediaSourceMetadata(template.content);
     return {
       html: template.innerHTML,
@@ -2161,6 +2168,11 @@ export async function cacheHtmlChapterMedia({
     });
     mediaBytes = await getStoredChapterMediaBytes(template.innerHTML, storageContext);
   }
+  await writeChapterMediaManifest({
+    complete: true,
+    context: storageContext,
+    files: [...mediaFilesBySourceUrl.values()],
+  });
   clearMediaSourceMetadata(template.content);
 
   return {
@@ -2279,6 +2291,11 @@ export async function storeEmbeddedChapterMedia({
       storageContext,
     );
   }
+  await writeChapterMediaManifest({
+    complete: true,
+    context: storageContext,
+    files,
+  });
 
   return {
     ...(archiveFailure ? { archiveFailure } : {}),

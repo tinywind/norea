@@ -427,6 +427,11 @@ async function restoreBackupChapterMediaFiles(
       "chapter_media_archive_cache",
       context,
     );
+    await invoke("chapter_media_write_manifest", {
+      ...context,
+      complete: true,
+      files: restoredFiles,
+    });
     mediaBytesByChapterId.set(chapterId, archiveBytes);
   }
   return mediaBytesByChapterId;

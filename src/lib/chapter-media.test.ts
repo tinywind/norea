@@ -1134,6 +1134,7 @@ describe("cacheHtmlChapterMedia", () => {
 
   it("reuses stored manifest media during chapter downloads", async () => {
     const manifest = {
+      complete: true,
       media: {
         files: [
           {
@@ -1228,6 +1229,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     expect(manifestWrites.at(-1)?.[1]).toEqual(
       expect.objectContaining({
+        complete: true,
         files: expect.arrayContaining([
           expect.objectContaining({
             fileName: "0001-page-1.png",
@@ -1251,6 +1253,80 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).toContain("norea-media://chapter/42/0001-page-1.png");
     expect(result.html).toContain("norea-media://chapter/42/0002-page-2.png");
     expect(result.html).toContain("norea-media://chapter/42/0003-page-3.png");
+  });
+
+  it("reuses existing files from incomplete manifests while downloading missing media", async () => {
+    const manifest = {
+      complete: false,
+      media: {
+        files: [
+          {
+            bytes: 3,
+            fileName: "0001-page-1.png",
+            path: "media/0001-page-1.png",
+            sourceUrl: "https://source.test/page-1.png",
+            status: "stored",
+            updatedAt: 1,
+          },
+          {
+            bytes: 3,
+            fileName: "0002-page-2.png",
+            path: "media/0002-page-2.png",
+            sourceUrl: "https://source.test/page-2.png",
+            status: "stored",
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+      version: 1,
+    };
+    pluginMediaFetchMock.mockImplementation(async () => {
+      return new Response(new Uint8Array([4, 5]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      });
+    });
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") {
+        return JSON.stringify(manifest);
+      }
+      if (command === "chapter_media_total_size") {
+        const [mediaSrc] = (args as { mediaSrcs: string[] }).mediaSrcs;
+        return (mediaSrc ?? "").includes("0001-page-1.png") ? 7 : 0;
+      }
+      if (command === "chapter_media_archive_cache") return 12;
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_store") {
+        const input = args as {
+          chapterId: number;
+          fileName: string;
+        };
+        return `norea-media://chapter/${input.chapterId}/${input.fileName}`;
+      }
+      return null;
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: [
+        `<img src="https://source.test/page-1.png">`,
+        `<img src="https://source.test/page-2.png">`,
+      ].join(""),
+    });
+
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
+      "https://source.test/page-2.png",
+      expect.anything(),
+    );
+    expect(result.storedMediaCount).toBe(1);
+    expect(result.mediaBytes).toBe(12);
+    expect(result.html).toContain("norea-media://chapter/42/0001-page-1.png");
+    expect(result.html).toContain("norea-media://chapter/42/0002-page-2.png");
   });
 
   it("writes a resumable manifest before aborted chapter downloads stop", async () => {
@@ -1296,6 +1372,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(manifestWrites).toHaveLength(2);
     expect(manifestWrites[0]?.[1]).toEqual(
       expect.objectContaining({
+        complete: false,
         files: expect.arrayContaining([
           expect.objectContaining({
             fileName: "0001-page-1.png",
@@ -1310,6 +1387,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     expect(manifestWrites[1]?.[1]).toEqual(
       expect.objectContaining({
+        complete: false,
         files: expect.arrayContaining([
           expect.objectContaining({
             bytes: 3,
@@ -1361,10 +1439,12 @@ describe("cacheHtmlChapterMedia", () => {
           ? JSON.stringify(manifest)
           : null,
     );
-    androidStorageMocks.extractAndroidStorageZip.mockResolvedValue(0);
     androidStorageMocks.androidStoragePathSize.mockImplementation(
-      async (path: string) =>
-        path.startsWith(`${preferredDir}/`) ? 7 : 0,
+      async (path: string) => (path === preferredArchive ? 14 : 0),
+    );
+    androidStorageMocks.androidStorageZipEntryExists.mockImplementation(
+      async (_archivePath: string, entryName: string) =>
+        entryName === "0001-page-1.png" || entryName === "0002-page-2.png",
     );
     androidStorageMocks.archiveAndroidStorageDirectory.mockResolvedValue(14);
     androidStorageMocks.writeAndroidStorageText.mockResolvedValue(undefined);
@@ -1393,14 +1473,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(androidStorageMocks.readAndroidStorageText).toHaveBeenCalledWith(
       "chapter-media/42/manifest.json",
     );
-    expect(androidStorageMocks.extractAndroidStorageZip).toHaveBeenCalledWith(
-      preferredArchive,
-      preferredDir,
-    );
-    expect(androidStorageMocks.extractAndroidStorageZip).toHaveBeenCalledWith(
-      "chapter-media/42/media.zip",
-      preferredDir,
-    );
+    expect(androidStorageMocks.extractAndroidStorageZip).not.toHaveBeenCalled();
     expect(
       androidStorageMocks.archiveAndroidStorageDirectory,
     ).toHaveBeenCalledWith(preferredDir, preferredArchive);
@@ -1443,6 +1516,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     expect(androidStorageMocks.renameAndroidStoragePath).not.toHaveBeenCalled();
     expect(androidStorageMocks.deleteAndroidStoragePath).not.toHaveBeenCalled();
+    expect(androidStorageMocks.extractAndroidStorageZip).not.toHaveBeenCalled();
     expect(result.storedMediaCount).toBe(1);
     expect(result.html).toContain("norea-media://chapter/42/0001-page-1.jpg");
   });
