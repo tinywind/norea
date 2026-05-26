@@ -478,7 +478,7 @@ function localChapterMediaSrc(fileName: string): string {
 }
 
 function localChapterMediaOutputSrc(fileName: string): string {
-  return fileName;
+  return localChapterMediaSrc(fileName);
 }
 
 function relativeChapterMediaFileName(
@@ -1245,7 +1245,9 @@ function localMediaSrc(
   if (!trimmed) return null;
   const parsed = parseLocalChapterMediaSrc(trimmed);
   if (parsed) return localChapterMediaOutputSrc(parsed.fileName);
-  return context && relativeChapterMediaFileName(trimmed) ? trimmed : null;
+  return context && relativeChapterMediaFileName(trimmed)
+    ? localChapterMediaOutputSrc(trimmed)
+    : null;
 }
 
 function fileNameFromLocalMediaSrc(
@@ -1257,7 +1259,7 @@ function fileNameFromLocalMediaSrc(
   return chapterId > 0 ? relativeChapterMediaFileName(src) : null;
 }
 
-function stripLocalChapterMediaPrefixes(html: string): string {
+function normalizeLocalChapterMediaOutput(html: string): string {
   return html.replace(LOCAL_CHAPTER_MEDIA_SRC_PATTERN, (src) => {
     const parsed = parseLocalChapterMediaSrc(src);
     return parsed ? localChapterMediaOutputSrc(parsed.fileName) : src;
@@ -1835,7 +1837,7 @@ function safeChapterMediaHtml(template: HTMLTemplateElement): string {
   const safeTemplate = document.createElement("template");
   safeTemplate.innerHTML = template.innerHTML;
   clearMediaSourceMetadata(safeTemplate.content);
-  return stripLocalChapterMediaPrefixes(safeTemplate.innerHTML);
+  return normalizeLocalChapterMediaOutput(safeTemplate.innerHTML);
 }
 
 async function emitHtmlUpdate(
@@ -2008,7 +2010,7 @@ export async function cacheHtmlChapterMedia({
 
   if (urls.length === 0 && !repair) {
     return {
-      html: stripLocalChapterMediaPrefixes(template.innerHTML),
+      html: normalizeLocalChapterMediaOutput(template.innerHTML),
       mediaBytes: 0,
       mediaFailures: [],
       storedMediaCount: 0,
@@ -2288,7 +2290,7 @@ export async function cacheHtmlChapterMedia({
     });
     clearMediaSourceMetadata(template.content);
     return {
-      html: stripLocalChapterMediaPrefixes(template.innerHTML),
+      html: normalizeLocalChapterMediaOutput(template.innerHTML),
       mediaBytes: 0,
       mediaFailures,
       storedMediaCount,
@@ -2328,7 +2330,7 @@ export async function cacheHtmlChapterMedia({
 
   return {
     ...(archiveFailure ? { archiveFailure } : {}),
-    html: stripLocalChapterMediaPrefixes(template.innerHTML),
+    html: normalizeLocalChapterMediaOutput(template.innerHTML),
     mediaFailures,
     mediaBytes,
     storedMediaCount,
@@ -2450,7 +2452,7 @@ export async function storeEmbeddedChapterMedia({
 
   return {
     ...(archiveFailure ? { archiveFailure } : {}),
-    html: stripLocalChapterMediaPrefixes(rewrittenHtml),
+    html: normalizeLocalChapterMediaOutput(rewrittenHtml),
     mediaBytes,
     storedMediaCount,
   };

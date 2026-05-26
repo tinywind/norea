@@ -262,10 +262,17 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(result.mediaBytes).toBe(6);
-    expect(result.html).not.toContain("norea-media://reader-asset/");
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0001-page.png"',
+    );
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0002-cover.webp"',
+    );
     expect(result.html).toContain("data:image/png;base64,abc");
     expect(result.html).toContain("blob:https://source.test/image");
-    expect(result.html).toContain('src="old-page.png"');
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/old-page.png"',
+    );
     expect(result.html).toContain("file:///tmp/page.png");
     expect(result.html).not.toMatch(/000\d-[^"]+-[0-9a-f]{8}\./);
   });
@@ -333,7 +340,9 @@ describe("cacheHtmlChapterMedia", () => {
       "chapter_media_store",
       expect.anything(),
     );
-    expect(result.html).toContain('src="0001-page.png"');
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0001-page.png"',
+    );
   });
 
   it("falls back to legacy desktop media store when the handle command is missing", async () => {
@@ -387,7 +396,9 @@ describe("cacheHtmlChapterMedia", () => {
         fileName: "0001-page.png",
       }),
     );
-    expect(result.html).toContain('src="0001-page.png"');
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0001-page.png"',
+    );
   });
 
   it("rewrites lazy and responsive image sources through the media cache", async () => {
@@ -422,7 +433,9 @@ describe("cacheHtmlChapterMedia", () => {
 
     expect(pluginMediaFetchMock).toHaveBeenCalledTimes(5);
     expect(result.mediaBytes).toBe(15);
-    expect(result.html).not.toContain("norea-media://reader-asset/");
+    expect(result.html).toContain(
+      "norea-media://reader-asset/0001-lazy.png",
+    );
     expect(result.html).not.toContain("data-src=");
     expect(result.html).toContain(" 1x");
     expect(result.html).toContain(" 2x");
@@ -471,7 +484,9 @@ describe("cacheHtmlChapterMedia", () => {
       "https://source.test/topic/background.png",
     ]);
     expect(result.mediaBytes).toBe(10);
-    expect(result.html).not.toContain("norea-media://reader-asset/");
+    expect(result.html).toContain(
+      "norea-media://reader-asset/0001-poster.png",
+    );
     expect(result.html).toContain("poster=");
     expect(result.html).toContain("data=");
     expect(result.html).toContain("href=");
@@ -518,17 +533,17 @@ describe("cacheHtmlChapterMedia", () => {
       '<a href="https://source.test/read">link</a>',
     );
     expect(result.html).toContain(
-      'src="0001-page.png"',
+      'src="norea-media://reader-asset/0001-page.png"',
     );
     expect(result.html).toContain(
-      "0002-small.png 1x",
+      "norea-media://reader-asset/0002-small.png 1x",
     );
     expect(result.html).toContain("./large.png 2x");
     expect(result.html).toContain(
-      'poster="0003-poster.png"',
+      'poster="norea-media://reader-asset/0003-poster.png"',
     );
     expect(result.html).toContain(
-      "0004-bg.png",
+      "norea-media://reader-asset/0004-bg.png",
     );
     expect(result.html).toContain('src="./relative.png"');
   });
@@ -579,13 +594,15 @@ describe("cacheHtmlChapterMedia", () => {
       expect(update).not.toContain('src=""');
       expect(update).not.toContain("data-norea-media");
     }
-    expect(htmlUpdates[0]).toContain('src="0001-page.png"');
+    expect(htmlUpdates[0]).toContain(
+      'src="norea-media://reader-asset/0001-page.png"',
+    );
     expect(htmlUpdates[0]).toContain('src="./clip.png"');
     expect(mediaPatches).toHaveLength(2);
     expect(mediaPatches[0]).toEqual([
       expect.objectContaining({
         attributes: expect.objectContaining({
-          src: "0001-page.png",
+          src: "norea-media://reader-asset/0001-page.png",
         }),
         index: 0,
       }),
@@ -593,7 +610,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(mediaPatches[1]).toEqual([
       expect.objectContaining({
         attributes: expect.objectContaining({
-          src: "0002-clip.png",
+          src: "norea-media://reader-asset/0002-clip.png",
         }),
         index: 1,
       }),
@@ -641,7 +658,9 @@ describe("cacheHtmlChapterMedia", () => {
       ]);
       expect(result.storedMediaCount).toBe(1);
       expect(result.mediaBytes).toBe(3);
-      expect(result.html).toContain('src="0001-ok.png"');
+      expect(result.html).toContain(
+        'src="norea-media://reader-asset/0001-ok.png"',
+      );
       expect(result.html).toContain(
         'src="https://source.test/chapter/missing.png"',
       );
@@ -692,7 +711,7 @@ describe("cacheHtmlChapterMedia", () => {
 
       expect(result.mediaFailures).toHaveLength(2);
       expect(result.html).toMatch(
-        /srcset="0001-small\.png 1x, https:\/\/source\.test\/chapter\/large\.png 2x"/,
+        /srcset="norea-media:\/\/reader-asset\/0001-small\.png 1x, https:\/\/source\.test\/chapter\/large\.png 2x"/,
       );
       expect(result.html).toContain(
         'style="background-image:url(&quot;https://source.test/chapter/bg.png&quot;)"',
@@ -745,8 +764,9 @@ describe("cacheHtmlChapterMedia", () => {
           url: "https://source.test/chapter/broken.png",
         }),
       ]);
-      expect(result.html).toContain('src="0001-ok.png"');
-      expect(result.html).not.toContain("norea-media://reader-asset/");
+      expect(result.html).toContain(
+        'src="norea-media://reader-asset/0001-ok.png"',
+      );
       expect(result.html).toContain(
         'src="https://source.test/chapter/broken.png"',
       );
@@ -865,8 +885,12 @@ describe("cacheHtmlChapterMedia", () => {
       chapterId: 42,
     });
     expect(result.mediaBytes).toBe(5);
-    expect(result.html).toContain('src="page-1.png"');
-    expect(result.html).toContain('src="0002-page-2.png"');
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/page-1.png"',
+    );
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0002-page-2.png"',
+    );
     expect(result.html).not.toContain("data-norea-media-source-url");
   });
 
@@ -983,7 +1007,9 @@ describe("cacheHtmlChapterMedia", () => {
     );
     expect(result.storedMediaCount).toBe(1);
     expect(result.mediaBytes).toBe(15);
-    expect(result.html).toContain("0001-page-1.png");
+    expect(result.html).toContain(
+      "norea-media://reader-asset/0001-page-1.png",
+    );
     expect(result.html).toContain("0002-page-2.png");
     expect(result.html).toContain("0003-page-3.png");
   });
@@ -1518,7 +1544,9 @@ describe("cacheHtmlChapterMedia", () => {
     expect(androidStorageMocks.deleteAndroidStoragePath).not.toHaveBeenCalled();
     expect(androidStorageMocks.extractAndroidStorageZip).not.toHaveBeenCalled();
     expect(result.storedMediaCount).toBe(1);
-    expect(result.html).toContain('src="0001-page-1.jpg"');
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0001-page-1.jpg"',
+    );
   });
 
   it("refetches reusable repair media after preparing the workspace", async () => {
@@ -1599,9 +1627,11 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(result.html).toContain(
-      "large.png 2x",
+      "norea-media://reader-asset/large.png 2x",
     );
-    expect(result.html).toContain("0001-small.png 1x");
+    expect(result.html).toContain(
+      "norea-media://reader-asset/0001-small.png 1x",
+    );
   });
 
   it("refetches reusable media when the stored local file is missing", async () => {
@@ -1650,7 +1680,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).not.toContain("norea-media://reader-asset/page-1.png");
   });
 
-  it("strips reader asset prefixes from stored repair HTML", async () => {
+  it("keeps reader asset prefixes in stored repair HTML", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
@@ -1672,9 +1702,10 @@ describe("cacheHtmlChapterMedia", () => {
     });
 
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
-    expect(result.html).toContain('src="page.png"');
-    expect(result.html).toContain("cover.png");
-    expect(result.html).not.toContain("norea-media://reader-asset/");
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/page.png"',
+    );
+    expect(result.html).toContain("norea-media://reader-asset/cover.png");
   });
 });
 
