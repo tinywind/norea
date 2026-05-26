@@ -39,7 +39,7 @@ function backupChapterMediaSources(
       novelPath: novel?.path,
       sourceId: novel?.pluginId,
     };
-    for (const mediaSrc of localChapterMediaSources(chapter.content)) {
+    for (const mediaSrc of localChapterMediaSources(chapter.content, context)) {
       if (!mediaSources.has(mediaSrc)) {
         mediaSources.set(mediaSrc, { context, mediaSrc });
       }

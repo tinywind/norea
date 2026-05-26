@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
@@ -1125,8 +1126,14 @@ class MainActivity : TauriActivity() {
       require(existing.isDirectory) { "Android storage path segment is not a folder: $name" }
       return existing
     }
-    return parent.createDirectory(name)
+    val created = parent.createDirectory(name)
       ?: throw IllegalStateException("Cannot create Android storage folder: $name")
+    return requireExactCreatedStorageName(
+      created,
+      name,
+      "folder",
+      "Android storage folder already exists but is not accessible: $name",
+    )
   }
 
   private fun ensureStorageFile(
@@ -1146,13 +1153,38 @@ class MainActivity : TauriActivity() {
       return existing
     }
     val created = current.createFile(mimeType, fileName)
-    if (created != null) return created
+    if (created != null) {
+      return requireExactCreatedStorageName(
+        created,
+        fileName,
+        "file",
+        "Android storage file already exists but is not accessible: $relativePath",
+      )
+    }
     val raced = current.findFile(fileName)
     if (raced != null) {
       require(raced.isFile) { "Android storage path is not a file: $relativePath" }
       return raced
     }
     throw IllegalStateException("Cannot create Android storage file: $relativePath")
+  }
+
+  private fun requireExactCreatedStorageName(
+    created: DocumentFile,
+    requestedName: String,
+    kind: String,
+    errorMessage: String,
+  ): DocumentFile {
+    val createdName = created.name
+    if (createdName == requestedName) return created
+
+    val deleted = runCatching { created.delete() }.getOrDefault(false)
+    Log.w(
+      TAG,
+      "SAF created unexpected $kind name. requested=$requestedName actual=$createdName " +
+        "uri=${created.uri} deleted=$deleted",
+    )
+    throw IllegalStateException(errorMessage)
   }
 
   private fun safeZipEntryName(name: String?): String? {
@@ -1333,6 +1365,7 @@ class MainActivity : TauriActivity() {
     private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     private const val BYTES_PER_MIB = 1024L * 1024L
     private const val DEFAULT_STORAGE_COPY_BUFFER_BYTES = 64 * 1024
+    private const val TAG = "NoreaStorage"
     private const val MAX_ANDROID_TEMP_BYTES = 2L * 1024L * BYTES_PER_MIB
     private const val MAX_UPDATE_BYTES = 512L * BYTES_PER_MIB
     private const val MAX_ZIP_ENTRY_BYTES = 256L * BYTES_PER_MIB

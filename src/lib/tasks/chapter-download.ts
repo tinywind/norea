@@ -919,9 +919,18 @@ export function enqueueChapterMediaRepair(
           `chapter-media-repair: failed to resolve chapter URL for "${chapter.name}".`,
         );
       }
+      const repairProbeContext = {
+        chapterId: chapter.id,
+        chapterName: chapter.name,
+        chapterNumber: chapter.chapterNumber,
+        chapterPosition: chapter.position,
+        novelId: chapter.novelId,
+        sourceId: job.pluginId,
+      };
       if (
         !hasRemoteChapterMedia(chapter.content, baseUrl) &&
-        localChapterMediaSources(chapter.content).length === 0
+        localChapterMediaSources(chapter.content, repairProbeContext).length ===
+          0
       ) {
         setDetail("No remote media to repair");
         reportProgress(

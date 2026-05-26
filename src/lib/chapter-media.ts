@@ -321,14 +321,22 @@ function collectStyleMediaUrls(
   return urls;
 }
 
-function localStyleMediaSources(style: string): string[] {
-  return styleMediaSlots(style).filter((src): src is string => src !== null);
-}
-
-function styleMediaSlots(style: string): Array<string | null> {
+function localStyleMediaSources(
+  style: string,
+  context?: ChapterMediaStorageContext,
+): string[] {
   return [...style.matchAll(STYLE_URL_PATTERN)]
     .map((match) => (match[1] ?? match[2] ?? match[3] ?? "").trim())
-    .map((source) => localMediaSrc(source));
+    .filter((source) => localChapterMediaFileName(source, context) !== null);
+}
+
+function styleMediaSlots(
+  style: string,
+  context?: ChapterMediaStorageContext,
+): Array<string | null> {
+  return [...style.matchAll(STYLE_URL_PATTERN)]
+    .map((match) => (match[1] ?? match[2] ?? match[3] ?? "").trim())
+    .map((source) => localMediaSrc(source, context));
 }
 
 function rewriteStyleMediaUrls(
@@ -476,6 +484,31 @@ function localChapterMediaSrc(
   return `${LOCAL_MEDIA_SRC_PREFIX}${chapterId}/${fileName}`;
 }
 
+function localChapterMediaOutputSrc(fileName: string): string {
+  return fileName;
+}
+
+function relativeChapterMediaFileName(
+  value: string | null | undefined,
+): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (
+    trimmed.startsWith(".") ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("#") ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.includes(":") ||
+    trimmed.includes("?") ||
+    trimmed.includes("&") ||
+    trimmed.includes("=")
+  ) {
+    return null;
+  }
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed) ? trimmed : null;
+}
+
 function androidChapterMediaRelativePath(
   chapterId: number,
   fileName?: string,
@@ -494,6 +527,26 @@ function parseLocalChapterMediaSrc(src: string): {
     chapterId: Number(match[1]),
     fileName: match[2]!,
   };
+}
+
+function localChapterMediaFileName(
+  src: string,
+  context?: ChapterMediaStorageContext,
+): string | null {
+  const parsed = parseLocalChapterMediaSrc(src);
+  if (parsed) return parsed.fileName;
+  return context ? relativeChapterMediaFileName(src) : null;
+}
+
+function localChapterMediaSourceForContext(
+  src: string,
+  context?: ChapterMediaStorageContext,
+): string | null {
+  const fileName = localChapterMediaFileName(src, context);
+  if (!fileName) return null;
+  const parsed = parseLocalChapterMediaSrc(src);
+  const chapterId = context?.chapterId ?? parsed?.chapterId;
+  return chapterId ? localChapterMediaSrc(chapterId, fileName) : null;
 }
 
 function hasStorageContext(
@@ -755,23 +808,57 @@ async function androidRelativePathsFromLocalMediaSrc(
   src: string,
   context?: ChapterMediaStorageContext,
 ): Promise<string[]> {
+  const fileName = localChapterMediaFileName(src, context);
+  if (!fileName) return [];
   const parsed = parseLocalChapterMediaSrc(src);
-  if (!parsed) return [];
   const resolvedContext =
-    context?.chapterId === parsed.chapterId
-      ? context
-      : await storageContextForChapter(parsed.chapterId);
-  if (hasStorageContext(resolvedContext)) {
-    return androidChapterMediaRelativePathCandidates(
-      resolvedContext,
-      parsed.fileName,
-    );
-  }
-  return [androidChapterMediaRelativePath(parsed.chapterId, parsed.fileName)];
+    context ??
+    (parsed ? await storageContextForChapter(parsed.chapterId) : undefined);
+  const lookupContext = resolvedContext ?? {
+    chapterId: parsed?.chapterId ?? context?.chapterId ?? 0,
+  };
+  return androidChapterMediaRelativePathCandidates(lookupContext, fileName);
 }
 
-export function localChapterMediaSources(html: string): string[] {
-  return [...new Set(html.match(LOCAL_CHAPTER_MEDIA_SRC_PATTERN) ?? [])];
+export function localChapterMediaSources(
+  html: string,
+  context?: ChapterMediaStorageContext,
+): string[] {
+  const sources = new Set<string>();
+  for (const source of html.match(LOCAL_CHAPTER_MEDIA_SRC_PATTERN) ?? []) {
+    sources.add(localChapterMediaSourceForContext(source, context) ?? source);
+  }
+  if (context && typeof document !== "undefined") {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    for (const patch of collectMediaElementPatches(
+      template.content,
+      collectAllMediaPatchElements(template.content),
+    )) {
+      for (const [attribute, value] of Object.entries(patch.attributes)) {
+        if (attribute === "srcset") {
+          for (const candidate of parseSrcset(value)) {
+            const source = localChapterMediaSourceForContext(
+              candidate.source,
+              context,
+            );
+            if (source) sources.add(source);
+          }
+          continue;
+        }
+        if (attribute === "style") {
+          for (const source of localStyleMediaSources(value, context)) {
+            const canonical = localChapterMediaSourceForContext(source, context);
+            if (canonical) sources.add(canonical);
+          }
+          continue;
+        }
+        const source = localChapterMediaSourceForContext(value, context);
+        if (source) sources.add(source);
+      }
+    }
+  }
+  return [...sources];
 }
 
 export function hasRemoteChapterMedia(
@@ -789,7 +876,10 @@ export async function getStoredChapterMediaBytes(
   context?: ChapterMediaStorageContext,
 ): Promise<number> {
   if (!isTauriRuntime()) return 0;
-  const mediaSrcs = localChapterMediaSources(html);
+  const directSource = localChapterMediaSourceForContext(html, context);
+  const mediaSrcs = directSource
+    ? [directSource]
+    : localChapterMediaSources(html, context);
   if (mediaSrcs.length === 0) return 0;
   const firstMedia = mediaSrcs[0]
     ? parseLocalChapterMediaSrc(mediaSrcs[0])
@@ -962,8 +1052,8 @@ async function storeChapterMedia({
   novelPath,
   sourceId,
 }: ChapterMediaStoreInput): Promise<string> {
+  const outputSrc = localChapterMediaOutputSrc(fileName);
   if (isAndroidRuntime()) {
-    const src = localChapterMediaSrc(chapterId, fileName);
     const context = {
       chapterId,
       chapterName,
@@ -983,9 +1073,9 @@ async function storeChapterMedia({
       body,
       contentType ?? mimeTypeFromFileName(fileName),
     );
-    return src;
+    return outputSrc;
   }
-  return storeChapterMediaHandle({
+  await storeChapterMediaHandle({
     body,
     chapterId,
     chapterName,
@@ -998,6 +1088,7 @@ async function storeChapterMedia({
     novelPath,
     sourceId,
   });
+  return outputSrc;
 }
 
 async function archiveChapterMediaCache({
@@ -1108,9 +1199,15 @@ function addUniqueUrl(urls: string[], url: string): void {
   }
 }
 
-function localMediaSrc(value: string | null): string | null {
+function localMediaSrc(
+  value: string | null,
+  context?: ChapterMediaStorageContext,
+): string | null {
   const trimmed = value?.trim();
-  return trimmed?.startsWith(LOCAL_MEDIA_SRC_PREFIX) ? trimmed : null;
+  if (!trimmed) return null;
+  const parsed = parseLocalChapterMediaSrc(trimmed);
+  if (parsed) return localChapterMediaOutputSrc(parsed.fileName);
+  return context && relativeChapterMediaFileName(trimmed) ? trimmed : null;
 }
 
 function fileNameFromLocalMediaSrc(
@@ -1118,8 +1215,15 @@ function fileNameFromLocalMediaSrc(
   chapterId: number,
 ): string | null {
   const match = src.match(LOCAL_CHAPTER_MEDIA_SRC_DETAIL_PATTERN);
-  if (!match || Number(match[1]) !== chapterId) return null;
-  return match[2] ?? null;
+  if (match) return match[2] ?? null;
+  return chapterId > 0 ? relativeChapterMediaFileName(src) : null;
+}
+
+function stripLocalChapterMediaPrefixes(html: string): string {
+  return html.replace(LOCAL_CHAPTER_MEDIA_SRC_PATTERN, (src) => {
+    const parsed = parseLocalChapterMediaSrc(src);
+    return parsed ? localChapterMediaOutputSrc(parsed.fileName) : src;
+  });
 }
 
 function collectMediaTargets(
@@ -1228,7 +1332,10 @@ export function protectRemoteChapterMediaForPartialHtml(
   return template.innerHTML;
 }
 
-function collectExistingMediaSlots(root: DocumentFragment): ExistingMediaSlots {
+function collectExistingMediaSlots(
+  root: DocumentFragment,
+  context?: ChapterMediaStorageContext,
+): ExistingMediaSlots {
   const srcSlots: Array<string | null> = [];
   const srcsetSlots: Array<Array<string | null>> = [];
   const styleSlots: Array<Array<string | null>> = [];
@@ -1237,18 +1344,22 @@ function collectExistingMediaSlots(root: DocumentFragment): ExistingMediaSlots {
     for (const attribute of MEDIA_SRC_ATTRIBUTES) {
       const rawSource = element.getAttribute(attribute);
       if (rawSource === null) continue;
-      srcSlots.push(localMediaSrc(rawSource));
+      srcSlots.push(localMediaSrc(rawSource, context));
     }
 
     const rawSrcset = element.getAttribute("srcset");
     if (rawSrcset === null) continue;
     srcsetSlots.push(
-      parseSrcset(rawSrcset).map((candidate) => localMediaSrc(candidate.source)),
+      parseSrcset(rawSrcset).map((candidate) =>
+        localMediaSrc(candidate.source, context),
+      ),
     );
   }
 
   for (const element of root.querySelectorAll<Element>(MEDIA_STYLE_SELECTOR)) {
-    styleSlots.push(styleMediaSlots(element.getAttribute("style") ?? ""));
+    styleSlots.push(
+      styleMediaSlots(element.getAttribute("style") ?? "", context),
+    );
   }
 
   return { srcSlots, srcsetSlots, styleSlots };
@@ -1281,6 +1392,7 @@ function clearMediaSourceMetadata(root: DocumentFragment): void {
 function collectMetadataReusableMediaSources(
   root: DocumentFragment,
   baseUrl: string | null | undefined,
+  context: ChapterMediaStorageContext,
   urls: Set<string>,
 ): Map<string, string> {
   const reusable = new Map<string, string>();
@@ -1292,7 +1404,7 @@ function collectMetadataReusableMediaSources(
       element.getAttribute(MEDIA_SOURCE_URL_ATTRIBUTE) ?? "",
       baseUrl,
     );
-    const src = localMediaSrc(element.getAttribute("src"));
+    const src = localMediaSrc(element.getAttribute("src"), context);
     if (sourceUrl && src && urls.has(sourceUrl)) {
       reusable.set(sourceUrl, src);
     }
@@ -1306,7 +1418,7 @@ function collectMetadataReusableMediaSources(
     );
     const localCandidates = parseSrcset(
       element.getAttribute("srcset") ?? "",
-    ).map((candidate) => localMediaSrc(candidate.source));
+    ).map((candidate) => localMediaSrc(candidate.source, context));
     for (
       let index = 0;
       index < sourceCandidates.length && index < localCandidates.length;
@@ -1328,19 +1440,21 @@ function collectMetadataReusableMediaSources(
 
 function collectSlotReusableMediaSources({
   baseUrl,
+  context,
   root,
   srcTargets,
   srcsetTargets,
   styleTargets,
 }: {
   baseUrl: string | null | undefined;
+  context: ChapterMediaStorageContext;
   root: DocumentFragment;
   srcTargets: MediaSrcTarget[];
   srcsetTargets: MediaSrcsetTarget[];
   styleTargets: MediaStyleTarget[];
 }): Map<string, string> {
   const reusable = new Map<string, string>();
-  const existingSlots = collectExistingMediaSlots(root);
+  const existingSlots = collectExistingMediaSlots(root, context);
 
   for (const target of srcTargets) {
     const src = existingSlots.srcSlots[target.slotIndex];
@@ -1382,6 +1496,7 @@ function collectSlotReusableMediaSources({
 function collectReusableMediaSources({
   baseUrl,
   chapterId,
+  context,
   previousHtml,
   srcTargets,
   srcsetTargets,
@@ -1390,13 +1505,14 @@ function collectReusableMediaSources({
 }: {
   baseUrl: string | null | undefined;
   chapterId: number;
+  context: ChapterMediaStorageContext;
   previousHtml: string | null | undefined;
   srcTargets: MediaSrcTarget[];
   srcsetTargets: MediaSrcsetTarget[];
   styleTargets: MediaStyleTarget[];
   urls: string[];
 }): Map<string, string> {
-  if (!previousHtml?.includes(LOCAL_MEDIA_SRC_PREFIX)) {
+  if (!previousHtml) {
     return new Map();
   }
 
@@ -1406,10 +1522,12 @@ function collectReusableMediaSources({
   const reusable = collectMetadataReusableMediaSources(
     template.content,
     baseUrl,
+    context,
     urlSet,
   );
   const slotReusable = collectSlotReusableMediaSources({
     baseUrl,
+    context,
     root: template.content,
     srcTargets,
     srcsetTargets,
@@ -1460,11 +1578,9 @@ async function collectStoredManifestMediaSources({
 }
 
 function collectManifestMediaSources({
-  chapterId,
   manifest,
   urls,
 }: {
-  chapterId: number;
   manifest: ChapterMediaManifest;
   urls: string[];
 }): Map<string, string> {
@@ -1480,7 +1596,7 @@ function collectManifestMediaSources({
     ) {
       continue;
     }
-    existing.set(file.sourceUrl, localChapterMediaSrc(chapterId, file.fileName));
+    existing.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
   }
   return existing;
 }
@@ -1507,7 +1623,7 @@ async function collectStoredMediaFileSources({
     }
     const src = localChapterMediaSrc(chapterId, file.fileName);
     if ((await getStoredChapterMediaBytes(src, context)) > 0) {
-      existing.set(file.sourceUrl, src);
+      existing.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
     }
   }
   return existing;
@@ -1537,7 +1653,7 @@ async function collectMissingManifestMediaSources({
     manifest.media.files.map((file) => [file.fileName, file]),
   );
   const missing = new Map<string, string>();
-  for (const src of localChapterMediaSources(html)) {
+  for (const src of localChapterMediaSources(html, context)) {
     const fileName = fileNameFromLocalMediaSrc(src, chapterId);
     if (!fileName) continue;
     const manifestFile = filesByName.get(fileName);
@@ -1686,7 +1802,7 @@ function safeChapterMediaHtml(template: HTMLTemplateElement): string {
   const safeTemplate = document.createElement("template");
   safeTemplate.innerHTML = template.innerHTML;
   clearMediaSourceMetadata(safeTemplate.content);
-  return safeTemplate.innerHTML;
+  return stripLocalChapterMediaPrefixes(safeTemplate.innerHTML);
 }
 
 async function emitHtmlUpdate(
@@ -1859,7 +1975,7 @@ export async function cacheHtmlChapterMedia({
 
   if (urls.length === 0 && !repair) {
     return {
-      html: template.innerHTML,
+      html: stripLocalChapterMediaPrefixes(template.innerHTML),
       mediaBytes: 0,
       mediaFailures: [],
       storedMediaCount: 0,
@@ -1879,14 +1995,15 @@ export async function cacheHtmlChapterMedia({
   const mediaContextUrl = contextUrl ?? baseUrl ?? undefined;
   const reusableCandidates = repair
     ? collectReusableMediaSources({
-          baseUrl,
-          chapterId,
-          previousHtml,
-          srcTargets,
-          srcsetTargets,
-          styleTargets,
-          urls,
-        })
+        baseUrl,
+        chapterId,
+        context: storageContext,
+        previousHtml,
+        srcTargets,
+        srcsetTargets,
+        styleTargets,
+        urls,
+      })
     : new Map<string, string>();
   const mediaFailures: ChapterMediaFailure[] = [];
   const previousManifest = await readChapterMediaManifest(storageContext);
@@ -1908,7 +2025,6 @@ export async function cacheHtmlChapterMedia({
           urls,
         })
       : collectManifestMediaSources({
-          chapterId,
           manifest: previousManifest,
           urls,
         });
@@ -2140,7 +2256,7 @@ export async function cacheHtmlChapterMedia({
     });
     clearMediaSourceMetadata(template.content);
     return {
-      html: template.innerHTML,
+      html: stripLocalChapterMediaPrefixes(template.innerHTML),
       mediaBytes: 0,
       mediaFailures,
       storedMediaCount,
@@ -2166,7 +2282,10 @@ export async function cacheHtmlChapterMedia({
       error: archiveFailure,
       sourceId,
     });
-    mediaBytes = await getStoredChapterMediaBytes(template.innerHTML, storageContext);
+    mediaBytes = await getStoredChapterMediaBytes(
+      template.innerHTML,
+      storageContext,
+    );
   }
   await writeChapterMediaManifest({
     complete: true,
@@ -2177,7 +2296,7 @@ export async function cacheHtmlChapterMedia({
 
   return {
     ...(archiveFailure ? { archiveFailure } : {}),
-    html: template.innerHTML,
+    html: stripLocalChapterMediaPrefixes(template.innerHTML),
     mediaFailures,
     mediaBytes,
     storedMediaCount,
@@ -2299,7 +2418,7 @@ export async function storeEmbeddedChapterMedia({
 
   return {
     ...(archiveFailure ? { archiveFailure } : {}),
-    html: rewrittenHtml,
+    html: stripLocalChapterMediaPrefixes(rewrittenHtml),
     mediaBytes,
     storedMediaCount,
   };
@@ -2325,25 +2444,26 @@ function chapterMediaInvokeArgs(
 
 function collectLocalChapterMediaSources(
   patches: ChapterMediaElementPatch[],
+  context?: ChapterMediaStorageContext,
 ): string[] {
   const sources = new Set<string>();
   for (const patch of patches) {
     for (const [attribute, value] of Object.entries(patch.attributes)) {
-      if (attribute === "srcset" && value.includes(LOCAL_MEDIA_SRC_PREFIX)) {
+      if (attribute === "srcset") {
         for (const candidate of parseSrcset(value)) {
-          if (candidate.source.startsWith(LOCAL_MEDIA_SRC_PREFIX)) {
+          if (localChapterMediaFileName(candidate.source, context)) {
             sources.add(candidate.source);
           }
         }
         continue;
       }
-      if (attribute === "style" && value.includes(LOCAL_MEDIA_SRC_PREFIX)) {
-        for (const source of localStyleMediaSources(value)) {
+      if (attribute === "style") {
+        for (const source of localStyleMediaSources(value, context)) {
           sources.add(source);
         }
         continue;
       }
-      if (value.startsWith(LOCAL_MEDIA_SRC_PREFIX)) {
+      if (localChapterMediaFileName(value, context)) {
         sources.add(value);
       }
     }
@@ -2389,20 +2509,22 @@ async function resolveAndroidLocalChapterMediaSources(
 
   await Promise.all(
     sources.map(async (source) => {
-      const parsed = parseLocalChapterMediaSrc(source);
-      if (!parsed) {
+      const fileName = localChapterMediaFileName(source, context);
+      if (!fileName) {
         resolved.set(source, null);
         return;
       }
+      const parsed = parseLocalChapterMediaSrc(source);
       const resolvedContext =
-        context?.chapterId === parsed.chapterId
-          ? context
-          : await storageContextForChapter(parsed.chapterId);
-      const lookupContext = resolvedContext ?? { chapterId: parsed.chapterId };
+        context ??
+        (parsed ? await storageContextForChapter(parsed.chapterId) : undefined);
+      const lookupContext = resolvedContext ?? {
+        chapterId: parsed?.chapterId ?? context?.chapterId ?? 0,
+      };
       if (await androidDirectMediaAvailable(lookupContext, directAvailability)) {
-        for (const relativePath of await androidRelativePathsFromLocalMediaSrc(
-          source,
+        for (const relativePath of androidChapterMediaRelativePathCandidates(
           lookupContext,
+          fileName,
         )) {
           const directDataUrl = await readAndroidStorageDataUrl(relativePath);
           if (directDataUrl) {
@@ -2415,7 +2537,7 @@ async function resolveAndroidLocalChapterMediaSources(
         archivePaths: androidChapterMediaArchiveRelativePathCandidates(
           lookupContext,
         ),
-        fileName: parsed.fileName,
+        fileName,
       });
     }),
   );
@@ -2474,16 +2596,17 @@ export async function resolveLocalChapterMediaSrc(
   src: string,
   context?: ChapterMediaStorageContext,
 ): Promise<string | null> {
-  if (!src.startsWith(LOCAL_MEDIA_SRC_PREFIX)) return src;
+  const fileName = localChapterMediaFileName(src, context);
+  if (!fileName) return src.startsWith(LOCAL_MEDIA_SRC_PREFIX) ? null : src;
   if (!isTauriRuntime()) return src;
   if (isAndroidRuntime()) {
     const parsed = parseLocalChapterMediaSrc(src);
-    if (!parsed) return null;
     const resolvedContext =
-      context?.chapterId === parsed.chapterId
-        ? context
-        : await storageContextForChapter(parsed.chapterId);
-    const lookupContext = resolvedContext ?? { chapterId: parsed.chapterId };
+      context ??
+      (parsed ? await storageContextForChapter(parsed.chapterId) : undefined);
+    const lookupContext = resolvedContext ?? {
+      chapterId: parsed?.chapterId ?? context?.chapterId ?? 0,
+    };
     const relativePaths = await androidRelativePathsFromLocalMediaSrc(
       src,
       lookupContext,
@@ -2498,7 +2621,7 @@ export async function resolveLocalChapterMediaSrc(
     )) {
       const archivedDataUrl = await readAndroidStorageZipEntryDataUrl(
         archivePath,
-        parsed.fileName,
+        fileName,
       );
       if (archivedDataUrl) return archivedDataUrl;
     }
@@ -2507,7 +2630,10 @@ export async function resolveLocalChapterMediaSrc(
   try {
     const path = await invoke<string>(
       "chapter_media_path",
-      chapterMediaInvokeArgs(src, context),
+      chapterMediaInvokeArgs(
+        localChapterMediaSourceForContext(src, context) ?? src,
+        context,
+      ),
     );
     if (typeof path === "string" && path.trim() !== "") {
       return convertFileSrc(path);
@@ -2518,7 +2644,10 @@ export async function resolveLocalChapterMediaSrc(
   try {
     return await invoke<string>(
       "chapter_media_data_url",
-      chapterMediaInvokeArgs(src, context),
+      chapterMediaInvokeArgs(
+        localChapterMediaSourceForContext(src, context) ?? src,
+        context,
+      ),
     );
   } catch {
     return null;
@@ -2530,7 +2659,7 @@ function resolveCachedLocalChapterMediaSrc(
   src: string,
   context?: ChapterMediaStorageContext,
 ): Promise<string | null> {
-  if (!src.startsWith(LOCAL_MEDIA_SRC_PREFIX)) {
+  if (!localChapterMediaFileName(src, context)) {
     return Promise.resolve(src);
   }
   const cached = cache.get(src);
@@ -2547,7 +2676,7 @@ export async function resolveLocalChapterMediaPatches(
   const resolvedMedia = new Map<string, Promise<string | null>>();
   if (isTauriRuntime() && isAndroidRuntime()) {
     const androidResolvedMedia = await resolveAndroidLocalChapterMediaSources(
-      collectLocalChapterMediaSources(patches),
+      collectLocalChapterMediaSources(patches, context),
       context,
     );
     for (const [source, resolved] of androidResolvedMedia) {
@@ -2559,10 +2688,13 @@ export async function resolveLocalChapterMediaPatches(
       const attributes: Record<string, string> = {};
       await Promise.all(
         Object.entries(patch.attributes).map(async ([attribute, value]) => {
-          if (attribute === "srcset" && value.includes(LOCAL_MEDIA_SRC_PREFIX)) {
+          if (attribute === "srcset") {
             const resolvedCandidates = (
               await Promise.all(
                 parseSrcset(value).map(async (candidate) => {
+                  if (!localChapterMediaFileName(candidate.source, context)) {
+                    return candidate;
+                  }
                   const src = await resolveCachedLocalChapterMediaSrc(
                     resolvedMedia,
                     candidate.source,
@@ -2579,8 +2711,9 @@ export async function resolveLocalChapterMediaPatches(
             }
             return;
           }
-          if (attribute === "style" && value.includes(LOCAL_MEDIA_SRC_PREFIX)) {
-            const localSources = localStyleMediaSources(value);
+          if (attribute === "style") {
+            const localSources = localStyleMediaSources(value, context);
+            if (localSources.length === 0) return;
             const resolvedSources = new Map<string, string | null>();
             await Promise.all(
               localSources.map(async (source) => {
@@ -2602,13 +2735,13 @@ export async function resolveLocalChapterMediaPatches(
                 const source = String(
                   doubleQuoted ?? singleQuoted ?? unquoted ?? "",
                 ).trim();
-                if (!source.startsWith(LOCAL_MEDIA_SRC_PREFIX)) return match;
+                if (!localChapterMediaFileName(source, context)) return match;
                 return `url("${resolvedSources.get(source) ?? ""}")`;
               },
             );
             return;
           }
-          if (!value.startsWith(LOCAL_MEDIA_SRC_PREFIX)) return;
+          if (!localChapterMediaFileName(value, context)) return;
           const src = await resolveCachedLocalChapterMediaSrc(
             resolvedMedia,
             value,
@@ -2632,7 +2765,7 @@ export async function resolveLocalChapterMedia(
   if (
     !isTauriRuntime() ||
     typeof document === "undefined" ||
-    !html.includes(LOCAL_MEDIA_SRC_PREFIX)
+    (!context && !html.includes(LOCAL_MEDIA_SRC_PREFIX))
   ) {
     return html;
   }
@@ -2654,7 +2787,9 @@ export async function resolveLocalChapterMedia(
     mediaElements.map(async (element) => {
       for (const attribute of MEDIA_SRC_ATTRIBUTES) {
         const rawSource = element.getAttribute(attribute);
-        if (!rawSource?.startsWith(LOCAL_MEDIA_SRC_PREFIX)) continue;
+        if (!rawSource || !localChapterMediaFileName(rawSource, context)) {
+          continue;
+        }
         const src = await resolveCachedLocalChapterMediaSrc(
           resolvedMedia,
           rawSource,
@@ -2672,10 +2807,20 @@ export async function resolveLocalChapterMedia(
       }
 
       const rawSrcset = element.getAttribute("srcset");
-      if (!rawSrcset?.includes(LOCAL_MEDIA_SRC_PREFIX)) return;
+      if (
+        !rawSrcset ||
+        !parseSrcset(rawSrcset).some((candidate) =>
+          localChapterMediaFileName(candidate.source, context),
+        )
+      ) {
+        return;
+      }
       const resolvedCandidates = (
         await Promise.all(
           parseSrcset(rawSrcset).map(async (candidate) => {
+            if (!localChapterMediaFileName(candidate.source, context)) {
+              return candidate;
+            }
             const src = await resolveCachedLocalChapterMediaSrc(
               resolvedMedia,
               candidate.source,
@@ -2696,8 +2841,9 @@ export async function resolveLocalChapterMedia(
   await Promise.all(
     styleElements.map(async (element) => {
       const rawStyle = element.getAttribute("style");
-      if (!rawStyle?.includes(LOCAL_MEDIA_SRC_PREFIX)) return;
-      const localSources = localStyleMediaSources(rawStyle);
+      if (!rawStyle) return;
+      const localSources = localStyleMediaSources(rawStyle, context);
+      if (localSources.length === 0) return;
       const resolvedSources = new Map<string, string | null>();
       await Promise.all(
         localSources.map(async (source) => {
@@ -2719,7 +2865,7 @@ export async function resolveLocalChapterMedia(
           const source = String(
             doubleQuoted ?? singleQuoted ?? unquoted ?? "",
           ).trim();
-          if (!source.startsWith(LOCAL_MEDIA_SRC_PREFIX)) return match;
+          if (!localChapterMediaFileName(source, context)) return match;
           return `url("${resolvedSources.get(source) ?? ""}")`;
         },
       );
@@ -2730,8 +2876,8 @@ export async function resolveLocalChapterMedia(
   await Promise.all(
     styleSheetElements.map(async (element) => {
       const rawCss = element.textContent ?? "";
-      if (!rawCss.includes(LOCAL_MEDIA_SRC_PREFIX)) return;
-      const localSources = localStyleMediaSources(rawCss);
+      const localSources = localStyleMediaSources(rawCss, context);
+      if (localSources.length === 0) return;
       const resolvedSources = new Map<string, string | null>();
       await Promise.all(
         localSources.map(async (source) => {
@@ -2753,7 +2899,7 @@ export async function resolveLocalChapterMedia(
           const source = String(
             doubleQuoted ?? singleQuoted ?? unquoted ?? "",
           ).trim();
-          if (!source.startsWith(LOCAL_MEDIA_SRC_PREFIX)) return match;
+          if (!localChapterMediaFileName(source, context)) return match;
           return `url("${resolvedSources.get(source) ?? ""}")`;
         },
       );

@@ -196,6 +196,8 @@ const READER_EMPTY_MEDIA_PLACEHOLDER_SRC =
   "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%2F%3E";
 const READER_PENDING_PLACEHOLDER_HEIGHT = "min(72vh, 56rem)";
 const READER_LOCAL_MEDIA_SRC_PREFIX = "norea-media://chapter/";
+const READER_LOCAL_MEDIA_RELATIVE_SRC_PATTERN =
+  /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const READER_STYLE_URL_PATTERN =
   /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")]*?))\s*\)/gi;
 const READER_SCROLL_OVERSCAN_PX = 1800;
@@ -414,8 +416,77 @@ function mediaLogHost(value: string): string {
   }
 }
 
-function hasLocalChapterMediaValue(value: string | null): value is string {
-  return !!value?.includes(READER_LOCAL_MEDIA_SRC_PREFIX);
+function hasRelativeLocalChapterMediaValue(
+  value: string | null,
+): value is string {
+  const trimmed = value?.trim();
+  if (!trimmed) return false;
+  if (
+    trimmed.startsWith(".") ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("#") ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.includes(":") ||
+    trimmed.includes("?") ||
+    trimmed.includes("&") ||
+    trimmed.includes("=")
+  ) {
+    return false;
+  }
+  return READER_LOCAL_MEDIA_RELATIVE_SRC_PATTERN.test(trimmed);
+}
+
+function hasLocalChapterMediaValue(
+  value: string | null,
+  allowRelative = false,
+): value is string {
+  if (!value) return false;
+  if (value.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
+  return allowRelative && hasRelativeLocalChapterMediaValue(value);
+}
+
+function hasLocalChapterMediaSrcsetValue(
+  value: string | null,
+  allowRelative: boolean,
+): value is string {
+  if (!value) return false;
+  if (value.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
+  if (!allowRelative) return false;
+  return value.split(",").some((candidate) => {
+    const source = candidate.trim().split(/\s+/)[0] ?? "";
+    return hasRelativeLocalChapterMediaValue(source);
+  });
+}
+
+function hasLocalChapterMediaStyleValue(
+  value: string | null,
+  allowRelative: boolean,
+): value is string {
+  if (!value) return false;
+  if (value.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
+  if (!allowRelative) return false;
+  READER_STYLE_URL_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = READER_STYLE_URL_PATTERN.exec(value)) !== null) {
+    const source = String(match[1] ?? match[2] ?? match[3] ?? "").trim();
+    if (hasRelativeLocalChapterMediaValue(source)) return true;
+  }
+  return false;
+}
+
+function hasLocalChapterMediaAttributeValue(
+  attribute: string,
+  value: string | null,
+  allowRelative: boolean,
+): value is string {
+  if (attribute === "style") {
+    return hasLocalChapterMediaStyleValue(value, allowRelative);
+  }
+  if (attribute === "srcset") {
+    return hasLocalChapterMediaSrcsetValue(value, allowRelative);
+  }
+  return hasLocalChapterMediaValue(value, allowRelative);
 }
 
 function hasReaderMediaPatchCandidate(html: string): boolean {
@@ -437,6 +508,7 @@ function setReaderLocalMediaPlaceholder(
   attribute: string,
   value: string,
   resolvedLocalMedia?: ReadonlyMap<string, string>,
+  allowRelative = false,
 ): void {
   const resolvedValue = resolvedLocalMedia?.get(value);
   if (resolvedValue) {
@@ -455,7 +527,7 @@ function setReaderLocalMediaPlaceholder(
           const source = String(
             doubleQuoted ?? singleQuoted ?? unquoted ?? "",
           ).trim();
-          if (!source.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return match;
+          if (!hasLocalChapterMediaValue(source, allowRelative)) return match;
           const resolvedStyleUrl = resolvedLocalMedia?.get(source);
           return `url("${resolvedStyleUrl ?? READER_EMPTY_MEDIA_PLACEHOLDER_SRC}")`;
         },
@@ -473,10 +545,11 @@ function setReaderLocalMediaPlaceholder(
 function protectLocalReaderMedia(
   html: string,
   resolvedLocalMedia?: ReadonlyMap<string, string>,
+  allowRelative = false,
 ): string {
   if (
     typeof document === "undefined" ||
-    !html.includes(READER_LOCAL_MEDIA_SRC_PREFIX)
+    (!allowRelative && !html.includes(READER_LOCAL_MEDIA_SRC_PREFIX))
   ) {
     return html;
   }
@@ -490,12 +563,15 @@ function protectLocalReaderMedia(
   )) {
     for (const attribute of READER_MEDIA_PATCH_ATTRIBUTES) {
       const value = element.getAttribute(attribute);
-      if (!hasLocalChapterMediaValue(value)) continue;
+      if (!hasLocalChapterMediaAttributeValue(attribute, value, allowRelative)) {
+        continue;
+      }
       setReaderLocalMediaPlaceholder(
         element,
         attribute,
         value,
         resolvedLocalMedia,
+        allowRelative,
       );
       changed = true;
       if (!resolvedLocalMedia?.has(value)) {
@@ -594,15 +670,17 @@ function preprocessReaderHtmlShell(html: string, bionicReading: boolean): string
 function protectLocalReaderMediaCached(
   html: string,
   resolvedLocalMedia?: ReadonlyMap<string, string>,
+  allowRelative = false,
 ): string {
   if (
     typeof document === "undefined" ||
-    !html.includes(READER_LOCAL_MEDIA_SRC_PREFIX)
+    (!allowRelative && !html.includes(READER_LOCAL_MEDIA_SRC_PREFIX))
   ) {
     return html;
   }
   const key = [
     "protect:v1",
+    allowRelative ? "relative" : "absolute",
     readerStringFingerprint(html),
     readerLocalMediaMapFingerprint(resolvedLocalMedia),
   ].join("|");
@@ -611,7 +689,7 @@ function protectLocalReaderMediaCached(
   return rememberReaderCacheValue(
     readerProtectedHtmlCache,
     key,
-    protectLocalReaderMedia(html, resolvedLocalMedia),
+    protectLocalReaderMedia(html, resolvedLocalMedia, allowRelative),
     READER_PROTECTED_HTML_CACHE_LIMIT,
   );
 }
@@ -830,6 +908,7 @@ function patchReaderMediaElements(
 
 function collectMountedLocalMediaPatches(
   container: HTMLElement,
+  allowRelative: boolean,
 ): ChapterMediaElementPatch[] {
   const elements = [
     ...container.querySelectorAll<HTMLElement>(READER_MEDIA_PATCH_SELECTOR),
@@ -844,7 +923,7 @@ function collectMountedLocalMediaPatches(
         (protectedAttribute
           ? element.getAttribute(protectedAttribute)
           : null) ?? element.getAttribute(attribute);
-      if (hasLocalChapterMediaValue(value)) {
+      if (hasLocalChapterMediaAttributeValue(attribute, value, allowRelative)) {
         attributes[attribute] = value;
         sourceAttributes[attribute] = value;
       }
@@ -2296,12 +2375,12 @@ function ReaderContentInner(
   }, [contentKey, getActiveScrollNode, layoutRestoreKey]);
 
   useEffect(() => {
-    if (!stableLocalMediaContext || !renderedHtml.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) {
+    if (!stableLocalMediaContext) {
       return;
     }
     const content = contentRef.current;
     if (!content) return;
-    const rawPatches = collectMountedLocalMediaPatches(content);
+    const rawPatches = collectMountedLocalMediaPatches(content, true);
     if (rawPatches.length === 0) return;
     const signature = localMediaPatchSignature(rawPatches);
     const scopedSignature = `${localMediaContextKey}\u0000${signature}`;
@@ -3091,8 +3170,14 @@ function ReaderContentInner(
           "</div></div>",
         ].join(""),
         resolvedLocalMediaMap,
+        Boolean(stableLocalMediaContext),
       ),
-    [displayStaticHtml, resolvedLocalMediaMap, visibleSegmentsHtml],
+    [
+      displayStaticHtml,
+      resolvedLocalMediaMap,
+      stableLocalMediaContext,
+      visibleSegmentsHtml,
+    ],
   );
   const pagedFullHtml = useMemo(
     () =>
@@ -3100,8 +3185,14 @@ function ReaderContentInner(
         displayStaticHtml +
           virtualDocument.segments.map((segment) => segment.html).join(""),
         resolvedLocalMediaMap,
+        Boolean(stableLocalMediaContext),
       ),
-    [displayStaticHtml, resolvedLocalMediaMap, virtualDocument.segments],
+    [
+      displayStaticHtml,
+      resolvedLocalMediaMap,
+      stableLocalMediaContext,
+      virtualDocument.segments,
+    ],
   );
   const readerContentHtml = isPagedReader ? pagedFullHtml : scrollVirtualHtml;
   const readerContentStyle = useMemo<CSSProperties>(
