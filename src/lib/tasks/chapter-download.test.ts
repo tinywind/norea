@@ -422,7 +422,7 @@ describe("enqueueChapterDownload", () => {
   it("keeps chapter media downloads on the assigned scraper executor", async () => {
     pluginMocks.parseChapter.mockResolvedValueOnce(`<img src="/page.png">`);
     vi.mocked(getChapterById).mockResolvedValueOnce({
-      content: `<img src="norea-media://chapter/7/page.png">`,
+      content: `<img src="norea-media://reader-asset/page.png">`,
       contentType: "html",
       id: 7,
     } as never);
@@ -446,7 +446,7 @@ describe("enqueueChapterDownload", () => {
 
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
-        previousHtml: `<img src="norea-media://chapter/7/page.png">`,
+        previousHtml: `<img src="norea-media://reader-asset/page.png">`,
         requestInit: { headers: { Referer: "https://source.test/" } },
         scraperExecutor: "pool:1",
         sourceId: "source-a",
@@ -472,7 +472,7 @@ describe("enqueueChapterDownload", () => {
       id: 7,
     } as never);
     vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({
-      html: `<section class="reader-markdown-content"><h1>Chapter 7</h1><p><a href="https://source.test/read">kept</a><img src="norea-media://chapter/7/page.png" alt="Page"></p></section>`,
+      html: `<section class="reader-markdown-content"><h1>Chapter 7</h1><p><a href="https://source.test/read">kept</a><img src="norea-media://reader-asset/page.png" alt="Page"></p></section>`,
       mediaFailures: [],
       mediaBytes: 3,
       storedMediaCount: 1,
@@ -504,7 +504,7 @@ describe("enqueueChapterDownload", () => {
     );
     expect(saveChapterContent).toHaveBeenCalledWith(
       7,
-      expect.stringContaining("norea-media://chapter/7/page.png"),
+      expect.stringContaining("norea-media://reader-asset/page.png"),
       "html",
       { mediaBytes: 3 },
     );
@@ -595,7 +595,7 @@ describe("enqueueChapterDownload", () => {
       `<article><img src="norea-epub-resource://OEBPS%2Fpage.png"></article>`,
     );
     vi.mocked(storeEmbeddedChapterMedia).mockResolvedValueOnce({
-      html: `<article><img src="norea-media://chapter/7/0001-page.png"></article>`,
+      html: `<article><img src="norea-media://reader-asset/0001-page.png"></article>`,
       mediaBytes: 3,
       storedMediaCount: 1,
     });
@@ -641,7 +641,7 @@ describe("enqueueChapterDownload", () => {
     );
     expect(saveChapterContent).toHaveBeenCalledWith(
       7,
-      `<article><img src="norea-media://chapter/7/0001-page.png"></article>`,
+      `<article><img src="norea-media://reader-asset/0001-page.png"></article>`,
       "epub",
       { mediaBytes: 3 },
     );
@@ -895,7 +895,7 @@ describe("enqueueChapterMediaRepair", () => {
   it("repairs remote media without parsing chapter content", async () => {
     const setDetail = vi.fn();
     const storedHtml = `<img src="https://cdn.test/page.png">`;
-    const repairedHtml = `<img src="norea-media://chapter/7/page.png">`;
+    const repairedHtml = `<img src="norea-media://reader-asset/page.png">`;
     vi.mocked(getChapterById).mockResolvedValueOnce({
       chapterNumber: "7",
       content: storedHtml,
@@ -953,10 +953,10 @@ describe("enqueueChapterMediaRepair", () => {
 
   it("runs media repair when stored HTML only has local media refs", async () => {
     const setDetail = vi.fn();
-    const storedHtml = `<img src="norea-media://chapter/7/0001-page.png">`;
+    const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
     vi.mocked(localChapterMediaSources).mockReturnValueOnce([
-      "norea-media://chapter/7/0001-page.png",
+      "norea-media://reader-asset/0001-page.png",
     ]);
     vi.mocked(getChapterById).mockResolvedValueOnce({
       chapterNumber: "7",

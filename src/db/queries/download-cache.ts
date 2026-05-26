@@ -242,7 +242,7 @@ export async function listDownloadCacheMediaBackfillCandidates(
      WHERE c.is_downloaded = 1
        AND c.media_bytes = 0
        AND c.media_bytes_checked_at IS NULL
-       AND c.content LIKE '%norea-media://chapter/%'
+       AND c.content LIKE '%norea-media://reader-asset/%'
        AND n.is_local = 0
        ${novelFilter}
      ORDER BY c.updated_at ASC, c.id ASC
@@ -263,7 +263,7 @@ export async function getDownloadCacheMediaBackfillCandidateContent(
        AND c.is_downloaded = 1
        AND c.media_bytes = 0
        AND c.media_bytes_checked_at IS NULL
-       AND c.content LIKE '%norea-media://chapter/%'
+       AND c.content LIKE '%norea-media://reader-asset/%'
        AND n.is_local = 0`,
     [chapterId],
   );

@@ -195,7 +195,7 @@ const READER_PENDING_PLACEHOLDER_SRC =
 const READER_EMPTY_MEDIA_PLACEHOLDER_SRC =
   "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%2F%3E";
 const READER_PENDING_PLACEHOLDER_HEIGHT = "min(72vh, 56rem)";
-const READER_LOCAL_MEDIA_SRC_PREFIX = "norea-media://chapter/";
+const READER_LOCAL_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 const READER_LOCAL_MEDIA_RELATIVE_SRC_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const READER_STYLE_URL_PATTERN =

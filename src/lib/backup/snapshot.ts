@@ -129,7 +129,7 @@ const BACKUP_SETTING_KEYS = new Set([
 
 const BACKUP_SETTING_PREFIXES = ["plugin:", "source-filters:"];
 const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
-  /^norea-media:\/\/chapter\/(?:([1-9]\d*)\/)?([A-Za-z0-9._-]+)$/;
+  /^norea-media:\/\/reader-asset\/([A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*)$/;
 
 const SELECT_NOVELS = `
   SELECT
@@ -318,15 +318,13 @@ function parseBackupChapterMediaSource(
   if (!match) {
     throw new Error(`Invalid backup chapter media reference: ${mediaSrc}`);
   }
-  const chapterId = match[1]
-    ? Number.parseInt(match[1], 10)
-    : fallbackChapterId;
+  const chapterId = fallbackChapterId;
   if (!chapterId || chapterId <= 0) {
     throw new Error(`Invalid backup chapter media reference: ${mediaSrc}`);
   }
   return {
     chapterId,
-    fileName: match[2]!,
+    fileName: match[1]!,
   };
 }
 

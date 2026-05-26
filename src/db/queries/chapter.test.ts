@@ -468,7 +468,7 @@ describe("saveChapterContent", () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
     await saveChapterContent(
       7,
-      '<img src="norea-media://chapter/7/page.png">',
+      '<img src="norea-media://reader-asset/page.png">',
     );
     const [, params] = mockExecute.mock.calls[0]!;
     expect(params?.[5]).toBe(0);

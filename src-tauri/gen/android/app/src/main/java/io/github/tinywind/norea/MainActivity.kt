@@ -1161,7 +1161,8 @@ class MainActivity : TauriActivity() {
 
   private fun androidReaderMediaResponse(uri: Uri): WebResourceResponse? {
     if (uri.host != NOREA_MEDIA_HOST) return null
-    val fileName = uri.pathSegments.lastOrNull()
+    val fileName = uri.pathSegments.joinToString("/")
+      .takeIf { it.isNotBlank() }
       ?: return androidLocalMediaErrorResponse(
         400,
         "Android reader media file is missing.",
@@ -1452,11 +1453,24 @@ class MainActivity : TauriActivity() {
   private fun safeZipEntryName(name: String?): String? {
     val entryName = name
       ?.replace('\\', '/')
-      ?.substringAfterLast('/')
+      ?.trim()
+      ?.trim('/')
       ?.trim()
       ?: return null
-    if (entryName.isEmpty() || entryName == "." || entryName == "..") return null
-    if (entryName.contains('\u0000')) return null
+    if (entryName.isEmpty() || entryName.contains('\u0000')) return null
+    val parts = entryName.split('/')
+    if (
+      parts.any { part ->
+        part.isEmpty() ||
+          part == "." ||
+          part == ".." ||
+          !part.all { ch ->
+            ch.isLetterOrDigit() || ch == '.' || ch == '_' || ch == '-'
+          }
+      }
+    ) {
+      return null
+    }
     return entryName
   }
 
@@ -1683,7 +1697,7 @@ class MainActivity : TauriActivity() {
     private const val MAX_ZIP_ENTRY_BYTES = 256L * BYTES_PER_MIB
     private const val MAX_ZIP_ENTRIES = 100_000
     private const val MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2L * 1024L * BYTES_PER_MIB
-    private const val NOREA_MEDIA_HOST = "chapter"
+    private const val NOREA_MEDIA_HOST = "reader-asset"
     private const val NOREA_MEDIA_SCHEME = "norea-media"
     private const val READER_MEDIA_CACHE_DIR = "reader-media"
     private const val REQUEST_MEDIA_STORAGE_ROOT = 1001

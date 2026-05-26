@@ -31,14 +31,10 @@ import {
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
-const LOCAL_MEDIA_SRC_PREFIX = "norea-media://chapter/";
+const LOCAL_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 const CHAPTER_MEDIA_STREAM_DOMAIN = "chapter-media";
 const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
-  /norea-media:\/\/chapter\/(?:[1-9]\d*\/)?[A-Za-z0-9._-]+(?=$|[^A-Za-z0-9._/-])/g;
-const LOCAL_CHAPTER_MEDIA_SRC_DETAIL_PATTERN =
-  /^norea-media:\/\/chapter\/([1-9]\d*)\/([A-Za-z0-9._-]+)$/;
-const LOCAL_CHAPTER_MEDIA_SRC_CANONICAL_PATTERN =
-  /^norea-media:\/\/chapter\/([A-Za-z0-9._-]+)$/;
+  /norea-media:\/\/reader-asset\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*(?=$|[^A-Za-z0-9._/-])/g;
 const MEDIA_SOURCE_URL_ATTRIBUTE = "data-norea-media-source-url";
 const MEDIA_SRCSET_SOURCE_ATTRIBUTE = "data-norea-media-srcset-source";
 const MEDIA_LAZY_SRC_ATTRIBUTES = [
@@ -494,7 +490,6 @@ function relativeChapterMediaFileName(
     trimmed.startsWith(".") ||
     trimmed.startsWith("/") ||
     trimmed.startsWith("#") ||
-    trimmed.includes("/") ||
     trimmed.includes("\\") ||
     trimmed.includes(":") ||
     trimmed.includes("?") ||
@@ -503,7 +498,16 @@ function relativeChapterMediaFileName(
   ) {
     return null;
   }
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed) ? trimmed : null;
+  const parts = trimmed.split("/");
+  return parts.every(
+    (part) =>
+      part !== "" &&
+      part !== "." &&
+      part !== ".." &&
+      /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part),
+  )
+    ? trimmed
+    : null;
 }
 
 function androidChapterMediaRelativePath(
@@ -515,19 +519,13 @@ function androidChapterMediaRelativePath(
 }
 
 function parseLocalChapterMediaSrc(src: string): {
-  chapterId?: number;
   fileName: string;
 } | null {
-  const canonicalMatch = src.match(LOCAL_CHAPTER_MEDIA_SRC_CANONICAL_PATTERN);
-  if (canonicalMatch) {
-    return { fileName: canonicalMatch[1]! };
-  }
-  const match = src.match(LOCAL_CHAPTER_MEDIA_SRC_DETAIL_PATTERN);
-  if (!match) return null;
-  return {
-    chapterId: Number(match[1]),
-    fileName: match[2]!,
-  };
+  if (!src.startsWith(LOCAL_MEDIA_SRC_PREFIX)) return null;
+  const fileName = relativeChapterMediaFileName(
+    src.slice(LOCAL_MEDIA_SRC_PREFIX.length),
+  );
+  return fileName ? { fileName } : null;
 }
 
 function localChapterMediaFileName(
@@ -543,8 +541,6 @@ function localChapterMediaSourceForContext(
   src: string,
   context?: ChapterMediaStorageContext,
 ): string | null {
-  const parsed = parseLocalChapterMediaSrc(src);
-  if (parsed?.chapterId && !context) return src;
   const fileName = localChapterMediaFileName(src, context);
   if (!fileName) return null;
   return localChapterMediaSrc(fileName);
@@ -811,16 +807,7 @@ async function androidRelativePathsFromLocalMediaSrc(
 ): Promise<string[]> {
   const fileName = localChapterMediaFileName(src, context);
   if (!fileName) return [];
-  const parsed = parseLocalChapterMediaSrc(src);
-  const resolvedContext =
-    context ??
-    (parsed?.chapterId
-      ? await storageContextForChapter(parsed.chapterId)
-      : undefined);
-  const lookupContext = resolvedContext ?? {
-    chapterId: parsed?.chapterId ?? context?.chapterId ?? 0,
-  };
-  return androidChapterMediaRelativePathCandidates(lookupContext, fileName);
+  return androidChapterMediaRelativePathCandidates(context, fileName);
 }
 
 export function localChapterMediaSources(
@@ -884,21 +871,13 @@ export async function getStoredChapterMediaBytes(
     ? [directSource]
     : localChapterMediaSources(html, context);
   if (mediaSrcs.length === 0) return 0;
-  const firstMedia = mediaSrcs[0]
-    ? parseLocalChapterMediaSrc(mediaSrcs[0])
-    : null;
-  const resolvedContext =
-    context ??
-    (firstMedia?.chapterId
-      ? await storageContextForChapter(firstMedia.chapterId)
-      : undefined);
   if (isAndroidRuntime()) {
     let total = 0;
     const countedArchives = new Set<string>();
     for (const source of mediaSrcs) {
       const relativePaths = await androidRelativePathsFromLocalMediaSrc(
         source,
-        resolvedContext ?? undefined,
+        context,
       );
       let hasDirectMedia = false;
       for (const path of relativePaths) {
@@ -914,7 +893,7 @@ export async function getStoredChapterMediaBytes(
       const parsed = parseLocalChapterMediaSrc(source);
       if (!parsed) continue;
       for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-        resolvedContext,
+        context,
       )) {
         if (countedArchives.has(archivePath)) continue;
         if (!(await androidStorageZipEntryExists(archivePath, parsed.fileName))) {
@@ -929,26 +908,26 @@ export async function getStoredChapterMediaBytes(
   }
   return invoke<number>("chapter_media_total_size", {
     mediaSrcs,
-    ...(resolvedContext?.chapterId
-      ? { chapterId: resolvedContext.chapterId }
+    ...(context?.chapterId
+      ? { chapterId: context.chapterId }
       : {}),
-    ...(resolvedContext?.chapterName
-      ? { chapterName: resolvedContext.chapterName }
+    ...(context?.chapterName
+      ? { chapterName: context.chapterName }
       : {}),
-    ...(resolvedContext?.chapterNumber
-      ? { chapterNumber: resolvedContext.chapterNumber }
+    ...(context?.chapterNumber
+      ? { chapterNumber: context.chapterNumber }
       : {}),
-    ...(resolvedContext?.chapterPosition
-      ? { chapterPosition: resolvedContext.chapterPosition }
+    ...(context?.chapterPosition
+      ? { chapterPosition: context.chapterPosition }
       : {}),
-    ...(resolvedContext?.novelId ? { novelId: resolvedContext.novelId } : {}),
-    ...(resolvedContext?.novelName
-      ? { novelName: resolvedContext.novelName }
+    ...(context?.novelId ? { novelId: context.novelId } : {}),
+    ...(context?.novelName
+      ? { novelName: context.novelName }
       : {}),
-    ...(resolvedContext?.novelPath
-      ? { novelPath: resolvedContext.novelPath }
+    ...(context?.novelPath
+      ? { novelPath: context.novelPath }
       : {}),
-    ...(resolvedContext?.sourceId ? { sourceId: resolvedContext.sourceId } : {}),
+    ...(context?.sourceId ? { sourceId: context.sourceId } : {}),
   });
 }
 
@@ -2496,18 +2475,8 @@ async function resolveAndroidLocalChapterMediaSources(
         resolved.set(source, null);
         return;
       }
-      const parsed = parseLocalChapterMediaSrc(source);
-      const resolvedContext = hasStorageContext(context)
-        ? context
-        : parsed?.chapterId
-          ? (await storageContextForChapter(parsed.chapterId)) ?? context
-          : context;
-      const lookupContext = resolvedContext ?? {
-        chapterId: parsed?.chapterId ?? context?.chapterId ?? 0,
-      };
-
       for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-        lookupContext,
+        context,
       )) {
         if (await prepareArchive(archivePath)) {
           resolved.set(source, localChapterMediaSrc(fileName));
@@ -2528,17 +2497,8 @@ export async function resolveLocalChapterMediaSrc(
   if (!fileName) return src.startsWith(LOCAL_MEDIA_SRC_PREFIX) ? null : src;
   if (!isTauriRuntime()) return src;
   if (isAndroidRuntime()) {
-    const parsed = parseLocalChapterMediaSrc(src);
-    const resolvedContext = hasStorageContext(context)
-      ? context
-      : parsed?.chapterId
-        ? (await storageContextForChapter(parsed.chapterId)) ?? context
-        : context;
-    const lookupContext = resolvedContext ?? {
-      chapterId: parsed?.chapterId ?? context?.chapterId ?? 0,
-    };
     for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-      lookupContext,
+      context,
     )) {
       try {
         await prepareAndroidReaderMediaCache(archivePath);
@@ -2561,7 +2521,7 @@ export async function resolveLocalChapterMediaSrc(
       return convertFileSrc(path);
     }
   } catch {
-    // Older native hosts and missing files continue through the legacy data URL path.
+    // Missing direct files can still be served through the archived data URL path.
   }
   try {
     return await invoke<string>(

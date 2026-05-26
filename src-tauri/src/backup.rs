@@ -581,36 +581,43 @@ fn media_backup_entry_name(
     media_src: &str,
     context_chapter_id: Option<i64>,
 ) -> Result<String, String> {
-    let payload = media_src
-        .strip_prefix("norea-media://chapter/")
+    let file_name = media_src
+        .strip_prefix("norea-media://reader-asset/")
         .ok_or_else(|| "backup_pack: unsupported chapter media uri".to_string())?;
-    let parts = payload.split('/').collect::<Vec<_>>();
-    let (uri_chapter_id, file_name) = match parts.as_slice() {
-        [file_name] => (None, *file_name),
-        [raw_chapter_id, file_name] => {
-            let chapter_id = raw_chapter_id
-                .parse::<i64>()
-                .map_err(|err| format!("backup_pack: invalid chapter media id: {err}"))?;
-            (Some(chapter_id), *file_name)
-        }
-        _ => return Err("backup_pack: invalid chapter media uri".to_string()),
-    };
-    let chapter_id = uri_chapter_id
-        .or(context_chapter_id)
+    let chapter_id = context_chapter_id
         .ok_or_else(|| "backup_pack: missing chapter media id".to_string())?;
     if chapter_id <= 0 {
         return Err("backup_pack: chapter media id must be positive".to_string());
     }
-    if file_name.is_empty()
-        || file_name == "."
-        || file_name == ".."
-        || file_name.contains('\0')
-        || file_name.contains('/')
-        || file_name.contains('\\')
-    {
+    if !is_safe_media_relative_path(file_name) {
         return Err("backup_pack: invalid chapter media file name".to_string());
     }
     Ok(format!("chapter-media/{chapter_id}/{file_name}"))
+}
+
+fn is_safe_media_relative_path(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('.')
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('#')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains('?')
+        || trimmed.contains('&')
+        || trimmed.contains('=')
+        || trimmed.contains('\0')
+    {
+        return false;
+    }
+    trimmed.split('/').all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    })
 }
 
 fn write_chapter_media_entries<W: Write + Seek>(
@@ -1590,7 +1597,7 @@ mod tests {
     fn media_repair_detection_ignores_local_media_refs() {
         assert_eq!(
             chapter_media_repair_needed(
-                Some(r#"<img src="norea-media://chapter/7/page.png">"#),
+                Some(r#"<img src="norea-media://reader-asset/page.png">"#),
                 Some("html"),
             ),
             0
@@ -1649,7 +1656,7 @@ mod tests {
             None,
             manifest_json.clone(),
             vec![ChapterMediaContent {
-                media_src: "norea-media://chapter/image.png".to_string(),
+                media_src: "norea-media://reader-asset/image.png".to_string(),
                 chapter_id: Some(10),
                 body: vec![1, 2, 3, 4],
             }],
@@ -1663,7 +1670,7 @@ mod tests {
         assert_eq!(unpacked.chapter_media.len(), 1);
         assert_eq!(
             unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://chapter/image.png"
+            "norea-media://reader-asset/image.png"
         );
         assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
         assert_eq!(unpacked.chapter_media[0].body.as_slice(), &[1, 2, 3, 4]);
@@ -1690,7 +1697,7 @@ mod tests {
         assert_eq!(unpacked.chapter_media.len(), 1);
         assert_eq!(
             unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://chapter/image.png"
+            "norea-media://reader-asset/image.png"
         );
         assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
         assert_eq!(unpacked.chapter_media[0].body.as_slice(), &[1, 2, 3, 4]);
@@ -1718,7 +1725,7 @@ mod tests {
         assert_eq!(unpacked.chapter_media.len(), 1);
         assert_eq!(
             unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://chapter/image.png"
+            "norea-media://reader-asset/image.png"
         );
         assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
         assert_eq!(unpacked.chapter_media[0].staged_ref.as_str(), "media-0.bin");

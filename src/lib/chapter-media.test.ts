@@ -174,7 +174,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -188,7 +188,7 @@ describe("cacheHtmlChapterMedia", () => {
         `<img src="/covers/cover.webp">`,
         `<img src="data:image/png;base64,abc">`,
         `<img src="blob:https://source.test/image">`,
-        `<img src="norea-media://chapter/42/old-page.png">`,
+        `<img src="norea-media://reader-asset/old-page.png">`,
         `<img src="file:///tmp/page.png">`,
       ].join(""),
       novelId: 9,
@@ -262,7 +262,7 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(result.mediaBytes).toBe(6);
-    expect(result.html).not.toContain("norea-media://chapter/");
+    expect(result.html).not.toContain("norea-media://reader-asset/");
     expect(result.html).toContain("data:image/png;base64,abc");
     expect(result.html).toContain("blob:https://source.test/image");
     expect(result.html).toContain('src="old-page.png"');
@@ -294,7 +294,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
@@ -363,7 +363,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       if (command === "chapter_media_archive_cache") return 2;
       if (command === "chapter_media_write_manifest") return null;
@@ -404,7 +404,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -422,7 +422,7 @@ describe("cacheHtmlChapterMedia", () => {
 
     expect(pluginMediaFetchMock).toHaveBeenCalledTimes(5);
     expect(result.mediaBytes).toBe(15);
-    expect(result.html).not.toContain("norea-media://chapter/");
+    expect(result.html).not.toContain("norea-media://reader-asset/");
     expect(result.html).not.toContain("data-src=");
     expect(result.html).toContain(" 1x");
     expect(result.html).toContain(" 2x");
@@ -447,7 +447,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -471,7 +471,7 @@ describe("cacheHtmlChapterMedia", () => {
       "https://source.test/topic/background.png",
     ]);
     expect(result.mediaBytes).toBe(10);
-    expect(result.html).not.toContain("norea-media://chapter/");
+    expect(result.html).not.toContain("norea-media://reader-asset/");
     expect(result.html).toContain("poster=");
     expect(result.html).toContain("data=");
     expect(result.html).toContain("href=");
@@ -493,7 +493,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -556,7 +556,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -623,7 +623,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     try {
@@ -677,7 +677,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     try {
@@ -729,7 +729,7 @@ describe("cacheHtmlChapterMedia", () => {
       if (input.fileName.includes("broken")) {
         throw new Error("write failed");
       }
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     try {
@@ -746,7 +746,7 @@ describe("cacheHtmlChapterMedia", () => {
         }),
       ]);
       expect(result.html).toContain('src="0001-ok.png"');
-      expect(result.html).not.toContain("norea-media://chapter/");
+      expect(result.html).not.toContain("norea-media://reader-asset/");
       expect(result.html).toContain(
         'src="https://source.test/chapter/broken.png"',
       );
@@ -832,7 +832,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -840,7 +840,7 @@ describe("cacheHtmlChapterMedia", () => {
       chapterId: 42,
       html: `<img src="/page-1.png"><img src="/page-2.png">`,
       previousHtml: [
-        `<img src="norea-media://chapter/42/page-1.png">`,
+        `<img src="norea-media://reader-asset/page-1.png">`,
         `<img src="">`,
       ].join(""),
       repair: true,
@@ -926,7 +926,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       return null;
     });
@@ -1044,7 +1044,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       return null;
     });
@@ -1097,7 +1097,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       return null;
     });
@@ -1189,7 +1189,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       return null;
     });
@@ -1304,7 +1304,7 @@ describe("cacheHtmlChapterMedia", () => {
           chapterId: number;
           fileName: string;
         };
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       return null;
     });
@@ -1348,7 +1348,7 @@ describe("cacheHtmlChapterMedia", () => {
           fileName: string;
         };
         controller.abort();
-        return `norea-media://chapter/${input.fileName}`;
+        return `norea-media://reader-asset/${input.fileName}`;
       }
       return null;
     });
@@ -1544,14 +1544,14 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
       baseUrl: "https://source.test/chapter/1",
       chapterId: 42,
       html: `<img src="/page-1.png">`,
-      previousHtml: `<img src="norea-media://chapter/42/page-1.png">`,
+      previousHtml: `<img src="norea-media://reader-asset/page-1.png">`,
       repair: true,
     });
 
@@ -1578,7 +1578,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
@@ -1587,7 +1587,7 @@ describe("cacheHtmlChapterMedia", () => {
       html: `<img srcset="/small.png 1x, /large.png 2x">`,
       previousHtml:
         `<img srcset="https://source.test/small.png 1x, ` +
-        `norea-media://chapter/42/large.png 2x">`,
+        `norea-media://reader-asset/large.png 2x">`,
       repair: true,
     });
 
@@ -1620,14 +1620,14 @@ describe("cacheHtmlChapterMedia", () => {
         chapterId: number;
         fileName: string;
       };
-      return `norea-media://chapter/${input.fileName}`;
+      return `norea-media://reader-asset/${input.fileName}`;
     });
 
     const result = await cacheHtmlChapterMedia({
       baseUrl: "https://source.test/chapter/1",
       chapterId: 42,
       html: `<img src="/page-1.png">`,
-      previousHtml: `<img src="norea-media://chapter/42/page-1.png">`,
+      previousHtml: `<img src="norea-media://reader-asset/page-1.png">`,
       repair: true,
     });
 
@@ -1647,10 +1647,10 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(result.html).toContain("0001-page-1.png");
-    expect(result.html).not.toContain("norea-media://chapter/42/page-1.png");
+    expect(result.html).not.toContain("norea-media://reader-asset/page-1.png");
   });
 
-  it("strips legacy chapter media prefixes from stored repair HTML", async () => {
+  it("strips reader asset prefixes from stored repair HTML", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
@@ -1661,10 +1661,10 @@ describe("cacheHtmlChapterMedia", () => {
     const result = await cacheHtmlChapterMedia({
       chapterId: 27,
       html: [
-        `<img src="norea-media://chapter/95/page.png">`,
+        `<img src="norea-media://reader-asset/page.png">`,
         [
           `<div style="background:url('`,
-          `norea-media://chapter/95/cover.png`,
+          `norea-media://reader-asset/cover.png`,
           `')"></div>`,
         ].join(""),
       ].join(""),
@@ -1674,7 +1674,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
     expect(result.html).toContain('src="page.png"');
     expect(result.html).toContain("cover.png");
-    expect(result.html).not.toContain("norea-media://chapter/");
+    expect(result.html).not.toContain("norea-media://reader-asset/");
   });
 });
 
@@ -1683,21 +1683,21 @@ describe("stored chapter media byte stats", () => {
     invokeMock.mockResolvedValueOnce(7);
 
     const html = [
-      `<img src="norea-media://chapter/42/page.png">`,
-      `<img data-src="norea-media://chapter/42/page.png">`,
-      `<style>.cover{background:url("norea-media://chapter/42/cover.png")}</style>`,
+      `<img src="norea-media://reader-asset/page.png">`,
+      `<img data-src="norea-media://reader-asset/page.png">`,
+      `<style>.cover{background:url("norea-media://reader-asset/cover.png")}</style>`,
       `<img src="https://source.test/page.png">`,
     ].join("");
 
     expect(localChapterMediaSources(html)).toEqual([
-      "norea-media://chapter/42/page.png",
-      "norea-media://chapter/42/cover.png",
+      "norea-media://reader-asset/page.png",
+      "norea-media://reader-asset/cover.png",
     ]);
     await expect(getStoredChapterMediaBytes(html)).resolves.toBe(7);
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_total_size", {
       mediaSrcs: [
-        "norea-media://chapter/42/page.png",
-        "norea-media://chapter/42/cover.png",
+        "norea-media://reader-asset/page.png",
+        "norea-media://reader-asset/cover.png",
       ],
     });
   });
@@ -1711,15 +1711,15 @@ describe("stored chapter media byte stats", () => {
     };
     const html = [
       `<img src="page.png">`,
-      `<img src="norea-media://chapter/95/old.png">`,
+      `<img src="norea-media://reader-asset/old.png">`,
       `<div style="background:url('cover.png')"></div>`,
     ].join("");
 
     expect(new Set(localChapterMediaSources(html, context))).toEqual(
       new Set([
-        "norea-media://chapter/page.png",
-        "norea-media://chapter/old.png",
-        "norea-media://chapter/cover.png",
+        "norea-media://reader-asset/page.png",
+        "norea-media://reader-asset/old.png",
+        "norea-media://reader-asset/cover.png",
       ]),
     );
 
@@ -1731,82 +1731,35 @@ describe("stored chapter media byte stats", () => {
       "chapter_media_total_size",
       expect.objectContaining({
         chapterId: 27,
-        mediaSrcs: ["norea-media://chapter/page.png"],
+        mediaSrcs: ["norea-media://reader-asset/page.png"],
       }),
     );
   });
 
-  it("ignores nested media refs instead of partial matching", () => {
-    const nestedSrc = ["norea-media://chapter/42", "old", "page.png"].join(
-      "/",
-    );
+  it("keeps nested reader asset paths intact", () => {
+    const nestedSrc = "norea-media://reader-asset/panels/old/page.png";
     const html = `<img src="${nestedSrc}">`;
 
-    expect(localChapterMediaSources(html)).toEqual([]);
+    expect(localChapterMediaSources(html)).toEqual([nestedSrc]);
   });
 });
 
 describe("resolveLocalChapterMedia", () => {
-  it("loads Android archives from stored chapter context for legacy media URLs", async () => {
+  it("loads Android archives from the current chapter context", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
-    getChapterByIdMock.mockResolvedValue({
-      bookmark: false,
-      chapterNumber: "12",
-      content: null,
-      contentBytes: 0,
-      contentType: "html",
-      createdAt: 1,
-      foundAt: 1,
-      id: 95,
-      isDownloaded: true,
-      mediaBytes: 12,
-      mediaRepairNeeded: false,
-      name: "Episode",
-      novelId: 7,
-      page: "",
-      path: "chapter/12",
-      position: 12,
-      progress: 0,
-      readAt: null,
-      releaseTime: null,
-      unread: true,
-      updatedAt: 1,
-    });
-    getNovelByIdMock.mockResolvedValue({
-      artist: null,
-      author: null,
-      cover: null,
-      createdAt: 1,
-      genres: null,
-      id: 7,
-      inLibrary: true,
-      isLocal: false,
-      lastReadAt: null,
-      libraryAddedAt: 1,
-      name: "Sample Novel",
-      path: "series/path",
-      pluginId: "demo-source",
-      pluginName: "Demo",
-      status: null,
-      summary: null,
-      updatedAt: 1,
-    });
     androidStorageMocks.prepareAndroidReaderMediaCache.mockResolvedValue(
       undefined,
     );
 
     const html = await resolveLocalChapterMedia(
-      `<img src="norea-media://chapter/95/page.png">`,
+      `<img src="norea-media://reader-asset/page.png">`,
+      { chapterId: 95 },
     );
 
-    expect(getChapterByIdMock).toHaveBeenCalledWith(95);
-    expect(getNovelByIdMock).toHaveBeenCalledWith(7);
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
-    ).toHaveBeenCalledWith(
-      "contents/demo-source/Sample-Novel-series-path/12-Episode/media.zip",
-    );
-    expect(html).toContain('src="norea-media://chapter/page.png"');
+    ).toHaveBeenCalledWith("chapter-media/95/media.zip");
+    expect(html).toContain('src="norea-media://reader-asset/page.png"');
   });
 
   it("prefers desktop asset URLs from stored media paths", async () => {
@@ -1818,11 +1771,11 @@ describe("resolveLocalChapterMedia", () => {
     });
 
     const html = await resolveLocalChapterMedia(
-      `<img src="norea-media://chapter/42/page.png">`,
+      `<img src="norea-media://reader-asset/page.png">`,
     );
 
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_path", {
-      mediaSrc: "norea-media://chapter/42/page.png",
+      mediaSrc: "norea-media://reader-asset/page.png",
     });
     expect(convertFileSrcMock).toHaveBeenCalledWith(
       "C:\\Users\\reader\\media\\page.png",
@@ -1847,26 +1800,26 @@ describe("resolveLocalChapterMedia", () => {
 
     const html = await resolveLocalChapterMedia(
       [
-        `<img src="norea-media://chapter/42/page.png">`,
-        `<img data-src="norea-media://chapter/42/lazy.png">`,
+        `<img src="norea-media://reader-asset/page.png">`,
+        `<img data-src="norea-media://reader-asset/lazy.png">`,
         [
-          `<img srcset="norea-media://chapter/42/small.png 1x, `,
-          `norea-media://chapter/42/large.png 2x">`,
+          `<img srcset="norea-media://reader-asset/small.png 1x, `,
+          `norea-media://reader-asset/large.png 2x">`,
         ].join(""),
-        `<video poster="norea-media://chapter/42/poster.png"></video>`,
-        `<object data="norea-media://chapter/42/panel.svg"></object>`,
-        `<link rel="preload" as="image" href="norea-media://chapter/42/preload.png">`,
-        `<svg><image href="norea-media://chapter/42/svg-href.png"></image></svg>`,
-        `<svg><image xlink:href="norea-media://chapter/42/svg-xlink.png"></image></svg>`,
-        `<svg><use href="norea-media://chapter/42/svg-use.svg"></use></svg>`,
-        `<div style="background-image:url('norea-media://chapter/42/bg.png')"></div>`,
-        `<style>.cover{background:url("norea-media://chapter/42/cover.png")}</style>`,
+        `<video poster="norea-media://reader-asset/poster.png"></video>`,
+        `<object data="norea-media://reader-asset/panel.svg"></object>`,
+        `<link rel="preload" as="image" href="norea-media://reader-asset/preload.png">`,
+        `<svg><image href="norea-media://reader-asset/svg-href.png"></image></svg>`,
+        `<svg><image xlink:href="norea-media://reader-asset/svg-xlink.png"></image></svg>`,
+        `<svg><use href="norea-media://reader-asset/svg-use.svg"></use></svg>`,
+        `<div style="background-image:url('norea-media://reader-asset/bg.png')"></div>`,
+        `<style>.cover{background:url("norea-media://reader-asset/cover.png")}</style>`,
         `<img src="https://source.test/page.png">`,
       ].join(""),
     );
 
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_data_url", {
-      mediaSrc: "norea-media://chapter/42/page.png",
+      mediaSrc: "norea-media://reader-asset/page.png",
     });
     expect(html).toContain('src="data:image/png;base64,page.png"');
     expect(html).toContain('src="data:image/png;base64,lazy.png"');
@@ -1893,12 +1846,12 @@ describe("resolveLocalChapterMedia", () => {
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
 
-    const repeated = "norea-media://chapter/42/page.png";
+    const repeated = "norea-media://reader-asset/page.png";
     const html = await resolveLocalChapterMedia(
       [
         `<img src="${repeated}">`,
         `<img data-src="${repeated}">`,
-        `<img srcset="${repeated} 1x, norea-media://chapter/42/large.png 2x">`,
+        `<img srcset="${repeated} 1x, norea-media://reader-asset/large.png 2x">`,
         `<div style="background-image:url('${repeated}')"></div>`,
       ].join(""),
     );
@@ -1908,7 +1861,7 @@ describe("resolveLocalChapterMedia", () => {
       .map(([, args]) => (args as { mediaSrc: string }).mediaSrc)
       .sort();
     expect(requestedSources).toEqual([
-      "norea-media://chapter/42/large.png",
+      "norea-media://reader-asset/large.png",
       repeated,
     ]);
     expect(html).toContain('src="data:image/png;base64,page.png"');
@@ -1926,7 +1879,7 @@ describe("resolveLocalChapterMediaPatches", () => {
     );
     androidStorageMocks.androidStorageZipEntryExists.mockResolvedValue(true);
 
-    const repeated = "norea-media://chapter/42/page.png";
+    const repeated = "norea-media://reader-asset/page.png";
     const patches = await resolveLocalChapterMediaPatches(
       [
         {
@@ -1940,12 +1893,12 @@ describe("resolveLocalChapterMediaPatches", () => {
         },
         {
           attributes: {
-            srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+            srcset: `${repeated} 1x, norea-media://reader-asset/large.png 2x`,
             style: `background-image:url('${repeated}')`,
           },
           index: 1,
           sourceAttributes: {
-            srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+            srcset: `${repeated} 1x, norea-media://reader-asset/large.png 2x`,
             style: `background-image:url('${repeated}')`,
           },
         },
@@ -1961,15 +1914,17 @@ describe("resolveLocalChapterMediaPatches", () => {
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/42/media.zip");
     expect(patches).toHaveLength(2);
-    expect(patches[0]?.attributes.src).toBe("norea-media://chapter/page.png");
-    expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://chapter/page.png 1x",
+    expect(patches[0]?.attributes.src).toBe(
+      "norea-media://reader-asset/page.png",
     );
     expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://chapter/large.png 2x",
+      "norea-media://reader-asset/page.png 1x",
+    );
+    expect(patches[1]?.attributes.srcset).toContain(
+      "norea-media://reader-asset/large.png 2x",
     );
     expect(patches[1]?.attributes.style).toContain(
-      'url("norea-media://chapter/page.png")',
+      'url("norea-media://reader-asset/page.png")',
     );
   });
 
@@ -1993,11 +1948,11 @@ describe("resolveLocalChapterMediaPatches", () => {
         },
         {
           attributes: {
-            srcset: "norea-media://chapter/95/large.png 2x",
+            srcset: "norea-media://reader-asset/large.png 2x",
           },
           index: 1,
           sourceAttributes: {
-            srcset: "norea-media://chapter/95/large.png 2x",
+            srcset: "norea-media://reader-asset/large.png 2x",
           },
         },
       ],
@@ -2007,9 +1962,11 @@ describe("resolveLocalChapterMediaPatches", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/27/media.zip");
-    expect(patches[0]?.attributes.src).toBe("norea-media://chapter/page.png");
+    expect(patches[0]?.attributes.src).toBe(
+      "norea-media://reader-asset/page.png",
+    );
     expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://chapter/large.png 2x",
+      "norea-media://reader-asset/large.png 2x",
     );
   });
 
@@ -2022,7 +1979,7 @@ describe("resolveLocalChapterMediaPatches", () => {
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
 
-    const repeated = "norea-media://chapter/42/page.png";
+    const repeated = "norea-media://reader-asset/page.png";
     const patches = await resolveLocalChapterMediaPatches([
       {
         attributes: {
@@ -2035,12 +1992,12 @@ describe("resolveLocalChapterMediaPatches", () => {
       },
       {
         attributes: {
-          srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+          srcset: `${repeated} 1x, norea-media://reader-asset/large.png 2x`,
           style: `background-image:url('${repeated}')`,
         },
         index: 1,
         sourceAttributes: {
-          srcset: `${repeated} 1x, norea-media://chapter/42/large.png 2x`,
+          srcset: `${repeated} 1x, norea-media://reader-asset/large.png 2x`,
           style: `background-image:url('${repeated}')`,
         },
       },
@@ -2051,7 +2008,7 @@ describe("resolveLocalChapterMediaPatches", () => {
       .map(([, args]) => (args as { mediaSrc: string }).mediaSrc)
       .sort();
     expect(requestedSources).toEqual([
-      "norea-media://chapter/42/large.png",
+      "norea-media://reader-asset/large.png",
       repeated,
     ]);
     expect(patches).toHaveLength(2);

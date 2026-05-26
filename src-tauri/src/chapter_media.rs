@@ -15,7 +15,7 @@ use crate::native_stream::{self, NativeStreamState};
 use tauri::State;
 
 pub(crate) const MEDIA_ROOT_DIR: &str = "chapter-media";
-const MEDIA_URI_PREFIX: &str = "norea-media://chapter/";
+const MEDIA_URI_PREFIX: &str = "norea-media://reader-asset/";
 const CONTENTS_ROOT_DIR: &str = "contents";
 const NO_MEDIA_FILE: &str = ".nomedia";
 const MEDIA_DOWNLOAD_DIR: &str = "media";
@@ -158,6 +158,35 @@ fn safe_segment(value: &str, fallback: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn safe_media_relative_path(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('.')
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('#')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains('?')
+        || trimmed.contains('&')
+        || trimmed.contains('=')
+        || trimmed.contains('\0')
+    {
+        return Err("chapter media: invalid media file path".to_string());
+    }
+    for part in trimmed.split('/') {
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || !part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        {
+            return Err("chapter media: invalid media file path".to_string());
+        }
+    }
+    Ok(trimmed.to_string())
 }
 
 fn is_unsafe_unicode_format(ch: char) -> bool {
@@ -576,7 +605,6 @@ fn remove_stored_chapter_content_files(
 
 #[derive(Debug)]
 struct ParsedMediaSrc {
-    chapter_id: Option<i64>,
     file_name: String,
 }
 
@@ -584,36 +612,13 @@ fn parse_media_src(media_src: &str) -> Result<ParsedMediaSrc, String> {
     let payload = media_src
         .strip_prefix(MEDIA_URI_PREFIX)
         .ok_or_else(|| "chapter media: unsupported media uri".to_string())?;
-    let parts = payload.split('/').collect::<Vec<_>>();
-    let (chapter_id, file_name) = match parts.as_slice() {
-        [file_name] => (None, *file_name),
-        [raw_chapter_id, file_name] => {
-            let chapter_id = raw_chapter_id
-                .parse::<i64>()
-                .map_err(|err| format!("chapter media: invalid chapter id: {err}"))?;
-            if chapter_id <= 0 {
-                return Err("chapter media: chapter id must be positive".to_string());
-            }
-            (Some(chapter_id), *file_name)
-        }
-        _ => return Err("chapter media: unexpected media uri segment".to_string()),
-    };
-    if file_name.is_empty() {
-        return Err("chapter media: missing file name".to_string());
-    }
     Ok(ParsedMediaSrc {
-        chapter_id,
-        file_name: safe_segment(file_name, "media"),
+        file_name: safe_media_relative_path(payload)?,
     })
 }
 
-fn media_src_chapter_id(
-    parsed: &ParsedMediaSrc,
-    context_chapter_id: Option<i64>,
-) -> Result<i64, String> {
-    let chapter_id = parsed
-        .chapter_id
-        .or(context_chapter_id)
+fn media_src_chapter_id(context_chapter_id: Option<i64>) -> Result<i64, String> {
+    let chapter_id = context_chapter_id
         .ok_or_else(|| "chapter media: missing chapter id context".to_string())?;
     if chapter_id <= 0 {
         return Err("chapter media: chapter id must be positive".to_string());
@@ -739,7 +744,7 @@ fn chapter_media_path_from_src_with_context(
     chapter_position: Option<i64>,
 ) -> Result<PathBuf, String> {
     let parsed = parse_media_src(media_src)?;
-    let chapter_id = media_src_chapter_id(&parsed, context_chapter_id)?;
+    let chapter_id = media_src_chapter_id(context_chapter_id)?;
     let file_name = parsed.file_name;
     let roots = media_roots_for_lookup(app)?;
     for root in &roots {
@@ -784,7 +789,7 @@ pub(crate) fn chapter_media_body_from_src_with_context(
     chapter_position: Option<i64>,
 ) -> Result<(Vec<u8>, String), String> {
     let parsed = parse_media_src(media_src)?;
-    let chapter_id = media_src_chapter_id(&parsed, context_chapter_id)?;
+    let chapter_id = media_src_chapter_id(context_chapter_id)?;
     let file_name = parsed.file_name;
     let roots = media_roots_for_lookup(app)?;
     for root in &roots {
@@ -821,13 +826,11 @@ pub(crate) fn chapter_media_from_backup_entry(entry_name: &str) -> Option<(i64, 
     if chapter_id <= 0 {
         return None;
     }
-    let file_name = parts.next()?;
-    if parts.next().is_some() || file_name.is_empty() {
-        return None;
-    }
+    let file_name = parts.collect::<Vec<_>>().join("/");
+    let file_name = safe_media_relative_path(&file_name).ok()?;
     Some((
         chapter_id,
-        format!("{MEDIA_URI_PREFIX}{}", safe_segment(file_name, "media")),
+        format!("{MEDIA_URI_PREFIX}{file_name}"),
     ))
 }
 
@@ -1674,7 +1677,7 @@ pub async fn chapter_media_data_url(
             Ok(parsed) => {
                 log::debug!(
                     "[chapter-media:data-url] request chapter_id={:?} file={}",
-                    parsed.chapter_id.or(chapter_id),
+                    chapter_id,
                     parsed.file_name
                 );
             }
@@ -1750,7 +1753,7 @@ fn chapter_media_total_size_sync(
     let mut counted_archives = HashSet::new();
     for media_src in media_srcs {
         let parsed = parse_media_src(&media_src)?;
-        let chapter_id = media_src_chapter_id(&parsed, context_chapter_id)?;
+        let chapter_id = media_src_chapter_id(context_chapter_id)?;
         let file_name = parsed.file_name;
         for root in media_roots_for_lookup(&app)? {
             let mut found = false;
@@ -2339,7 +2342,7 @@ mod tests {
         )
         .expect("store media");
 
-        assert_eq!(src, "norea-media://chapter/page.png");
+        assert_eq!(src, "norea-media://reader-asset/page.png");
         assert_eq!(
             fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
             vec![1, 2, 3]
@@ -2364,7 +2367,7 @@ mod tests {
         )
         .expect("store media handle");
 
-        assert_eq!(src, "norea-media://chapter/page.png");
+        assert_eq!(src, "norea-media://reader-asset/page.png");
         assert!(!source_path.exists());
         assert_eq!(
             fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),

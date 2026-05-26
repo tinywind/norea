@@ -41,7 +41,7 @@ export interface BackupChapterMediaFile {
 
 const BACKUP_CHAPTER_MEDIA_FILES = Symbol("backupChapterMediaFiles");
 const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
-  /^norea-media:\/\/chapter\/(?:([1-9]\d*)\/)?([A-Za-z0-9._-]+)$/;
+  /^norea-media:\/\/reader-asset\/([A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*)$/;
 
 type BackupManifestWithChapterMedia = BackupManifest & {
   [BACKUP_CHAPTER_MEDIA_FILES]?: readonly BackupChapterMediaFile[];
@@ -80,13 +80,11 @@ function parseBackupChapterMediaSource(
 ): { chapterId: number; fileName: string } | null {
   const match = LOCAL_CHAPTER_MEDIA_SRC_PATTERN.exec(mediaSrc);
   if (!match) return null;
-  const chapterId = match[1]
-    ? Number.parseInt(match[1], 10)
-    : fallbackChapterId;
+  const chapterId = fallbackChapterId;
   if (!chapterId || chapterId <= 0) return null;
   return {
     chapterId,
-    fileName: match[2]!,
+    fileName: match[1]!,
   };
 }
 

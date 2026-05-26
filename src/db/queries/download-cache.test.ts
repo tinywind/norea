@@ -132,7 +132,7 @@ describe("download cache media byte backfill", () => {
     expect(sql).toContain("n.plugin_id      AS pluginId");
     expect(sql).toContain("c.media_bytes = 0");
     expect(sql).toContain("c.media_bytes_checked_at IS NULL");
-    expect(sql).toContain("c.content LIKE '%norea-media://chapter/%'");
+    expect(sql).toContain("c.content LIKE '%norea-media://reader-asset/%'");
     expect(sql).toContain("n.is_local = 0");
     expect(sql).toContain("c.novel_id = $1");
     expect(sql).toContain("ORDER BY c.updated_at ASC, c.id ASC");
@@ -155,7 +155,7 @@ describe("download cache media byte backfill", () => {
 
   it("loads full candidate content only for one budgeted backfill row", async () => {
     mockSelect.mockResolvedValueOnce([
-      { content: '<img src="norea-media://chapter/7/page.png">' },
+      { content: '<img src="norea-media://reader-asset/page.png">' },
     ]);
 
     const content = await getDownloadCacheMediaBackfillCandidateContent(7);
@@ -164,9 +164,9 @@ describe("download cache media byte backfill", () => {
     expect(sql).toContain("SELECT c.content");
     expect(sql).toContain("c.id = $1");
     expect(sql).toContain("c.media_bytes_checked_at IS NULL");
-    expect(sql).toContain("c.content LIKE '%norea-media://chapter/%'");
+    expect(sql).toContain("c.content LIKE '%norea-media://reader-asset/%'");
     expect(params).toEqual([7]);
-    expect(content).toBe('<img src="norea-media://chapter/7/page.png">');
+    expect(content).toBe('<img src="norea-media://reader-asset/page.png">');
   });
 
   it("updates a chapter media byte count and records that backfill was attempted", async () => {

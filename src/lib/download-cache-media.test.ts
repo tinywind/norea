@@ -56,7 +56,7 @@ describe("download cache media backfill", () => {
       },
     ]);
     mockedGetContent.mockResolvedValueOnce(
-      '<img src="norea-media://chapter/7/page.png">',
+      '<img src="norea-media://reader-asset/page.png">',
     );
     mockedGetStoredMediaBytes.mockResolvedValueOnce(12);
     mockedUpdateMediaBytes.mockResolvedValueOnce({ rowsAffected: 1 });
@@ -66,7 +66,7 @@ describe("download cache media backfill", () => {
     expect(mockedListCandidates).toHaveBeenCalledWith(3, MAX_BACKFILL_PER_RUN);
     expect(mockedGetContent).toHaveBeenCalledWith(7);
     expect(mockedGetStoredMediaBytes).toHaveBeenCalledWith(
-      '<img src="norea-media://chapter/7/page.png">',
+      '<img src="norea-media://reader-asset/page.png">',
       expect.objectContaining({ chapterId: 7, novelId: 3 }),
     );
     expect(mockedUpdateMediaBytes).toHaveBeenCalledWith(7, 12);

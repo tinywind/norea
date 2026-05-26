@@ -491,7 +491,7 @@ function isAllowedUrl(
   if (options.allowMedia && trimmed.startsWith(EPUB_HTML_RESOURCE_PREFIX)) {
     return true;
   }
-  if (options.allowMedia && trimmed.startsWith("norea-media://chapter/")) {
+  if (options.allowMedia && trimmed.startsWith("norea-media://reader-asset/")) {
     return true;
   }
   if (

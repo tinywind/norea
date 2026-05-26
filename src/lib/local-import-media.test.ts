@@ -43,13 +43,13 @@ beforeEach(() => {
   ] as never);
   saveChapterContentMock.mockResolvedValue({ rowsAffected: 1 });
   cacheHtmlChapterMediaMock.mockResolvedValue({
-    html: `<img src="norea-media://chapter/99/0001-page.png">`,
+    html: `<img src="norea-media://reader-asset/0001-page.png">`,
     mediaBytes: 12,
     mediaFailures: [],
     storedMediaCount: 1,
   });
   storeEmbeddedChapterMediaMock.mockResolvedValue({
-    html: `<img src="norea-media://chapter/99/0001-page.png">`,
+    html: `<img src="norea-media://reader-asset/0001-page.png">`,
     mediaBytes: 4,
     storedMediaCount: 1,
   });
@@ -85,7 +85,7 @@ describe("cacheLocalImportedChapterMedia", () => {
     );
     expect(saveChapterContentMock).toHaveBeenCalledWith(
       99,
-      `<img src="norea-media://chapter/99/0001-page.png">`,
+      `<img src="norea-media://reader-asset/0001-page.png">`,
       "html",
       { mediaBytes: 12 },
     );
@@ -172,7 +172,7 @@ describe("cacheLocalImportedChapterMedia", () => {
     expect(clearChapterMediaMock).not.toHaveBeenCalled();
     expect(saveChapterContentMock).toHaveBeenCalledWith(
       99,
-      `<img src="norea-media://chapter/99/0001-page.png">`,
+      `<img src="norea-media://reader-asset/0001-page.png">`,
       "epub",
       { mediaBytes: 4 },
     );
@@ -181,7 +181,7 @@ describe("cacheLocalImportedChapterMedia", () => {
   it("stores imported pdf binary resources while keeping legacy content as fallback", async () => {
     hasRemoteChapterMediaMock.mockReturnValue(false);
     storeEmbeddedChapterMediaMock.mockResolvedValue({
-      html: "norea-media://chapter/99/Manual.pdf",
+      html: "norea-media://reader-asset/Manual.pdf",
       mediaBytes: 4,
       storedMediaCount: 1,
     });
@@ -234,7 +234,7 @@ describe("cacheLocalImportedChapterMedia", () => {
     expect(cacheHtmlChapterMediaMock).not.toHaveBeenCalled();
     expect(saveChapterContentMock).toHaveBeenCalledWith(
       99,
-      "norea-media://chapter/99/Manual.pdf",
+      "norea-media://reader-asset/Manual.pdf",
       "pdf",
       { mediaBytes: 4 },
     );
