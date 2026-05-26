@@ -40,8 +40,10 @@ import {
   cacheHtmlChapterMedia,
   getStoredChapterMediaBytes,
   localChapterMediaSources,
+  protectRemoteChapterMediaForPartialHtml,
   resolveLocalChapterMedia,
   resolveLocalChapterMediaPatches,
+  restoreProtectedRemoteChapterMediaSources,
 } from "./chapter-media";
 
 const invokeMock = vi.mocked(invoke);
@@ -1772,6 +1774,27 @@ describe("stored chapter media byte stats", () => {
     const html = `<img src="${nestedSrc}">`;
 
     expect(localChapterMediaSources(html)).toEqual([nestedSrc]);
+  });
+});
+
+describe("restoreProtectedRemoteChapterMediaSources", () => {
+  it("restores partial download media sources before repair", () => {
+    const baseUrl = "https://source.test/chapter/1";
+    const protectedHtml = protectRemoteChapterMediaForPartialHtml(
+      [
+        `<img src="/page.png">`,
+        `<img srcset="/small.png 1x, /large.png 2x">`,
+      ].join(""),
+      baseUrl,
+    );
+
+    const restored = restoreProtectedRemoteChapterMediaSources(
+      protectedHtml,
+      baseUrl,
+    );
+
+    expect(restored).toContain('src="https://source.test/page.png"');
+    expect(restored).toContain('srcset="/small.png 1x, /large.png 2x"');
   });
 });
 

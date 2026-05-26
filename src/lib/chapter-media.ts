@@ -1344,10 +1344,14 @@ export function protectRemoteChapterMediaForPartialHtml(
   if (urls.length === 0) return html;
 
   for (const target of srcTargets) {
+    const isImageSrc =
+      target.attribute === "src" &&
+      typeof HTMLImageElement !== "undefined" &&
+      target.element instanceof HTMLImageElement;
     target.element.setAttribute(MEDIA_SOURCE_URL_ATTRIBUTE, target.url);
     target.element.setAttribute(
       target.attribute,
-      target.attribute === "src" && target.element instanceof HTMLImageElement
+      isImageSrc
         ? REMOTE_MEDIA_PENDING_PLACEHOLDER_SRC
         : REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC,
     );
@@ -1370,6 +1374,51 @@ export function protectRemoteChapterMediaForPartialHtml(
   }
 
   return template.innerHTML;
+}
+
+export function restoreProtectedRemoteChapterMediaSources(
+  html: string,
+  baseUrl?: string | null,
+): string {
+  if (
+    typeof document === "undefined" ||
+    (!html.includes(MEDIA_SOURCE_URL_ATTRIBUTE) &&
+      !html.includes(MEDIA_SRCSET_SOURCE_ATTRIBUTE))
+  ) {
+    return html;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  let changed = false;
+
+  for (const element of template.content.querySelectorAll<Element>(
+    `[${MEDIA_SOURCE_URL_ATTRIBUTE}]`,
+  )) {
+    const source = element.getAttribute(MEDIA_SOURCE_URL_ATTRIBUTE) ?? "";
+    const url = absoluteMediaUrl(source, baseUrl);
+    if (!url) continue;
+    const attribute =
+      MEDIA_SRC_ATTRIBUTES.find((candidate) => {
+        const value = element.getAttribute(candidate);
+        return (
+          value === REMOTE_MEDIA_PENDING_PLACEHOLDER_SRC ||
+          value === REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC
+        );
+      }) ?? "src";
+    element.setAttribute(attribute, url);
+    changed = true;
+  }
+
+  for (const element of template.content.querySelectorAll<Element>(
+    `[${MEDIA_SRCSET_SOURCE_ATTRIBUTE}]`,
+  )) {
+    const source = element.getAttribute(MEDIA_SRCSET_SOURCE_ATTRIBUTE);
+    if (!source) continue;
+    element.setAttribute("srcset", source);
+    changed = true;
+  }
+
+  return changed ? template.innerHTML : html;
 }
 
 function collectExistingMediaSlots(

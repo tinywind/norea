@@ -17,6 +17,7 @@ import {
   hasRemoteChapterMedia,
   localChapterMediaSources,
   protectRemoteChapterMediaForPartialHtml,
+  restoreProtectedRemoteChapterMediaSources,
   storeEmbeddedChapterMedia,
   type ChapterMediaElementPatch,
 } from "../chapter-media";
@@ -636,9 +637,6 @@ export function enqueueChapterDownload(
         if (!chapter) {
           throw missingLocalChapterError(job);
         }
-        const previousHtml = chapter.isDownloaded
-          ? await readStoredChapterContentMirror(job.id)
-          : null;
         const novel =
           job.novelPath && job.novelName && job.novelId
             ? {
@@ -654,6 +652,11 @@ export function enqueueChapterDownload(
           job.contentType ?? chapter.contentType,
         );
         const savedContentType = storedChapterContentType(contentType);
+        const previousHtml =
+          !isBinaryChapterContentType(contentType) &&
+          isHtmlLikeChapterContentType(savedContentType)
+            ? await readStoredChapterContentMirror(job.id)
+            : null;
         const storageContext = {
           chapterId: job.id,
           chapterName: chapter.name,
@@ -748,19 +751,32 @@ export function enqueueChapterDownload(
           );
           return;
         }
-        const rawContent = await plugin.parseChapter(job.chapterPath);
-        if (signal.aborted) {
-          throw new DOMException("Task was cancelled.", "AbortError");
+        const baseUrl = absolutePluginUrl(plugin, job.chapterPath);
+        const storedHtmlSource = previousHtml?.trim()
+          ? restoreProtectedRemoteChapterMediaSources(previousHtml, baseUrl)
+          : null;
+        const usesStoredHtmlSource = storedHtmlSource !== null;
+        let html: string;
+        if (storedHtmlSource) {
+          html = storedHtmlSource;
+        } else {
+          const rawContent = await plugin.parseChapter(job.chapterPath);
+          if (signal.aborted) {
+            throw new DOMException("Task was cancelled.", "AbortError");
+          }
+          if (rawContent.trim() === "") {
+            throw new Error("Downloaded chapter content is empty.");
+          }
+          html = chapterContentToHtml(rawContent, contentType);
         }
-        if (rawContent.trim() === "") {
-          throw new Error("Downloaded chapter content is empty.");
-        }
-        let html = chapterContentToHtml(rawContent, contentType);
         let mediaBytes = 0;
         let shouldClearMedia = true;
         if (isHtmlLikeChapterContentType(savedContentType)) {
-          const baseUrl = absolutePluginUrl(plugin, job.chapterPath);
-          if (hasRemoteChapterMedia(html, baseUrl)) {
+          const hasCacheableMedia =
+            hasRemoteChapterMedia(html, baseUrl) ||
+            (usesStoredHtmlSource &&
+              localChapterMediaSources(html, storageContext).length > 0);
+          if (hasCacheableMedia) {
             shouldClearMedia = false;
             if (liveReaderUpdates) {
               await emitPartialHtml(
@@ -800,7 +816,7 @@ export function enqueueChapterDownload(
               },
               previousHtml,
               requestInit: plugin.imageRequestInit,
-              repair: false,
+              repair: usesStoredHtmlSource,
               scraperExecutor: executor ?? "immediate",
               signal,
               sourceId: job.pluginId,
