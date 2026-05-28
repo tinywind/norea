@@ -583,8 +583,8 @@ fn media_backup_entry_name(
     let file_name = media_src
         .strip_prefix("norea-media://reader-asset/")
         .ok_or_else(|| "backup_pack: unsupported chapter media uri".to_string())?;
-    let chapter_id = context_chapter_id
-        .ok_or_else(|| "backup_pack: missing chapter media id".to_string())?;
+    let chapter_id =
+        context_chapter_id.ok_or_else(|| "backup_pack: missing chapter media id".to_string())?;
     if chapter_id <= 0 {
         return Err("backup_pack: chapter media id must be positive".to_string());
     }

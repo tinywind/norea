@@ -828,10 +828,7 @@ pub(crate) fn chapter_media_from_backup_entry(entry_name: &str) -> Option<(i64, 
     }
     let file_name = parts.collect::<Vec<_>>().join("/");
     let file_name = safe_media_relative_path(&file_name).ok()?;
-    Some((
-        chapter_id,
-        format!("{MEDIA_URI_PREFIX}{file_name}"),
-    ))
+    Some((chapter_id, format!("{MEDIA_URI_PREFIX}{file_name}")))
 }
 
 struct ChapterMediaStoreInput {
@@ -1167,8 +1164,10 @@ fn chapter_media_archive_cache_sync(
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
-    let new_entry_names: HashSet<String> =
-        entries.iter().map(|(entry_name, _)| entry_name.clone()).collect();
+    let new_entry_names: HashSet<String> = entries
+        .iter()
+        .map(|(entry_name, _)| entry_name.clone())
+        .collect();
     let mut written_entry_names = HashSet::new();
 
     if archive_path.is_file() {
@@ -2391,14 +2390,17 @@ mod tests {
             archive.finish().expect("finish archive");
         }
 
-        let path = media_path_from_chapter_dir(&chapter_dir, "page.png")
-            .expect("resolve archived media");
+        let path =
+            media_path_from_chapter_dir(&chapter_dir, "page.png").expect("resolve archived media");
         let body = media_body_from_chapter_dir(&chapter_dir, "page.png")
             .expect("read archived media")
             .expect("archived media body");
 
         assert!(path.is_none());
         assert_eq!(body, b"image-body");
-        assert!(!chapter_dir.join(MEDIA_DOWNLOAD_DIR).join("page.png").exists());
+        assert!(!chapter_dir
+            .join(MEDIA_DOWNLOAD_DIR)
+            .join("page.png")
+            .exists());
     }
 }
