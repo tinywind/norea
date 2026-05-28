@@ -1813,7 +1813,7 @@ describe("resolveLocalChapterMedia", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/95/media.zip");
-    expect(html).toContain('src="norea-media://reader-asset/page.png"');
+    expect(html).toContain('src="norea-media://reader-asset/page.png?v=');
   });
 
   it("prefers desktop asset URLs from stored media paths", async () => {
@@ -1968,17 +1968,17 @@ describe("resolveLocalChapterMediaPatches", () => {
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/42/media.zip");
     expect(patches).toHaveLength(2);
-    expect(patches[0]?.attributes.src).toBe(
-      "norea-media://reader-asset/page.png",
+    expect(patches[0]?.attributes.src).toMatch(
+      /^norea-media:\/\/reader-asset\/page\.png\?v=/,
     );
     expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://reader-asset/page.png 1x",
+      "norea-media://reader-asset/page.png?v=",
     );
     expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://reader-asset/large.png 2x",
+      "norea-media://reader-asset/large.png?v=",
     );
     expect(patches[1]?.attributes.style).toContain(
-      'url("norea-media://reader-asset/page.png")',
+      'url("norea-media://reader-asset/page.png?v=',
     );
   });
 
@@ -2016,11 +2016,11 @@ describe("resolveLocalChapterMediaPatches", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/27/media.zip");
-    expect(patches[0]?.attributes.src).toBe(
-      "norea-media://reader-asset/page.png",
+    expect(patches[0]?.attributes.src).toMatch(
+      /^norea-media:\/\/reader-asset\/page\.png\?v=/,
     );
     expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://reader-asset/large.png 2x",
+      "norea-media://reader-asset/large.png?v=",
     );
   });
 

@@ -477,6 +477,26 @@ function localChapterMediaSrc(fileName: string): string {
   return `${LOCAL_MEDIA_SRC_PREFIX}${fileName}`;
 }
 
+// Android serves reader media from one cache directory; the archive token prevents
+// WebView from reusing a same-name image decoded for the previous chapter.
+function androidReaderMediaCacheToken(archivePath: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < archivePath.length; index += 1) {
+    hash ^= archivePath.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${archivePath.length}-${(hash >>> 0).toString(36)}`;
+}
+
+function androidReaderLocalChapterMediaSrc(
+  fileName: string,
+  archivePath: string,
+): string {
+  return `${localChapterMediaSrc(fileName)}?v=${androidReaderMediaCacheToken(
+    archivePath,
+  )}`;
+}
+
 function localChapterMediaOutputSrc(fileName: string): string {
   return localChapterMediaSrc(fileName);
 }
@@ -2583,7 +2603,10 @@ async function resolveAndroidLocalChapterMediaSources(
         context,
       )) {
         if (await prepareArchive(archivePath)) {
-          resolved.set(source, localChapterMediaSrc(fileName));
+          resolved.set(
+            source,
+            androidReaderLocalChapterMediaSrc(fileName, archivePath),
+          );
           return;
         }
       }
@@ -2606,7 +2629,7 @@ export async function resolveLocalChapterMediaSrc(
     )) {
       try {
         await prepareAndroidReaderMediaCache(archivePath);
-        return localChapterMediaSrc(fileName);
+        return androidReaderLocalChapterMediaSrc(fileName, archivePath);
       } catch {
         continue;
       }
