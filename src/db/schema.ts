@@ -108,6 +108,26 @@ export const chapterTable = sqliteTable(
   }),
 );
 
+// ChapterDownloadQueue: resumable chapter download work owned by the backend
+// queue executor.
+export const chapterDownloadQueueTable = sqliteTable(
+  "chapter_download_queue",
+  {
+    chapterId: integer("chapter_id").primaryKey().notNull(),
+    jobJson: text("job_json").notNull(),
+    createdAtMs: integer("created_at_ms").notNull(),
+    updatedAtMs: integer("updated_at_ms").notNull(),
+    leasedAtMs: integer("leased_at_ms"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+  },
+  (t) => ({
+    createdIdx: index("chapter_download_queue_created_idx").on(
+      t.createdAtMs,
+      t.chapterId,
+    ),
+  }),
+);
+
 // NovelStats: materialized counters used by Library lists. Keeping
 // this separate from novel metadata avoids scanning every chapter on
 // each Library entry render.
@@ -236,6 +256,10 @@ export type Novel = typeof novelTable.$inferSelect;
 export type NovelInsert = typeof novelTable.$inferInsert;
 export type Chapter = typeof chapterTable.$inferSelect;
 export type ChapterInsert = typeof chapterTable.$inferInsert;
+export type ChapterDownloadQueue =
+  typeof chapterDownloadQueueTable.$inferSelect;
+export type ChapterDownloadQueueInsert =
+  typeof chapterDownloadQueueTable.$inferInsert;
 export type NovelStats = typeof novelStatsTable.$inferSelect;
 export type NovelStatsInsert = typeof novelStatsTable.$inferInsert;
 export type Category = typeof categoryTable.$inferSelect;

@@ -4,7 +4,7 @@ import {
   startAndroidBackgroundDownloadRecovery,
   startAndroidTaskNotifications,
 } from "../lib/tasks/android-notifications";
-import { restorePersistedChapterDownloads } from "../lib/tasks/chapter-download";
+import { startChapterDownloadQueueExecutor } from "../lib/tasks/chapter-download";
 import { startTrayTaskProgress } from "../lib/tasks/tray-progress";
 import { useNotificationStore } from "../store/notifications";
 import { WindowsTaskNotificationBridge } from "./WindowsTaskNotificationBridge";
@@ -16,7 +16,7 @@ export function TaskNotifications() {
   );
 
   useEffect(() => {
-    void restorePersistedChapterDownloads();
+    void startChapterDownloadQueueExecutor();
   }, []);
 
   useEffect(() => {

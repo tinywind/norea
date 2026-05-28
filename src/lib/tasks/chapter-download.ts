@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { useBrowseStore } from "../../store/browse";
@@ -101,6 +102,7 @@ export interface ChapterDownloadBatchResult {
 
 export interface ChapterDownloadBatchJob {
   jobs: Iterable<ChapterDownloadJob>;
+  persist?: boolean;
   title: string;
   total?: number;
   windowSize?: number;
@@ -115,6 +117,11 @@ interface ChapterDownloadBatchState extends ChapterDownloadBatchResult {
   settledChapterIds: Set<number>;
 }
 
+interface BackendChapterDownloadLease {
+  leased: number;
+  pendingJobs: ChapterDownloadJob[];
+}
+
 type ChapterDownloadBatchSettlement = "cancelled" | "failed" | "succeeded";
 
 const chapterDownloadBatchStates = new Map<
@@ -127,17 +134,21 @@ const chapterPartialContentListeners = new Set<
 const chapterMediaPatchListeners = new Set<
   (event: ChapterMediaPatchEvent) => void
 >();
-const CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY = "chapter-download-queue";
-const CHAPTER_DOWNLOAD_QUEUE_STORAGE_VERSION = 1;
 export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
   100,
   MAX_SCHEDULER_MATERIALIZED_TASKS,
 );
+export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
+  10,
+  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+);
+const CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL = 25;
 const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 
-let restorePersistedChapterDownloadsStarted = false;
+let chapterDownloadQueueExecutorStarted = false;
 let chapterDownloadLifecycleSuspending = false;
 let chapterDownloadLifecycleListenersInstalled = false;
+let backendChapterDownloadQueueMutation: Promise<void> = Promise.resolve();
 
 function createChapterDownloadProgressReporter(
   setProgress: (progress: TaskProgress) => void,
@@ -161,11 +172,6 @@ function createChapterDownloadProgressReporter(
 
 function shouldEmitLiveChapterDownloadUpdates(job: ChapterDownloadJob): boolean {
   return job.priority === "interactive";
-}
-
-interface PersistedChapterDownloadQueue {
-  jobs: ChapterDownloadJob[];
-  version: typeof CHAPTER_DOWNLOAD_QUEUE_STORAGE_VERSION;
 }
 
 function chapterDownloadDedupeKey(chapterId: number): string {
@@ -313,6 +319,10 @@ function normalizeChapterDownloadBatchWindowSize(
   );
 }
 
+function yieldChapterDownloadRestoreInspection(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
 function isAbortError(error: unknown): boolean {
   return (
     error instanceof DOMException ||
@@ -367,7 +377,7 @@ function readPositiveIntegerField(
   return value;
 }
 
-function normalizePersistedChapterDownloadJob(
+function normalizeQueuedChapterDownloadJob(
   value: unknown,
 ): ChapterDownloadJob | null {
   if (value === null || typeof value !== "object") return null;
@@ -398,72 +408,74 @@ function normalizePersistedChapterDownloadJob(
   };
 }
 
-function readPersistedChapterDownloadJobs(): ChapterDownloadJob[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed === null || typeof parsed !== "object") return [];
-    const queue = parsed as Partial<PersistedChapterDownloadQueue>;
-    if (
-      queue.version !== CHAPTER_DOWNLOAD_QUEUE_STORAGE_VERSION ||
-      !Array.isArray(queue.jobs)
-    ) {
-      return [];
-    }
-    const jobsById = new Map<number, ChapterDownloadJob>();
-    for (const item of queue.jobs) {
-      const job = normalizePersistedChapterDownloadJob(item);
-      if (job) jobsById.set(job.id, job);
-    }
-    return [...jobsById.values()];
-  } catch (error) {
-    console.warn("[chapter-download] failed to read persisted queue:", error);
-    return [];
+async function enqueueBackendChapterDownloadJobs(
+  jobs: ChapterDownloadJob[],
+): Promise<void> {
+  if (jobs.length === 0) return;
+  await invoke("chapter_download_queue_enqueue", { jobs });
+}
+
+async function removeBackendChapterDownloadJobs(
+  chapterIds: number[],
+): Promise<void> {
+  if (chapterIds.length === 0) return;
+  await invoke("chapter_download_queue_remove", { chapterIds });
+}
+
+async function leaseBackendChapterDownloadJobs(
+  limit: number,
+): Promise<ChapterDownloadJob[]> {
+  const jobs = await invoke<unknown[]>("chapter_download_queue_lease", {
+    limit,
+  });
+  const pendingJobs: ChapterDownloadJob[] = [];
+  const jobsById = new Map<number, ChapterDownloadJob>();
+  for (const item of jobs) {
+    const job = normalizeQueuedChapterDownloadJob(item);
+    if (job) jobsById.set(job.id, job);
   }
+  pendingJobs.push(...jobsById.values());
+  return pendingJobs;
 }
 
-function writePersistedChapterDownloadJobs(jobs: ChapterDownloadJob[]): void {
-  if (typeof window === "undefined") return;
-  installChapterDownloadLifecycleListeners();
-  try {
-    if (jobs.length === 0) {
-      window.localStorage.removeItem(CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY);
-      return;
-    }
-    window.localStorage.setItem(
-      CHAPTER_DOWNLOAD_QUEUE_STORAGE_KEY,
-      JSON.stringify({
-        jobs,
-        version: CHAPTER_DOWNLOAD_QUEUE_STORAGE_VERSION,
-      } satisfies PersistedChapterDownloadQueue),
-    );
-  } catch (error) {
-    console.warn("[chapter-download] failed to persist queue:", error);
-  }
+function queueBackendChapterDownloadMutation(
+  context: string,
+  mutation: () => Promise<void>,
+): void {
+  backendChapterDownloadQueueMutation = backendChapterDownloadQueueMutation
+    .catch(() => undefined)
+    .then(mutation)
+    .catch((error) => {
+      console.warn(`[chapter-download] failed to ${context}:`, error);
+    });
 }
 
-function persistChapterDownloadJob(job: ChapterDownloadJob): void {
-  persistChapterDownloadJobs([job]);
+async function waitForBackendChapterDownloadQueueMutations(): Promise<void> {
+  await backendChapterDownloadQueueMutation.catch(() => undefined);
 }
 
-function removePersistedChapterDownloadJob(chapterId: number): void {
-  writePersistedChapterDownloadJobs(
-    readPersistedChapterDownloadJobs().filter((job) => job.id !== chapterId),
+function queueChapterDownloadJob(job: ChapterDownloadJob): void {
+  queueChapterDownloadJobs([job]);
+}
+
+function removeQueuedChapterDownloadJob(chapterId: number): void {
+  if (!isTauriRuntime()) return;
+  queueBackendChapterDownloadMutation("remove queued chapter download", () =>
+    removeBackendChapterDownloadJobs([chapterId]),
   );
 }
 
-function persistChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
+function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
+  if (!isTauriRuntime()) return;
   const jobsById = new Map<number, ChapterDownloadJob>();
-  for (const existing of readPersistedChapterDownloadJobs()) {
-    jobsById.set(existing.id, existing);
-  }
   for (const job of jobs) {
-    const persisted = normalizePersistedChapterDownloadJob(job);
-    if (persisted) jobsById.set(persisted.id, persisted);
+    const queuedJob = normalizeQueuedChapterDownloadJob(job);
+    if (queuedJob) jobsById.set(queuedJob.id, queuedJob);
   }
-  writePersistedChapterDownloadJobs([...jobsById.values()]);
+  const queuedJobs = [...jobsById.values()];
+  queueBackendChapterDownloadMutation("queue chapter downloads", () =>
+    enqueueBackendChapterDownloadJobs(queuedJobs),
+  );
 }
 
 function installChapterDownloadLifecycleListeners(): void {
@@ -488,7 +500,7 @@ function installChapterDownloadLifecycleListeners(): void {
   }
 }
 
-function shouldKeepPersistedChapterDownloadJobAfterRejection(
+function shouldKeepQueuedChapterDownloadJobAfterRejection(
   error: unknown,
 ): boolean {
   if (!isAbortError(error)) return false;
@@ -591,14 +603,25 @@ function resolveSourceTaskName(
   return pluginManager.getPlugin(pluginId)?.name ?? trimmedName ?? pluginId;
 }
 
-export function enqueueChapterDownload(
+function enqueueChapterDownloadForExecutor(
   job: ChapterDownloadJob,
+  options: {
+    persistBeforeStart?: boolean;
+    removeQueuedJobOnFailure?: boolean;
+    waitForBackendQueue?: boolean;
+  } = {},
 ): TaskHandle<void> {
   const sourcePlugin = pluginManager.getPlugin(job.pluginId);
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
   const sourceBaseUrl = sourcePlugin ? getPluginBaseUrl(sourcePlugin) : undefined;
   const sourceCooldownKey = sourceBaseDomainKey(sourceBaseUrl) ?? job.pluginId;
-  persistChapterDownloadJob(job);
+  const waitForBackendQueue =
+    options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
+  const removeQueuedJobOnFailure = options.removeQueuedJobOnFailure ?? true;
+  installChapterDownloadLifecycleListeners();
+  if (options.persistBeforeStart !== false) {
+    queueChapterDownloadJob(job);
+  }
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
     priority: job.priority ?? "background",
@@ -626,6 +649,9 @@ export function enqueueChapterDownload(
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
       try {
+        if (waitForBackendQueue) {
+          await waitForBackendChapterDownloadQueueMutations();
+        }
         if (isTauriRuntime()) {
           await pluginManager.loadInstalledFromDb();
         }
@@ -873,13 +899,20 @@ export function enqueueChapterDownload(
     },
   });
   void handle.promise.then(
-    () => removePersistedChapterDownloadJob(job.id),
+    () => removeQueuedChapterDownloadJob(job.id),
     (error) => {
-      if (shouldKeepPersistedChapterDownloadJobAfterRejection(error)) return;
-      removePersistedChapterDownloadJob(job.id);
+      if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
+      if (!removeQueuedJobOnFailure) return;
+      removeQueuedChapterDownloadJob(job.id);
     },
   );
   return handle;
+}
+
+export function enqueueChapterDownload(
+  job: ChapterDownloadJob,
+): TaskHandle<void> {
+  return enqueueChapterDownloadForExecutor(job);
 }
 
 export function enqueueChapterMediaRepair(
@@ -1049,6 +1082,7 @@ export function enqueueChapterMediaRepair(
 
 export function enqueueChapterDownloadBatch({
   jobs,
+  persist = true,
   title,
   total: requestedTotal,
   windowSize: requestedWindowSize,
@@ -1058,9 +1092,11 @@ export function enqueueChapterDownloadBatch({
   const windowSize = normalizeChapterDownloadBatchWindowSize(
     requestedWindowSize,
   );
-  if (Array.isArray(jobs)) {
-    persistChapterDownloadJobs(jobs);
+  if (persist && Array.isArray(jobs)) {
+    queueChapterDownloadJobs(jobs);
   }
+  const persistMaterializedJobs = persist && !Array.isArray(jobs);
+  const waitForBatchQueue = persist && Array.isArray(jobs);
   chapterDownloadBatchStates.set(batchId, {
     cancelled: 0,
     failed: 0,
@@ -1074,11 +1110,18 @@ export function enqueueChapterDownloadBatch({
     windowSize,
     materialize: async (job) => {
       try {
-        const handle = enqueueChapterDownload({
-          ...job,
-          batchId,
-          batchTitle: title,
-        });
+        const handle = enqueueChapterDownloadForExecutor(
+          {
+            ...job,
+            batchId,
+            batchTitle: title,
+          },
+          {
+            persistBeforeStart: persistMaterializedJobs,
+            removeQueuedJobOnFailure: persist,
+            waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
+          },
+        );
         await handle.promise;
         settleChapterDownloadBatchJob(batchId, job.id, "succeeded");
       } catch (error) {
@@ -1171,39 +1214,89 @@ export function subscribeChapterMediaPatches(
   };
 }
 
-export async function restorePersistedChapterDownloads(): Promise<void> {
-  if (restorePersistedChapterDownloadsStarted || !isTauriRuntime()) return;
-  restorePersistedChapterDownloadsStarted = true;
-
-  const jobs = readPersistedChapterDownloadJobs();
-  if (jobs.length === 0) return;
+async function pendingBackendChapterDownloadJobs(): Promise<
+  BackendChapterDownloadLease
+> {
+  await waitForBackendChapterDownloadQueueMutations();
+  const jobs = await leaseBackendChapterDownloadJobs(
+    RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+  );
+  if (jobs.length === 0) {
+    return { leased: 0, pendingJobs: [] };
+  }
 
   const pendingJobs: ChapterDownloadJob[] = [];
-  for (const job of jobs) {
+  const completedChapterIds: number[] = [];
+  for (let index = 0; index < jobs.length; index += 1) {
+    const job = jobs[index]!;
     try {
       const chapter = await getChapterById(job.id);
-      if (!chapter?.isDownloaded) pendingJobs.push(job);
+      if (!chapter || chapter.isDownloaded) {
+        completedChapterIds.push(job.id);
+      } else {
+        pendingJobs.push(job);
+      }
     } catch (error) {
       console.warn(
-        "[chapter-download] failed to inspect persisted chapter:",
+        "[chapter-download] failed to inspect queued chapter:",
         error,
       );
       pendingJobs.push(job);
     }
+    if (
+      (index + 1) % CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL ===
+      0
+    ) {
+      await yieldChapterDownloadRestoreInspection();
+    }
   }
-  writePersistedChapterDownloadJobs(pendingJobs);
-  if (pendingJobs.length === 0) return;
+  if (completedChapterIds.length > 0) {
+    await removeBackendChapterDownloadJobs(completedChapterIds);
+  }
+  return { leased: jobs.length, pendingJobs };
+}
 
-  try {
-    await pluginManager.loadInstalledFromDb();
-  } catch (error) {
-    console.warn(
-      "[chapter-download] failed to load plugins for restore:",
-      error,
-    );
-  }
+async function runBackendChapterDownloadExecutor(): Promise<void> {
+  let pluginsLoaded = false;
+  for (;;) {
+    const { leased, pendingJobs } = await pendingBackendChapterDownloadJobs();
+    if (pendingJobs.length === 0) {
+      if (leased === 0) return;
+      continue;
+    }
+    if (!pluginsLoaded) {
+      pluginsLoaded = true;
+      try {
+        await pluginManager.loadInstalledFromDb();
+      } catch (error) {
+        console.warn(
+          "[chapter-download] failed to load plugins for restore:",
+          error,
+        );
+      }
+    }
 
-  for (const job of pendingJobs) {
-    enqueueChapterDownload({ ...job, priority: "background" });
+    const restoreHandle = enqueueChapterDownloadBatch({
+      jobs: pendingJobs.map((job) => ({ ...job, priority: "background" })),
+      persist: false,
+      title: "Queued chapter downloads",
+      total: pendingJobs.length,
+      windowSize: RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+    });
+    try {
+      await restoreHandle.promise;
+    } catch (error) {
+      console.warn("[chapter-download] queued downloads failed:", error);
+      return;
+    }
   }
+}
+
+export function startChapterDownloadQueueExecutor(): void {
+  if (chapterDownloadQueueExecutorStarted || !isTauriRuntime()) return;
+  chapterDownloadQueueExecutorStarted = true;
+
+  void runBackendChapterDownloadExecutor().catch((error) => {
+    console.warn("[chapter-download] failed to run download queue:", error);
+  });
 }

@@ -2,6 +2,7 @@
 mod android_tls;
 mod backup;
 mod chapter_media;
+mod download_queue;
 mod native_stream;
 mod plugin_host;
 mod scraper;
@@ -31,12 +32,20 @@ fn set_runtime_log_level(level: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![Migration {
-        version: 1,
-        description: "create current application schema",
-        sql: include_str!("schema.sql"),
-        kind: MigrationKind::Up,
-    }];
+    let migrations = vec![
+        Migration {
+            version: 1,
+            description: "create current application schema",
+            sql: include_str!("schema.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "create chapter download queue",
+            sql: include_str!("schema_download_queue.sql"),
+            kind: MigrationKind::Up,
+        },
+    ];
 
     let builder = tauri::Builder::default();
 
@@ -50,6 +59,7 @@ pub fn run() {
     }));
 
     builder
+        .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
@@ -99,6 +109,9 @@ pub fn run() {
             chapter_media::chapter_storage_prune_dir_children,
             chapter_media::chapter_storage_relocate_dir,
             chapter_media::chapter_storage_remove_dir,
+            download_queue::chapter_download_queue_enqueue,
+            download_queue::chapter_download_queue_lease,
+            download_queue::chapter_download_queue_remove,
             native_stream::native_stream_cancel,
             native_stream::native_stream_cleanup,
             native_stream::native_stream_create,

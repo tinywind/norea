@@ -62,11 +62,29 @@ async function ensureNoChapterContentColumn(db: Database): Promise<void> {
   await db.execute("ALTER TABLE chapter DROP COLUMN content");
 }
 
+async function ensureChapterDownloadQueueTable(db: Database): Promise<void> {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS chapter_download_queue (
+       chapter_id integer PRIMARY KEY NOT NULL,
+       job_json text NOT NULL,
+       created_at_ms integer NOT NULL,
+       updated_at_ms integer NOT NULL,
+       leased_at_ms integer,
+       attempt_count integer DEFAULT 0 NOT NULL
+     )`,
+  );
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS chapter_download_queue_created_idx
+     ON chapter_download_queue (created_at_ms, chapter_id)`,
+  );
+}
+
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   await ensureMediaRepairNeededColumn(db);
   await ensureMediaBytesCheckedAtColumn(db);
   await ensureNoChapterContentColumn(db);
+  await ensureChapterDownloadQueueTable(db);
   return db;
 }
 
