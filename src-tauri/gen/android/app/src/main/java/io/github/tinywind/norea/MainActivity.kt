@@ -838,6 +838,10 @@ class MainActivity : TauriActivity() {
           }
         } ?: throw IllegalStateException("Cannot open reader media archive.")
 
+        Log.d(
+          TAG,
+          "Android reader media cache prepared. path=$archiveRelativePath count=$entryCount bytes=$totalBytes",
+        )
         JSONObject()
           .put("ok", true)
           .put("bytes", totalBytes)
@@ -1169,6 +1173,7 @@ class MainActivity : TauriActivity() {
         400,
         "Android reader media file is missing.",
       )
+    Log.d(TAG, "Android reader media request. uri=$uri fileName=$fileName")
     val safeName = safeZipEntryName(fileName)
       ?: return androidLocalMediaErrorResponse(
         400,
@@ -1176,11 +1181,13 @@ class MainActivity : TauriActivity() {
       )
     val file = containedReaderMediaCacheFile(safeName)
     if (!file.isFile) {
+      Log.w(TAG, "Android reader media file not found. uri=$uri file=$file")
       return androidLocalMediaErrorResponse(
         404,
         "Android reader media file was not found.",
       )
     }
+    Log.d(TAG, "Android reader media file opened. uri=$uri file=$file")
     return androidLocalMediaResponse(
       mimeTypeForPath(safeName, ""),
       file.inputStream(),

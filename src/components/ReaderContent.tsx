@@ -328,7 +328,6 @@ function logReaderMediaPipeline(
   event: string,
   details: Record<string, unknown>,
 ): void {
-  if (!import.meta.env.DEV) return;
   console.warn("[reader-media:content]", event, details);
 }
 
