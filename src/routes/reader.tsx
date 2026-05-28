@@ -1377,16 +1377,16 @@ export function ReaderPage() {
     ChapterMediaStorageContext | undefined
   >(
     () =>
-      chapter
+      chapter && currentNovel
         ? {
             chapterId: chapter.id,
             chapterName: chapter.name,
             chapterNumber: chapter.chapterNumber,
             chapterPosition: chapter.position,
-            novelId: currentNovel?.id ?? chapter.novelId,
-            novelName: currentNovel?.name,
-            novelPath: currentNovel?.path,
-            sourceId: currentNovel?.pluginId,
+            novelId: currentNovel.id,
+            novelName: currentNovel.name,
+            novelPath: currentNovel.path,
+            sourceId: currentNovel.pluginId,
           }
         : undefined,
     [
