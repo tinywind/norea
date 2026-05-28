@@ -1163,7 +1163,7 @@ class MainActivity : TauriActivity() {
 
   private fun androidReaderMediaResponse(uri: Uri): WebResourceResponse? {
     if (uri.host != NOREA_MEDIA_HOST) return null
-    val fileName = uri.pathSegments.joinToString("/")
+    val fileName = readerMediaCacheFileName(uri)
       .takeIf { it.isNotBlank() }
       ?: return androidLocalMediaErrorResponse(
         400,
@@ -1185,6 +1185,20 @@ class MainActivity : TauriActivity() {
       mimeTypeForPath(safeName, ""),
       file.inputStream(),
     )
+  }
+
+  private fun readerMediaCacheFileName(uri: Uri): String {
+    val segments = uri.pathSegments.filter { it.isNotBlank() }
+    val fileSegments =
+      if (
+        segments.size >= 3 &&
+          segments[0] == READER_MEDIA_CACHE_SCOPE_SEGMENT
+      ) {
+        segments.drop(2)
+      } else {
+        segments
+      }
+    return fileSegments.joinToString("/")
   }
 
   private fun androidDirectLocalMediaResponse(
@@ -1747,6 +1761,7 @@ class MainActivity : TauriActivity() {
     private const val NOREA_MEDIA_HOST = "reader-asset"
     private const val NOREA_MEDIA_SCHEME = "norea-media"
     private const val READER_MEDIA_CACHE_DIR = "reader-media"
+    private const val READER_MEDIA_CACHE_SCOPE_SEGMENT = "~cache"
     private const val REQUEST_MEDIA_STORAGE_ROOT = 1001
     private const val REQUEST_POST_NOTIFICATIONS = 1002
     private const val STORAGE_TEMP_DIR = "android-storage-bridge"

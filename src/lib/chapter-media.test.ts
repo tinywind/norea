@@ -1813,7 +1813,9 @@ describe("resolveLocalChapterMedia", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/95/media.zip");
-    expect(html).toContain('src="norea-media://reader-asset/page.png?v=');
+    expect(html).toMatch(
+      /src="norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png"/,
+    );
   });
 
   it("prefers desktop asset URLs from stored media paths", async () => {
@@ -1969,16 +1971,16 @@ describe("resolveLocalChapterMediaPatches", () => {
     ).toHaveBeenCalledWith("chapter-media/42/media.zip");
     expect(patches).toHaveLength(2);
     expect(patches[0]?.attributes.src).toMatch(
-      /^norea-media:\/\/reader-asset\/page\.png\?v=/,
+      /^norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png$/,
     );
-    expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://reader-asset/page.png?v=",
+    expect(patches[1]?.attributes.srcset).toMatch(
+      /norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png 1x/,
     );
-    expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://reader-asset/large.png?v=",
+    expect(patches[1]?.attributes.srcset).toMatch(
+      /norea-media:\/\/reader-asset\/~cache\/[^/]+\/large\.png 2x/,
     );
-    expect(patches[1]?.attributes.style).toContain(
-      'url("norea-media://reader-asset/page.png?v=',
+    expect(patches[1]?.attributes.style).toMatch(
+      /url\("norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png"\)/,
     );
   });
 
@@ -2017,11 +2019,32 @@ describe("resolveLocalChapterMediaPatches", () => {
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith("chapter-media/27/media.zip");
     expect(patches[0]?.attributes.src).toMatch(
-      /^norea-media:\/\/reader-asset\/page\.png\?v=/,
+      /^norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png$/,
     );
-    expect(patches[1]?.attributes.srcset).toContain(
-      "norea-media://reader-asset/large.png?v=",
+    expect(patches[1]?.attributes.srcset).toMatch(
+      /norea-media:\/\/reader-asset\/~cache\/[^/]+\/large\.png 2x/,
     );
+  });
+
+  it("leaves scoped Android reader media URLs as resolved resources", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Android" });
+
+    const scoped = "norea-media://reader-asset/~cache/42-abcd/page.png";
+    const patches = await resolveLocalChapterMediaPatches(
+      [
+        {
+          attributes: { src: scoped },
+          index: 0,
+          sourceAttributes: { src: scoped },
+        },
+      ],
+      { chapterId: 42 },
+    );
+
+    expect(
+      androidStorageMocks.prepareAndroidReaderMediaCache,
+    ).not.toHaveBeenCalled();
+    expect(patches).toEqual([]);
   });
 
   it("deduplicates repeated cached media sources across a patch batch", async () => {

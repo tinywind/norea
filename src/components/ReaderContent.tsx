@@ -196,6 +196,8 @@ const READER_EMPTY_MEDIA_PLACEHOLDER_SRC =
   "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%2F%3E";
 const READER_PENDING_PLACEHOLDER_HEIGHT = "min(72vh, 56rem)";
 const READER_LOCAL_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
+const READER_LOCAL_MEDIA_SCOPED_SRC_PREFIX =
+  "norea-media://reader-asset/~cache/";
 const READER_LOCAL_MEDIA_RELATIVE_SRC_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const READER_STYLE_URL_PATTERN =
@@ -441,9 +443,11 @@ function hasLocalChapterMediaValue(
   value: string | null,
   allowRelative = false,
 ): value is string {
-  if (!value) return false;
-  if (value.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
-  return allowRelative && hasRelativeLocalChapterMediaValue(value);
+  const trimmed = value?.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith(READER_LOCAL_MEDIA_SCOPED_SRC_PREFIX)) return false;
+  if (trimmed.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
+  return allowRelative && hasRelativeLocalChapterMediaValue(trimmed);
 }
 
 function hasLocalChapterMediaSrcsetValue(
@@ -451,11 +455,9 @@ function hasLocalChapterMediaSrcsetValue(
   allowRelative: boolean,
 ): value is string {
   if (!value) return false;
-  if (value.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
-  if (!allowRelative) return false;
   return value.split(",").some((candidate) => {
     const source = candidate.trim().split(/\s+/)[0] ?? "";
-    return hasRelativeLocalChapterMediaValue(source);
+    return hasLocalChapterMediaValue(source, allowRelative);
   });
 }
 
@@ -464,13 +466,11 @@ function hasLocalChapterMediaStyleValue(
   allowRelative: boolean,
 ): value is string {
   if (!value) return false;
-  if (value.includes(READER_LOCAL_MEDIA_SRC_PREFIX)) return true;
-  if (!allowRelative) return false;
   READER_STYLE_URL_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = READER_STYLE_URL_PATTERN.exec(value)) !== null) {
     const source = String(match[1] ?? match[2] ?? match[3] ?? "").trim();
-    if (hasRelativeLocalChapterMediaValue(source)) return true;
+    if (hasLocalChapterMediaValue(source, allowRelative)) return true;
   }
   return false;
 }
