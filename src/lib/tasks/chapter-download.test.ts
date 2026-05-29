@@ -432,6 +432,25 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
+  it("marks web-storage-backed source downloads for the foreground executor", () => {
+    pluginMocks.getPlugin.mockReturnValueOnce({
+      id: "source-a",
+      name: "Source A",
+      getBaseUrl: () => "https://source.test",
+      parseChapter: pluginMocks.parseChapter,
+      webStorageUtilized: true,
+    });
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    expect(capturedSpec?.requiresForegroundExecutor).toBe(true);
+  });
+
   it("carries contentType through the task subject and saveStoredChapterContent", async () => {
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
 

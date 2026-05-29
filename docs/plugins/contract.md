@@ -60,6 +60,7 @@ export interface Plugin extends PluginItem {
   ) => Promise<ChapterBinaryResource>;
   searchNovels: (searchTerm: string, pageNo: number) => Promise<NovelItem[]>;
   resolveUrl?: (path: string, isNovel?: boolean) => string;
+  /** Run source tasks on the foreground scraper when per-page Web Storage is needed. */
   webStorageUtilized?: boolean;
 }
 ```

@@ -603,6 +603,10 @@ function resolveSourceTaskName(
   return pluginManager.getPlugin(pluginId)?.name ?? trimmedName ?? pluginId;
 }
 
+function requiresForegroundChapterExecutor(plugin: Plugin | undefined): boolean {
+  return plugin?.webStorageUtilized === true;
+}
+
 function enqueueChapterDownloadForExecutor(
   job: ChapterDownloadJob,
   options: {
@@ -641,6 +645,8 @@ function enqueueChapterDownloadForExecutor(
       batchTitle: job.batchTitle,
     },
     dedupeKey: chapterDownloadDedupeKey(job.id),
+    requiresForegroundExecutor:
+      requiresForegroundChapterExecutor(sourcePlugin),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
     run: async ({ executor, setDetail, setProgress, signal }) => {
@@ -932,6 +938,8 @@ export function enqueueChapterMediaRepair(
       pluginId: job.pluginId,
     },
     dedupeKey: chapterMediaRepairDedupeKey(job.id),
+    requiresForegroundExecutor:
+      requiresForegroundChapterExecutor(sourcePlugin),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
     run: async ({ executor, setDetail, setProgress, signal }) => {

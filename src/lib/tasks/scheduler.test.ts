@@ -655,6 +655,55 @@ describe("TaskScheduler", () => {
     await Promise.all([browser.promise, download.promise]);
   });
 
+  it("runs foreground-required downloads on the immediate executor after the site browser closes", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const source = { id: "newtoki-novel", name: "Newtoki Novel" };
+    const order: string[] = [];
+    let closeBrowser!: () => void;
+
+    const browser = scheduler.enqueueSource({
+      kind: "source.openSite",
+      title: "Open source",
+      priority: "interactive",
+      exclusive: true,
+      source,
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          order.push(`open:${context.executor}:start`);
+          closeBrowser = resolve;
+        }),
+    });
+
+    await settle();
+    expect(order).toEqual(["open:immediate:start"]);
+
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Download chapter",
+      priority: "user",
+      source,
+      requiresForegroundExecutor: true,
+      run: async (context) => {
+        order.push(`download:${context.executor}:start`);
+      },
+    });
+
+    await settle();
+    expect(order).toEqual(["open:immediate:start"]);
+    expect(scheduler.getTask(download.id)?.status).toBe("queued");
+
+    closeBrowser();
+    await Promise.all([browser.promise, download.promise]);
+
+    expect(order).toEqual([
+      "open:immediate:start",
+      "download:immediate:start",
+    ]);
+  });
+
   it("lets open site work run while source queues are paused", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
     const order: string[] = [];

@@ -195,6 +195,7 @@ export interface TaskSpec<T> {
   subject?: TaskSubject;
   dedupeKey?: string;
   exclusive?: boolean;
+  requiresForegroundExecutor?: boolean;
   sourceCooldownKey?: string;
   sourceCooldownMs?: number;
   run: (context: TaskRunContext) => Promise<T>;
@@ -284,6 +285,7 @@ function isInterruptibleDownloadKind(kind: TaskKind): boolean {
 }
 
 function shouldUseImmediateExecutor(entry: TaskEntry): boolean {
+  if (entry.spec.requiresForegroundExecutor) return true;
   if (isOpenSiteSourceKind(entry.record.kind)) return true;
   return (
     entry.record.priority === "interactive" &&
@@ -1004,7 +1006,14 @@ export class TaskScheduler {
         isImmediateBrowseSourceKind(entry.record.kind),
       { allowActiveSource: true },
     );
-    if (browse) this.startSource(browse, "immediate");
+    if (browse) {
+      this.startSource(browse, "immediate");
+      return;
+    }
+    const foreground = this.pickSourceTask(
+      (entry) => entry.spec.requiresForegroundExecutor === true,
+    );
+    if (foreground) this.startSource(foreground, "immediate");
   }
 
   private drainSourcePool(): void {
