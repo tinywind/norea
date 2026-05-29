@@ -2467,6 +2467,9 @@ function ReaderContentInner(
     })();
     return () => {
       cancelled = true;
+      if (pendingLocalMediaSignatureRef.current === scopedSignature) {
+        pendingLocalMediaSignatureRef.current = null;
+      }
     };
   }, [
     isPagedReader,
