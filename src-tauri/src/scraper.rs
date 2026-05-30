@@ -441,6 +441,10 @@ const HIDDEN_SIZE: f64 = 1.0;
 #[cfg(desktop)]
 const HIDDEN_POSITION: f64 = -10_000.0;
 #[cfg(desktop)]
+const BACKGROUND_RENDER_WIDTH: f64 = 1280.0;
+#[cfg(desktop)]
+const BACKGROUND_RENDER_HEIGHT: f64 = 900.0;
+#[cfg(desktop)]
 const SCRAPER_CONTROL_HOST: &str = "norea.localhost";
 #[cfg(desktop)]
 const SCRAPER_CONTROL_PATH_PREFIX: &str = "/__norea_scraper_control__/";
@@ -735,6 +739,24 @@ fn hide_scraper_webview(webview: &ScraperWebview) -> Result<(), String> {
         .hide()
         .map_err(|err| format!("scraper: hide: {err}"))?;
     log_windows_scraper_event("hide_scraper_webview complete");
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn show_scraper_webview_for_background_render(webview: &ScraperWebview) -> Result<(), String> {
+    log_windows_scraper_event("show_scraper_webview_for_background_render start");
+    set_webview_bounds(
+        webview,
+        HIDDEN_POSITION,
+        HIDDEN_POSITION,
+        BACKGROUND_RENDER_WIDTH,
+        BACKGROUND_RENDER_HEIGHT,
+        "background",
+    )?;
+    webview
+        .show()
+        .map_err(|err| format!("scraper: show background render surface: {err}"))?;
+    log_windows_scraper_event("show_scraper_webview_for_background_render complete");
     Ok(())
 }
 
@@ -2061,6 +2083,15 @@ pub async fn webview_extract(
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
     let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+    let is_visible_browser = state
+        .visible_key
+        .lock()
+        .expect("scraper visible_key mutex")
+        .as_deref()
+        == Some(queue.as_str());
+    if !is_visible_browser {
+        show_scraper_webview_for_background_render(&scraper)?;
+    }
     log::trace!(
         "[scraper:extract] request queue={queue} url={url} timeout_ms={timeout_ms:?} user_agent={user_agent:?} before_script_len={}",
         before_script.as_ref().map(|script| script.len()).unwrap_or(0)

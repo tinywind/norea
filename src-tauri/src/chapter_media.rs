@@ -533,6 +533,10 @@ fn chapter_media_manifest_path(chapter_dir: &Path) -> PathBuf {
     chapter_dir.join(CHAPTER_MEDIA_MANIFEST_FILE)
 }
 
+fn chapter_media_manifest_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
 fn write_chapter_media_manifest(path: &Path, manifest: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -544,7 +548,30 @@ fn write_chapter_media_manifest(path: &Path, manifest: &serde_json::Value) -> Re
     body.push(b'\n');
     fs::write(&temp_path, body)
         .map_err(|err| format!("chapter media: write media manifest temp: {err}"))?;
-    fs::rename(&temp_path, path).map_err(|err| format!("chapter media: move media manifest: {err}"))
+
+    let backup_path = chapter_media_manifest_backup_path(path);
+    if backup_path.exists() {
+        fs::remove_file(&backup_path)
+            .map_err(|err| format!("chapter media: remove stale media manifest backup: {err}"))?;
+    }
+    let had_manifest = path.exists();
+    if had_manifest {
+        fs::rename(path, &backup_path)
+            .map_err(|err| format!("chapter media: backup media manifest: {err}"))?;
+    }
+
+    if let Err(err) = fs::rename(&temp_path, path) {
+        if had_manifest {
+            let _ = fs::rename(&backup_path, path);
+        }
+        return Err(format!("chapter media: move media manifest: {err}"));
+    }
+
+    if backup_path.exists() {
+        fs::remove_file(&backup_path)
+            .map_err(|err| format!("chapter media: remove media manifest backup: {err}"))?;
+    }
+    Ok(())
 }
 
 fn delete_legacy_storage_manifest(root: &Path) -> Result<(), String> {
@@ -2402,5 +2429,37 @@ mod tests {
             .join(MEDIA_DOWNLOAD_DIR)
             .join("page.png")
             .exists());
+    }
+
+    #[test]
+    fn write_chapter_media_manifest_replaces_existing_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest_path = dir.path().join(CHAPTER_MEDIA_MANIFEST_FILE);
+
+        write_chapter_media_manifest(
+            &manifest_path,
+            &serde_json::json!({
+                "version": 1,
+                "complete": false,
+                "media": { "files": [{ "fileName": "old.png" }] }
+            }),
+        )
+        .expect("write initial manifest");
+        write_chapter_media_manifest(
+            &manifest_path,
+            &serde_json::json!({
+                "version": 1,
+                "complete": true,
+                "media": { "files": [{ "fileName": "new.png" }] }
+            }),
+        )
+        .expect("replace manifest");
+
+        let manifest =
+            fs::read_to_string(&manifest_path).expect("read replaced media manifest");
+        assert!(manifest.contains("new.png"));
+        assert!(!manifest.contains("old.png"));
+        assert!(!manifest_path.with_extension("json.tmp").exists());
+        assert!(!chapter_media_manifest_backup_path(&manifest_path).exists());
     }
 }

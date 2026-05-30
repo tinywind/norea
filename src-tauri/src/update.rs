@@ -806,9 +806,10 @@ mod tests {
         zip.finish().expect("finish zip");
     }
 
+    #[cfg(target_os = "android")]
     fn metadata_for(bytes: &[u8]) -> UpdateInstallMetadata {
         UpdateInstallMetadata {
-            sha256: sha256_hex(bytes),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
             signature: None,
             signing_key_id: None,
             size: u64::try_from(bytes.len()).expect("test size"),
@@ -871,6 +872,7 @@ mod tests {
         assert!(output.is_empty());
     }
 
+    #[cfg(target_os = "android")]
     #[test]
     fn verify_update_bytes_rejects_size_mismatch() {
         let bytes = b"norea";
@@ -882,6 +884,7 @@ mod tests {
         assert!(error.contains("size does not match metadata"));
     }
 
+    #[cfg(target_os = "android")]
     #[test]
     fn verify_update_bytes_rejects_digest_mismatch() {
         let bytes = b"norea";
