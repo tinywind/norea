@@ -6,6 +6,7 @@ mod download_queue;
 mod native_stream;
 mod plugin_host;
 mod scraper;
+mod task_notifications;
 mod tray;
 mod update;
 
@@ -146,6 +147,8 @@ pub fn run() {
             scraper::scraper_clear_cookies,
             scraper::scraper_open_devtools,
             set_runtime_log_level,
+            task_notifications::task_notification_show_download_progress,
+            task_notifications::task_notification_update_download_progress,
             tray::tray_set_task_progress,
             update::download_and_open_update,
             update::get_build_info,

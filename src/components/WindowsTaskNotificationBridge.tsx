@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   isPermissionGranted,
@@ -25,6 +26,7 @@ import {
   taskNotificationProgressPercent,
   taskNotificationRouteForTask,
   taskNotificationTitleForTask,
+  type ActiveTaskNotificationGroup,
   type TaskNotificationRoute,
 } from "../lib/tasks/task-notification-model";
 import type { TaskNotificationMode } from "../store/notifications";
@@ -36,12 +38,29 @@ interface WindowsTaskNotificationBridgeProps {
 interface SentNotificationState {
   lastPercent?: number;
   lastSentAt: number;
+  nativeProgressDismissed?: boolean;
+  nativeProgressShown?: boolean;
   terminalSent: boolean;
 }
 
 const NOTIFICATION_GROUP = "task-progress";
+const DOWNLOAD_PROGRESS_NOTIFICATION_TAG = "norea-download-progress";
 const MIN_PROGRESS_INTERVAL_MS = 2_500;
 const MIN_PROGRESS_PERCENT_DELTA = 10;
+
+type NativeDownloadProgressUpdateResult =
+  | "failed"
+  | "notFound"
+  | "succeeded"
+  | "unsupported";
+
+interface NativeDownloadProgressPayload {
+  status: string;
+  tag: string;
+  title: string;
+  value: number;
+  valueString: string;
+}
 
 let permissionPromise: Promise<boolean> | null = null;
 
@@ -122,6 +141,11 @@ function progressPercent(
   );
 }
 
+function progressValue(progress: TaskProgress | undefined): number | undefined {
+  if (!progress?.total || progress.total <= 0) return undefined;
+  return Math.min(progress.current, progress.total) / progress.total;
+}
+
 function isCompleteProgress(progress: TaskProgress | undefined): boolean {
   return progress?.total !== undefined && progress.current >= progress.total;
 }
@@ -134,6 +158,9 @@ function shouldSendDownloadNotification(
   progress: TaskProgress | undefined,
 ): boolean {
   if (mode === "off" || !isTaskEventNotificationCandidate(event.task)) {
+    return false;
+  }
+  if (mode === "progress" && state?.nativeProgressDismissed) {
     return false;
   }
 
@@ -154,6 +181,34 @@ function shouldSendDownloadNotification(
   if (now - state.lastSentAt >= MIN_PROGRESS_INTERVAL_MS) return true;
   if (state.lastPercent === undefined) return true;
   return percent - state.lastPercent >= MIN_PROGRESS_PERCENT_DELTA;
+}
+
+function nativeDownloadProgressPayload(
+  group: ActiveTaskNotificationGroup | undefined,
+): NativeDownloadProgressPayload | null {
+  const value = progressValue(group?.progress);
+  if (!group || value === undefined) return null;
+  return {
+    status: group.body,
+    tag: DOWNLOAD_PROGRESS_NOTIFICATION_TAG,
+    title: group.title,
+    value,
+    valueString: group.body,
+  };
+}
+
+async function sendNativeDownloadProgressNotification(
+  payload: NativeDownloadProgressPayload,
+  update: boolean,
+): Promise<NativeDownloadProgressUpdateResult> {
+  if (update) {
+    return invoke<NativeDownloadProgressUpdateResult>(
+      "task_notification_update_download_progress",
+      { payload },
+    );
+  }
+  await invoke("task_notification_show_download_progress", { payload });
+  return "succeeded";
 }
 
 export function WindowsTaskNotificationBridge({
@@ -246,9 +301,17 @@ export function WindowsTaskNotificationBridge({
       const percent = isDownloadTask
         ? progressPercent(group?.progress)
         : taskNotificationProgressPercent(event.task);
+      const nativeDownloadPayload =
+        isDownloadTask && taskProgressMode === "progress"
+          ? nativeDownloadProgressPayload(group)
+          : null;
       sentByKey.set(key, {
         lastPercent: percent,
         lastSentAt: now,
+        nativeProgressDismissed: state?.nativeProgressDismissed,
+        nativeProgressShown: nativeDownloadPayload
+          ? true
+          : state?.nativeProgressShown,
         terminalSent:
           isTerminalTaskStatus(event.task.status) &&
           (!isDownloadTask || isCompleteProgress(group?.progress)),
@@ -256,6 +319,32 @@ export function WindowsTaskNotificationBridge({
 
       void ensureNotificationPermission().then((granted) => {
         if (!granted || disposed) return;
+        if (nativeDownloadPayload) {
+          void sendNativeDownloadProgressNotification(
+            nativeDownloadPayload,
+            state?.nativeProgressShown === true,
+          )
+            .then((result) => {
+              const latestState = sentByKey.get(key);
+              if (!latestState) return;
+              sentByKey.set(key, {
+                ...latestState,
+                nativeProgressDismissed:
+                  result === "notFound"
+                    ? true
+                    : latestState.nativeProgressDismissed,
+                nativeProgressShown:
+                  result === "succeeded" || latestState.nativeProgressShown,
+              });
+            })
+            .catch((error) => {
+              console.warn(
+                "[task-notifications] native progress send failed",
+                error,
+              );
+            });
+          return;
+        }
         try {
           sendNotification({
             id: notificationId(key),
