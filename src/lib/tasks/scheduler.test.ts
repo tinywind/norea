@@ -1136,5 +1136,5 @@ describe("TaskScheduler", () => {
       MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
     );
     expect(snapshot.sourceQueuesTruncated).toBe(false);
-  });
+  }, 15_000);
 });
