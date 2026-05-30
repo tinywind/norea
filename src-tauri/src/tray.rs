@@ -1,9 +1,9 @@
 use serde::Deserialize;
 #[cfg(target_os = "windows")]
 use tauri::{
+    AppHandle, Manager, Runtime, WindowEvent,
     menu::{MenuBuilder, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime, WindowEvent,
 };
 
 #[cfg(target_os = "windows")]
@@ -67,15 +67,17 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
             TRAY_QUIT_ID => app.exit(0),
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
-            } = event
-            {
-                show_main_window(tray.app_handle());
             }
+            | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => show_main_window(tray.app_handle()),
+            _ => {}
         });
 
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -179,13 +181,14 @@ pub fn tray_set_task_progress(
 #[cfg(target_os = "windows")]
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        log::warn!("show main window from tray failed: main window not found");
         return;
     };
-    if let Err(err) = window.unminimize() {
-        log::warn!("unminimize main window from tray failed: {err}");
-    }
     if let Err(err) = window.show() {
         log::warn!("show main window from tray failed: {err}");
+    }
+    if let Err(err) = window.unminimize() {
+        log::warn!("unminimize main window from tray failed: {err}");
     }
     if let Err(err) = window.set_focus() {
         log::warn!("focus main window from tray failed: {err}");
