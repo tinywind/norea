@@ -13,10 +13,12 @@ import { isWindowsRuntime } from "../lib/tauri-runtime";
 import {
   taskScheduler,
   type TaskEvent,
+  type TaskProgress,
 } from "../lib/tasks/scheduler";
 import {
   buildActiveTaskNotificationGroups,
   buildTaskEventNotificationBody,
+  isChapterDownloadNotificationTask,
   isTaskEventNotificationCandidate,
   isTerminalTaskStatus,
   taskNotificationKey,
@@ -108,6 +110,52 @@ function groupKeyFromNotificationKey(key: string): string | null {
   return key.startsWith("group:") ? key.slice("group:".length) : null;
 }
 
+function progressPercent(
+  progress: TaskProgress | undefined,
+): number | undefined {
+  if (!progress?.total || progress.total <= 0) return undefined;
+  return Math.min(
+    100,
+    Math.round(
+      (Math.min(progress.current, progress.total) / progress.total) * 100,
+    ),
+  );
+}
+
+function isCompleteProgress(progress: TaskProgress | undefined): boolean {
+  return progress?.total !== undefined && progress.current >= progress.total;
+}
+
+function shouldSendDownloadNotification(
+  event: TaskEvent,
+  mode: TaskNotificationMode,
+  state: SentNotificationState | undefined,
+  now: number,
+  progress: TaskProgress | undefined,
+): boolean {
+  if (mode === "off" || !isTaskEventNotificationCandidate(event.task)) {
+    return false;
+  }
+
+  if (mode === "completion") {
+    return (
+      isTerminalTaskStatus(event.task.status) &&
+      isCompleteProgress(progress) &&
+      !state?.terminalSent
+    );
+  }
+
+  const percent = progressPercent(progress);
+  if (percent === undefined) return false;
+  if (!state) return true;
+  if (isTerminalTaskStatus(event.task.status) && isCompleteProgress(progress)) {
+    return !state.terminalSent;
+  }
+  if (now - state.lastSentAt >= MIN_PROGRESS_INTERVAL_MS) return true;
+  if (state.lastPercent === undefined) return true;
+  return percent - state.lastPercent >= MIN_PROGRESS_PERCENT_DELTA;
+}
+
 export function WindowsTaskNotificationBridge({
   taskProgressMode,
 }: WindowsTaskNotificationBridgeProps) {
@@ -163,31 +211,51 @@ export function WindowsTaskNotificationBridge({
 
     const unsubscribeEvents = taskScheduler.subscribeEvents((event) => {
       const key = taskNotificationKey(event.task);
-      if (isTerminalTaskStatus(event.task.status) && activeGroupKeys.has(key)) {
+      const isDownloadTask = isChapterDownloadNotificationTask(event.task);
+      if (
+        isTerminalTaskStatus(event.task.status) &&
+        activeGroupKeys.has(key) &&
+        !isDownloadTask
+      ) {
         return;
       }
+      const groupKey = groupKeyFromNotificationKey(key);
+      const group = groupKey
+        ? buildActiveTaskNotificationGroups(
+            taskScheduler.getSnapshot(),
+            t,
+          ).find((item) => item.key === groupKey)
+        : undefined;
+      if (isDownloadTask && !group) return;
+
       const state = sentByKey.get(key);
       const now = Date.now();
-      if (!shouldSendNotification(event, taskProgressMode, state, now)) {
+      const shouldSend = isDownloadTask
+        ? shouldSendDownloadNotification(
+            event,
+            taskProgressMode,
+            state,
+            now,
+            group?.progress,
+          )
+        : shouldSendNotification(event, taskProgressMode, state, now);
+      if (!shouldSend) {
         return;
       }
 
-      const percent = taskNotificationProgressPercent(event.task);
+      const percent = isDownloadTask
+        ? progressPercent(group?.progress)
+        : taskNotificationProgressPercent(event.task);
       sentByKey.set(key, {
         lastPercent: percent,
         lastSentAt: now,
-        terminalSent: isTerminalTaskStatus(event.task.status),
+        terminalSent:
+          isTerminalTaskStatus(event.task.status) &&
+          (!isDownloadTask || isCompleteProgress(group?.progress)),
       });
 
       void ensureNotificationPermission().then((granted) => {
         if (!granted || disposed) return;
-        const groupKey = groupKeyFromNotificationKey(key);
-        const group = groupKey
-          ? buildActiveTaskNotificationGroups(
-              taskScheduler.getSnapshot(),
-              t,
-            ).find((item) => item.key === groupKey)
-          : undefined;
         try {
           sendNotification({
             id: notificationId(key),

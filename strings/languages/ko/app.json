@@ -86,7 +86,7 @@
   "tasks.task.uninstallPlugin": "{name} 제거",
   "tasks.notification.title": "Norea 작업",
   "tasks.notification.downloads": "전체 다운로드",
-  "tasks.notification.downloadTitleProgress": "챕터 다운로드 중(완료 {current}개 / 총 {total}개)",
+  "tasks.notification.downloadTitleProgress": "전체 {total}개 중 {current}개 완료",
   "tasks.notification.downloadDetail": "다운로드 중: {detail}",
   "tasks.notification.search": "전체 검색",
   "tasks.notification.libraryUpdates": "서재 업데이트",

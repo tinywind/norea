@@ -86,7 +86,7 @@
   "tasks.task.uninstallPlugin": "Uninstall {name}",
   "tasks.notification.title": "Norea tasks",
   "tasks.notification.downloads": "All downloads",
-  "tasks.notification.downloadTitleProgress": "Downloading chapters (done {current} / total {total})",
+  "tasks.notification.downloadTitleProgress": "Done {current} of {total} chapters",
   "tasks.notification.downloadDetail": "Downloading: {detail}",
   "tasks.notification.search": "All search",
   "tasks.notification.libraryUpdates": "Library updates",

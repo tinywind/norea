@@ -59,11 +59,19 @@ export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
+export function isChapterDownloadNotificationTask(
+  task: TaskRecord,
+): boolean {
+  return (
+    task.kind === "chapter.download" || task.kind === "chapter.repairMedia"
+  );
+}
+
 export function isTaskEventNotificationCandidate(
   task: TaskRecord,
 ): boolean {
-  if (task.kind === "chapter.download" || task.kind === "chapter.repairMedia") {
-    return isTerminalTaskStatus(task.status);
+  if (isChapterDownloadNotificationTask(task)) {
+    return ACTIVE_STATUSES.has(task.status) || isTerminalTaskStatus(task.status);
   }
   return AGGREGATE_TASK_KINDS.has(task.kind);
 }
@@ -99,12 +107,6 @@ export function taskNotificationRouteForTask(
 }
 
 export function taskNotificationKey(task: TaskRecord): string {
-  if (
-    (task.kind === "chapter.download" || task.kind === "chapter.repairMedia") &&
-    isTerminalTaskStatus(task.status)
-  ) {
-    return task.id;
-  }
   const groupKey = taskNotificationGroupKey(task);
   if (groupKey) return `group:${groupKey}`;
   return task.id;
@@ -114,12 +116,6 @@ export function taskNotificationTitleForTask(
   t: TaskNotificationTranslate,
   task: TaskRecord,
 ): string {
-  if (
-    (task.kind === "chapter.download" || task.kind === "chapter.repairMedia") &&
-    isTerminalTaskStatus(task.status)
-  ) {
-    return task.title;
-  }
   const groupKey = taskNotificationGroupKey(task);
   return groupKey
     ? taskNotificationGroupTitle(t, groupKey, task.progress)
@@ -224,9 +220,13 @@ export function buildActiveTaskNotificationGroups(
     grouped.set(groupKey, [...(grouped.get(groupKey) ?? []), task]);
   }
 
+  if (!grouped.has("downloads") && getActiveChapterDownloadBatchProgress()) {
+    grouped.set("downloads", []);
+  }
+
   return TASK_GROUP_ORDER.flatMap((groupKey) => {
     const tasks = grouped.get(groupKey);
-    if (!tasks || tasks.length === 0) return [];
+    if (!tasks) return [];
     return [buildTaskNotificationGroup(t, groupKey, tasks)];
   });
 }
@@ -348,9 +348,11 @@ function taskNotificationGroupProgress(
 ): TaskProgress | undefined {
   if (groupKey === "downloads") {
     const batchProgress = getActiveChapterDownloadBatchProgress();
-    const standaloneProgress = sumTaskNotificationProgress(
-      tasks.filter((task) => !task.subject?.batchId),
-    );
+    const standaloneTasks = tasks.filter((task) => !task.subject?.batchId);
+    const standaloneProgress =
+      standaloneTasks.length > 0
+        ? { current: 0, total: standaloneTasks.length }
+        : undefined;
     if (batchProgress && standaloneProgress) {
       return {
         current: batchProgress.current + standaloneProgress.current,
@@ -386,12 +388,8 @@ function activeTaskNotificationBody(
   tasks: readonly TaskRecord[],
   progress: TaskProgress | undefined,
 ): string {
-  const detail = activeTaskNotificationDetail(groupKey, tasks);
   if (groupKey === "downloads") {
-    const progressLabel = downloadProgressLabel(progress);
-    if (detail) {
-      return progressLabel ? `${progressLabel} ${detail}` : detail;
-    }
+    const progressLabel = downloadProgressLabel(t, progress);
     if (progressLabel) return progressLabel;
     return t("tasks.notification.active", {
       queued: tasks.filter((task) => task.status === "queued").length,
@@ -399,6 +397,7 @@ function activeTaskNotificationBody(
     });
   }
 
+  const detail = activeTaskNotificationDetail(tasks);
   if (progress?.total) {
     const current = Math.min(progress.current, progress.total);
     const percent = Math.min(100, Math.round((current / progress.total) * 100));
@@ -426,16 +425,12 @@ function activeTaskNotificationBody(
 }
 
 function activeTaskNotificationDetail(
-  groupKey: TaskNotificationGroupKey,
   tasks: readonly TaskRecord[],
 ): string | undefined {
   const task = [...tasks]
     .filter((item) => !isAggregateTaskNotification(item))
     .sort(activeTaskDetailOrder)[0];
   const fallbackTask = [...tasks].sort(activeTaskDetailOrder)[0];
-  if (groupKey === "downloads") {
-    return downloadTaskDetail(task) ?? downloadTaskDetail(fallbackTask);
-  }
   return taskDetail(task) ?? taskDetail(fallbackTask);
 }
 
@@ -457,22 +452,13 @@ function taskDetail(task: TaskRecord | undefined): string | undefined {
   );
 }
 
-function downloadTaskDetail(task: TaskRecord | undefined): string | undefined {
-  if (!task) return undefined;
-  const novelName = task.subject?.novelName;
-  const chapterName = formatChapterDetail(task.subject?.chapterName);
-  if (novelName && chapterName) return `${novelName} - ${chapterName}`;
-  return chapterName ?? novelName ?? task.title;
-}
-
-function downloadProgressLabel(progress: TaskProgress | undefined): string {
+function downloadProgressLabel(
+  t: TaskNotificationTranslate,
+  progress: TaskProgress | undefined,
+): string {
   if (!progress?.total) return "";
-  return `[${Math.min(progress.current, progress.total)}/${progress.total}]`;
-}
-
-function formatChapterDetail(
-  chapterName: string | undefined,
-): string | undefined {
-  if (!chapterName) return undefined;
-  return chapterName.startsWith("#") ? chapterName : `#${chapterName}`;
+  return t("tasks.notification.downloadTitleProgress", {
+    current: Math.min(progress.current, progress.total),
+    total: progress.total,
+  });
 }
