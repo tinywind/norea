@@ -14,7 +14,6 @@ use tokio::sync::Mutex;
 
 const DB_FILE: &str = "norea.db";
 const DB_BUSY_TIMEOUT_MS: u64 = 5000;
-const MAX_LEASE_LIMIT: usize = 100;
 
 const CREATE_DOWNLOAD_QUEUE_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS chapter_download_queue (
@@ -195,25 +194,39 @@ pub async fn chapter_download_queue_remove(
 pub async fn chapter_download_queue_lease(
     app: AppHandle,
     state: State<'_, DownloadQueueState>,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
     let pool = queue_pool(&app, state.inner()).await?;
-    let limit = limit.clamp(1, MAX_LEASE_LIMIT);
     let mut tx = pool
         .begin()
         .await
         .map_err(|err| format!("download queue: begin lease: {err}"))?;
-    let rows = sqlx::query(
-        r#"
-        SELECT chapter_id, job_json
-        FROM chapter_download_queue
-        ORDER BY created_at_ms, chapter_id
-        LIMIT ?1
-        "#,
-    )
-    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-    .fetch_all(&mut *tx)
-    .await
+    let rows = match limit.filter(|value| *value > 0) {
+        Some(limit) => {
+            sqlx::query(
+                r#"
+                SELECT chapter_id, job_json
+                FROM chapter_download_queue
+                ORDER BY created_at_ms, chapter_id
+                LIMIT ?1
+                "#,
+            )
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(&mut *tx)
+            .await
+        }
+        None => {
+            sqlx::query(
+                r#"
+                SELECT chapter_id, job_json
+                FROM chapter_download_queue
+                ORDER BY created_at_ms, chapter_id
+                "#,
+            )
+            .fetch_all(&mut *tx)
+            .await
+        }
+    }
     .map_err(|err| format!("download queue: lease jobs: {err}"))?;
 
     let mut jobs = Vec::with_capacity(rows.len());

@@ -1102,7 +1102,7 @@ describe("TaskScheduler", () => {
     expect(executor).toBe("pool:0");
   });
 
-  it("caps materialized snapshot records at the scheduler budget", () => {
+  it("materializes every active snapshot record", () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
     const fixtures = buildSyntheticSourceTasks(
       MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
@@ -1121,16 +1121,20 @@ describe("TaskScheduler", () => {
     const snapshot = scheduler.getSnapshot();
     expect(snapshot.total).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
     expect(snapshot.queued).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
-    expect(snapshot.records).toHaveLength(MAX_SCHEDULER_MATERIALIZED_TASKS);
-    expect(snapshot.recordLimit).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS);
-    expect(snapshot.recordsTruncated).toBe(true);
-    expect(snapshot.sourceQueueOrder).toHaveLength(
-      MAX_SCHEDULER_MATERIALIZED_TASKS,
+    expect(snapshot.records).toHaveLength(
+      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
     );
-    expect(snapshot.sourceQueueLimit).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS);
+    expect(snapshot.recordLimit).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
+    expect(snapshot.recordsTruncated).toBe(false);
+    expect(snapshot.sourceQueueOrder).toHaveLength(
+      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
+    );
+    expect(snapshot.sourceQueueLimit).toBe(
+      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
+    );
     expect(snapshot.sourceQueuesTotal).toBe(
       MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
     );
-    expect(snapshot.sourceQueuesTruncated).toBe(true);
+    expect(snapshot.sourceQueuesTruncated).toBe(false);
   });
 });

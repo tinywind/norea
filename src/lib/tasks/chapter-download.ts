@@ -42,7 +42,6 @@ import {
   type TaskProgress,
   type TaskRecord,
 } from "./scheduler";
-import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
 import { runBoundedTaskBatch } from "./batch-window";
 
 export interface ChapterDownloadJob {
@@ -134,14 +133,9 @@ const chapterPartialContentListeners = new Set<
 const chapterMediaPatchListeners = new Set<
   (event: ChapterMediaPatchEvent) => void
 >();
-export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
-  100,
-  MAX_SCHEDULER_MATERIALIZED_TASKS,
-);
-export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
-  10,
-  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
-);
+export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW = Number.POSITIVE_INFINITY;
+export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW =
+  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
 const CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL = 25;
 const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 
@@ -312,11 +306,11 @@ function normalizeChapterDownloadBatchWindowSize(
   windowSize: number | undefined,
 ): number {
   if (windowSize === undefined) return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
+  if (windowSize === Number.POSITIVE_INFINITY) {
+    return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
+  }
   if (!Number.isFinite(windowSize)) return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
-  return Math.max(
-    1,
-    Math.min(MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW, Math.floor(windowSize)),
-  );
+  return Math.max(1, Math.floor(windowSize));
 }
 
 function yieldChapterDownloadRestoreInspection(): Promise<void> {
@@ -423,10 +417,10 @@ async function removeBackendChapterDownloadJobs(
 }
 
 async function leaseBackendChapterDownloadJobs(
-  limit: number,
+  limit?: number,
 ): Promise<ChapterDownloadJob[]> {
   const jobs = await invoke<unknown[]>("chapter_download_queue_lease", {
-    limit,
+    limit: Number.isFinite(limit) ? limit : null,
   });
   const pendingJobs: ChapterDownloadJob[] = [];
   const jobsById = new Map<number, ChapterDownloadJob>();
@@ -1226,9 +1220,7 @@ async function pendingBackendChapterDownloadJobs(): Promise<
   BackendChapterDownloadLease
 > {
   await waitForBackendChapterDownloadQueueMutations();
-  const jobs = await leaseBackendChapterDownloadJobs(
-    RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
-  );
+  const jobs = await leaseBackendChapterDownloadJobs();
   if (jobs.length === 0) {
     return { leased: 0, pendingJobs: [] };
   }

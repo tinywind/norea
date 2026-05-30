@@ -99,8 +99,6 @@ import {
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
-  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
-  RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
   startChapterDownloadQueueExecutor,
   type ChapterDownloadJob,
 } from "./chapter-download";
@@ -185,8 +183,9 @@ beforeEach(() => {
         return Promise.resolve(undefined);
       }
       if (command === "chapter_download_queue_lease") {
-        const limit = typeof args?.limit === "number" ? args.limit : 1;
-        return Promise.resolve([...backendQueueValues.values()].slice(0, limit));
+        const values = [...backendQueueValues.values()];
+        if (typeof args?.limit !== "number") return Promise.resolve(values);
+        return Promise.resolve(values.slice(0, args.limit));
       }
       return Promise.reject(new Error(`unexpected invoke: ${command}`));
     },
@@ -241,7 +240,7 @@ beforeEach(() => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
-  it("materializes only a bounded scheduler window for 10k chapter batches", async () => {
+  it("materializes every scheduler task for 10k chapter batches", async () => {
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(
       (spec: SourceTaskSpec<void>) => {
@@ -274,17 +273,15 @@ describe("enqueueChapterDownloadBatch", () => {
     });
     void handle.promise.catch(() => undefined);
 
-    expect(yielded).toBe(MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW);
+    expect(yielded).toBe(10_000);
     await flushMicrotasks();
 
-    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
-      MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
-    );
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(10_000);
 
     expect(capturedSpec?.subject?.batchTitle).toBe("Download 10k chapters");
   });
 
-  it("queues every array batch job before bounded scheduler materialization", async () => {
+  it("queues every array batch job before requested scheduler materialization", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(
@@ -386,22 +383,20 @@ describe("startChapterDownloadQueueExecutor", () => {
         };
       },
     );
-    const jobs = Array.from(
-      { length: RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW + 5 },
-      (_, index) => {
-        const id = index + 1;
-        return {
-          id,
-          pluginId: "source-a",
-          chapterPath: `/chapter/${id}`,
-          chapterName: `Chapter ${id}`,
-          novelId: 11,
-          novelName: "Novel",
-          novelPath: "/novel",
-          title: `Chapter ${id}`,
-        };
-      },
-    );
+    const restoredJobCount = 15;
+    const jobs = Array.from({ length: restoredJobCount }, (_, index) => {
+      const id = index + 1;
+      return {
+        id,
+        pluginId: "source-a",
+        chapterPath: `/chapter/${id}`,
+        chapterName: `Chapter ${id}`,
+        novelId: 11,
+        novelName: "Novel",
+        novelPath: "/novel",
+        title: `Chapter ${id}`,
+      };
+    });
     for (const job of jobs) backendQueueValues.set(job.id, job);
     vi.mocked(getChapterById).mockImplementation(async (chapterId) => {
       if (chapterId === 1) {
@@ -421,7 +416,7 @@ describe("startChapterDownloadQueueExecutor", () => {
 
     expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledTimes(1);
     expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
-      RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW - 2,
+      restoredJobCount - 2,
     );
     expect([...backendQueueValues.keys()]).toEqual(
       jobs.slice(2).map((job) => job.id),

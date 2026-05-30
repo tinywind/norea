@@ -404,9 +404,9 @@ export class TaskScheduler {
   private snapshot: TaskSnapshot = {
     pausedSourceIds: [],
     records: [],
-    recordLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
+    recordLimit: 0,
     recordsTruncated: false,
-    sourceQueueLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
+    sourceQueueLimit: 0,
     sourceQueueOrder: [],
     sourceQueuesTotal: 0,
     sourceQueuesTruncated: false,
@@ -1605,16 +1605,13 @@ export class TaskScheduler {
       string,
       Pick<TaskRecord, "queueIndex" | "queueSize">
     >();
-    const remainingMaterializedCapacity = () =>
-      MAX_SCHEDULER_MATERIALIZED_TASKS - materializedEntries.length;
     const addMaterializedEntry = (
       entry: TaskEntry | undefined,
       queuePosition?: Pick<TaskRecord, "queueIndex" | "queueSize">,
     ): boolean => {
       if (
         !entry ||
-        materializedTaskIds.has(entry.record.id) ||
-        materializedEntries.length >= MAX_SCHEDULER_MATERIALIZED_TASKS
+        materializedTaskIds.has(entry.record.id)
       ) {
         return false;
       }
@@ -1627,18 +1624,13 @@ export class TaskScheduler {
     };
     const terminalCandidates: TaskEntry[] = [];
     const addTerminalCandidate = (entry: TaskEntry): void => {
-      const capacity = remainingMaterializedCapacity();
-      if (capacity <= 0) return;
       const insertIndex = terminalCandidates.findIndex(
         (candidate) => candidate.record.createdAt < entry.record.createdAt,
       );
       if (insertIndex < 0) {
-        if (terminalCandidates.length < capacity) {
-          terminalCandidates.push(entry);
-        }
+        terminalCandidates.push(entry);
       } else {
         terminalCandidates.splice(insertIndex, 0, entry);
-        if (terminalCandidates.length > capacity) terminalCandidates.pop();
       }
     };
 
@@ -1664,8 +1656,7 @@ export class TaskScheduler {
 
     for (
       let queueIndex = 0;
-      queueIndex < this.mainQueue.length &&
-      remainingMaterializedCapacity() > 0;
+      queueIndex < this.mainQueue.length;
       queueIndex += 1
     ) {
       const id = this.mainQueue[queueIndex]!;
@@ -1679,13 +1670,11 @@ export class TaskScheduler {
     }
     const sourceQueueOrderSet = new Set(this.sourceQueueOrder);
     const materializeSourceQueue = (sourceId: string): void => {
-      if (remainingMaterializedCapacity() <= 0) return;
       const queue = this.sourceQueues.get(sourceId);
       if (!queue) return;
       for (
         let queueIndex = 0;
-        queueIndex < queue.length &&
-        remainingMaterializedCapacity() > 0;
+        queueIndex < queue.length;
         queueIndex += 1
       ) {
         const id = queue[queueIndex]!;
@@ -1700,19 +1689,15 @@ export class TaskScheduler {
     };
     for (const sourceId of this.sourceQueueOrder) {
       materializeSourceQueue(sourceId);
-      if (remainingMaterializedCapacity() <= 0) break;
     }
-    if (remainingMaterializedCapacity() > 0) {
-      const unorderedSourceIds = [...this.sourceQueues.keys()]
-        .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
-        .sort();
-      for (const sourceId of unorderedSourceIds) {
-        materializeSourceQueue(sourceId);
-        if (remainingMaterializedCapacity() <= 0) break;
-      }
+    const unorderedSourceIds = [...this.sourceQueues.keys()]
+      .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
+      .sort();
+    for (const sourceId of unorderedSourceIds) {
+      materializeSourceQueue(sourceId);
     }
     for (const entry of terminalCandidates) {
-      if (!addMaterializedEntry(entry)) break;
+      addMaterializedEntry(entry);
     }
 
     const records = materializedEntries.map((entry) => ({
@@ -1723,7 +1708,6 @@ export class TaskScheduler {
     const sourceQueueOrderWindowIds = new Set<string>();
     const addSourceQueueId = (sourceId: string): void => {
       if (
-        sourceQueueOrder.length >= MAX_SCHEDULER_MATERIALIZED_TASKS ||
         sourceQueueOrderWindowIds.has(sourceId) ||
         !sourceIdsInActiveEntries.has(sourceId)
       ) {
@@ -1734,28 +1718,24 @@ export class TaskScheduler {
     };
     for (const sourceId of this.sourceQueueOrder) {
       addSourceQueueId(sourceId);
-      if (sourceQueueOrder.length >= MAX_SCHEDULER_MATERIALIZED_TASKS) break;
     }
-    if (sourceQueueOrder.length < MAX_SCHEDULER_MATERIALIZED_TASKS) {
-      const unorderedSourceIds = [...sourceIdsInActiveEntries]
-        .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
-        .sort();
-      for (const sourceId of unorderedSourceIds) {
-        addSourceQueueId(sourceId);
-        if (sourceQueueOrder.length >= MAX_SCHEDULER_MATERIALIZED_TASKS) break;
-      }
+    const unorderedActiveSourceIds = [...sourceIdsInActiveEntries]
+      .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
+      .sort();
+    for (const sourceId of unorderedActiveSourceIds) {
+      addSourceQueueId(sourceId);
     }
     const total = this.entries.size;
     const sourceQueuesTotal = sourceIdsInActiveEntries.size;
     const snapshot = {
       pausedSourceIds: [...this.pausedSourceIds].sort(),
       records,
-      recordLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
-      recordsTruncated: total > records.length,
-      sourceQueueLimit: MAX_SCHEDULER_MATERIALIZED_TASKS,
+      recordLimit: records.length,
+      recordsTruncated: false,
+      sourceQueueLimit: sourceQueueOrder.length,
       sourceQueueOrder,
       sourceQueuesTotal,
-      sourceQueuesTruncated: sourceQueuesTotal > sourceQueueOrder.length,
+      sourceQueuesTruncated: false,
       sourceQueuesPaused: this.sourceQueuesPaused,
       total,
       running: counts.running,

@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
 import {
   runBoundedTaskBatch,
   TASK_BATCH_MATERIALIZATION_WINDOW,
 } from "./batch-window";
 
 describe("runBoundedTaskBatch", () => {
-  it("keeps 10k materialized tasks within the scheduler budget", async () => {
+  it("materializes every task by default", async () => {
     let active = 0;
     let maxActive = 0;
     let started = 0;
@@ -24,7 +23,7 @@ describe("runBoundedTaskBatch", () => {
     });
 
     expect(started).toBe(items.length);
-    expect(maxActive).toBe(TASK_BATCH_MATERIALIZATION_WINDOW);
-    expect(maxActive).toBeLessThan(MAX_SCHEDULER_MATERIALIZED_TASKS);
+    expect(TASK_BATCH_MATERIALIZATION_WINDOW).toBe(Number.POSITIVE_INFINITY);
+    expect(maxActive).toBe(items.length);
   });
 });

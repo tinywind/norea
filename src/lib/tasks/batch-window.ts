@@ -1,9 +1,4 @@
-import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
-
-export const TASK_BATCH_MATERIALIZATION_WINDOW = Math.max(
-  1,
-  MAX_SCHEDULER_MATERIALIZED_TASKS - 1,
-);
+export const TASK_BATCH_MATERIALIZATION_WINDOW = Number.POSITIVE_INFINITY;
 
 interface RunBoundedTaskBatchOptions<T> {
   items: Iterable<T>;
@@ -13,11 +8,9 @@ interface RunBoundedTaskBatchOptions<T> {
 }
 
 function normalizeTaskBatchWindowSize(windowSize: number): number {
+  if (windowSize === Number.POSITIVE_INFINITY) return windowSize;
   if (!Number.isFinite(windowSize)) return TASK_BATCH_MATERIALIZATION_WINDOW;
-  return Math.min(
-    MAX_SCHEDULER_MATERIALIZED_TASKS,
-    Math.max(1, Math.floor(windowSize)),
-  );
+  return Math.max(1, Math.floor(windowSize));
 }
 
 export async function runBoundedTaskBatch<T>({
