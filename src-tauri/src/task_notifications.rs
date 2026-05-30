@@ -17,7 +17,6 @@ pub enum ProgressNotificationUpdateResult {
     Succeeded,
     Failed,
     NotFound,
-    Unsupported,
 }
 
 const MAX_PROGRESS_TEXT_CHARS: usize = 128;
@@ -166,5 +165,5 @@ pub fn task_notification_update_download_progress(
     payload: DownloadProgressNotificationPayload,
 ) -> Result<ProgressNotificationUpdateResult, String> {
     let _ = (app, payload);
-    Ok(ProgressNotificationUpdateResult::Unsupported)
+    Ok(ProgressNotificationUpdateResult::Failed)
 }

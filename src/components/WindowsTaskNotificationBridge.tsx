@@ -51,8 +51,7 @@ const MIN_PROGRESS_PERCENT_DELTA = 10;
 type NativeDownloadProgressUpdateResult =
   | "failed"
   | "notFound"
-  | "succeeded"
-  | "unsupported";
+  | "succeeded";
 
 interface NativeDownloadProgressPayload {
   status: string;
