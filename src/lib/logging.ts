@@ -32,6 +32,8 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   off: 5,
 };
 
+const MAX_FRONTEND_LOG_MESSAGE_LENGTH = 16_384;
+
 const originalConsole: Record<ConsoleMethod, (...data: unknown[]) => void> = {
   trace: console.trace.bind(console),
   debug: console.debug.bind(console),
@@ -49,6 +51,53 @@ function shouldLog(level: ActiveLogLevel): boolean {
     currentLogLevel !== "off" &&
     LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[currentLogLevel]
   );
+}
+
+function clampFrontendLogMessage(message: string): string {
+  if (message.length <= MAX_FRONTEND_LOG_MESSAGE_LENGTH) return message;
+  return `${message.slice(0, MAX_FRONTEND_LOG_MESSAGE_LENGTH)}...`;
+}
+
+function formatConsoleValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) {
+    return value.stack ?? `${value.name}: ${value.message}`;
+  }
+  try {
+    const seen = new WeakSet<object>();
+    const serialized = JSON.stringify(value, (_key, candidate) => {
+      if (candidate instanceof Error) {
+        return {
+          message: candidate.message,
+          name: candidate.name,
+          stack: candidate.stack,
+        };
+      }
+      if (typeof candidate === "object" && candidate !== null) {
+        if (seen.has(candidate)) return "[Circular]";
+        seen.add(candidate);
+      }
+      return candidate;
+    });
+    return serialized ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function frontendLogMessage(data: readonly unknown[]): string {
+  return clampFrontendLogMessage(data.map(formatConsoleValue).join(" "));
+}
+
+function writeFrontendLog(method: ConsoleMethod, data: readonly unknown[]): void {
+  if (!isTauriRuntime() || currentLogLevel === "off") return;
+  const level = CONSOLE_METHOD_LEVEL[method];
+  void invoke("write_frontend_log", {
+    level,
+    message: frontendLogMessage(data),
+  }).catch((error) => {
+    originalConsole.warn("[logging] failed to write frontend log", error);
+  });
 }
 
 function applyNativeLogLevel(logLevel: LogLevel): void {
@@ -74,8 +123,10 @@ export function installRuntimeLogLevelFilter(logLevel: unknown): void {
   consoleFilterInstalled = true;
   for (const method of CONSOLE_METHODS) {
     console[method] = (...data: unknown[]) => {
-      if (shouldLog(CONSOLE_METHOD_LEVEL[method])) {
+      const level = CONSOLE_METHOD_LEVEL[method];
+      if (shouldLog(level)) {
         originalConsole[method](...data);
+        writeFrontendLog(method, data);
       }
     };
   }

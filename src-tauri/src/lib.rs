@@ -30,6 +30,19 @@ fn set_runtime_log_level(level: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn write_frontend_log(level: String, message: String) -> Result<(), String> {
+    match parse_runtime_log_level(&level)? {
+        log::LevelFilter::Off => {}
+        log::LevelFilter::Error => log::error!(target: "frontend", "{message}"),
+        log::LevelFilter::Warn => log::warn!(target: "frontend", "{message}"),
+        log::LevelFilter::Info => log::info!(target: "frontend", "{message}"),
+        log::LevelFilter::Debug => log::debug!(target: "frontend", "{message}"),
+        log::LevelFilter::Trace => log::trace!(target: "frontend", "{message}"),
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = vec![
@@ -138,6 +151,7 @@ pub fn run() {
             update::get_build_info,
             update::open_downloaded_update,
             update::open_downloaded_update_handle,
+            write_frontend_log,
         ])
         .setup(|app| {
             native_stream::cleanup_startup(app.handle())
@@ -145,20 +159,18 @@ pub fn run() {
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Trace)
-                        .level_for("h2", log::LevelFilter::Warn)
-                        .level_for("hyper", log::LevelFilter::Warn)
-                        .level_for("hyper_util", log::LevelFilter::Warn)
-                        .level_for("reqwest", log::LevelFilter::Warn)
-                        .level_for("sqlx", log::LevelFilter::Info)
-                        .level_for("tracing", log::LevelFilter::Warn)
-                        .build(),
-                )?;
-                log::set_max_level(log::LevelFilter::Info);
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Trace)
+                    .level_for("h2", log::LevelFilter::Warn)
+                    .level_for("hyper", log::LevelFilter::Warn)
+                    .level_for("hyper_util", log::LevelFilter::Warn)
+                    .level_for("reqwest", log::LevelFilter::Warn)
+                    .level_for("sqlx", log::LevelFilter::Info)
+                    .level_for("tracing", log::LevelFilter::Warn)
+                    .build(),
+            )?;
+            log::set_max_level(log::LevelFilter::Info);
             Ok(())
         })
         .run(tauri::generate_context!())
