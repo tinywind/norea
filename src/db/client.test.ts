@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sqlPluginMock = vi.hoisted(() => ({
+  get: vi.fn(),
   load: vi.fn(),
 }));
 
@@ -35,12 +36,24 @@ function makeRawDb(): RawDbMock {
 
 async function loadClient(rawDb: RawDbMock) {
   vi.resetModules();
-  sqlPluginMock.load.mockResolvedValue(rawDb);
+  sqlPluginMock.get.mockReturnValue(rawDb);
   return import("./client");
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("getDb", () => {
+  it("reuses the preloaded sqlite pool", async () => {
+    const rawDb = makeRawDb();
+    const { getDb } = await loadClient(rawDb);
+
+    await getDb();
+
+    expect(sqlPluginMock.get).toHaveBeenCalledWith("sqlite:norea.db");
+    expect(sqlPluginMock.load).not.toHaveBeenCalled();
+  });
 });
 
 describe("runDatabaseTransaction", () => {

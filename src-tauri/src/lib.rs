@@ -2,6 +2,7 @@
 mod android_tls;
 mod backup;
 mod chapter_media;
+mod database;
 mod download_queue;
 mod native_stream;
 mod plugin_host;
@@ -157,6 +158,8 @@ pub fn run() {
             write_frontend_log,
         ])
         .setup(|app| {
+            database::install_single_connection_sqlite_pool(app.handle())
+                .map_err(|err| format!("database init: {err}"))?;
             native_stream::cleanup_startup(app.handle())
                 .map_err(|err| format!("native stream init: {err}"))?;
             app.manage(scraper::ScraperState::default());

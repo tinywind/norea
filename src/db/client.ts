@@ -149,7 +149,7 @@ function serializedDb(rawDb: Database): Database {
 
 function getRawDb(): Promise<Database> {
   if (!rawDbPromise) {
-    rawDbPromise = Database.load(DB_URL).then(configureDb);
+    rawDbPromise = configureDb(Database.get(DB_URL));
   }
   return rawDbPromise;
 }
