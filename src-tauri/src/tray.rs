@@ -188,6 +188,7 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Err(err) = window.show() {
         log::warn!("show main window from tray failed: {err}");
     }
+    #[cfg(desktop)]
     if let Err(err) = window.unminimize() {
         log::warn!("unminimize main window from tray failed: {err}");
     }
