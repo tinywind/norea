@@ -1110,6 +1110,7 @@ export function enqueueChapterDownloadBatch({
   const promise = runBoundedTaskBatch({
     items: jobs,
     windowSize,
+    materializeBatch: taskScheduler.batch.bind(taskScheduler),
     materialize: async (job) => {
       try {
         const handle = enqueueChapterDownloadForExecutor(

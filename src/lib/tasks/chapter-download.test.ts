@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceTaskSpec } from "./scheduler";
 
 const schedulerMocks = vi.hoisted(() => ({
+  batch: vi.fn((run: () => void) => run()),
   enqueueSource: vi.fn(),
 }));
 
@@ -71,6 +72,7 @@ vi.mock("./scheduler", () => ({
   ),
   TASK_PAUSE_ABORT_MESSAGE: "Task was paused.",
   taskScheduler: {
+    batch: schedulerMocks.batch,
     enqueueSource: schedulerMocks.enqueueSource,
     getSnapshot: vi.fn(() => ({ records: [] })),
     getTaskByDedupeKey: vi.fn(),
@@ -240,7 +242,7 @@ beforeEach(() => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
-  it("materializes every scheduler task for 10k chapter batches", async () => {
+  it("materializes every scheduler task for large chapter batches inside a scheduler batch", async () => {
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(
       (spec: SourceTaskSpec<void>) => {
@@ -276,6 +278,7 @@ describe("enqueueChapterDownloadBatch", () => {
     expect(yielded).toBe(10_000);
     await flushMicrotasks();
 
+    expect(schedulerMocks.batch).toHaveBeenCalled();
     expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(10_000);
 
     expect(capturedSpec?.subject?.batchTitle).toBe("Download 10k chapters");

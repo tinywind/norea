@@ -2,6 +2,7 @@ export const TASK_BATCH_MATERIALIZATION_WINDOW = Number.POSITIVE_INFINITY;
 
 interface RunBoundedTaskBatchOptions<T> {
   items: Iterable<T>;
+  materializeBatch?: (run: () => void) => void;
   materialize: (item: T, index: number) => Promise<void>;
   shouldContinue?: () => boolean;
   windowSize?: number;
@@ -15,6 +16,7 @@ function normalizeTaskBatchWindowSize(windowSize: number): number {
 
 export async function runBoundedTaskBatch<T>({
   items,
+  materializeBatch,
   materialize,
   shouldContinue = () => true,
   windowSize = TASK_BATCH_MATERIALIZATION_WINDOW,
@@ -34,22 +36,32 @@ export async function runBoundedTaskBatch<T>({
     const index = nextIndex;
     nextIndex += 1;
     const item = next.value;
-    let promise!: Promise<void>;
-    promise = Promise.resolve()
-      .then(() => materialize(item, index))
-      .finally(() => {
-        active.delete(promise);
-      });
+    let promise: Promise<void>;
+    try {
+      promise = Promise.resolve(materialize(item, index));
+    } catch (error) {
+      promise = Promise.reject(error);
+    }
+    promise = promise.finally(() => {
+      active.delete(promise);
+    });
     active.add(promise);
   };
 
   while (!iteratorDone || active.size > 0) {
-    while (
-      !iteratorDone &&
-      active.size < maxActive &&
-      shouldContinue()
-    ) {
-      startNext();
+    const startAvailable = (): void => {
+      while (
+        !iteratorDone &&
+        active.size < maxActive &&
+        shouldContinue()
+      ) {
+        startNext();
+      }
+    };
+    if (materializeBatch) {
+      materializeBatch(startAvailable);
+    } else {
+      startAvailable();
     }
 
     if (active.size === 0) break;

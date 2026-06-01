@@ -7,7 +7,7 @@
 
 .lnr-task-title-count {
   align-items: center;
-  background: var(--lnr-design-surface-muted);
+  background: var(--lnr-design-surface-muted, var(--lnr-design-panel));
   border: 1px solid var(--lnr-design-rule);
   border-radius: 999px;
   color: var(--lnr-design-ink-muted);
@@ -74,7 +74,7 @@
 }
 
 .lnr-task-sort-section button:hover {
-  background: var(--lnr-design-surface-muted);
+  background: var(--lnr-design-surface-muted, var(--lnr-design-panel));
 }
 
 .lnr-task-summary-strip {
@@ -86,7 +86,7 @@
 
 .lnr-task-summary-pill {
   align-items: center;
-  background: var(--lnr-design-surface-muted);
+  background: var(--lnr-design-surface-muted, var(--lnr-design-panel));
   border: 1px solid var(--lnr-design-rule);
   border-radius: 999px;
   color: var(--lnr-design-ink-muted);
@@ -126,33 +126,18 @@
   min-width: 0;
 }
 
-.lnr-task-group[data-dragging="true"],
-.lnr-task-row[data-dragging="true"] {
-  opacity: 0.55;
-}
-
-.lnr-task-group[data-drop-target="true"],
-.lnr-task-row[data-drop-target="true"] {
-  outline: 2px solid var(--lnr-design-accent);
-  outline-offset: -2px;
-}
-
 .lnr-task-group + .lnr-task-group {
   border-top: 1px solid var(--lnr-design-rule-strong);
 }
 
 .lnr-task-group-header {
   align-items: center;
-  background: var(--lnr-design-surface-muted);
+  background: var(--lnr-design-surface-muted, var(--lnr-design-panel));
   display: grid;
   gap: 0.5rem;
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 2.75rem;
   padding: 0.45rem 0.65rem 0.45rem 0.8rem;
-}
-
-.lnr-task-group-header[data-has-drag="true"] {
-  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
 .lnr-task-group-copy {
@@ -167,6 +152,24 @@
   font-size: 0.875rem;
   font-weight: 700;
   min-width: 0;
+}
+
+.lnr-task-group[data-source-group] {
+  background: var(--lnr-design-surface-muted, var(--lnr-design-panel));
+  border-left: 0.25rem solid transparent;
+}
+
+.lnr-task-group[data-source-group] .lnr-task-group-header {
+  background: color-mix(
+    in srgb,
+    var(--lnr-design-accent) 8%,
+    var(--lnr-design-surface-muted, var(--lnr-design-panel))
+  );
+  padding-left: 0.7rem;
+}
+
+.lnr-task-group[data-source-group] .lnr-task-group-title {
+  color: var(--lnr-design-accent);
 }
 
 .lnr-task-group-count {
@@ -184,41 +187,95 @@
   gap: 0.25rem;
 }
 
-.lnr-task-drag-handle {
+.lnr-task-group[data-source-group] > .lnr-task-rows {
+  background: var(--lnr-design-surface-muted, var(--lnr-design-panel));
+  border-top: 1px solid var(--lnr-design-rule);
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.35rem 0 0.35rem 0.7rem;
+}
+
+.lnr-task-work-group {
+  background: var(--lnr-design-surface);
+  border-left: 0.1875rem solid var(--lnr-design-rule-strong);
+  border-top: 1px solid var(--lnr-design-rule);
+  display: grid;
+  min-width: 0;
+}
+
+.lnr-task-work-group:first-child {
+  border-top-color: transparent;
+}
+
+.lnr-task-work-header {
   align-items: center;
-  border-radius: 6px;
-  color: var(--lnr-design-ink-subtle);
-  cursor: grab;
-  display: inline-flex;
-  height: 1.75rem;
-  justify-content: center;
-  width: 1.75rem;
+  background: var(--lnr-design-surface);
+  border-bottom: 1px solid transparent;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 2.5rem;
+  padding: 0.35rem 0.65rem 0.35rem 0.55rem;
 }
 
-.lnr-task-drag-handle:hover {
-  background: var(--lnr-design-surface-muted);
+.lnr-task-work-group:not([data-collapsed]) {
+  border-left-color: var(--lnr-design-accent);
+}
+
+.lnr-task-work-group:not([data-collapsed]) .lnr-task-work-header {
+  background: color-mix(
+    in srgb,
+    var(--lnr-design-accent) 5%,
+    var(--lnr-design-surface)
+  );
+  border-bottom-color: var(--lnr-design-rule);
+}
+
+.lnr-task-work-copy {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.lnr-task-work-title {
   color: var(--lnr-design-ink);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  min-width: 0;
 }
 
-.lnr-task-drag-handle:active {
-  cursor: grabbing;
+.lnr-task-work-rows {
+  display: grid;
+  min-width: 0;
 }
 
-.lnr-task-drag-handle[data-disabled="true"] {
-  color: color-mix(in srgb, var(--lnr-design-ink-subtle) 40%, transparent);
-  cursor: default;
+.lnr-task-virtual-viewport {
+  max-height: min(44rem, calc(var(--lnr-app-content-height) - 13rem));
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.lnr-task-drag-handle[data-disabled="true"]:hover {
-  background: transparent;
-  color: color-mix(in srgb, var(--lnr-design-ink-subtle) 40%, transparent);
+.lnr-task-work-rows.lnr-task-virtual-viewport {
+  max-height: min(34rem, calc(var(--lnr-app-content-height) - 16rem));
 }
 
-.lnr-task-drag-handle svg {
-  fill: currentColor;
-  height: 1rem;
-  stroke: none;
-  width: 1rem;
+.lnr-task-virtual-spacer {
+  min-width: 0;
+  overflow-anchor: none;
+  position: relative;
+}
+
+.lnr-task-virtual-window {
+  display: grid;
+  left: 0;
+  min-width: 0;
+  overflow-anchor: none;
+  position: absolute;
+  right: 0;
+  top: 0;
 }
 
 .lnr-task-rows {
@@ -230,11 +287,39 @@
   align-items: center;
   background: transparent;
   border-top: 1px solid var(--lnr-design-rule);
+  contain-intrinsic-size: auto 4rem;
+  content-visibility: auto;
   display: grid;
   gap: 0.55rem;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-height: 4rem;
   padding: 0.55rem 0.65rem 0.55rem 0.8rem;
+}
+
+.lnr-task-virtual-window .lnr-task-row {
+  height: 4rem;
+  min-height: 4rem;
+}
+
+.lnr-task-virtual-window .lnr-task-row:first-child {
+  border-top: 1px solid var(--lnr-design-rule);
+}
+
+.lnr-task-row[role="button"] {
+  cursor: default;
+}
+
+.lnr-task-row:focus-visible {
+  outline: 2px solid var(--lnr-design-accent);
+  outline-offset: -2px;
+}
+
+.lnr-task-row[data-selected="true"] {
+  background: color-mix(
+    in srgb,
+    var(--lnr-design-accent) 10%,
+    var(--lnr-design-surface)
+  );
 }
 
 .lnr-task-row:first-child {
@@ -348,7 +433,7 @@
 
   .lnr-task-row {
     gap: 0.45rem;
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     padding: 0.55rem 0.5rem 0.55rem 0.65rem;
   }
 

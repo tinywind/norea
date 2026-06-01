@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
 import { buildSyntheticSourceTasks } from "../../test/fixtures/performance";
-import { TaskScheduler, type TaskRunContext } from "./scheduler";
+import {
+  taskWorkQueueKey,
+  TaskScheduler,
+  type TaskRunContext,
+} from "./scheduler";
 import { activeScraperExecutor } from "./scraper-queue";
 
 async function settle(): Promise<void> {
@@ -412,6 +415,138 @@ describe("TaskScheduler", () => {
     await Promise.all([first.promise, second.promise]);
 
     expect(order).toEqual(["second:start", "first:start"]);
+  });
+
+  it("moves queued source work for the same novel as one block", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: true,
+    });
+    const order: string[] = [];
+    const source = { id: "p", name: "Plugin" };
+
+    const firstNovelFirst = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Novel A 1",
+      priority: "background",
+      source,
+      subject: { novelId: 1, novelName: "Novel A" },
+      run: async () => {
+        order.push("a1:start");
+      },
+    });
+    const secondNovel = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Novel B",
+      priority: "background",
+      source,
+      subject: { novelId: 2, novelName: "Novel B" },
+      run: async () => {
+        order.push("b:start");
+      },
+    });
+    const firstNovelSecond = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Novel A 2",
+      priority: "background",
+      source,
+      subject: { novelId: 1, novelName: "Novel A" },
+      run: async () => {
+        order.push("a2:start");
+      },
+    });
+    const firstNovelKey = taskWorkQueueKey({ novelId: 1, novelName: "Novel A" });
+
+    expect(firstNovelKey).not.toBeNull();
+    expect(
+      scheduler.moveSourceWorkQueue(source.id, firstNovelKey!, "bottom"),
+    ).toBe(true);
+
+    const snapshot = scheduler.getSnapshot();
+    expect(
+      snapshot.records
+        .filter((task) => task.status === "queued")
+        .sort((left, right) => (left.queueIndex ?? 0) - (right.queueIndex ?? 0))
+        .map((task) => task.id),
+    ).toEqual([secondNovel.id, firstNovelFirst.id, firstNovelSecond.id]);
+
+    expect(scheduler.resumeSourceQueue()).toBe(true);
+    await Promise.all([
+      firstNovelFirst.promise,
+      secondNovel.promise,
+      firstNovelSecond.promise,
+    ]);
+
+    expect(order).toEqual(["b:start", "a1:start", "a2:start"]);
+  });
+
+  it("cancels queued and running source work for the same novel", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const order: string[] = [];
+    const source = { id: "p", name: "Plugin" };
+    let finishRunning!: () => void;
+
+    const running = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Novel A running",
+      priority: "background",
+      source,
+      subject: { novelId: 1, novelName: "Novel A" },
+      run: () =>
+        new Promise<void>((resolve) => {
+          order.push("a1:start");
+          finishRunning = resolve;
+        }),
+    });
+
+    await settle();
+
+    const queuedSameNovel = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Novel A queued",
+      priority: "background",
+      source,
+      subject: { novelId: 1, novelName: "Novel A" },
+      run: async () => {
+        order.push("a2:start");
+      },
+    });
+    const queuedOtherNovel = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Novel B",
+      priority: "background",
+      source,
+      subject: { novelId: 2, novelName: "Novel B" },
+      run: async () => {
+        order.push("b:start");
+      },
+    });
+    const firstNovelKey = taskWorkQueueKey({ novelId: 1, novelName: "Novel A" });
+    let snapshots = 0;
+    scheduler.subscribe(() => {
+      snapshots += 1;
+    });
+
+    expect(firstNovelKey).not.toBeNull();
+    expect(
+      scheduler.cancelActiveTasks({
+        sourceId: source.id,
+        workKey: firstNovelKey!,
+      }),
+    ).toBe(2);
+    expect(snapshots).toBe(1);
+    await expect(running.promise).rejects.toThrow("Task was cancelled.");
+    await expect(queuedSameNovel.promise).rejects.toThrow(
+      "Task was cancelled.",
+    );
+
+    finishRunning();
+    await queuedOtherNovel.promise;
+
+    expect(order).toEqual(["a1:start", "b:start"]);
   });
 
   it("lets interactive source browsing use the immediate executor during background downloads", async () => {
@@ -1102,11 +1237,85 @@ describe("TaskScheduler", () => {
     expect(executor).toBe("pool:0");
   });
 
+  it("coalesces snapshot publishes during a scheduler batch", () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
+    let snapshots = 0;
+    scheduler.subscribe(() => {
+      snapshots += 1;
+    });
+
+    scheduler.batch(() => {
+      for (let index = 0; index < 10; index += 1) {
+        scheduler.enqueueSource({
+          kind: "chapter.download",
+          priority: "background",
+          source: { id: "source-a", name: "Source A" },
+          title: `Chapter ${index}`,
+          run: async () => undefined,
+        });
+      }
+    });
+
+    expect(snapshots).toBe(1);
+    expect(scheduler.getSnapshot().queued).toBe(10);
+  });
+
+  it("publishes progress and detail updates as task events without rebuilding the snapshot", async () => {
+    const scheduler = new TaskScheduler();
+    let snapshots = 0;
+    const events: Array<{ previousStatus: string | null; task: string }> = [];
+    let context!: TaskRunContext;
+    let finish!: () => void;
+
+    scheduler.subscribe(() => {
+      snapshots += 1;
+    });
+    scheduler.subscribeEvents((event) => {
+      events.push({
+        previousStatus: event.previousStatus,
+        task: event.task.id,
+      });
+    });
+
+    const task = scheduler.enqueueSource({
+      kind: "chapter.download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      title: "Chapter",
+      run: (runContext) =>
+        new Promise<void>((resolve) => {
+          context = runContext;
+          finish = resolve;
+        }),
+    });
+
+    await settle();
+
+    const snapshotsAfterStart = snapshots;
+    const eventsAfterStart = events.length;
+    context.setProgress({ current: 1, total: 4 });
+    context.setDetail("Downloading media");
+
+    expect(snapshots).toBe(snapshotsAfterStart);
+    expect(events.slice(eventsAfterStart)).toEqual([
+      { previousStatus: "running", task: task.id },
+      { previousStatus: "running", task: task.id },
+    ]);
+    expect(
+      scheduler.getSnapshot().records.find((record) => record.id === task.id),
+    ).toMatchObject({
+      detail: "Downloading media",
+      progress: { current: 1, total: 4 },
+    });
+
+    finish();
+    await task.promise;
+    expect(snapshots).toBeGreaterThan(snapshotsAfterStart);
+  });
+
   it("materializes every active snapshot record", () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
-    const fixtures = buildSyntheticSourceTasks(
-      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
-    );
+    const fixtures = buildSyntheticSourceTasks(525);
 
     for (const fixture of fixtures) {
       scheduler.enqueueSource({
@@ -1119,22 +1328,14 @@ describe("TaskScheduler", () => {
     }
 
     const snapshot = scheduler.getSnapshot();
-    expect(snapshot.total).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
-    expect(snapshot.queued).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
-    expect(snapshot.records).toHaveLength(
-      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
-    );
-    expect(snapshot.recordLimit).toBe(MAX_SCHEDULER_MATERIALIZED_TASKS + 25);
+    expect(snapshot.total).toBe(525);
+    expect(snapshot.queued).toBe(525);
+    expect(snapshot.records).toHaveLength(525);
+    expect(snapshot.recordLimit).toBe(525);
     expect(snapshot.recordsTruncated).toBe(false);
-    expect(snapshot.sourceQueueOrder).toHaveLength(
-      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
-    );
-    expect(snapshot.sourceQueueLimit).toBe(
-      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
-    );
-    expect(snapshot.sourceQueuesTotal).toBe(
-      MAX_SCHEDULER_MATERIALIZED_TASKS + 25,
-    );
+    expect(snapshot.sourceQueueOrder).toHaveLength(525);
+    expect(snapshot.sourceQueueLimit).toBe(525);
+    expect(snapshot.sourceQueuesTotal).toBe(525);
     expect(snapshot.sourceQueuesTruncated).toBe(false);
   }, 15_000);
 });

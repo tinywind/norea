@@ -115,6 +115,16 @@ export interface TaskSubject {
   url?: string;
 }
 
+export function taskWorkQueueKey(subject: TaskSubject | undefined): string | null {
+  if (!subject) return null;
+  if (subject.novelId !== undefined) return `novel:${subject.novelId}`;
+  const novelPath = subject.novelPath?.trim();
+  if (novelPath) return `path:${novelPath}`;
+  const novelName = subject.novelName?.trim();
+  if (novelName) return `name:${novelName}`;
+  return null;
+}
+
 export interface TaskProgress {
   current: number;
   total?: number;
@@ -218,6 +228,7 @@ export interface TaskHandle<T> {
 
 export interface TaskCancelOptions {
   sourceId?: string;
+  workKey?: string;
 }
 
 interface TaskEntry {
@@ -398,9 +409,13 @@ export class TaskScheduler {
   private activeBackgroundCount = 0;
   private activeImmediateTaskId: string | null = null;
   private activeMainTaskId: string | null = null;
+  private batchDepth = 0;
+  private drainAfterBatch = false;
+  private publishSnapshotAfterBatch = false;
   private readonly activePoolTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
   private readonly sourceExecutorBySource = new Map<string, ScraperExecutorId>();
   private readonly sourceLastServedAt = new Map<string, number>();
+  private snapshotRecordIndexes = new Map<string, number>();
   private snapshot: TaskSnapshot = {
     pausedSourceIds: [],
     records: [],
@@ -505,7 +520,7 @@ export class TaskScheduler {
             priority: requestedPriority,
           };
           this.publishSnapshot();
-          this.drain();
+          this.requestDrain();
         }
         return {
           id: activeEntry.record.id,
@@ -569,7 +584,7 @@ export class TaskScheduler {
 
     this.debug("queued", entry, { dedupeKey: entry.dedupeKey });
     this.publish(entry, null);
-    this.drain();
+    this.requestDrain();
     return { id, promise: promise as Promise<T> };
   }
 
@@ -595,7 +610,7 @@ export class TaskScheduler {
     }
 
     this.finishQueuedAsCancelled(entry);
-    this.drain();
+    this.requestDrain();
     return true;
   }
 
@@ -610,9 +625,11 @@ export class TaskScheduler {
       .map((entry) => entry.record.id);
     let cancelled = 0;
 
-    for (const taskId of cancellableTaskIds) {
-      if (this.cancel(taskId)) cancelled += 1;
-    }
+    this.batch(() => {
+      for (const taskId of cancellableTaskIds) {
+        if (this.cancel(taskId)) cancelled += 1;
+      }
+    });
 
     return cancelled;
   }
@@ -728,6 +745,60 @@ export class TaskScheduler {
     });
     this.publishSnapshot();
     this.drain();
+    return true;
+  }
+
+  moveSourceWorkQueue(
+    sourceId: string,
+    workKey: string,
+    target: TaskMoveTarget,
+  ): boolean {
+    const queue = this.sourceQueues.get(sourceId);
+    if (!queue) return false;
+
+    const selectedIds = new Set<string>();
+    for (const id of queue) {
+      const entry = this.entries.get(id);
+      if (
+        entry?.record.status === "queued" &&
+        taskWorkQueueKey(entry.record.subject) === workKey
+      ) {
+        selectedIds.add(id);
+      }
+    }
+    if (selectedIds.size === 0) return false;
+
+    const selected = queue.filter((id) => selectedIds.has(id));
+    const remaining = queue.filter((id) => !selectedIds.has(id));
+    const firstSelectedIndex = queue.findIndex((id) => selectedIds.has(id));
+    const currentIndex = queue
+      .slice(0, firstSelectedIndex)
+      .filter((id) => !selectedIds.has(id)).length;
+    const nextIndex = this.moveTargetIndex(
+      currentIndex,
+      remaining.length + 1,
+      target,
+    );
+    const reordered = [
+      ...remaining.slice(0, nextIndex),
+      ...selected,
+      ...remaining.slice(nextIndex),
+    ];
+    if (
+      queue.length === reordered.length &&
+      queue.every((id, index) => id === reordered[index])
+    ) {
+      return false;
+    }
+
+    queue.splice(0, queue.length, ...reordered);
+    this.debug("source work queue moved", undefined, {
+      sourceId,
+      target,
+      workKey,
+    });
+    this.publishSnapshot();
+    this.requestDrain();
     return true;
   }
 
@@ -859,11 +930,16 @@ export class TaskScheduler {
     if (entry.record.status !== "queued" && entry.record.status !== "running") {
       return false;
     }
-    if (!options.sourceId) return true;
-    return (
-      entry.record.lane === "source" &&
-      entry.record.source?.id === options.sourceId
-    );
+    if (options.sourceId) {
+      if (
+        entry.record.lane !== "source" ||
+        entry.record.source?.id !== options.sourceId
+      ) {
+        return false;
+      }
+    }
+    if (!options.workKey) return true;
+    return taskWorkQueueKey(entry.record.subject) === options.workKey;
   }
 
   retry(id: string): TaskHandle<unknown> | null {
@@ -965,6 +1041,23 @@ export class TaskScheduler {
     return () => {
       this.eventListeners.delete(listener);
     };
+  }
+
+  batch<T>(run: () => T): T {
+    this.batchDepth += 1;
+    try {
+      return run();
+    } finally {
+      this.batchDepth -= 1;
+      if (this.batchDepth === 0) {
+        const shouldPublishSnapshot = this.publishSnapshotAfterBatch;
+        const shouldDrain = this.drainAfterBatch;
+        this.publishSnapshotAfterBatch = false;
+        this.drainAfterBatch = false;
+        if (shouldPublishSnapshot) this.publishSnapshot();
+        if (shouldDrain) this.drain();
+      }
+    }
   }
 
   private drain(): void {
@@ -1322,11 +1415,11 @@ export class TaskScheduler {
       taskId: entry.record.id,
       setDetail: (detail) => {
         entry.record = { ...entry.record, detail };
-        this.publish(entry, entry.record.status);
+        this.publishTaskEvent(entry, entry.record.status);
       },
       setProgress: (progress) => {
         entry.record = { ...entry.record, progress };
-        this.publish(entry, entry.record.status);
+        this.publishTaskEvent(entry, entry.record.status);
       },
     };
 
@@ -1581,13 +1674,48 @@ export class TaskScheduler {
 
   private publish(entry: TaskEntry, previousStatus: TaskStatus | null): void {
     this.publishSnapshot();
+    this.publishTaskEvent(entry, previousStatus);
+  }
+
+  private publishTaskEvent(
+    entry: TaskEntry,
+    previousStatus: TaskStatus | null,
+  ): void {
+    this.refreshSnapshotRecord(entry);
     const event = { task: { ...entry.record }, previousStatus };
     for (const listener of this.eventListeners) listener(event);
   }
 
+  private refreshSnapshotRecord(entry: TaskEntry): void {
+    const index = this.snapshotRecordIndexes.get(entry.record.id);
+    if (index === undefined) return;
+    const current = this.snapshot.records[index];
+    this.snapshot.records[index] = {
+      ...entry.record,
+      ...(current?.queueIndex !== undefined
+        ? { queueIndex: current.queueIndex }
+        : {}),
+      ...(current?.queueSize !== undefined
+        ? { queueSize: current.queueSize }
+        : {}),
+    };
+  }
+
   private publishSnapshot(): void {
+    if (this.batchDepth > 0) {
+      this.publishSnapshotAfterBatch = true;
+      return;
+    }
     this.snapshot = this.buildSnapshot();
     for (const listener of this.snapshotListeners) listener();
+  }
+
+  private requestDrain(): void {
+    if (this.batchDepth > 0) {
+      this.drainAfterBatch = true;
+      return;
+    }
+    this.drain();
   }
 
   private buildSnapshot(): TaskSnapshot {
@@ -1609,10 +1737,7 @@ export class TaskScheduler {
       entry: TaskEntry | undefined,
       queuePosition?: Pick<TaskRecord, "queueIndex" | "queueSize">,
     ): boolean => {
-      if (
-        !entry ||
-        materializedTaskIds.has(entry.record.id)
-      ) {
+      if (!entry || materializedTaskIds.has(entry.record.id)) {
         return false;
       }
       materializedTaskIds.add(entry.record.id);
@@ -1704,6 +1829,9 @@ export class TaskScheduler {
       ...entry.record,
       ...queuePositions.get(entry.record.id),
     }));
+    this.snapshotRecordIndexes = new Map(
+      records.map((record, index) => [record.id, index]),
+    );
     const sourceQueueOrder: string[] = [];
     const sourceQueueOrderWindowIds = new Set<string>();
     const addSourceQueueId = (sourceId: string): void => {

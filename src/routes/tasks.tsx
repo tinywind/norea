@@ -1,29 +1,20 @@
-import {
-  closestCenter,
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DraggableAttributes,
-  type DraggableSyntheticListeners,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { Progress, Text } from "@mantine/core";
-import { useState, type CSSProperties } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type UIEvent,
+} from "react";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import {
+  ArrowDownGlyph,
+  ArrowUpGlyph,
   ChevronDownGlyph,
   ChevronUpGlyph,
   CloseGlyph,
-  DragHandleGlyph,
   PauseGlyph,
   PlayGlyph,
   RetryGlyph,
@@ -35,6 +26,7 @@ import { IconButton } from "../components/IconButton";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
 import {
+  taskWorkQueueKey,
   taskScheduler,
   type SourceQueueSortMode,
   type TaskPriority,
@@ -45,6 +37,11 @@ import {
 } from "../lib/tasks/scheduler";
 import "../styles/tasks.css";
 
+const TASK_ROW_HEIGHT = 64;
+const TASK_ROW_OVERSCAN = 8;
+const TASK_VIRTUAL_FALLBACK_ROWS = 14;
+const TASK_VIRTUALIZATION_THRESHOLD = 80;
+
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 
 type SourceTaskGroup = {
@@ -53,57 +50,21 @@ type SourceTaskGroup = {
   tasks: TaskRecord[];
 };
 
+type SourceWorkTaskGroup = {
+  tasks: TaskRecord[];
+  title: string;
+  workKey: string;
+};
+
+type SourceTaskGroupItem =
+  | { type: "task"; task: TaskRecord }
+  | { type: "work"; group: SourceWorkTaskGroup };
+
 type ChapterDownloadTaskHeading = {
   chapterLabel: string;
   novelName: string;
   title: string;
 };
-
-type SortableGroupState = {
-  attributes: DraggableAttributes;
-  isDragging: boolean;
-  listeners?: DraggableSyntheticListeners;
-  setNodeRef: (element: HTMLElement | null) => void;
-  style: CSSProperties;
-};
-
-const SOURCE_DND_PREFIX = "source:";
-const TASK_DND_PREFIX = "task:";
-
-function sourceDndId(sourceId: string): string {
-  return `${SOURCE_DND_PREFIX}${sourceId}`;
-}
-
-function taskDndId(taskId: string): string {
-  return `${TASK_DND_PREFIX}${taskId}`;
-}
-
-function parseSourceDndId(id: unknown): string | null {
-  const value = String(id);
-  return value.startsWith(SOURCE_DND_PREFIX)
-    ? value.slice(SOURCE_DND_PREFIX.length)
-    : null;
-}
-
-function parseTaskDndId(id: unknown): string | null {
-  const value = String(id);
-  return value.startsWith(TASK_DND_PREFIX)
-    ? value.slice(TASK_DND_PREFIX.length)
-    : null;
-}
-
-function beforeIdForMove(
-  orderedIds: string[],
-  activeId: string,
-  overId: string,
-): string | null {
-  const activeIndex = orderedIds.indexOf(activeId);
-  const overIndex = orderedIds.indexOf(overId);
-  if (activeIndex < 0 || overIndex < 0 || activeIndex === overIndex) {
-    return activeId;
-  }
-  return activeIndex < overIndex ? orderedIds[overIndex + 1] ?? null : overId;
-}
 
 function isActiveTask(task: TaskRecord): boolean {
   return ACTIVE_STATUSES.has(task.status);
@@ -256,32 +217,44 @@ function chapterDownloadTaskHeading(
   };
 }
 
-function DragHandle({
-  attributes,
-  draggable,
-  label,
-  listeners,
-}: {
-  attributes?: DraggableAttributes;
-  draggable: boolean;
-  label: string;
-  listeners?: DraggableSyntheticListeners;
-}) {
-  return (
-    <span
-      {...attributes}
-      {...listeners}
-      aria-disabled={!draggable}
-      aria-label={label}
-      className="lnr-task-drag-handle"
-      data-disabled={draggable ? undefined : "true"}
-      role="button"
-      tabIndex={draggable ? 0 : -1}
-      title={label}
-    >
-      <DragHandleGlyph />
-    </span>
-  );
+function sourceWorkTaskTitle(task: TaskRecord): string {
+  const novelName = task.subject?.novelName?.trim();
+  if (novelName) return novelName;
+  const novelPath = task.subject?.novelPath?.trim();
+  if (novelPath) return novelPath;
+  return task.title;
+}
+
+function groupSourceTasksByWork(tasks: TaskRecord[]): SourceTaskGroupItem[] {
+  const items: SourceTaskGroupItem[] = [];
+  const groupsByKey = new Map<string, SourceWorkTaskGroup>();
+
+  for (const task of tasks) {
+    const workKey = taskWorkQueueKey(task.subject);
+    if (!workKey) {
+      items.push({ type: "task", task });
+      continue;
+    }
+
+    const group = groupsByKey.get(workKey);
+    if (group) {
+      group.tasks.push(task);
+    } else {
+      const nextGroup = {
+        tasks: [task],
+        title: sourceWorkTaskTitle(task),
+        workKey,
+      };
+      groupsByKey.set(workKey, nextGroup);
+      items.push({ type: "work", group: nextGroup });
+    }
+  }
+
+  return items;
+}
+
+function sourceWorkOpenKey(sourceId: string, workKey: string): string {
+  return `${sourceId}::${workKey}`;
 }
 
 function TaskSortMenu() {
@@ -349,20 +322,26 @@ function TaskSortMenu() {
   );
 }
 
+function activeSourceTaskCounts(records: TaskRecord[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const task of records) {
+    const sourceId = task.source?.id;
+    if (task.lane !== "source" || !sourceId || !isActiveTask(task)) continue;
+    counts.set(sourceId, (counts.get(sourceId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 function hasBlockingSourceTask(
   task: TaskRecord,
-  records: TaskRecord[],
+  sourceActiveTaskCounts: Map<string, number>,
 ): boolean {
   if (task.priority !== "background" || task.status !== "queued") {
     return false;
   }
-  return records.some(
-    (candidate) =>
-      candidate.id !== task.id &&
-      candidate.lane === "source" &&
-      candidate.source?.id === task.source?.id &&
-      isActiveTask(candidate),
-  );
+  const sourceId = task.source?.id;
+  if (!sourceId) return false;
+  return (sourceActiveTaskCounts.get(sourceId) ?? 0) > 1;
 }
 
 function isSourceQueuePaused(task: TaskRecord, snapshot: TaskSnapshot): boolean {
@@ -379,61 +358,79 @@ function hasCancellableActiveTask(records: TaskRecord[]): boolean {
   return records.some((task) => task.canCancel && isActiveTask(task));
 }
 
-function TaskRow({
+function hasQueuedTask(records: TaskRecord[]): boolean {
+  return records.some((task) => task.status === "queued");
+}
+
+function useLiveTaskRecord(task: TaskRecord): TaskRecord {
+  const [liveTask, setLiveTask] = useState(task);
+
+  useEffect(() => {
+    setLiveTask(task);
+  }, [task]);
+
+  useEffect(
+    () =>
+      taskScheduler.subscribeEvents((event) => {
+        if (event.task.id === task.id) {
+          setLiveTask(event.task);
+        }
+      }),
+    [task.id],
+  );
+
+  return liveTask.id === task.id ? liveTask : task;
+}
+
+const TaskRow = memo(function TaskRow({
   blockingSourceTask,
-  snapshot,
+  onSelect,
+  selected,
+  sourcePaused,
+  sourceQueuesPaused,
   task,
 }: {
   blockingSourceTask: boolean;
-  snapshot: TaskSnapshot;
+  onSelect: () => void;
+  selected: boolean;
+  sourcePaused: boolean;
+  sourceQueuesPaused: boolean;
   task: TaskRecord;
 }) {
   const { t } = useTranslation();
-  const sourcePaused = isSourceQueuePaused(task, snapshot);
-  const label = progressLabel(task);
-  const chapterHeading = chapterDownloadTaskHeading(task);
+  const currentTask = useLiveTaskRecord(task);
+  const label = progressLabel(currentTask);
+  const chapterHeading = chapterDownloadTaskHeading(currentTask);
   const canMove =
-    task.status === "queued" &&
-    task.queueIndex !== undefined &&
-    task.queueSize !== undefined &&
-    task.queueSize > 1;
+    currentTask.status === "queued" &&
+    currentTask.queueIndex !== undefined &&
+    currentTask.queueSize !== undefined &&
+    currentTask.queueSize > 1;
+  const showActions = selected || currentTask.status !== "queued";
   const retry = () => {
-    const handle = taskScheduler.retry(task.id);
+    const handle = taskScheduler.retry(currentTask.id);
     if (handle) void handle.promise.catch(() => undefined);
-  };
-  const {
-    attributes,
-    isDragging,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({
-    id: taskDndId(task.id),
-    disabled: !canMove,
-  });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
   };
 
   return (
     <div
-      ref={setNodeRef}
+      aria-selected={selected}
       className="lnr-task-row"
-      data-dragging={isDragging ? "true" : undefined}
-      data-status={task.status}
-      style={style}
+      data-selected={selected ? "true" : undefined}
+      data-status={currentTask.status}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
-      <DragHandle
-        attributes={canMove ? attributes : undefined}
-        draggable={canMove}
-        label={t("tasks.dragTask")}
-        listeners={canMove ? listeners : undefined}
-      />
       <ConsoleStatusDot
-        status={statusTone(task.status)}
-        label={t(taskStatusKey(task.status))}
+        status={statusTone(currentTask.status)}
+        label={t(taskStatusKey(currentTask.status))}
       />
       <div className="lnr-task-row-main">
         <div className="lnr-task-row-heading">
@@ -451,17 +448,17 @@ function TaskRow({
             </div>
           ) : (
             <Text className="lnr-task-row-title" lineClamp={1}>
-              {task.title}
+              {currentTask.title}
             </Text>
           )}
           {label ? <span className="lnr-task-progress-text">{label}</span> : null}
         </div>
         <Text className="lnr-task-row-meta" lineClamp={1}>
-          {taskMeta(t, task)}
+          {taskMeta(t, currentTask)}
         </Text>
         {sourcePaused ? (
           <Text className="lnr-task-row-detail" lineClamp={1}>
-            {snapshot.sourceQueuesPaused
+            {sourceQueuesPaused
               ? t("tasks.allSourcesPaused")
               : t("tasks.sourcePaused")}
           </Text>
@@ -469,48 +466,308 @@ function TaskRow({
           <Text className="lnr-task-row-detail" lineClamp={1}>
             {t("tasks.downloadWaiting")}
           </Text>
-        ) : task.detail ? (
+        ) : currentTask.detail ? (
           <Text className="lnr-task-row-detail" lineClamp={1}>
-            {task.detail}
+            {currentTask.detail}
           </Text>
         ) : null}
-        {task.error ? (
+        {currentTask.error ? (
           <Text className="lnr-task-row-error" lineClamp={1}>
-            {task.error}
+            {currentTask.error}
           </Text>
         ) : null}
-        {task.progress ? (
+        {currentTask.progress ? (
           <Progress
             className="lnr-task-row-progress"
             size="xs"
             value={
-              task.progress.total
+              currentTask.progress.total
                 ? Math.min(
                     100,
-                    (task.progress.current / task.progress.total) * 100,
+                    (currentTask.progress.current /
+                      currentTask.progress.total) *
+                      100,
                   )
                 : 100
             }
-            animated={!task.progress.total}
+            animated={!currentTask.progress.total}
           />
         ) : null}
       </div>
       <div className="lnr-task-row-actions">
-        {task.canCancel ? (
+        {showActions && canMove ? (
+          <>
+            <IconButton
+              disabled={currentTask.queueIndex === 0}
+              label={t("tasks.moveTaskTop")}
+              onClick={() =>
+                taskScheduler.moveQueuedTask(currentTask.id, "top")
+              }
+              size="lg"
+            >
+              <ArrowUpGlyph />
+            </IconButton>
+            <IconButton
+              disabled={currentTask.queueIndex === currentTask.queueSize! - 1}
+              label={t("tasks.moveTaskBottom")}
+              onClick={() =>
+                taskScheduler.moveQueuedTask(currentTask.id, "bottom")
+              }
+              size="lg"
+            >
+              <ArrowDownGlyph />
+            </IconButton>
+          </>
+        ) : null}
+        {showActions && currentTask.canCancel ? (
           <IconButton
             label={t("common.cancel")}
-            onClick={() => taskScheduler.cancel(task.id)}
+            onClick={() => taskScheduler.cancel(currentTask.id)}
             size="lg"
             tone="danger"
           >
             <CloseGlyph />
           </IconButton>
         ) : null}
-        {task.canRetry ? (
+        {showActions && currentTask.canRetry ? (
           <IconButton label={t("common.retry")} onClick={retry} size="lg">
             <RetryGlyph />
           </IconButton>
         ) : null}
+      </div>
+    </div>
+  );
+});
+
+function TaskWorkGroup({
+  group,
+  open,
+  onSelectTask,
+  onToggleOpen,
+  selectedTaskId,
+  sourceActiveTaskCounts,
+  snapshot,
+  sourceId,
+}: {
+  group: SourceWorkTaskGroup;
+  open: boolean;
+  onSelectTask: (taskId: string) => void;
+  onToggleOpen: () => void;
+  selectedTaskId: string | null;
+  sourceActiveTaskCounts: Map<string, number>;
+  snapshot: TaskSnapshot;
+  sourceId: string;
+}) {
+  const { t } = useTranslation();
+  const canMove = hasQueuedTask(group.tasks);
+  const canCancel = hasCancellableActiveTask(group.tasks);
+
+  return (
+    <div
+      className="lnr-task-work-group"
+      data-collapsed={open ? undefined : "true"}
+    >
+      <div className="lnr-task-work-header">
+        <div className="lnr-task-work-copy">
+          <Text className="lnr-task-work-title" lineClamp={1}>
+            {group.title}
+          </Text>
+          <span className="lnr-task-group-count">
+            {t("tasks.count", { count: group.tasks.length })}
+          </span>
+        </div>
+        <div className="lnr-task-group-actions">
+          <IconButton
+            active={!open}
+            label={open ? t("tasks.collapse") : t("tasks.expand")}
+            onClick={onToggleOpen}
+            size="lg"
+          >
+            {open ? <ChevronUpGlyph /> : <ChevronDownGlyph />}
+          </IconButton>
+          <IconButton
+            disabled={!canMove}
+            label={t("tasks.moveWorkTop")}
+            onClick={() =>
+              taskScheduler.moveSourceWorkQueue(
+                sourceId,
+                group.workKey,
+                "top",
+              )
+            }
+            size="lg"
+          >
+            <ArrowUpGlyph />
+          </IconButton>
+          <IconButton
+            disabled={!canMove}
+            label={t("tasks.moveWorkBottom")}
+            onClick={() =>
+              taskScheduler.moveSourceWorkQueue(
+                sourceId,
+                group.workKey,
+                "bottom",
+              )
+            }
+            size="lg"
+          >
+            <ArrowDownGlyph />
+          </IconButton>
+          {canCancel ? (
+            <IconButton
+              label={t("tasks.cancelWorkCurrent")}
+              onClick={() =>
+                taskScheduler.cancelActiveTasks({
+                  sourceId,
+                  workKey: group.workKey,
+                })
+              }
+              size="lg"
+              tone="danger"
+            >
+              <CloseGlyph />
+            </IconButton>
+          ) : null}
+        </div>
+      </div>
+      {open ? (
+        <TaskRows
+          className="lnr-task-work-rows"
+          renderTask={(task) => (
+            <TaskRow
+              blockingSourceTask={hasBlockingSourceTask(
+                task,
+                sourceActiveTaskCounts,
+              )}
+              key={task.id}
+              onSelect={() => onSelectTask(task.id)}
+              selected={selectedTaskId === task.id}
+              sourcePaused={isSourceQueuePaused(task, snapshot)}
+              sourceQueuesPaused={snapshot.sourceQueuesPaused}
+              task={task}
+            />
+          )}
+          tasks={group.tasks}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function TaskRows({
+  className,
+  renderTask,
+  tasks,
+}: {
+  className: string;
+  renderTask: (task: TaskRecord) => ReactNode;
+  tasks: TaskRecord[];
+}) {
+  if (tasks.length <= TASK_VIRTUALIZATION_THRESHOLD) {
+    return <div className={className}>{tasks.map(renderTask)}</div>;
+  }
+
+  return (
+    <VirtualTaskRows
+      className={className}
+      renderTask={renderTask}
+      tasks={tasks}
+    />
+  );
+}
+
+function VirtualTaskRows({
+  className,
+  renderTask,
+  tasks,
+}: {
+  className: string;
+  renderTask: (task: TaskRecord) => ReactNode;
+  tasks: TaskRecord[];
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const pendingScrollTopRef = useRef(0);
+  const scrollFrameRef = useRef<number | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(
+    TASK_ROW_HEIGHT * TASK_VIRTUAL_FALLBACK_ROWS,
+  );
+  const totalHeight = tasks.length * TASK_ROW_HEIGHT;
+  const startIndex = Math.max(
+    0,
+    Math.floor(scrollTop / TASK_ROW_HEIGHT) - TASK_ROW_OVERSCAN,
+  );
+  const endIndex = Math.min(
+    tasks.length,
+    Math.ceil((scrollTop + viewportHeight) / TASK_ROW_HEIGHT) +
+      TASK_ROW_OVERSCAN,
+  );
+  const visibleTasks = tasks.slice(startIndex, endIndex);
+  const offsetY = startIndex * TASK_ROW_HEIGHT;
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+
+    const updateViewportHeight = () => {
+      setViewportHeight(element.clientHeight || TASK_ROW_HEIGHT);
+    };
+
+    updateViewportHeight();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateViewportHeight);
+
+    resizeObserver?.observe(element);
+    window.addEventListener("resize", updateViewportHeight);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateViewportHeight);
+    };
+  }, []);
+
+  useEffect(() => {
+    const maxScrollTop = Math.max(0, totalHeight - viewportHeight);
+    setScrollTop((current) => Math.min(current, maxScrollTop));
+  }, [totalHeight, viewportHeight]);
+
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleScroll = (event: UIEvent<HTMLDivElement>) => {
+    pendingScrollTopRef.current = event.currentTarget.scrollTop;
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      setScrollTop(pendingScrollTopRef.current);
+    });
+  };
+
+  return (
+    <div
+      className={`${className} lnr-task-virtual-viewport`}
+      onScroll={handleScroll}
+      ref={viewportRef}
+    >
+      <div
+        className="lnr-task-virtual-spacer"
+        style={{ height: totalHeight }}
+      >
+        <div
+          className="lnr-task-virtual-window"
+          style={{ transform: `translateY(${offsetY}px)` }}
+        >
+          {visibleTasks.map(renderTask)}
+        </div>
       </div>
     </div>
   );
@@ -532,18 +789,26 @@ function SummaryPill({
 
 function TaskGroup({
   collapsed,
+  onSelectTask,
   onToggleCollapsed,
+  onToggleWorkGroup,
+  openWorkGroupKey,
+  selectedTaskId,
   snapshot,
-  sourceSortable,
+  sourceActiveTaskCounts,
   sourceId,
   sourcePaused,
   tasks,
   title,
 }: {
   collapsed?: boolean;
+  onSelectTask: (taskId: string) => void;
   onToggleCollapsed?: () => void;
+  onToggleWorkGroup?: (key: string) => void;
+  openWorkGroupKey?: string | null;
+  selectedTaskId: string | null;
   snapshot: TaskSnapshot;
-  sourceSortable?: SortableGroupState;
+  sourceActiveTaskCounts: Map<string, number>;
   sourceId?: string;
   sourcePaused?: boolean;
   tasks: TaskRecord[];
@@ -551,31 +816,16 @@ function TaskGroup({
 }) {
   const { t } = useTranslation();
   const hasCancellableTasks = hasCancellableActiveTask(tasks);
-  const canDragSource = Boolean(
-    sourceId && snapshot.sourceQueueOrder.length > 1,
-  );
   const sourceCollapsed = Boolean(sourceId && collapsed);
+  const sourceItems = sourceId ? groupSourceTasksByWork(tasks) : [];
 
   return (
     <section
-      ref={sourceSortable?.setNodeRef}
       className="lnr-task-group"
       data-collapsed={sourceCollapsed ? "true" : undefined}
-      data-dragging={sourceSortable?.isDragging ? "true" : undefined}
-      style={sourceSortable?.style}
+      data-source-group={sourceId ? "true" : undefined}
     >
-      <header
-        className="lnr-task-group-header"
-        data-has-drag={sourceId ? "true" : undefined}
-      >
-        {sourceId ? (
-          <DragHandle
-            attributes={canDragSource ? sourceSortable?.attributes : undefined}
-            draggable={canDragSource}
-            label={t("tasks.dragSource")}
-            listeners={canDragSource ? sourceSortable?.listeners : undefined}
-          />
-        ) : null}
+      <header className="lnr-task-group-header">
         <div className="lnr-task-group-copy">
           <Text className="lnr-task-group-title" lineClamp={1}>
             {title}
@@ -631,74 +881,65 @@ function TaskGroup({
           ) : null}
         </div>
       </header>
-      {sourceCollapsed ? null : (
-        <SortableContext
-          items={tasks.map((task) => taskDndId(task.id))}
-          strategy={verticalListSortingStrategy}
-        >
-          <div className="lnr-task-rows">
-            {tasks.map((task) => (
+      {sourceCollapsed ? null : sourceId ? (
+        <div className="lnr-task-rows">
+          {sourceItems.map((item) =>
+            item.type === "work" ? (
+              <TaskWorkGroup
+                group={item.group}
+                key={`work:${item.group.workKey}`}
+                onToggleOpen={() =>
+                  onToggleWorkGroup?.(
+                    sourceWorkOpenKey(sourceId, item.group.workKey),
+                  )
+                }
+                open={
+                  openWorkGroupKey ===
+                  sourceWorkOpenKey(sourceId, item.group.workKey)
+                }
+                onSelectTask={onSelectTask}
+                selectedTaskId={selectedTaskId}
+                sourceActiveTaskCounts={sourceActiveTaskCounts}
+                snapshot={snapshot}
+                sourceId={sourceId}
+              />
+            ) : (
               <TaskRow
                 blockingSourceTask={hasBlockingSourceTask(
-                  task,
-                  snapshot.records,
+                  item.task,
+                  sourceActiveTaskCounts,
                 )}
-                key={task.id}
-                snapshot={snapshot}
-                task={task}
+                key={item.task.id}
+                onSelect={() => onSelectTask(item.task.id)}
+                selected={selectedTaskId === item.task.id}
+                sourcePaused={isSourceQueuePaused(item.task, snapshot)}
+                sourceQueuesPaused={snapshot.sourceQueuesPaused}
+                task={item.task}
               />
-            ))}
-          </div>
-        </SortableContext>
+            ),
+          )}
+        </div>
+      ) : (
+        <TaskRows
+          className="lnr-task-rows"
+          renderTask={(task) => (
+            <TaskRow
+              blockingSourceTask={hasBlockingSourceTask(
+                task,
+                sourceActiveTaskCounts,
+              )}
+              key={task.id}
+              onSelect={() => onSelectTask(task.id)}
+              selected={selectedTaskId === task.id}
+              sourcePaused={isSourceQueuePaused(task, snapshot)}
+              sourceQueuesPaused={snapshot.sourceQueuesPaused}
+              task={task}
+            />
+          )}
+          tasks={tasks}
+        />
       )}
     </section>
-  );
-}
-
-function SortableSourceTaskGroup({
-  collapsed,
-  group,
-  onToggleCollapsed,
-  snapshot,
-}: {
-  collapsed: boolean;
-  group: SourceTaskGroup;
-  onToggleCollapsed: () => void;
-  snapshot: TaskSnapshot;
-}) {
-  const {
-    attributes,
-    isDragging,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({
-    id: sourceDndId(group.sourceId),
-    disabled: snapshot.sourceQueueOrder.length <= 1,
-  });
-  const sourceSortable: SortableGroupState = {
-    attributes,
-    isDragging,
-    listeners,
-    setNodeRef,
-    style: {
-      transform: CSS.Transform.toString(transform),
-      transition,
-    },
-  };
-
-  return (
-    <TaskGroup
-      collapsed={collapsed}
-      onToggleCollapsed={onToggleCollapsed}
-      snapshot={snapshot}
-      sourceId={group.sourceId}
-      sourcePaused={snapshot.pausedSourceIds.includes(group.sourceId)}
-      sourceSortable={sourceSortable}
-      tasks={group.tasks}
-      title={group.sourceName}
-    />
   );
 }
 
@@ -712,60 +953,101 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
   const [collapsedSourceIds, setCollapsedSourceIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
+  const [openWorkGroupKey, setOpenWorkGroupKey] = useState<string | null>(
+    null,
   );
-  const tasks = [...snapshot.records].sort(compareTaskQueueOrder);
-  const mainTasks = tasks.filter((task) => task.lane === "main");
-  const sourceTasks = tasks.filter((task) => task.lane === "source");
-  const taskStats = {
-    running: tasks.filter((task) => task.status === "running").length,
-    queued: tasks.filter((task) => task.status === "queued").length,
-    failed: tasks.filter((task) => task.status === "failed").length,
-    succeeded: tasks.filter((task) => task.status === "succeeded").length,
-  };
-  const hasCancellableTasks = hasCancellableActiveTask(tasks);
-  const sourceGroupsById = new Map<string, SourceTaskGroup>();
-  for (const task of sourceTasks) {
-    const sourceId = task.source?.id;
-    if (!sourceId) continue;
-    const group = sourceGroupsById.get(sourceId);
-    if (group) {
-      group.tasks.push(task);
-    } else {
-      sourceGroupsById.set(sourceId, {
-        sourceId,
-        sourceName: task.source?.name ?? sourceId,
-        tasks: [task],
-      });
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const tasks = useMemo(
+    () => [...snapshot.records].sort(compareTaskQueueOrder),
+    [snapshot.records],
+  );
+  useEffect(() => {
+    if (selectedTaskId && !tasks.some((task) => task.id === selectedTaskId)) {
+      setSelectedTaskId(null);
     }
-  }
-  const sourceOrder = [
-    ...snapshot.sourceQueueOrder.filter((sourceId) =>
-      sourceGroupsById.has(sourceId),
-    ),
-    ...[...sourceGroupsById.keys()]
-      .filter((sourceId) => !snapshot.sourceQueueOrder.includes(sourceId))
-      .sort((left, right) => {
-        const leftGroup = sourceGroupsById.get(left);
-        const rightGroup = sourceGroupsById.get(right);
-        const sourceName = (leftGroup?.sourceName ?? left).localeCompare(
-          rightGroup?.sourceName ?? right,
-          undefined,
-          { sensitivity: "base" },
-        );
-        if (sourceName !== 0) return sourceName;
-        return left.localeCompare(right);
-      }),
-  ];
-  const sourceGroups = sourceOrder
-    .map((sourceId) => sourceGroupsById.get(sourceId))
-    .filter((group): group is SourceTaskGroup => Boolean(group));
+  }, [selectedTaskId, tasks]);
+  const sourceActiveTaskCounts = useMemo(
+    () => activeSourceTaskCounts(tasks),
+    [tasks],
+  );
+  const mainTasks = useMemo(
+    () => tasks.filter((task) => task.lane === "main"),
+    [tasks],
+  );
+  const sourceTasks = useMemo(
+    () => tasks.filter((task) => task.lane === "source"),
+    [tasks],
+  );
+  const taskStats = useMemo(
+    () => ({
+      running: tasks.filter((task) => task.status === "running").length,
+      queued: tasks.filter((task) => task.status === "queued").length,
+      failed: tasks.filter((task) => task.status === "failed").length,
+      succeeded: tasks.filter((task) => task.status === "succeeded").length,
+    }),
+    [tasks],
+  );
+  const hasCancellableTasks = useMemo(
+    () => hasCancellableActiveTask(tasks),
+    [tasks],
+  );
+  const sourceGroups = useMemo(() => {
+    const sourceGroupsById = new Map<string, SourceTaskGroup>();
+    for (const task of sourceTasks) {
+      const sourceId = task.source?.id;
+      if (!sourceId) continue;
+      const group = sourceGroupsById.get(sourceId);
+      if (group) {
+        group.tasks.push(task);
+      } else {
+        sourceGroupsById.set(sourceId, {
+          sourceId,
+          sourceName: task.source?.name ?? sourceId,
+          tasks: [task],
+        });
+      }
+    }
+
+    const sourceQueueOrderSet = new Set(snapshot.sourceQueueOrder);
+    const sourceOrder = [
+      ...snapshot.sourceQueueOrder.filter((sourceId) =>
+        sourceGroupsById.has(sourceId),
+      ),
+      ...[...sourceGroupsById.keys()]
+        .filter((sourceId) => !sourceQueueOrderSet.has(sourceId))
+        .sort((left, right) => {
+          const leftGroup = sourceGroupsById.get(left);
+          const rightGroup = sourceGroupsById.get(right);
+          const sourceName = (leftGroup?.sourceName ?? left).localeCompare(
+            rightGroup?.sourceName ?? right,
+            undefined,
+            { sensitivity: "base" },
+          );
+          if (sourceName !== 0) return sourceName;
+          return left.localeCompare(right);
+        }),
+    ];
+
+    return sourceOrder
+      .map((sourceId) => sourceGroupsById.get(sourceId))
+      .filter((group): group is SourceTaskGroup => Boolean(group));
+  }, [snapshot.sourceQueueOrder, sourceTasks]);
+  const visibleWorkGroupKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const sourceGroup of sourceGroups) {
+      for (const item of groupSourceTasksByWork(sourceGroup.tasks)) {
+        if (item.type === "work") {
+          keys.add(sourceWorkOpenKey(sourceGroup.sourceId, item.group.workKey));
+        }
+      }
+    }
+    return keys;
+  }, [sourceGroups]);
+  useEffect(() => {
+    if (openWorkGroupKey && !visibleWorkGroupKeys.has(openWorkGroupKey)) {
+      setOpenWorkGroupKey(null);
+    }
+  }, [openWorkGroupKey, visibleWorkGroupKeys]);
   const toggleSourceCollapsed = (sourceId: string) => {
     setCollapsedSourceIds((current) => {
       const next = new Set(current);
@@ -777,48 +1059,8 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
       return next;
     });
   };
-  const handleDragEnd = (event: DragEndEvent) => {
-    const overId = event.over?.id;
-    if (!overId) return;
-
-    const activeSourceId = parseSourceDndId(event.active.id);
-    const overSourceId = parseSourceDndId(overId);
-    if (activeSourceId && overSourceId) {
-      const sourceIds = sourceGroups.map((group) => group.sourceId);
-      taskScheduler.moveSourceQueueBefore(
-        activeSourceId,
-        beforeIdForMove(sourceIds, activeSourceId, overSourceId),
-      );
-      return;
-    }
-
-    const activeTaskId = parseTaskDndId(event.active.id);
-    const overTaskId = parseTaskDndId(overId);
-    if (!activeTaskId || !overTaskId) return;
-
-    const activeTask = snapshot.records.find((task) => task.id === activeTaskId);
-    const overTask = snapshot.records.find((task) => task.id === overTaskId);
-    if (
-      !activeTask ||
-      !overTask ||
-      activeTask.status !== "queued" ||
-      overTask.status !== "queued" ||
-      taskQueueKey(activeTask) !== taskQueueKey(overTask)
-    ) {
-      return;
-    }
-
-    const queueTaskIds = tasks
-      .filter(
-        (task) =>
-          task.status === "queued" &&
-          taskQueueKey(task) === taskQueueKey(activeTask),
-      )
-      .map((task) => task.id);
-    taskScheduler.moveQueuedTaskBefore(
-      activeTaskId,
-      beforeIdForMove(queueTaskIds, activeTaskId, overTaskId),
-    );
+  const toggleWorkGroup = (key: string) => {
+    setOpenWorkGroupKey((current) => (current === key ? null : key));
   };
 
   return (
@@ -897,37 +1139,35 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           message={t("tasks.empty.message")}
         />
       ) : (
-        <DndContext
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
-          sensors={sensors}
-        >
-          <div className="lnr-task-shell">
-            {mainTasks.length > 0 ? (
-              <TaskGroup
-                snapshot={snapshot}
-                tasks={mainTasks}
-                title={t("tasks.mainQueue")}
-              />
-            ) : null}
-            <SortableContext
-              items={sourceGroups.map((group) => sourceDndId(group.sourceId))}
-              strategy={verticalListSortingStrategy}
-            >
-              {sourceGroups.map((group) => (
-                <SortableSourceTaskGroup
-                  collapsed={collapsedSourceIds.has(group.sourceId)}
-                  group={group}
-                  key={group.sourceId}
-                  onToggleCollapsed={() =>
-                    toggleSourceCollapsed(group.sourceId)
-                  }
-                  snapshot={snapshot}
-                />
-              ))}
-            </SortableContext>
-          </div>
-        </DndContext>
+        <div className="lnr-task-shell">
+          {mainTasks.length > 0 ? (
+            <TaskGroup
+              onSelectTask={setSelectedTaskId}
+              selectedTaskId={selectedTaskId}
+              snapshot={snapshot}
+              sourceActiveTaskCounts={sourceActiveTaskCounts}
+              tasks={mainTasks}
+              title={t("tasks.mainQueue")}
+            />
+          ) : null}
+          {sourceGroups.map((group) => (
+            <TaskGroup
+              collapsed={collapsedSourceIds.has(group.sourceId)}
+              key={group.sourceId}
+              onSelectTask={setSelectedTaskId}
+              onToggleCollapsed={() => toggleSourceCollapsed(group.sourceId)}
+              onToggleWorkGroup={toggleWorkGroup}
+              openWorkGroupKey={openWorkGroupKey}
+              selectedTaskId={selectedTaskId}
+              snapshot={snapshot}
+              sourceActiveTaskCounts={sourceActiveTaskCounts}
+              sourceId={group.sourceId}
+              sourcePaused={snapshot.pausedSourceIds.includes(group.sourceId)}
+              tasks={group.tasks}
+              title={group.sourceName}
+            />
+          ))}
+        </div>
       )}
     </PageFrame>
   );

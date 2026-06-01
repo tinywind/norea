@@ -40,13 +40,15 @@ export function startTrayTaskProgress(
     }, TRAY_UPDATE_DELAY_MS);
   };
 
-  const unsubscribe = taskScheduler.subscribe(publish);
+  const unsubscribeSnapshots = taskScheduler.subscribe(publish);
+  const unsubscribeEvents = taskScheduler.subscribeEvents(publish);
   publish();
 
   return () => {
     disposed = true;
     if (publishTimer) clearTimeout(publishTimer);
-    unsubscribe();
+    unsubscribeSnapshots();
+    unsubscribeEvents();
     void invoke("tray_set_task_progress", {
       items: [],
       summary: t("tasks.tray.none"),

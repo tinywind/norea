@@ -52,11 +52,13 @@ export function startAndroidTaskNotifications(
     lastPayload = serialized;
   };
 
-  const unsubscribe = taskScheduler.subscribe(publish);
+  const unsubscribeSnapshots = taskScheduler.subscribe(publish);
+  const unsubscribeEvents = taskScheduler.subscribeEvents(publish);
   publish();
 
   return () => {
-    unsubscribe();
+    unsubscribeSnapshots();
+    unsubscribeEvents();
     if (lastPayload !== "") {
       window.__NoreaAndroidTasks?.stop();
     }
