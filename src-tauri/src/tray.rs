@@ -1,12 +1,14 @@
 use serde::Deserialize;
 #[cfg(target_os = "windows")]
 use tauri::{
-    AppHandle, Manager, Runtime, WindowEvent,
     menu::{MenuBuilder, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    WindowEvent,
 };
-
+use tauri::{AppHandle, Manager, Runtime};
 #[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+
 const MAIN_WINDOW_LABEL: &str = "main";
 #[cfg(target_os = "windows")]
 const TRAY_ID: &str = "norea-main";
@@ -178,8 +180,7 @@ pub fn tray_set_task_progress(
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         log::warn!("show main window from tray failed: main window not found");
         return;
@@ -190,7 +191,27 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Err(err) = window.unminimize() {
         log::warn!("unminimize main window from tray failed: {err}");
     }
+    restore_native_window(&window);
     if let Err(err) = window.set_focus() {
         log::warn!("focus main window from tray failed: {err}");
     }
+    restore_native_window(&window);
 }
+
+#[cfg(target_os = "windows")]
+fn restore_native_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let hwnd = match window.hwnd() {
+        Ok(hwnd) => hwnd,
+        Err(err) => {
+            log::warn!("get main window hwnd failed: {err}");
+            return;
+        }
+    };
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restore_native_window<R: Runtime>(_window: &tauri::WebviewWindow<R>) {}
