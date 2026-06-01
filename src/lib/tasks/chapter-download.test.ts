@@ -98,6 +98,7 @@ import {
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
+  cancelChapterDownloadBatches,
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
@@ -371,6 +372,129 @@ describe("enqueueChapterDownloadBatch", () => {
       succeeded: 3,
       total: 4,
     });
+  });
+
+  it("stops materializing a batch after the batch is cancelled", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [1, 2, 3, 4].map((id) => ({
+        id,
+        pluginId: "source-a",
+        chapterPath: `/chapter/${id}`,
+        title: `Chapter ${id}`,
+      })),
+      title: "Download 4 chapters",
+      total: 4,
+      windowSize: 2,
+    });
+
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
+    expect(cancelChapterDownloadBatches([capturedSpec!.subject!.batchId!])).toBe(
+      1,
+    );
+
+    deferreds[0]!.reject(
+      new DOMException("Task was cancelled.", "AbortError"),
+    );
+    deferreds[1]!.reject(
+      new DOMException("Task was cancelled.", "AbortError"),
+    );
+
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 4,
+      failed: 0,
+      succeeded: 0,
+      total: 4,
+    });
+    await flushMicrotasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
+    expect([...backendQueueValues.keys()]).toEqual([]);
+    expect(
+      tauriMocks.invoke.mock.calls.filter(
+        ([command]) => command === "chapter_download_queue_remove",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("removes restored backend queued jobs when the restored batch is cancelled", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+    const jobs = [1, 2, 3, 4].map((id) => ({
+      id,
+      pluginId: "source-a",
+      chapterPath: `/chapter/${id}`,
+      title: `Chapter ${id}`,
+    }));
+    for (const job of jobs) backendQueueValues.set(job.id, job);
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs,
+      persist: false,
+      removeBackendQueuedJobsOnCancel: true,
+      title: "Restore queued downloads",
+      total: 4,
+      windowSize: 2,
+    });
+
+    await flushMicrotasks();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
+    expect(cancelChapterDownloadBatches([capturedSpec!.subject!.batchId!])).toBe(
+      1,
+    );
+
+    deferreds[0]!.reject(
+      new DOMException("Task was cancelled.", "AbortError"),
+    );
+    deferreds[1]!.reject(
+      new DOMException("Task was cancelled.", "AbortError"),
+    );
+
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 4,
+      failed: 0,
+      succeeded: 0,
+      total: 4,
+    });
+    await flushMicrotasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushMicrotasks();
+
+    expect([...backendQueueValues.keys()]).toEqual([]);
+    expect(
+      tauriMocks.invoke.mock.calls.filter(
+        ([command]) => command === "chapter_download_queue_remove",
+      ),
+    ).toHaveLength(1);
   });
 });
 

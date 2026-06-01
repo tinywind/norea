@@ -549,6 +549,56 @@ describe("TaskScheduler", () => {
     expect(order).toEqual(["a1:start", "b:start"]);
   });
 
+  it("discards queued source tasks with a single snapshot publish", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: true,
+    });
+    const source = { id: "p", name: "Plugin" };
+    const tasks = [1, 2, 3].map((index) =>
+      scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: `Queued ${index}`,
+        priority: "background",
+        source,
+        run: async () => undefined,
+      }),
+    );
+    let snapshots = 0;
+    scheduler.subscribe(() => {
+      snapshots += 1;
+    });
+
+    expect(
+      scheduler.cancelActiveTasks({
+        discardQueued: true,
+        sourceId: source.id,
+      }),
+    ).toBe(3);
+    expect(snapshots).toBe(1);
+    expect(scheduler.getSnapshot().queued).toBe(0);
+    expect(scheduler.getSnapshot().cancelled).toBe(0);
+    expect(scheduler.getSnapshot().total).toBe(0);
+    await Promise.all(
+      tasks.map((task) =>
+        expect(task.promise).rejects.toThrow("Task was cancelled."),
+      ),
+    );
+
+    const followUp = scheduler.enqueueMain({
+      kind: "repository.refreshIndex",
+      title: "Follow-up",
+      run: async () => undefined,
+    });
+    await followUp.promise;
+
+    expect(
+      scheduler
+        .getSnapshot()
+        .records.some((task) => task.title.startsWith("Queued ")),
+    ).toBe(false);
+  });
+
   it("lets interactive source browsing use the immediate executor during background downloads", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,

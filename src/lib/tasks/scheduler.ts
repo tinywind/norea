@@ -44,6 +44,8 @@ import {
 import { recordPerformanceObservation } from "../observability";
 import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
 
+const TASK_BULK_EVENT_CHUNK_SIZE = 250;
+
 export type TaskLane = "main" | "source";
 
 export type TaskPriority =
@@ -227,6 +229,7 @@ export interface TaskHandle<T> {
 }
 
 export interface TaskCancelOptions {
+  discardQueued?: boolean;
   sourceId?: string;
   workKey?: string;
 }
@@ -605,16 +608,13 @@ export class TaskScheduler {
   cancel(id: string): boolean {
     const entry = this.entries.get(id);
     if (!entry) return false;
-    this.debug("cancel requested", entry);
 
     if (entry.record.status === "running") {
-      entry.pauseRequested = false;
-      entry.controller.abort();
-      this.cancelRunning(entry);
-      return true;
+      return this.cancelRunningEntry(entry);
     }
 
     if (entry.record.status !== "queued") return false;
+    this.debug("cancel requested", entry);
 
     if (entry.record.lane === "main") {
       this.removeQueuedId(this.mainQueue, id);
@@ -629,19 +629,16 @@ export class TaskScheduler {
   }
 
   cancelActiveTasks(options: TaskCancelOptions = {}): number {
-    const cancellableTaskIds = [...this.entries.values()]
-      .filter((entry) => this.isCancellableActiveEntry(entry, options))
-      .sort((left, right) => {
-        const leftRank = left.record.status === "queued" ? 0 : 1;
-        const rightRank = right.record.status === "queued" ? 0 : 1;
-        return leftRank - rightRank;
-      })
-      .map((entry) => entry.record.id);
+    const cancellableEntries = this.cancellableActiveEntries(options);
     let cancelled = 0;
 
     this.batch(() => {
-      for (const taskId of cancellableTaskIds) {
-        if (this.cancel(taskId)) cancelled += 1;
+      cancelled += this.cancelQueuedEntries(
+        cancellableEntries.queued,
+        options.discardQueued === true,
+      );
+      for (const entry of cancellableEntries.running) {
+        if (this.cancelRunningEntry(entry)) cancelled += 1;
       }
     });
 
@@ -954,6 +951,25 @@ export class TaskScheduler {
     }
     if (!options.workKey) return true;
     return taskWorkQueueKey(entry.record.subject) === options.workKey;
+  }
+
+  private cancellableActiveEntries(options: TaskCancelOptions): {
+    queued: TaskEntry[];
+    running: TaskEntry[];
+  } {
+    const queued: TaskEntry[] = [];
+    const running: TaskEntry[] = [];
+
+    for (const entry of this.entries.values()) {
+      if (!this.isCancellableActiveEntry(entry, options)) continue;
+      if (entry.record.status === "queued") {
+        queued.push(entry);
+      } else {
+        running.push(entry);
+      }
+    }
+
+    return { queued, running };
   }
 
   retry(id: string): TaskHandle<unknown> | null {
@@ -1526,6 +1542,15 @@ export class TaskScheduler {
     return true;
   }
 
+  private cancelRunningEntry(entry: TaskEntry): boolean {
+    if (entry.record.status !== "running") return false;
+    this.debug("cancel requested", entry);
+    entry.pauseRequested = false;
+    entry.controller.abort();
+    this.cancelRunning(entry);
+    return true;
+  }
+
   private cancelRunning(entry: TaskEntry): void {
     this.setStatus(entry, "cancelled", {
       canCancel: false,
@@ -1701,7 +1726,31 @@ export class TaskScheduler {
     previousStatus: TaskStatus | null,
   ): void {
     this.refreshSnapshotRecord(entry);
-    const event = { task: { ...entry.record }, previousStatus };
+    this.publishTaskEventPayload({ task: { ...entry.record }, previousStatus });
+  }
+
+  private publishTaskEventsInChunks(events: TaskEvent[]): void {
+    if (events.length === 0) return;
+    if (events.length <= TASK_BULK_EVENT_CHUNK_SIZE) {
+      for (const event of events) this.publishTaskEventPayload(event);
+      return;
+    }
+
+    let index = 0;
+    const publishNextChunk = (): void => {
+      const end = Math.min(index + TASK_BULK_EVENT_CHUNK_SIZE, events.length);
+      for (; index < end; index += 1) {
+        this.publishTaskEventPayload(events[index]!);
+      }
+      if (index < events.length) {
+        setTimeout(publishNextChunk, 0);
+      }
+    };
+
+    setTimeout(publishNextChunk, 0);
+  }
+
+  private publishTaskEventPayload(event: TaskEvent): void {
     for (const listener of this.eventListeners) listener(event);
   }
 
@@ -1963,11 +2012,86 @@ export class TaskScheduler {
     entry.reject(new Error("Task was cancelled."));
   }
 
+  private cancelQueuedEntries(
+    entries: TaskEntry[],
+    discardCancelled: boolean,
+  ): number {
+    const queuedEntries = entries.filter(
+      (entry) => entry.record.status === "queued",
+    );
+    if (queuedEntries.length === 0) return 0;
+
+    this.removeQueuedIds(
+      new Set(queuedEntries.map((entry) => entry.record.id)),
+    );
+
+    const events: TaskEvent[] = [];
+    const discardedEntries: TaskEntry[] = [];
+    const finishedAt = Date.now();
+    let cancelled = 0;
+    for (const entry of queuedEntries) {
+      if (entry.record.status !== "queued") continue;
+      const previousStatus = entry.record.status;
+      entry.record = {
+        ...entry.record,
+        status: "cancelled",
+        canCancel: false,
+        canRetry: true,
+        finishedAt,
+      };
+      this.entries.set(entry.record.id, entry);
+      this.debug("queued task cancelled", entry);
+      if (
+        entry.dedupeKey &&
+        this.activeDedupeByKey.get(entry.dedupeKey) === entry.record.id
+      ) {
+        this.activeDedupeByKey.delete(entry.dedupeKey);
+      }
+      entry.reject(new Error("Task was cancelled."));
+      if (discardCancelled) {
+        discardedEntries.push(entry);
+      } else {
+        this.scheduleTerminalCleanup(entry);
+      }
+      events.push({ task: { ...entry.record }, previousStatus });
+      cancelled += 1;
+    }
+    if (discardedEntries.length > 0) {
+      this.deleteEntries(discardedEntries);
+    }
+    this.publishSnapshot();
+    this.publishTaskEventsInChunks(events);
+    this.requestDrain();
+    return cancelled;
+  }
+
   private removeFromSourceQueue(entry: TaskEntry): void {
     const sourceId = entry.record.source?.id;
     if (!sourceId) return;
     const queue = this.sourceQueues.get(sourceId);
     if (queue) this.removeQueuedId(queue, entry.record.id);
+  }
+
+  private removeQueuedIds(ids: ReadonlySet<string>): void {
+    if (ids.size === 0) return;
+    this.removeQueuedIdsFromQueue(this.mainQueue, ids);
+    for (const queue of this.sourceQueues.values()) {
+      this.removeQueuedIdsFromQueue(queue, ids);
+    }
+  }
+
+  private removeQueuedIdsFromQueue(
+    queue: string[],
+    ids: ReadonlySet<string>,
+  ): void {
+    let writeIndex = 0;
+    for (let readIndex = 0; readIndex < queue.length; readIndex += 1) {
+      const id = queue[readIndex]!;
+      if (ids.has(id)) continue;
+      queue[writeIndex] = id;
+      writeIndex += 1;
+    }
+    queue.length = writeIndex;
   }
 
   private removeQueuedId(queue: string[], id: string): void {
@@ -2148,6 +2272,22 @@ export class TaskScheduler {
   }
 
   private deleteEntry(entry: TaskEntry): void {
+    const sourceId = this.deleteEntryRecord(entry);
+    this.pruneSourceQueueOrder(sourceId);
+  }
+
+  private deleteEntries(entries: Iterable<TaskEntry>): void {
+    const sourceIds = new Set<string>();
+    for (const entry of entries) {
+      const sourceId = this.deleteEntryRecord(entry);
+      if (sourceId) sourceIds.add(sourceId);
+    }
+    for (const sourceId of sourceIds) {
+      this.pruneSourceQueueOrder(sourceId);
+    }
+  }
+
+  private deleteEntryRecord(entry: TaskEntry): string | undefined {
     const timer = this.cleanupTimers.get(entry.record.id);
     if (timer) {
       clearTimeout(timer);
@@ -2155,13 +2295,13 @@ export class TaskScheduler {
     }
     const sourceId = entry.record.source?.id;
     this.entries.delete(entry.record.id);
-    this.pruneSourceQueueOrder(sourceId);
     if (
       entry.dedupeKey &&
       this.latestByDedupeKey.get(entry.dedupeKey) === entry.record.id
     ) {
       this.latestByDedupeKey.delete(entry.dedupeKey);
     }
+    return sourceId;
   }
 }
 

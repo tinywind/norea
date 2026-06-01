@@ -24,6 +24,7 @@ import {
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
 import {
   taskWorkQueueKey,
@@ -358,6 +359,16 @@ function hasCancellableActiveTask(records: TaskRecord[]): boolean {
   return records.some((task) => task.canCancel && isActiveTask(task));
 }
 
+function activeChapterDownloadBatchIds(records: TaskRecord[]): string[] {
+  const batchIds = new Set<string>();
+  for (const task of records) {
+    if (task.kind !== "chapter.download" || !isActiveTask(task)) continue;
+    const batchId = task.subject?.batchId;
+    if (batchId) batchIds.add(batchId);
+  }
+  return [...batchIds];
+}
+
 function hasQueuedTask(records: TaskRecord[]): boolean {
   return records.some((task) => task.status === "queued");
 }
@@ -616,12 +627,16 @@ function TaskWorkGroup({
           {canCancel ? (
             <IconButton
               label={t("tasks.cancelWorkCurrent")}
-              onClick={() =>
+              onClick={() => {
+                cancelChapterDownloadBatches(
+                  activeChapterDownloadBatchIds(group.tasks),
+                );
                 taskScheduler.cancelActiveTasks({
+                  discardQueued: true,
                   sourceId,
                   workKey: group.workKey,
-                })
-              }
+                });
+              }}
               size="lg"
               tone="danger"
             >
@@ -868,11 +883,15 @@ function TaskGroup({
           {sourceId && hasCancellableTasks ? (
             <IconButton
               label={t("tasks.cancelSourceCurrent")}
-              onClick={() =>
+              onClick={() => {
+                cancelChapterDownloadBatches(
+                  activeChapterDownloadBatchIds(tasks),
+                );
                 taskScheduler.cancelActiveTasks({
+                  discardQueued: true,
                   sourceId,
-                })
-              }
+                });
+              }}
               size="lg"
               tone="danger"
             >
@@ -980,12 +999,12 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
   );
   const taskStats = useMemo(
     () => ({
-      running: tasks.filter((task) => task.status === "running").length,
-      queued: tasks.filter((task) => task.status === "queued").length,
-      failed: tasks.filter((task) => task.status === "failed").length,
-      succeeded: tasks.filter((task) => task.status === "succeeded").length,
+      running: snapshot.running,
+      queued: snapshot.queued,
+      failed: snapshot.failed,
+      succeeded: snapshot.succeeded,
     }),
-    [tasks],
+    [snapshot.failed, snapshot.queued, snapshot.running, snapshot.succeeded],
   );
   const hasCancellableTasks = useMemo(
     () => hasCancellableActiveTask(tasks),
@@ -1069,7 +1088,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
         title={
           <span className="lnr-task-page-title">
             {t("tasks.title")}
-            <span className="lnr-task-title-count">{tasks.length}</span>
+            <span className="lnr-task-title-count">{snapshot.total}</span>
           </span>
         }
         actions={
@@ -1097,7 +1116,12 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
             <IconButton
               disabled={!hasCancellableTasks}
               label={t("tasks.cancelAllCurrent")}
-              onClick={() => taskScheduler.cancelActiveTasks()}
+              onClick={() => {
+                cancelChapterDownloadBatches(
+                  activeChapterDownloadBatchIds(tasks),
+                );
+                taskScheduler.cancelActiveTasks({ discardQueued: true });
+              }}
               size="lg"
               tone="danger"
             >

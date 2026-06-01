@@ -102,6 +102,7 @@ export interface ChapterDownloadBatchResult {
 export interface ChapterDownloadBatchJob {
   jobs: Iterable<ChapterDownloadJob>;
   persist?: boolean;
+  removeBackendQueuedJobsOnCancel?: boolean;
   title: string;
   total?: number;
   windowSize?: number;
@@ -113,6 +114,11 @@ export interface ChapterDownloadBatchProgress {
 }
 
 interface ChapterDownloadBatchState extends ChapterDownloadBatchResult {
+  cancelRequested: boolean;
+  cancelledUnmaterialized: number;
+  knownChapterIds: Set<number>;
+  materializedChapterIds: Set<number>;
+  queuedChapterIds: Set<number>;
   settledChapterIds: Set<number>;
 }
 
@@ -138,6 +144,7 @@ export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW =
   MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
 const CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL = 25;
 const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
+const CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE = 500;
 
 let chapterDownloadQueueExecutorStarted = false;
 let chapterDownloadLifecycleSuspending = false;
@@ -484,14 +491,60 @@ async function waitForBackendChapterDownloadQueueMutations(): Promise<void> {
 }
 
 function queueChapterDownloadJob(job: ChapterDownloadJob): void {
+  if (job.batchId) {
+    chapterDownloadBatchStates.get(job.batchId)?.queuedChapterIds.add(job.id);
+  }
   queueChapterDownloadJobs([job]);
 }
 
-function removeQueuedChapterDownloadJob(chapterId: number): void {
+function removeQueuedChapterDownloadJobs(chapterIds: Iterable<number>): void {
   if (!isTauriRuntime()) return;
+  const uniqueChapterIds = [...new Set(chapterIds)];
+  if (uniqueChapterIds.length === 0) return;
   queueBackendChapterDownloadMutation("remove queued chapter download", () =>
-    removeBackendChapterDownloadJobs([chapterId]),
+    removeBackendChapterDownloadJobs(uniqueChapterIds),
   );
+}
+
+function scheduleQueuedChapterDownloadJobsRemoval(
+  chapterIds: Iterable<number>,
+): void {
+  if (!isTauriRuntime()) return;
+
+  const iterator = chapterIds[Symbol.iterator]();
+  queueBackendChapterDownloadMutation(
+    "remove queued chapter download",
+    async () => {
+      let done = false;
+      while (!done) {
+        const chunk: number[] = [];
+        while (chunk.length < CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE) {
+          const next = iterator.next();
+          if (next.done) {
+            done = true;
+            break;
+          }
+          chunk.push(next.value);
+        }
+        if (chunk.length > 0) {
+          await removeBackendChapterDownloadJobs(chunk);
+        }
+        if (!done) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    },
+  );
+}
+
+function removeQueuedChapterDownloadJob(
+  job: Pick<ChapterDownloadJob, "batchId" | "id">,
+): void {
+  const state = job.batchId
+    ? chapterDownloadBatchStates.get(job.batchId)
+    : undefined;
+  if (state && !state.queuedChapterIds.delete(job.id)) return;
+  removeQueuedChapterDownloadJobs([job.id]);
 }
 
 function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
@@ -552,6 +605,48 @@ function settleChapterDownloadBatchJob(
   state[settlement] += 1;
 }
 
+function chapterDownloadBatchCancelledCount(
+  state: ChapterDownloadBatchState,
+): number {
+  return state.cancelled + state.cancelledUnmaterialized;
+}
+
+function chapterDownloadBatchProgressCount(
+  state: ChapterDownloadBatchState,
+): number {
+  return (
+    chapterDownloadBatchCancelledCount(state) +
+    state.failed +
+    state.succeeded
+  );
+}
+
+export function cancelChapterDownloadBatches(
+  batchIds: Iterable<string>,
+): number {
+  let cancelled = 0;
+
+  for (const batchId of new Set(batchIds)) {
+    const state = chapterDownloadBatchStates.get(batchId);
+    if (!state || state.cancelRequested) continue;
+
+    state.cancelRequested = true;
+    cancelled += 1;
+    state.cancelledUnmaterialized = Math.max(
+      state.cancelledUnmaterialized,
+      state.knownChapterIds.size - state.materializedChapterIds.size,
+    );
+
+    const queuedChapterIds = state.queuedChapterIds;
+    state.queuedChapterIds = new Set();
+    if (queuedChapterIds.size > 0) {
+      scheduleQueuedChapterDownloadJobsRemoval(queuedChapterIds);
+    }
+  }
+
+  return cancelled;
+}
+
 export function getActiveChapterDownloadBatchProgress():
   | ChapterDownloadBatchProgress
   | undefined {
@@ -560,7 +655,7 @@ export function getActiveChapterDownloadBatchProgress():
 
   return activeBatches.reduce<ChapterDownloadBatchProgress>(
     (sum, batch) => ({
-      current: sum.current + batch.settledChapterIds.size,
+      current: sum.current + chapterDownloadBatchProgressCount(batch),
       total: sum.total + batch.total,
     }),
     { current: 0, total: 0 },
@@ -937,11 +1032,11 @@ function enqueueChapterDownloadForExecutor(
     },
   });
   void handle.promise.then(
-    () => removeQueuedChapterDownloadJob(job.id),
+    () => removeQueuedChapterDownloadJob(job),
     (error) => {
       if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
       if (!removeQueuedJobOnFailure) return;
-      removeQueuedChapterDownloadJob(job.id);
+      removeQueuedChapterDownloadJob(job);
     },
   );
   return handle;
@@ -1123,23 +1218,34 @@ export function enqueueChapterMediaRepair(
 export function enqueueChapterDownloadBatch({
   jobs,
   persist = true,
+  removeBackendQueuedJobsOnCancel = false,
   title,
   total: requestedTotal,
   windowSize: requestedWindowSize,
 }: ChapterDownloadBatchJob): TaskHandle<ChapterDownloadBatchResult> {
   const batchId = makeChapterDownloadBatchId();
+  const batchJobs = Array.isArray(jobs) ? jobs : null;
   const total = normalizeChapterDownloadBatchTotal(jobs, requestedTotal);
   const windowSize = normalizeChapterDownloadBatchWindowSize(
     requestedWindowSize,
   );
-  if (persist && Array.isArray(jobs)) {
-    queueChapterDownloadJobs(jobs);
+  if (persist && batchJobs) {
+    queueChapterDownloadJobs(batchJobs);
   }
-  const persistMaterializedJobs = persist && !Array.isArray(jobs);
-  const waitForBatchQueue = persist && Array.isArray(jobs);
+  const persistMaterializedJobs = persist && !batchJobs;
+  const waitForBatchQueue = persist && Boolean(batchJobs);
   chapterDownloadBatchStates.set(batchId, {
+    cancelRequested: false,
     cancelled: 0,
+    cancelledUnmaterialized: 0,
     failed: 0,
+    knownChapterIds: new Set(batchJobs?.map((job) => job.id) ?? []),
+    materializedChapterIds: new Set(),
+    queuedChapterIds: new Set(
+      persist || removeBackendQueuedJobsOnCancel
+        ? (batchJobs?.map((job) => job.id) ?? [])
+        : [],
+    ),
     settledChapterIds: new Set(),
     succeeded: 0,
     total,
@@ -1149,7 +1255,16 @@ export function enqueueChapterDownloadBatch({
     items: jobs,
     windowSize,
     materializeBatch: taskScheduler.batch.bind(taskScheduler),
+    shouldContinue: () =>
+      !chapterDownloadBatchStates.get(batchId)?.cancelRequested,
     materialize: async (job) => {
+      if (chapterDownloadBatchStates.get(batchId)?.cancelRequested) {
+        settleChapterDownloadBatchJob(batchId, job.id, "cancelled");
+        return;
+      }
+      chapterDownloadBatchStates
+        .get(batchId)
+        ?.materializedChapterIds.add(job.id);
       try {
         const handle = enqueueChapterDownloadForExecutor(
           {
@@ -1178,7 +1293,7 @@ export function enqueueChapterDownloadBatch({
       const state = chapterDownloadBatchStates.get(batchId);
       const result = state
         ? {
-            cancelled: state.cancelled,
+            cancelled: chapterDownloadBatchCancelledCount(state),
             failed: state.failed,
             succeeded: state.succeeded,
             total: state.total,
@@ -1318,6 +1433,7 @@ async function runBackendChapterDownloadExecutor(): Promise<void> {
     const restoreHandle = enqueueChapterDownloadBatch({
       jobs: pendingJobs.map((job) => ({ ...job, priority: "background" })),
       persist: false,
+      removeBackendQueuedJobsOnCancel: true,
       title: "Queued chapter downloads",
       total: pendingJobs.length,
       windowSize: RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
