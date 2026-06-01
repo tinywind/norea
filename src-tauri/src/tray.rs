@@ -1,11 +1,11 @@
 use serde::Deserialize;
 #[cfg(target_os = "windows")]
 use tauri::{
-    menu::{MenuBuilder, MenuItem},
+    menu::MenuBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     WindowEvent,
 };
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime, WebviewWindowBuilder, Window};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
 
@@ -17,11 +17,11 @@ const TRAY_OPEN_ID: &str = "tray-open";
 #[cfg(target_os = "windows")]
 const TRAY_QUIT_ID: &str = "tray-quit";
 #[cfg(target_os = "windows")]
-const TRAY_TASK_ITEM_ID_PREFIX: &str = "tray-task-item";
+const MAX_TOOLTIP_TASK_ITEMS: usize = 4;
 #[cfg(target_os = "windows")]
-const MAX_TRAY_TASK_ITEMS: usize = 8;
+const MAX_TOOLTIP_LINE_CHARS: usize = 96;
 #[cfg(target_os = "windows")]
-const MAX_MENU_TEXT_CHARS: usize = 96;
+const MAX_TOOLTIP_TEXT_CHARS: usize = 240;
 
 #[derive(Debug, Deserialize)]
 pub struct TrayTaskProgressItem {
@@ -42,7 +42,8 @@ pub fn init(_app: &mut tauri::App) -> tauri::Result<()> {
 
 #[cfg(target_os = "windows")]
 fn install_close_to_tray_handler(app: &tauri::App) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(window) = main_window(app.handle()) else {
+        log::warn!("install close-to-tray failed: main window not found");
         return;
     };
     let window_to_hide = window.clone();
@@ -58,7 +59,7 @@ fn install_close_to_tray_handler(app: &tauri::App) {
 
 #[cfg(target_os = "windows")]
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let menu = build_tray_menu(app, &[])?;
+    let menu = build_tray_menu(app)?;
 
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -91,61 +92,57 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn build_tray_menu<R: Runtime, M: Manager<R>>(
-    manager: &M,
-    items: &[TrayTaskProgressItem],
-) -> tauri::Result<tauri::menu::Menu<R>> {
-    let mut builder = MenuBuilder::new(manager).text(TRAY_OPEN_ID, "Open Norea");
-
-    if !items.is_empty() {
-        builder = builder.separator();
-        for (index, item) in items.iter().take(MAX_TRAY_TASK_ITEMS).enumerate() {
-            let task_item = MenuItem::with_id(
-                manager,
-                format!("{TRAY_TASK_ITEM_ID_PREFIX}-{index}"),
-                menu_text(&item.label, "Task"),
-                false,
-                None::<&str>,
-            )?;
-            builder = builder.item(&task_item);
-        }
-    }
-
-    builder.separator().text(TRAY_QUIT_ID, "Quit Norea").build()
+fn build_tray_menu<R: Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<tauri::menu::Menu<R>> {
+    MenuBuilder::new(manager)
+        .text(TRAY_OPEN_ID, "Open Norea")
+        .separator()
+        .text(TRAY_QUIT_ID, "Quit Norea")
+        .build()
 }
 
 #[cfg(target_os = "windows")]
-fn menu_text(value: &str, fallback: &str) -> String {
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars {
+        return value.to_string();
+    }
+
+    let mut truncated = chars
+        .into_iter()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+#[cfg(target_os = "windows")]
+fn tooltip_line(value: &str, fallback: &str, max_chars: usize) -> String {
     let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let text = if compact.is_empty() {
         fallback
     } else {
         &compact
     };
-    let chars = text.chars().collect::<Vec<_>>();
-    let truncated = if chars.len() > MAX_MENU_TEXT_CHARS {
-        let mut value = chars
-            .into_iter()
-            .take(MAX_MENU_TEXT_CHARS.saturating_sub(3))
-            .collect::<String>();
-        value.push_str("...");
-        value
-    } else {
-        text.to_string()
-    };
-    truncated.replace('&', "&&")
+    truncate_text(text, max_chars)
 }
 
 #[cfg(target_os = "windows")]
-fn tray_tooltip(summary: &str, has_tasks: bool) -> String {
-    if !has_tasks {
-        "Norea".to_string()
-    } else {
-        format!(
-            "Norea - {}",
-            summary.split_whitespace().collect::<Vec<_>>().join(" ")
-        )
+fn tray_tooltip(summary: &str, items: &[TrayTaskProgressItem]) -> String {
+    if items.is_empty() {
+        return "Norea".to_string();
     }
+
+    let mut lines = vec![format!(
+        "Norea - {}",
+        tooltip_line(summary, "Tasks", MAX_TOOLTIP_LINE_CHARS)
+    )];
+    lines.extend(
+        items
+            .iter()
+            .take(MAX_TOOLTIP_TASK_ITEMS)
+            .map(|item| tooltip_line(&item.label, "Task", MAX_TOOLTIP_LINE_CHARS)),
+    );
+    truncate_text(&lines.join("\n"), MAX_TOOLTIP_TEXT_CHARS)
 }
 
 #[cfg(target_os = "windows")]
@@ -158,10 +155,7 @@ pub fn tray_set_task_progress(
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
     };
-    let menu = build_tray_menu(&app, &items).map_err(|err| format!("build tray menu: {err}"))?;
-    tray.set_menu(Some(menu))
-        .map_err(|err| format!("set tray menu: {err}"))?;
-    if let Err(err) = tray.set_tooltip(Some(tray_tooltip(&summary, !items.is_empty()))) {
+    if let Err(err) = tray.set_tooltip(Some(tray_tooltip(&summary, &items))) {
         log::warn!("set tray tooltip failed: {err}");
     }
     Ok(())
@@ -181,8 +175,7 @@ pub fn tray_set_task_progress(
 }
 
 pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
-        log::warn!("show main window from tray failed: main window not found");
+    let Some(window) = main_window(app).or_else(|| recreate_main_window(app)) else {
         return;
     };
     if let Err(err) = window.show() {
@@ -200,7 +193,7 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 }
 
 #[cfg(target_os = "windows")]
-fn restore_native_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+fn restore_native_window<R: Runtime>(window: &Window<R>) {
     let hwnd = match window.hwnd() {
         Ok(hwnd) => hwnd,
         Err(err) => {
@@ -215,4 +208,38 @@ fn restore_native_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn restore_native_window<R: Runtime>(_window: &tauri::WebviewWindow<R>) {}
+fn restore_native_window<R: Runtime>(_window: &Window<R>) {}
+
+fn main_window<R: Runtime>(app: &AppHandle<R>) -> Option<Window<R>> {
+    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
+        return Some(window);
+    }
+
+    let mut windows = app.windows();
+    if windows.len() == 1 {
+        return windows.drain().map(|(_, window)| window).next();
+    }
+
+    let labels = windows.keys().cloned().collect::<Vec<_>>().join(", ");
+    log::warn!("main window label '{MAIN_WINDOW_LABEL}' not found; windows=[{labels}]");
+    None
+}
+
+fn recreate_main_window<R: Runtime>(app: &AppHandle<R>) -> Option<Window<R>> {
+    let result = match app.config().app.windows.first() {
+        Some(config) => {
+            let mut config = config.clone();
+            config.label = MAIN_WINDOW_LABEL.to_string();
+            WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build())
+        }
+        None => WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, Default::default()).build(),
+    };
+
+    match result {
+        Ok(_) => app.get_window(MAIN_WINDOW_LABEL),
+        Err(err) => {
+            log::warn!("recreate main window from tray failed: {err}");
+            None
+        }
+    }
+}

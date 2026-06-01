@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Norea",
         "width": 1100,
         "height": 720,
