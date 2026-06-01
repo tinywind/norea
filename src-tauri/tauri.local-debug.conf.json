@@ -5,6 +5,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Norea Debug",
         "width": 1100,
         "height": 720,
