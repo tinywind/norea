@@ -61,14 +61,27 @@ export function chapterStorageRelativeDir(
   novel: ChapterStorageNovelPathInput,
   chapter: ChapterStorageChapterPathInput,
 ): string {
-  const sourceId = safeSegment(novel.pluginId, "source");
-  const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
-  const novelSegment = `${safeLabelSegment(novel.name, "novel")}-${novelAddress}`;
   const chapterSegment = `${chapterNumberSegment(chapter)}-${safeLabelSegment(
     chapter.name,
     "chapter",
   )}`;
-  return `${CONTENTS_ROOT_DIR}/${sourceId}/${novelSegment}/${chapterSegment}`;
+  return `${novelStorageRelativeDir(novel)}/${chapterSegment}`;
+}
+
+export function novelStorageRelativeDir(
+  novel: ChapterStorageNovelPathInput,
+): string {
+  const sourceId = safeSegment(novel.pluginId, "source");
+  const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
+  const novelSegment = `${safeLabelSegment(novel.name, "novel")}-${novelAddress}`;
+  return `${CONTENTS_ROOT_DIR}/${sourceId}/${novelSegment}`;
+}
+
+export function novelCoverRelativePath(
+  novel: ChapterStorageNovelPathInput,
+  fileName: string,
+): string {
+  return `${novelStorageRelativeDir(novel)}/${safeSegment(fileName, "cover")}`;
 }
 
 export function chapterContentRelativePath(

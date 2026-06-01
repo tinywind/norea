@@ -6,6 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use tauri::http::{self, StatusCode, header};
 use tauri::{AppHandle, Manager, Runtime};
 use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
@@ -20,6 +21,7 @@ const CONTENTS_ROOT_DIR: &str = "contents";
 const NO_MEDIA_FILE: &str = ".nomedia";
 const MEDIA_DOWNLOAD_DIR: &str = "media";
 const MEDIA_ARCHIVE_FILE: &str = "media.zip";
+const NOVEL_COVER_MANIFEST_FILE: &str = "cover.json";
 const LEGACY_STORAGE_MANIFEST_FILE: &str = "storage-manifest.json";
 const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
@@ -215,6 +217,122 @@ fn is_unsafe_unicode_format(ch: char) -> bool {
     )
 }
 
+pub fn norea_media_protocol_response(
+    app: &AppHandle,
+    request: http::Request<Vec<u8>>,
+) -> http::Response<Vec<u8>> {
+    match norea_media_protocol_body(app, request.uri().path()) {
+        Ok((body, content_type)) => http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(body)
+            .unwrap_or_else(|_| http::Response::new(Vec::new())),
+        Err((status, message)) => http::Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(message.into_bytes())
+            .unwrap_or_else(|_| http::Response::new(Vec::new())),
+    }
+}
+
+fn norea_media_protocol_body(
+    app: &AppHandle,
+    request_path: &str,
+) -> Result<(Vec<u8>, &'static str), (StatusCode, String)> {
+    let relative_path = norea_media_relative_path(request_path)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let media_root =
+        media_root(app).map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    let path = media_root.join(&relative_path);
+    if !path.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "norea media: file not found".to_string(),
+        ));
+    }
+    let body = fs::read(&path).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("norea media: read file: {err}"),
+        )
+    })?;
+    Ok((body, norea_media_content_type(&path)))
+}
+
+fn norea_media_relative_path(request_path: &str) -> Result<PathBuf, String> {
+    let decoded = percent_decode_utf8(request_path.trim_start_matches('/'))?;
+    let parts = decoded.split('/').collect::<Vec<_>>();
+    if parts.first() != Some(&CONTENTS_ROOT_DIR) {
+        return Err("norea media: path must be contents-relative".to_string());
+    }
+
+    let mut path = PathBuf::new();
+    for part in parts {
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.chars().any(|ch| {
+                ch.is_control()
+                    || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            })
+        {
+            return Err("norea media: invalid relative path".to_string());
+        }
+        path.push(part);
+    }
+    Ok(path)
+}
+
+fn percent_decode_utf8(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("norea media: invalid percent encoding".to_string());
+            }
+            let high = percent_hex_value(bytes[index + 1])
+                .ok_or_else(|| "norea media: invalid percent encoding".to_string())?;
+            let low = percent_hex_value(bytes[index + 2])
+                .ok_or_else(|| "norea media: invalid percent encoding".to_string())?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "norea media: invalid utf-8 path".to_string())
+}
+
+fn percent_hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn norea_media_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("gif") => "image/gif",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
 fn safe_label_segment(value: Option<&str>, fallback: &str) -> String {
     let raw = value.map(str::trim).filter(|value| !value.is_empty());
     let sanitized = raw
@@ -254,6 +372,24 @@ fn novel_folder_segment(
         "{}-{novel_address}",
         safe_label_segment(novel_name, "novel")
     )
+}
+
+fn content_novel_dir_at(
+    root: &Path,
+    source_id: &str,
+    novel_id: i64,
+    novel_path: Option<&str>,
+    novel_name: Option<&str>,
+) -> Result<PathBuf, String> {
+    if novel_id <= 0 {
+        return Err("chapter media: invalid novel id".to_string());
+    }
+    let source_id = safe_segment(source_id, "source");
+    let novel_segment = novel_folder_segment(novel_name, novel_path, novel_id);
+    Ok(root
+        .join(CONTENTS_ROOT_DIR)
+        .join(source_id)
+        .join(novel_segment))
 }
 
 fn chapter_number_segment(
@@ -305,15 +441,12 @@ fn content_chapter_dir_at(
     if chapter_id <= 0 {
         return Err("chapter media: invalid chapter id".to_string());
     }
-    let source_id = safe_segment(source_id, "source");
-    let novel_segment = novel_folder_segment(novel_name, novel_path, novel_id);
     let chapter_segment =
         chapter_folder_segment(chapter_number, chapter_name, chapter_position, chapter_id);
-    Ok(root
-        .join(CONTENTS_ROOT_DIR)
-        .join(source_id)
-        .join(novel_segment)
-        .join(chapter_segment))
+    Ok(
+        content_novel_dir_at(root, source_id, novel_id, novel_path, novel_name)?
+            .join(chapter_segment),
+    )
 }
 
 fn content_chapter_relative_dir(
@@ -1585,6 +1718,115 @@ pub fn chapter_content_mirror_store(
     delete_legacy_storage_manifest(&media_root)
 }
 
+fn novel_cover_manifest_path(novel_dir: &Path) -> PathBuf {
+    novel_dir.join(NOVEL_COVER_MANIFEST_FILE)
+}
+
+fn novel_cover_file_name_from_manifest(raw: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|manifest| {
+            manifest
+                .get("fileName")
+                .and_then(serde_json::Value::as_str)
+                .map(|value| value.to_string())
+        })
+}
+
+fn read_existing_novel_cover_manifest(novel_dir: &Path) -> Result<Option<String>, String> {
+    let manifest_path = novel_cover_manifest_path(novel_dir);
+    let raw = match fs::read_to_string(&manifest_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("chapter media: read novel cover manifest: {err}")),
+    };
+    let file_name = match novel_cover_file_name_from_manifest(&raw) {
+        Some(file_name) => safe_segment(&file_name, "cover"),
+        None => return Ok(None),
+    };
+    if novel_dir.join(file_name).is_file() {
+        Ok(Some(raw))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn novel_cover_read_manifest(
+    app: AppHandle,
+    novel_id: i64,
+    source_id: String,
+    novel_name: String,
+    novel_path: String,
+) -> Result<Option<String>, String> {
+    let media_root = media_root(&app)?;
+    let novel_dir = content_novel_dir_at(
+        &media_root,
+        &source_id,
+        novel_id,
+        Some(novel_path.as_str()),
+        Some(novel_name.as_str()),
+    )?;
+    read_existing_novel_cover_manifest(&novel_dir)
+}
+
+#[tauri::command]
+pub fn novel_cover_store(
+    app: AppHandle,
+    novel_id: i64,
+    source_id: String,
+    novel_name: String,
+    novel_path: String,
+    file_name: String,
+    body: Vec<u8>,
+    manifest: String,
+) -> Result<(), String> {
+    if body.is_empty() {
+        return Err("chapter media: novel cover body is empty".to_string());
+    }
+
+    let media_root = media_root(&app)?;
+    ensure_contents_nomedia(&media_root)?;
+    let novel_dir = content_novel_dir_at(
+        &media_root,
+        &source_id,
+        novel_id,
+        Some(novel_path.as_str()),
+        Some(novel_name.as_str()),
+    )?;
+    fs::create_dir_all(&novel_dir)
+        .map_err(|err| format!("chapter media: create novel cover dir: {err}"))?;
+
+    let previous_file_name = read_existing_novel_cover_manifest(&novel_dir)?
+        .as_deref()
+        .and_then(novel_cover_file_name_from_manifest)
+        .map(|file_name| safe_segment(&file_name, "cover"));
+    let file_name = safe_segment(&file_name, "cover");
+    let cover_path = novel_dir.join(&file_name);
+    let temp_cover_path = novel_dir.join(format!("{file_name}.tmp"));
+    fs::write(&temp_cover_path, body)
+        .map_err(|err| format!("chapter media: write novel cover temp: {err}"))?;
+    move_media_source_to_part_path(&temp_cover_path, &cover_path, "chapter media: novel cover")?;
+
+    let manifest_path = novel_cover_manifest_path(&novel_dir);
+    let temp_manifest_path = novel_dir.join(format!("{NOVEL_COVER_MANIFEST_FILE}.tmp"));
+    fs::write(&temp_manifest_path, manifest)
+        .map_err(|err| format!("chapter media: write novel cover manifest temp: {err}"))?;
+    move_media_source_to_part_path(
+        &temp_manifest_path,
+        &manifest_path,
+        "chapter media: novel cover manifest",
+    )?;
+
+    if let Some(previous_file_name) = previous_file_name {
+        if previous_file_name != file_name {
+            let _ = fs::remove_file(novel_dir.join(previous_file_name));
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn chapter_content_mirror_clear(app: AppHandle, chapter_id: i64) -> Result<(), String> {
     let media_root = media_root(&app)?;
@@ -2423,11 +2665,12 @@ mod tests {
             fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
             vec![1, 2, 3]
         );
-        assert!(dir
-            .path()
-            .join(CONTENTS_ROOT_DIR)
-            .join(NO_MEDIA_FILE)
-            .exists());
+        assert!(
+            dir.path()
+                .join(CONTENTS_ROOT_DIR)
+                .join(NO_MEDIA_FILE)
+                .exists()
+        );
     }
 
     #[test]
@@ -2475,10 +2718,12 @@ mod tests {
 
         assert!(path.is_none());
         assert_eq!(body, b"image-body");
-        assert!(!chapter_dir
-            .join(MEDIA_DOWNLOAD_DIR)
-            .join("page.png")
-            .exists());
+        assert!(
+            !chapter_dir
+                .join(MEDIA_DOWNLOAD_DIR)
+                .join("page.png")
+                .exists()
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ import {
   isKnownChapterContentType,
   type ChapterContentType,
 } from "../chapter-content";
+import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { markUpdatesIndexDirty } from "../updates/update-index-events";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 
@@ -246,6 +247,8 @@ export async function syncNovelFromSource(
     options,
   );
   const preserveMissingMetadata = options.preserveMissingMetadata ?? false;
+  const cover = optionalText(detail.cover) ?? optionalText(item.cover);
+  const novelName = detail.name || item.name;
   const chapterInputs: InsertChapterInput[] = detail.chapters.map(
     (chapter, index) => ({
       novelId: 0,
@@ -283,8 +286,8 @@ export async function syncNovelFromSource(
       [
         plugin.id,
         item.path,
-        detail.name || item.name,
-        optionalText(detail.cover) ?? optionalText(item.cover),
+        novelName,
+        cover,
         optionalText(detail.summary),
         optionalText(detail.author),
         optionalText(detail.artist),
@@ -321,6 +324,25 @@ export async function syncNovelFromSource(
   const changed = result.novelChanged || result.changedChapters > 0;
   if (changed && (options.notifyUpdatesIndex ?? true)) {
     markUpdatesIndexDirty("novel-sync");
+  }
+
+  try {
+    await saveNovelCoverFromSource(
+      plugin,
+      {
+        id: result.novelId,
+        name: novelName,
+        path: item.path,
+        pluginId: plugin.id,
+      },
+      cover,
+    );
+  } catch (error) {
+    console.warn("[sync-novel] failed to store novel cover", {
+      error,
+      novelId: result.novelId,
+      pluginId: plugin.id,
+    });
   }
 
   return {

@@ -89,6 +89,9 @@ pub fn run() {
                 .add_migrations("sqlite:norea.db", migrations)
                 .build(),
         )
+        .register_uri_scheme_protocol("norea-media", |ctx, request| {
+            chapter_media::norea_media_protocol_response(ctx.app_handle(), request)
+        })
         .invoke_handler(tauri::generate_handler![
             backup::backup_cleanup_staged_unpack,
             backup::backup_delete_temp_file,
@@ -127,6 +130,8 @@ pub fn run() {
             chapter_media::chapter_storage_prune_dir_children,
             chapter_media::chapter_storage_relocate_dir,
             chapter_media::chapter_storage_remove_dir,
+            chapter_media::novel_cover_read_manifest,
+            chapter_media::novel_cover_store,
             download_queue::chapter_download_queue_enqueue,
             download_queue::chapter_download_queue_lease,
             download_queue::chapter_download_queue_remove,

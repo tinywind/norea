@@ -12,6 +12,7 @@ import {
   useTranslation,
   type TranslationKey,
 } from "../i18n";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
 import {
   ConsoleChip,
@@ -208,6 +209,7 @@ const LibraryTableRow = memo(function LibraryTableRow({
   const downloadProgress = getDownloadPercent(novel);
   const status = getNovelStatus(novel, t);
   const hasUnread = novel.chaptersUnread > 0;
+  const coverSource = useNovelCoverSource(novel);
 
   return (
     <LibraryInteractiveItem
@@ -224,7 +226,7 @@ const LibraryTableRow = memo(function LibraryTableRow({
           <span data-active={hasUnread} />
         )}
       </span>
-      <ConsoleCover alt={novel.name} height={42} src={novel.cover} width={28} />
+      <ConsoleCover alt={novel.name} height={42} src={coverSource} width={28} />
       <span className="lnr-library-title-cell">
         <span className="lnr-library-title">{novel.name}</span>
         <span className="lnr-library-subtitle">
@@ -273,6 +275,7 @@ const LibraryCard = memo(function LibraryCard({
   const status = getNovelStatus(novel, t);
   const coverOnly = displayMode === "cover-only";
   const coverWidth = displayMode === "compact" ? 100 : coverOnly ? "100%" : 128;
+  const coverSource = useNovelCoverSource(novel);
 
   return (
     <LibraryInteractiveItem
@@ -289,7 +292,7 @@ const LibraryCard = memo(function LibraryCard({
         <ConsoleCover
           alt={novel.name}
           height={displayMode === "compact" ? 150 : 190}
-          src={novel.cover}
+          src={coverSource}
           width={coverWidth}
         />
       </div>

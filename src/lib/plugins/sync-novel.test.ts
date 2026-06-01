@@ -14,11 +14,16 @@ vi.mock("../updates/update-index-events", () => ({
   markUpdatesIndexDirty: vi.fn(),
 }));
 
+vi.mock("../novel-cover-storage", () => ({
+  saveNovelCoverFromSource: vi.fn(),
+}));
+
 import { getDb, runDatabaseTransaction } from "../../db/client";
 import {
   getLatestSourceChapterAnchor,
   upsertSourceChaptersInDb,
 } from "../../db/queries/chapter";
+import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { syncNovelFromSource } from "./sync-novel";
 import type { Plugin, SourceNovel } from "./types";
 
@@ -27,6 +32,7 @@ const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
 const mockedGetLatestSourceChapterAnchor = vi.mocked(
   getLatestSourceChapterAnchor,
 );
+const mockedSaveNovelCoverFromSource = vi.mocked(saveNovelCoverFromSource);
 const mockedUpsertSourceChaptersInDb = vi.mocked(upsertSourceChaptersInDb);
 
 let mockExecute: ReturnType<typeof vi.fn>;
@@ -87,6 +93,7 @@ beforeEach(() => {
     chunks: 1,
     rowsAffected: 1,
   });
+  mockedSaveNovelCoverFromSource.mockResolvedValue(undefined);
 });
 
 describe("syncNovelFromSource", () => {
@@ -305,6 +312,35 @@ describe("syncNovelFromSource", () => {
           path: "/chapter-1",
         }),
       ]),
+    );
+  });
+
+  it("stores the resolved novel cover after syncing metadata", async () => {
+    const plugin = makePlugin({
+      parseNovel: vi.fn(() =>
+        Promise.resolve({
+          ...makeDetail([1]),
+          cover: "https://source.test/cover.jpg",
+          name: "Updated Novel",
+        }),
+      ),
+    });
+
+    await syncNovelFromSource(plugin, {
+      cover: "https://source.test/old.jpg",
+      name: "Novel",
+      path: "/novel",
+    });
+
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
+      plugin,
+      {
+        id: 7,
+        name: "Updated Novel",
+        path: "/novel",
+        pluginId: "demo",
+      },
+      "https://source.test/cover.jpg",
     );
   });
 

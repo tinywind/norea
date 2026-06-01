@@ -100,6 +100,8 @@ import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
+import { saveNovelCoverFromSource } from "../lib/novel-cover-storage";
 import {
   enqueueChapterDownload,
   enqueueChapterDownloadBatch,
@@ -1430,6 +1432,7 @@ function NovelWorkspace({
 }: NovelWorkspaceProps) {
   const { t } = useTranslation();
   const { titleRef, titleStyle } = useAutoFitNovelTitle(novel.name);
+  const coverSource = useNovelCoverSource(novel);
   const genres = useMemo(() => splitGenres(novel.genres), [novel.genres]);
   const firstChapter = useMemo(() => findFirstChapter(chapters), [chapters]);
   const lastReadChapter = useMemo(
@@ -1495,7 +1498,7 @@ function NovelWorkspace({
       <ConsoleCover
         alt={novel.name}
         height={204}
-        src={novel.cover}
+        src={coverSource}
         width={136}
       />
     </ConsolePanel>
@@ -1726,6 +1729,49 @@ export function NovelDetailPage() {
     queryFn: () => listChaptersByNovel(id),
     enabled: id > 0,
   });
+
+  useEffect(() => {
+    const novel = novelQuery.data;
+    if (!novel || novel.isLocal || !novel.cover) return;
+    const plugin = pluginManager.getPlugin(novel.pluginId);
+    if (!plugin) return;
+
+    let cancelled = false;
+    void saveNovelCoverFromSource(
+      plugin,
+      {
+        id: novel.id,
+        name: novel.name,
+        path: novel.path,
+        pluginId: novel.pluginId,
+      },
+      novel.cover,
+    )
+      .then(() => {
+        if (cancelled) return;
+        void queryClient.invalidateQueries({ queryKey: novelKey(novel.id) });
+        void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+      })
+      .catch((error) => {
+        console.warn("[novel] failed to store novel cover", {
+          error,
+          novelId: novel.id,
+          pluginId: novel.pluginId,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    novelQuery.data?.cover,
+    novelQuery.data?.id,
+    novelQuery.data?.isLocal,
+    novelQuery.data?.name,
+    novelQuery.data?.path,
+    novelQuery.data?.pluginId,
+    queryClient,
+  ]);
 
   useEffect(() => {
     setSourceDuplicateChapters(getSourceDuplicateChapterInfo(id));
