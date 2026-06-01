@@ -6,8 +6,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     QueryBuilder, Row, Sqlite, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;

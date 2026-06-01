@@ -79,9 +79,9 @@ fn update_progress_notification(
     progress: &tauri_winrt_notification::Progress,
 ) -> windows::core::Result<tauri_winrt_notification::NotificationUpdateResult> {
     use windows::{
-        core::HSTRING,
         Foundation::Collections::StringMap,
         UI::Notifications::{NotificationData, ToastNotificationManager},
+        core::HSTRING,
     };
 
     let map = StringMap::new()?;

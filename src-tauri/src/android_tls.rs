@@ -1,7 +1,7 @@
 use jni::{
+    EnvUnowned,
     errors::ThrowRuntimeExAndDefault,
     objects::{JClass, JObject},
-    EnvUnowned,
 };
 
 #[unsafe(no_mangle)]

@@ -1,13 +1,13 @@
 use serde::Deserialize;
-#[cfg(target_os = "windows")]
-use tauri::{
-    menu::MenuBuilder,
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    WindowEvent,
-};
 use tauri::{AppHandle, Manager, Runtime, WebviewWindowBuilder, Window};
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+use tauri::{
+    WindowEvent,
+    menu::MenuBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{SW_RESTORE, SetForegroundWindow, ShowWindow};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 #[cfg(target_os = "windows")]

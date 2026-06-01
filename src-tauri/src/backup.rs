@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
-use tauri::{async_runtime, AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, async_runtime};
 use tauri_plugin_sql::{DbInstances, DbPool};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -296,11 +296,7 @@ struct BackupRestoreInstalledPlugin {
 }
 
 fn bool_to_int(value: bool) -> i64 {
-    if value {
-        1
-    } else {
-        0
-    }
+    if value { 1 } else { 0 }
 }
 
 fn backup_content_type(value: Option<&str>) -> &str {

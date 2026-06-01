@@ -27,9 +27,9 @@
 //!   the host asks the WebView to start an async browser fetch and
 //!   polls a page-local result slot through `eval_with_callback`.
 
+use std::collections::HashMap;
 #[cfg(desktop)]
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 #[cfg(desktop)]
 use std::hash::{Hash, Hasher};
 #[cfg(desktop)]
@@ -52,7 +52,7 @@ use tauri::{Emitter, Manager, Url, WebviewUrl};
 #[cfg(desktop)]
 use tauri::{LogicalPosition, LogicalSize, Rect, Webview, WebviewBuilder};
 #[cfg(desktop)]
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::{Mutex as AsyncMutex, oneshot};
 #[cfg(desktop)]
 use tokio::time::timeout;
 
@@ -2245,7 +2245,10 @@ pub async fn webview_extract(
     }
     log::trace!(
         "[scraper:extract] request queue={queue} url={url} timeout_ms={timeout_ms:?} user_agent={user_agent:?} before_script_len={}",
-        before_script.as_ref().map(|script| script.len()).unwrap_or(0)
+        before_script
+            .as_ref()
+            .map(|script| script.len())
+            .unwrap_or(0)
     );
     log_scraper_cookies(
         &scraper,
