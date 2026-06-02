@@ -85,6 +85,12 @@ type ReaderChapterRow = ChapterRow & {
   content: string | null;
 };
 
+function shouldReadStoredReaderContent(
+  chapter: Pick<ChapterRow, "contentBytes" | "isDownloaded">,
+): boolean {
+  return chapter.isDownloaded || chapter.contentBytes > 0;
+}
+
 const READER_RENDERABLE_MEDIA_SELECTOR =
   "img,video,audio,source,embed,track,object,iframe,link[rel~='preload']";
 
@@ -595,7 +601,7 @@ export function ReaderPage() {
     queryFn: async () => {
       const chapter = await getChapterById(chapterId);
       if (!chapter) return null;
-      const content = chapter.isDownloaded
+      const content = shouldReadStoredReaderContent(chapter)
         ? await readStoredChapterContentMirror(chapter.id)
         : null;
       return { ...chapter, content } satisfies ReaderChapterRow;
@@ -1470,6 +1476,30 @@ export function ReaderPage() {
   const readerSeekbarMounted =
     readerSeekbarEnabled &&
     (readerSeekbarRenderMounted || readerSeekbarVisible);
+  useEffect(() => {
+    if (
+      !chapter ||
+      chapter.isDownloaded ||
+      hasChapterContent ||
+      autoDownloadingChapterId !== chapter.id
+    ) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void queryClient.invalidateQueries({
+        queryKey: chapterDetailQueryKey(chapter.id),
+      });
+    }, 1_000);
+
+    return () => window.clearInterval(interval);
+  }, [
+    autoDownloadingChapterId,
+    chapter?.id,
+    chapter?.isDownloaded,
+    hasChapterContent,
+    queryClient,
+  ]);
   const readerContentGeneral = useMemo(
     () =>
       effectiveReaderGeneral.showSeekbar === readerSeekbarMounted

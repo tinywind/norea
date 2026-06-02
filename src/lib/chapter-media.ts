@@ -680,6 +680,28 @@ function androidChapterMediaArchiveRelativePathCandidates(
   ]);
 }
 
+function androidChapterMediaSourceCandidates(
+  context: ChapterMediaStorageContext | null | undefined,
+): Array<{ archivePath: string; mediaPath: string }> {
+  const preferred = {
+    archivePath: androidChapterMediaArchiveRelativePathForContext(context),
+    mediaPath: androidChapterMediaRelativePathForContext(context),
+  };
+  if (!hasStorageContext(context)) return [preferred];
+  const legacy = {
+    archivePath: `chapter-media/${context.chapterId}/media.zip`,
+    mediaPath: androidChapterMediaRelativePath(context.chapterId),
+  };
+  const unique = new Map<string, { archivePath: string; mediaPath: string }>();
+  for (const candidate of [preferred, legacy]) {
+    unique.set(
+      `${candidate.mediaPath}\u0000${candidate.archivePath}`,
+      candidate,
+    );
+  }
+  return [...unique.values()];
+}
+
 function androidChapterMediaManifestRelativePath(
   context: ChapterMediaStorageContext | null | undefined,
 ): string {
@@ -2587,13 +2609,23 @@ async function resolveAndroidLocalChapterMediaSources(
   const resolved = new Map<string, string | null>();
   const preparedArchives = new Map<string, Promise<boolean>>();
 
-  const prepareArchive = (archivePath: string): Promise<boolean> => {
-    const cached = preparedArchives.get(archivePath);
+  const prepareArchive = (
+    mediaPath: string,
+    archivePath: string,
+  ): Promise<boolean> => {
+    const key = `${mediaPath}\u0000${archivePath}`;
+    const cached = preparedArchives.get(key);
     if (cached) return cached;
-    const result = Promise.resolve(prepareAndroidReaderMediaCache(archivePath))
+    const result = Promise.resolve(
+      prepareAndroidReaderMediaCache(
+        mediaPath,
+        archivePath,
+        androidReaderMediaCacheToken(archivePath),
+      ),
+    )
       .then(() => true)
       .catch(() => false);
-    preparedArchives.set(archivePath, result);
+    preparedArchives.set(key, result);
     return result;
   };
 
@@ -2604,10 +2636,11 @@ async function resolveAndroidLocalChapterMediaSources(
         resolved.set(source, null);
         return;
       }
-      for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-        context,
-      )) {
-        if (await prepareArchive(archivePath)) {
+      for (const {
+        archivePath,
+        mediaPath,
+      } of androidChapterMediaSourceCandidates(context)) {
+        if (await prepareArchive(mediaPath, archivePath)) {
           resolved.set(
             source,
             androidReaderLocalChapterMediaSrc(fileName, archivePath),
@@ -2629,11 +2662,16 @@ export async function resolveLocalChapterMediaSrc(
   if (!fileName) return src.startsWith(LOCAL_MEDIA_SRC_PREFIX) ? null : src;
   if (!isTauriRuntime()) return src;
   if (isAndroidRuntime()) {
-    for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-      context,
-    )) {
+    for (const {
+      archivePath,
+      mediaPath,
+    } of androidChapterMediaSourceCandidates(context)) {
       try {
-        await prepareAndroidReaderMediaCache(archivePath);
+        await prepareAndroidReaderMediaCache(
+          mediaPath,
+          archivePath,
+          androidReaderMediaCacheToken(archivePath),
+        );
         return androidReaderLocalChapterMediaSrc(fileName, archivePath);
       } catch {
         continue;

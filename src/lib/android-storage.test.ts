@@ -210,12 +210,18 @@ describe("android storage bridge facade", () => {
     invokeMock.mockResolvedValue(root);
     installBridge({ deletePath, prepareReaderMediaCache });
 
-    await prepareAndroidReaderMediaCache("contents/demo/chapter/media.zip");
+    await prepareAndroidReaderMediaCache(
+      "contents/demo/chapter/media",
+      "contents/demo/chapter/media.zip",
+      "cache-token",
+    );
 
     expect(deletePath).toHaveBeenCalledWith(root, "contents/.nomedia");
     expect(prepareReaderMediaCache).toHaveBeenCalledWith(
       root,
+      "contents/demo/chapter/media",
       "contents/demo/chapter/media.zip",
+      "cache-token",
     );
   });
 
@@ -230,11 +236,17 @@ describe("android storage bridge facade", () => {
     invokeMock.mockResolvedValue(root);
     installBridge({ deletePath, prepareReaderMediaCache });
 
-    await prepareAndroidReaderMediaCache("contents/demo/chapter/media.zip");
+    await prepareAndroidReaderMediaCache(
+      "contents/demo/chapter/media",
+      "contents/demo/chapter/media.zip",
+      "cache-token",
+    );
 
     expect(prepareReaderMediaCache).toHaveBeenCalledWith(
       root,
+      "contents/demo/chapter/media",
       "contents/demo/chapter/media.zip",
+      "cache-token",
     );
   });
 });

@@ -1812,7 +1812,11 @@ describe("resolveLocalChapterMedia", () => {
 
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
-    ).toHaveBeenCalledWith("chapter-media/95/media.zip");
+    ).toHaveBeenCalledWith(
+      "chapter-media/95/media",
+      "chapter-media/95/media.zip",
+      expect.stringMatching(/^\d+-[a-z0-9]+$/),
+    );
     expect(html).toMatch(
       /src="norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png"/,
     );
@@ -1968,7 +1972,11 @@ describe("resolveLocalChapterMediaPatches", () => {
     ).not.toHaveBeenCalled();
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
-    ).toHaveBeenCalledWith("chapter-media/42/media.zip");
+    ).toHaveBeenCalledWith(
+      "chapter-media/42/media",
+      "chapter-media/42/media.zip",
+      expect.stringMatching(/^\d+-[a-z0-9]+$/),
+    );
     expect(patches).toHaveLength(2);
     expect(patches[0]?.attributes.src).toMatch(
       /^norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png$/,
@@ -2017,12 +2025,55 @@ describe("resolveLocalChapterMediaPatches", () => {
 
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
-    ).toHaveBeenCalledWith("chapter-media/27/media.zip");
+    ).toHaveBeenCalledWith(
+      "chapter-media/27/media",
+      "chapter-media/27/media.zip",
+      expect.stringMatching(/^\d+-[a-z0-9]+$/),
+    );
     expect(patches[0]?.attributes.src).toMatch(
       /^norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png$/,
     );
     expect(patches[1]?.attributes.srcset).toMatch(
       /norea-media:\/\/reader-asset\/~cache\/[^/]+\/large\.png 2x/,
+    );
+  });
+
+  it("prepares Android reader cache from the media directory before the archive", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Android" });
+
+    const patches = await resolveLocalChapterMediaPatches(
+      [
+        {
+          attributes: {
+            src: "page.png",
+          },
+          index: 0,
+          sourceAttributes: {
+            src: "page.png",
+          },
+        },
+      ],
+      {
+        chapterId: 42,
+        chapterName: "Chapter",
+        chapterNumber: "7",
+        chapterPosition: 7,
+        novelId: 1,
+        novelName: "Novel",
+        novelPath: "novel/path",
+        sourceId: "source-a",
+      },
+    );
+
+    expect(
+      androidStorageMocks.prepareAndroidReaderMediaCache,
+    ).toHaveBeenCalledWith(
+      "contents/source-a/Novel-novel-path/7-Chapter/media",
+      "contents/source-a/Novel-novel-path/7-Chapter/media.zip",
+      expect.stringMatching(/^\d+-[a-z0-9]+$/),
+    );
+    expect(patches[0]?.attributes.src).toMatch(
+      /^norea-media:\/\/reader-asset\/~cache\/[^/]+\/page\.png$/,
     );
   });
 

@@ -501,7 +501,7 @@ class MainActivity : TauriActivity() {
 
       val archiveSegments = safeStorageSegments(archiveRelativePath)
       val archiveName = archiveSegments.last()
-      val tempArchiveRelativePath = (archiveSegments.dropLast(1) + "$archiveName.tmp")
+      val tempArchiveRelativePath = (archiveSegments.dropLast(1) + "$archiveName.tmp.zip")
         .joinToString("/")
       val tempArchive = ensureStorageFile(
         rootUri,
@@ -808,42 +808,59 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
-    fun prepareReaderMediaCache(rootUri: String, archiveRelativePath: String): String =
+    fun prepareReaderMediaCache(
+      rootUri: String,
+      mediaRelativePath: String,
+      archiveRelativePath: String,
+      cacheToken: String,
+    ): String =
       storageResponse {
-        val cacheRoot = resetReaderMediaCacheRoot()
-        var entryCount = 0
-        var totalBytes = 0L
-        openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
-          ZipInputStream(input.buffered()).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-              entryCount = nextZipEntryCount(entryCount, "Reader media archive")
-              val entryName = safeZipEntryName(entry.name)
-              if (!entry.isDirectory && entryName != null) {
-                requireZipEntrySize(entry, "Reader media archive entry")
-                val target = containedReaderMediaCacheFile(entryName)
-                target.parentFile?.mkdirs()
-                target.outputStream().use { output ->
-                  val copied = copyToWithLimit(zip, output, MAX_ZIP_ENTRY_BYTES)
-                  totalBytes = addZipTotalBytes(
-                    totalBytes,
-                    copied,
-                    "Reader media archive",
-                  )
-                }
-              }
-              zip.closeEntry()
-              entry = zip.nextEntry
-            }
-          }
-        } ?: throw IllegalStateException("Cannot open reader media archive.")
+        val safeCacheToken = safeReaderMediaCacheToken(cacheToken)
+          ?: throw IllegalArgumentException("Reader media cache token is invalid.")
+        val cacheRoot = readerMediaCacheTokenRoot(safeCacheToken)
+        Log.d(
+          TAG,
+          "Android reader media cache prepare start. " +
+            "token=$safeCacheToken mediaPath=$mediaRelativePath " +
+            "archivePath=$archiveRelativePath",
+        )
+        val mediaStats = copyReaderMediaDirectoryToCache(
+          rootUri,
+          mediaRelativePath,
+          cacheRoot,
+        )
+        var archiveFailure: String? = null
+        val archiveStats = runCatching {
+          copyReaderMediaArchiveToCache(rootUri, archiveRelativePath, cacheRoot)
+        }.getOrElse { error ->
+          if (mediaStats.entryCount == 0) throw error
+          archiveFailure = error.message ?: error.toString()
+          Log.w(
+            TAG,
+            "Android reader media archive overlay failed. path=$archiveRelativePath",
+            error,
+          )
+          ReaderMediaCacheStats()
+        }
+        if (mediaStats.entryCount == 0 && archiveStats.entryCount == 0) {
+          throw IllegalStateException("Cannot open reader media source.")
+        }
+        val entryCount = mediaStats.entryCount + archiveStats.entryCount
+        val totalBytes = mediaStats.totalBytes + archiveStats.totalBytes
 
         Log.d(
           TAG,
-          "Android reader media cache prepared. path=$archiveRelativePath count=$entryCount bytes=$totalBytes",
+          "Android reader media cache prepared. " +
+            "token=$safeCacheToken " +
+            "mediaPath=$mediaRelativePath " +
+            "archivePath=$archiveRelativePath " +
+            "mediaCount=${mediaStats.entryCount} " +
+            "archiveCount=${archiveStats.entryCount} " +
+            "bytes=$totalBytes",
         )
         JSONObject()
           .put("ok", true)
+          .put("archiveError", archiveFailure)
           .put("bytes", totalBytes)
           .put("count", entryCount)
       }
@@ -1179,7 +1196,7 @@ class MainActivity : TauriActivity() {
         400,
         "Android reader media file is invalid.",
       )
-    val file = containedReaderMediaCacheFile(safeName)
+    val file = readerMediaCacheFileForRequest(safeName)
     if (!file.isFile) {
       Log.w(TAG, "Android reader media file not found. uri=$uri file=$file")
       return androidLocalMediaErrorResponse(
@@ -1187,7 +1204,10 @@ class MainActivity : TauriActivity() {
         "Android reader media file was not found.",
       )
     }
-    Log.d(TAG, "Android reader media file opened. uri=$uri file=$file")
+    Log.d(
+      TAG,
+      "Android reader media file opened. uri=$uri file=$file bytes=${file.length()}",
+    )
     return androidLocalMediaResponse(
       mimeTypeForPath(safeName, ""),
       file.inputStream(),
@@ -1201,7 +1221,7 @@ class MainActivity : TauriActivity() {
         segments.size >= 3 &&
           segments[0] == READER_MEDIA_CACHE_SCOPE_SEGMENT
       ) {
-        segments.drop(2)
+        segments.drop(1)
       } else {
         segments
       }
@@ -1582,25 +1602,158 @@ class MainActivity : TauriActivity() {
     return root
   }
 
-  private fun resetReaderMediaCacheRoot(): File {
+  private fun readerMediaCacheTokenRoot(cacheToken: String): File {
     val root = readerMediaCacheRoot()
-    root.listFiles()?.forEach { child ->
-      if (!child.deleteRecursively()) {
-        throw IllegalStateException("Cannot clear reader media cache.")
-      }
+    val tokenRoot = File(root, cacheToken).canonicalFile
+    require(tokenRoot.path.startsWith(root.path + File.separator)) {
+      "Reader media cache token is outside the cache folder."
     }
-    return root
+    if (!tokenRoot.exists() && !tokenRoot.mkdirs()) {
+      throw IllegalStateException("Cannot create reader media cache token folder.")
+    }
+    require(tokenRoot.isDirectory) {
+      "Reader media cache token path is not a folder."
+    }
+    return tokenRoot
   }
 
-  private fun containedReaderMediaCacheFile(fileName: String): File {
+  private fun safeReaderMediaCacheToken(value: String): String? =
+    value
+      .trim()
+      .takeIf { it.isNotBlank() && it.length <= 96 }
+      ?.takeIf { token ->
+        token.all { char ->
+          char in 'A'..'Z' ||
+            char in 'a'..'z' ||
+            char in '0'..'9' ||
+            char == '.' ||
+            char == '_' ||
+            char == '-'
+        }
+      }
+
+  private fun containedReaderMediaCacheFile(fileName: String): File =
+    containedReaderMediaCacheFile(fileName, readerMediaCacheRoot())
+
+  private fun containedReaderMediaCacheFile(fileName: String, root: File): File {
     val safeName = safeZipEntryName(fileName)
       ?: throw IllegalArgumentException("Reader media file name is invalid.")
-    val root = readerMediaCacheRoot()
     val file = File(root, safeName).canonicalFile
     require(file.path.startsWith(root.path + File.separator)) {
       "Reader media file is outside the cache folder."
     }
     return file
+  }
+
+  private fun readerMediaCacheFileForRequest(fileName: String): File {
+    val direct = containedReaderMediaCacheFile(fileName)
+    if (direct.isFile || fileName.contains("/")) return direct
+    val root = readerMediaCacheRoot()
+    val matches = root
+      .listFiles()
+      ?.filter { it.isDirectory }
+      ?.mapNotNull { tokenRoot ->
+        containedReaderMediaCacheFile(fileName, tokenRoot)
+          .takeIf { it.isFile }
+      }
+      ?: emptyList()
+    if (matches.size == 1) {
+      Log.d(
+        TAG,
+        "Android reader media file opened from token fallback. " +
+          "fileName=$fileName file=${matches[0]}",
+      )
+      return matches[0]
+    }
+    return direct
+  }
+
+  private data class ReaderMediaCacheStats(
+    val entryCount: Int = 0,
+    val totalBytes: Long = 0L,
+  )
+
+  private fun copyReaderMediaDirectoryToCache(
+    rootUri: String,
+    mediaRelativePath: String,
+    cacheRoot: File,
+  ): ReaderMediaCacheStats {
+    val sourceDir = storageDocumentAt(rootUri, mediaRelativePath)
+      ?.takeIf { it.isDirectory }
+      ?: return ReaderMediaCacheStats()
+    var entryCount = 0
+    var totalBytes = 0L
+
+    fun copyChildren(directory: DocumentFile, prefix: String) {
+      directory.listFiles()
+        .sortedBy { it.name ?: "" }
+        .forEach { child ->
+          val childName = child.name ?: return@forEach
+          val entryName = safeZipEntryName(
+            if (prefix.isBlank()) childName else "$prefix/$childName",
+          ) ?: return@forEach
+          if (child.isDirectory) {
+            copyChildren(child, entryName)
+            return@forEach
+          }
+          if (!child.isFile || entryName.endsWith(".part")) return@forEach
+          requireStorageFileZipEntrySize(child, "Reader media file")
+          entryCount = nextZipEntryCount(entryCount, "Reader media directory")
+          val target = containedReaderMediaCacheFile(entryName, cacheRoot)
+          target.parentFile?.mkdirs()
+          target.outputStream().use { output ->
+            val copied = openStorageInputStream(
+              rootUri,
+              "$mediaRelativePath/$entryName",
+              child,
+            )?.use { input ->
+              copyToWithLimit(input, output, MAX_ZIP_ENTRY_BYTES)
+            } ?: throw IllegalStateException("Cannot open reader media file.")
+            totalBytes = addZipTotalBytes(
+              totalBytes,
+              copied,
+              "Reader media directory",
+            )
+          }
+        }
+    }
+
+    copyChildren(sourceDir, "")
+    return ReaderMediaCacheStats(entryCount, totalBytes)
+  }
+
+  private fun copyReaderMediaArchiveToCache(
+    rootUri: String,
+    archiveRelativePath: String,
+    cacheRoot: File,
+  ): ReaderMediaCacheStats {
+    var entryCount = 0
+    var totalBytes = 0L
+    openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
+      ZipInputStream(input.buffered()).use { zip ->
+        var entry = zip.nextEntry
+        while (entry != null) {
+          entryCount = nextZipEntryCount(entryCount, "Reader media archive")
+          val entryName = safeZipEntryName(entry.name)
+          if (!entry.isDirectory && entryName != null) {
+            requireZipEntrySize(entry, "Reader media archive entry")
+            val target = containedReaderMediaCacheFile(entryName, cacheRoot)
+            target.parentFile?.mkdirs()
+            target.outputStream().use { output ->
+              val copied = copyToWithLimit(zip, output, MAX_ZIP_ENTRY_BYTES)
+              totalBytes = addZipTotalBytes(
+                totalBytes,
+                copied,
+                "Reader media archive",
+              )
+            }
+          }
+          zip.closeEntry()
+          entry = zip.nextEntry
+        }
+      }
+    } ?: return ReaderMediaCacheStats()
+    return ReaderMediaCacheStats(entryCount, totalBytes)
   }
 
   private fun containedAppCacheFile(path: String): File {

@@ -22,7 +22,9 @@ interface AndroidStorageBridge {
   pathSize: (rootUri: string, relativePath: string) => string;
   prepareReaderMediaCache?: (
     rootUri: string,
+    mediaRelativePath: string,
     archiveRelativePath: string,
+    cacheToken: string,
   ) => string;
   pickMediaStorageRoot: (requestId: string) => void;
   readBase64: (rootUri: string, relativePath: string) => string;
@@ -498,7 +500,9 @@ export async function androidStoragePathSize(
 }
 
 export async function prepareAndroidReaderMediaCache(
+  mediaRelativePath: string,
   archiveRelativePath: string,
+  cacheToken: string,
 ): Promise<void> {
   const bridge = androidStorageBridge();
   if (!bridge.prepareReaderMediaCache) {
@@ -507,7 +511,12 @@ export async function prepareAndroidReaderMediaCache(
   const root = await androidStorageRoot();
   await cleanupAndroidStorageLegacyNomedia(root);
   parseStorageResponse(
-    bridge.prepareReaderMediaCache(root, archiveRelativePath),
+    bridge.prepareReaderMediaCache(
+      root,
+      mediaRelativePath,
+      archiveRelativePath,
+      cacheToken,
+    ),
   );
 }
 
