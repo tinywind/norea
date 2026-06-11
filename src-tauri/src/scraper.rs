@@ -96,6 +96,13 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
       } catch (e) {
         location.hash = marker;
       }
+      try {
+        var rid = window.__lnrExtractRequestId;
+        if (rid) {
+          location.href = "https://norea.localhost/__norea_scraper_result__/" +
+            encodeURIComponent(rid);
+        }
+      } catch (e) {}
     } catch (e) {}
   };
   try {
@@ -146,6 +153,13 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
       } catch (e) {
         location.hash = marker;
       }
+      try {
+        var rid = window.__lnrExtractRequestId;
+        if (rid) {
+          location.href = "https://norea.localhost/__norea_scraper_result__/" +
+            encodeURIComponent(rid);
+        }
+      } catch (e) {}
     } catch (e) {}
   };
   try {
@@ -430,6 +444,10 @@ pub struct ScraperState {
     visible_key: Mutex<Option<String>>,
     /// Last URL the visible site browser navigated to, for diagnostics.
     last_navigated: Mutex<Option<String>>,
+    /// Pending fetch-completion waiters keyed by request id. The in-page fetch
+    /// script navigates to the result sentinel (intercepted in `on_navigation`)
+    /// to wake the awaiting request, replacing the per-request poll loop.
+    pending_completions: Mutex<HashMap<String, oneshot::Sender<()>>>,
 }
 
 #[cfg(not(desktop))]
@@ -448,6 +466,8 @@ const BACKGROUND_RENDER_HEIGHT: f64 = 900.0;
 const SCRAPER_CONTROL_HOST: &str = "norea.localhost";
 #[cfg(desktop)]
 const SCRAPER_CONTROL_PATH_PREFIX: &str = "/__norea_scraper_control__/";
+#[cfg(desktop)]
+const SCRAPER_RESULT_PATH_PREFIX: &str = "/__norea_scraper_result__/";
 #[cfg(desktop)]
 const SITE_BROWSER_HIDDEN_EVENT: &str = "site-browser-hidden";
 #[cfg(desktop)]
@@ -469,6 +489,65 @@ fn scraper_control_action(url: &Url) -> Option<&str> {
         return url.path().strip_prefix(SCRAPER_CONTROL_PATH_PREFIX);
     }
     None
+}
+
+/// Parse the fetch-completion sentinel a page navigates to when its browser
+/// fetch settles, returning the request id it carries. The sentinel is
+/// intercepted (and cancelled) in `on_navigation`, so it never actually leaves
+/// the source document.
+#[cfg(desktop)]
+fn scraper_result_request_id(url: &Url) -> Option<String> {
+    if url.scheme() == "https"
+        && url.host_str() == Some(SCRAPER_CONTROL_HOST)
+        && url.path().starts_with(SCRAPER_RESULT_PATH_PREFIX)
+    {
+        let encoded = url.path().strip_prefix(SCRAPER_RESULT_PATH_PREFIX)?;
+        return decode_uri_component(encoded).ok();
+    }
+    None
+}
+
+#[cfg(desktop)]
+fn register_completion(state: &ScraperState, request_id: &str) -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    state
+        .pending_completions
+        .lock()
+        .expect("scraper pending completions mutex")
+        .insert(request_id.to_string(), tx);
+    rx
+}
+
+#[cfg(desktop)]
+fn fire_completion(state: &ScraperState, request_id: &str) {
+    let sender = state
+        .pending_completions
+        .lock()
+        .expect("scraper pending completions mutex")
+        .remove(request_id);
+    if let Some(tx) = sender {
+        let _ = tx.send(());
+    }
+}
+
+/// Removes a pending completion waiter on every exit path of the awaiting
+/// request (success, error, timeout, early return) so a missed signal cannot
+/// leak a map entry.
+#[cfg(desktop)]
+struct CompletionGuard<'a> {
+    state: &'a ScraperState,
+    request_id: String,
+}
+
+#[cfg(desktop)]
+impl Drop for CompletionGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .pending_completions
+            .lock()
+            .expect("scraper pending completions mutex")
+            .remove(&self.request_id);
+    }
 }
 
 #[cfg(desktop)]
@@ -585,6 +664,11 @@ fn scraper_handle_for_key(
         WebviewUrl::App(PathBuf::from(SCRAPER_HOMEPAGE_PATH)),
     )
     .on_navigation(move |url| {
+        if let Some(request_id) = scraper_result_request_id(url) {
+            let state = app_for_navigation.state::<ScraperState>();
+            fire_completion(&state, &request_id);
+            return false;
+        }
         if scraper_control_action(url) == Some("close") {
             log_windows_scraper_event("scraper control close navigation received");
             let app = app_for_navigation.clone();
@@ -1307,6 +1391,13 @@ async fn scraper_bridge_is_ready(scraper: &ScraperWebview) -> bool {
     ready.unwrap_or(false)
 }
 
+/// Exponential backoff for the readiness/challenge poll loops, capped so a long
+/// wait emits far fewer main-thread evals than a fixed short interval.
+#[cfg(desktop)]
+fn next_poll_backoff(current: Duration, cap: Duration) -> Duration {
+    (current * 2).min(cap)
+}
+
 #[cfg(desktop)]
 async fn wait_for_scraper_bridge_ready(
     scraper: &ScraperWebview,
@@ -1314,13 +1405,15 @@ async fn wait_for_scraper_bridge_ready(
     timeout: Duration,
 ) -> bool {
     let started = Instant::now();
-    let poll_interval = Duration::from_millis(100);
+    let mut poll_interval = Duration::from_millis(100);
+    let max_poll_interval = Duration::from_millis(500);
 
     while started.elapsed() < timeout {
         if scraper_bridge_is_ready(scraper).await {
             return true;
         }
         tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
     }
 
     log::debug!("[scraper:{operation}] bridge readiness wait timed out");
@@ -1376,11 +1469,13 @@ async fn wait_for_browser_challenge_to_clear(
     timeout: Duration,
 ) -> bool {
     let started = Instant::now();
-    let poll_interval = Duration::from_millis(250);
+    let mut poll_interval = Duration::from_millis(250);
+    let max_poll_interval = Duration::from_millis(1000);
     let mut challenge_logged = false;
 
     while started.elapsed() < timeout {
         tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
         if !document_is_ready(scraper).await {
             continue;
         }
@@ -1426,12 +1521,14 @@ async fn prepare_scraper_context(
         .map_err(|err| format!("scraper: navigate {operation} context: {err}"))?;
 
     let deadline = Duration::from_secs(15);
-    let poll_interval = Duration::from_millis(150);
+    let mut poll_interval = Duration::from_millis(150);
+    let max_poll_interval = Duration::from_millis(750);
     let started = Instant::now();
     let mut challenge_logged = false;
 
     while started.elapsed() < deadline {
         tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
         if scraper_is_at_origin(scraper, &target) && document_is_ready(scraper).await {
             if wait_for_browser_challenge && document_has_browser_challenge(scraper).await {
                 if !challenge_logged {
@@ -1600,6 +1697,10 @@ fn build_webview_fetch_start_script(
       try {{
         delete window.__lnrFetchControllers[requestId];
       }} catch (error) {{}}
+      try {{
+        location.href = "https://norea.localhost/__norea_scraper_result__/" +
+          encodeURIComponent(requestId);
+      }} catch (error) {{}}
     }}
   }})();
 }})();"#
@@ -1707,30 +1808,28 @@ async fn take_webview_extract_result(scraper: &ScraperWebview) -> Option<String>
 fn install_webview_extract_before_script(
     scraper: &ScraperWebview,
     before_script: Option<&str>,
+    request_id: &str,
 ) -> Result<(), String> {
-    let script = match before_script {
-        Some(before_script) => {
-            let before_script_json = serde_json::to_string(before_script)
-                .map_err(|err| format!("webview_extract: serialize before script: {err}"))?;
-            format!(
-                r#"(function () {{
+    let request_id_json = serde_json::to_string(request_id)
+        .map_err(|err| format!("webview_extract: serialize extract request id: {err}"))?;
+    // The id-setter runs on the destination document via the SCRAPER_INIT_SCRIPT
+    // bridge, so the page's postMessage polyfill can navigate to the result
+    // sentinel and wake the awaiting extract for this request id.
+    let id_script = format!("window.__lnrExtractRequestId = {request_id_json};");
+    let combined = match before_script {
+        Some(before_script) => format!("{id_script}\n{before_script}"),
+        None => id_script,
+    };
+    let combined_json = serde_json::to_string(&combined)
+        .map_err(|err| format!("webview_extract: serialize before script: {err}"))?;
+    let script = format!(
+        r#"(function () {{
   try {{ window.__lnrExtractResult = null; }} catch (error) {{}}
   try {{
-    window.name = "__lnr_script__=" + encodeURIComponent({before_script_json});
+    window.name = "__lnr_script__=" + encodeURIComponent({combined_json});
   }} catch (error) {{}}
 }})();"#
-            )
-        }
-        None => r#"(function () {
-  try { window.__lnrExtractResult = null; } catch (error) {}
-  try {
-    if ((window.name || "").indexOf("__lnr_script__=") === 0) {
-      window.name = "";
-    }
-  } catch (error) {}
-})();"#
-            .to_string(),
-    };
+    );
     scraper
         .eval(script)
         .map_err(|err| format!("webview_extract: install before script: {err}"))
@@ -1741,6 +1840,7 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
     let _ = scraper.eval(
         r#"(function () {
   try { window.__lnrExtractResult = null; } catch (error) {}
+  try { window.__lnrExtractRequestId = null; } catch (error) {}
   try {
     if ((window.name || "").indexOf("__lnr_script__=") === 0) {
       window.name = "";
@@ -1759,6 +1859,7 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
 #[cfg(desktop)]
 async fn webview_fetch_with_ready_scraper(
     scraper: &ScraperWebview,
+    state: &ScraperState,
     url: String,
     init: Option<FetchInit>,
     context_url: Option<String>,
@@ -1771,16 +1872,44 @@ async fn webview_fetch_with_ready_scraper(
     let init = init.unwrap_or_default();
     let request_id = format!("fetch-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
     let start_script = build_webview_fetch_start_script(&request_id, &url, &init)?;
+
+    // Register the completion waiter before starting the fetch so the page's
+    // result sentinel (fired from the fetch `finally`) can never beat the
+    // waiter. The guard removes the map entry on every exit path.
+    let mut completion = register_completion(state, &request_id);
+    let _completion_guard = CompletionGuard {
+        state,
+        request_id: request_id.clone(),
+    };
+    let mut signaled = false;
+
     scraper
         .eval(start_script)
         .map_err(|err| format!("scraper: start browser fetch: {err}"))?;
 
     let deadline = Duration::from_millis(timeout_ms.unwrap_or(60_000).max(1));
-    let poll_interval = Duration::from_millis(150);
+    // Event-driven on the happy path: wake on the sentinel and read the result
+    // once. The backstop tick still polls periodically so a missed sentinel
+    // (e.g. a site that blocks the navigation) never regresses reliability
+    // below the previous fixed-interval poll.
+    let backstop_interval = Duration::from_millis(1500);
     let started = Instant::now();
 
     while started.elapsed() < deadline {
-        tokio::time::sleep(poll_interval).await;
+        let wait = deadline
+            .saturating_sub(started.elapsed())
+            .min(backstop_interval);
+        if signaled {
+            tokio::time::sleep(wait).await;
+        } else {
+            tokio::select! {
+                _ = &mut completion => {
+                    signaled = true;
+                }
+                _ = tokio::time::sleep(wait) => {}
+            }
+        }
+
         let poll_script = build_webview_fetch_poll_script(&request_id)?;
         let result: Option<WebviewFetchScriptResult> = eval_json(scraper, poll_script).await?;
         let Some(result) = result else {
@@ -1848,6 +1977,7 @@ pub async fn webview_fetch(
     for (index, fetch_context) in fetch_contexts.iter().enumerate() {
         result = webview_fetch_with_ready_scraper(
             &scraper,
+            &state,
             url.clone(),
             init.clone(),
             Some(fetch_context.clone()),
@@ -2111,15 +2241,25 @@ pub async fn webview_extract(
         .map_err(|err| format!("webview_extract: invalid url '{target_url_str}': {err}"))?;
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
-    let poll_interval = Duration::from_millis(150);
     let result_marker = "#__lnr_result__=";
     let mut retried_after_browser_challenge = false;
     let max_attempts = 2;
 
+    // Event-driven wake for the first result via the page's postMessage signal.
+    // The marker/result read below is unchanged, so backoff polling remains the
+    // safety net if the signal never arrives (e.g. challenge-retry navigations).
+    let request_id = format!("extract-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
+    let mut completion = register_completion(&state, &request_id);
+    let _completion_guard = CompletionGuard {
+        state: state.inner(),
+        request_id: request_id.clone(),
+    };
+    let mut signaled = false;
+
     for attempt in 1..=max_attempts {
         prepare_extract_context(&scraper, &parsed).await?;
         wait_for_scraper_bridge_ready(&scraper, "extract", Duration::from_secs(5)).await;
-        install_webview_extract_before_script(&scraper, before_script)?;
+        install_webview_extract_before_script(&scraper, before_script, &request_id)?;
 
         log::trace!(
             "[scraper:extract] navigate queue={queue} url={url} target_url={target_url_str} attempt={attempt}"
@@ -2130,8 +2270,19 @@ pub async fn webview_extract(
             .map_err(|err| format!("webview_extract: navigate: {err}"))?;
 
         let start = Instant::now();
+        let mut poll_interval = Duration::from_millis(150);
         while start.elapsed() < timeout {
-            tokio::time::sleep(poll_interval).await;
+            if signaled {
+                tokio::time::sleep(poll_interval).await;
+            } else {
+                tokio::select! {
+                    _ = &mut completion => {
+                        signaled = true;
+                    }
+                    _ = tokio::time::sleep(poll_interval) => {}
+                }
+            }
+            poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(600));
             let mut extract_result = take_webview_extract_result(&scraper)
                 .await
                 .map(|decoded| (decoded, None::<String>));
@@ -2166,7 +2317,7 @@ pub async fn webview_extract(
                         prepare_extract_context(&scraper, &parsed).await?;
                         wait_for_scraper_bridge_ready(&scraper, "extract", Duration::from_secs(5))
                             .await;
-                        install_webview_extract_before_script(&scraper, before_script)?;
+                        install_webview_extract_before_script(&scraper, before_script, &request_id)?;
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url}"
                         );
@@ -2232,4 +2383,82 @@ pub async fn webview_extract(
     _queue: Option<String>,
 ) -> Result<String, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot::error::TryRecvError;
+
+    #[test]
+    fn parses_result_sentinel_request_id() {
+        let url = Url::parse("https://norea.localhost/__norea_scraper_result__/fetch-7").unwrap();
+        assert_eq!(scraper_result_request_id(&url).as_deref(), Some("fetch-7"));
+    }
+
+    #[test]
+    fn decodes_encoded_result_request_id() {
+        let url = Url::parse("https://norea.localhost/__norea_scraper_result__/a%20b").unwrap();
+        assert_eq!(scraper_result_request_id(&url).as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn rejects_non_result_sentinels() {
+        for raw in [
+            "http://norea.localhost/__norea_scraper_result__/fetch-7",
+            "https://example.com/__norea_scraper_result__/fetch-7",
+            "https://norea.localhost/__norea_scraper_control__/close",
+            "https://norea.localhost/other/fetch-7",
+        ] {
+            let url = Url::parse(raw).unwrap();
+            assert_eq!(scraper_result_request_id(&url), None, "should reject {raw}");
+        }
+    }
+
+    #[test]
+    fn result_and_control_sentinels_are_disjoint() {
+        let result =
+            Url::parse("https://norea.localhost/__norea_scraper_result__/extract-1").unwrap();
+        assert_eq!(scraper_control_action(&result), None);
+        let control = Url::parse("https://norea.localhost/__norea_scraper_control__/close").unwrap();
+        assert_eq!(scraper_result_request_id(&control), None);
+    }
+
+    #[test]
+    fn fires_pending_completion_by_request_id() {
+        let state = ScraperState::default();
+        let mut rx = register_completion(&state, "fetch-1");
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        fire_completion(&state, "fetch-1");
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn completion_guard_removes_pending_entry() {
+        let state = ScraperState::default();
+        let mut rx = register_completion(&state, "fetch-2");
+        {
+            let _guard = CompletionGuard {
+                state: &state,
+                request_id: "fetch-2".to_string(),
+            };
+        }
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Closed)));
+        fire_completion(&state, "fetch-2");
+    }
+
+    #[test]
+    fn fire_completion_unknown_id_is_noop() {
+        let state = ScraperState::default();
+        fire_completion(&state, "missing");
+    }
+
+    #[test]
+    fn fetch_start_script_navigates_result_sentinel() {
+        let script =
+            build_webview_fetch_start_script("fetch-3", "https://example.com/a", &FetchInit::default())
+                .unwrap();
+        assert!(script.contains("__norea_scraper_result__"));
+        assert!(script.contains("encodeURIComponent(requestId)"));
+    }
 }
