@@ -1039,7 +1039,7 @@ describe("TaskScheduler", () => {
     ]);
   });
 
-  it("lets background work follow the source work concurrency setting", async () => {
+  it("reserves a pool executor for foreground when background follows concurrency", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: true,
@@ -1065,13 +1065,19 @@ describe("TaskScheduler", () => {
     expect(scheduler.resumeSourceQueue()).toBe(true);
     await settle();
 
-    expect(order).toEqual([
-      "a:pool:0:start",
-      "b:pool:1:start",
-      "c:pool:2:start",
-    ]);
+    // Background follows foreground (3) but reserves one executor for
+    // foreground work, so only two background tasks run concurrently.
+    expect(order).toEqual(["a:pool:0:start", "b:pool:1:start"]);
 
-    finishers.forEach((finish) => finish());
+    finishers[0]?.();
+    await tasks[0].promise;
+    await settle();
+
+    // The freed executor lets the third background task start.
+    expect(order).toHaveLength(3);
+    expect(order[2]).toMatch(/^c:pool:\d:start$/);
+
+    finishers.slice(1).forEach((finish) => finish());
     await Promise.all(tasks.map((task) => task.promise));
   });
 
@@ -1258,6 +1264,33 @@ describe("TaskScheduler", () => {
 
     expect(snapshots).toBe(1);
     expect(scheduler.getSnapshot().queued).toBe(10);
+  });
+
+  it("coalesces multiple non-batched publishes into a single fan-out", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
+    let snapshots = 0;
+    scheduler.subscribe(() => {
+      snapshots += 1;
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      scheduler.enqueueSource({
+        kind: "chapter.download",
+        priority: "background",
+        source: { id: "source-a", name: "Source A" },
+        title: `Chapter ${index}`,
+        run: async () => undefined,
+      });
+    }
+
+    // Fan-out is deferred and coalesced, so no synchronous notifications fire.
+    expect(snapshots).toBe(0);
+    // A synchronous read still sees fresh state via rebuild-if-dirty.
+    expect(scheduler.getSnapshot().queued).toBe(5);
+
+    await settle();
+
+    expect(snapshots).toBe(1);
   });
 
   it("publishes progress and detail updates as task events without rebuilding the snapshot", async () => {

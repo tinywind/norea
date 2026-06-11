@@ -247,6 +247,18 @@ interface TaskEntry {
 
 const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
 const HISTORY_LIMIT = Math.min(200, MAX_SCHEDULER_MATERIALIZED_TASKS);
+
+/**
+ * When background concurrency follows the foreground setting, reserve one pool
+ * executor for foreground work so a batch of background downloads cannot occupy
+ * every executor and stall interactive search, novel-home refresh, or
+ * "read now" chapter downloads. With a single executor (N=1) this collapses to
+ * 1 because reservation is impossible; interactive work escapes to the
+ * dedicated immediate executor regardless.
+ */
+function reservedBackgroundConcurrency(foregroundConcurrency: number): number {
+  return Math.max(1, foregroundConcurrency - 1);
+}
 const TERMINAL_TASK_RETENTION_MS = 2_000;
 export const TASK_PAUSE_ABORT_MESSAGE = "Task was paused.";
 
@@ -412,6 +424,9 @@ export class TaskScheduler {
   private batchDepth = 0;
   private drainAfterBatch = false;
   private publishSnapshotAfterBatch = false;
+  private snapshotDirty = false;
+  private snapshotFlushScheduled = false;
+  private snapshotRafHandle: number | null = null;
   private readonly activePoolTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
   private readonly sourceExecutorBySource = new Map<string, ScraperExecutorId>();
   private readonly sourceLastServedAt = new Map<string, number>();
@@ -452,11 +467,10 @@ export class TaskScheduler {
     );
     this.sourceBackgroundConcurrencyFollowsForeground =
       options.sourceBackgroundConcurrency === undefined;
-    this.sourceBackgroundConcurrency = Math.max(
-      1,
-      options.sourceBackgroundConcurrency ??
-        this.sourceForegroundConcurrency,
-    );
+    this.sourceBackgroundConcurrency =
+      this.sourceBackgroundConcurrencyFollowsForeground
+        ? reservedBackgroundConcurrency(this.sourceForegroundConcurrency)
+        : Math.max(1, options.sourceBackgroundConcurrency ?? 1);
     this.snapshot = this.buildSnapshot();
   }
 
@@ -1007,7 +1021,8 @@ export class TaskScheduler {
     if (nextConcurrency === this.sourceForegroundConcurrency) return;
     this.sourceForegroundConcurrency = nextConcurrency;
     if (this.sourceBackgroundConcurrencyFollowsForeground) {
-      this.sourceBackgroundConcurrency = nextConcurrency;
+      this.sourceBackgroundConcurrency =
+        reservedBackgroundConcurrency(nextConcurrency);
     }
     this.dropDisabledSourceExecutors();
     this.debug("source foreground concurrency changed", undefined, {
@@ -1017,7 +1032,10 @@ export class TaskScheduler {
     this.drain();
   }
 
-  getSnapshot = (): TaskSnapshot => this.snapshot;
+  getSnapshot = (): TaskSnapshot => {
+    this.materializeSnapshotIfDirty();
+    return this.snapshot;
+  };
 
   getTask(id: string): TaskRecord | undefined {
     const entry = this.entries.get(id);
@@ -1054,7 +1072,7 @@ export class TaskScheduler {
         const shouldDrain = this.drainAfterBatch;
         this.publishSnapshotAfterBatch = false;
         this.drainAfterBatch = false;
-        if (shouldPublishSnapshot) this.publishSnapshot();
+        if (shouldPublishSnapshot) this.flushSnapshot();
         if (shouldDrain) this.drain();
       }
     }
@@ -1687,6 +1705,7 @@ export class TaskScheduler {
   }
 
   private refreshSnapshotRecord(entry: TaskEntry): void {
+    this.materializeSnapshotIfDirty();
     const index = this.snapshotRecordIndexes.get(entry.record.id);
     if (index === undefined) return;
     const current = this.snapshot.records[index];
@@ -1702,12 +1721,56 @@ export class TaskScheduler {
   }
 
   private publishSnapshot(): void {
+    this.snapshotDirty = true;
     if (this.batchDepth > 0) {
       this.publishSnapshotAfterBatch = true;
       return;
     }
+    this.scheduleSnapshotFlush();
+  }
+
+  private materializeSnapshotIfDirty(): void {
+    if (!this.snapshotDirty) return;
     this.snapshot = this.buildSnapshot();
+    this.snapshotDirty = false;
+  }
+
+  /**
+   * Rebuild (if dirty) and notify snapshot listeners once. Cancels any pending
+   * coalesced flush so a burst of transitions produces a single rebuild and a
+   * single fan-out instead of one per transition.
+   */
+  private flushSnapshot(): void {
+    this.snapshotFlushScheduled = false;
+    if (
+      this.snapshotRafHandle !== null &&
+      typeof cancelAnimationFrame === "function"
+    ) {
+      cancelAnimationFrame(this.snapshotRafHandle);
+    }
+    this.snapshotRafHandle = null;
+    this.materializeSnapshotIfDirty();
     for (const listener of this.snapshotListeners) listener();
+  }
+
+  private scheduleSnapshotFlush(): void {
+    if (this.snapshotFlushScheduled) return;
+    this.snapshotFlushScheduled = true;
+    // The webview coalesces to a frame; tests (node, no rAF) coalesce to a
+    // microtask so synchronous bursts still collapse to one fan-out.
+    if (typeof requestAnimationFrame === "function") {
+      this.snapshotRafHandle = requestAnimationFrame(() => {
+        this.snapshotRafHandle = null;
+        this.runScheduledSnapshotFlush();
+      });
+      return;
+    }
+    queueMicrotask(() => this.runScheduledSnapshotFlush());
+  }
+
+  private runScheduledSnapshotFlush(): void {
+    if (!this.snapshotFlushScheduled) return;
+    this.flushSnapshot();
   }
 
   private requestDrain(): void {
@@ -1749,14 +1812,7 @@ export class TaskScheduler {
     };
     const terminalCandidates: TaskEntry[] = [];
     const addTerminalCandidate = (entry: TaskEntry): void => {
-      const insertIndex = terminalCandidates.findIndex(
-        (candidate) => candidate.record.createdAt < entry.record.createdAt,
-      );
-      if (insertIndex < 0) {
-        terminalCandidates.push(entry);
-      } else {
-        terminalCandidates.splice(insertIndex, 0, entry);
-      }
+      terminalCandidates.push(entry);
     };
 
     for (const entry of this.entries.values()) {
@@ -1821,6 +1877,10 @@ export class TaskScheduler {
     for (const sourceId of unorderedSourceIds) {
       materializeSourceQueue(sourceId);
     }
+    // Newest terminal entries first. The sort is stable (V8), so entries with
+    // equal createdAt keep insertion order, matching the previous O(n^2)
+    // insertion-sort while avoiding per-entry findIndex+splice.
+    terminalCandidates.sort((a, b) => b.record.createdAt - a.record.createdAt);
     for (const entry of terminalCandidates) {
       addMaterializedEntry(entry);
     }
