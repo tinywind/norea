@@ -128,6 +128,35 @@ export const chapterDownloadQueueTable = sqliteTable(
   }),
 );
 
+// DownloadCacheWork: resumable maintenance work for bulk cache deletion.
+export const downloadCacheWorkTable = sqliteTable(
+  "download_cache_work",
+  {
+    id: text("id").primaryKey().notNull(),
+    scope: text("scope").notNull(),
+    targetIdsJson: text("target_ids_json").notNull(),
+    title: text("title"),
+    status: text("status").notNull().default("queued"),
+    total: integer("total").notNull().default(0),
+    completed: integer("completed").notNull().default(0),
+    failed: integer("failed").notNull().default(0),
+    error: text("error"),
+    cancelRequested: integer("cancel_requested", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAtMs: integer("created_at_ms").notNull(),
+    updatedAtMs: integer("updated_at_ms").notNull(),
+    startedAtMs: integer("started_at_ms"),
+    finishedAtMs: integer("finished_at_ms"),
+  },
+  (t) => ({
+    statusIdx: index("download_cache_work_status_idx").on(
+      t.status,
+      t.updatedAtMs,
+    ),
+  }),
+);
+
 // NovelStats: materialized counters used by Library lists. Keeping
 // this separate from novel metadata avoids scanning every chapter on
 // each Library entry render.

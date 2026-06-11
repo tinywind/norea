@@ -31,7 +31,6 @@ import {
 } from "../components/SettingsPrimitives";
 import { TextButton } from "../components/TextButton";
 import {
-  clearDownloadedChapterContent,
   clearLibraryMembership,
   clearReadingProgress,
   clearUpdatesTab,
@@ -40,8 +39,6 @@ import {
   exportBackupToFile,
   importBackupFromFile,
 } from "../lib/backup/io";
-import { clearAllChapterMedia } from "../lib/chapter-media";
-import { clearAllStoredChapterContentMirrors } from "../lib/chapter-content-storage";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -49,6 +46,7 @@ import {
 import { pluginManager } from "../lib/plugins/manager";
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
+import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
 import type { MainTaskKind } from "../lib/tasks/scheduler";
 import {
   checkDevUpdate,
@@ -121,15 +119,6 @@ const LOG_LEVEL_LABEL_KEYS: Record<LogLevel, TranslationKey> = {
 };
 
 const SETTINGS_TOAST_AUTO_CLOSE_MS = 5000;
-
-async function clearDownloadedChapterContentAndMedia(): Promise<{
-  rowsAffected: number;
-}> {
-  await clearAllStoredChapterContentMirrors();
-  const result = await clearDownloadedChapterContent();
-  await clearAllChapterMedia();
-  return result;
-}
 
 type SettingsToastColor = "blue" | "green" | "red";
 
@@ -544,11 +533,13 @@ function AppSettingsSection({ isBusy }: { isBusy: boolean }) {
 
 function DataSettingsSection({
   isBusy,
+  onClearDownloadedContent,
   onExport,
   onImport,
   onRunMaintenance,
 }: {
   isBusy: boolean;
+  onClearDownloadedContent: () => void;
   onExport: () => void;
   onImport: () => void;
   onRunMaintenance: (
@@ -631,17 +622,7 @@ function DataSettingsSection({
             loading={isBusy}
             variant="default"
             onClick={() => {
-              onRunMaintenance(
-                "maintenance.clearDownloadedContent",
-                t("settings.data.downloadedContent.button"),
-                t("settings.data.downloadedContent.busy"),
-                t("settings.data.downloadedContent.warning"),
-                clearDownloadedChapterContentAndMedia,
-                (rowsAffected) =>
-                  t("settings.data.downloadedContent.done", {
-                    count: rowsAffected,
-                  }),
-              );
+              onClearDownloadedContent();
             }}
           >
             {t("common.clear")}
@@ -1338,6 +1319,50 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     }
   }
 
+  async function clearDownloadedContent(): Promise<void> {
+    const kind = "maintenance.clearDownloadedContent";
+    const title = t("settings.data.downloadedContent.button");
+    if (!window.confirm(t("settings.data.downloadedContent.warning"))) {
+      return;
+    }
+    setBusyAction(kind);
+    showSettingsLoadingToast(
+      kind,
+      title,
+      t("settings.data.downloadedContent.busy"),
+    );
+    try {
+      const result = await enqueueDownloadCacheDelete({
+        scope: "all",
+        title: t("tasks.task.deleteDownloadCache"),
+        progressLabel: (current, total) =>
+          t("tasks.progress.deleteDownloadCache", { current, total }),
+      }).promise;
+      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+      void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+      void queryClient.invalidateQueries({ queryKey: ["novel"] });
+      updateSettingsToast(
+        kind,
+        "green",
+        title,
+        t("settings.data.downloadedContent.done", {
+          count: result.deleted,
+        }),
+      );
+    } catch (error) {
+      updateSettingsToast(
+        kind,
+        "red",
+        title,
+        t("settings.data.maintenanceFailed", {
+          error: describeError(error),
+        }),
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function openLatestRelease(): void {
     void openUrl(LATEST_RELEASE_URL).catch((error: unknown) => {
       showSettingsToast(
@@ -1377,6 +1402,9 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       content: (
         <DataSettingsSection
           isBusy={isBusy}
+          onClearDownloadedContent={() => {
+            void clearDownloadedContent();
+          }}
           onExport={() => {
             void handleExport();
           }}

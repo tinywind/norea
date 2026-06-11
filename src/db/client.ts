@@ -79,12 +79,38 @@ async function ensureChapterDownloadQueueTable(db: Database): Promise<void> {
   );
 }
 
+async function ensureDownloadCacheWorkTable(db: Database): Promise<void> {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS download_cache_work (
+       id text PRIMARY KEY NOT NULL,
+       scope text NOT NULL,
+       target_ids_json text NOT NULL,
+       title text,
+       status text DEFAULT 'queued' NOT NULL,
+       total integer DEFAULT 0 NOT NULL,
+       completed integer DEFAULT 0 NOT NULL,
+       failed integer DEFAULT 0 NOT NULL,
+       error text,
+       cancel_requested integer DEFAULT 0 NOT NULL,
+       created_at_ms integer NOT NULL,
+       updated_at_ms integer NOT NULL,
+       started_at_ms integer,
+       finished_at_ms integer
+     )`,
+  );
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS download_cache_work_status_idx
+     ON download_cache_work (status, updated_at_ms)`,
+  );
+}
+
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   await ensureMediaRepairNeededColumn(db);
   await ensureMediaBytesCheckedAtColumn(db);
   await ensureNoChapterContentColumn(db);
   await ensureChapterDownloadQueueTable(db);
+  await ensureDownloadCacheWorkTable(db);
   return db;
 }
 

@@ -47,6 +47,7 @@ tauri-winrt-notification = "0.7.2"
 windows = { version = "0.61", features = ["Foundation_Collections", "UI_Notifications", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+tauri = { version = "2.11.1", features = ["test"] }
 tempfile = "3.27.0"
 
 [profile.release]

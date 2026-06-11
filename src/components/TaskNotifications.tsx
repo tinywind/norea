@@ -5,6 +5,7 @@ import {
   startAndroidTaskNotifications,
 } from "../lib/tasks/android-notifications";
 import { startChapterDownloadQueueExecutor } from "../lib/tasks/chapter-download";
+import { startDownloadCacheDeleteWorkExecutor } from "../lib/tasks/download-cache-delete";
 import { startTrayTaskProgress } from "../lib/tasks/tray-progress";
 import { useNotificationStore } from "../store/notifications";
 import { WindowsTaskNotificationBridge } from "./WindowsTaskNotificationBridge";
@@ -18,6 +19,12 @@ export function TaskNotifications() {
   useEffect(() => {
     void startChapterDownloadQueueExecutor();
   }, []);
+
+  useEffect(() => {
+    void startDownloadCacheDeleteWorkExecutor(
+      t("tasks.task.deleteDownloadCache"),
+    );
+  }, [t]);
 
   useEffect(() => {
     return startAndroidTaskNotifications(t, taskProgressMode);

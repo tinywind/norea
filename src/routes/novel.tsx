@@ -71,7 +71,6 @@ import { LocalCoverPicker } from "../components/LocalCoverPicker";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import { TextButton } from "../components/TextButton";
 import {
-  clearChapterContent,
   listChaptersByNovel,
   setChaptersReadState,
   type ChapterListRow,
@@ -97,10 +96,6 @@ import {
   syncNovelFromSource,
   type SourceDuplicateChapterInfo,
 } from "../lib/plugins/sync-novel";
-import { clearChapterMedia } from "../lib/chapter-media";
-import {
-  clearStoredChapterContentMirror,
-} from "../lib/chapter-content-storage";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
@@ -113,6 +108,7 @@ import {
   subscribeChapterDownloads,
   type ChapterDownloadStatus,
 } from "../lib/tasks/chapter-download";
+import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import {
   enqueueOpenSiteTask,
@@ -1749,15 +1745,33 @@ export function NovelDetailPage() {
 
   const clearDownload = useMutation({
     mutationFn: async (chapterId: number) => {
-      await clearChapterContent(chapterId);
-      await clearChapterMedia(chapterId);
-      await clearStoredChapterContentMirror(chapterId);
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: chaptersKey(id),
+      const chapter = chapters.find((row) => row.id === chapterId);
+      const handle = enqueueDownloadCacheDelete({
+        scope: "chapter",
+        targetIds: [chapterId],
+        title: t("tasks.task.deleteDownloadCacheChapter", {
+          name: chapter?.name ?? String(chapterId),
+        }),
+        progressLabel: (current, total) =>
+          t("tasks.progress.deleteDownloadCache", { current, total }),
       });
-      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+      void handle.promise.then(
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: chaptersKey(id),
+          });
+          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+          void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+        },
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: chaptersKey(id),
+          });
+          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+          void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+        },
+      );
+      return { queued: true };
     },
   });
 
@@ -1766,19 +1780,30 @@ export function NovelDetailPage() {
       const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
         (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
       );
-      for (const chapterId of uniqueChapterIds) {
-        await clearChapterContent(chapterId);
-        await clearChapterMedia(chapterId);
-        await clearStoredChapterContentMirror(chapterId);
-      }
-      return uniqueChapterIds.length;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: chaptersKey(id),
+      const handle = enqueueDownloadCacheDelete({
+        scope: "chapter",
+        targetIds: uniqueChapterIds,
+        title: t("tasks.task.deleteDownloadCache"),
+        progressLabel: (current, total) =>
+          t("tasks.progress.deleteDownloadCache", { current, total }),
       });
-      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+      void handle.promise.then(
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: chaptersKey(id),
+          });
+          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+          void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+        },
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: chaptersKey(id),
+          });
+          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+          void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+        },
+      );
+      return { queued: true };
     },
   });
 

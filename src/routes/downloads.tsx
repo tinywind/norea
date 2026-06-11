@@ -21,28 +21,16 @@ import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { ConsoleCover } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import {
-  deleteAllDownloadCache,
-  deleteDownloadCacheChapter,
-  deleteDownloadCacheNovel,
-  listDownloadCacheChapters,
   type DownloadCacheChapter,
   type DownloadCacheNovel,
 } from "../db/queries/download-cache";
-import {
-  clearAllChapterMedia,
-  clearChapterMedia,
-} from "../lib/chapter-media";
-import {
-  clearAllStoredChapterContentMirrors,
-  clearStoredChapterContentMirror,
-  clearStoredNovelChapterContentMirrors,
-} from "../lib/chapter-content-storage";
 import { scheduleDownloadCacheMediaBytesBackfill } from "../lib/download-cache-media";
 import {
   loadDownloadCacheChapters,
   loadDownloadCacheNovels,
 } from "../lib/download-cache-loaders";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
+import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
 import {
   formatRelativeTimeForLocale,
   useTranslation,
@@ -244,18 +232,28 @@ function DownloadCacheChapters({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const progressLabel = (current: number, total: number) =>
+    t("tasks.progress.deleteDownloadCache", { current, total });
   const chapters = useQuery({
     queryKey: [...DOWNLOAD_CACHE_QUERY_KEY, "chapters", novel.novelId] as const,
     queryFn: () => loadDownloadCacheChapters(novel.novelId),
   });
   const deleteChapter = useMutation({
-    mutationFn: async (chapterId: number) => {
-      await clearStoredChapterContentMirror(chapterId);
-      const result = await deleteDownloadCacheChapter(chapterId);
-      await clearChapterMedia(chapterId);
-      return result;
+    mutationFn: async (chapter: DownloadCacheChapter) => {
+      const handle = enqueueDownloadCacheDelete({
+        scope: "chapter",
+        targetIds: [chapter.id],
+        title: t("tasks.task.deleteDownloadCacheChapter", {
+          name: chapter.name,
+        }),
+        progressLabel,
+      });
+      void handle.promise.then(
+        () => invalidateDownloadCache(queryClient),
+        () => invalidateDownloadCache(queryClient),
+      );
+      return { queued: true };
     },
-    onSuccess: () => invalidateDownloadCache(queryClient),
   });
   const repairChapter = useMutation({
     mutationFn: async (chapter: DownloadCacheChapter) => {
@@ -306,7 +304,7 @@ function DownloadCacheChapters({
           chapter={chapter}
           deleting={
             deleteChapter.isPending &&
-            deleteChapter.variables === chapter.id
+            deleteChapter.variables?.id === chapter.id
           }
           repairing={
             repairChapter.isPending &&
@@ -318,7 +316,7 @@ function DownloadCacheChapters({
             }))) {
               return;
             }
-            deleteChapter.mutate(chapter.id);
+            deleteChapter.mutate(chapter);
           }}
           onRepair={() => repairChapter.mutate(chapter)}
         />
@@ -337,17 +335,24 @@ function DownloadCacheNovelCard({
   const { locale, t } = useTranslation();
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const progressLabel = (current: number, total: number) =>
+    t("tasks.progress.deleteDownloadCache", { current, total });
   const deleteNovel = useMutation({
     mutationFn: async (novelId: number) => {
-      const chapters = await listDownloadCacheChapters(novelId);
-      await clearStoredNovelChapterContentMirrors(novelId);
-      const result = await deleteDownloadCacheNovel(novelId);
-      await Promise.all(
-        chapters.map((chapter) => clearChapterMedia(chapter.id)),
+      const handle = enqueueDownloadCacheDelete({
+        scope: "novel",
+        targetIds: [novelId],
+        title: t("tasks.task.deleteDownloadCacheNovel", {
+          name: novel.novelName,
+        }),
+        progressLabel,
+      });
+      void handle.promise.then(
+        () => invalidateDownloadCache(queryClient),
+        () => invalidateDownloadCache(queryClient),
       );
-      return result;
+      return { queued: true };
     },
-    onSuccess: () => invalidateDownloadCache(queryClient),
   });
   const size = formatBytes(novel.totalBytes, locale);
   const libraryLabel = novel.inLibrary
@@ -507,14 +512,21 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
     });
   }, [active, query.data, queryClient]);
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
+  const progressLabel = (current: number, total: number) =>
+    t("tasks.progress.deleteDownloadCache", { current, total });
   const deleteAll = useMutation({
     mutationFn: async () => {
-      await clearAllStoredChapterContentMirrors();
-      const result = await deleteAllDownloadCache();
-      await clearAllChapterMedia();
-      return result;
+      const handle = enqueueDownloadCacheDelete({
+        scope: "all",
+        title: t("tasks.task.deleteDownloadCache"),
+        progressLabel,
+      });
+      void handle.promise.then(
+        () => invalidateDownloadCache(queryClient),
+        () => invalidateDownloadCache(queryClient),
+      );
+      return { queued: true };
     },
-    onSuccess: () => invalidateDownloadCache(queryClient),
   });
   const rows = query.data ?? [];
   const visibleRows = mediaFallbackOnly

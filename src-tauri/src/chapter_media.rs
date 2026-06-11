@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -26,6 +26,18 @@ const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
 const MEDIA_RESTORE_BACKUP_INFIX: &str = ".restore-backup-";
 const CHAPTER_MEDIA_STREAM_DOMAIN: &str = "chapter-media";
 
+#[derive(Debug, Clone)]
+pub(crate) struct ChapterMediaClearContext {
+    pub chapter_id: i64,
+    pub novel_id: Option<i64>,
+    pub source_id: Option<String>,
+    pub novel_name: Option<String>,
+    pub novel_path: Option<String>,
+    pub chapter_number: Option<String>,
+    pub chapter_name: Option<String>,
+    pub chapter_position: Option<i64>,
+}
+
 async fn chapter_media_blocking<T, F>(context: &'static str, task: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -36,7 +48,7 @@ where
         .map_err(|err| format!("chapter media: {context} task: {err}"))?
 }
 
-fn legacy_media_root(app: &AppHandle) -> Result<PathBuf, String> {
+fn legacy_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -44,7 +56,7 @@ fn legacy_media_root(app: &AppHandle) -> Result<PathBuf, String> {
         .join(MEDIA_ROOT_DIR))
 }
 
-fn storage_root_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn storage_root_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_config_dir()
@@ -52,7 +64,7 @@ fn storage_root_config_path(app: &AppHandle) -> Result<PathBuf, String> {
         .join(STORAGE_ROOT_CONFIG_FILE))
 }
 
-fn configured_media_root(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+fn configured_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBuf>, String> {
     let config_path = storage_root_config_path(app)?;
     match fs::read_to_string(&config_path) {
         Ok(value) => {
@@ -68,11 +80,14 @@ fn configured_media_root(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     }
 }
 
-fn media_root(app: &AppHandle) -> Result<PathBuf, String> {
+fn media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     configured_media_root(app)?.map_or_else(|| legacy_media_root(app), Ok)
 }
 
-fn save_configured_media_root(app: &AppHandle, root_path: &Path) -> Result<String, String> {
+fn save_configured_media_root<R: Runtime>(
+    app: &AppHandle<R>,
+    root_path: &Path,
+) -> Result<String, String> {
     let root_value = root_path.to_string_lossy().into_owned();
     if !root_value.starts_with("content://") {
         fs::create_dir_all(root_path)
@@ -102,7 +117,7 @@ fn ensure_contents_nomedia(root: &Path) -> Result<(), String> {
         .map_err(|err| format!("chapter media: create .nomedia: {err}"))
 }
 
-fn media_roots_for_lookup(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+fn media_roots_for_lookup<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<PathBuf>, String> {
     let mut roots = Vec::new();
     roots.push(media_root(app)?);
     let legacy_root = legacy_media_root(app)?;
@@ -2274,8 +2289,8 @@ pub async fn chapter_media_clear(
     .await
 }
 
-fn chapter_media_clear_sync(
-    app: AppHandle,
+fn chapter_media_clear_sync<R: Runtime>(
+    app: AppHandle<R>,
     chapter_id: i64,
     novel_id: Option<i64>,
     source_id: Option<String>,
@@ -2311,6 +2326,28 @@ fn chapter_media_clear_sync(
         }
     }
     Ok(())
+}
+
+pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
+    app: &AppHandle<R>,
+    context: &ChapterMediaClearContext,
+) -> Result<(), String> {
+    for root in media_roots_for_lookup(app)? {
+        remove_stored_chapter_content_files(&root, context.chapter_id, None)?;
+        delete_legacy_storage_manifest(&root)?;
+    }
+
+    chapter_media_clear_sync(
+        app.clone(),
+        context.chapter_id,
+        context.novel_id,
+        context.source_id.clone(),
+        context.novel_name.clone(),
+        context.novel_path.clone(),
+        context.chapter_number.clone(),
+        context.chapter_name.clone(),
+        context.chapter_position,
+    )
 }
 
 #[tauri::command]
@@ -2455,8 +2492,7 @@ mod tests {
         )
         .expect("replace manifest");
 
-        let manifest =
-            fs::read_to_string(&manifest_path).expect("read replaced media manifest");
+        let manifest = fs::read_to_string(&manifest_path).expect("read replaced media manifest");
         assert!(manifest.contains("new.png"));
         assert!(!manifest.contains("old.png"));
         assert!(!manifest_path.with_extension("json.tmp").exists());

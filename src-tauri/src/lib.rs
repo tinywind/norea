@@ -3,6 +3,7 @@ mod android_tls;
 mod backup;
 mod chapter_media;
 mod database;
+mod download_cache;
 mod download_queue;
 mod native_stream;
 mod plugin_host;
@@ -58,6 +59,12 @@ pub fn run() {
             version: 2,
             description: "create chapter download queue",
             sql: include_str!("schema_download_queue.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "create download cache work queue",
+            sql: include_str!("schema_download_cache_work.sql"),
             kind: MigrationKind::Up,
         },
     ];
@@ -123,6 +130,10 @@ pub fn run() {
             download_queue::chapter_download_queue_enqueue,
             download_queue::chapter_download_queue_lease,
             download_queue::chapter_download_queue_remove,
+            download_cache::download_cache_delete_work_cancel,
+            download_cache::download_cache_delete_work_enqueue,
+            download_cache::download_cache_delete_work_list_resumable,
+            download_cache::download_cache_delete_work_run,
             native_stream::native_stream_cancel,
             native_stream::native_stream_cleanup,
             native_stream::native_stream_create,
