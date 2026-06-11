@@ -60,12 +60,15 @@ import {
 import {
   getLibraryNovelSummary,
   getNovelById,
+  listLibrarySourceFilters,
   listLibraryNovelPage,
+  LOCAL_PLUGIN_ID,
   findLocalNovelByPath,
   setNovelInLibrary,
   upsertLocalNovel,
   upsertLocalNovelMetadata,
   type LibraryNovelCursor,
+  type LibrarySourceFilter,
   type LibraryNovelSummary,
   type LibraryNovel,
   type LocalNovelMetadataInput,
@@ -302,6 +305,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const unreadOnlyMode = useLibraryStore((s) => s.unreadOnlyMode);
   const setUnreadOnlyMode = useLibraryStore((s) => s.setUnreadOnlyMode);
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
 
   const novels = useInfiniteQuery({
     queryKey: [
@@ -312,8 +316,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         categoryId: selectedCategoryId,
         downloadedOnly: downloadedOnlyMode,
         limit: LIBRARY_PAGE_SIZE,
-        unreadOnly: unreadOnlyMode,
+        sourceId: selectedSourceId,
         sortOrder,
+        unreadOnly: unreadOnlyMode,
       },
     ] as const,
     initialPageParam: null as LibraryNovelCursor | null,
@@ -324,8 +329,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         cursor: pageParam,
         downloadedOnly: downloadedOnlyMode,
         limit: LIBRARY_PAGE_SIZE,
-        unreadOnly: unreadOnlyMode,
+        sourceId: selectedSourceId,
         sortOrder,
+        unreadOnly: unreadOnlyMode,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
   });
@@ -339,11 +345,34 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         search: debouncedSearch,
         categoryId: selectedCategoryId,
         downloadedOnly: downloadedOnlyMode,
+        sourceId: selectedSourceId,
         unreadOnly: unreadOnlyMode,
       },
     ] as const,
     queryFn: () =>
       getLibraryNovelSummary({
+        search: debouncedSearch,
+        categoryId: selectedCategoryId,
+        downloadedOnly: downloadedOnlyMode,
+        sourceId: selectedSourceId,
+        unreadOnly: unreadOnlyMode,
+      }),
+  });
+
+  const sourceFilters = useQuery({
+    queryKey: [
+      "novel",
+      "library",
+      "sources",
+      {
+        search: debouncedSearch,
+        categoryId: selectedCategoryId,
+        downloadedOnly: downloadedOnlyMode,
+        unreadOnly: unreadOnlyMode,
+      },
+    ] as const,
+    queryFn: () =>
+      listLibrarySourceFilters({
         search: debouncedSearch,
         categoryId: selectedCategoryId,
         downloadedOnly: downloadedOnlyMode,
@@ -389,9 +418,25 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     debouncedSearch,
     downloadedOnlyMode,
     selectedCategoryId,
+    selectedSourceId,
     sortOrder,
     unreadOnlyMode,
   ]);
+
+  useEffect(() => {
+    if (
+      selectedSourceId === null ||
+      sourceFilters.isLoading ||
+      !sourceFilters.data
+    ) {
+      return;
+    }
+    if (
+      !sourceFilters.data.some((source) => source.pluginId === selectedSourceId)
+    ) {
+      setSelectedSourceId(null);
+    }
+  }, [selectedSourceId, sourceFilters.data, sourceFilters.isLoading]);
 
   const invalidateLibraryCategories = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["category"] });
@@ -632,6 +677,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const filterActive =
     debouncedSearch.trim() !== "" ||
     selectedCategoryId !== null ||
+    selectedSourceId !== null ||
     downloadedOnlyMode ||
     unreadOnlyMode;
 
@@ -676,6 +722,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     0,
   );
   const manualCategories = categories.data ?? [];
+  const sourceRows = sourceFilters.data ?? [];
+  const sourceTotalCount = sourceRows.reduce(
+    (total, source) => total + source.totalNovels,
+    0,
+  );
   const allCategoryCount = categoryCounts.data?.total ?? 0;
   const uncategorizedCategoryCount = categoryCounts.data?.uncategorized ?? 0;
   const assignableCategories = manualCategories.filter(
@@ -706,6 +757,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const showMobileSearch = mobileSearchOpen || search.trim() !== "";
   const tags = getLibraryTags(summary, t);
   const sortLabel = t(SORT_LABEL_KEYS[sortOrder]);
+  const activeSource =
+    selectedSourceId == null
+      ? null
+      : sourceRows.find((source) => source.pluginId === selectedSourceId);
+  const activeSourceLabel = activeSource
+    ? getLibrarySourceLabel(activeSource, t)
+    : t("library.sources.all");
   const activeCategoryCount =
     selectedCategoryId == null
       ? allCategoryCount
@@ -1058,6 +1116,19 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               </div>
             ) : null}
 
+            {sourceFilters.isLoading ||
+            sourceRows.length > 0 ||
+            selectedSourceId !== null ? (
+              <LibrarySourceFilterBar
+                activeSourceId={selectedSourceId}
+                loading={sourceFilters.isLoading}
+                onChange={setSelectedSourceId}
+                sources={sourceRows}
+                t={t}
+                totalCount={sourceTotalCount}
+              />
+            ) : null}
+
             {selectedIds.size > 0 ? (
               <div className="lnr-library-selection-strip">
                 <span>{t("library.selectedCount", { count: selectedIds.size })}</span>
@@ -1232,6 +1303,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               <span>{status}</span>
               <span>{t("library.statusUpdated", { time: stats.lastUpdatedLabel })}</span>
               <span>{activeCategory}</span>
+              <span>{activeSourceLabel}</span>
               <span>{t("library.statusSort", { sort: sortLabel })}</span>
               {metadataRefreshStatus ? (
                 <span>{metadataRefreshStatus}</span>
@@ -1545,6 +1617,92 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         </Stack>
       </Modal>
     </>
+  );
+}
+
+interface LibrarySourceFilterBarProps {
+  activeSourceId: string | null;
+  loading: boolean;
+  onChange: (sourceId: string | null) => void;
+  sources: readonly LibrarySourceFilter[];
+  t: TranslateFn;
+  totalCount: number;
+}
+
+function getLibrarySourceLabel(
+  source: Pick<LibrarySourceFilter, "pluginId" | "pluginName">,
+  t: TranslateFn,
+): string {
+  if (source.pluginId === LOCAL_PLUGIN_ID) return t("library.sources.local");
+  return (
+    source.pluginName?.trim() ||
+    source.pluginId.trim() ||
+    t("library.sources.unknown")
+  );
+}
+
+function LibrarySourceFilterBar({
+  activeSourceId,
+  loading,
+  onChange,
+  sources,
+  t,
+  totalCount,
+}: LibrarySourceFilterBarProps) {
+  const allCount = loading ? "..." : totalCount.toLocaleString();
+
+  return (
+    <div
+      className="lnr-library-source-filter"
+      aria-label={t("library.sources.title")}
+    >
+      <ScrollArea
+        className="lnr-library-source-scroll"
+        offsetScrollbars
+        scrollbarSize={4}
+        type="hover"
+      >
+        <div className="lnr-library-source-list">
+          <UnstyledButton
+            aria-pressed={activeSourceId === null}
+            className="lnr-library-source-chip"
+            data-active={activeSourceId === null}
+            onClick={() => onChange(null)}
+            title={t("library.sources.all")}
+          >
+            <span className="lnr-library-source-chip-label">
+              {t("library.sources.all")}
+            </span>
+            <span className="lnr-library-source-chip-count">{allCount}</span>
+          </UnstyledButton>
+          {loading && sources.length === 0 ? (
+            <span className="lnr-library-source-loading">
+              {t("library.sources.loading")}
+            </span>
+          ) : null}
+          {sources.map((source) => {
+            const label = getLibrarySourceLabel(source, t);
+            const count = source.totalNovels.toLocaleString();
+            return (
+              <UnstyledButton
+                aria-label={`${label} ${t("library.sources.count", {
+                  count: source.totalNovels,
+                })}`}
+                aria-pressed={activeSourceId === source.pluginId}
+                className="lnr-library-source-chip"
+                data-active={activeSourceId === source.pluginId}
+                key={source.pluginId}
+                onClick={() => onChange(source.pluginId)}
+                title={label}
+              >
+                <span className="lnr-library-source-chip-label">{label}</span>
+                <span className="lnr-library-source-chip-count">{count}</span>
+              </UnstyledButton>
+            );
+          })}
+        </div>
+      </ScrollArea>
+    </div>
   );
 }
 

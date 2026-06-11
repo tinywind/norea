@@ -48,6 +48,8 @@ export interface LibraryFilter {
   /** Restrict to an assigned category, or to uncategorized novels with the sentinel id. */
   categoryId?: number | null;
   downloadedOnly?: boolean;
+  /** Restrict to one source plugin id. */
+  sourceId?: string | null;
   unreadOnly?: boolean;
   sortOrder?: LibrarySortOrder;
   /** Optional route-level guard for screens that render bounded library windows. */
@@ -76,6 +78,12 @@ export interface LibraryNovelSummary {
   totalNovels: number;
   unreadChapters: number;
   unreadNovels: number;
+}
+
+export interface LibrarySourceFilter {
+  pluginId: string;
+  pluginName: string | null;
+  totalNovels: number;
 }
 
 interface LibraryNovelPageFilter extends LibraryFilter {
@@ -108,6 +116,12 @@ interface RawLibraryNovelSummary {
   totalNovels: number | null;
   unreadChapters: number | null;
   unreadNovels: number | null;
+}
+
+interface RawLibrarySourceFilter {
+  pluginId: string;
+  pluginName: string | null;
+  totalNovels: number | null;
 }
 
 export interface LibraryNovelRefreshTarget {
@@ -273,6 +287,10 @@ function buildLibraryFilterConditions(
     conditions.push(
       "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
     );
+  }
+  if (filter.sourceId != null && filter.sourceId.trim() !== "") {
+    const sourceParam = addParam(params, filter.sourceId.trim());
+    conditions.push(`n.plugin_id = ${sourceParam}`);
   }
   if (filter.unreadOnly) {
     conditions.push("COALESCE(s.chapters_unread, 0) > 0");
@@ -486,6 +504,33 @@ export async function getLibraryNovelSummary(
     unreadChapters: row?.unreadChapters ?? 0,
     unreadNovels: row?.unreadNovels ?? 0,
   };
+}
+
+export async function listLibrarySourceFilters(
+  filter: Omit<LibraryFilter, "limit" | "sortOrder" | "sourceId"> = {},
+): Promise<LibrarySourceFilter[]> {
+  const db = await getDb();
+  const params: unknown[] = [];
+  const conditions = buildLibraryFilterConditions(filter, params);
+  const rows = await db.select<RawLibrarySourceFilter[]>(
+    `${libraryRowsCte(conditions)}
+     SELECT
+       pluginId,
+       pluginName,
+       COUNT(*) AS totalNovels
+     FROM library_rows
+     GROUP BY pluginId, pluginName
+     ORDER BY
+       CASE WHEN pluginId = '${LOCAL_PLUGIN_ID}' THEN 1 ELSE 0 END ASC,
+       COALESCE(pluginName, pluginId) COLLATE NOCASE ASC`,
+    params,
+  );
+
+  return rows.map((row) => ({
+    pluginId: row.pluginId,
+    pluginName: row.pluginName,
+    totalNovels: row.totalNovels ?? 0,
+  }));
 }
 
 export async function listLibraryNovelRefreshTargets(
