@@ -449,6 +449,40 @@ describe("enqueueChapterDownload", () => {
     expect(capturedSpec?.requiresForegroundExecutor).toBe(true);
   });
 
+  it("yields the foreground executor when paused during the download preamble", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const blockedLoad = createDeferred<void>();
+    pluginMocks.loadInstalledFromDb.mockReturnValueOnce(blockedLoad.promise);
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const controller = new AbortController();
+    const runPromise = capturedSpec.run({
+      executor: "immediate",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: controller.signal,
+      taskId: "task-1",
+    });
+    void runPromise.catch(() => undefined);
+
+    await flushMicrotasks();
+    expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledTimes(1);
+
+    controller.abort(new DOMException("Task was paused.", "AbortError"));
+
+    // The blocked preamble never resolves; the run still rejects promptly so
+    // the shared foreground executor is released for interactive work.
+    await expect(runPromise).rejects.toThrow("Task was paused.");
+    expect(pluginMocks.parseChapter).not.toHaveBeenCalled();
+  });
+
   it("carries contentType through the task subject and saveStoredChapterContent", async () => {
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
 

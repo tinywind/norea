@@ -333,6 +333,41 @@ function isPauseAbort(signal: AbortSignal): boolean {
   );
 }
 
+function abortReason(signal: AbortSignal): Error {
+  const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+  return reason instanceof Error
+    ? reason
+    : new DOMException("Task was cancelled.", "AbortError");
+}
+
+/**
+ * Await `work` but reject as soon as `signal` aborts. Foreground (web-storage)
+ * downloads hold the single shared `immediate` scraper executor that
+ * interactive site-open and browse work also need. Without this, a paused
+ * download blocked in a non-fetch preamble (backend queue persistence, plugin
+ * reload) keeps that executor until the preamble settles on its own, leaving
+ * interactive tasks stuck in the queue. Racing the abort lets the download
+ * relinquish the executor immediately; the underlying preamble work keeps
+ * running for later tasks.
+ */
+async function abortableStep<T>(
+  signal: AbortSignal,
+  work: Promise<T>,
+): Promise<T> {
+  if (signal.aborted) throw abortReason(signal);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    void work.catch(() => undefined);
+  }
+}
+
 function missingLocalChapterError(job: ChapterDownloadJob): Error {
   return new Error(
     `chapter-download: local chapter ${job.id} was not found for "${job.title}" from plugin "${job.pluginId}" at path "${job.chapterPath}".`,
@@ -650,10 +685,13 @@ function enqueueChapterDownloadForExecutor(
       reportProgress({ current: 0, total: progressTotal }, { force: true });
       try {
         if (waitForBackendQueue) {
-          await waitForBackendChapterDownloadQueueMutations();
+          await abortableStep(
+            signal,
+            waitForBackendChapterDownloadQueueMutations(),
+          );
         }
         if (isTauriRuntime()) {
-          await pluginManager.loadInstalledFromDb();
+          await abortableStep(signal, pluginManager.loadInstalledFromDb());
         }
         const plugin = pluginManager.getPluginForExecutor(
           job.pluginId,
@@ -941,7 +979,7 @@ export function enqueueChapterMediaRepair(
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
       if (isTauriRuntime()) {
-        await pluginManager.loadInstalledFromDb();
+        await abortableStep(signal, pluginManager.loadInstalledFromDb());
       }
       const plugin = pluginManager.getPluginForExecutor(
         job.pluginId,
