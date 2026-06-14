@@ -33,7 +33,7 @@ use std::collections::HashMap;
 #[cfg(desktop)]
 use std::hash::{Hash, Hasher};
 #[cfg(desktop)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(desktop)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -448,6 +448,10 @@ pub struct ScraperState {
     /// script navigates to the result sentinel (intercepted in `on_navigation`)
     /// to wake the awaiting request, replacing the per-request poll loop.
     pending_completions: Mutex<HashMap<String, oneshot::Sender<()>>>,
+    /// Per-executor cancellation flags. `scraper_cancel_executor` sets one so a
+    /// long-running `webview_extract` navigation aborts and releases the
+    /// executor lock for interactive work instead of holding it until timeout.
+    cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[cfg(not(desktop))]
@@ -594,6 +598,18 @@ fn scraper_executor_lock(state: &ScraperState, executor: &str) -> Arc<AsyncMutex
     locks
         .entry(executor.to_string())
         .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+#[cfg(desktop)]
+fn scraper_executor_cancel_flag(state: &ScraperState, executor: &str) -> Arc<AtomicBool> {
+    let mut flags = state
+        .cancel_flags
+        .lock()
+        .expect("scraper cancel flags mutex");
+    flags
+        .entry(executor.to_string())
+        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
         .clone()
 }
 
@@ -2127,6 +2143,9 @@ pub async fn scraper_cancel_executor(
     message: Option<String>,
 ) -> Result<bool, String> {
     let queue = normalize_scraper_executor(queue.as_deref())?;
+    // Signal any in-flight `webview_extract` navigation on this executor to
+    // abort so it releases the executor lock for interactive work.
+    scraper_executor_cancel_flag(&state, &queue).store(true, Ordering::SeqCst);
     let entry = state
         .webviews
         .lock()
@@ -2212,6 +2231,8 @@ pub async fn webview_extract(
     let queue = normalize_scraper_executor(queue.as_deref())?;
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
+    let cancel_flag = scraper_executor_cancel_flag(&state, &queue);
+    cancel_flag.store(false, Ordering::SeqCst);
     let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
     let is_visible_browser = state
         .visible_key
@@ -2272,6 +2293,11 @@ pub async fn webview_extract(
         let start = Instant::now();
         let mut poll_interval = Duration::from_millis(150);
         while start.elapsed() < timeout {
+            if cancel_flag.load(Ordering::SeqCst) {
+                clear_webview_extract_result(&scraper, None);
+                log::debug!("[scraper:extract] cancelled queue={queue} url={url}");
+                return Err(format!("webview_extract: {url} request cancelled"));
+            }
             if signaled {
                 tokio::time::sleep(poll_interval).await;
             } else {

@@ -1507,6 +1507,7 @@ export class TaskScheduler {
       entry.record.source.id,
       entry.record.id,
       executorId,
+      context.signal,
       () => entry.spec.run(context),
     );
   }

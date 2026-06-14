@@ -6,18 +6,21 @@ import { androidWebviewExtract } from "../android-scraper";
 import { getSourceRequestTimeoutMs } from "../../store/browse";
 import {
   appFetch,
+  cancelScraperExecutor,
   type ContextUrlProvider,
   createPluginFetch,
   createPluginFetchFile,
   createPluginFetchText,
   pluginFetch,
   pluginFetchText,
+  requestAbortedError,
   type HttpInit,
 } from "../http";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { getScraperUserAgent } from "../../store/user-agent";
 import {
   activeScraperExecutor,
+  activeScraperExecutorSignal,
   type ScraperExecutorId,
 } from "../tasks/scraper-queue";
 import {
@@ -38,6 +41,8 @@ interface WebViewFetchOptions {
   timeoutMs?: number;
   scraperExecutor?: ScraperExecutorId;
   sourceId?: string;
+  /** Aborts the in-flight WebView navigation when the owning task is paused. */
+  signal?: AbortSignal;
 }
 
 interface WebViewLoadResult {
@@ -172,6 +177,7 @@ async function webViewFetch(
   const scraperExecutor =
     options.scraperExecutor ?? activeScraperExecutor(options.sourceId);
   const timeoutMs = options.timeoutMs ?? getSourceRequestTimeoutMs();
+  const signal = options.signal ?? activeScraperExecutorSignal(scraperExecutor);
   if (isAndroidRuntime()) {
     return androidWebviewExtract(
       url,
@@ -179,16 +185,61 @@ async function webViewFetch(
       timeoutMs,
       userAgent,
       scraperExecutor,
+      signal,
     );
   }
 
-  return invoke<string>("webview_extract", {
+  return desktopWebViewExtract(
     url,
-    beforeScript: options.beforeContentScript ?? null,
+    options.beforeContentScript ?? null,
+    timeoutMs,
+    userAgent,
+    scraperExecutor,
+    signal,
+  );
+}
+
+/**
+ * Desktop WebView extract with abort support. The native `webview_extract`
+ * holds its executor lock while navigating, so a paused task must cancel it to
+ * release the shared foreground executor for interactive work. On abort we both
+ * reject promptly and ask the native side to cancel the in-flight navigation.
+ */
+async function desktopWebViewExtract(
+  url: string,
+  beforeScript: string | null,
+  timeoutMs: number,
+  userAgent: string | null,
+  scraperExecutor: ScraperExecutorId,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  if (signal?.aborted) {
+    void cancelScraperExecutor(scraperExecutor);
+    throw requestAbortedError();
+  }
+  const request = invoke<string>("webview_extract", {
+    url,
+    beforeScript,
     timeoutMs,
     userAgent,
     queue: scraperExecutor,
   });
+  if (!signal) return request;
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      void cancelScraperExecutor(scraperExecutor);
+      reject(requestAbortedError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([request, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    void request.catch(() => undefined);
+  }
 }
 
 async function webViewLoad(

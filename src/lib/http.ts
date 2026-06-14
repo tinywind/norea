@@ -8,6 +8,7 @@ import { getSourceRequestTimeoutMs } from "../store/browse";
 import { getScraperUserAgent } from "../store/user-agent";
 import {
   activeScraperExecutor,
+  activeScraperExecutorSignal,
   type ScraperExecutorId,
 } from "./tasks/scraper-queue";
 
@@ -70,7 +71,7 @@ function resolveContextUrl(
   return typeof contextUrl === "function" ? contextUrl() : contextUrl;
 }
 
-function requestAbortedError(): DOMException {
+export function requestAbortedError(): DOMException {
   return new DOMException(REQUEST_CANCELLED_ERROR, "AbortError");
 }
 
@@ -258,7 +259,7 @@ async function nativeMediaResponse(
   return responseFromWire(result);
 }
 
-async function cancelScraperExecutor(
+export async function cancelScraperExecutor(
   executor: ScraperExecutorId,
 ): Promise<boolean> {
   if (isAndroidRuntime()) {
@@ -488,6 +489,7 @@ async function pluginFetchInternal(
   const userAgent = scraperUserAgent(wireInit.headers);
   const scraperExecutor =
     init.scraperExecutor ?? activeScraperExecutor(init.sourceId);
+  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   const timeoutMs = requestTimeoutMs(init.timeoutMs);
   let result: FetchResultWire;
   try {
@@ -499,7 +501,7 @@ async function pluginFetchInternal(
           userAgent,
           scraperExecutor,
           timeoutMs,
-          init.signal,
+          signal,
         )
       : await desktopWebviewFetch(
           url,
@@ -508,7 +510,7 @@ async function pluginFetchInternal(
           userAgent,
           scraperExecutor,
           timeoutMs,
-          init.signal,
+          signal,
         );
   } catch (error) {
     if (logFailures && !isRequestAbortError(error)) {

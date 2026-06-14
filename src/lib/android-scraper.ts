@@ -211,6 +211,7 @@ export function androidWebviewExtract(
   timeoutMs: number,
   userAgent: string | null,
   executor: ScraperExecutorId,
+  signal?: AbortSignal,
 ): Promise<string> {
   return callNative<string>(
     "extract",
@@ -222,6 +223,7 @@ export function androidWebviewExtract(
       queue: executor,
     },
     timeoutMs + 5_000,
+    signal,
   );
 }
 
