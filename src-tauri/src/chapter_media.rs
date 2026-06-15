@@ -804,6 +804,14 @@ fn chapter_media_path_from_src_with_context(
             if let Some(path) = media_path_from_chapter_dir(&chapter_dir, &file_name)? {
                 return Ok(path);
             }
+            if chapter_dir.is_dir() {
+                // The context-derived chapter directory is authoritative. Media kept
+                // only inside media.zip has no extractable file path and is served via
+                // chapter_media_data_url instead, so skip the full-library scan rather
+                // than walking every downloaded chapter directory on each media
+                // request (which is O(chapters) per image and freezes large libraries).
+                continue;
+            }
         }
 
         for chapter_dir in content_chapter_dirs_for_lookup(root, chapter_id)? {
@@ -848,6 +856,11 @@ pub(crate) fn chapter_media_body_from_src_with_context(
         )? {
             if let Some(body) = media_body_from_chapter_dir(&chapter_dir, &file_name)? {
                 return Ok((body, file_name));
+            }
+            if chapter_dir.is_dir() {
+                // Authoritative context dir exists; avoid the O(chapters) full-library
+                // scan on every media request (see chapter_media_path_from_src_with_context).
+                continue;
             }
         }
 
