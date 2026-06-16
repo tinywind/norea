@@ -2588,21 +2588,48 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
     context: &ChapterMediaClearContext,
 ) -> Result<(), String> {
     for root in media_roots_for_lookup(app)? {
-        remove_stored_chapter_content_files(&root, context.chapter_id, None)?;
-        delete_legacy_storage_manifest(&root)?;
-    }
+        let context_dir = content_chapter_dir_from_context(
+            &root,
+            context.novel_id,
+            context.source_id.as_deref(),
+            context.novel_path.as_deref(),
+            context.novel_name.as_deref(),
+            context.chapter_id,
+            context.chapter_number.as_deref(),
+            context.chapter_name.as_deref(),
+            context.chapter_position,
+        )?;
 
-    chapter_media_clear_sync(
-        app.clone(),
-        context.chapter_id,
-        context.novel_id,
-        context.source_id.clone(),
-        context.novel_name.clone(),
-        context.novel_path.clone(),
-        context.chapter_number.clone(),
-        context.chapter_name.clone(),
-        context.chapter_position,
-    )
+        // When the storage context resolves to an existing chapter directory it is
+        // authoritative, so clear it directly and skip the O(library) content tree
+        // scan that otherwise runs once per chapter (mirrors the same tradeoff in
+        // chapter_media_body_from_src_with_context). Bulk cache deletion of a novel
+        // with many chapters is quadratic without this fast path.
+        let cleared_via_context = match &context_dir {
+            Some(dir) if dir.is_dir() => {
+                remove_chapter_content_files_in_dir(dir, None)?;
+                clear_content_media_artifacts(dir)?;
+                true
+            }
+            _ => false,
+        };
+
+        if !cleared_via_context {
+            remove_stored_chapter_content_files(&root, context.chapter_id, None)?;
+            for chapter_dir in content_chapter_dirs_for_lookup(&root, context.chapter_id)? {
+                clear_content_media_artifacts(&chapter_dir)?;
+            }
+        }
+
+        delete_legacy_storage_manifest(&root)?;
+
+        let legacy_dir = chapter_dir_at(&root, context.chapter_id)?;
+        if legacy_dir.exists() {
+            fs::remove_dir_all(legacy_dir)
+                .map_err(|err| format!("chapter media: remove chapter dir: {err}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
