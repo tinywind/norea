@@ -151,7 +151,8 @@ Use this path when checking that the app still works end to end:
     touches library, progress, category, repository, or downloaded chapter data.
 11. On an installed Windows or Android build, open TXT, PDF, and EPUB files from
     the system file browser while Norea is stopped and while it is already
-    running; confirm each file reaches the local import review.
+    running; confirm each file creates or reuses a file-named local work and
+    opens its imported chapter in the reader.
 
 For protected sources, open the in-app site browser first so the app can use the
 same browser session for later source actions.
