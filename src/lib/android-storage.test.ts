@@ -9,6 +9,7 @@ import {
   clearAndroidStorageRoot,
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
+  describeAndroidContentUri,
   prepareAndroidReaderMediaCache,
   readAndroidStorageText,
   selectAndroidStorageRoot,
@@ -19,6 +20,7 @@ type TestBridge = {
   deleteRootChildren?: ReturnType<typeof vi.fn>;
   deletePath?: ReturnType<typeof vi.fn>;
   deleteTempFile?: ReturnType<typeof vi.fn>;
+  describeContentUri?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
@@ -111,6 +113,29 @@ describe("android storage bridge facade", () => {
       path: "/data/user/0/io.github.tinywind.norea/cache/android-storage-bridge/content.tmp",
     });
     expect(readContentUriFile).toHaveBeenCalledWith("content://backup", "8192");
+  });
+
+  it("describes content URIs through the Android storage bridge", async () => {
+    const describeContentUri = vi.fn(() =>
+      JSON.stringify({
+        fileName: "Book.epub",
+        mimeType: "application/epub+zip",
+        ok: true,
+        size: 42,
+      }),
+    );
+    installBridge({ describeContentUri });
+
+    await expect(
+      describeAndroidContentUri("content://documents/Book.epub"),
+    ).resolves.toEqual({
+      fileName: "Book.epub",
+      mimeType: "application/epub+zip",
+      size: 42,
+    });
+    expect(describeContentUri).toHaveBeenCalledWith(
+      "content://documents/Book.epub",
+    );
   });
 
   it("returns null for temp file reads when the bridge lacks the method", async () => {

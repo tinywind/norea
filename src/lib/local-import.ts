@@ -252,7 +252,9 @@ function safeLocalImportFileName(
     : `${candidate}.${fallbackExtension}`;
 }
 
-function formatFromFile(file: File): LocalImportFormat {
+function formatFromFile(
+  file: Pick<File, "name" | "type">,
+): LocalImportFormat {
   const extension = getExtension(file.name);
   const mimeType = file.type.toLowerCase();
 
@@ -279,6 +281,15 @@ function formatLimit(format: LocalImportFormat): number {
   if (format === "markdown") return LOCAL_IMPORT_LIMITS.markdownBytes;
   if (format === "pdf") return LOCAL_IMPORT_LIMITS.pdfBytes;
   return LOCAL_IMPORT_LIMITS.fileBytes;
+}
+
+export function localImportFileSizeLimit(
+  file: Pick<File, "name" | "type">,
+): number {
+  return Math.min(
+    LOCAL_IMPORT_LIMITS.fileBytes,
+    formatLimit(formatFromFile(file)),
+  );
 }
 
 function assertFileWithinLimit(file: File, format: LocalImportFormat): void {

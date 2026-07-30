@@ -10,6 +10,7 @@ import {
   analyzeLocalImportFile,
   clearLocalImportFileCache,
   convertLocalImportFile,
+  localImportFileSizeLimit,
   sanitizeLocalImportHtml,
 } from "./local-import";
 
@@ -53,6 +54,21 @@ describe("sanitizeLocalImportHtml", () => {
 });
 
 describe("analyzeLocalImportFile", () => {
+  it("returns the format-specific limit from file metadata", () => {
+    expect(
+      localImportFileSizeLimit({ name: "Book.txt", type: "text/plain" }),
+    ).toBe(LOCAL_IMPORT_LIMITS.textBytes);
+    expect(
+      localImportFileSizeLimit({
+        name: "Book",
+        type: "application/epub+zip",
+      }),
+    ).toBe(LOCAL_IMPORT_LIMITS.fileBytes);
+    expect(
+      localImportFileSizeLimit({ name: "Book.pdf", type: "application/pdf" }),
+    ).toBe(LOCAL_IMPORT_LIMITS.pdfBytes);
+  });
+
   it("rejects oversized files before reading their body", async () => {
     const oversized = file([""], "Huge.pdf", "application/pdf");
     const arrayBuffer = vi.fn(async () => new ArrayBuffer(0));

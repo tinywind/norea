@@ -304,6 +304,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   );
   const unreadOnlyMode = useLibraryStore((s) => s.unreadOnlyMode);
   const setUnreadOnlyMode = useLibraryStore((s) => s.setUnreadOnlyMode);
+  const pendingLocalImportFiles = useLibraryStore(
+    (s) => s.pendingLocalImportFiles,
+  );
+  const takePendingLocalImportFiles = useLibraryStore(
+    (s) => s.takePendingLocalImportFiles,
+  );
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
 
@@ -935,12 +941,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     [createLocalNovelMutation, localNovelForm],
   );
 
-  const handleLocalImportFilesSelected = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(event.currentTarget.files ?? []);
-      event.currentTarget.value = "";
+  const reviewLocalImportFiles = useCallback(
+    async (files: readonly File[]) => {
       if (files.length === 0) return;
-
       localImportMutation.reset();
       for (const item of localImportItems) {
         clearLocalImportFileCache(item.file);
@@ -956,6 +959,36 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       setLocalImportAnalyzing(false);
     },
     [localImportItems, localImportMutation],
+  );
+
+  const localImportReviewQueueRef = useRef(Promise.resolve());
+  const queueLocalImportReview = useCallback(
+    (files: readonly File[]) => {
+      localImportReviewQueueRef.current = localImportReviewQueueRef.current.then(
+        () => reviewLocalImportFiles(files),
+      );
+      return localImportReviewQueueRef.current;
+    },
+    [reviewLocalImportFiles],
+  );
+
+  useEffect(() => {
+    if (pendingLocalImportFiles.length === 0) return;
+    const files = takePendingLocalImportFiles();
+    void queueLocalImportReview(files);
+  }, [
+    pendingLocalImportFiles,
+    queueLocalImportReview,
+    takePendingLocalImportFiles,
+  ]);
+
+  const handleLocalImportFilesSelected = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.currentTarget.files ?? []);
+      event.currentTarget.value = "";
+      void queueLocalImportReview(files);
+    },
+    [queueLocalImportReview],
   );
 
   const readyLocalImportItems = localImportItems.filter(

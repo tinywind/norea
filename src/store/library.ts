@@ -26,6 +26,7 @@ export type LibrarySortOrder =
 export type DefaultChapterSort = "asc" | "desc";
 
 interface LibraryState {
+  pendingLocalImportFiles: readonly File[];
   selectedCategoryId: number | null;
   search: string;
   displayMode: LibraryDisplayMode;
@@ -38,6 +39,8 @@ interface LibraryState {
   unreadOnlyMode: boolean;
   incognitoMode: boolean;
   defaultChapterSort: DefaultChapterSort;
+  queueLocalImportFiles: (files: readonly File[]) => void;
+  takePendingLocalImportFiles: () => File[];
   setSelectedCategoryId: (id: number | null) => void;
   setSearch: (search: string) => void;
   setDisplayMode: (displayMode: LibraryDisplayMode) => void;
@@ -54,7 +57,8 @@ interface LibraryState {
 
 export const useLibraryStore = create<LibraryState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
+      pendingLocalImportFiles: [],
       selectedCategoryId: null,
       search: "",
       displayMode: "comfortable",
@@ -67,6 +71,15 @@ export const useLibraryStore = create<LibraryState>()(
       unreadOnlyMode: false,
       incognitoMode: false,
       defaultChapterSort: "asc",
+      queueLocalImportFiles: (files) =>
+        set((state) => ({
+          pendingLocalImportFiles: [...state.pendingLocalImportFiles, ...files],
+        })),
+      takePendingLocalImportFiles: () => {
+        const files = [...get().pendingLocalImportFiles];
+        set({ pendingLocalImportFiles: [] });
+        return files;
+      },
       setSelectedCategoryId: (selectedCategoryId) =>
         set({ selectedCategoryId }),
       setSearch: (search) => set({ search }),

@@ -17,6 +17,7 @@ interface AndroidStorageBridge {
   ) => string;
   deletePath: (rootUri: string, relativePath: string) => string;
   deleteRootChildren: (rootUri: string) => string;
+  describeContentUri?: (uri: string) => string;
   beginRestore: (rootUri: string, token: string) => string;
   commitRestore: (rootUri: string, token: string) => string;
   pathSize: (rootUri: string, relativePath: string) => string;
@@ -117,8 +118,20 @@ interface AndroidStorageTempFileResponse extends AndroidStorageSizeResponse {
   path?: string;
 }
 
+interface AndroidContentUriDescriptorResponse extends AndroidStorageResponse {
+  fileName?: string;
+  mimeType?: string;
+  size?: number | null;
+}
+
 interface AndroidStorageExistsResponse extends AndroidStorageResponse {
   exists?: boolean;
+}
+
+export interface AndroidContentUriDescriptor {
+  fileName: string;
+  mimeType: string;
+  size: number | null;
 }
 
 export interface AndroidStorageTempFile {
@@ -329,6 +342,26 @@ export async function copyAndroidContentUriToTempFile(
     bytes: response.bytes ?? 0,
     mimeType: response.mimeType ?? "application/octet-stream",
     path: response.path,
+  };
+}
+
+export async function describeAndroidContentUri(
+  uri: string,
+): Promise<AndroidContentUriDescriptor> {
+  const describe = androidStorageBridge().describeContentUri;
+  if (!describe) {
+    throw new Error("Android content URI descriptor bridge is unavailable.");
+  }
+  const response = parseStorageResponse<AndroidContentUriDescriptorResponse>(
+    describe(uri),
+  );
+  if (!response.fileName) {
+    throw new Error("Android content URI descriptor has no file name.");
+  }
+  return {
+    fileName: response.fileName,
+    mimeType: response.mimeType ?? "application/octet-stream",
+    size: response.size ?? null,
   };
 }
 

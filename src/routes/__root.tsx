@@ -9,13 +9,17 @@ import {
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { startAndroidFileOpenListener } from "../lib/android-file-open";
+import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
 import {
   getAppNavigationHistoryIndex,
   recordAppNavigationEntry,
 } from "../lib/navigation-history";
+import { isAndroidRuntime, isTauriRuntime } from "../lib/tauri-runtime";
 import { useAppearanceStore } from "../store/appearance";
 import { useBrowseStore } from "../store/browse";
+import { useLibraryStore } from "../store/library";
 import { useReaderStore } from "../store/reader";
 import { BrowsePage, type BrowseTab } from "./browse";
 import { DownloadsPage } from "./downloads";
@@ -361,6 +365,39 @@ export function RootLayout() {
         // for vite-only dev). Listener registration silently no-ops.
       });
     return () => {
+      unlisten?.();
+    };
+  }, [navigate]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const startFileOpenListener = isAndroidRuntime()
+      ? startAndroidFileOpenListener
+      : startDesktopFileOpenListener;
+    startFileOpenListener({
+      onError: (error) => {
+        console.error("[file-open] failed to open file", error);
+      },
+      onFiles: async (files) => {
+        useLibraryStore.getState().queueLocalImportFiles(files);
+        await navigate({ to: "/" });
+      },
+    })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+        } else {
+          unlisten = cleanup;
+        }
+      })
+      .catch((error) => {
+        if (isTauriRuntime()) {
+          console.error("[file-open] failed to start listener", error);
+        }
+      });
+    return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [navigate]);
