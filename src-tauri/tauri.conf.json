@@ -50,7 +50,7 @@
         "role": "Viewer",
         "mimeType": "text/plain",
         "androidIntentActionFilters": [
-          "View"
+          "view"
         ]
       },
       {
@@ -62,7 +62,7 @@
         "role": "Viewer",
         "mimeType": "application/pdf",
         "androidIntentActionFilters": [
-          "View"
+          "view"
         ]
       },
       {
@@ -74,7 +74,7 @@
         "role": "Viewer",
         "mimeType": "application/epub+zip",
         "androidIntentActionFilters": [
-          "View"
+          "view"
         ]
       }
     ],
