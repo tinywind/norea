@@ -23,6 +23,8 @@ but it is a separate app with its own data, backup, and source system.
 - Browse and search installed reading sources.
 - Add novels to your library and organize them with categories.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
+- Open TXT, EPUB, and PDF files with installed desktop or Android builds and
+  review them through the local import flow.
 - Cache rendered chapter media for offline reading.
 - Create local novel homes, add chapter files later, reorder local chapters, and
   manage local metadata with locally uploaded cover images.
