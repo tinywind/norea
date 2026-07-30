@@ -4,8 +4,13 @@ use std::{
     sync::Mutex,
 };
 
-use tauri::{ipc::Response, AppHandle, Emitter, Manager, State, Url};
+#[cfg(target_os = "android")]
+use tauri::Emitter;
+#[cfg(any(target_os = "android", test))]
+use tauri::Url;
+use tauri::{ipc::Response, AppHandle, Manager, State};
 
+#[cfg(target_os = "android")]
 const ANDROID_OPEN_FILES_EVENT: &str = "android-open-files";
 const ANDROID_STORAGE_TEMP_DIR: &str = "android-storage-bridge";
 const MAX_ANDROID_OPEN_FILE_BYTES: u64 = 25 * 1024 * 1024;
@@ -16,6 +21,7 @@ struct AndroidOpenFileRegistry {
 }
 
 impl AndroidOpenFileRegistry {
+    #[cfg(any(target_os = "android", test))]
     fn enqueue(&mut self, urls: impl IntoIterator<Item = Url>) -> usize {
         let mut added = 0;
         for url in urls {
@@ -41,6 +47,7 @@ impl AndroidOpenFileRegistry {
 pub struct AndroidOpenFileState(Mutex<AndroidOpenFileRegistry>);
 
 impl AndroidOpenFileState {
+    #[cfg(target_os = "android")]
     fn enqueue(&self, urls: Vec<Url>) -> Result<usize, String> {
         self.0
             .lock()
@@ -56,6 +63,7 @@ impl AndroidOpenFileState {
     }
 }
 
+#[cfg(target_os = "android")]
 pub fn enqueue_opened_urls(app: &AppHandle, urls: Vec<Url>) {
     let state = app.state::<AndroidOpenFileState>();
     match state.enqueue(urls) {
