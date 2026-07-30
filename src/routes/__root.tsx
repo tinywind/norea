@@ -1,5 +1,6 @@
 import { memo, useEffect, useState, type ReactNode } from "react";
 import { Anchor, AppShell } from "@mantine/core";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Link,
   Outlet,
@@ -16,6 +17,7 @@ import {
   getAppNavigationHistoryIndex,
   recordAppNavigationEntry,
 } from "../lib/navigation-history";
+import { importSystemOpenedFile } from "../lib/system-file-import";
 import { isAndroidRuntime, isTauriRuntime } from "../lib/tauri-runtime";
 import { useAppearanceStore } from "../store/appearance";
 import { useBrowseStore } from "../store/browse";
@@ -311,6 +313,7 @@ export function RootLayout() {
   const pathname = location.pathname;
   const search = asSearchRecord(location.search);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const activePersistentPage = getPersistentPage(pathname);
   const [visitedPages, setVisitedPages] = useState<ReadonlySet<PersistentPage>>(
     () =>
@@ -380,8 +383,29 @@ export function RootLayout() {
         console.error("[file-open] failed to open file", error);
       },
       onFiles: async (files) => {
-        useLibraryStore.getState().queueLocalImportFiles(files);
-        await navigate({ to: "/" });
+        const failedFiles: File[] = [];
+        let chapterId: number | undefined;
+
+        for (const file of files) {
+          try {
+            const imported = await importSystemOpenedFile(file);
+            chapterId ??= imported.chapterId;
+          } catch (error) {
+            console.error("[file-open] failed to import file", error);
+            failedFiles.push(file);
+          }
+        }
+
+        if (failedFiles.length > 0) {
+          useLibraryStore.getState().queueLocalImportFiles(failedFiles);
+        }
+        if (chapterId !== undefined) {
+          void queryClient.invalidateQueries({ queryKey: ["category"] });
+          void queryClient.invalidateQueries({ queryKey: ["novel"] });
+          await navigate({ to: "/reader", search: { chapterId } });
+        } else if (failedFiles.length > 0) {
+          await navigate({ to: "/" });
+        }
       },
     })
       .then((cleanup) => {
@@ -400,7 +424,7 @@ export function RootLayout() {
       disposed = true;
       unlisten?.();
     };
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   useEffect(() => {
     if (activePersistentPage) {

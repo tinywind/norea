@@ -65,7 +65,6 @@ import {
   LOCAL_PLUGIN_ID,
   findLocalNovelByPath,
   setNovelInLibrary,
-  upsertLocalNovel,
   upsertLocalNovelMetadata,
   type LibraryNovelCursor,
   type LibrarySourceFilter,
@@ -77,13 +76,11 @@ import {
 import {
   analyzeLocalImportFile,
   clearLocalImportFileCache,
-  convertLocalImportFile,
   LocalImportError,
   type LocalImportAnalysis,
   type LocalImportFormat,
 } from "../lib/local-import";
-import { cacheLocalImportedChapterMedia } from "../lib/local-import-media";
-import { syncLocalChapterStorageAfterOrderChange } from "../lib/local-chapter-storage";
+import { importLocalFileToLibrary } from "../lib/local-import-library";
 import { MAX_ROUTE_QUERY_ROWS } from "../lib/performance-budgets";
 import {
   enqueueChapterDownloadBatch,
@@ -818,7 +815,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         try {
           const result = await importLocalFileToLibrary(
             item.file,
-            item.analysis,
+            { analysis: item.analysis },
           );
           results.push({ itemId: item.id, result, status: "imported" });
         } catch (error) {
@@ -2460,59 +2457,6 @@ function markSelectedLocalImportDuplicates(
   });
 }
 
-async function importLocalFileToLibrary(
-  file: File,
-  analysis?: LocalImportAnalysis,
-): Promise<LocalNovelImportResult> {
-  const conversion = await convertLocalImportFile(file, { analysis });
-  const chapters = conversion.chapters.map((chapter, index) => ({
-    chapterNumber:
-      chapter.chapterNumber == null ? null : String(chapter.chapterNumber),
-    content: chapter.content,
-    binaryResource: chapter.binaryResource,
-    contentBytes: chapter.contentBytes,
-    contentType: chapter.contentType,
-    mediaResources: chapter.mediaResources,
-    name: chapter.name,
-    page: chapter.page,
-    path: chapter.path,
-    position: index + 1,
-    releaseTime: chapter.releaseTime ?? null,
-  }));
-
-  const previousNovel = await findLocalNovelByPath(conversion.novel.path);
-  const previousChapters = previousNovel
-    ? await listChaptersByNovel(previousNovel.id)
-    : [];
-  const result = await upsertLocalNovel({
-    artist: conversion.novel.artist ?? null,
-    author: conversion.novel.author ?? null,
-    chapters,
-    cover: conversion.novel.cover ?? null,
-    genres: conversion.novel.genres ?? null,
-    name: conversion.novel.name,
-    path: conversion.novel.path,
-    status: conversion.novel.status ?? null,
-    summary: conversion.novel.summary ?? null,
-  });
-  const nextNovel = await getNovelById(result.novelId);
-  if (previousNovel && nextNovel?.isLocal) {
-    const nextChapters = await listChaptersByNovel(result.novelId);
-    await syncLocalChapterStorageAfterOrderChange({
-      nextChapters,
-      novel: nextNovel,
-      previousChapters,
-      previousNovel,
-    });
-  }
-  await cacheLocalImportedChapterMedia({
-    chapters,
-    novelId: result.novelId,
-    novelName: conversion.novel.name,
-    novelPath: conversion.novel.path,
-  });
-  return result;
-}
 
 function createManualLocalNovelPath(): string {
   const id =
