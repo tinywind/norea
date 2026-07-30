@@ -40,6 +40,44 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "txt"
+        ],
+        "name": "Plain Text Document",
+        "description": "Norea plain text document",
+        "role": "Viewer",
+        "mimeType": "text/plain",
+        "androidIntentActionFilters": [
+          "View"
+        ]
+      },
+      {
+        "ext": [
+          "pdf"
+        ],
+        "name": "PDF Document",
+        "description": "Norea PDF document",
+        "role": "Viewer",
+        "mimeType": "application/pdf",
+        "androidIntentActionFilters": [
+          "View"
+        ]
+      },
+      {
+        "ext": [
+          "epub"
+        ],
+        "name": "EPUB E-book",
+        "description": "Norea EPUB e-book",
+        "role": "Viewer",
+        "mimeType": "application/epub+zip",
+        "androidIntentActionFilters": [
+          "View"
+        ]
+      }
+    ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },

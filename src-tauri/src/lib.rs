@@ -1,8 +1,10 @@
+mod android_file_open;
 #[cfg(target_os = "android")]
 mod android_tls;
 mod backup;
 mod chapter_media;
 mod database;
+mod desktop_file_open;
 mod download_cache;
 mod download_queue;
 mod native_stream;
@@ -69,14 +71,18 @@ pub fn run() {
         },
     ];
 
+    let desktop_open_files = desktop_file_open::DesktopOpenFileState::from_process_args();
     let builder = tauri::Builder::default();
 
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        desktop_file_open::enqueue_new_instance(app, args, cwd);
         tray::show_main_window(app);
     }));
 
     builder
+        .manage(android_file_open::AndroidOpenFileState::default())
+        .manage(desktop_open_files)
         .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
         .plugin(tauri_plugin_deep_link::init())
@@ -93,6 +99,8 @@ pub fn run() {
             chapter_media::norea_media_protocol_response(ctx.app_handle(), request)
         })
         .invoke_handler(tauri::generate_handler![
+            android_file_open::android_open_file_temp_read,
+            android_file_open::android_open_file_url_take,
             backup::backup_cleanup_staged_unpack,
             backup::backup_delete_temp_file,
             backup::backup_pack,
@@ -132,6 +140,9 @@ pub fn run() {
             chapter_media::chapter_storage_remove_dir,
             chapter_media::novel_cover_read_manifest,
             chapter_media::novel_cover_store,
+            desktop_file_open::desktop_open_file_discard,
+            desktop_file_open::desktop_open_file_list,
+            desktop_file_open::desktop_open_file_take,
             download_queue::chapter_download_queue_enqueue,
             download_queue::chapter_download_queue_lease,
             download_queue::chapter_download_queue_remove,
@@ -191,6 +202,12 @@ pub fn run() {
             log::set_max_level(log::LevelFilter::Info);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            #[cfg(target_os = "android")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                android_file_open::enqueue_opened_urls(_app, urls);
+            }
+        });
 }

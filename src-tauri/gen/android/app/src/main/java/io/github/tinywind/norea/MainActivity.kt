@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
 import android.webkit.JavascriptInterface
@@ -36,6 +37,11 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 class MainActivity : TauriActivity() {
+  private data class ContentUriMetadata(
+    val fileName: String?,
+    val size: Long?,
+  )
+
   private val bridgeSession = BridgeSession()
   private var androidScraperBridge: AndroidScraperBridge? = null
   private var scraperBackPressedCallback: OnBackPressedCallback? = null
@@ -418,9 +424,23 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
+    fun describeContentUri(uri: String): String = storageResponse {
+      val contentUri = Uri.parse(uri)
+      val metadata = contentUriMetadata(contentUri)
+      val mimeType = contentUriMimeType(contentUri)
+      JSONObject()
+        .put("ok", true)
+        .put("fileName", contentUriFileName(contentUri, mimeType, metadata.fileName))
+        .put("mimeType", mimeType)
+        .put("size", metadata.size ?: JSONObject.NULL)
+    }
+
+    @JavascriptInterface
     fun readContentUriFile(uri: String, maxBytes: String): String = storageResponse {
       val limit = parseStorageByteLimit(maxBytes)
       val contentUri = Uri.parse(uri)
+      val metadata = contentUriMetadata(contentUri)
+      val mimeType = contentUriMimeType(contentUri)
       val tempFile = createStorageTempFile()
       var bytes = 0L
       try {
@@ -436,12 +456,9 @@ class MainActivity : TauriActivity() {
       JSONObject()
         .put("ok", true)
         .put("bytes", bytes)
+        .put("fileName", contentUriFileName(contentUri, mimeType, metadata.fileName))
+        .put("mimeType", mimeType)
         .put("path", tempFile.absolutePath)
-        .put(
-          "mimeType",
-          contentResolver.getType(contentUri)
-            ?: mimeTypeForPath(uri, "application/octet-stream"),
-        )
     }
 
     @JavascriptInterface
@@ -1570,6 +1587,54 @@ class MainActivity : TauriActivity() {
       "Android storage byte limit exceeds the $MAX_ANDROID_TEMP_BYTES byte limit."
     }
     return limit
+  }
+
+  private fun contentUriMetadata(uri: Uri): ContentUriMetadata {
+    var fileName: String? = null
+    var size: Long? = null
+    runCatching {
+      contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+        null,
+        null,
+        null,
+      )?.use { cursor ->
+        if (!cursor.moveToFirst()) return@use
+        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (nameIndex >= 0 && !cursor.isNull(nameIndex)) {
+          fileName = cursor.getString(nameIndex)
+        }
+        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+          size = cursor.getLong(sizeIndex).takeIf { it >= 0L }
+        }
+      }
+    }.onFailure { error ->
+      Log.w(TAG, "Android content URI metadata query failed. uri=$uri", error)
+    }
+    return ContentUriMetadata(fileName, size)
+  }
+
+  private fun contentUriMimeType(uri: Uri): String =
+    contentResolver.getType(uri)
+      ?.takeIf { it.isNotBlank() }
+      ?: mimeTypeForPath(uri.toString(), "")
+        .ifBlank { "application/octet-stream" }
+
+  private fun contentUriFileName(
+    uri: Uri,
+    mimeType: String,
+    displayName: String?,
+  ): String {
+    displayName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+    uri.lastPathSegment
+      ?.substringAfterLast('/')
+      ?.substringAfterLast(':')
+      ?.takeIf { it.isNotBlank() }
+      ?.let { return it }
+    val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
+    return if (extension.isNullOrBlank()) "opened-file" else "opened-file.$extension"
   }
 
   private fun storageTempRoot(): File {
