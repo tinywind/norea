@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
+import { getResourceDownloadConcurrency } from "../store/browse";
 import {
   androidStorageZipEntryExists,
   archiveAndroidStorageDirectory,
@@ -28,6 +29,7 @@ import {
   writeNativeStream,
   type NativeStreamInfo,
 } from "./native-stream";
+import { runBoundedTaskBatch } from "./tasks/batch-window";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
@@ -2221,6 +2223,16 @@ export async function cacheHtmlChapterMedia({
     ),
   ];
   let storedMediaCount = 0;
+  let completedDownloadCount = 0;
+  let terminalDownloadError: unknown;
+  let mediaUpdateQueue = Promise.resolve();
+  const runMediaUpdate = async (
+    update: () => Promise<void>,
+  ): Promise<void> => {
+    const pending = mediaUpdateQueue.then(update);
+    mediaUpdateQueue = pending.catch(() => undefined);
+    await pending;
+  };
   tagCollectedMediaTargets(srcTargets, srcsetTargets);
   const reusableChangedElements = new Set<Element>();
   for (const url of localSources.keys()) {
@@ -2252,126 +2264,168 @@ export async function cacheHtmlChapterMedia({
     });
   }
 
-  for (let index = 0; index < downloadUrls.length; index += 1) {
-    throwIfAborted(signal);
-    const url = downloadUrls[index]!;
-    const mediaIndex = urls.indexOf(url);
-    if (localSources.has(url)) {
-      onProgress?.({ current: index + 1, total: downloadUrls.length });
-      continue;
-    }
-    try {
-      const response = await pluginMediaFetch(url, {
-        ...requestInit,
-        headers: {
-          Accept: DEFAULT_MEDIA_ACCEPT,
-          ...(requestInit?.headers ?? {}),
-        },
-        ...(mediaContextUrl ? { contextUrl: mediaContextUrl } : {}),
-        ...(scraperExecutor ? { scraperExecutor } : {}),
-        signal,
-        ...(sourceId ? { sourceId } : {}),
-      });
-      if (!response.ok) {
-        recordChapterMediaFailure(mediaFailures, {
-          contextUrl: mediaContextUrl ?? url,
-          error: `HTTP ${response.status} ${response.statusText}`,
-          scraperExecutor,
-          sourceId,
-          status: response.status,
-          url,
-        });
-        applyRemoteMediaFallback({
-          baseUrl,
-          srcTargets,
-          srcsetTargets,
-          styleTargets,
-          url,
-        });
-      } else {
+  await runBoundedTaskBatch({
+    items: downloadUrls,
+    materialize: async (url, index) => {
+      if (terminalDownloadError !== undefined) return;
+      try {
         throwIfAborted(signal);
-        const body = bytesFromArrayBuffer(await response.arrayBuffer());
-        throwIfAborted(signal);
-        const contentType = response.headers.get("content-type");
-        const manifestFile =
-          mediaFilesBySourceUrl.get(url) ??
-          ({
-            bytes: 0,
-            fileName: mediaFileName(
-              mediaIndex >= 0 ? mediaIndex : index,
+        const mediaIndex = urls.indexOf(url);
+        if (localSources.has(url)) {
+          completedDownloadCount += 1;
+          onProgress?.({
+            current: completedDownloadCount,
+            total: downloadUrls.length,
+          });
+          return;
+        }
+        const response = await pluginMediaFetch(url, {
+          ...requestInit,
+          headers: {
+            Accept: DEFAULT_MEDIA_ACCEPT,
+            ...(requestInit?.headers ?? {}),
+          },
+          ...(mediaContextUrl ? { contextUrl: mediaContextUrl } : {}),
+          ...(scraperExecutor ? { scraperExecutor } : {}),
+          signal,
+          ...(sourceId ? { sourceId } : {}),
+        });
+        if (!response.ok) {
+          await runMediaUpdate(async () => {
+            recordChapterMediaFailure(mediaFailures, {
+              contextUrl: mediaContextUrl ?? url,
+              error: `HTTP ${response.status} ${response.statusText}`,
+              scraperExecutor,
+              sourceId,
+              status: response.status,
               url,
-              contentType,
-              usedFileNames,
-            ),
-            path: "",
-            sourceUrl: url,
-            status: "remote",
-            updatedAt: Date.now(),
-          } satisfies ChapterMediaManifestFile);
-        const fileName = manifestFile.fileName;
-        const src = await storeChapterMedia({
-          body,
-          chapterId,
-          contentType,
-          fileName,
-          chapterName,
-          chapterNumber,
-          chapterPosition,
-          novelId,
-          novelName,
-          novelPath,
-          sourceId,
-        });
-        localSources.set(url, src);
-        mediaFilesBySourceUrl.set(url, {
-          ...manifestFile,
-          bytes: chapterMediaByteLength(body),
-          ...(contentType ? { contentType } : {}),
-          fileName,
-          path: `media/${fileName}`,
-          sourceUrl: url,
-          status: "stored",
-          updatedAt: Date.now(),
-        });
-        await writeChapterMediaManifest({
-          context: storageContext,
-          files: [...mediaFilesBySourceUrl.values()],
-        });
-        storedMediaCount += 1;
-        const changedElements = applyResolvedMediaSource({
-          baseUrl,
-          localSources,
-          srcTargets,
-          srcsetTargets,
-          styleTargets,
-          url,
-        });
-        await emitHtmlUpdate(onHtmlUpdate, template);
-        await emitMediaPatchUpdate(onMediaPatch, template, changedElements);
+            });
+            applyRemoteMediaFallback({
+              baseUrl,
+              srcTargets,
+              srcsetTargets,
+              styleTargets,
+              url,
+            });
+          });
+        } else {
+          throwIfAborted(signal);
+          const body = bytesFromArrayBuffer(await response.arrayBuffer());
+          throwIfAborted(signal);
+          const contentType = response.headers.get("content-type");
+          const manifestFile =
+            mediaFilesBySourceUrl.get(url) ??
+            ({
+              bytes: 0,
+              fileName: mediaFileName(
+                mediaIndex >= 0 ? mediaIndex : index,
+                url,
+                contentType,
+                usedFileNames,
+              ),
+              path: "",
+              sourceUrl: url,
+              status: "remote",
+              updatedAt: Date.now(),
+            } satisfies ChapterMediaManifestFile);
+          const fileName = manifestFile.fileName;
+          const src = await storeChapterMedia({
+            body,
+            chapterId,
+            contentType,
+            fileName,
+            chapterName,
+            chapterNumber,
+            chapterPosition,
+            novelId,
+            novelName,
+            novelPath,
+            sourceId,
+          });
+          await runMediaUpdate(async () => {
+            localSources.set(url, src);
+            mediaFilesBySourceUrl.set(url, {
+              ...manifestFile,
+              bytes: chapterMediaByteLength(body),
+              ...(contentType ? { contentType } : {}),
+              fileName,
+              path: `media/${fileName}`,
+              sourceUrl: url,
+              status: "stored",
+              updatedAt: Date.now(),
+            });
+            await writeChapterMediaManifest({
+              context: storageContext,
+              files: [...mediaFilesBySourceUrl.values()],
+            });
+            storedMediaCount += 1;
+            const changedElements = applyResolvedMediaSource({
+              baseUrl,
+              localSources,
+              srcTargets,
+              srcsetTargets,
+              styleTargets,
+              url,
+            });
+            await emitHtmlUpdate(onHtmlUpdate, template);
+            await emitMediaPatchUpdate(onMediaPatch, template, changedElements);
+          });
+        }
+      } catch (error) {
+        if (signal?.aborted) {
+          terminalDownloadError ??= new DOMException(
+            "Task was cancelled.",
+            "AbortError",
+          );
+          return;
+        }
+        if (isMediaAbortError(error)) {
+          terminalDownloadError ??= error;
+          return;
+        }
+        try {
+          await runMediaUpdate(async () => {
+            recordChapterMediaFailure(mediaFailures, {
+              contextUrl: mediaContextUrl ?? url,
+              error,
+              scraperExecutor,
+              sourceId,
+              url,
+            });
+            applyRemoteMediaFallback({
+              baseUrl,
+              srcTargets,
+              srcsetTargets,
+              styleTargets,
+              url,
+            });
+          });
+        } catch (updateError) {
+          terminalDownloadError ??= updateError;
+          return;
+        }
       }
-    } catch (error) {
       if (signal?.aborted) {
-        throw new DOMException("Task was cancelled.", "AbortError");
+        terminalDownloadError ??= new DOMException(
+          "Task was cancelled.",
+          "AbortError",
+        );
+        return;
       }
-      if (isMediaAbortError(error)) throw error;
-      recordChapterMediaFailure(mediaFailures, {
-        contextUrl: mediaContextUrl ?? url,
-        error,
-        scraperExecutor,
-        sourceId,
-        url,
+      completedDownloadCount += 1;
+      onProgress?.({
+        current: completedDownloadCount,
+        total: downloadUrls.length,
       });
-      applyRemoteMediaFallback({
-        baseUrl,
-        srcTargets,
-        srcsetTargets,
-        styleTargets,
-        url,
-      });
-    }
-    throwIfAborted(signal);
-    onProgress?.({ current: index + 1, total: downloadUrls.length });
+    },
+    shouldContinue: () =>
+      terminalDownloadError === undefined && signal?.aborted !== true,
+    windowSize: getResourceDownloadConcurrency(),
+  });
+  if (terminalDownloadError !== undefined) {
+    throw terminalDownloadError;
   }
+  throwIfAborted(signal);
 
   await writeChapterMediaManifest({
     context: storageContext,

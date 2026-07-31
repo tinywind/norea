@@ -8,6 +8,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("./http", () => ({
   pluginMediaFetch: vi.fn(),
 }));
+vi.mock("../store/browse", () => ({
+  getResourceDownloadConcurrency: vi.fn(() => 1),
+}));
 const androidStorageMocks = vi.hoisted(() => ({
   androidStoragePathSize: vi.fn(),
   androidStorageZipEntryExists: vi.fn(),
@@ -33,9 +36,9 @@ vi.mock("../db/queries/novel", () => ({
 }));
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { pluginMediaFetch } from "./http";
 import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
+import { getResourceDownloadConcurrency } from "../store/browse";
 import {
   cacheHtmlChapterMedia,
   getStoredChapterMediaBytes,
@@ -45,10 +48,14 @@ import {
   resolveLocalChapterMediaPatches,
   restoreProtectedRemoteChapterMediaSources,
 } from "./chapter-media";
+import { pluginMediaFetch } from "./http";
 
 const invokeMock = vi.mocked(invoke);
 const convertFileSrcMock = vi.mocked(convertFileSrc);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
+const getResourceDownloadConcurrencyMock = vi.mocked(
+  getResourceDownloadConcurrency,
+);
 const getChapterByIdMock = vi.mocked(getChapterById);
 const getNovelByIdMock = vi.mocked(getNovelById);
 
@@ -62,6 +69,22 @@ function nativeStreamInfo(handle: string, size = 0, finished = false) {
     maxBytes: 100,
     size,
   };
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 function installTemplateDocument(): void {
@@ -146,6 +169,8 @@ beforeEach(() => {
   convertFileSrcMock.mockReset();
   convertFileSrcMock.mockImplementation((path) => `asset://localhost/${path}`);
   pluginMediaFetchMock.mockReset();
+  getResourceDownloadConcurrencyMock.mockReset();
+  getResourceDownloadConcurrencyMock.mockReturnValue(1);
   getChapterByIdMock.mockReset();
   getNovelByIdMock.mockReset();
   Object.values(androidStorageMocks).forEach((mock) => mock.mockReset());
@@ -158,6 +183,79 @@ afterEach(() => {
 });
 
 describe("cacheHtmlChapterMedia", () => {
+  it("refills configured resource slots after success or failure", async () => {
+    getResourceDownloadConcurrencyMock.mockReturnValue(2);
+    const pendingResponses: Deferred<Response>[] = [];
+    let activeDownloads = 0;
+    let maxActiveDownloads = 0;
+    pluginMediaFetchMock.mockImplementation(() => {
+      const deferred = createDeferred<Response>();
+      pendingResponses.push(deferred);
+      activeDownloads += 1;
+      maxActiveDownloads = Math.max(maxActiveDownloads, activeDownloads);
+      return deferred.promise.finally(() => {
+        activeDownloads -= 1;
+      });
+    });
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_archive_cache") return 6;
+      if (command === "chapter_media_store") {
+        const input = args as { fileName: string };
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      return null;
+    });
+
+    const resultPromise = cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/",
+      chapterId: 42,
+      chapterName: "Opening",
+      chapterNumber: "1",
+      chapterPosition: 1,
+      html: [
+        `<img src="page-1.png">`,
+        `<img src="page-2.png">`,
+        `<img src="page-3.png">`,
+      ].join(""),
+      novelId: 9,
+      novelName: "Sample Novel",
+      novelPath: "/novel/sample",
+      sourceId: "demo",
+    });
+
+    await vi.waitFor(() => {
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+    });
+    pendingResponses[0]!.resolve(
+      new Response(null, {
+        status: 502,
+        statusText: "Bad Gateway",
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);
+    });
+    pendingResponses[1]!.resolve(
+      new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+      }),
+    );
+    pendingResponses[2]!.resolve(
+      new Response(new Uint8Array([2]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+      }),
+    );
+
+    const result = await resultPromise;
+
+    expect(maxActiveDownloads).toBe(2);
+    expect(result.mediaFailures).toHaveLength(1);
+    expect(result.storedMediaCount).toBe(2);
+  });
+
   it("rewrites remote images through the media cache and skips local sources", async () => {
     pluginMediaFetchMock.mockImplementation(async (url) => {
       const contentType = String(url).endsWith(".webp")

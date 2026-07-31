@@ -4,6 +4,7 @@ import type { GlobalSearchResult } from "../lib/plugins/global-search";
 import { taskScheduler } from "../lib/tasks/scheduler";
 
 export const DEFAULT_SOURCE_WORK_CONCURRENCY = 3;
+export const DEFAULT_RESOURCE_DOWNLOAD_CONCURRENCY = 1;
 export const DEFAULT_SOURCE_REQUEST_TIMEOUT_SECONDS = 30;
 export const DEFAULT_CHAPTER_DOWNLOAD_COOLDOWN_SECONDS = 1;
 
@@ -15,10 +16,12 @@ function normalizeStringArray(
   return value.filter((item): item is string => typeof item === "string");
 }
 
-function normalizeConcurrency(value: unknown): number {
-  const numeric =
-    typeof value === "number" ? value : DEFAULT_SOURCE_WORK_CONCURRENCY;
-  if (!Number.isFinite(numeric)) return DEFAULT_SOURCE_WORK_CONCURRENCY;
+function normalizeConcurrency(
+  value: unknown,
+  fallback = DEFAULT_SOURCE_WORK_CONCURRENCY,
+): number {
+  const numeric = typeof value === "number" ? value : fallback;
+  if (!Number.isFinite(numeric)) return fallback;
   return Math.max(1, Math.min(10, Math.round(numeric)));
 }
 
@@ -69,6 +72,7 @@ interface BrowseState {
   pendingRepoUrl: string | null;
   pluginLanguageFilter: string[];
   sourceWorkConcurrency: number;
+  resourceDownloadConcurrency: number;
   sourceRequestTimeoutSeconds: number;
   chapterDownloadCooldownSeconds: number;
   pinnedPluginIds: string[];
@@ -78,6 +82,7 @@ interface BrowseState {
   clearPendingRepoUrl: () => void;
   setPluginLanguageFilter: (languages: string[]) => void;
   setSourceWorkConcurrency: (concurrency: number) => void;
+  setResourceDownloadConcurrency: (concurrency: number) => void;
   setSourceRequestTimeoutSeconds: (seconds: number) => void;
   setChapterDownloadCooldownSeconds: (seconds: number) => void;
   togglePinnedPlugin: (pluginId: string) => void;
@@ -97,6 +102,7 @@ export const useBrowseStore = create<BrowseState>()(
       pendingRepoUrl: null,
       pluginLanguageFilter: [],
       sourceWorkConcurrency: DEFAULT_SOURCE_WORK_CONCURRENCY,
+      resourceDownloadConcurrency: DEFAULT_RESOURCE_DOWNLOAD_CONCURRENCY,
       sourceRequestTimeoutSeconds: DEFAULT_SOURCE_REQUEST_TIMEOUT_SECONDS,
       chapterDownloadCooldownSeconds:
         DEFAULT_CHAPTER_DOWNLOAD_COOLDOWN_SECONDS,
@@ -119,6 +125,13 @@ export const useBrowseStore = create<BrowseState>()(
           sourceWorkConcurrency: concurrency,
         });
       },
+      setResourceDownloadConcurrency: (resourceDownloadConcurrency) =>
+        set({
+          resourceDownloadConcurrency: normalizeConcurrency(
+            resourceDownloadConcurrency,
+            DEFAULT_RESOURCE_DOWNLOAD_CONCURRENCY,
+          ),
+        }),
       setSourceRequestTimeoutSeconds: (sourceRequestTimeoutSeconds) =>
         set({
           sourceRequestTimeoutSeconds: normalizeTimeoutSeconds(
@@ -188,6 +201,10 @@ export const useBrowseStore = create<BrowseState>()(
             currentState.pluginLanguageFilter,
           ),
           sourceWorkConcurrency,
+          resourceDownloadConcurrency: normalizeConcurrency(
+            persisted.resourceDownloadConcurrency,
+            DEFAULT_RESOURCE_DOWNLOAD_CONCURRENCY,
+          ),
           sourceRequestTimeoutSeconds: normalizeTimeoutSeconds(
             persisted.sourceRequestTimeoutSeconds ??
               persisted.globalSearchTimeoutSeconds,
@@ -214,6 +231,10 @@ export const useBrowseStore = create<BrowseState>()(
         sourceWorkConcurrency: normalizeConcurrency(
           state.sourceWorkConcurrency,
         ),
+        resourceDownloadConcurrency: normalizeConcurrency(
+          state.resourceDownloadConcurrency,
+          DEFAULT_RESOURCE_DOWNLOAD_CONCURRENCY,
+        ),
         sourceRequestTimeoutSeconds: normalizeTimeoutSeconds(
           state.sourceRequestTimeoutSeconds,
         ),
@@ -236,4 +257,11 @@ export function getSourceRequestTimeoutSeconds(): number {
 
 export function getSourceRequestTimeoutMs(): number {
   return getSourceRequestTimeoutSeconds() * 1000;
+}
+
+export function getResourceDownloadConcurrency(): number {
+  return normalizeConcurrency(
+    useBrowseStore.getState().resourceDownloadConcurrency,
+    DEFAULT_RESOURCE_DOWNLOAD_CONCURRENCY,
+  );
 }

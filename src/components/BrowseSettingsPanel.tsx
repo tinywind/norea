@@ -14,6 +14,12 @@ export function BrowseSettingsPanel() {
   const setSourceWorkConcurrency = useBrowseStore(
     (s) => s.setSourceWorkConcurrency,
   );
+  const resourceDownloadConcurrency = useBrowseStore(
+    (s) => s.resourceDownloadConcurrency,
+  );
+  const setResourceDownloadConcurrency = useBrowseStore(
+    (s) => s.setResourceDownloadConcurrency,
+  );
   const sourceRequestTimeoutSeconds = useBrowseStore(
     (s) => s.sourceRequestTimeoutSeconds,
   );
@@ -43,6 +49,25 @@ export function BrowseSettingsPanel() {
             onChange={(value) => {
               if (typeof value === "number") {
                 setSourceWorkConcurrency(value);
+              }
+            }}
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("browseSettings.resourceDownloadConcurrency")}
+          description={t(
+            "browseSettings.resourceDownloadConcurrency.description",
+          )}
+        >
+          <NumberInput
+            value={resourceDownloadConcurrency}
+            min={1}
+            max={10}
+            step={1}
+            clampBehavior="strict"
+            onChange={(value) => {
+              if (typeof value === "number") {
+                setResourceDownloadConcurrency(value);
               }
             }}
           />

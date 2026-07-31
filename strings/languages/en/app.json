@@ -444,6 +444,8 @@
   "browseSettings.group.downloads": "Downloads",
   "browseSettings.sourceWorkConcurrency": "Concurrent source work",
   "browseSettings.sourceWorkConcurrency.description": "Limit how many source executor WebViews can work at the same time.",
+  "browseSettings.resourceDownloadConcurrency": "Concurrent resource downloads",
+  "browseSettings.resourceDownloadConcurrency.description": "Limit how many images and other resources are downloaded at once within a chapter.",
   "browseSettings.sourceRequestTimeout": "Source request timeout",
   "browseSettings.sourceRequestTimeout.description": "Stop waiting for each source WebView request after this many seconds.",
   "browseSettings.chapterDownloadCooldown": "Per-source chapter download cooldown",
