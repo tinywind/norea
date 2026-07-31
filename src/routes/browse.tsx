@@ -380,21 +380,27 @@ export function BrowsePage({
     () => filterByLanguage(installedPlugins, pluginLanguageFilter),
     [installedPlugins, pluginLanguageFilter],
   );
-  const installedIds = useMemo(
-    () => new Set(installed.data?.map((p) => p.id) ?? []),
-    [installed.data],
+  const installedPluginsById = useMemo(
+    () => new Map(installedPlugins.map((plugin) => [plugin.id, plugin])),
+    [installedPlugins],
   );
   const filteredAvailableEntries = useMemo(
     () =>
       sortEntriesByName(
         availableEntries.filter(
-          ({ item }) =>
-            (!installedIds.has(item.id) || isMultiSourcePlugin(item)) &&
-            (pluginLanguageFilter.length === 0 ||
-              pluginLanguageFilter.includes(item.lang)),
+          ({ item }) => {
+            const installedPlugin = installedPluginsById.get(item.id);
+            return (
+              (installedPlugin === undefined ||
+                installedPlugin.version !== item.version ||
+                isMultiSourcePlugin(item)) &&
+              (pluginLanguageFilter.length === 0 ||
+                pluginLanguageFilter.includes(item.lang))
+            );
+          },
         ),
       ),
-    [availableEntries, installedIds, pluginLanguageFilter],
+    [availableEntries, installedPluginsById, pluginLanguageFilter],
   );
   const availableFailures = hasRepository
     ? (available.data?.failures ?? [])
@@ -699,7 +705,7 @@ export function BrowsePage({
               entries={filteredAvailableEntries}
               locale={locale}
               hasRepository={hasRepository}
-              installedIds={installedIds}
+              installedPluginsById={installedPluginsById}
               onInstall={(item) => {
                 if (isMultiSourcePlugin(item)) {
                   installSourceMutation.reset();
@@ -1370,7 +1376,7 @@ interface AvailableSectionProps {
   entries: readonly AvailableEntry[];
   locale: AppLocale;
   hasRepository: boolean;
-  installedIds: ReadonlySet<string>;
+  installedPluginsById: ReadonlyMap<string, Plugin>;
   onInstall: (item: PluginItem) => void;
   installing: boolean;
   failures: readonly RepoFetchFailure[];
@@ -1381,7 +1387,7 @@ function AvailableSection({
   entries,
   locale,
   hasRepository,
-  installedIds,
+  installedPluginsById,
   onInstall,
   installing,
   failures,
@@ -1430,14 +1436,15 @@ function AvailableSection({
         ) : entries.length > 0 ? (
           <Stack gap={6}>
             {entries.map(({ item, repoUrl }) => {
-              const isInstalled = installedIds.has(item.id);
+              const installedVersion =
+                installedPluginsById.get(item.id)?.version;
               return (
                 <AvailablePluginRow
                   key={`${repoUrl}::${item.id}`}
                   item={item}
                   locale={locale}
                   repoUrl={repoUrl}
-                  isInstalled={isInstalled}
+                  installedVersion={installedVersion}
                   installing={installing}
                   onInstall={onInstall}
                 />
@@ -1466,7 +1473,7 @@ interface AvailablePluginRowProps {
   item: PluginItem;
   locale: AppLocale;
   repoUrl: string;
-  isInstalled: boolean;
+  installedVersion?: string;
   installing: boolean;
   onInstall: (item: PluginItem) => void;
 }
@@ -1475,18 +1482,24 @@ function AvailablePluginRow({
   item,
   locale,
   repoUrl,
-  isInstalled,
+  installedVersion,
   installing,
   onInstall,
 }: AvailablePluginRowProps) {
   const { t } = useTranslation();
   const multiSource = isMultiSourcePlugin(item);
-  const disabled = isInstalled && !multiSource;
-  const actionLabel = multiSource
-    ? t("browse.addSource")
-    : isInstalled
-      ? t("common.installed")
-      : t("common.install");
+  const isInstalled = installedVersion !== undefined;
+  const hasVersionChange =
+    installedVersion !== undefined && installedVersion !== item.version;
+  const disabled = isInstalled && !multiSource && !hasVersionChange;
+  let actionLabel = t("common.install");
+  if (multiSource) {
+    actionLabel = t("browse.addSource");
+  } else if (hasVersionChange) {
+    actionLabel = t("browse.updatePlugin");
+  } else if (isInstalled) {
+    actionLabel = t("common.installed");
+  }
 
   return (
     <div className="lnr-browse-plugin-row">
@@ -1504,9 +1517,23 @@ function AvailablePluginRow({
             <ConsoleChip>
               {formatPluginLanguageForLocale(locale, item.lang)}
             </ConsoleChip>
-            <ConsoleChip>
-              v{item.version}
-            </ConsoleChip>
+            {hasVersionChange ? (
+              <>
+                <ConsoleChip>
+                  {t("browse.installedVersion", {
+                    version: installedVersion,
+                  })}
+                </ConsoleChip>
+                <Text size="xs" c="dimmed" fw={700} aria-hidden="true">
+                  →
+                </Text>
+                <ConsoleChip tone="accent">
+                  {t("browse.availableVersion", { version: item.version })}
+                </ConsoleChip>
+              </>
+            ) : (
+              <ConsoleChip>v{item.version}</ConsoleChip>
+            )}
             {isInstalled ? (
               <span
                 className="lnr-icon-state"
@@ -1530,10 +1557,17 @@ function AvailablePluginRow({
             variant="light"
             disabled={disabled}
             loading={installing && !disabled}
+            tone={hasVersionChange ? "accent" : "default"}
             title={actionLabel}
             onClick={() => onInstall(item)}
           >
-            {disabled ? <CheckGlyph /> : <PlusGlyph />}
+            {disabled ? (
+              <CheckGlyph />
+            ) : hasVersionChange && !multiSource ? (
+              <RefreshGlyph />
+            ) : (
+              <PlusGlyph />
+            )}
           </IconButton>
         </Group>
       </Group>
