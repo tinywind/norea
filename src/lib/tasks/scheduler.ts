@@ -319,6 +319,14 @@ function shouldUseImmediateExecutor(entry: TaskEntry): boolean {
   );
 }
 
+function canUsePoolExecutorForImmediateBrowse(entry: TaskEntry): boolean {
+  return (
+    entry.spec.requiresForegroundExecutor !== true &&
+    entry.record.priority === "interactive" &&
+    isImmediateBrowseSourceKind(entry.record.kind)
+  );
+}
+
 function poolExecutorId(index: number): ScraperExecutorId {
   return `pool:${index}`;
 }
@@ -866,9 +874,15 @@ export class TaskScheduler {
 
   private pauseRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return 0;
-    const paused = this.pauseRunningSourceTasks(undefined, (candidate) =>
-      isInterruptibleDownloadKind(candidate.record.kind),
-    );
+    if (canUsePoolExecutorForImmediateBrowse(entry)) return 0;
+    const requiresImmediateExecutor = shouldUseImmediateExecutor(entry);
+    const paused = this.pauseRunningSourceTasks(undefined, (candidate) => {
+      if (!isInterruptibleDownloadKind(candidate.record.kind)) return false;
+      return (
+        !requiresImmediateExecutor ||
+        candidate.sourceExecutorId === "immediate"
+      );
+    });
     if (paused > 0) {
       this.debug("paused interruptible downloads for UI work", entry, {
         paused,
@@ -1146,23 +1160,40 @@ export class TaskScheduler {
   private drainSourcePool(): void {
     const freeExecutorIds = this.freePoolExecutorIds();
     if (freeExecutorIds.length === 0) return;
+    const activeImmediateEntry = this.activeImmediateTaskId
+      ? this.entries.get(this.activeImmediateTaskId)
+      : undefined;
+    const immediateExecutorHasDownload =
+      activeImmediateEntry !== undefined &&
+      isInterruptibleDownloadKind(activeImmediateEntry.record.kind);
 
     for (const sourceId of this.orderedSourceQueueIds()) {
       if (freeExecutorIds.length === 0) return;
 
       for (let index = 0; index < freeExecutorIds.length; index += 1) {
         const executorId = freeExecutorIds[index]!;
-        const next = this.pickSourceTaskFromQueue(sourceId, (entry) => {
-          if (shouldUseImmediateExecutor(entry)) return false;
-          if (!this.canUseExecutorForSource(entry, executorId)) return false;
-          if (
-            isBackgroundPriority(entry.record.priority) &&
-            this.activeBackgroundCount >= this.sourceBackgroundConcurrency
-          ) {
-            return false;
-          }
-          return true;
-        });
+        const immediateBrowse = immediateExecutorHasDownload
+          ? this.pickSourceTaskFromQueue(
+              sourceId,
+              (entry) =>
+                canUsePoolExecutorForImmediateBrowse(entry) &&
+                this.canUseExecutorForSource(entry, executorId),
+              { allowActiveSource: true },
+            )
+          : null;
+        const next =
+          immediateBrowse ??
+          this.pickSourceTaskFromQueue(sourceId, (entry) => {
+            if (shouldUseImmediateExecutor(entry)) return false;
+            if (!this.canUseExecutorForSource(entry, executorId)) return false;
+            if (
+              isBackgroundPriority(entry.record.priority) &&
+              this.activeBackgroundCount >= this.sourceBackgroundConcurrency
+            ) {
+              return false;
+            }
+            return true;
+          });
         if (!next) continue;
         freeExecutorIds.splice(index, 1);
         this.startSource(next, executorId);

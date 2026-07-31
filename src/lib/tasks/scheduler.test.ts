@@ -599,7 +599,7 @@ describe("TaskScheduler", () => {
     ).toBe(false);
   });
 
-  it("lets interactive source browsing use the immediate executor during background downloads", async () => {
+  it("keeps pool downloads running while interactive browsing uses the immediate executor", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
@@ -650,10 +650,66 @@ describe("TaskScheduler", () => {
     await settle();
     expect(order).toEqual([
       "download:1:pool:0:start",
-      "download:1:paused",
       "browse:immediate:start",
-      "download:2:pool:0:start",
     ]);
+    expect(downloadRunCount).toBe(1);
+
+    finishDownload();
+    await download.promise;
+  });
+
+  it("uses a pool executor for same-source browsing while a foreground download continues", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const order: string[] = [];
+    let downloadPaused = false;
+    let finishDownload!: () => void;
+
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Foreground download",
+      priority: "background",
+      source: { id: "p", name: "Plugin" },
+      requiresForegroundExecutor: true,
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          order.push(`download:${context.executor}:start`);
+          const cleanup = () => {
+            context.signal.removeEventListener("abort", handleAbort);
+          };
+          const handleAbort = () => {
+            downloadPaused = true;
+            cleanup();
+            resolve();
+          };
+          context.signal.addEventListener("abort", handleAbort, { once: true });
+          finishDownload = () => {
+            cleanup();
+            resolve();
+          };
+        }),
+    });
+
+    await settle();
+
+    const browse = scheduler.enqueueSource({
+      kind: "source.listPopular",
+      title: "Open source",
+      priority: "interactive",
+      source: { id: "p", name: "Plugin" },
+      run: async (context) => {
+        order.push(`browse:${context.executor}:start`);
+      },
+    });
+
+    await browse.promise;
+    expect(order).toEqual([
+      "download:immediate:start",
+      "browse:pool:0:start",
+    ]);
+    expect(downloadPaused).toBe(false);
 
     finishDownload();
     await download.promise;
