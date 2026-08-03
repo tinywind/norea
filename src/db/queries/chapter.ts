@@ -176,6 +176,7 @@ type DbHandle = Awaited<ReturnType<typeof getDb>>;
 const FINISHED_PROGRESS = 100;
 const SQLITE_BIND_PARAMETER_BUDGET = 900;
 const SOURCE_CHAPTER_PARAM_COUNT = 8;
+const SOURCE_CHAPTER_PATH_PARAM_COUNT = 4;
 const DOWNLOADED_CHAPTER_PARAM_COUNT = 9;
 const SOURCE_CHAPTER_CHUNK_SIZE = Math.max(
   1,
@@ -280,6 +281,28 @@ function sourceChapterParams(inputs: readonly InsertChapterInput[]): unknown[] {
   ]);
 }
 
+function sourceChapterPathValuesSql(
+  inputs: readonly InsertChapterInput[],
+): string {
+  return inputs
+    .map((_, index) => {
+      const param = index * SOURCE_CHAPTER_PATH_PARAM_COUNT + 1;
+      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3})`;
+    })
+    .join(", ");
+}
+
+function sourceChapterPathParams(
+  inputs: readonly InsertChapterInput[],
+): unknown[] {
+  return inputs.flatMap((input) => [
+    input.novelId,
+    input.path,
+    input.chapterNumber ?? null,
+    input.page ?? "1",
+  ]);
+}
+
 function downloadedChapterValuesSql(
   inputs: readonly DownloadedChapterUpsertInput[],
 ): string {
@@ -353,6 +376,54 @@ async function executeSourceChapterChunk(
   return result.rowsAffected;
 }
 
+async function migrateSourceChapterPathsWithDb(
+  db: DbHandle,
+  chunk: readonly InsertChapterInput[],
+): Promise<number> {
+  const result = await db.execute(
+    `WITH incoming(novel_id, path, chapter_number, page) AS (
+       VALUES ${sourceChapterPathValuesSql(chunk)}
+     )
+     UPDATE chapter AS target
+        SET path = (
+          SELECT incoming.path
+            FROM incoming
+           WHERE incoming.novel_id IS target.novel_id
+             AND incoming.chapter_number IS target.chapter_number
+             AND incoming.page IS target.page
+        ),
+            updated_at = unixepoch()
+      WHERE target.id = (
+              SELECT MIN(existing.id)
+                FROM chapter AS existing
+               WHERE existing.novel_id IS target.novel_id
+                 AND existing.chapter_number IS target.chapter_number
+                 AND existing.page IS target.page
+            )
+        AND EXISTS (
+          SELECT 1
+            FROM incoming
+           WHERE incoming.novel_id IS target.novel_id
+             AND incoming.chapter_number IS target.chapter_number
+             AND incoming.page IS target.page
+             AND incoming.path IS NOT target.path
+        )
+        AND NOT EXISTS (
+          SELECT 1
+            FROM chapter AS existing
+            JOIN incoming
+              ON incoming.novel_id IS existing.novel_id
+             AND incoming.path IS existing.path
+           WHERE existing.id IS NOT target.id
+             AND incoming.novel_id IS target.novel_id
+             AND incoming.chapter_number IS target.chapter_number
+             AND incoming.page IS target.page
+        )`,
+    sourceChapterPathParams(chunk),
+  );
+  return result.rowsAffected;
+}
+
 async function executeDownloadedChapterChunk(
   db: DbHandle,
   chunk: ReadonlyArray<DownloadedChapterUpsertInput & { contentBytes: number }>,
@@ -397,7 +468,9 @@ async function upsertSourceChaptersWithDb(
 
   let rowsAffected = 0;
   let chunks = 0;
-  for (const chunk of chapterChunks(inputs, SOURCE_CHAPTER_CHUNK_SIZE)) {
+  const sourceChunks = chapterChunks(inputs, SOURCE_CHAPTER_CHUNK_SIZE);
+  for (const chunk of sourceChunks) {
+    rowsAffected += await migrateSourceChapterPathsWithDb(db, chunk);
     rowsAffected += await executeSourceChapterChunk(db, chunk);
     chunks += 1;
   }

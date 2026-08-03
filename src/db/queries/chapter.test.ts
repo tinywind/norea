@@ -203,7 +203,9 @@ describe("upsertChapter", () => {
 
 describe("upsertSourceChapters", () => {
   it("bulk upserts source chapter metadata in one transaction", async () => {
-    mockExecute.mockResolvedValueOnce({ rowsAffected: 2 });
+    mockExecute
+      .mockResolvedValueOnce({ rowsAffected: 0 })
+      .mockResolvedValueOnce({ rowsAffected: 2 });
 
     const result = await upsertSourceChapters([
       {
@@ -224,8 +226,8 @@ describe("upsertSourceChapters", () => {
     ]);
 
     expect(mockedRunDatabaseTransaction).toHaveBeenCalledOnce();
-    expect(mockExecute).toHaveBeenCalledOnce();
-    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+    const [sql, params] = mockExecute.mock.calls[1]!;
     expect(sql).toContain("INSERT INTO chapter");
     expect(sql).toContain("VALUES ($1, $2, $3, $4, $5, $6, $7, $8");
     expect(sql).toContain("($9, $10, $11, $12, $13, $14, $15, $16");
@@ -252,8 +254,35 @@ describe("upsertSourceChapters", () => {
     expect(result).toEqual({ rowsAffected: 2, chunks: 1 });
   });
 
+  it("migrates a source chapter path when its chapter identity is unchanged", async () => {
+    mockExecute
+      .mockResolvedValueOnce({ rowsAffected: 1 })
+      .mockResolvedValueOnce({ rowsAffected: 0 });
+
+    await expect(
+      upsertSourceChapters([
+        {
+          novelId: 7,
+          path: "/novel/7/42",
+          name: "Chapter Forty-Two",
+          position: 42,
+          chapterNumber: "42",
+        },
+      ]),
+    ).resolves.toEqual({ rowsAffected: 1, chunks: 1 });
+
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("WITH incoming(novel_id, path, chapter_number, page)");
+    expect(sql).toContain("UPDATE chapter AS target");
+    expect(sql).toContain("target.chapter_number");
+    expect(sql).toContain("incoming.chapter_number IS target.chapter_number");
+    expect(params).toEqual([7, "/novel/7/42", "42", "1"]);
+  });
+
   it("chunks source chapter upserts by the SQLite bind budget", async () => {
     mockExecute
+      .mockResolvedValueOnce({ rowsAffected: 0 })
+      .mockResolvedValueOnce({ rowsAffected: 0 })
       .mockResolvedValueOnce({ rowsAffected: 112 })
       .mockResolvedValueOnce({ rowsAffected: 1 });
 
@@ -269,7 +298,7 @@ describe("upsertSourceChapters", () => {
       rowsAffected: 113,
       chunks: 2,
     });
-    expect(mockExecute).toHaveBeenCalledTimes(2);
+    expect(mockExecute).toHaveBeenCalledTimes(4);
   });
 
   it("rejects chapter titles over the input budget before opening a transaction", async () => {
