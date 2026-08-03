@@ -726,6 +726,7 @@ describe("enqueueChapterDownload", () => {
     expect(pluginMocks.parseChapter).toHaveBeenCalledWith("/chapter/7");
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
+        downloadPriority: "foreground",
         previousHtml: null,
         repair: false,
         requestInit: { headers: { Referer: "https://source.test/" } },
@@ -736,6 +737,65 @@ describe("enqueueChapterDownload", () => {
     expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<img>", "html", {
       mediaBytes: 3,
     });
+  });
+
+  it("persists background chapter HTML before caching media", async () => {
+    const mediaDeferred = createDeferred<{
+      html: string;
+      mediaBytes: number;
+      mediaFailures: never[];
+      storedMediaCount: number;
+    }>();
+    pluginMocks.parseChapter.mockResolvedValueOnce(`<img src="/page.png">`);
+    vi.mocked(cacheHtmlChapterMedia).mockReturnValueOnce(mediaDeferred.promise);
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      contentType: "html",
+      id: 7,
+      isDownloaded: false,
+    } as never);
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      contentType: "html",
+      priority: "background",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const runPromise = capturedSpec.run({
+      executor: "pool:1",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    });
+
+    await flushMicrotasks();
+
+    expect(saveStoredChapterPartialContent).toHaveBeenCalledWith(
+      7,
+      `<img src="/page.png">`,
+      "html",
+    );
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledTimes(1);
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ downloadPriority: "background" }),
+    );
+    expect(
+      vi.mocked(saveStoredChapterPartialContent).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(cacheHtmlChapterMedia).mock.invocationCallOrder[0]!,
+    );
+
+    mediaDeferred.resolve({
+      html: "<img>",
+      mediaBytes: 3,
+      mediaFailures: [],
+      storedMediaCount: 1,
+    });
+    await runPromise;
   });
 
   it("renders markdown chapters before caching rendered media", async () => {

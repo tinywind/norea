@@ -256,6 +256,72 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.storedMediaCount).toBe(2);
   });
 
+  it("finishes active background resources without starting another after yield", async () => {
+    getResourceDownloadConcurrencyMock.mockReturnValue(2);
+    const activeResponses = [
+      createDeferred<Response>(),
+      createDeferred<Response>(),
+    ];
+    let shouldYield = false;
+    pluginMediaFetchMock.mockImplementation(() => {
+      const activeResponse =
+        activeResponses[pluginMediaFetchMock.mock.calls.length - 1];
+      if (activeResponse) return activeResponse.promise;
+      return Promise.resolve(
+        new Response(new Uint8Array([3]), {
+          headers: { "content-type": "image/png" },
+          status: 200,
+        }),
+      );
+    });
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_archive_cache") return 6;
+      if (command === "chapter_media_store") {
+        const input = args as { fileName: string };
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      return null;
+    });
+
+    const resultPromise = cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/",
+      chapterId: 42,
+      chapterName: "Opening",
+      chapterNumber: "1",
+      chapterPosition: 1,
+      downloadPriority: "background",
+      html: [
+        `<img src="page-1.png">`,
+        `<img src="page-2.png">`,
+        `<img src="page-3.png">`,
+      ].join(""),
+      novelId: 9,
+      novelName: "Sample Novel",
+      novelPath: "/novel/sample",
+      shouldYield: () => shouldYield,
+      sourceId: "demo",
+    });
+
+    await vi.waitFor(() => {
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+    });
+    shouldYield = true;
+    for (const response of activeResponses) {
+      response.resolve(
+        new Response(new Uint8Array([1]), {
+          headers: { "content-type": "image/png" },
+          status: 200,
+        }),
+      );
+    }
+
+    await expect(resultPromise).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("rewrites remote images through the media cache and skips local sources", async () => {
     pluginMediaFetchMock.mockImplementation(async (url) => {
       const contentType = String(url).endsWith(".webp")

@@ -192,6 +192,7 @@ export interface TaskEvent {
 
 export interface TaskRunContext {
   executor?: ScraperExecutorId;
+  shouldYield?: () => boolean;
   signal: AbortSignal;
   taskId: string;
   setDetail: (detail: string) => void;
@@ -665,6 +666,19 @@ export class TaskScheduler {
     return requeued;
   }
 
+  yieldRunningInterruptibleDownloads(): number {
+    const yielded = this.yieldRunningSourceTasks(
+      undefined,
+      (entry) => isInterruptibleDownloadKind(entry.record.kind),
+    );
+    if (yielded > 0) {
+      this.debug("yielded running interruptible downloads", undefined, {
+        yielded,
+      });
+    }
+    return yielded;
+  }
+
   moveQueuedTask(id: string, target: TaskMoveTarget): boolean {
     const entry = this.entries.get(id);
     if (!entry || entry.record.status !== "queued") return false;
@@ -872,30 +886,54 @@ export class TaskScheduler {
     return paused;
   }
 
-  private pauseRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
+  private yieldRunningSourceTasks(
+    sourceId?: string,
+    shouldYield: (entry: TaskEntry) => boolean = () => true,
+  ): number {
+    let yielded = 0;
+    for (const entry of this.entries.values()) {
+      if (
+        !entry.record.canCancel ||
+        entry.record.lane !== "source" ||
+        entry.record.status !== "running" ||
+        entry.record.kind === "source.openSite" ||
+        (sourceId && entry.record.source?.id !== sourceId) ||
+        !shouldYield(entry)
+      ) {
+        continue;
+      }
+      if (!entry.pauseRequested) {
+        yielded += 1;
+      }
+      entry.pauseRequested = true;
+    }
+    return yielded;
+  }
+
+  private yieldRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return 0;
     if (canUsePoolExecutorForImmediateBrowse(entry)) return 0;
     const requiresImmediateExecutor = shouldUseImmediateExecutor(entry);
-    const paused = this.pauseRunningSourceTasks(undefined, (candidate) => {
+    const yielded = this.yieldRunningSourceTasks(undefined, (candidate) => {
       if (!isInterruptibleDownloadKind(candidate.record.kind)) return false;
       return (
         !requiresImmediateExecutor ||
         candidate.sourceExecutorId === "immediate"
       );
     });
-    if (paused > 0) {
-      this.debug("paused interruptible downloads for UI work", entry, {
-        paused,
+    if (yielded > 0) {
+      this.debug("yielded interruptible downloads for UI work", entry, {
+        yielded,
       });
     }
-    return paused;
+    return yielded;
   }
 
   private handleUiResponsiveSourceEnqueue(entry: TaskEntry): void {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return;
     this.promoteQueuedUiSourceEntry(entry);
     this.promoteSourceQueue(entry.record.source?.id);
-    this.pauseRunningInterruptibleDownloadsForUi(entry);
+    this.yieldRunningInterruptibleDownloadsForUi(entry);
   }
 
   private shouldPromoteForUiResponsiveness(entry: TaskEntry): boolean {
@@ -1476,6 +1514,7 @@ export class TaskScheduler {
 
     const context: TaskRunContext = {
       executor: entry.sourceExecutorId,
+      shouldYield: () => entry.pauseRequested === true,
       signal: entry.controller.signal,
       taskId: entry.record.id,
       setDetail: (detail) => {

@@ -340,6 +340,16 @@ function isPauseAbort(signal: AbortSignal): boolean {
   );
 }
 
+function isPauseAbortError(error: unknown): boolean {
+  return (
+    isAbortError(error) &&
+    error !== null &&
+    typeof error === "object" &&
+    "message" in error &&
+    error.message === TASK_PAUSE_ABORT_MESSAGE
+  );
+}
+
 function abortReason(signal: AbortSignal): Error {
   const reason = (signal as AbortSignal & { reason?: unknown }).reason;
   return reason instanceof Error
@@ -773,7 +783,7 @@ function enqueueChapterDownloadForExecutor(
       requiresForegroundChapterExecutor(sourcePlugin),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async ({ executor, setDetail, setProgress, signal }) => {
+    run: async ({ executor, setDetail, setProgress, shouldYield, signal }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       const liveReaderUpdates = shouldEmitLiveChapterDownloadUpdates(job);
       let progressTotal = 1;
@@ -826,7 +836,9 @@ function enqueueChapterDownloadForExecutor(
           novelPath: novel?.path ?? job.novelPath,
           sourceId: job.pluginId,
         };
-        const emitPartialHtml = async (partialHtml: string): Promise<void> => {
+        const persistPartialHtml = async (
+          partialHtml: string,
+        ): Promise<void> => {
           const partialSaveResult = await saveStoredChapterPartialContent(
             job.id,
             partialHtml,
@@ -835,6 +847,11 @@ function enqueueChapterDownloadForExecutor(
           if (partialSaveResult.rowsAffected <= 0) {
             throw missingLocalChapterError(job);
           }
+        };
+        const persistAndEmitPartialHtml = async (
+          partialHtml: string,
+        ): Promise<void> => {
+          await persistPartialHtml(partialHtml);
           emitChapterPartialContentUpdate({
             chapterId: job.id,
             html: partialHtml,
@@ -937,10 +954,14 @@ function enqueueChapterDownloadForExecutor(
               localChapterMediaSources(html, storageContext).length > 0);
           if (hasCacheableMedia) {
             shouldClearMedia = false;
+            const partialHtml = protectRemoteChapterMediaForPartialHtml(
+              html,
+              baseUrl,
+            );
             if (liveReaderUpdates) {
-              await emitPartialHtml(
-                protectRemoteChapterMediaForPartialHtml(html, baseUrl),
-              );
+              await persistAndEmitPartialHtml(partialHtml);
+            } else {
+              await persistPartialHtml(partialHtml);
             }
             const media = await cacheHtmlChapterMedia({
               ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
@@ -948,13 +969,15 @@ function enqueueChapterDownloadForExecutor(
               chapterName: chapter.name,
               chapterNumber: chapter.chapterNumber ?? String(chapter.position),
               chapterPosition: chapter.position,
+              downloadPriority:
+                job.priority === "background" ? "background" : "foreground",
               html,
               novelId: chapter.novelId,
               novelName: novel?.name ?? job.novelName,
               novelPath: novel?.path ?? job.novelPath,
               onHtmlUpdate: liveReaderUpdates
                 ? (partialHtml) =>
-                    emitPartialHtml(
+                    persistAndEmitPartialHtml(
                       protectRemoteChapterMediaForPartialHtml(
                         partialHtml,
                         baseUrl,
@@ -977,6 +1000,7 @@ function enqueueChapterDownloadForExecutor(
               requestInit: plugin.imageRequestInit,
               repair: usesStoredHtmlSource,
               scraperExecutor: executor ?? "immediate",
+              shouldYield,
               signal,
               sourceId: job.pluginId,
             });
@@ -1020,7 +1044,7 @@ function enqueueChapterDownloadForExecutor(
           { force: true },
         );
       } catch (error) {
-        if (!isPauseAbort(signal)) {
+        if (!isPauseAbort(signal) && !isPauseAbortError(error)) {
           settleChapterDownloadBatchJob(
             job.batchId,
             job.id,
@@ -1069,7 +1093,7 @@ export function enqueueChapterMediaRepair(
       requiresForegroundChapterExecutor(sourcePlugin),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async ({ executor, setDetail, setProgress, signal }) => {
+    run: async ({ executor, setDetail, setProgress, shouldYield, signal }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
@@ -1144,6 +1168,8 @@ export function enqueueChapterMediaRepair(
         chapterNumber: chapter.chapterNumber ?? String(chapter.position),
         chapterPosition: chapter.position,
         contextUrl: baseUrl,
+        downloadPriority:
+          job.priority === "background" ? "background" : "foreground",
         html: content,
         novelId: storageContext.novelId,
         novelName: storageContext.novelName,
@@ -1180,6 +1206,7 @@ export function enqueueChapterMediaRepair(
         requestInit: plugin.imageRequestInit,
         repair: true,
         scraperExecutor: executor ?? "immediate",
+        shouldYield,
         signal,
         sourceId: job.pluginId,
       });

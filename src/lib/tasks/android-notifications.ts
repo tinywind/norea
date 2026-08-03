@@ -11,7 +11,7 @@ interface AndroidTaskNotificationBridge {
   update: (payload: string) => void;
 }
 
-const ANDROID_BACKGROUND_DOWNLOAD_REQUEUE_DELAY_MS = 15_000;
+const ANDROID_BACKGROUND_DOWNLOAD_YIELD_DELAY_MS = 15_000;
 
 declare global {
   interface Window {
@@ -93,7 +93,7 @@ export function startAndroidBackgroundDownloadRecovery(): () => void {
 
     const backgroundDuration = Date.now() - hiddenAt;
     hiddenAt = null;
-    if (backgroundDuration < ANDROID_BACKGROUND_DOWNLOAD_REQUEUE_DELAY_MS) {
+    if (backgroundDuration < ANDROID_BACKGROUND_DOWNLOAD_YIELD_DELAY_MS) {
       return;
     }
 
@@ -102,7 +102,7 @@ export function startAndroidBackgroundDownloadRecovery(): () => void {
       .records.some(isRunningInterruptibleDownload);
     if (!hasRunningDownload) return;
 
-    taskScheduler.requeueRunningInterruptibleDownloads();
+    taskScheduler.yieldRunningInterruptibleDownloads();
   };
 
   document.addEventListener("visibilitychange", recoverIfNeeded);

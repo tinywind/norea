@@ -715,7 +715,7 @@ describe("TaskScheduler", () => {
     await download.promise;
   });
 
-  it("runs queued pool UI work before a paused same-source download resumes", async () => {
+  it("runs queued pool UI work after the current background resource yields", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
@@ -723,31 +723,26 @@ describe("TaskScheduler", () => {
     const order: string[] = [];
     let downloadRunCount = 0;
     let finishDownload!: () => void;
+    let firstDownloadContext: TaskRunContext | null = null;
 
     const download = scheduler.enqueueSource({
       kind: "chapter.download",
       title: "Background download",
       priority: "background",
       source: { id: "p", name: "Plugin" },
-      run: (context) =>
-        new Promise<void>((resolve) => {
-          downloadRunCount += 1;
-          const runNumber = downloadRunCount;
-          order.push(`download:${runNumber}:${context.executor}:start`);
-          const cleanup = () => {
-            context.signal.removeEventListener("abort", handleAbort);
-          };
-          const handleAbort = () => {
-            order.push(`download:${runNumber}:paused`);
-            cleanup();
-            resolve();
-          };
-          context.signal.addEventListener("abort", handleAbort, { once: true });
-          finishDownload = () => {
-            cleanup();
-            resolve();
-          };
-        }),
+      run: async (context) => {
+        downloadRunCount += 1;
+        const runNumber = downloadRunCount;
+        if (runNumber === 1) firstDownloadContext = context;
+        order.push(`download:${runNumber}:${context.executor}:start`);
+        await new Promise<void>((resolve) => {
+          finishDownload = resolve;
+        });
+        if (context.shouldYield?.()) {
+          order.push(`download:${runNumber}:yielded`);
+          throw new DOMException("Task was paused.", "AbortError");
+        }
+      },
     });
 
     await settle();
@@ -762,12 +757,22 @@ describe("TaskScheduler", () => {
       },
     });
 
+    await settle();
+
+    expect(order).toEqual(["download:1:pool:0:start"]);
+    const observedFirstDownloadContext = firstDownloadContext as
+      | TaskRunContext
+      | null;
+    expect(observedFirstDownloadContext?.signal.aborted).toBe(false);
+    expect(observedFirstDownloadContext?.shouldYield?.()).toBe(true);
+
+    finishDownload();
     await search.promise;
     await settle();
 
     expect(order).toEqual([
       "download:1:pool:0:start",
-      "download:1:paused",
+      "download:1:yielded",
       "search:pool:0:start",
       "download:2:pool:0:start",
     ]);
@@ -1089,6 +1094,57 @@ describe("TaskScheduler", () => {
     finishDownload();
     finishSearch();
     await Promise.all([download.promise, search.promise]);
+  });
+
+  it("lets current background resources finish before yielding the task", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    let finishCurrentResource!: () => void;
+    let finishResumedDownload!: () => void;
+    let firstContext: TaskRunContext | null = null;
+    let runCount = 0;
+
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Background download",
+      priority: "background",
+      source: { id: "download-source", name: "Download Source" },
+      run: async (context) => {
+        runCount += 1;
+        if (runCount === 1) {
+          firstContext = context;
+          await new Promise<void>((resolve) => {
+            finishCurrentResource = resolve;
+          });
+          if (context.shouldYield?.()) {
+            throw new DOMException("Task was paused.", "AbortError");
+          }
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          finishResumedDownload = resolve;
+        });
+      },
+    });
+
+    await settle();
+
+    expect(scheduler.yieldRunningInterruptibleDownloads()).toBe(1);
+    const observedFirstContext = firstContext as TaskRunContext | null;
+    expect(observedFirstContext?.signal.aborted).toBe(false);
+    expect(observedFirstContext?.shouldYield?.()).toBe(true);
+    expect(scheduler.getTask(download.id)?.status).toBe("running");
+
+    finishCurrentResource();
+    await settle();
+
+    expect(runCount).toBe(2);
+    expect(scheduler.getTask(download.id)?.status).toBe("running");
+
+    finishResumedDownload();
+    await download.promise;
   });
 
   it("limits background work inside the shared pool", async () => {
