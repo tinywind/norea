@@ -21,6 +21,7 @@ type TestBridge = {
   deletePath?: ReturnType<typeof vi.fn>;
   deleteTempFile?: ReturnType<typeof vi.fn>;
   describeContentUri?: ReturnType<typeof vi.fn>;
+  ensureNoMedia?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
@@ -157,36 +158,40 @@ describe("android storage bridge facade", () => {
     );
   });
 
-  it("does not create .nomedia while reading from the selected storage root", async () => {
-    const root = "content://tree/primary%3ANorea";
+  it("ensures .nomedia once while reading from the selected storage root", async () => {
+    const root = "content://tree/primary%3ANoreaRead";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     const readText = vi.fn(() =>
       JSON.stringify({ ok: true, text: "<html></html>" }),
     );
-    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
     invokeMock.mockResolvedValue(root);
-    installBridge({ readText, writeBytes });
+    installBridge({ ensureNoMedia, readText });
 
+    await expect(
+      readAndroidStorageText("contents/demo/chapter/content.html"),
+    ).resolves.toBe("<html></html>");
     await expect(
       readAndroidStorageText("contents/demo/chapter/content.html"),
     ).resolves.toBe("<html></html>");
 
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_get_storage_root");
-    expect(readText).toHaveBeenCalledWith(
+    expect(ensureNoMedia).toHaveBeenCalledOnce();
+    expect(ensureNoMedia).toHaveBeenCalledWith(root);
+    expect(readText).toHaveBeenCalledTimes(2);
+    expect(readText).toHaveBeenLastCalledWith(
       root,
       "contents/demo/chapter/content.html",
     );
-    expect(writeBytes).not.toHaveBeenCalled();
   });
 
-  it("does not create .nomedia after selecting a storage root", async () => {
+  it("ensures .nomedia after selecting a storage root", async () => {
     const root = "content://tree/primary%3ANoreaSelect";
-    const deletePath = vi.fn(() => JSON.stringify({ ok: true }));
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     const pickMediaStorageRoot = vi.fn((requestId: string) => {
       window.__lnrResolveAndroidStoragePick?.(requestId, { ok: true, root });
     });
-    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
     invokeMock.mockResolvedValue(root);
-    installBridge({ deletePath, pickMediaStorageRoot, writeBytes });
+    installBridge({ ensureNoMedia, pickMediaStorageRoot });
 
     await expect(selectAndroidStorageRoot()).resolves.toBe(root);
 
@@ -194,46 +199,33 @@ describe("android storage bridge facade", () => {
     expect(invokeMock).toHaveBeenCalledWith("chapter_media_set_storage_root", {
       root,
     });
-    expect(writeBytes).not.toHaveBeenCalled();
+    expect(ensureNoMedia).toHaveBeenCalledOnce();
+    expect(ensureNoMedia).toHaveBeenCalledWith(root);
   });
 
-  it("cleans up legacy .nomedia after selecting a storage root", async () => {
-    const root = "content://tree/primary%3ANoreaSelectCleanup";
-    const deletePath = vi.fn(() => JSON.stringify({ ok: true }));
-    const pickMediaStorageRoot = vi.fn((requestId: string) => {
-      window.__lnrResolveAndroidStoragePick?.(requestId, { ok: true, root });
-    });
-    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
-    invokeMock.mockResolvedValue(root);
-    installBridge({ deletePath, pickMediaStorageRoot, writeBytes });
-
-    await expect(selectAndroidStorageRoot()).resolves.toBe(root);
-
-    expect(deletePath).toHaveBeenCalledWith(root, "contents/.nomedia");
-    expect(writeBytes).not.toHaveBeenCalled();
-  });
-
-  it("does not recreate .nomedia after clearing the storage root", async () => {
-    const root = "content://tree/primary%3ANorea";
+  it("recreates .nomedia after clearing the storage root", async () => {
+    const root = "content://tree/primary%3ANoreaClear";
     const deleteRootChildren = vi.fn(() => JSON.stringify({ ok: true }));
-    const writeBytes = vi.fn(() => JSON.stringify({ ok: true }));
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     invokeMock.mockResolvedValue(root);
-    installBridge({ deleteRootChildren, writeBytes });
+    installBridge({ deleteRootChildren, ensureNoMedia });
 
     await clearAndroidStorageRoot();
 
     expect(deleteRootChildren).toHaveBeenCalledWith(root);
-    expect(writeBytes).not.toHaveBeenCalled();
+    expect(ensureNoMedia).toHaveBeenCalledTimes(2);
+    expect(ensureNoMedia).toHaveBeenNthCalledWith(1, root);
+    expect(ensureNoMedia).toHaveBeenNthCalledWith(2, root);
   });
 
-  it("cleans up legacy .nomedia before preparing reader media cache", async () => {
+  it("keeps .nomedia while preparing reader media cache", async () => {
     const root = "content://tree/primary%3ANoreaPrepare";
-    const deletePath = vi.fn(() => JSON.stringify({ ok: true }));
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     const prepareReaderMediaCache = vi.fn(() =>
       JSON.stringify({ bytes: 12, ok: true }),
     );
     invokeMock.mockResolvedValue(root);
-    installBridge({ deletePath, prepareReaderMediaCache });
+    installBridge({ ensureNoMedia, prepareReaderMediaCache });
 
     await prepareAndroidReaderMediaCache(
       "contents/demo/chapter/media",
@@ -241,7 +233,7 @@ describe("android storage bridge facade", () => {
       "cache-token",
     );
 
-    expect(deletePath).toHaveBeenCalledWith(root, "contents/.nomedia");
+    expect(ensureNoMedia).toHaveBeenCalledWith(root);
     expect(prepareReaderMediaCache).toHaveBeenCalledWith(
       root,
       "contents/demo/chapter/media",
@@ -250,28 +242,25 @@ describe("android storage bridge facade", () => {
     );
   });
 
-  it("keeps preparing reader media when legacy .nomedia cleanup fails", async () => {
-    const root = "content://tree/primary%3ANoreaPrepareAfterCleanupFailure";
-    const deletePath = vi.fn(() =>
-      JSON.stringify({ error: "not found", ok: false }),
+  it("stops preparing reader media when .nomedia cannot be ensured", async () => {
+    const root = "content://tree/primary%3ANoreaPrepareMarkerFailure";
+    const ensureNoMedia = vi.fn(() =>
+      JSON.stringify({ error: "marker failed", ok: false }),
     );
     const prepareReaderMediaCache = vi.fn(() =>
       JSON.stringify({ bytes: 12, ok: true }),
     );
     invokeMock.mockResolvedValue(root);
-    installBridge({ deletePath, prepareReaderMediaCache });
+    installBridge({ ensureNoMedia, prepareReaderMediaCache });
 
-    await prepareAndroidReaderMediaCache(
-      "contents/demo/chapter/media",
-      "contents/demo/chapter/media.zip",
-      "cache-token",
-    );
+    await expect(
+      prepareAndroidReaderMediaCache(
+        "contents/demo/chapter/media",
+        "contents/demo/chapter/media.zip",
+        "cache-token",
+      ),
+    ).rejects.toThrow("marker failed");
 
-    expect(prepareReaderMediaCache).toHaveBeenCalledWith(
-      root,
-      "contents/demo/chapter/media",
-      "contents/demo/chapter/media.zip",
-      "cache-token",
-    );
+    expect(prepareReaderMediaCache).not.toHaveBeenCalled();
   });
 });

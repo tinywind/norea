@@ -18,6 +18,7 @@ interface AndroidStorageBridge {
   deletePath: (rootUri: string, relativePath: string) => string;
   deleteRootChildren: (rootUri: string) => string;
   describeContentUri?: (uri: string) => string;
+  ensureNoMedia: (rootUri: string) => string;
   beginRestore: (rootUri: string, token: string) => string;
   commitRestore: (rootUri: string, token: string) => string;
   pathSize: (rootUri: string, relativePath: string) => string;
@@ -144,13 +145,12 @@ type AndroidStorageBytes = Uint8Array | readonly number[];
 
 const ANDROID_STORAGE_NOT_SELECTED =
   "Android media storage folder has not been selected.";
-const LEGACY_CONTENTS_NOMEDIA_PATH = "contents/.nomedia";
 
 const pickResolvers = new Map<
   string,
   (payload: AndroidStoragePickPayload) => void
 >();
-const legacyNomediaCleanupRoots = new Set<string>();
+const nomediaRoots = new Set<string>();
 
 declare global {
   interface Window {
@@ -215,6 +215,12 @@ function normalizeContentUriMaxBytes(maxBytes: number): number {
   return maxBytes;
 }
 
+async function ensureAndroidStorageNomedia(root: string): Promise<void> {
+  if (nomediaRoots.has(root)) return;
+  parseStorageResponse(androidStorageBridge().ensureNoMedia(root));
+  nomediaRoots.add(root);
+}
+
 async function androidStorageRoot(): Promise<string> {
   const root = (await invoke<string | null>(
     "chapter_media_get_storage_root",
@@ -225,19 +231,8 @@ async function androidStorageRoot(): Promise<string> {
   if (!root.startsWith("content://")) {
     throw new Error("Android media storage folder must be selected again.");
   }
+  await ensureAndroidStorageNomedia(root);
   return root;
-}
-
-async function cleanupAndroidStorageLegacyNomedia(root: string): Promise<void> {
-  if (legacyNomediaCleanupRoots.has(root)) return;
-  try {
-    parseStorageResponse(
-      androidStorageBridge().deletePath(root, LEGACY_CONTENTS_NOMEDIA_PATH),
-    );
-  } catch (error) {
-    console.warn("[android-storage] legacy .nomedia cleanup failed", error);
-  }
-  legacyNomediaCleanupRoots.add(root);
 }
 
 function ensurePickResolver(): void {
@@ -271,7 +266,8 @@ export async function selectAndroidStorageRoot(): Promise<string | null> {
   const root = await invoke<string>("chapter_media_set_storage_root", {
     root: payload.root,
   });
-  await cleanupAndroidStorageLegacyNomedia(root);
+  nomediaRoots.delete(root);
+  await ensureAndroidStorageNomedia(root);
   return root;
 }
 
@@ -542,7 +538,6 @@ export async function prepareAndroidReaderMediaCache(
     throw new Error("Android reader media cache is unavailable.");
   }
   const root = await androidStorageRoot();
-  await cleanupAndroidStorageLegacyNomedia(root);
   parseStorageResponse(
     bridge.prepareReaderMediaCache(
       root,
@@ -613,4 +608,6 @@ export async function deleteAndroidStorageChildrenExcept(
 export async function clearAndroidStorageRoot(): Promise<void> {
   const root = await androidStorageRoot();
   parseStorageResponse(androidStorageBridge().deleteRootChildren(root));
+  nomediaRoots.delete(root);
+  await ensureAndroidStorageNomedia(root);
 }

@@ -5,11 +5,13 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
@@ -350,6 +352,14 @@ class MainActivity : TauriActivity() {
           )
         }
       }
+    }
+
+    @JavascriptInterface
+    fun ensureNoMedia(rootUri: String): String = storageResponse {
+      val created = ensureContentsNoMedia(rootUri)
+      JSONObject()
+        .put("ok", true)
+        .put("created", created)
     }
 
     @JavascriptInterface
@@ -902,6 +912,7 @@ class MainActivity : TauriActivity() {
           throw IllegalStateException("Cannot backup Android media contents.")
         }
       }
+      ensureContentsNoMedia(rootUri)
       JSONObject().put("ok", true)
     }
 
@@ -1349,6 +1360,28 @@ class MainActivity : TauriActivity() {
   private fun storageRoot(rootUri: String): DocumentFile =
     DocumentFile.fromTreeUri(this, Uri.parse(rootUri))
       ?: throw IllegalArgumentException("Android storage folder is unavailable.")
+
+  private fun ensureContentsNoMedia(rootUri: String): Boolean {
+    val relativePath = "$CONTENTS_ROOT_DIR/${MediaStore.MEDIA_IGNORE_FILENAME}"
+    val existing = storageDocumentAt(rootUri, relativePath)
+    if (existing != null) {
+      require(existing.isFile) { "Android media marker is not a file." }
+      return false
+    }
+
+    ensureStorageFile(rootUri, relativePath, "application/octet-stream")
+    externalStorageFile(rootUri, relativePath)
+      ?.takeIf { it.isFile }
+      ?.let { marker ->
+        MediaScannerConnection.scanFile(
+          this,
+          arrayOf(marker.absolutePath),
+          null,
+          null,
+        )
+      }
+    return true
+  }
 
   private fun safeStorageSegments(relativePath: String): List<String> {
     val segments = relativePath
@@ -1975,6 +2008,7 @@ class MainActivity : TauriActivity() {
     private const val ANDROID_LOCAL_MEDIA_PATH = "__norea_android_media__"
     private const val ANDROID_ZIP_MEDIA_PATH = "zip"
     private const val BYTES_PER_MIB = 1024L * 1024L
+    private const val CONTENTS_ROOT_DIR = "contents"
     private const val DEFAULT_STORAGE_COPY_BUFFER_BYTES = 64 * 1024
     private const val STORAGE_ROOT_CONFIG_FILE = "chapter-media-storage-root.txt"
     private const val TAG = "NoreaStorage"
