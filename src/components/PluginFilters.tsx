@@ -108,7 +108,7 @@ export function PluginFilters({
               <Select
                 key={key}
                 label={def.label}
-                value={v || null}
+                value={v}
                 data={def.options.map((o) => ({
                   value: o.value,
                   label: o.label,
