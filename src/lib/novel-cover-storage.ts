@@ -23,6 +23,7 @@ import {
 const NOVEL_COVER_MANIFEST_FILE = "cover.json";
 const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
+const ANDROID_LOCAL_MEDIA_SRC_PREFIX = "/__norea_android_media__/file/";
 const NOREA_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 const WINDOWS_NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
 
@@ -129,7 +130,10 @@ export async function resolveStoredNovelCoverSrc(
   const manifest = await readStoredNovelCoverManifest(novel);
   if (!manifest) return null;
 
-  return noreaMediaSrc(novelCoverRelativePath(novel, manifest.fileName));
+  const relativePath = novelCoverRelativePath(novel, manifest.fileName);
+  return isAndroidRuntime()
+    ? androidLocalMediaSrc(relativePath)
+    : noreaMediaSrc(relativePath);
 }
 
 async function readStoredNovelCoverManifest(
@@ -204,6 +208,17 @@ function novelCoverManifestRelativePath(
   novel: ChapterStorageNovelPathInput,
 ): string {
   return `${novelStorageRelativeDir(novel)}/${NOVEL_COVER_MANIFEST_FILE}`;
+}
+
+function androidLocalMediaSrc(relativePath: string): string {
+  const binaryPath = String.fromCharCode(
+    ...new TextEncoder().encode(relativePath),
+  );
+  const encodedPath = btoa(binaryPath)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+  return `${ANDROID_LOCAL_MEDIA_SRC_PREFIX}${encodedPath}`;
 }
 
 function noreaMediaSrc(relativePath: string): string {

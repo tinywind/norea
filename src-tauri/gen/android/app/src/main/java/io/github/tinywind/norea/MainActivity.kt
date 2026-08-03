@@ -1363,6 +1363,8 @@ class MainActivity : TauriActivity() {
 
   private fun ensureContentsNoMedia(rootUri: String): Boolean {
     val relativePath = "$CONTENTS_ROOT_DIR/${MediaStore.MEDIA_IGNORE_FILENAME}"
+    if (externalStorageFile(rootUri, relativePath)?.isFile == true) return false
+
     val existing = storageDocumentAt(rootUri, relativePath)
     if (existing != null) {
       require(existing.isFile) { "Android media marker is not a file." }

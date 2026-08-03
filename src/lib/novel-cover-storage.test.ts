@@ -281,7 +281,7 @@ describe("saveNovelCoverFromSource", () => {
     );
   });
 
-  it("resolves a stored Android cover to a norea-media URL", async () => {
+  it("resolves a stored Android cover to the direct storage URL", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
     readAndroidStorageTextMock.mockResolvedValueOnce(
       coverManifest("https://source.test/covers/cover.webp", "cover.webp"),
@@ -291,7 +291,26 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(novel),
     ).resolves.toBe(
-      "norea-media://reader-asset/contents/demo/Sample-Novel-novel/cover.webp",
+      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIud2VicA",
+    );
+  });
+
+  it("encodes unicode Android cover paths in the direct storage URL", async () => {
+    isAndroidRuntimeMock.mockReturnValue(true);
+    readAndroidStorageTextMock.mockResolvedValueOnce(
+      coverManifest("https://source.test/covers/cover.jpg"),
+    );
+    androidStoragePathSizeMock.mockResolvedValueOnce(10);
+
+    await expect(
+      resolveStoredNovelCoverSrc({
+        id: 776601,
+        name: "광마회귀",
+        path: "webtoon/list?titleId=776601",
+        pluginId: "naver-webtoon",
+      }),
+    ).resolves.toBe(
+      "/__norea_android_media__/file/Y29udGVudHMvbmF2ZXItd2VidG9vbi_qtJHrp4jtmozqt4Atd2VidG9vbi1saXN0LXRpdGxlSWQtNzc2NjAxL2NvdmVyLmpwZw",
     );
   });
 
