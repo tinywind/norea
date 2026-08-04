@@ -570,7 +570,7 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
-  it("keeps web-storage-backed source downloads off the interaction executor", () => {
+  it("keeps chapter downloads off the interaction executor", () => {
     pluginMocks.getPlugin.mockReturnValueOnce({
       apiVersion: "0.2",
       id: "source-a",
@@ -578,7 +578,6 @@ describe("enqueueChapterDownload", () => {
       getBaseUrl: () => "https://source.test",
       getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan,
       getChapterResource: pluginMocks.getChapterResource,
-      webStorageUtilized: true,
     });
 
     enqueueChapterDownload({

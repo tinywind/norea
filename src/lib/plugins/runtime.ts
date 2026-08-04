@@ -182,9 +182,6 @@ export function createLazyPluginProxy(
           (runtime) => runtime.resolveUrl,
         ),
     },
-    webStorageUtilized: {
-      get: () => immediateRuntime(handle).webStorageUtilized,
-    },
   });
 
   return plugin;

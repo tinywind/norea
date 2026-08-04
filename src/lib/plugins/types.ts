@@ -192,8 +192,6 @@ export interface Plugin extends PluginItem {
     pageNo: number,
   ) => Promise<NovelItem[]>;
   resolveUrl?: (path: string, isNovel?: boolean) => string;
-  /** Run source tasks on the foreground scraper when per-page Web Storage is needed. */
-  webStorageUtilized?: boolean;
 }
 
 /** Reserved plugin id for novels imported from local files. */
