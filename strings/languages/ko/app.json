@@ -444,8 +444,6 @@
   "browseSettings.group.downloads": "다운로드",
   "browseSettings.sourceWorkConcurrency": "동시 소스 작업 수",
   "browseSettings.sourceWorkConcurrency.description": "동시에 작업할 소스 실행기 WebView 수를 제한합니다.",
-  "browseSettings.resourceDownloadConcurrency": "동시 리소스 다운로드 수",
-  "browseSettings.resourceDownloadConcurrency.description": "한 챕터의 이미지와 기타 리소스를 동시에 다운로드하는 수를 제한합니다.",
   "browseSettings.sourceRequestTimeout": "소스 요청 타임아웃",
   "browseSettings.sourceRequestTimeout.description": "각 소스 WebView 요청을 이 초 수만큼 기다린 뒤 중단합니다.",
   "browseSettings.chapterDownloadCooldown": "소스별 챕터 다운로드 대기 시간",

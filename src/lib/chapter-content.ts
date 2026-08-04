@@ -113,9 +113,17 @@ const GLOBAL_ALLOWED_ATTRIBUTES = new Set([
   "title",
 ]);
 
+const IMAGE_SOURCE_ATTRIBUTES = new Set([
+  "src",
+  "data-src",
+  "data-original",
+  "data-lazy-src",
+  "data-orig-src",
+]);
+
 const TAG_ALLOWED_ATTRIBUTES: Record<string, Set<string>> = {
   a: new Set(["href"]),
-  img: new Set(["alt", "height", "src", "width"]),
+  img: new Set(["alt", "height", ...IMAGE_SOURCE_ATTRIBUTES, "width"]),
   td: new Set(["colspan", "rowspan"]),
   th: new Set(["colspan", "rowspan", "scope"]),
 };
@@ -212,7 +220,7 @@ function isAllowedAttribute(
       allowMailto: true,
     });
   }
-  if (tagName === "img" && normalizedName === "src") {
+  if (tagName === "img" && IMAGE_SOURCE_ATTRIBUTES.has(normalizedName)) {
     return isAllowedUrl(value, {
       allowDataImages: true,
       allowMailto: false,

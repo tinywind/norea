@@ -325,8 +325,30 @@ class AndroidScraperBridge(
 
   fun handleBackPressed(): Boolean {
     if (Looper.myLooper() != Looper.getMainLooper()) return false
-    val webView = queueState(IMMEDIATE_EXECUTOR).webView ?: return false
-    if (!browserVisible && !isForegroundBrowser(webView)) return false
+    val state = queueState(IMMEDIATE_EXECUTOR)
+    val webView = state.webView
+    val hasPendingBrowserAction =
+      state.activeAction?.browserAction == true || state.queue.any { it.browserAction }
+    if (
+      !browserVisible &&
+      (webView == null || !isForegroundBrowser(webView)) &&
+      !hasPendingBrowserAction
+    ) {
+      return false
+    }
+    if (!browserVisible && hasPendingBrowserAction) {
+      hideScraper()
+      return true
+    }
+    if (webView == null) {
+      hideScraper()
+      return true
+    }
+    if (browserVisible && !isForegroundBrowser(webView)) {
+      hideScraper()
+      return true
+    }
+    webView.stopLoading()
     if (webView.canGoBack()) {
       webView.goBack()
       return true
@@ -577,9 +599,24 @@ class AndroidScraperBridge(
 
   private fun hideScraper() {
     val state = queueState(IMMEDIATE_EXECUTOR)
-    val webView = state.webView ?: return
     logState(state, "hideScraper before")
+    cancelQueuedWhere(state, "scraper: site browser closed") { it.browserAction }
+    if (state.activeAction?.browserAction == true) {
+      cancelActive(state, "scraper: site browser closed")
+    } else if (state.activeAction == null) {
+      state.webView?.stopLoading()
+    }
+    hideScraperSurface(state)
+    CookieManager.getInstance().flush()
+    emitSiteBrowserHidden()
+    logState(state, "hideScraper after")
+    runNext(state)
+  }
+
+  private fun hideScraperSurface(state: QueueState) {
+    val webView = state.webView
     browserVisible = false
+    if (webView == null) return
     webView.layoutParams = hiddenLayoutParams()
     webView.alpha = 0f
     webView.translationX = -10000f
@@ -589,10 +626,6 @@ class AndroidScraperBridge(
     webView.isFocusable = false
     webView.isFocusableInTouchMode = false
     webView.requestLayout()
-    CookieManager.getInstance().flush()
-    emitSiteBrowserHidden()
-    logState(state, "hideScraper after")
-    runNext(state)
   }
 
   private fun emitSiteBrowserHidden() {
@@ -692,22 +725,33 @@ class AndroidScraperBridge(
     val id = payload.getString("id")
     val url = payload.getString("url")
     val resetHistory = payload.optBoolean("resetHistory", false)
+    val timeoutMs = payload.optLong("timeoutMs", 30_000L).coerceAtLeast(1L)
     val userAgent = payloadUserAgent(payload)
     val webView = if (resetHistory) {
       resetScraperWebView(state, userAgent)
     } else {
       scraper(state, userAgent)
     }
-    logState(state, "runNavigate start id=$id url=$url resetHistory=$resetHistory", url)
-    showScraper()
-    webView.loadUrl(url)
-    finish(
+    logState(
+      state,
+      "runNavigate start id=$id url=$url resetHistory=$resetHistory timeoutMs=$timeoutMs",
+      url,
+    )
+    hideScraperSurface(state)
+    webView.stopLoading()
+    webView.webViewClient = makeClient(state) {
+      if (state.activeAction?.id != id) return@makeClient
+      webView.webViewClient = makeClient(state, null)
+      browserVisible = true
+      finishSuccess(state, id, true)
+    }
+    setTimeout(
       state,
       id,
-      JSONObject()
-        .put("ok", true)
-        .put("result", true),
+      timeoutMs,
+      "scraper: browser navigation to $url timed out after ${timeoutMs}ms",
     )
+    webView.loadUrl(url)
   }
 
   private fun prepareContext(
@@ -862,6 +906,14 @@ class AndroidScraperBridge(
     val timeout = Runnable {
       if (state.activeFetchId == id) abortActiveFetch(state, id)
       if (state.activeExtractId == id) state.webView?.stopLoading()
+      if (
+        state.activeAction?.id == id &&
+        state.activeAction?.browserAction == true
+      ) {
+        state.webView?.webViewClient = makeClient(state, null)
+        state.webView?.stopLoading()
+        hideScraperSurface(state)
+      }
       finishError(state, id, message)
     }
     state.activeTimeout = timeout
@@ -922,7 +974,11 @@ class AndroidScraperBridge(
         }
       }
       if (cancelledQueued) return
-      if (state.activeFetchId == id || state.activeExtractId == id) {
+      if (
+        state.activeFetchId == id ||
+        state.activeExtractId == id ||
+        state.activeAction?.id == id
+      ) {
         cancelActive(state, message)
         return
       }
@@ -931,10 +987,10 @@ class AndroidScraperBridge(
 
   private fun cancelActive(state: QueueState, message: String) {
     val fetchId = state.activeFetchId
-    val id = fetchId ?: state.activeExtractId
+    val id = fetchId ?: state.activeExtractId ?: state.activeAction?.id
     if (fetchId != null) abortActiveFetch(state, fetchId)
-    state.webView?.stopLoading()
     state.webView?.webViewClient = makeClient(state, null)
+    state.webView?.stopLoading()
     if (id == null) {
       clearTimeout(state)
       state.activeResultNonce = null

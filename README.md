@@ -97,7 +97,7 @@ To add the sample source list:
 3. Paste this URL:
 
    ```text
-   https://raw.githubusercontent.com/tinywind/norea-plugins/main-dist/plugins/v0.1.0/.dist/plugins.min.json
+   https://raw.githubusercontent.com/tinywind/norea-plugins/main-dist/plugins/v0.2.0/.dist/plugins.min.json
    ```
 
 4. Save it.
@@ -123,6 +123,9 @@ guaranteed only within the same minor version.
 For example, `0.1.x` data is supported by later `0.1.x` releases, but `0.2.0`
 may introduce incompatible data changes. Export a backup before moving across a
 major version, or across a minor version while Norea is still `0.x`.
+
+The 0.2 app and plugin contract do not guarantee compatibility with 0.1 app
+data, downloaded content, or source plugins.
 
 Maintainer details live in
 [docs/release-compatibility.md](./docs/release-compatibility.md).

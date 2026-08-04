@@ -480,6 +480,32 @@ a {
   color: var(--lnr-design-ink);
 }
 
+.lnr-blocking-loading-overlay {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.36);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  padding: calc(var(--lnr-safe-area-top) + 1rem)
+    calc(var(--lnr-safe-area-right) + 1rem)
+    calc(var(--lnr-safe-area-bottom) + 1rem)
+    calc(var(--lnr-safe-area-left) + 1rem);
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 1100;
+}
+
+.lnr-blocking-loading-panel {
+  background: var(--lnr-design-surface);
+  border-color: var(--lnr-design-rule-strong);
+  box-shadow: var(--lnr-design-shadow-floating);
+  color: var(--lnr-design-ink);
+  max-width: 24rem;
+  width: min(100%, 24rem);
+}
+
 .lnr-back-icon-button {
   align-items: center;
   display: inline-flex;

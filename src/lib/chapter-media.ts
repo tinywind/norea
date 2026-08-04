@@ -1,7 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
-import { getResourceDownloadConcurrency } from "../store/browse";
 import {
   androidStorageZipEntryExists,
   archiveAndroidStorageDirectory,
@@ -29,11 +28,6 @@ import {
   writeNativeStream,
   type NativeStreamInfo,
 } from "./native-stream";
-import { runBoundedTaskBatch } from "./tasks/batch-window";
-import {
-  resourceDownloadSlots,
-  type ResourceDownloadPriority,
-} from "./tasks/resource-download-slots";
 import { TASK_PAUSE_ABORT_MESSAGE } from "./tasks/scheduler";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
@@ -133,7 +127,6 @@ interface CacheChapterMediaOptions {
   chapterNumber?: string | null;
   chapterPosition?: number | null;
   contextUrl?: string;
-  downloadPriority?: ResourceDownloadPriority;
   html: string;
   novelId?: number;
   novelName?: string | null;
@@ -142,6 +135,7 @@ interface CacheChapterMediaOptions {
   onMediaPatch?: (patches: ChapterMediaElementPatch[]) => Promise<void> | void;
   onProgress?: (progress: { current: number; total: number }) => void;
   previousHtml?: string | null;
+  preferBrowserCache?: boolean;
   requestInit?: ChapterMediaRequestInit;
   repair?: boolean;
   scraperExecutor?: ScraperExecutorId;
@@ -2083,7 +2077,6 @@ export async function cacheHtmlChapterMedia({
   chapterNumber,
   chapterPosition,
   contextUrl,
-  downloadPriority = "foreground",
   html,
   novelId,
   novelName,
@@ -2091,6 +2084,7 @@ export async function cacheHtmlChapterMedia({
   onHtmlUpdate,
   onMediaPatch,
   onProgress,
+  preferBrowserCache,
   previousHtml,
   requestInit,
   repair = false,
@@ -2296,6 +2290,7 @@ export async function cacheHtmlChapterMedia({
           ...(requestInit?.headers ?? {}),
         },
         ...(mediaContextUrl ? { contextUrl: mediaContextUrl } : {}),
+        preferBrowserCache,
         ...(scraperExecutor ? { scraperExecutor } : {}),
         signal,
         ...(sourceId ? { sourceId } : {}),
@@ -2429,40 +2424,16 @@ export async function cacheHtmlChapterMedia({
     });
   };
 
-  await runBoundedTaskBatch({
-    items: downloadUrls,
-    materialize: async (url, index) => {
-      let slot;
-      try {
-        slot = await resourceDownloadSlots.acquire({
-          priority: downloadPriority,
-          shouldStart: () =>
-            terminalDownloadError === undefined &&
-            signal?.aborted !== true &&
-            shouldYield?.() !== true,
-          signal,
-        });
-      } catch (error) {
-        if (!signal?.aborted) throw error;
-        terminalDownloadError ??= new DOMException(
-          "Task was cancelled.",
-          "AbortError",
-        );
-        return;
-      }
-      if (!slot) return;
-      try {
-        await materializeMedia(url, index);
-      } finally {
-        slot.release();
-      }
-    },
-    shouldContinue: () =>
-      terminalDownloadError === undefined &&
-      signal?.aborted !== true &&
-      shouldYield?.() !== true,
-    windowSize: getResourceDownloadConcurrency(),
-  });
+  for (const [index, url] of downloadUrls.entries()) {
+    if (
+      terminalDownloadError !== undefined ||
+      signal?.aborted === true ||
+      shouldYield?.() === true
+    ) {
+      break;
+    }
+    await materializeMedia(url, index);
+  }
   if (terminalDownloadError !== undefined) {
     throw terminalDownloadError;
   }

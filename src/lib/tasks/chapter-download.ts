@@ -8,6 +8,7 @@ import {
   isBinaryChapterContentType,
   isHtmlLikeChapterContentType,
   normalizeChapterContentType,
+  sanitizeReaderHtml,
   storedChapterContentType,
   type ChapterContentType,
 } from "../chapter-content";
@@ -29,8 +30,18 @@ import {
 } from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { getPluginBaseUrl } from "../plugins/base-url";
+import {
+  captureChapterPage,
+  validateChapterAcquisitionPlan,
+} from "../plugins/chapter-acquisition";
 import { pluginManager } from "../plugins/manager";
-import type { ChapterBinaryResource, Plugin } from "../plugins/types";
+import type {
+  ChapterBinaryResource,
+  ChapterContentResource,
+  ChapterResource,
+  Plugin,
+  TextChapterContentType,
+} from "../plugins/types";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
   sourceBaseDomainKey,
@@ -274,17 +285,48 @@ function validateChapterResource(
 async function loadChapterResource(
   plugin: Plugin,
   chapterPath: string,
-  contentType: "pdf" | "epub",
-): Promise<Uint8Array> {
-  if (!plugin.parseChapterResource) {
+  contentType: ChapterContentType,
+): Promise<ChapterResource> {
+  if (!plugin.getChapterResource) {
     throw new Error(
-      `Plugin must implement parseChapterResource() for ${contentType} chapters.`,
+      `Plugin must implement getChapterResource() for ${contentType} resource chapters.`,
     );
   }
-  return validateChapterResource(
-    await plugin.parseChapterResource(chapterPath),
-    contentType,
-  );
+  return plugin.getChapterResource(chapterPath, contentType);
+}
+
+function validateChapterContentResource(
+  resource: unknown,
+  contentType: TextChapterContentType,
+): ChapterContentResource {
+  if (!resource || typeof resource !== "object") {
+    throw new Error("Chapter resource must be a text content resource.");
+  }
+  const candidate = resource as Partial<ChapterContentResource>;
+  if (candidate.type !== "content") {
+    throw new Error("Chapter resource must be a text content resource.");
+  }
+  if (candidate.contentType !== contentType) {
+    throw new Error(
+      `Chapter resource contentType "${candidate.contentType}" does not match "${contentType}".`,
+    );
+  }
+  if (typeof candidate.content !== "string" || candidate.content.trim() === "") {
+    throw new Error("Chapter content resource is empty.");
+  }
+  if (candidate.baseUrl !== undefined) {
+    try {
+      const baseUrl = new URL(candidate.baseUrl);
+      if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+        throw new Error();
+      }
+    } catch {
+      throw new Error(
+        "Chapter content resource baseUrl must be an absolute HTTP(S) URL.",
+      );
+    }
+  }
+  return candidate as ChapterContentResource;
 }
 
 function makeChapterDownloadBatchId(): string {
@@ -737,10 +779,6 @@ function resolveSourceTaskName(
   return pluginManager.getPlugin(pluginId)?.name ?? trimmedName ?? pluginId;
 }
 
-function requiresForegroundChapterExecutor(plugin: Plugin | undefined): boolean {
-  return plugin?.webStorageUtilized === true;
-}
-
 function enqueueChapterDownloadForExecutor(
   job: ChapterDownloadJob,
   options: {
@@ -779,11 +817,15 @@ function enqueueChapterDownloadForExecutor(
       batchTitle: job.batchTitle,
     },
     dedupeKey: chapterDownloadDedupeKey(job.id),
-    requiresForegroundExecutor:
-      requiresForegroundChapterExecutor(sourcePlugin),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async ({ executor, setDetail, setProgress, shouldYield, signal }) => {
+    run: async ({
+      executor,
+      setDetail,
+      setProgress,
+      shouldYield,
+      signal,
+    }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       const liveReaderUpdates = shouldEmitLiveChapterDownloadUpdates(job);
       let progressTotal = 1;
@@ -819,6 +861,9 @@ function enqueueChapterDownloadForExecutor(
               : null;
         const contentType = normalizeChapterContentType(
           job.contentType ?? chapter.contentType,
+        );
+        const acquisitionPlan = validateChapterAcquisitionPlan(
+          plugin.getChapterAcquisitionPlan(job.chapterPath, contentType),
         );
         const savedContentType = storedChapterContentType(contentType);
         const previousHtml =
@@ -858,9 +903,13 @@ function enqueueChapterDownloadForExecutor(
           });
         };
         if (isBinaryChapterContentType(contentType)) {
-          const bytes = await loadChapterResource(
-            plugin,
-            job.chapterPath,
+          if (acquisitionPlan.type !== "resource") {
+            throw new Error(
+              `Plugin must declare a resource acquisition plan for ${contentType} chapters.`,
+            );
+          }
+          const bytes = validateChapterResource(
+            await loadChapterResource(plugin, job.chapterPath, contentType),
             contentType,
           );
           if (signal.aborted) {
@@ -927,23 +976,42 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
-        const baseUrl = absolutePluginUrl(plugin, job.chapterPath);
+        let baseUrl = absolutePluginUrl(plugin, job.chapterPath);
         const storedHtmlSource = previousHtml?.trim()
           ? restoreProtectedRemoteChapterMediaSources(previousHtml, baseUrl)
           : null;
         const usesStoredHtmlSource = storedHtmlSource !== null;
+        const preferBrowserCache = acquisitionPlan.type === "page";
         let html: string;
         if (storedHtmlSource) {
           html = storedHtmlSource;
         } else {
-          const rawContent = await plugin.parseChapter(job.chapterPath);
+          let rawContent: string;
+          if (acquisitionPlan.type === "page") {
+            const captured = await captureChapterPage(acquisitionPlan, {
+              contentType,
+              executor: executor ?? "immediate",
+              signal,
+              sourceId: job.pluginId,
+            });
+            rawContent = captured.content;
+            baseUrl = captured.baseUrl;
+          } else {
+            const resource = validateChapterContentResource(
+              await loadChapterResource(plugin, job.chapterPath, contentType),
+              contentType,
+            );
+            rawContent = resource.content;
+            baseUrl = resource.baseUrl ?? baseUrl;
+          }
           if (signal.aborted) {
             throw new DOMException("Task was cancelled.", "AbortError");
           }
-          if (rawContent.trim() === "") {
-            throw new Error("Downloaded chapter content is empty.");
-          }
-          html = chapterContentToHtml(rawContent, contentType);
+          const convertedHtml = chapterContentToHtml(rawContent, contentType);
+          html =
+            contentType === "html"
+              ? sanitizeReaderHtml(convertedHtml)
+              : convertedHtml;
         }
         let mediaBytes = 0;
         let shouldClearMedia = true;
@@ -969,8 +1037,6 @@ function enqueueChapterDownloadForExecutor(
               chapterName: chapter.name,
               chapterNumber: chapter.chapterNumber ?? String(chapter.position),
               chapterPosition: chapter.position,
-              downloadPriority:
-                job.priority === "background" ? "background" : "foreground",
               html,
               novelId: chapter.novelId,
               novelName: novel?.name ?? job.novelName,
@@ -996,6 +1062,7 @@ function enqueueChapterDownloadForExecutor(
                 progressTotal = total + 1;
                 reportProgress({ current, total: progressTotal });
               },
+              preferBrowserCache,
               previousHtml,
               requestInit: plugin.imageRequestInit,
               repair: usesStoredHtmlSource,
@@ -1089,11 +1156,15 @@ export function enqueueChapterMediaRepair(
       pluginId: job.pluginId,
     },
     dedupeKey: chapterMediaRepairDedupeKey(job.id),
-    requiresForegroundExecutor:
-      requiresForegroundChapterExecutor(sourcePlugin),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async ({ executor, setDetail, setProgress, shouldYield, signal }) => {
+    run: async ({
+      executor,
+      setDetail,
+      setProgress,
+      shouldYield,
+      signal,
+    }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
@@ -1124,7 +1195,37 @@ export function enqueueChapterMediaRepair(
         );
         return;
       }
-      const baseUrl = absolutePluginUrl(plugin, chapter.path);
+      const acquisitionPlan = validateChapterAcquisitionPlan(
+        plugin.getChapterAcquisitionPlan(chapter.path, contentType),
+      );
+      let baseUrl = absolutePluginUrl(plugin, chapter.path);
+      let repairHtml = content;
+      const preferBrowserCache = acquisitionPlan.type === "page";
+      if (acquisitionPlan.type === "page") {
+        if (isBinaryChapterContentType(contentType)) {
+          throw new Error(
+            `Plugin must declare a resource acquisition plan for ${contentType} chapters.`,
+          );
+        }
+        const captured = await captureChapterPage(acquisitionPlan, {
+          contentType,
+          executor: executor ?? "immediate",
+          signal,
+          sourceId: job.pluginId,
+        });
+        if (signal.aborted) {
+          throw new DOMException("Task was cancelled.", "AbortError");
+        }
+        const convertedHtml = chapterContentToHtml(
+          captured.content,
+          contentType,
+        );
+        repairHtml =
+          contentType === "html"
+            ? sanitizeReaderHtml(convertedHtml)
+            : convertedHtml;
+        baseUrl = captured.baseUrl;
+      }
       if (!baseUrl) {
         throw new Error(
           `chapter-media-repair: failed to resolve chapter URL for "${chapter.name}".`,
@@ -1139,8 +1240,8 @@ export function enqueueChapterMediaRepair(
         sourceId: job.pluginId,
       };
       if (
-        !hasRemoteChapterMedia(content, baseUrl) &&
-        localChapterMediaSources(content, repairProbeContext).length ===
+        !hasRemoteChapterMedia(repairHtml, baseUrl) &&
+        localChapterMediaSources(repairHtml, repairProbeContext).length ===
           0
       ) {
         setDetail("No remote media to repair");
@@ -1168,9 +1269,7 @@ export function enqueueChapterMediaRepair(
         chapterNumber: chapter.chapterNumber ?? String(chapter.position),
         chapterPosition: chapter.position,
         contextUrl: baseUrl,
-        downloadPriority:
-          job.priority === "background" ? "background" : "foreground",
-        html: content,
+        html: repairHtml,
         novelId: storageContext.novelId,
         novelName: storageContext.novelName,
         novelPath: storageContext.novelPath,
@@ -1202,6 +1301,7 @@ export function enqueueChapterMediaRepair(
           progressTotal = total + 1;
           reportProgress({ current, total: progressTotal });
         },
+        preferBrowserCache,
         previousHtml: content,
         requestInit: plugin.imageRequestInit,
         repair: true,

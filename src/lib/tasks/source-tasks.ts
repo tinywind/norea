@@ -51,7 +51,7 @@ export function enqueueOpenSiteTask(
   url: string,
   title: string,
 ): TaskHandle<void> {
-  return enqueueSourceTask<void>({
+  const handle = enqueueSourceTask<void>({
     plugin,
     kind: "source.openSite",
     priority: "interactive",
@@ -61,6 +61,15 @@ export function enqueueOpenSiteTask(
     dedupeKey: `source.openSite:${plugin.id}:${url}`,
     run: async ({ signal, taskId }) =>
       new Promise<void>((resolve, reject) => {
+        const queuedBrowser = useSiteBrowserStore.getState();
+        if (
+          !queuedBrowser.visible ||
+          queuedBrowser.currentUrl !== url ||
+          queuedBrowser.taskId !== taskId
+        ) {
+          reject(new DOMException("Task was cancelled.", "AbortError"));
+          return;
+        }
         debugOpenSiteTask("started", {
           sourceId: plugin.id,
           sourceName: plugin.name,
@@ -69,7 +78,11 @@ export function enqueueOpenSiteTask(
         });
         const handleAbort = () => {
           const siteBrowser = useSiteBrowserStore.getState();
-          if (siteBrowser.visible && siteBrowser.currentUrl === url) {
+          if (
+            siteBrowser.visible &&
+            siteBrowser.currentUrl === url &&
+            siteBrowser.taskId === taskId
+          ) {
             siteBrowser.hide();
           }
           debugOpenSiteTask("cancelled", {
@@ -85,7 +98,11 @@ export function enqueueOpenSiteTask(
           unsubscribe();
         };
         const unsubscribe = useSiteBrowserStore.subscribe((state) => {
-          if (!state.visible || state.currentUrl !== url) {
+          if (
+            !state.visible ||
+            state.currentUrl !== url ||
+            state.taskId !== taskId
+          ) {
             debugOpenSiteTask("closed", {
               sourceId: plugin.id,
               taskId,
@@ -104,8 +121,10 @@ export function enqueueOpenSiteTask(
           taskId,
           url,
         });
-        useSiteBrowserStore.getState().openAt(url);
+        useSiteBrowserStore.getState().startLoading(url, taskId);
         if (signal.aborted) handleAbort();
       }),
   });
+  useSiteBrowserStore.getState().queueAt(url, handle.id);
+  return handle;
 }

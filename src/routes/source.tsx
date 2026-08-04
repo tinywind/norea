@@ -11,7 +11,12 @@ import {
   Stack,
   Text,
 } from "@mantine/core";
-import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
+import {
+  BlockingLoadingOverlay,
+  PageFrame,
+  PageHeader,
+  StateView,
+} from "../components/AppFrame";
 import {
   ChevronDownGlyph,
   ExternalLinkGlyph,
@@ -55,6 +60,10 @@ import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
 } from "../lib/tasks/source-tasks";
+import {
+  taskScheduler,
+  type TaskHandle,
+} from "../lib/tasks/scheduler";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useTranslation } from "../i18n";
 import { sourceRoute } from "../router";
@@ -73,6 +82,29 @@ interface ListingPage {
 interface AccumulatedNovel {
   item: NovelItem;
   key: string;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
+}
+
+export function canLoadSourceListing(
+  plugin: Plugin | undefined,
+  filterOwner: Plugin | undefined,
+  pluginId: string,
+  shouldLoadListing: boolean,
+): boolean {
+  return Boolean(
+    plugin &&
+      plugin === filterOwner &&
+      pluginId.length > 0 &&
+      shouldLoadListing,
+  );
 }
 
 function countActiveFilters(filters: ResolvedFilterValues): number {
@@ -237,6 +269,7 @@ export function SourcePage() {
   const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
   const [readerSettingsDrawerOpen, setReaderSettingsDrawerOpen] =
     useState(false);
+  const openTaskRef = useRef<TaskHandle<number> | null>(null);
   const initialFilters = useMemo<ResolvedFilterValues>(
     () => (plugin?.filters ? readSourceFilters(plugin, plugin.filters) : {}),
     [plugin],
@@ -245,11 +278,13 @@ export function SourcePage() {
     useState<ResolvedFilterValues>(initialFilters);
   const [activeFilters, setActiveFilters] =
     useState<ResolvedFilterValues>(initialFilters);
+  const [filterOwner, setFilterOwner] = useState<Plugin | undefined>(plugin);
 
   useEffect(() => {
     setPendingFilters(initialFilters);
     setActiveFilters(initialFilters);
-  }, [initialFilters]);
+    setFilterOwner(plugin);
+  }, [initialFilters, plugin]);
 
   useEffect(() => {
     setSearch(query);
@@ -281,7 +316,12 @@ export function SourcePage() {
   }, [listingScopeKey]);
 
   const listing = useQuery({
-    enabled: !!plugin && pluginId.length > 0 && shouldLoadListing,
+    enabled: canLoadSourceListing(
+      plugin,
+      filterOwner,
+      pluginId,
+      shouldLoadListing,
+    ),
     queryKey: [
       "plugin",
       "source",
@@ -289,7 +329,7 @@ export function SourcePage() {
       listingScopeKey,
       page,
     ] as const,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!plugin || !shouldLoadListing) {
         return {
           items: [],
@@ -307,7 +347,7 @@ export function SourcePage() {
             mode: popularModeLabel,
             source: plugin.name,
           });
-      const items = await enqueueSourceTask<NovelItem[]>({
+      const task = enqueueSourceTask<NovelItem[]>({
         plugin,
         kind: taskKind,
         priority: "interactive",
@@ -333,8 +373,17 @@ export function SourcePage() {
             filters: activeFilters as never,
           });
         },
-      }).promise;
-      return { items, page, scopeKey: listingScopeKey };
+      });
+      const cancelTask = () => taskScheduler.cancel(task.id);
+      signal.addEventListener("abort", cancelTask, { once: true });
+      if (signal.aborted) cancelTask();
+
+      try {
+        const items = await task.promise;
+        return { items, page, scopeKey: listingScopeKey };
+      } finally {
+        signal.removeEventListener("abort", cancelTask);
+      }
     },
   });
 
@@ -347,23 +396,6 @@ export function SourcePage() {
       t("tasks.task.openSite", { source: plugin.name }),
     ).promise.catch(() => undefined);
   }
-
-  const goBack = useCallback((): void => {
-    const target = findPreviousAppHistoryEntry(currentHref, ["/source"]);
-    if (target) {
-      trimAppNavigationHistoryTo(target);
-      window.history.go(-target.steps);
-      return;
-    }
-
-    void navigate({
-      to: "/browse",
-      search: { q: "", tab: "search" },
-      replace: true,
-    });
-  }, [currentHref, navigate]);
-
-  usePageBackNavigation(goBack);
 
   useEffect(() => {
     const data = listing.data;
@@ -397,17 +429,69 @@ export function SourcePage() {
   const open = useMutation({
     mutationFn: async (item: NovelItem) => {
       if (!plugin) throw new Error(t("source.pluginNotLoaded"));
-      return enqueueOpenNovelFromSourceTask({
+      const task = enqueueOpenNovelFromSourceTask({
         plugin,
         item,
         title: t("tasks.task.openNovel", { name: item.name }),
-      }).promise;
+      });
+      openTaskRef.current = task;
+      const novelId = await task.promise;
+      if (openTaskRef.current?.id !== task.id) {
+        throw new DOMException("Task was cancelled.", "AbortError");
+      }
+      return novelId;
     },
-    onSuccess: (novelId) => {
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
-      void navigate({ to: "/novel", search: { id: novelId } });
+    onError: () => {
+      openTaskRef.current = null;
+    },
+    onSuccess: async (novelId) => {
+      const task = openTaskRef.current;
+      if (!task) return;
+      await queryClient.invalidateQueries({ queryKey: ["novel"] });
+      if (openTaskRef.current?.id !== task.id) return;
+      await navigate({ to: "/novel", search: { id: novelId } });
+      if (openTaskRef.current?.id === task.id) {
+        openTaskRef.current = null;
+      }
     },
   });
+
+  const cancelOpenNovel = useCallback((): boolean => {
+    const task = openTaskRef.current;
+    if (!task) return false;
+    openTaskRef.current = null;
+    taskScheduler.cancel(task.id);
+    return true;
+  }, []);
+
+  const goBack = useCallback((): void => {
+    if (cancelOpenNovel()) return;
+
+    void queryClient.cancelQueries({
+      queryKey: ["plugin", "source", pluginId],
+    });
+    const target = findPreviousAppHistoryEntry(currentHref, ["/source"]);
+    if (target) {
+      trimAppNavigationHistoryTo(target);
+      window.history.go(-target.steps);
+      return;
+    }
+
+    void navigate({
+      to: "/browse",
+      search: { q: "", tab: "search" },
+      replace: true,
+    });
+  }, [cancelOpenNovel, currentHref, navigate, pluginId, queryClient]);
+
+  usePageBackNavigation(goBack);
+
+  useEffect(
+    () => () => {
+      cancelOpenNovel();
+    },
+    [cancelOpenNovel],
+  );
 
   if (!plugin && installed.isLoading) {
     return (
@@ -463,9 +547,26 @@ export function SourcePage() {
   const activeFilterLabels = isFilterMode && sourceFilters
     ? getActiveFilterLabels(sourceFilters, activeFilters)
     : [];
+  const blockingLoading = open.isPending || (listing.isFetching && page === 1);
 
   return (
     <PageFrame size="wide" className="lnr-source-page">
+      {blockingLoading ? (
+        <BlockingLoadingOverlay
+          cancelLabel={open.isPending ? t("common.cancel") : t("common.back")}
+          label={
+            open.isPending
+              ? t("globalSearch.openingNovel")
+              : isKeywordMode
+                ? t("source.searching", {
+                    name: plugin.name,
+                    query: trimmedSearch,
+                  })
+                : t("source.loadingMode", { mode: popularModeLabel })
+          }
+          onCancel={open.isPending ? cancelOpenNovel : goBack}
+        />
+      ) : null}
       <PageHeader
         title={plugin.name}
         description={
@@ -713,7 +814,7 @@ export function SourcePage() {
             </>
           )}
 
-          {open.error ? (
+          {open.error && !isAbortError(open.error) ? (
             <StateView
               color="red"
               title={t("common.openFailed")}

@@ -494,7 +494,6 @@ interface ChapterListItemProps {
   selectionMode: boolean;
   status: ChapterDownloadStatus | undefined;
   deleteBusy: boolean;
-  opening: boolean;
   repairBusy: boolean;
   reorderBusy: boolean;
   onOpen: () => void;
@@ -515,7 +514,6 @@ function ChapterListItem({
   selectionMode,
   status,
   deleteBusy,
-  opening,
   repairBusy,
   reorderBusy,
   onOpen,
@@ -549,9 +547,7 @@ function ChapterListItem({
     ? t("novel.retryDownload")
     : t("novel.downloadChapter");
   const showDownloadButton =
-    !chapter.isDownloaded && !opening && !isQueued && !isRunning;
-  const showOpeningSpinner =
-    opening && !chapter.isDownloaded && !isQueued && !isRunning;
+    !chapter.isDownloaded && !isQueued && !isRunning;
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const progress = getChapterReadingProgress(chapter);
@@ -571,7 +567,6 @@ function ChapterListItem({
     chapter.isDownloaded ||
     chapter.mediaRepairNeeded ||
     hasSourceDuplicateChapter ||
-    showOpeningSpinner ||
     Boolean(status);
   const renderChapterFlags = () => (
     <>
@@ -603,11 +598,6 @@ function ChapterListItem({
           tone="warning"
         >
           <AlertIcon />
-        </ChapterFlag>
-      ) : null}
-      {showOpeningSpinner ? (
-        <ChapterFlag label={t("common.downloading")}>
-          <SpinnerIcon />
         </ChapterFlag>
       ) : null}
       {status ? <ChapterDownloadStatusIcon status={status} /> : null}
@@ -643,7 +633,7 @@ function ChapterListItem({
       }`}
       role="button"
       tabIndex={0}
-      aria-busy={opening || isRunning}
+      aria-busy={isRunning}
       aria-label={
         selectionMode
           ? t("novel.toggleChapterSelection", { name: chapter.name })
@@ -652,7 +642,6 @@ function ChapterListItem({
       aria-selected={selectionMode ? isSelected : undefined}
       data-dragging={isDragging ? "true" : undefined}
       data-has-drag={hasReorderControls ? "true" : undefined}
-      data-opening={opening}
       data-selected={isSelected ? "true" : undefined}
       data-selection-mode={selectionMode ? "true" : undefined}
       onClick={() => {
@@ -839,7 +828,6 @@ interface VirtualChapterListProps {
   duplicateSourceChapterCounts: ReadonlyMap<number, number>;
   deletePending: boolean;
   lastReadChapterId: number | undefined;
-  openingChapterId: number | null;
   repairBusyChapterId: number | undefined;
   repairPending: boolean;
   reorderPending: boolean;
@@ -862,7 +850,6 @@ function VirtualChapterList({
   duplicateSourceChapterCounts,
   deletePending,
   lastReadChapterId,
-  openingChapterId,
   repairBusyChapterId,
   repairPending,
   reorderPending,
@@ -994,7 +981,6 @@ function VirtualChapterList({
                 selectionMode={selectionMode}
                 status={statuses.get(chapter.id)}
                 deleteBusy={deletePending && deleteBusyChapterId === chapter.id}
-                opening={openingChapterId === chapter.id}
                 repairBusy={repairPending && repairBusyChapterId === chapter.id}
                 reorderBusy={reorderPending}
                 onOpen={() => onOpen(chapter)}
@@ -2037,8 +2023,6 @@ export function NovelDetailPage() {
   const [statuses, setStatuses] = useState<
     ReadonlyMap<number, ChapterDownloadStatus>
   >(() => new Map());
-  const [openingChapterId, setOpeningChapterId] = useState<number | null>(null);
-  const openRequestRef = useRef(0);
 
   useEffect(() => {
     return subscribeChapterDownloads((event) => {
@@ -2253,46 +2237,7 @@ export function NovelDetailPage() {
   usePageBackNavigation(goBack);
 
   function openChapter(chapter: ChapterListRow): void {
-    const requestId = openRequestRef.current + 1;
-    openRequestRef.current = requestId;
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
-
-    if (chapter.isDownloaded) {
-      return;
-    }
-
-    const novel = novelQuery.data;
-    if (!novel) return;
-
-    setOpeningChapterId(chapter.id);
-    void enqueueChapterDownload({
-      id: chapter.id,
-      pluginId: novel.pluginId,
-      chapterPath: chapter.path,
-      chapterName: chapter.name,
-      chapterNumber: chapter.chapterNumber ?? undefined,
-      contentType: chapter.contentType,
-      novelId: novel.id,
-      novelName: novel.name,
-      novelPath: novel.path,
-      priority: "interactive",
-      title: t("tasks.task.downloadChapter", { name: chapter.name }),
-    })
-      .promise.then(async () => {
-        if (openRequestRef.current !== requestId) return;
-        await queryClient.invalidateQueries({
-          queryKey: chaptersKey(id),
-        });
-        void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
-      })
-      .catch(() => {
-        // The queue emits the failed status; the row renders that state.
-      })
-      .finally(() => {
-        if (openRequestRef.current === requestId) {
-          setOpeningChapterId(null);
-        }
-      });
   }
 
   function openSourceNovel(pluginId: string, url: string | null) {
@@ -2716,7 +2661,6 @@ export function NovelDetailPage() {
                 duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
                 deletePending={clearDownload.isPending}
                 lastReadChapterId={lastReadChapterId}
-                openingChapterId={openingChapterId}
                 repairBusyChapterId={repairMedia.variables?.id}
                 repairPending={repairMedia.isPending}
                 reorderPending={reorderLocalChapters.isPending}

@@ -18,6 +18,7 @@ import {
 import { loadPlugin } from "./sandbox";
 import { createShimResolver } from "./shims";
 import type { Plugin, PluginInstallMode, PluginItem } from "./types";
+import { CURRENT_PLUGIN_API_VERSION } from "./types";
 
 export class PluginValidationError extends Error {
   constructor(message: string) {
@@ -37,7 +38,7 @@ const REQUIRED_PLUGIN_METHOD_FIELDS = [
   "popularNovels",
   "parseNovel",
   "parseNovelSince",
-  "parseChapter",
+  "getChapterAcquisitionPlan",
   "searchNovels",
   "getBaseUrl",
 ] as const;
@@ -79,6 +80,11 @@ function slugifyPluginInstanceId(value: string): string {
 
 function assertPluginContract(plugin: Plugin, sourceLabel: string): void {
   const value = plugin as unknown as Record<string, unknown>;
+  if (value.apiVersion !== CURRENT_PLUGIN_API_VERSION) {
+    throw new PluginValidationError(
+      `Plugin ${sourceLabel} must declare apiVersion '${CURRENT_PLUGIN_API_VERSION}'.`,
+    );
+  }
   for (const field of [...REQUIRED_PLUGIN_METADATA_FIELDS, "url"] as const) {
     readRequiredPluginString(value[field], field, sourceLabel);
   }
@@ -101,6 +107,11 @@ function pluginItemFromLocalSource(
   sourceUrl: string,
 ): PluginItem {
   const value = plugin as unknown as Record<string, unknown>;
+  if (value.apiVersion !== CURRENT_PLUGIN_API_VERSION) {
+    throw new PluginValidationError(
+      `Plugin ${sourceUrl} must declare apiVersion '${CURRENT_PLUGIN_API_VERSION}'.`,
+    );
+  }
   return {
     id: readRequiredPluginString(value.id, "id", sourceUrl),
     name: readRequiredPluginString(value.name, "name", sourceUrl),
@@ -109,6 +120,7 @@ function pluginItemFromLocalSource(
     url: sourceUrl,
     iconUrl: readOptionalPluginString(value.iconUrl) ?? "",
     installMode: readOptionalPluginInstallMode(value.installMode),
+    apiVersion: CURRENT_PLUGIN_API_VERSION,
   };
 }
 
@@ -126,7 +138,8 @@ export function isValidPluginItem(value: unknown): value is PluginItem {
     typeof v.url === "string" &&
     typeof v.lang === "string" &&
     typeof v.version === "string" &&
-    typeof v.iconUrl === "string"
+    typeof v.iconUrl === "string" &&
+    v.apiVersion === CURRENT_PLUGIN_API_VERSION
   );
 }
 
@@ -169,6 +182,7 @@ function pluginItemFromPlugin(plugin: Plugin, sourceUrl: string): PluginItem {
     iconUrl: plugin.iconUrl,
     url: sourceUrl,
     installMode: plugin.installMode,
+    apiVersion: plugin.apiVersion,
   };
 }
 
@@ -417,6 +431,7 @@ export class PluginManager {
             "url",
             row.sourceUrl,
           ),
+          apiVersion: CURRENT_PLUGIN_API_VERSION,
         };
         const handle = createPluginRuntimeHandle({
           item,

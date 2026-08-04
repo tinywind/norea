@@ -1253,8 +1253,9 @@ class MainActivity : TauriActivity() {
       TAG,
       "Android reader media file opened. uri=$uri file=$file bytes=${file.length()}",
     )
+    val imageMimeType = file.inputStream().buffered().use(::imageMimeType)
     return androidLocalMediaResponse(
-      mimeTypeForPath(safeName, ""),
+      imageMimeType ?: mimeTypeForPath(safeName, ""),
       file.inputStream(),
     )
   }
@@ -1973,6 +1974,84 @@ class MainActivity : TauriActivity() {
     return if (mimeType == "application/octet-stream") "text/plain" else mimeType
   }
 
+  private fun imageMimeType(input: InputStream): String? {
+    val header = ByteArray(IMAGE_SIGNATURE_MAX_BYTES)
+    var length = 0
+    while (length < header.size) {
+      val read = input.read(header, length, header.size - length)
+      if (read <= 0) break
+      length += read
+    }
+
+    return when {
+      length >= 3 &&
+        byteValue(header[0]) == 0xff &&
+        byteValue(header[1]) == 0xd8 &&
+        byteValue(header[2]) == 0xff -> "image/jpeg"
+      length >= 8 &&
+        byteValue(header[0]) == 0x89 &&
+        hasAsciiSignature(header, length, 1, "PNG") &&
+        byteValue(header[4]) == 0x0d &&
+        byteValue(header[5]) == 0x0a &&
+        byteValue(header[6]) == 0x1a &&
+        byteValue(header[7]) == 0x0a -> "image/png"
+      hasAsciiSignature(header, length, 0, "GIF87a") ||
+        hasAsciiSignature(header, length, 0, "GIF89a") -> "image/gif"
+      hasAsciiSignature(header, length, 0, "RIFF") &&
+        hasAsciiSignature(header, length, 8, "WEBP") -> "image/webp"
+      hasAsciiSignature(header, length, 0, "BM") -> "image/bmp"
+      hasAvifSignature(header, length) -> "image/avif"
+      else -> null
+    }
+  }
+
+  private fun hasAsciiSignature(
+    bytes: ByteArray,
+    length: Int,
+    offset: Int,
+    signature: String,
+  ): Boolean {
+    if (offset < 0 || offset + signature.length > length) return false
+    return signature.indices.all { index ->
+      byteValue(bytes[offset + index]) == signature[index].code
+    }
+  }
+
+  private fun hasAvifSignature(header: ByteArray, length: Int): Boolean {
+    if (length < 12 || !hasAsciiSignature(header, length, 4, "ftyp")) {
+      return false
+    }
+    val declaredSize = (0 until 4).fold(0L) { size, index ->
+      (size shl 8) or byteValue(header[index]).toLong()
+    }
+    val boxEnd = when {
+      declaredSize == 0L -> length
+      declaredSize == 1L -> return false
+      else -> minOf(length.toLong(), declaredSize).toInt()
+    }
+    if (boxEnd < 12) return false
+    if (
+      hasAsciiSignature(header, boxEnd, 8, "avif") ||
+      hasAsciiSignature(header, boxEnd, 8, "avis")
+    ) {
+      return true
+    }
+
+    var offset = 16
+    while (offset + 4 <= boxEnd) {
+      if (
+        hasAsciiSignature(header, boxEnd, offset, "avif") ||
+        hasAsciiSignature(header, boxEnd, offset, "avis")
+      ) {
+        return true
+      }
+      offset += 4
+    }
+    return false
+  }
+
+  private fun byteValue(value: Byte): Int = value.toInt() and 0xff
+
   private fun mimeTypeForPath(relativePath: String, fallback: String): String {
     if (fallback.isNotBlank()) return fallback
     val extension = relativePath.substringAfterLast('.', "")
@@ -2029,6 +2108,7 @@ class MainActivity : TauriActivity() {
     private const val BYTES_PER_MIB = 1024L * 1024L
     private const val CONTENTS_ROOT_DIR = "contents"
     private const val DEFAULT_STORAGE_COPY_BUFFER_BYTES = 64 * 1024
+    private const val IMAGE_SIGNATURE_MAX_BYTES = 256
     private const val STORAGE_ROOT_CONFIG_FILE = "chapter-media-storage-root.txt"
     private const val TAG = "NoreaStorage"
     private const val MAX_ANDROID_TEMP_BYTES = 2L * 1024L * BYTES_PER_MIB

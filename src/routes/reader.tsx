@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Box } from "@mantine/core";
-import { StateView } from "../components/AppFrame";
+import { BlockingLoadingOverlay, StateView } from "../components/AppFrame";
 import {
   ReaderContent,
   type ReaderContentHandle,
@@ -55,6 +55,7 @@ import {
   subscribeChapterMediaPatches,
   subscribeChapterPartialContentUpdates,
 } from "../lib/tasks/chapter-download";
+import { taskScheduler, type TaskHandle } from "../lib/tasks/scheduler";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import { readerRoute } from "../router";
 import { useLibraryStore } from "../store/library";
@@ -572,6 +573,12 @@ export function ReaderPage() {
   const openedChapterRef = useRef<number | null>(null);
   const openRequestRef = useRef(0);
   const autoDownloadingChapterRef = useRef<number | null>(null);
+  const activeChapterOpenTaskRef = useRef<{
+    chapterId: number;
+    handle: TaskHandle<void>;
+  } | null>(null);
+  const suppressedAutoDownloadChapterRef = useRef<number | null>(null);
+  const readerContentReadyRef = useRef(false);
   const chromeHideTimerRef = useRef<number | null>(null);
   const readerSeekbarHideTimerRef = useRef<number | null>(null);
   const readerSeekbarFadeTimerRef = useRef<number | null>(null);
@@ -631,6 +638,7 @@ export function ReaderPage() {
     if (!chapter || !isHtmlLikeChapterContentType(chapter.contentType)) return;
     const unsubscribe = subscribeChapterPartialContentUpdates((event) => {
       if (event.chapterId !== chapter.id) return;
+      readerContentReadyRef.current = hasRenderableReaderHtml(event.html);
       logReaderMediaPipeline("partial-html", {
         chapterId: chapter.id,
         htmlLength: event.html.length,
@@ -1041,6 +1049,23 @@ export function ReaderPage() {
     },
   });
 
+  const cancelPendingChapterOpen = useCallback(() => {
+    if (readerContentReadyRef.current) return;
+
+    const activeTask = activeChapterOpenTaskRef.current;
+    const pendingChapterId =
+      activeTask?.chapterId ?? autoDownloadingChapterRef.current ?? chapterId;
+    openRequestRef.current += 1;
+    suppressedAutoDownloadChapterRef.current =
+      pendingChapterId > 0 ? pendingChapterId : null;
+    if (activeTask) {
+      taskScheduler.cancel(activeTask.handle.id);
+      activeChapterOpenTaskRef.current = null;
+    }
+    autoDownloadingChapterRef.current = null;
+    setAutoDownloadingChapterId(null);
+  }, [chapterId]);
+
   const openChapter = useCallback(
     (
       targetChapter: ChapterListRow,
@@ -1064,7 +1089,9 @@ export function ReaderPage() {
       }
       const requestId = openRequestRef.current + 1;
       openRequestRef.current = requestId;
+      suppressedAutoDownloadChapterRef.current = null;
       if (targetChapter.id !== chapterId) {
+        readerContentReadyRef.current = false;
         openedChapterRef.current = null;
         void navigate({
           to: "/reader",
@@ -1085,9 +1112,9 @@ export function ReaderPage() {
             queryKey: novelDetailQueryKey(targetChapter.novelId),
             queryFn: () => getNovelById(targetChapter.novelId),
           });
-          if (!novel) return;
+          if (!novel || openRequestRef.current !== requestId) return;
 
-          await enqueueChapterDownload({
+          const handle = enqueueChapterDownload({
             id: targetChapter.id,
             pluginId: novel.pluginId,
             chapterPath: targetChapter.path,
@@ -1099,7 +1126,12 @@ export function ReaderPage() {
             novelPath: novel.path,
             priority: "interactive",
             title: t("tasks.task.downloadChapter", { name: targetChapter.name }),
-          }).promise;
+          });
+          activeChapterOpenTaskRef.current = {
+            chapterId: targetChapter.id,
+            handle,
+          };
+          await handle.promise;
           if (openRequestRef.current !== requestId) return;
           await Promise.all([
             queryClient.invalidateQueries({
@@ -1116,12 +1148,23 @@ export function ReaderPage() {
         } catch {
           // The reader stays open and continues showing any partial content.
         } finally {
-          if (autoDownloadingChapterRef.current === targetChapter.id) {
+          if (
+            activeChapterOpenTaskRef.current?.chapterId === targetChapter.id &&
+            openRequestRef.current === requestId
+          ) {
+            activeChapterOpenTaskRef.current = null;
+          }
+          if (
+            autoDownloadingChapterRef.current === targetChapter.id &&
+            openRequestRef.current === requestId
+          ) {
             autoDownloadingChapterRef.current = null;
           }
-          setAutoDownloadingChapterId((current) =>
-            current === targetChapter.id ? null : current,
-          );
+          if (openRequestRef.current === requestId) {
+            setAutoDownloadingChapterId((current) =>
+              current === targetChapter.id ? null : current,
+            );
+          }
         }
       })();
     },
@@ -1131,6 +1174,7 @@ export function ReaderPage() {
   useEffect(() => {
     if (!chapter || chapter.isDownloaded) return;
     if (autoDownloadingChapterRef.current === chapter.id) return;
+    if (suppressedAutoDownloadChapterRef.current === chapter.id) return;
 
     void openChapter(chapter);
   }, [chapter, openChapter]);
@@ -1156,6 +1200,7 @@ export function ReaderPage() {
   );
 
   const handleReaderBack = useCallback(() => {
+    cancelPendingChapterOpen();
     const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
     if (target) {
       trimAppNavigationHistoryTo(target);
@@ -1173,7 +1218,7 @@ export function ReaderPage() {
       return;
     }
     void navigate({ to: "/" });
-  }, [chapter?.novelId, currentHref, navigate]);
+  }, [cancelPendingChapterOpen, chapter?.novelId, currentHref, navigate]);
 
   usePageBackNavigation(handleReaderBack);
 
@@ -1202,9 +1247,6 @@ export function ReaderPage() {
       window.removeEventListener("popstate", handleReaderPopState);
     };
   }, [chapter?.novelId, navigate]);
-
-  const readerBusy =
-    autoDownloadingChapterId === chapter?.id && !chapter?.isDownloaded;
 
   useEffect(() => {
     if (
@@ -1443,6 +1485,13 @@ export function ReaderPage() {
   }, [activeReaderDocument?.chapterId, activeReaderDocument?.html]);
 
   const hasChapterContent = Boolean(activeReaderHtml);
+  useEffect(() => {
+    readerContentReadyRef.current = hasChapterContent;
+  }, [hasChapterContent]);
+  const readerBusy =
+    chapterId > 0 &&
+    !hasChapterContent &&
+    (chapterQuery.isLoading || Boolean(chapter && !chapter.isDownloaded));
   const content = activeReaderHtml ?? SAMPLE_CHAPTER_HTML;
   const isPdfChapter = hasChapterContent && activeContentType === "pdf";
   const progress = chapter?.progress ?? 0;
@@ -1769,7 +1818,13 @@ export function ReaderPage() {
         }
         progress={readerProgress}
       />
-
+      {readerBusy ? (
+        <BlockingLoadingOverlay
+          cancelLabel={t("common.back")}
+          label={t("reader.loadingContent")}
+          onCancel={handleReaderBack}
+        />
+      ) : null}
     </Box>
   );
 }

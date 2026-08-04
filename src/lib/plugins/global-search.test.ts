@@ -14,6 +14,7 @@ function makePlugin(
   searchImpl: (term: string, page: number) => Promise<NovelItem[]>,
 ): Plugin {
   return {
+    apiVersion: "0.2",
     id,
     name: `Plugin ${id}`,
     lang: "en",
@@ -26,7 +27,7 @@ function makePlugin(
       Promise.resolve({ name: "", path: "", chapters: [] }),
     parseNovelSince: () =>
       Promise.resolve({ name: "", path: "", chapters: [] }),
-    parseChapter: () => Promise.resolve(""),
+    getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: searchImpl,
   };
 }

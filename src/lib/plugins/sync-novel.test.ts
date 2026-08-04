@@ -52,6 +52,7 @@ function makeDetail(chapterNumbers: number[]): SourceNovel {
 
 function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   return {
+    apiVersion: "0.2",
     id: "demo",
     name: "Demo",
     lang: "en",
@@ -64,7 +65,7 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
     parseNovelSince: vi.fn((_path, since) =>
       Promise.resolve(makeDetail([since, since + 1])),
     ),
-    parseChapter: () => Promise.resolve(""),
+    getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
     ...overrides,
   };

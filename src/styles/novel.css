@@ -395,14 +395,6 @@
   background: var(--lnr-design-accent-soft);
 }
 
-.lnr-novel-chapter-row[data-opening="true"] {
-  cursor: wait;
-}
-
-.lnr-novel-chapter-row[data-opening="true"] .lnr-novel-chapter-main {
-  opacity: 0.68;
-}
-
 .lnr-novel-chapter-row:focus-visible {
   outline: 0.125rem solid var(--lnr-design-accent);
   outline-offset: 0.125rem;

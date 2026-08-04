@@ -164,7 +164,7 @@ The public sample source catalog is maintained in
 stores a single active repository URL, and the published sample manifest is:
 
 ```text
-https://raw.githubusercontent.com/tinywind/norea-plugins/plugins/v0.1.0/.dist/plugins.min.json
+https://raw.githubusercontent.com/tinywind/norea-plugins/plugins/v0.2.0/.dist/plugins.min.json
 ```
 
 For local plugin development, keep a sibling checkout at `../norea-plugins` and

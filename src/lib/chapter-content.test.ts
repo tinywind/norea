@@ -5,6 +5,7 @@ import {
   isHtmlLikeChapterContentType,
   isKnownChapterContentType,
   normalizeChapterContentType,
+  sanitizeReaderHtml,
   storedChapterContentType,
 } from "./chapter-content";
 
@@ -77,6 +78,31 @@ describe("chapterContentToHtml", () => {
     expect(html).toContain("<h1>Line</h1>");
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("onclick");
+  });
+
+  it("preserves safe lazy image URLs and removes unsafe ones", () => {
+    const html = sanitizeReaderHtml(
+      [
+        '<img data-src="https://cdn.test/page-1.jpg?accessKey=signed"',
+        ' data-original="http://cdn.test/page-2.jpg"',
+        ' data-lazy-src="https://cdn.test/page-3.jpg"',
+        ' data-orig-src="https://cdn.test/page-4.jpg">',
+        '<img data-src="javascript:alert(1)"',
+        ' data-original="data:text/html;base64,PHNjcmlwdD4="',
+        ' data-lazy-src="javascript:run()"',
+        ' data-orig-src="data:application/octet-stream;base64,AA==">',
+      ].join(""),
+    );
+
+    expect(html).toContain(
+      'data-src="https://cdn.test/page-1.jpg?accessKey=signed"',
+    );
+    expect(html).toContain('data-original="http://cdn.test/page-2.jpg"');
+    expect(html).toContain('data-lazy-src="https://cdn.test/page-3.jpg"');
+    expect(html).toContain('data-orig-src="https://cdn.test/page-4.jpg"');
+    expect(html).not.toContain("javascript:");
+    expect(html).not.toContain("data:text/html");
+    expect(html).not.toContain("data:application/octet-stream");
   });
 });
 

@@ -32,7 +32,7 @@ import {
 } from "./inputs";
 import { NovelStatus } from "./types";
 
-interface WebViewFetchOptions {
+export interface WebViewFetchOptions {
   beforeContentScript?: string;
   /** Accepted for upstream compatibility; no host hook today. */
   afterContentScript?: string;
@@ -169,7 +169,7 @@ function parseWebViewNavigateResult(raw: string): WebViewNavigateResult {
  * behind closed shadow roots that only a real Chromium session can
  * read after the page's own JS finishes decrypting.
  */
-async function webViewFetch(
+export async function webViewFetch(
   url: string,
   options: WebViewFetchOptions = {},
 ): Promise<string> {

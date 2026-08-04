@@ -14,6 +14,8 @@ export type SiteBrowserChromeMode = "react" | "in-page";
 
 export interface SiteBrowserNavigateOptions {
   resetHistory?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface SiteBrowserPlatformApi {

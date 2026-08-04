@@ -256,7 +256,8 @@ fn norea_media_protocol_body(
             format!("norea media: read file: {err}"),
         )
     })?;
-    Ok((body, norea_media_content_type(&path)))
+    let content_type = norea_media_content_type(&path, &body);
+    Ok((body, content_type))
 }
 
 fn norea_media_relative_path(request_path: &str) -> Result<PathBuf, String> {
@@ -315,7 +316,53 @@ fn percent_hex_value(value: u8) -> Option<u8> {
     }
 }
 
-fn norea_media_content_type(path: &Path) -> &'static str {
+fn image_mime_type(body: &[u8]) -> Option<&'static str> {
+    if body.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if body.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if body.len() >= 12 && body.starts_with(b"RIFF") && &body[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if body.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    if is_avif_image(body) {
+        return Some("image/avif");
+    }
+    None
+}
+
+fn is_avif_image(body: &[u8]) -> bool {
+    if body.len() < 12 || &body[4..8] != b"ftyp" {
+        return false;
+    }
+    let declared_size = u32::from_be_bytes([body[0], body[1], body[2], body[3]]) as usize;
+    let box_end = match declared_size {
+        0 => body.len(),
+        1 => return false,
+        size => size.min(body.len()),
+    };
+    if box_end < 12 {
+        return false;
+    }
+
+    matches!(&body[8..12], b"avif" | b"avis")
+        || (box_end >= 20
+            && body[16..box_end]
+                .chunks_exact(4)
+                .any(|brand| matches!(brand, b"avif" | b"avis")))
+}
+
+fn norea_media_content_type(path: &Path, body: &[u8]) -> &'static str {
+    if let Some(content_type) = image_mime_type(body) {
+        return content_type;
+    }
     match path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1897,7 +1944,10 @@ fn encode_base64(bytes: &[u8]) -> String {
     output
 }
 
-fn media_mime_type(path: &Path) -> &'static str {
+fn media_mime_type(path: &Path, body: &[u8]) -> &'static str {
+    if let Some(content_type) = image_mime_type(body) {
+        return content_type;
+    }
     match path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1995,7 +2045,7 @@ pub async fn chapter_media_data_url(
         )?;
         Ok(format!(
             "data:{};base64,{}",
-            media_mime_type(Path::new(&file_name)),
+            media_mime_type(Path::new(&file_name), &body),
             encode_base64(&body)
         ))
     })
@@ -2675,6 +2725,37 @@ mod tests {
             .join("1-Opening")
             .join(MEDIA_DOWNLOAD_DIR)
             .join(file_name)
+    }
+
+    #[test]
+    fn image_signature_overrides_disguised_media_extension() {
+        let cases: &[(&[u8], &str)] = &[
+            (b"\xff\xd8\xff\xe0image-body", "image/jpeg"),
+            (b"\x89PNG\r\n\x1a\nimage-body", "image/png"),
+            (b"GIF89aimage-body", "image/gif"),
+            (b"RIFF\x08\x00\x00\x00WEBPimage-body", "image/webp"),
+            (b"BMimage-body", "image/bmp"),
+            (
+                b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00avifmif1",
+                "image/avif",
+            ),
+        ];
+
+        for (body, expected) in cases {
+            assert_eq!(
+                norea_media_content_type(Path::new("page.woff"), body),
+                *expected
+            );
+            assert_eq!(media_mime_type(Path::new("page.css"), body), *expected);
+        }
+    }
+
+    #[test]
+    fn non_image_media_preserves_extension_fallback() {
+        assert_eq!(
+            media_mime_type(Path::new("audio.mp3"), b"not-an-image"),
+            "audio/mpeg"
+        );
     }
 
     #[test]

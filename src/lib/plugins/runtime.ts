@@ -1,6 +1,7 @@
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import type {
-  ChapterBinaryResource,
+  ChapterAcquisitionPlan,
+  ChapterResource,
   NovelItem,
   Plugin,
   PluginItem,
@@ -116,9 +117,12 @@ export function createLazyPluginProxy(
       const runtime = immediateRuntime(handle);
       return runtime.parseNovelSince(novelPath, sinceChapterNumber);
     },
-    parseChapter: async (chapterPath: string): Promise<string> => {
+    getChapterAcquisitionPlan: (
+      chapterPath,
+      contentType,
+    ): ChapterAcquisitionPlan => {
       const runtime = immediateRuntime(handle);
-      return runtime.parseChapter(chapterPath);
+      return runtime.getChapterAcquisitionPlan(chapterPath, contentType);
     },
     searchNovels: async (
       searchTerm: string,
@@ -148,11 +152,14 @@ export function createLazyPluginProxy(
     imageRequestInit: {
       get: () => immediateRuntime(handle).imageRequestInit,
     },
-    parseChapterResource: {
+    getChapterResource: {
       get: () =>
-        bindOptionalMethod<[string], Promise<ChapterBinaryResource>>(
+        bindOptionalMethod<
+          Parameters<NonNullable<Plugin["getChapterResource"]>>,
+          Promise<ChapterResource>
+        >(
           handle,
-          (runtime) => runtime.parseChapterResource,
+          (runtime) => runtime.getChapterResource,
         ),
     },
     parsePage: {

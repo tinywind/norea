@@ -658,6 +658,53 @@ describe("TaskScheduler", () => {
     await download.promise;
   });
 
+  it("opens a same-source interactive chapter without yielding the batch download", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const order: string[] = [];
+    const backgroundContexts: TaskRunContext[] = [];
+    let finishBackground!: () => void;
+
+    const background = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Batch chapter",
+      priority: "background",
+      source: { id: "p", name: "Plugin" },
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          backgroundContexts.push(context);
+          order.push(`background:${context.executor}:start`);
+          finishBackground = resolve;
+        }),
+    });
+
+    await settle();
+
+    const interactive = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Opened chapter",
+      priority: "interactive",
+      source: { id: "p", name: "Plugin" },
+      run: async (context) => {
+        order.push(`interactive:${context.executor}:start`);
+      },
+    });
+
+    await interactive.promise;
+
+    expect(order).toEqual([
+      "background:pool:0:start",
+      "interactive:immediate:start",
+    ]);
+    expect(backgroundContexts[0]?.shouldYield?.()).toBe(false);
+    expect(scheduler.getTask(background.id)?.status).toBe("running");
+
+    finishBackground();
+    await background.promise;
+  });
+
   it("uses a pool executor for same-source browsing while a foreground download continues", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,

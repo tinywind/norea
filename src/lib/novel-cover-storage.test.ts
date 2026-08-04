@@ -64,6 +64,7 @@ const novel = {
 
 function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   return {
+    apiVersion: "0.2",
     id: "demo",
     name: "Demo",
     lang: "en",
@@ -76,7 +77,7 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
       Promise.resolve({ name: "Sample Novel", path: "/novel", chapters: [] }),
     parseNovelSince: () =>
       Promise.resolve({ name: "Sample Novel", path: "/novel", chapters: [] }),
-    parseChapter: () => Promise.resolve(""),
+    getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
     ...overrides,
   };

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { Box, Group, Text } from "@mantine/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Box, Group, Loader, Text } from "@mantine/core";
 import { listen } from "@tauri-apps/api/event";
 import { CloseGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
@@ -8,7 +8,9 @@ import {
   getSiteBrowserPlatform,
   type SiteBrowserPlatformApi,
 } from "../lib/site-browser";
+import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
 import { isTauriRuntime } from "../lib/tauri-runtime";
+import { taskScheduler } from "../lib/tasks/scheduler";
 import { useSiteBrowserStore } from "../store/site-browser";
 
 const CHROME_HEIGHT = 40;
@@ -23,6 +25,13 @@ function reportScraperError(action: string, error: unknown): void {
 
 function debugSiteBrowser(message: string, data?: unknown): void {
   console.debug(`[site-browser] ${message}`, data);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 function syncSiteBrowserBounds(
@@ -58,12 +67,17 @@ export function SiteBrowserOverlay() {
   const platform = getSiteBrowserPlatform();
   const visible = useSiteBrowserStore((s) => s.visible);
   const currentUrl = useSiteBrowserStore((s) => s.currentUrl);
+  const browserTaskId = useSiteBrowserStore((s) => s.taskId);
+  const phase = useSiteBrowserStore((s) => s.phase);
   const openSequence = useSiteBrowserStore((s) => s.openSequence);
   const hide = useSiteBrowserStore((s) => s.hide);
+  const markReady = useSiteBrowserStore((s) => s.markReady);
   const inPageControls = platform.chromeMode === "in-page";
+  const [loading, setLoading] = useState(false);
 
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   const lastOpenSequence = useRef<number | null>(null);
+  const navigationController = useRef<AbortController | null>(null);
   const nativeHiddenRef = useRef(false);
   const boundsResyncTimers = useRef<number[]>([]);
 
@@ -91,8 +105,27 @@ export function SiteBrowserOverlay() {
     }
   };
 
+  const closeBrowser = useCallback(() => {
+    const state = useSiteBrowserStore.getState();
+    navigationController.current?.abort();
+    navigationController.current = null;
+    setLoading(false);
+    if (state.phase !== "ready" && state.taskId) {
+      taskScheduler.cancel(state.taskId);
+    }
+    hide();
+  }, [hide]);
+
+  useEffect(() => {
+    if (!visible) return;
+    return registerPageBackNavigationHandler({ back: closeBrowser });
+  }, [closeBrowser, visible]);
+
   useEffect(() => {
     if (!visible) {
+      navigationController.current?.abort();
+      navigationController.current = null;
+      setLoading(false);
       clearBoundsResyncTimers();
       lastOpenSequence.current = null;
       if (nativeHiddenRef.current) {
@@ -107,6 +140,7 @@ export function SiteBrowserOverlay() {
       return;
     }
     nativeHiddenRef.current = false;
+    if (phase !== "loading") return;
     if (currentUrl && openSequence !== lastOpenSequence.current) {
       debugSiteBrowser("open requested", {
         platform: platform.name,
@@ -116,9 +150,27 @@ export function SiteBrowserOverlay() {
         hasPlaceholder: placeholderRef.current !== null,
       });
       lastOpenSequence.current = openSequence;
+      navigationController.current?.abort();
+      const controller = new AbortController();
+      navigationController.current = controller;
+      setLoading(true);
       void (async () => {
         try {
-          await platform.navigate(currentUrl, { resetHistory: true });
+          await platform.navigate(currentUrl, {
+            resetHistory: true,
+            signal: controller.signal,
+          });
+          if (controller.signal.aborted) return;
+          const state = useSiteBrowserStore.getState();
+          if (
+            !state.visible ||
+            state.currentUrl !== currentUrl ||
+            state.openSequence !== openSequence ||
+            state.phase !== "loading" ||
+            state.taskId !== browserTaskId
+          ) {
+            return;
+          }
           const nextNode = placeholderRef.current;
           debugSiteBrowser("navigate returned", {
             platform: platform.name,
@@ -130,13 +182,35 @@ export function SiteBrowserOverlay() {
             await syncSiteBrowserBounds(platform, nextNode, currentUrl);
           }
           queueBoundsResync();
+          if (browserTaskId) markReady(browserTaskId);
+          if (navigationController.current === controller) {
+            navigationController.current = null;
+            setLoading(false);
+          }
         } catch (error) {
-          lastOpenSequence.current = null;
-          reportScraperError("navigate", error);
+          if (navigationController.current === controller) {
+            navigationController.current = null;
+            lastOpenSequence.current = null;
+            setLoading(false);
+          }
+          if (!isAbortError(error)) {
+            reportScraperError("navigate", error);
+            if (browserTaskId) taskScheduler.cancel(browserTaskId);
+            useSiteBrowserStore.getState().hide();
+          }
         }
       })();
     }
-  }, [currentUrl, inPageControls, openSequence, platform, visible]);
+  }, [
+    browserTaskId,
+    currentUrl,
+    inPageControls,
+    markReady,
+    openSequence,
+    phase,
+    platform,
+    visible,
+  ]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -174,14 +248,14 @@ export function SiteBrowserOverlay() {
   }, [platform.name]);
 
   useEffect(() => {
-    if (!visible || !inPageControls) return;
+    if (!visible || !inPageControls || phase !== "ready") return;
     let disposed = false;
     const poll = () => {
       void platform
         .pollControlMessage()
         .then((message) => {
           if (disposed || message?.action !== "close") return;
-          useSiteBrowserStore.getState().hide();
+          closeBrowser();
         })
         .catch((error) => reportScraperError("poll controls", error));
     };
@@ -191,7 +265,7 @@ export function SiteBrowserOverlay() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [currentUrl, inPageControls, platform, visible]);
+  }, [closeBrowser, currentUrl, inPageControls, phase, platform, visible]);
 
   useEffect(() => {
     if (!visible) return;
@@ -234,13 +308,40 @@ export function SiteBrowserOverlay() {
   }, [currentUrl, inPageControls, platform, visible]);
 
   if (!visible) return null;
+  const browserLoading = phase !== "ready" || loading;
   if (inPageControls) {
     debugSiteBrowser("react overlay skipped for in-page chrome", {
       platform: platform.name,
       currentUrl,
       openSequence,
     });
-    return null;
+    if (!browserLoading) return null;
+    return (
+      <Box
+        aria-busy="true"
+        role="dialog"
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 1000,
+          backgroundColor: "var(--mantine-color-body)",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        <Group gap="sm">
+          <Loader size="sm" />
+          <Text>{t("common.loading")}</Text>
+          <IconButton
+            label={t("siteBrowser.close")}
+            size="lg"
+            onClick={closeBrowser}
+          >
+            <CloseGlyph />
+          </IconButton>
+        </Group>
+      </Box>
+    );
   }
 
   return (
@@ -274,11 +375,38 @@ export function SiteBrowserOverlay() {
         <Text size="sm" c="dimmed" lineClamp={1} style={{ flex: 1, minWidth: 0 }}>
           {currentUrl ?? ""}
         </Text>
-        <IconButton label={t("siteBrowser.close")} size="lg" onClick={hide}>
+        <IconButton
+          label={t("siteBrowser.close")}
+          size="lg"
+          onClick={closeBrowser}
+        >
           <CloseGlyph />
         </IconButton>
       </Group>
-      <div ref={placeholderRef} style={{ flex: 1, minHeight: 0 }} />
+      <div
+        ref={placeholderRef}
+        style={{ flex: 1, minHeight: 0, position: "relative" }}
+      >
+        {browserLoading ? (
+          <Box
+            aria-busy="true"
+            role="status"
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 1,
+              backgroundColor: "var(--mantine-color-body)",
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            <Group gap="sm">
+              <Loader size="sm" />
+              <Text>{t("common.loading")}</Text>
+            </Group>
+          </Box>
+        ) : null}
+      </div>
     </Box>
   );
 }

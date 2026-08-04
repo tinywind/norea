@@ -298,6 +298,10 @@ function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
   );
 }
 
+function isImmediateInteractionSourceKind(kind: TaskKind): boolean {
+  return isImmediateBrowseSourceKind(kind) || kind === "chapter.download";
+}
+
 function isUiResponsiveSourceKind(kind: TaskKind): boolean {
   return (
     isOpenSiteSourceKind(kind) ||
@@ -316,15 +320,15 @@ function shouldUseImmediateExecutor(entry: TaskEntry): boolean {
   if (isOpenSiteSourceKind(entry.record.kind)) return true;
   return (
     entry.record.priority === "interactive" &&
-    isImmediateBrowseSourceKind(entry.record.kind)
+    isImmediateInteractionSourceKind(entry.record.kind)
   );
 }
 
-function canUsePoolExecutorForImmediateBrowse(entry: TaskEntry): boolean {
+function canUsePoolExecutorForImmediateInteraction(entry: TaskEntry): boolean {
   return (
     entry.spec.requiresForegroundExecutor !== true &&
     entry.record.priority === "interactive" &&
-    isImmediateBrowseSourceKind(entry.record.kind)
+    isImmediateInteractionSourceKind(entry.record.kind)
   );
 }
 
@@ -912,7 +916,7 @@ export class TaskScheduler {
 
   private yieldRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return 0;
-    if (canUsePoolExecutorForImmediateBrowse(entry)) return 0;
+    if (canUsePoolExecutorForImmediateInteraction(entry)) return 0;
     const requiresImmediateExecutor = shouldUseImmediateExecutor(entry);
     const yielded = this.yieldRunningSourceTasks(undefined, (candidate) => {
       if (!isInterruptibleDownloadKind(candidate.record.kind)) return false;
@@ -1182,7 +1186,7 @@ export class TaskScheduler {
     const browse = this.pickSourceTask(
       (entry) =>
         entry.record.priority === "interactive" &&
-        isImmediateBrowseSourceKind(entry.record.kind),
+        isImmediateInteractionSourceKind(entry.record.kind),
       { allowActiveSource: true },
     );
     if (browse) {
@@ -1210,17 +1214,17 @@ export class TaskScheduler {
 
       for (let index = 0; index < freeExecutorIds.length; index += 1) {
         const executorId = freeExecutorIds[index]!;
-        const immediateBrowse = immediateExecutorHasDownload
+        const immediateInteraction = immediateExecutorHasDownload
           ? this.pickSourceTaskFromQueue(
               sourceId,
               (entry) =>
-                canUsePoolExecutorForImmediateBrowse(entry) &&
+                canUsePoolExecutorForImmediateInteraction(entry) &&
                 this.canUseExecutorForSource(entry, executorId),
               { allowActiveSource: true },
             )
           : null;
         const next =
-          immediateBrowse ??
+          immediateInteraction ??
           this.pickSourceTaskFromQueue(sourceId, (entry) => {
             if (shouldUseImmediateExecutor(entry)) return false;
             if (!this.canUseExecutorForSource(entry, executorId)) return false;

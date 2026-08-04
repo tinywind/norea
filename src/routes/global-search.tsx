@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -9,6 +9,7 @@ import {
 } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { BlockingLoadingOverlay } from "../components/AppFrame";
 import {
   ConsoleChip,
   ConsoleCover,
@@ -31,6 +32,7 @@ import { SearchBar } from "../components/SearchBar";
 import { SegmentedToggle } from "../components/SegmentedToggle";
 import { TextButton } from "../components/TextButton";
 import { useTranslation } from "../i18n";
+import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
 import {
   globalSearch,
   type GlobalSearchResult,
@@ -39,6 +41,10 @@ import { getPluginBaseUrl } from "../lib/plugins/base-url";
 import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
 import { pluginManager } from "../lib/plugins/manager";
 import type { NovelItem, Plugin } from "../lib/plugins/types";
+import {
+  taskScheduler,
+  type TaskHandle,
+} from "../lib/tasks/scheduler";
 import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
 import { useBrowseStore } from "../store/browse";
 import "../styles/browse.css";
@@ -63,6 +69,15 @@ function resultKey(pluginId: string, novelPath: string): string {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
 }
 
 function isCloudflareError(message: string): boolean {
@@ -724,6 +739,7 @@ export function PluginSearchSection({
   const [search, setSearch] = useState(restoredQuery);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
+  const openTaskRef = useRef<TaskHandle<number> | null>(null);
   const [scopeMode, setScopeMode] = useState<ScopeMode>("all");
   const [selectedPluginIds, setSelectedPluginIds] = useState<string[]>([]);
   const [hideEmpty, setHideEmpty] = useState(true);
@@ -1003,9 +1019,31 @@ export function PluginSearchSection({
     trimmedQuery,
   ]);
 
+  const cancelOpenNovel = useCallback(() => {
+    const task = openTaskRef.current;
+    if (!task) return;
+    openTaskRef.current = null;
+    taskScheduler.cancel(task.id);
+    setOpeningKey(null);
+  }, []);
+
+  useEffect(() => {
+    if (openingKey === null) return;
+    return registerPageBackNavigationHandler({ back: cancelOpenNovel });
+  }, [cancelOpenNovel, openingKey]);
+
+  useEffect(
+    () => () => {
+      const task = openTaskRef.current;
+      openTaskRef.current = null;
+      if (task) taskScheduler.cancel(task.id);
+    },
+    [],
+  );
+
   const handleOpenNovel = useCallback(
     async (row: GlobalSearchResult, novel: NovelItem) => {
-      if (openingKey !== null) return;
+      if (openTaskRef.current) return;
 
       const plugin = pluginManager.getPlugin(row.pluginId);
       if (!plugin) {
@@ -1017,26 +1055,35 @@ export function PluginSearchSection({
       setLastUsedPluginId(row.pluginId);
       setOpeningKey(key);
       setOpenError(null);
+      const task = enqueueOpenNovelFromSourceTask({
+        plugin,
+        item: novel,
+        title: t("tasks.task.openNovel", { name: novel.name }),
+      });
+      openTaskRef.current = task;
       try {
-        const id = await enqueueOpenNovelFromSourceTask({
-          plugin,
-          item: novel,
-          title: t("tasks.task.openNovel", { name: novel.name }),
-        }).promise;
+        const id = await task.promise;
+        if (openTaskRef.current?.id !== task.id) return;
         await queryClient.invalidateQueries({ queryKey: ["novel"] });
+        if (openTaskRef.current?.id !== task.id) return;
         await navigate({ to: "/novel", search: { id } });
       } catch (error) {
-        setOpenError(
-          t("globalSearch.openNovelFailed", {
-            name: novel.name,
-            error: describeError(error),
-          }),
-        );
+        if (!isAbortError(error)) {
+          setOpenError(
+            t("globalSearch.openNovelFailed", {
+              name: novel.name,
+              error: describeError(error),
+            }),
+          );
+        }
       } finally {
+        if (openTaskRef.current?.id === task.id) {
+          openTaskRef.current = null;
+        }
         setOpeningKey((current) => (current === key ? null : current));
       }
     },
-    [navigate, openingKey, queryClient, setLastUsedPluginId, t],
+    [navigate, queryClient, setLastUsedPluginId, t],
   );
 
   const submitSearch = () => {
@@ -1080,6 +1127,13 @@ export function PluginSearchSection({
 
   return (
     <div className="lnr-search-console">
+      {openingKey !== null ? (
+        <BlockingLoadingOverlay
+          cancelLabel={t("common.cancel")}
+          label={t("globalSearch.openingNovel")}
+          onCancel={cancelOpenNovel}
+        />
+      ) : null}
       <ScopePanel
         installedPlugins={installedPlugins}
         lastUsedPlugin={lastUsedPlugin}
@@ -1159,13 +1213,6 @@ export function PluginSearchSection({
               sortMode={sortMode}
             />
           </>
-        ) : null}
-
-        {openingKey !== null ? (
-          <Group gap="sm" className="lnr-search-inline-state">
-            <Loader size="sm" />
-            <Text c="dimmed">{t("globalSearch.openingNovel")}</Text>
-          </Group>
         ) : null}
 
         {openError ? (

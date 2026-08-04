@@ -1,8 +1,9 @@
-import type { KeyboardEvent, ReactNode } from "react";
+import { useId, type KeyboardEvent, type ReactNode } from "react";
 import {
   Alert,
   Box,
   Group,
+  Loader,
   Paper,
   Stack,
   Text,
@@ -12,6 +13,49 @@ import {
 } from "@mantine/core";
 import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
+
+interface BlockingLoadingOverlayProps {
+  cancelLabel?: string;
+  label: ReactNode;
+  onCancel?: () => void;
+}
+
+export function BlockingLoadingOverlay({
+  cancelLabel,
+  label,
+  onCancel,
+}: BlockingLoadingOverlayProps) {
+  const labelId = useId();
+
+  return (
+    <Box
+      aria-busy="true"
+      aria-labelledby={labelId}
+      aria-modal="true"
+      className="lnr-blocking-loading-overlay"
+      role="dialog"
+    >
+      <Paper
+        className="lnr-blocking-loading-panel"
+        p="lg"
+        radius="sm"
+        withBorder
+      >
+        <Stack align="center" gap="md">
+          <Loader aria-hidden="true" size="md" />
+          <Text id={labelId} ta="center">
+            {label}
+          </Text>
+          {onCancel && cancelLabel ? (
+            <TextButton autoFocus onClick={onCancel}>
+              {cancelLabel}
+            </TextButton>
+          ) : null}
+        </Stack>
+      </Paper>
+    </Box>
+  );
+}
 
 type PageFrameSize = "narrow" | "default" | "wide" | "full";
 

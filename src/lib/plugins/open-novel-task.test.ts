@@ -20,6 +20,7 @@ import { enqueueOpenNovelFromSourceTask } from "./open-novel-task";
 
 function makePlugin(id = "demo"): Plugin {
   return {
+    apiVersion: "0.2",
     id,
     name: "Demo",
     lang: "en",
@@ -31,7 +32,7 @@ function makePlugin(id = "demo"): Plugin {
     parseNovel: () => Promise.resolve({ name: "", path: "", chapters: [] }),
     parseNovelSince: () =>
       Promise.resolve({ name: "", path: "", chapters: [] }),
-    parseChapter: () => Promise.resolve(""),
+    getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
   };
 }

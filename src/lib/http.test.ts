@@ -346,6 +346,40 @@ describe("pluginMediaFetch", () => {
     }
   });
 
+  it("uses the page WebView cache first for captured cross-host media", async () => {
+    invokeMock.mockResolvedValueOnce(
+      wireOk("image", {
+        finalUrl: "https://cdn.test/page.png?accessKey=signed",
+        headers: { "content-type": "image/png" },
+      }),
+    );
+
+    const response = await pluginMediaFetch(
+      "https://cdn.test/page.png?accessKey=signed",
+      {
+        contextUrl: "https://source.test/chapter/1",
+        preferBrowserCache: true,
+        scraperExecutor: "pool:1",
+        sourceId: "source-a",
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("webview_fetch", {
+      url: "https://cdn.test/page.png?accessKey=signed",
+      init: {
+        headers: undefined,
+        method: undefined,
+        body: undefined,
+      },
+      contextUrl: "https://source.test/chapter/1",
+      queue: "pool:1",
+      timeoutMs: 30_000,
+      userAgent: globalThis.navigator?.userAgent ?? null,
+    });
+    expect(await response.text()).toBe("image");
+  });
+
   it("retries native-first media fetches in the WebView on session-sensitive HTTP errors", async () => {
     const debugSpy = vi
       .spyOn(console, "debug")

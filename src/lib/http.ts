@@ -34,6 +34,8 @@ export interface HttpInit {
   timeoutMs?: number;
   /** Cancels the plugin-owned WebView request when the owning task is aborted. */
   signal?: AbortSignal;
+  /** Try the page-owning WebView cache before the native media transport. */
+  preferBrowserCache?: boolean;
 }
 
 export type ContextUrlProvider = string | (() => string);
@@ -201,6 +203,7 @@ function mediaFallbackContextHost(contextUrl: string | undefined): string {
 }
 
 function shouldPreferNativeMediaFetch(url: string, init: HttpInit): boolean {
+  if (init.preferBrowserCache) return false;
   const host = mediaFallbackHost(url);
   const contextHost = mediaFallbackContextHost(init.contextUrl);
   return host !== "" && contextHost !== "" && host !== contextHost;

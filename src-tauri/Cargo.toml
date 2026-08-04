@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "0.2.0"
 description = "Norea - Tauri 2 light-novel reader"
 authors = ["Norea contributors"]
 license = "MIT"

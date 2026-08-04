@@ -33,6 +33,7 @@ const mockedDeleteInstalledPlugin = vi.mocked(deleteInstalledPlugin);
 const mockedListInstalledPlugins = vi.mocked(listInstalledPlugins);
 
 const VALID_ITEM = {
+  apiVersion: "0.2" as const,
   id: "demo",
   name: "Demo",
   url: "https://example.test/index.js",
@@ -43,6 +44,7 @@ const VALID_ITEM = {
 
 const VALID_PLUGIN_SOURCE = `
   module.exports.default = {
+    apiVersion: "0.2",
     id: "demo",
     name: "Demo",
     url: "https://example.test/index.js",
@@ -52,7 +54,7 @@ const VALID_PLUGIN_SOURCE = `
     popularNovels: () => Promise.resolve([]),
     parseNovel: () => Promise.resolve({ name: "", path: "", chapters: [] }),
     parseNovelSince: () => Promise.resolve({ name: "", path: "", chapters: [] }),
-    parseChapter: () => Promise.resolve(""),
+    getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
     getBaseUrl: () => "https://example.test",
   };
@@ -63,6 +65,7 @@ const LAZY_LOAD_MARKER = "__noreaPluginLazyLoadCount";
 const COUNTING_PLUGIN_SOURCE = `
   globalThis.${LAZY_LOAD_MARKER} = (globalThis.${LAZY_LOAD_MARKER} ?? 0) + 1;
   module.exports.default = {
+    apiVersion: "0.2",
     id: "demo",
     name: "Demo",
     url: "https://example.test/index.js",
@@ -72,7 +75,7 @@ const COUNTING_PLUGIN_SOURCE = `
     popularNovels: () => Promise.resolve([{ name: "Novel", path: "/novel" }]),
     parseNovel: () => Promise.resolve({ name: "", path: "", chapters: [] }),
     parseNovelSince: () => Promise.resolve({ name: "", path: "", chapters: [] }),
-    parseChapter: () => Promise.resolve(""),
+    getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
     getBaseUrl: () => "https://example.test",
   };
@@ -127,6 +130,13 @@ describe("isValidPluginItem", () => {
 
   it("rejects when a required string field is the wrong type", () => {
     expect(isValidPluginItem({ ...VALID_ITEM, version: 1 })).toBe(false);
+  });
+
+  it("rejects repository entries from a different plugin API", () => {
+    expect(isValidPluginItem({ ...VALID_ITEM, apiVersion: "0.1" })).toBe(false);
+    const missing = { ...VALID_ITEM } as Record<string, unknown>;
+    delete missing.apiVersion;
+    expect(isValidPluginItem(missing)).toBe(false);
   });
 });
 
@@ -208,6 +218,17 @@ describe("PluginManager.installPlugin", () => {
       PluginValidationError,
     );
     expect(manager.has("demo")).toBe(false);
+  });
+
+  it("rejects source code that does not declare API 0.2", async () => {
+    const manager = new PluginManager();
+    mockedFetchText.mockResolvedValueOnce(
+      VALID_PLUGIN_SOURCE.replace('    apiVersion: "0.2",\n', ""),
+    );
+
+    await expect(manager.installPlugin(VALID_ITEM)).rejects.toThrow(
+      "apiVersion '0.2'",
+    );
   });
 });
 

@@ -254,15 +254,22 @@ export function androidScraperHide(): void {
 export function androidScraperNavigate(
   url: string,
   userAgent: string | null,
-  options: { resetHistory?: boolean } = {},
+  options: {
+    resetHistory?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {},
 ): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
   return callNative<boolean>(
     "navigate",
     {
       url,
       userAgent,
       resetHistory: options.resetHistory ?? false,
+      timeoutMs,
     },
-    10_000,
+    timeoutMs + 5_000,
+    options.signal,
   );
 }
