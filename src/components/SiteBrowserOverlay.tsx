@@ -73,6 +73,8 @@ export function SiteBrowserOverlay() {
   const hide = useSiteBrowserStore((s) => s.hide);
   const markReady = useSiteBrowserStore((s) => s.markReady);
   const inPageControls = platform.chromeMode === "in-page";
+  const deferDesktopBounds =
+    platform.name === "windows" || platform.name === "linux";
   const [loading, setLoading] = useState(false);
 
   const placeholderRef = useRef<HTMLDivElement | null>(null);
@@ -178,10 +180,10 @@ export function SiteBrowserOverlay() {
             openSequence,
             hasPlaceholder: nextNode !== null,
           });
-          if (inPageControls || nextNode) {
+          if (!deferDesktopBounds && (inPageControls || nextNode)) {
             await syncSiteBrowserBounds(platform, nextNode, currentUrl);
           }
-          queueBoundsResync();
+          if (!deferDesktopBounds) queueBoundsResync();
           if (browserTaskId) markReady(browserTaskId);
           if (navigationController.current === controller) {
             navigationController.current = null;
@@ -204,6 +206,7 @@ export function SiteBrowserOverlay() {
   }, [
     browserTaskId,
     currentUrl,
+    deferDesktopBounds,
     inPageControls,
     markReady,
     openSequence,
@@ -269,6 +272,7 @@ export function SiteBrowserOverlay() {
 
   useEffect(() => {
     if (!visible) return;
+    if (deferDesktopBounds && (phase !== "ready" || loading)) return;
     if (inPageControls) {
       const sendBounds = () => {
         void syncSiteBrowserBounds(platform, null, currentUrl).catch((error) =>
@@ -294,6 +298,7 @@ export function SiteBrowserOverlay() {
     };
 
     sendBounds();
+    if (deferDesktopBounds) queueBoundsResync();
     const observer = new ResizeObserver(sendBounds);
     observer.observe(node);
     window.addEventListener("resize", sendBounds);
@@ -305,7 +310,15 @@ export function SiteBrowserOverlay() {
       window.visualViewport?.removeEventListener("resize", sendBounds);
       window.visualViewport?.removeEventListener("scroll", sendBounds);
     };
-  }, [currentUrl, inPageControls, platform, visible]);
+  }, [
+    currentUrl,
+    deferDesktopBounds,
+    inPageControls,
+    loading,
+    phase,
+    platform,
+    visible,
+  ]);
 
   if (!visible) return null;
   const browserLoading = phase !== "ready" || loading;

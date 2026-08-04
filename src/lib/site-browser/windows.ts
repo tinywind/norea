@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getScraperUserAgent } from "../../store/user-agent";
+import { invokeDesktopNavigation } from "./desktop-navigation";
 import type {
   SiteBrowserBounds,
   SiteBrowserControlMessage,
@@ -77,9 +78,12 @@ export const windowsSiteBrowser: SiteBrowserPlatformApi = {
       url,
       userAgent: getScraperUserAgent(),
       resetHistory: options?.resetHistory ?? false,
+      timeoutMs: options?.timeoutMs ?? null,
     };
     debugWindowsSiteBrowser("navigate invoke", args);
-    await invoke("scraper_navigate", args);
+    await invokeDesktopNavigation(args, options?.signal, (error) => {
+      debugWindowsSiteBrowser("navigate cancellation failed", error);
+    });
     debugWindowsSiteBrowser("navigate complete", args);
   },
   hide: async () => {

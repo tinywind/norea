@@ -33,7 +33,7 @@ use std::collections::hash_map::DefaultHasher;
 #[cfg(desktop)]
 use std::hash::{Hash, Hasher};
 #[cfg(desktop)]
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(desktop)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,7 +50,9 @@ use tauri::AppHandle;
 #[cfg(desktop)]
 use tauri::{Emitter, Manager, Url, WebviewUrl};
 #[cfg(desktop)]
-use tauri::{LogicalPosition, LogicalSize, Rect, Webview, WebviewBuilder};
+use tauri::{
+    webview::PageLoadEvent, LogicalPosition, LogicalSize, Rect, Webview, WebviewBuilder,
+};
 #[cfg(desktop)]
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 #[cfg(desktop)]
@@ -392,7 +394,9 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
     window.setInterval(mountSoon, 500);
   }
 
-  installNoreaControls();
+  if (window.__noreaScraperControlsEnabled === true) {
+    installNoreaControls();
+  }
 })();
 "##;
 
@@ -406,6 +410,14 @@ struct ScraperEntry {
     user_agent: Option<String>,
 }
 
+#[cfg(desktop)]
+struct PendingNavigation {
+    request_id: u64,
+    requested_url: String,
+    started: bool,
+    sender: oneshot::Sender<String>,
+}
+
 /// Inbound JSON shape from `webview_fetch` callers (matches the
 /// browser `RequestInit` subset our pluginFetch surfaces).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -414,6 +426,7 @@ pub struct FetchInit {
     pub method: Option<String>,
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<String>,
+    pub prefer_browser_cache: Option<bool>,
 }
 
 /// Successful fetch payload returned to JS. Mirrors the subset of
@@ -448,10 +461,15 @@ pub struct ScraperState {
     /// script navigates to the result sentinel (intercepted in `on_navigation`)
     /// to wake the awaiting request, replacing the per-request poll loop.
     pending_completions: Mutex<HashMap<String, oneshot::Sender<()>>>,
-    /// Per-executor cancellation flags. `scraper_cancel_executor` sets one so a
-    /// long-running `webview_extract` navigation aborts and releases the
-    /// executor lock for interactive work instead of holding it until timeout.
-    cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Active site-browser navigation waiter for each executor. Page-load
+    /// callbacks complete the waiter only after a navigation started while it
+    /// was registered, so a late finish from the initial scraper page cannot
+    /// satisfy a later request.
+    pending_navigations: Mutex<HashMap<String, PendingNavigation>>,
+    /// Monotonic cancellation generation per executor. A request snapshots the
+    /// generation before waiting for the executor lock and rejects itself if a
+    /// cancellation advanced it while queued or in flight.
+    cancel_generations: Mutex<HashMap<String, Arc<AtomicU64>>>,
 }
 
 #[cfg(not(desktop))]
@@ -555,6 +573,96 @@ impl Drop for CompletionGuard<'_> {
 }
 
 #[cfg(desktop)]
+fn register_navigation(
+    state: &ScraperState,
+    executor: &str,
+    request_id: u64,
+    requested_url: &str,
+) -> oneshot::Receiver<String> {
+    let (tx, rx) = oneshot::channel();
+    state
+        .pending_navigations
+        .lock()
+        .expect("scraper pending navigations mutex")
+        .insert(
+            executor.to_string(),
+            PendingNavigation {
+                request_id,
+                requested_url: requested_url.to_string(),
+                started: false,
+                sender: tx,
+            },
+        );
+    rx
+}
+
+#[cfg(desktop)]
+fn record_navigation_page_load(
+    state: &ScraperState,
+    executor: &str,
+    event: PageLoadEvent,
+    url: &Url,
+) {
+    let completion = {
+        let mut pending = state
+            .pending_navigations
+            .lock()
+            .expect("scraper pending navigations mutex");
+        match event {
+            PageLoadEvent::Started => {
+                let Some(navigation) = pending.get_mut(executor) else {
+                    return;
+                };
+                navigation.started = true;
+                log::trace!(
+                    "[scraper:navigate] page started executor={executor} request_id={} requested_url={} event_url={url}",
+                    navigation.request_id,
+                    navigation.requested_url,
+                );
+                None
+            }
+            PageLoadEvent::Finished => pending
+                .get(executor)
+                .is_some_and(|navigation| navigation.started)
+                .then(|| pending.remove(executor))
+                .flatten(),
+        }
+    };
+    if let Some(navigation) = completion {
+        log::trace!(
+            "[scraper:navigate] page finished executor={executor} request_id={} requested_url={} final_url={url}",
+            navigation.request_id,
+            navigation.requested_url,
+        );
+        let _ = navigation.sender.send(url.to_string());
+    }
+}
+
+#[cfg(desktop)]
+struct NavigationGuard<'a> {
+    state: &'a ScraperState,
+    executor: String,
+    request_id: u64,
+}
+
+#[cfg(desktop)]
+impl Drop for NavigationGuard<'_> {
+    fn drop(&mut self) {
+        let mut pending = self
+            .state
+            .pending_navigations
+            .lock()
+            .expect("scraper pending navigations mutex");
+        if pending
+            .get(&self.executor)
+            .is_some_and(|navigation| navigation.request_id == self.request_id)
+        {
+            pending.remove(&self.executor);
+        }
+    }
+}
+
+#[cfg(desktop)]
 fn emit_site_browser_hidden(app: &AppHandle) {
     if let Err(err) = app.emit(SITE_BROWSER_HIDDEN_EVENT, ()) {
         log::warn!("[scraper] failed to emit site browser hidden event: {err}");
@@ -602,15 +710,80 @@ fn scraper_executor_lock(state: &ScraperState, executor: &str) -> Arc<AsyncMutex
 }
 
 #[cfg(desktop)]
-fn scraper_executor_cancel_flag(state: &ScraperState, executor: &str) -> Arc<AtomicBool> {
-    let mut flags = state
-        .cancel_flags
+fn scraper_executor_cancel_generation(state: &ScraperState, executor: &str) -> Arc<AtomicU64> {
+    let mut generations = state
+        .cancel_generations
         .lock()
-        .expect("scraper cancel flags mutex");
-    flags
+        .expect("scraper cancel generations mutex");
+    generations
         .entry(executor.to_string())
-        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
         .clone()
+}
+
+#[cfg(desktop)]
+fn ensure_executor_generation(
+    generation: &AtomicU64,
+    expected: u64,
+    operation: &str,
+    executor: &str,
+) -> Result<(), String> {
+    if generation.load(Ordering::Acquire) != expected {
+        return Err(format!(
+            "scraper:{operation}: Request cancelled for executor {executor}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(desktop)]
+async fn wait_for_navigation_completion(
+    mut completion: oneshot::Receiver<String>,
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
+    wait: Duration,
+) -> Result<String, String> {
+    let started = Instant::now();
+    loop {
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            "navigate",
+            executor,
+        )?;
+        let remaining = wait.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(format!(
+                "scraper_navigate: timeout after {}ms",
+                wait.as_millis()
+            ));
+        }
+        tokio::select! {
+            result = &mut completion => {
+                ensure_executor_generation(
+                    generation,
+                    expected_generation,
+                    "navigate",
+                    executor,
+                )?;
+                return result.map_err(|_| {
+                    "scraper_navigate: page-load completion dropped".to_string()
+                });
+            }
+            _ = tokio::time::sleep(remaining.min(Duration::from_millis(100))) => {}
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn stop_scraper_loading(scraper: &ScraperWebview) {
+    let _ = scraper.eval(
+        r#"(function () {
+  try { window.stop(); } catch (error) {}
+})();"#
+            .to_string(),
+    );
 }
 
 #[cfg(desktop)]
@@ -618,6 +791,14 @@ fn scraper_label_from_key(key: &str) -> String {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     format!("{SCRAPER_LABEL}-{:016x}", hasher.finish())
+}
+
+#[cfg(desktop)]
+fn scraper_initialization_script(executor: &str) -> String {
+    let controls_enabled = executor == IMMEDIATE_EXECUTOR;
+    format!(
+        "window.__noreaScraperControlsEnabled = {controls_enabled};\n{SCRAPER_INIT_SCRIPT}"
+    )
 }
 
 #[cfg(desktop)]
@@ -675,6 +856,9 @@ fn scraper_handle_for_key(
         .ok_or_else(|| "scraper: main window missing".to_string())?;
     log_windows_scraper_event("handle_for_key build child webview");
     let app_for_navigation = app.clone();
+    let app_for_page_load = app.clone();
+    let key_for_page_load = key.to_string();
+    let initialization_script = scraper_initialization_script(key);
     let mut builder = WebviewBuilder::new(
         label.clone(),
         WebviewUrl::App(PathBuf::from(SCRAPER_HOMEPAGE_PATH)),
@@ -699,7 +883,16 @@ fn scraper_handle_for_key(
         }
         true
     })
-    .initialization_script(SCRAPER_INIT_SCRIPT);
+    .on_page_load(move |_webview, payload| {
+        let state = app_for_page_load.state::<ScraperState>();
+        record_navigation_page_load(
+            &state,
+            &key_for_page_load,
+            payload.event(),
+            payload.url(),
+        );
+    })
+    .initialization_script(initialization_script);
     if let Some(user_agent) = user_agent {
         builder = builder.user_agent(user_agent);
     }
@@ -1126,32 +1319,129 @@ pub async fn scraper_navigate(
     url: String,
     user_agent: Option<String>,
     reset_history: Option<bool>,
+    timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     let user_agent = normalize_user_agent(user_agent);
     let reset_history = reset_history.unwrap_or(false);
+    let request_timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
+    let request_started = Instant::now();
+    let generation = scraper_executor_cancel_generation(&state, IMMEDIATE_EXECUTOR);
+    let expected_generation = generation.load(Ordering::Acquire);
     if cfg!(target_os = "windows") {
         log::trace!(
-            "[scraper:windows] scraper_navigate start url={url} reset_history={reset_history}"
+            "[scraper:windows] scraper_navigate start url={url} reset_history={reset_history} timeout_ms={} ",
+            request_timeout.as_millis(),
         );
     }
     let executor_lock = scraper_executor_lock(&state, IMMEDIATE_EXECUTOR);
-    let _executor_guard = executor_lock.lock().await;
+    let _executor_guard = timeout(request_timeout, executor_lock.lock())
+        .await
+        .map_err(|_| {
+            format!(
+                "scraper_navigate: timeout waiting for executor after {}ms",
+                request_timeout.as_millis()
+            )
+        })?;
+    ensure_executor_generation(
+        &generation,
+        expected_generation,
+        "navigate",
+        IMMEDIATE_EXECUTOR,
+    )?;
     if reset_history
         && close_scraper_webview_for_key(&app, &state, IMMEDIATE_EXECUTOR, "history reset")?
     {
         log_windows_scraper_event("scraper_navigate reset foreground webview");
     }
+    ensure_executor_generation(
+        &generation,
+        expected_generation,
+        "navigate",
+        IMMEDIATE_EXECUTOR,
+    )?;
     let scraper = scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
     let parsed: Url = url
         .parse()
         .map_err(|err| format!("scraper_navigate: invalid url '{url}': {err}"))?;
-    scraper
-        .navigate(parsed)
-        .map_err(|err| format!("scraper_navigate: {err}"))?;
+
+    let ready_budget = request_timeout
+        .saturating_sub(request_started.elapsed())
+        .min(Duration::from_secs(5));
+    if ready_budget.is_zero()
+        || !wait_for_scraper_bridge_ready(
+            &scraper,
+            "navigate",
+            ready_budget,
+            &generation,
+            expected_generation,
+            IMMEDIATE_EXECUTOR,
+        )
+        .await?
+    {
+        stop_scraper_loading(&scraper);
+        return Err(format!(
+            "scraper_navigate: scraper bridge was not ready within {}ms",
+            request_timeout.as_millis()
+        ));
+    }
+    ensure_executor_generation(
+        &generation,
+        expected_generation,
+        "navigate",
+        IMMEDIATE_EXECUTOR,
+    )?;
+
+    let request_id = FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let completion = register_navigation(&state, IMMEDIATE_EXECUTOR, request_id, &url);
+    let _navigation_guard = NavigationGuard {
+        state: state.inner(),
+        executor: IMMEDIATE_EXECUTOR.to_string(),
+        request_id,
+    };
+    if let Err(err) = scraper.navigate(parsed) {
+        return Err(format!("scraper_navigate: {err}"));
+    }
+
+    let remaining = request_timeout.saturating_sub(request_started.elapsed());
+    let final_url = match wait_for_navigation_completion(
+        completion,
+        &generation,
+        expected_generation,
+        IMMEDIATE_EXECUTOR,
+        remaining,
+    )
+    .await
+    {
+        Ok(final_url) => final_url,
+        Err(err) => {
+            stop_scraper_loading(&scraper);
+            return Err(err);
+        }
+    };
+    ensure_executor_generation(
+        &generation,
+        expected_generation,
+        "navigate",
+        IMMEDIATE_EXECUTOR,
+    )?;
+    let ready_budget = request_timeout.saturating_sub(request_started.elapsed());
+    let document_ready = if ready_budget.is_zero() {
+        false
+    } else {
+        timeout(ready_budget, document_is_ready(&scraper))
+            .await
+            .unwrap_or(false)
+    };
+    if !document_ready {
+        stop_scraper_loading(&scraper);
+        return Err(format!(
+            "scraper_navigate: page finished without a ready document: {final_url}"
+        ));
+    }
     *state
         .last_navigated
         .lock()
-        .expect("scraper last_navigated mutex") = Some(url);
+        .expect("scraper last_navigated mutex") = Some(final_url);
     log_windows_scraper_event("scraper_navigate complete");
     if cfg!(target_os = "linux") {
         log::trace!("[scraper:linux] scraper_navigate complete");
@@ -1167,6 +1457,7 @@ pub async fn scraper_navigate(
     url: String,
     _user_agent: Option<String>,
     _reset_history: Option<bool>,
+    _timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     Err(format!(
         "scraper_navigate is handled by the Android native scraper bridge: {url}"
@@ -1181,6 +1472,7 @@ pub async fn scraper_navigate(
     _url: String,
     _user_agent: Option<String>,
     _reset_history: Option<bool>,
+    _timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
@@ -1419,21 +1711,36 @@ async fn wait_for_scraper_bridge_ready(
     scraper: &ScraperWebview,
     operation: &str,
     timeout: Duration,
-) -> bool {
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
+) -> Result<bool, String> {
     let started = Instant::now();
     let mut poll_interval = Duration::from_millis(100);
     let max_poll_interval = Duration::from_millis(500);
 
     while started.elapsed() < timeout {
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            operation,
+            executor,
+        )?;
         if scraper_bridge_is_ready(scraper).await {
-            return true;
+            return Ok(true);
         }
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            operation,
+            executor,
+        )?;
         tokio::time::sleep(poll_interval).await;
         poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
     }
 
     log::debug!("[scraper:{operation}] bridge readiness wait timed out");
-    false
+    Ok(false)
 }
 
 #[cfg(desktop)]
@@ -1483,13 +1790,22 @@ async fn wait_for_browser_challenge_to_clear(
     operation: &str,
     url: &str,
     timeout: Duration,
-) -> bool {
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
+) -> Result<bool, String> {
     let started = Instant::now();
     let mut poll_interval = Duration::from_millis(250);
     let max_poll_interval = Duration::from_millis(1000);
     let mut challenge_logged = false;
 
     while started.elapsed() < timeout {
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            operation,
+            executor,
+        )?;
         tokio::time::sleep(poll_interval).await;
         poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
         if !document_is_ready(scraper).await {
@@ -1504,10 +1820,10 @@ async fn wait_for_browser_challenge_to_clear(
             }
             continue;
         }
-        return true;
+        return Ok(true);
     }
 
-    false
+    Ok(false)
 }
 
 #[cfg(desktop)]
@@ -1516,7 +1832,16 @@ async fn prepare_scraper_context(
     context_url: Option<&str>,
     operation: &str,
     wait_for_browser_challenge: bool,
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
 ) -> Result<(), String> {
+    ensure_executor_generation(
+        generation,
+        expected_generation,
+        operation,
+        executor,
+    )?;
     let Some(context_url) = context_url else {
         return Ok(());
     };
@@ -1543,6 +1868,12 @@ async fn prepare_scraper_context(
     let mut challenge_logged = false;
 
     while started.elapsed() < deadline {
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            operation,
+            executor,
+        )?;
         tokio::time::sleep(poll_interval).await;
         poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
         if scraper_is_at_origin(scraper, &target) && document_is_ready(scraper).await {
@@ -1597,17 +1928,44 @@ fn reset_extract_navigation(
 async fn prepare_fetch_context(
     scraper: &ScraperWebview,
     context_url: Option<&str>,
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
 ) -> Result<(), String> {
-    prepare_scraper_context(scraper, context_url, "fetch", false).await
+    prepare_scraper_context(
+        scraper,
+        context_url,
+        "fetch",
+        false,
+        generation,
+        expected_generation,
+        executor,
+    )
+    .await
 }
 
 #[cfg(desktop)]
-async fn prepare_extract_context(scraper: &ScraperWebview, target: &Url) -> Result<(), String> {
+async fn prepare_extract_context(
+    scraper: &ScraperWebview,
+    target: &Url,
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
+) -> Result<(), String> {
     if !matches!(target.scheme(), "http" | "https") {
         return Ok(());
     }
     let context_url = origin_url(target);
-    prepare_scraper_context(scraper, Some(&context_url), "extract", true).await
+    prepare_scraper_context(
+        scraper,
+        Some(&context_url),
+        "extract",
+        true,
+        generation,
+        expected_generation,
+        executor,
+    )
+    .await
 }
 
 #[cfg(desktop)]
@@ -1670,11 +2028,11 @@ fn build_webview_fetch_start_script(
   window.__lnrFetchResults[requestId] = {{ done: false }};
   (async function () {{
     try {{
-      const requestOrigin = new URL(request.url, location.href).origin;
       const fetchInit = {{
         method: init.method || "GET",
         headers,
-        credentials: requestOrigin === location.origin ? "include" : "same-origin",
+        cache: init.preferBrowserCache === true ? "force-cache" : "default",
+        credentials: "include",
         redirect: "follow",
         signal: controller.signal
       }};
@@ -1769,6 +2127,7 @@ fn build_webview_fetch_cancel_script(message: &str) -> Result<String, String> {
   const controllers = window.__lnrFetchControllers || {{}};
   const results = window.__lnrFetchResults || (window.__lnrFetchResults = {{}});
   let cancelled = 0;
+  try {{ window.stop(); }} catch (error) {{}}
   for (const requestId of Object.keys(controllers)) {{
     try {{
       controllers[requestId].abort();
@@ -1880,11 +2239,27 @@ async fn webview_fetch_with_ready_scraper(
     init: Option<FetchInit>,
     context_url: Option<String>,
     timeout_ms: Option<u64>,
+    generation: &AtomicU64,
+    expected_generation: u64,
+    executor: &str,
 ) -> Result<FetchResult, String> {
     let _: Url = url
         .parse()
         .map_err(|err| format!("scraper: invalid url '{url}': {err}"))?;
-    prepare_fetch_context(scraper, context_url.as_deref()).await?;
+    prepare_fetch_context(
+        scraper,
+        context_url.as_deref(),
+        generation,
+        expected_generation,
+        executor,
+    )
+    .await?;
+    ensure_executor_generation(
+        generation,
+        expected_generation,
+        "fetch",
+        executor,
+    )?;
     let init = init.unwrap_or_default();
     let request_id = format!("fetch-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
     let start_script = build_webview_fetch_start_script(&request_id, &url, &init)?;
@@ -1912,6 +2287,12 @@ async fn webview_fetch_with_ready_scraper(
     let started = Instant::now();
 
     while started.elapsed() < deadline {
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            "fetch",
+            executor,
+        )?;
         let wait = deadline
             .saturating_sub(started.elapsed())
             .min(backstop_interval);
@@ -1925,6 +2306,12 @@ async fn webview_fetch_with_ready_scraper(
                 _ = tokio::time::sleep(wait) => {}
             }
         }
+        ensure_executor_generation(
+            generation,
+            expected_generation,
+            "fetch",
+            executor,
+        )?;
 
         let poll_script = build_webview_fetch_poll_script(&request_id)?;
         let result: Option<WebviewFetchScriptResult> = eval_json(scraper, poll_script).await?;
@@ -1974,8 +2361,11 @@ pub async fn webview_fetch(
 ) -> Result<FetchResult, String> {
     let user_agent = normalize_user_agent(user_agent);
     let queue = normalize_scraper_executor(queue.as_deref())?;
+    let generation = scraper_executor_cancel_generation(&state, &queue);
+    let expected_generation = generation.load(Ordering::Acquire);
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
+    ensure_executor_generation(&generation, expected_generation, "fetch", &queue)?;
     let fetch_contexts = fetch_context_urls(&url, context_url.as_deref())?;
     let init_log = fetch_init_for_log(&init);
     log::trace!(
@@ -1998,8 +2388,17 @@ pub async fn webview_fetch(
             init.clone(),
             Some(fetch_context.clone()),
             timeout_ms,
+            &generation,
+            expected_generation,
+            &queue,
         )
         .await;
+        if generation.load(Ordering::Acquire) != expected_generation {
+            result = Err(format!(
+                "scraper:fetch: Request cancelled for executor {queue}"
+            ));
+            break;
+        }
         if result.is_ok() || index + 1 == fetch_contexts.len() {
             break;
         }
@@ -2143,9 +2542,11 @@ pub async fn scraper_cancel_executor(
     message: Option<String>,
 ) -> Result<bool, String> {
     let queue = normalize_scraper_executor(queue.as_deref())?;
-    // Signal any in-flight `webview_extract` navigation on this executor to
-    // abort so it releases the executor lock for interactive work.
-    scraper_executor_cancel_flag(&state, &queue).store(true, Ordering::SeqCst);
+    let generation = scraper_executor_cancel_generation(&state, &queue);
+    let next_generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
+    log::debug!(
+        "[scraper:cancel] executor={queue} generation={next_generation}"
+    );
     let entry = state
         .webviews
         .lock()
@@ -2153,15 +2554,22 @@ pub async fn scraper_cancel_executor(
         .get(&queue)
         .cloned();
     let Some(scraper) = entry.and_then(|entry| app.get_webview(&entry.label)) else {
-        return Ok(false);
+        return Ok(true);
     };
     let script =
         build_webview_fetch_cancel_script(message.as_deref().unwrap_or("Request cancelled"))?;
-    let cancelled: u32 = eval_json(&scraper, script).await?;
-    if cancelled > 0 {
-        log::debug!("[scraper:fetch] cancelled queue={queue} count={cancelled}");
+    match eval_json::<u32>(&scraper, script).await {
+        Ok(cancelled) if cancelled > 0 => {
+            log::debug!("[scraper:fetch] cancelled queue={queue} count={cancelled}");
+        }
+        Ok(_) => {}
+        Err(err) => {
+            log::debug!(
+                "[scraper:cancel] browser cancellation script failed queue={queue}: {err}"
+            );
+        }
     }
-    Ok(cancelled > 0)
+    Ok(true)
 }
 
 #[cfg(not(desktop))]
@@ -2212,7 +2620,7 @@ fn decode_uri_component(input: &str) -> Result<String, String> {
 /// Use this instead of `webview_fetch` for plugins that need a fully
 /// rendered page (closed shadow roots, JS-decrypted bodies,
 /// fingerprinted CDN handshake) - e.g. Booktoki, which decrypts
-/// chapter HTML inside a closed shadow root that only a real Chromium
+/// chapter HTML inside a closed shadow root that only a real browser
 /// session can read.
 ///
 /// Uses the scraper WebView owned by the requested queue.
@@ -2229,10 +2637,11 @@ pub async fn webview_extract(
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
     let queue = normalize_scraper_executor(queue.as_deref())?;
+    let generation = scraper_executor_cancel_generation(&state, &queue);
+    let expected_generation = generation.load(Ordering::Acquire);
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
-    let cancel_flag = scraper_executor_cancel_flag(&state, &queue);
-    cancel_flag.store(false, Ordering::SeqCst);
+    ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
     let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
     let is_visible_browser = state
         .visible_key
@@ -2281,8 +2690,24 @@ pub async fn webview_extract(
     let mut signaled = false;
 
     for attempt in 1..=max_attempts {
-        prepare_extract_context(&scraper, &parsed).await?;
-        wait_for_scraper_bridge_ready(&scraper, "extract", Duration::from_secs(5)).await;
+        prepare_extract_context(
+            &scraper,
+            &parsed,
+            &generation,
+            expected_generation,
+            &queue,
+        )
+        .await?;
+        let _ = wait_for_scraper_bridge_ready(
+            &scraper,
+            "extract",
+            Duration::from_secs(5),
+            &generation,
+            expected_generation,
+            &queue,
+        )
+        .await?;
+        ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
         install_webview_extract_before_script(&scraper, before_script, &request_id)?;
 
         log::trace!(
@@ -2296,10 +2721,11 @@ pub async fn webview_extract(
         let start = Instant::now();
         let mut poll_interval = Duration::from_millis(150);
         while start.elapsed() < timeout {
-            if cancel_flag.load(Ordering::SeqCst) {
+            if generation.load(Ordering::Acquire) != expected_generation {
                 clear_webview_extract_result(&scraper, None);
+                stop_scraper_loading(&scraper);
                 log::debug!("[scraper:extract] cancelled queue={queue} url={url}");
-                return Err(format!("webview_extract: {url} request cancelled"));
+                return Err(format!("webview_extract: {url} Request cancelled"));
             }
             if signaled {
                 tokio::time::sleep(poll_interval).await;
@@ -2312,6 +2738,7 @@ pub async fn webview_extract(
                 }
             }
             poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(600));
+            ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
             let mut extract_result = take_webview_extract_result(&scraper)
                 .await
                 .map(|decoded| (decoded, None::<String>));
@@ -2326,6 +2753,12 @@ pub async fn webview_extract(
                 }
             }
             if let Some((decoded, current_url)) = extract_result {
+                ensure_executor_generation(
+                    &generation,
+                    expected_generation,
+                    "extract",
+                    &queue,
+                )?;
                 if !retried_after_browser_challenge
                     && looks_like_browser_challenge_extract_result(&decoded)
                 {
@@ -2339,13 +2772,36 @@ pub async fn webview_extract(
                             "extract",
                             &url,
                             wait_budget,
+                            &generation,
+                            expected_generation,
+                            &queue,
                         )
-                        .await
+                        .await?
                     {
+                        ensure_executor_generation(
+                            &generation,
+                            expected_generation,
+                            "extract",
+                            &queue,
+                        )?;
                         reset_extract_navigation(&scraper, &parsed, "extract")?;
-                        prepare_extract_context(&scraper, &parsed).await?;
-                        wait_for_scraper_bridge_ready(&scraper, "extract", Duration::from_secs(5))
-                            .await;
+                        prepare_extract_context(
+                            &scraper,
+                            &parsed,
+                            &generation,
+                            expected_generation,
+                            &queue,
+                        )
+                        .await?;
+                        let _ = wait_for_scraper_bridge_ready(
+                            &scraper,
+                            "extract",
+                            Duration::from_secs(5),
+                            &generation,
+                            expected_generation,
+                            &queue,
+                        )
+                        .await?;
                         install_webview_extract_before_script(&scraper, before_script, &request_id)?;
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url}"
@@ -2378,6 +2834,7 @@ pub async fn webview_extract(
             log::debug!(
                 "[scraper:extract] timeout before extract result; retrying queue={queue} url={url} attempt={attempt}"
             );
+            ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
             reset_extract_navigation(&scraper, &parsed, "extract")?;
         }
     }
@@ -2483,11 +2940,83 @@ mod tests {
     }
 
     #[test]
+    fn navigation_ignores_old_finish_and_completes_redirected_page() {
+        let state = ScraperState::default();
+        let mut completion = register_navigation(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            7,
+            "https://example.com/requested",
+        );
+        let initial = Url::parse("tauri://localhost/scraper.html").unwrap();
+        record_navigation_page_load(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            PageLoadEvent::Finished,
+            &initial,
+        );
+        assert!(matches!(completion.try_recv(), Err(TryRecvError::Empty)));
+
+        let requested = Url::parse("https://example.com/requested").unwrap();
+        let redirected = Url::parse("https://example.com/final").unwrap();
+        record_navigation_page_load(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            PageLoadEvent::Started,
+            &requested,
+        );
+        record_navigation_page_load(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            PageLoadEvent::Started,
+            &redirected,
+        );
+        record_navigation_page_load(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            PageLoadEvent::Finished,
+            &redirected,
+        );
+        assert_eq!(completion.try_recv().unwrap(), redirected.to_string());
+    }
+
+    #[test]
+    fn cancellation_generation_invalidates_queued_request() {
+        let state = ScraperState::default();
+        let generation = scraper_executor_cancel_generation(&state, "pool:0");
+        let expected = generation.load(Ordering::Acquire);
+        generation.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            ensure_executor_generation(&generation, expected, "fetch", "pool:0")
+                .unwrap_err()
+                .contains("Request cancelled")
+        );
+    }
+
+    #[test]
+    fn pool_initialization_disables_linux_controls() {
+        assert!(scraper_initialization_script("pool:0")
+            .starts_with("window.__noreaScraperControlsEnabled = false;"));
+        assert!(scraper_initialization_script(IMMEDIATE_EXECUTOR)
+            .starts_with("window.__noreaScraperControlsEnabled = true;"));
+    }
+
+    #[test]
     fn fetch_start_script_navigates_result_sentinel() {
-        let script =
-            build_webview_fetch_start_script("fetch-3", "https://example.com/a", &FetchInit::default())
-                .unwrap();
+        let init = FetchInit {
+            prefer_browser_cache: Some(true),
+            ..FetchInit::default()
+        };
+        let script = build_webview_fetch_start_script(
+            "fetch-3",
+            "https://example.com/a",
+            &init,
+        )
+        .unwrap();
         assert!(script.contains("__norea_scraper_result__"));
         assert!(script.contains("encodeURIComponent(requestId)"));
+        assert!(script.contains(r#""preferBrowserCache":true"#));
+        assert!(script.contains(r#"credentials: "include""#));
+        assert!(script.contains(r#"? "force-cache" : "default""#));
     }
 }

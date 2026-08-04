@@ -44,6 +44,7 @@ interface FetchInitWire {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  preferBrowserCache?: boolean;
 }
 
 interface FetchResultWire {
@@ -125,6 +126,7 @@ function toWireInit(init: HttpInit): FetchInitWire {
     method: init.method,
     headers: init.headers ? { ...init.headers } : undefined,
     body: serializeBody(init.body),
+    ...(init.preferBrowserCache ? { preferBrowserCache: true } : {}),
   };
 }
 

@@ -166,7 +166,7 @@ function parseWebViewNavigateResult(raw: string): WebViewNavigateResult {
  * whatever the page emits via `window.ReactNativeWebView.postMessage`.
  *
  * Used by plugins (e.g. Booktoki) whose chapter content is locked
- * behind closed shadow roots that only a real Chromium session can
+ * behind closed shadow roots that only the platform browser session can
  * read after the page's own JS finishes decrypting.
  */
 export async function webViewFetch(

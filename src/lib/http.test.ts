@@ -371,6 +371,7 @@ describe("pluginMediaFetch", () => {
         headers: undefined,
         method: undefined,
         body: undefined,
+        preferBrowserCache: true,
       },
       contextUrl: "https://source.test/chapter/1",
       queue: "pool:1",
