@@ -10,6 +10,7 @@ import {
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { startAndroidBackNavigationBridge } from "../lib/android-back-navigation";
 import { startAndroidFileOpenListener } from "../lib/android-file-open";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
@@ -348,6 +349,8 @@ export function RootLayout() {
       pathname,
     });
   }, [location.historyIndex, location.href, pathname]);
+
+  useEffect(() => startAndroidBackNavigationBridge(), []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

@@ -50,6 +50,7 @@ class MainActivity : TauriActivity() {
   private var mainWebView: WebView? = null
   private var notificationPermissionRequested = false
   private var pendingStorageRootRequestId: String? = null
+  private var mainBackEvaluationPending = false
   private var taskForegroundServiceActive = false
   @Volatile
   private var safeAreaInsetsJson = insetsJson(Insets.NONE)
@@ -111,6 +112,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    mainBackEvaluationPending = false
     scraperBackPressedCallback?.remove()
     scraperBackPressedCallback = null
     androidScraperBridge?.destroy()
@@ -124,12 +126,7 @@ class MainActivity : TauriActivity() {
       override fun handleOnBackPressed() {
         if (androidScraperBridge?.handleBackPressed() == true) return
         if (handleMainWebViewBackPressed()) return
-        isEnabled = false
-        try {
-          onBackPressedDispatcher.onBackPressed()
-        } finally {
-          isEnabled = true
-        }
+        dispatchUnhandledBackPressed()
       }
     }.also { callback ->
       // Register after Tauri creates its WebView so source-browser back wins.
@@ -139,18 +136,38 @@ class MainActivity : TauriActivity() {
 
   private fun handleMainWebViewBackPressed(): Boolean {
     val webView = mainWebView ?: return false
-    val path = mainAppPath(webView.url) ?: return false
-    if (path == "/reader" || path == "/source") {
-      webView.evaluateJavascript(
-        "window.dispatchEvent(new CustomEvent('norea:android-back'));",
-        null,
-      )
-      return true
-    }
+    if (mainAppPath(webView.url) == null) return false
+    if (mainBackEvaluationPending) return true
 
+    mainBackEvaluationPending = true
+    webView.evaluateJavascript(
+      "(() => { try { return window.__NoreaAndroidBackNavigation?.handle() === true; } catch { return false; } })();",
+    ) { handled ->
+      mainBackEvaluationPending = false
+      if (
+        handled != "true" &&
+        !handleDefaultMainWebViewBackPressed(webView)
+      ) {
+        dispatchUnhandledBackPressed()
+      }
+    }
+    return true
+  }
+
+  private fun handleDefaultMainWebViewBackPressed(webView: WebView): Boolean {
     if (!webView.canGoBack()) return false
     webView.goBack()
     return true
+  }
+
+  private fun dispatchUnhandledBackPressed() {
+    val callback = scraperBackPressedCallback ?: return
+    callback.isEnabled = false
+    try {
+      onBackPressedDispatcher.onBackPressed()
+    } finally {
+      callback.isEnabled = true
+    }
   }
 
   private fun resumeTaskWebViewsForBackgroundWork() {

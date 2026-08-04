@@ -36,6 +36,7 @@ import { IconButton } from "../components/IconButton";
 import { PluginSettingsEditor } from "../components/PluginSettingsEditor";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import { SearchBar } from "../components/SearchBar";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { getPluginBaseUrl } from "../lib/plugins/base-url";
 import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
 import { FilterTypes, type Filters } from "../lib/plugins/filterTypes";
@@ -362,12 +363,7 @@ export function SourcePage() {
     });
   }, [currentHref, navigate]);
 
-  useEffect(() => {
-    window.addEventListener("norea:android-back", goBack);
-    return () => {
-      window.removeEventListener("norea:android-back", goBack);
-    };
-  }, [goBack]);
+  usePageBackNavigation(goBack);
 
   useEffect(() => {
     const data = listing.data;

@@ -23,6 +23,7 @@ import {
   updateChapterProgress,
 } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   hasRemoteChapterMedia,
   resolveLocalChapterMediaPatches,
@@ -1174,12 +1175,7 @@ export function ReaderPage() {
     void navigate({ to: "/" });
   }, [chapter?.novelId, currentHref, navigate]);
 
-  useEffect(() => {
-    window.addEventListener("norea:android-back", handleReaderBack);
-    return () => {
-      window.removeEventListener("norea:android-back", handleReaderBack);
-    };
-  }, [handleReaderBack]);
+  usePageBackNavigation(handleReaderBack);
 
   useEffect(() => {
     const novelId = chapter?.novelId;

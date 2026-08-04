@@ -85,6 +85,7 @@ import {
   type LocalNovelMetadataInput,
   type NovelDetailRecord,
 } from "../db/queries/novel";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   clearLocalImportFileCache,
   convertLocalImportFile,
@@ -2248,6 +2249,8 @@ export function NovelDetailPage() {
 
     void navigate({ to: "/", replace: true });
   }
+
+  usePageBackNavigation(goBack);
 
   function openChapter(chapter: ChapterListRow): void {
     const requestId = openRequestRef.current + 1;
