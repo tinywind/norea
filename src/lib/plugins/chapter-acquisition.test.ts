@@ -38,28 +38,63 @@ function captureImage(attributes: Record<string, string>): {
   };
 }
 
-function executeChapterCaptureScript(script: string): string {
+function executeChapterCaptureScript(
+  script: string,
+  { includeHostControls = false }: { includeHostControls?: boolean } = {},
+): string {
   const sourceImage = captureImage({
     "data-src": "/assets/page.jpg?accessKey=asset",
   });
   const clonedImage = captureImage(
     Object.fromEntries(sourceImage.attributes.entries()),
   );
+  let hostControlsRemoved = false;
+  const sourceHostControls = {
+    getAttribute: () => null,
+    removeAttribute: () => undefined,
+    setAttribute: () => undefined,
+    tagName: "DIV",
+  };
+  const clonedHostControls = {
+    ...sourceHostControls,
+    remove: () => {
+      hostControlsRemoved = true;
+    },
+  };
   const cloneRoot = {
     get innerHTML() {
       const attributes = [...clonedImage.attributes.entries()]
         .map(([name, value]) => ` ${name}="${value}"`)
         .join("");
-      return `<img${attributes}>`;
+      const hostControls =
+        includeHostControls && !hostControlsRemoved
+          ? '<div id="__norea_scraper_controls"><span>source.test</span></div>'
+          : "";
+      return `<img${attributes}>${hostControls}`;
     },
-    querySelectorAll: (selector: string) =>
-      selector === "*" ? [clonedImage.element] : [],
+    querySelectorAll: (selector: string) => {
+      if (selector === "*") {
+        return includeHostControls
+          ? [clonedImage.element, clonedHostControls]
+          : [clonedImage.element];
+      }
+      if (selector === "#__norea_scraper_controls") {
+        return includeHostControls && !hostControlsRemoved
+          ? [clonedHostControls]
+          : [];
+      }
+      return [];
+    },
     tagName: "ARTICLE",
   };
   const sourceRoot = {
     cloneNode: () => cloneRoot,
-    querySelectorAll: (selector: string) =>
-      selector === "*" ? [sourceImage.element] : [],
+    querySelectorAll: (selector: string) => {
+      if (selector !== "*") return [];
+      return includeHostControls
+        ? [sourceImage.element, sourceHostControls]
+        : [sourceImage.element];
+    },
     tagName: "ARTICLE",
   };
   let postedMessage: string | undefined;
@@ -152,6 +187,33 @@ describe("captureChapterPage", () => {
       '<img data-src="https://source.test/assets/page.jpg?accessKey=asset">',
     );
     expect(result.content).not.toContain(" src=");
+  });
+
+  it("removes host scraper controls from captured chapter content", async () => {
+    mockedWebViewFetch.mockImplementationOnce(async (_url, options) => {
+      if (!options?.beforeContentScript) {
+        throw new Error("Expected chapter capture script.");
+      }
+      return executeChapterCaptureScript(options.beforeContentScript, {
+        includeHostControls: true,
+      });
+    });
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "body",
+      loadStrategy: "selector",
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    const result = await captureChapterPage(plan, {
+      contentType: "html",
+      executor: "pool:1",
+      sourceId: "source-a",
+    });
+
+    expect(result.content).not.toContain("__norea_scraper_controls");
+    expect(result.content).not.toContain("source.test</span>");
   });
 
   it("preserves signed query values when adding the host cache buster", async () => {

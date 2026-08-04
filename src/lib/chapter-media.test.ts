@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
   invoke: vi.fn(),
 }));
 vi.mock("./http", () => ({
@@ -32,7 +31,7 @@ vi.mock("../db/queries/novel", () => ({
   getNovelById: vi.fn(),
 }));
 
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import {
@@ -47,7 +46,6 @@ import {
 import { pluginMediaFetch } from "./http";
 
 const invokeMock = vi.mocked(invoke);
-const convertFileSrcMock = vi.mocked(convertFileSrc);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
 const getChapterByIdMock = vi.mocked(getChapterById);
 const getNovelByIdMock = vi.mocked(getNovelById);
@@ -159,8 +157,6 @@ function installTemplateDocument(): void {
 
 beforeEach(() => {
   invokeMock.mockReset();
-  convertFileSrcMock.mockReset();
-  convertFileSrcMock.mockImplementation((path) => `asset://localhost/${path}`);
   pluginMediaFetchMock.mockReset();
   getChapterByIdMock.mockReset();
   getNovelByIdMock.mockReset();
@@ -1894,10 +1890,11 @@ describe("resolveLocalChapterMedia", () => {
     );
   });
 
-  it("prefers desktop asset URLs from stored media paths", async () => {
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "chapter_media_path") {
-        return "C:\\Users\\reader\\media\\page.png";
+  it("uses data URLs for desktop media outside the asset scope", async () => {
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_data_url") {
+        const { mediaSrc } = args as { mediaSrc: string };
+        return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
       }
       throw new Error(`unexpected command: ${command}`);
     });
@@ -1906,26 +1903,14 @@ describe("resolveLocalChapterMedia", () => {
       `<img src="norea-media://reader-asset/page.png">`,
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_path", {
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_data_url", {
       mediaSrc: "norea-media://reader-asset/page.png",
     });
-    expect(convertFileSrcMock).toHaveBeenCalledWith(
-      "C:\\Users\\reader\\media\\page.png",
-    );
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "chapter_media_data_url",
-      expect.anything(),
-    );
-    expect(html).toContain(
-      'src="asset://localhost/C:\\Users\\reader\\media\\page.png"',
-    );
+    expect(html).toContain('src="data:image/png;base64,page.png"');
   });
 
   it("rewrites cached chapter media to local data URLs", async () => {
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "chapter_media_path") {
-        throw new Error("chapter media: file not found");
-      }
+    invokeMock.mockImplementation(async (_command, args) => {
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
@@ -1970,10 +1955,7 @@ describe("resolveLocalChapterMedia", () => {
   });
 
   it("deduplicates repeated cached media sources while resolving HTML", async () => {
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "chapter_media_path") {
-        throw new Error("chapter media: file not found");
-      }
+    invokeMock.mockImplementation(async (_command, args) => {
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
@@ -2171,10 +2153,7 @@ describe("resolveLocalChapterMediaPatches", () => {
   });
 
   it("deduplicates repeated cached media sources across a patch batch", async () => {
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "chapter_media_path") {
-        throw new Error("chapter media: file not found");
-      }
+    invokeMock.mockImplementation(async (_command, args) => {
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });

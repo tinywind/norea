@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import {
@@ -2747,20 +2747,6 @@ export async function resolveLocalChapterMediaSrc(
       }
     }
     return null;
-  }
-  try {
-    const path = await invoke<string>(
-      "chapter_media_path",
-      chapterMediaInvokeArgs(
-        localChapterMediaSourceForContext(src, context) ?? src,
-        context,
-      ),
-    );
-    if (typeof path === "string" && path.trim() !== "") {
-      return convertFileSrc(path);
-    }
-  } catch {
-    // Missing direct files can still be served through the archived data URL path.
   }
   try {
     return await invoke<string>(

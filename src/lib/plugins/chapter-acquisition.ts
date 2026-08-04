@@ -230,6 +230,9 @@ function chapterCaptureScript(
     }
     var clone = root.cloneNode(true);
     normalizeClone(root, clone);
+    clone.querySelectorAll("#__norea_scraper_controls").forEach(function (element) {
+      element.remove();
+    });
     (plan.excludeSelectors || []).forEach(function (selector) {
       clone.querySelectorAll(selector).forEach(function (element) { element.remove(); });
     });
