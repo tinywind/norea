@@ -144,9 +144,9 @@ function mockDevUpdateRoutes(
   devOverrides: Record<string, unknown> = {},
 ): void {
   const manifestUrl =
-    "https://github.com/tinywind/norea/releases/download/dev/norea-updates-linux-x64.json";
+    "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-updates-linux-x64.json";
   mockJsonRoutes({
-    [`${GITHUB_API_BASE}/actions/workflows/linux.yml/runs?status=success&per_page=10`]:
+    [`${GITHUB_API_BASE}/actions/workflows/linux.yml/runs?branch=main&status=success&per_page=10`]:
       {
         workflow_runs: [
           {
@@ -170,11 +170,11 @@ function mockDevUpdateRoutes(
         },
       ],
     },
-    [`${GITHUB_API_BASE}/releases/tags/dev`]: {
+    [`${GITHUB_API_BASE}/releases/tags/dev-0.2`]: {
       assets: [
         {
           browser_download_url:
-            "https://github.com/tinywind/norea/releases/download/dev/norea-linux-x64.AppImage",
+            "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-linux-x64.AppImage",
           name: "norea-linux-x64.AppImage",
           size: VALID_INTEGRITY.size,
         },
@@ -184,10 +184,10 @@ function mockDevUpdateRoutes(
           size: 300,
         },
       ],
-      html_url: "https://github.com/tinywind/norea/releases/tag/dev",
-      name: "Latest dev build",
+      html_url: "https://github.com/tinywind/norea/releases/tag/dev-0.2",
+      name: "Latest 0.2 dev build",
       published_at: "2026-05-11T00:10:00Z",
-      tag_name: "dev",
+      tag_name: "dev-0.2",
     },
     [manifestUrl]: {
       assets: [
@@ -443,6 +443,12 @@ describe("dev update provenance", () => {
       workflow: "linux.yml",
     });
     expect(candidate.integrity).toEqual(VALID_INTEGRITY);
+    expect(candidate.downloadUrl).toBe(
+      "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-linux-x64.AppImage",
+    );
+    expect(candidate.sourceUrl).toBe(
+      "https://github.com/tinywind/norea/releases/tag/dev-0.2",
+    );
   });
 
   it.each([

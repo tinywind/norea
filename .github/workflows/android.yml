@@ -28,6 +28,7 @@ env:
   ANDROID_PLATFORM: android-36
   ANDROID_BUILD_TOOLS: 36.0.0
   ANDROID_NDK_VERSION: 27.1.12297006
+  DEV_RELEASE_TAG: dev-0.2
   RELEASE_SIGNED_APK_DIR: .tmp/android-release-apks
 
 jobs:
@@ -301,24 +302,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! gh release view dev >/dev/null 2>&1; then
-            gh release create dev \
-              --title "Latest dev build" \
-              --notes "Latest successful development build assets." \
+          if ! gh release view "$DEV_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$DEV_RELEASE_TAG" \
+              --title "Latest 0.2 dev build" \
+              --notes "Latest successful 0.2 development build assets." \
               --prerelease \
               --target "$GITHUB_SHA" ||
-              gh release view dev >/dev/null
+              gh release view "$DEV_RELEASE_TAG" >/dev/null
           fi
 
-          gh release view dev --json assets --jq '.assets[].name' |
+          gh release view "$DEV_RELEASE_TAG" --json assets --jq '.assets[].name' |
             while IFS= read -r asset_name; do
               case "$asset_name" in
                 norea-arm64.apk|norea-x86_64.apk)
                   ;;
                 norea-arm64*apk*|norea-x86_64*apk*|norea-signed-release-apk-checksums)
-                  gh release delete-asset dev "$asset_name" --yes || true
+                  gh release delete-asset "$DEV_RELEASE_TAG" "$asset_name" --yes || true
                   ;;
               esac
             done
 
-          gh release upload dev "$RELEASE_SIGNED_APK_DIR"/* --clobber
+          gh release upload "$DEV_RELEASE_TAG" "$RELEASE_SIGNED_APK_DIR"/* --clobber

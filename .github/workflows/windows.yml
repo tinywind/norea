@@ -25,6 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  DEV_RELEASE_TAG: dev-0.2
   WINDOWS_BUNDLE_ARTIFACT_DIR: .tmp/windows-release-bundles
 
 jobs:
@@ -232,11 +233,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          gh release view dev *> $null
+          gh release view $env:DEV_RELEASE_TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create dev --title "Latest dev build" --notes "Latest successful development build assets." --prerelease --target "${{ github.sha }}"
+            gh release create $env:DEV_RELEASE_TAG --title "Latest 0.2 dev build" --notes "Latest successful 0.2 development build assets." --prerelease --target "${{ github.sha }}"
             if ($LASTEXITCODE -ne 0) {
-              gh release view dev *> $null
+              gh release view $env:DEV_RELEASE_TAG *> $null
               if ($LASTEXITCODE -ne 0) {
                 exit 1
               }
@@ -245,4 +246,4 @@ jobs:
 
           $assets = Get-ChildItem -Path $env:WINDOWS_BUNDLE_ARTIFACT_DIR -File |
             ForEach-Object { $_.FullName }
-          gh release upload dev $assets --clobber
+          gh release upload $env:DEV_RELEASE_TAG $assets --clobber

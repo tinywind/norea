@@ -54,7 +54,13 @@ For regular installs, use the
 [latest GitHub release](https://github.com/tinywind/norea/releases/latest).
 Release assets are the stable public downloads.
 
-For a newer tester build from the current `main` branch, use GitHub Actions:
+For a newer tester build from the current `main` branch, use the
+[dev-0.2 GitHub prerelease](https://github.com/tinywind/norea/releases/dev-0.2).
+Successful platform workflows refresh its installers, packages, APKs, update
+metadata, and checksums.
+
+Workflow artifacts remain available as a fallback while the prerelease is being
+refreshed:
 
 1. Open the latest successful workflow run for your platform:
    [Windows](https://github.com/tinywind/norea/actions/workflows/windows.yml?query=branch%3Amain+is%3Asuccess),
@@ -72,8 +78,8 @@ For a newer tester build from the current `main` branch, use GitHub Actions:
 | Android phone or tablet | `norea-arm64.apk` |
 | Android emulator or WSA | `norea-x86_64.apk` |
 
-Workflow artifacts are tester downloads and are kept for 30 days. If an
-artifact is expired, use a newer successful run or the latest release.
+Workflow artifacts are kept for 30 days. If an artifact is expired, use a newer
+successful run, the dev-0.2 prerelease, or the latest stable release.
 
 ## First Run
 

@@ -15,6 +15,7 @@ import {
 import { recordPerformanceObservation } from "./observability";
 
 const GITHUB_API_BASE = "https://api.github.com/repos/tinywind/norea";
+const DEV_RELEASE_TAG = "dev-0.2";
 const UPDATE_MANIFEST_SCHEMA_VERSION = 1;
 const ANDROID_UPDATE_STREAM_TTL_MS = 30 * 60 * 1000;
 const ANDROID_UPDATE_OPEN_APK_CAPABILITY = "update.openApk";
@@ -208,7 +209,7 @@ export async function checkDevUpdate(
   }
 
   const runs = await fetchGithubJson<GitHubWorkflowRunsResponse>(
-    `${GITHUB_API_BASE}/actions/workflows/${workflow}/runs?status=success&per_page=10`,
+    `${GITHUB_API_BASE}/actions/workflows/${workflow}/runs?branch=main&status=success&per_page=10`,
   );
 
   for (const run of runs.workflow_runs) {
@@ -228,7 +229,7 @@ export async function checkDevUpdate(
     }
     const { artifact } = selection;
     const devRelease = await fetchGithubJson<GitHubRelease>(
-      `${GITHUB_API_BASE}/releases/tags/dev`,
+      `${GITHUB_API_BASE}/releases/tags/${DEV_RELEASE_TAG}`,
     );
     const manifest = await requireReleaseUpdateManifest(
       devRelease.assets,
@@ -267,7 +268,7 @@ export async function checkDevUpdate(
       integrity: integrityFromManifestAsset(manifestAsset),
       remoteTime: run.updated_at || run.created_at,
       remoteVersion: null,
-      sourceUrl: run.html_url,
+      sourceUrl: devRelease.html_url,
       status: compareWorkflowBuild(buildInfo, run),
     };
   }

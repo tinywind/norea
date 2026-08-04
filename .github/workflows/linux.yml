@@ -25,6 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  DEV_RELEASE_TAG: dev-0.2
   LINUX_BUNDLE_ARTIFACT_DIR: .tmp/linux-release-bundles
 
 jobs:
@@ -274,13 +275,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! gh release view dev >/dev/null 2>&1; then
-            gh release create dev \
-              --title "Latest dev build" \
-              --notes "Latest successful development build assets." \
+          if ! gh release view "$DEV_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$DEV_RELEASE_TAG" \
+              --title "Latest 0.2 dev build" \
+              --notes "Latest successful 0.2 development build assets." \
               --prerelease \
               --target "$GITHUB_SHA" ||
-              gh release view dev >/dev/null
+              gh release view "$DEV_RELEASE_TAG" >/dev/null
           fi
 
-          gh release upload dev "$LINUX_BUNDLE_ARTIFACT_DIR"/* --clobber
+          gh release upload "$DEV_RELEASE_TAG" "$LINUX_BUNDLE_ARTIFACT_DIR"/* --clobber
