@@ -195,7 +195,8 @@ mod windows_capture {
     use tauri::{Webview, Wry};
     use tokio::sync::oneshot;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2WebResourceResponseReceivedEventArgs, ICoreWebView2_2,
+        ICoreWebView2WebResourceResponseReceivedEventArgs,
+        ICoreWebView2WebResourceResponseReceivedEventHandler, ICoreWebView2_2,
     };
     use webview2_com::{
         take_pwstr, WebResourceResponseReceivedEventHandler,
@@ -243,7 +244,7 @@ mod windows_capture {
     fn response_handler(
         executor: String,
         store: Arc<CapturedResourceStore>,
-    ) -> WebResourceResponseReceivedEventHandler {
+    ) -> ICoreWebView2WebResourceResponseReceivedEventHandler {
         WebResourceResponseReceivedEventHandler::create(Box::new(move |_sender, args| {
             if let Some(args) = args {
                 if let Err(error) = capture_response(&args, &executor, &store) {
