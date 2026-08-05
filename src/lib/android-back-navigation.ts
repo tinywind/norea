@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 export interface PageBackNavigationHandler {
-  back: () => void;
+  back: () => boolean;
 }
 
 export interface AndroidBackNavigationBridge {
@@ -31,10 +31,10 @@ export function startAndroidBackNavigationBridge(): () => void {
 
   const bridge: AndroidBackNavigationBridge = {
     handle: () => {
-      const handler = handlers.at(-1);
-      if (!handler) return false;
-      handler.back();
-      return true;
+      for (let index = handlers.length - 1; index >= 0; index -= 1) {
+        if (handlers[index]?.back()) return true;
+      }
+      return false;
     },
   };
   window.__NoreaAndroidBackNavigation = bridge;
@@ -46,7 +46,7 @@ export function startAndroidBackNavigationBridge(): () => void {
   };
 }
 
-export function usePageBackNavigation(onBack: () => void): void {
+export function usePageBackNavigation(onBack: () => boolean): void {
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;
 

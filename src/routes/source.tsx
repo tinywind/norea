@@ -464,8 +464,8 @@ export function SourcePage() {
     return true;
   }, []);
 
-  const goBack = useCallback((): void => {
-    if (cancelOpenNovel()) return;
+  const goBack = useCallback((): boolean => {
+    if (cancelOpenNovel()) return true;
 
     void queryClient.cancelQueries({
       queryKey: ["plugin", "source", pluginId],
@@ -474,7 +474,7 @@ export function SourcePage() {
     if (target) {
       trimAppNavigationHistoryTo(target);
       window.history.go(-target.steps);
-      return;
+      return true;
     }
 
     void navigate({
@@ -482,6 +482,7 @@ export function SourcePage() {
       search: { q: "", tab: "search" },
       replace: true,
     });
+    return true;
   }, [cancelOpenNovel, currentHref, navigate, pluginId, queryClient]);
 
   usePageBackNavigation(goBack);

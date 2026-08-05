@@ -1199,25 +1199,26 @@ export function ReaderPage() {
     [chapter?.novelId, chapter?.position, openChapter],
   );
 
-  const handleReaderBack = useCallback(() => {
+  const handleReaderBack = useCallback((): boolean => {
     cancelPendingChapterOpen();
     const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
     if (target) {
       trimAppNavigationHistoryTo(target);
       window.history.go(-target.steps);
-      return;
+      return true;
     }
 
     const novelId = chapter?.novelId;
     if (novelId) {
       void navigate({ to: "/novel", search: { id: novelId }, replace: true });
-      return;
+      return true;
     }
     if (window.history.length > 1) {
       window.history.back();
-      return;
+      return true;
     }
     void navigate({ to: "/" });
+    return true;
   }, [cancelPendingChapterOpen, chapter?.novelId, currentHref, navigate]);
 
   usePageBackNavigation(handleReaderBack);

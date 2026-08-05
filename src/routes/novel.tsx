@@ -2218,20 +2218,21 @@ export function NovelDetailPage() {
     setSelectedChapterIds(new Set());
   }
 
-  function goBack() {
+  function goBack(): boolean {
     if (chapterSelectionMode) {
       closeChapterSelectionMode();
-      return;
+      return true;
     }
 
     const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
     if (target) {
       trimAppNavigationHistoryTo(target);
       window.history.go(-target.steps);
-      return;
+      return true;
     }
 
     void navigate({ to: "/", replace: true });
+    return true;
   }
 
   usePageBackNavigation(goBack);

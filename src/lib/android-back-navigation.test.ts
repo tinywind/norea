@@ -21,8 +21,8 @@ describe("Android back navigation", () => {
 
   it("uses the most recently registered page back handler", () => {
     vi.stubGlobal("window", {});
-    const firstBack = vi.fn();
-    const secondBack = vi.fn();
+    const firstBack = vi.fn(() => true);
+    const secondBack = vi.fn(() => true);
     cleanups.push(startAndroidBackNavigationBridge());
     cleanups.push(
       registerPageBackNavigationHandler({ back: firstBack }),
@@ -37,5 +37,49 @@ describe("Android back navigation", () => {
 
     expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(true);
     expect(firstBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through when a newer handler performs no action", () => {
+    vi.stubGlobal("window", {});
+    const pageBack = vi.fn(() => true);
+    const staleBack = vi.fn(() => false);
+    cleanups.push(startAndroidBackNavigationBridge());
+    cleanups.push(
+      registerPageBackNavigationHandler({ back: pageBack }),
+      registerPageBackNavigationHandler({ back: staleBack }),
+    );
+
+    expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(true);
+    expect(staleBack).toHaveBeenCalledTimes(1);
+    expect(pageBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through after a transient handler finishes its work", () => {
+    vi.stubGlobal("window", {});
+    const pageBack = vi.fn(() => true);
+    const transientBack = vi.fn(() => false).mockReturnValueOnce(true);
+    cleanups.push(startAndroidBackNavigationBridge());
+    cleanups.push(
+      registerPageBackNavigationHandler({ back: pageBack }),
+      registerPageBackNavigationHandler({ back: transientBack }),
+    );
+
+    expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(true);
+    expect(pageBack).not.toHaveBeenCalled();
+
+    expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(true);
+    expect(pageBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves back navigation unhandled when no handler performs an action", () => {
+    vi.stubGlobal("window", {});
+    const noActionBack = vi.fn(() => false);
+    cleanups.push(startAndroidBackNavigationBridge());
+    cleanups.push(
+      registerPageBackNavigationHandler({ back: noActionBack }),
+    );
+
+    expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(false);
+    expect(noActionBack).toHaveBeenCalledTimes(1);
   });
 });

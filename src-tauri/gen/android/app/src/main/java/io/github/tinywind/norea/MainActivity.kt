@@ -50,7 +50,9 @@ class MainActivity : TauriActivity() {
   private var mainWebView: WebView? = null
   private var notificationPermissionRequested = false
   private var pendingStorageRootRequestId: String? = null
+  private var mainBackEvaluationGeneration = 0L
   private var mainBackEvaluationPending = false
+  private var mainBackReplayPending = false
   private var taskForegroundServiceActive = false
   @Volatile
   private var safeAreaInsetsJson = insetsJson(Insets.NONE)
@@ -73,6 +75,7 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    resetMainBackEvaluation()
     mainWebView = webView
     val bridge = AndroidScraperBridge(webView, bridgeSession)
     androidScraperBridge = bridge
@@ -112,7 +115,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
-    mainBackEvaluationPending = false
+    resetMainBackEvaluation()
     scraperBackPressedCallback?.remove()
     scraperBackPressedCallback = null
     androidScraperBridge?.destroy()
@@ -137,21 +140,64 @@ class MainActivity : TauriActivity() {
   private fun handleMainWebViewBackPressed(): Boolean {
     val webView = mainWebView ?: return false
     if (mainAppPath(webView.url) == null) return false
-    if (mainBackEvaluationPending) return true
+    if (mainBackEvaluationPending) {
+      mainBackReplayPending = true
+      return true
+    }
 
+    mainBackEvaluationGeneration += 1
+    val requestId = mainBackEvaluationGeneration
     mainBackEvaluationPending = true
+    val requestedUrl = webView.url
     webView.evaluateJavascript(
       "(() => { try { return window.__NoreaAndroidBackNavigation?.handle() === true; } catch { return false; } })();",
     ) { handled ->
-      mainBackEvaluationPending = false
-      if (
-        handled != "true" &&
-        !handleDefaultMainWebViewBackPressed(webView)
-      ) {
-        dispatchUnhandledBackPressed()
-      }
+      finishMainBackEvaluation(
+        requestId,
+        webView,
+        requestedUrl,
+        handled == "true",
+      )
     }
     return true
+  }
+
+  private fun finishMainBackEvaluation(
+    requestId: Long,
+    webView: WebView,
+    requestedUrl: String?,
+    handled: Boolean,
+  ) {
+    if (!mainBackEvaluationPending || mainBackEvaluationGeneration != requestId) return
+
+    mainBackEvaluationPending = false
+    val replayBackPressed = mainBackReplayPending
+    mainBackReplayPending = false
+
+    val requestStillTargetsCurrentPage =
+      mainWebView === webView && webView.url == requestedUrl
+    if (
+      requestStillTargetsCurrentPage &&
+      !handled &&
+      !handleDefaultMainWebViewBackPressed(webView)
+    ) {
+      dispatchUnhandledBackPressed()
+    }
+    if (replayBackPressed) {
+      webView.post {
+        if (!isFinishing && !isDestroyed && mainWebView === webView) {
+          if (!handleMainWebViewBackPressed()) {
+            dispatchUnhandledBackPressed()
+          }
+        }
+      }
+    }
+  }
+
+  private fun resetMainBackEvaluation() {
+    mainBackEvaluationPending = false
+    mainBackEvaluationGeneration += 1
+    mainBackReplayPending = false
   }
 
   private fun handleDefaultMainWebViewBackPressed(webView: WebView): Boolean {

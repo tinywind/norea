@@ -107,8 +107,9 @@ export function SiteBrowserOverlay() {
     }
   };
 
-  const closeBrowser = useCallback(() => {
+  const closeBrowser = useCallback((): boolean => {
     const state = useSiteBrowserStore.getState();
+    if (!state.visible) return false;
     navigationController.current?.abort();
     navigationController.current = null;
     setLoading(false);
@@ -116,6 +117,7 @@ export function SiteBrowserOverlay() {
       taskScheduler.cancel(state.taskId);
     }
     hide();
+    return true;
   }, [hide]);
 
   useEffect(() => {

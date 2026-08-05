@@ -1019,12 +1019,13 @@ export function PluginSearchSection({
     trimmedQuery,
   ]);
 
-  const cancelOpenNovel = useCallback(() => {
+  const cancelOpenNovel = useCallback((): boolean => {
     const task = openTaskRef.current;
-    if (!task) return;
+    if (!task) return false;
     openTaskRef.current = null;
     taskScheduler.cancel(task.id);
     setOpeningKey(null);
+    return true;
   }, []);
 
   useEffect(() => {
