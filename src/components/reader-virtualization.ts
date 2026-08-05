@@ -3,6 +3,28 @@ export interface VirtualRange {
   end: number;
 }
 
+const READER_MEDIA_TAG_PATTERN =
+  /<(?:audio|canvas|embed|iframe|img|object|picture|source|svg|video)\b/i;
+const READER_INLINE_STYLE_MEDIA_PATTERN =
+  /\bstyle\s*=\s*(?:"[^"]*\burl\s*\(|'[^']*\burl\s*\()/i;
+
+export function readerHtmlHasMedia(html: string): boolean {
+  return (
+    READER_MEDIA_TAG_PATTERN.test(html) ||
+    READER_INLINE_STYLE_MEDIA_PATTERN.test(html)
+  );
+}
+
+export function shouldVirtualizeReaderScroll({
+  hasMediaSegments,
+  isPagedReader,
+}: {
+  hasMediaSegments: boolean;
+  isPagedReader: boolean;
+}): boolean {
+  return !isPagedReader && !hasMediaSegments;
+}
+
 function safeDimension(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
 }

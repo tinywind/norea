@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   pageNumbersForVirtualRange,
   prefixSegmentHeights,
+  readerHtmlHasMedia,
+  shouldVirtualizeReaderScroll,
   virtualRangeForScroll,
   virtualRangesEqual,
 } from "./reader-virtualization";
@@ -63,5 +65,59 @@ describe("reader virtualization helpers", () => {
     expect(
       virtualRangesEqual({ start: 2, end: 4 }, { start: 2, end: 5 }),
     ).toBe(false);
+  });
+
+  it.each([
+    {
+      hasMediaSegments: false,
+      isPagedReader: false,
+      expected: true,
+      scenario: "a media-free scroll chapter",
+    },
+    {
+      hasMediaSegments: true,
+      isPagedReader: false,
+      expected: false,
+      scenario: "a media-heavy scroll chapter",
+    },
+    {
+      hasMediaSegments: false,
+      isPagedReader: true,
+      expected: false,
+      scenario: "a media-free paged chapter",
+    },
+    {
+      hasMediaSegments: true,
+      isPagedReader: true,
+      expected: false,
+      scenario: "a media-heavy paged chapter",
+    },
+  ])("enables virtual range work only for $scenario", (reader) => {
+    expect(
+      shouldVirtualizeReaderScroll({
+        hasMediaSegments: reader.hasMediaSegments,
+        isPagedReader: reader.isPagedReader,
+      }),
+    ).toBe(reader.expected);
+  });
+
+  it.each([
+    ["an image", '<img src="page.jpg">'],
+    ["an object", '<object data="page.svg"></object>'],
+    ["audio", '<audio src="chapter.mp3"></audio>'],
+    [
+      "a double-quoted background image",
+      '<div style="background-image: url(\'page.jpg\')"></div>',
+    ],
+    [
+      "a single-quoted background image",
+      '<div style=\'background-image: url("page.jpg")\'></div>',
+    ],
+  ])("recognizes $0 as reader media", (_scenario, html) => {
+    expect(readerHtmlHasMedia(html)).toBe(true);
+  });
+
+  it("does not classify ordinary styled text as reader media", () => {
+    expect(readerHtmlHasMedia('<p style="color: red">Chapter</p>')).toBe(false);
   });
 });
