@@ -173,6 +173,21 @@ export async function webViewFetch(
   url: string,
   options: WebViewFetchOptions = {},
 ): Promise<string> {
+  return webViewFetchInternal(url, options, false);
+}
+
+export async function captureChapterWebView(
+  url: string,
+  options: WebViewFetchOptions = {},
+): Promise<string> {
+  return webViewFetchInternal(url, options, true);
+}
+
+async function webViewFetchInternal(
+  url: string,
+  options: WebViewFetchOptions,
+  captureResources: boolean,
+): Promise<string> {
   const userAgent = options.userAgent?.trim() || getScraperUserAgent();
   const scraperExecutor =
     options.scraperExecutor ?? activeScraperExecutor(options.sourceId);
@@ -196,6 +211,7 @@ export async function webViewFetch(
     userAgent,
     scraperExecutor,
     signal,
+    captureResources,
   );
 }
 
@@ -212,6 +228,7 @@ async function desktopWebViewExtract(
   userAgent: string | null,
   scraperExecutor: ScraperExecutorId,
   signal: AbortSignal | undefined,
+  captureResources: boolean,
 ): Promise<string> {
   if (signal?.aborted) {
     void cancelScraperExecutor(scraperExecutor);
@@ -223,6 +240,7 @@ async function desktopWebViewExtract(
     timeoutMs,
     userAgent,
     queue: scraperExecutor,
+    ...(captureResources ? { captureResources: true } : {}),
   });
   if (!signal) return request;
 

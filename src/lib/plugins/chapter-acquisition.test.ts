@@ -2,16 +2,16 @@ import { runInNewContext } from "node:vm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./shims", () => ({
-  webViewFetch: vi.fn(),
+  captureChapterWebView: vi.fn(),
 }));
 
-import { webViewFetch } from "./shims";
+import { captureChapterWebView } from "./shims";
 import {
   captureChapterPage,
   validateChapterAcquisitionPlan,
 } from "./chapter-acquisition";
 
-const mockedWebViewFetch = vi.mocked(webViewFetch);
+const mockedCaptureChapterWebView = vi.mocked(captureChapterWebView);
 
 interface CaptureElement {
   currentSrc: string;
@@ -163,7 +163,7 @@ describe("validateChapterAcquisitionPlan", () => {
 
 describe("captureChapterPage", () => {
   it("keeps a lazy-only image URL inert while making it absolute", async () => {
-    mockedWebViewFetch.mockImplementationOnce(async (_url, options) => {
+    mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
       if (!options?.beforeContentScript) {
         throw new Error("Expected chapter capture script.");
       }
@@ -190,7 +190,7 @@ describe("captureChapterPage", () => {
   });
 
   it("removes host scraper controls from captured chapter content", async () => {
-    mockedWebViewFetch.mockImplementationOnce(async (_url, options) => {
+    mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
       if (!options?.beforeContentScript) {
         throw new Error("Expected chapter capture script.");
       }
@@ -217,7 +217,7 @@ describe("captureChapterPage", () => {
   });
 
   it("preserves signed query values when adding the host cache buster", async () => {
-    mockedWebViewFetch.mockResolvedValueOnce(
+    mockedCaptureChapterWebView.mockResolvedValueOnce(
       JSON.stringify({
         ok: true,
         result: {
@@ -241,7 +241,7 @@ describe("captureChapterPage", () => {
       sourceId: "source-a",
     });
 
-    const [navigationUrl, options] = mockedWebViewFetch.mock.calls[0]!;
+    const [navigationUrl, options] = mockedCaptureChapterWebView.mock.calls[0]!;
     if (!options) throw new Error("Expected WebView fetch options.");
     const url = new URL(navigationUrl);
     expect(url.searchParams.get("accessKey")).toBe("signed");
@@ -255,7 +255,7 @@ describe("captureChapterPage", () => {
   });
 
   it("surfaces stable capture error codes", async () => {
-    mockedWebViewFetch.mockResolvedValueOnce(
+    mockedCaptureChapterWebView.mockResolvedValueOnce(
       JSON.stringify({
         ok: false,
         code: "manual-action-required",

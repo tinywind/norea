@@ -13,6 +13,7 @@ mod scraper;
 mod task_notifications;
 mod tray;
 mod update;
+mod webview_resource_capture;
 
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -162,6 +163,7 @@ pub fn run() {
             plugin_host::plugin_zip_read_file,
             scraper::webview_fetch,
             scraper::scraper_media_fetch,
+            scraper::scraper_take_captured_resource,
             scraper::webview_extract,
             scraper::scraper_cancel_executor,
             scraper::scraper_navigate,

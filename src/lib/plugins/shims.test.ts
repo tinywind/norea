@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   FilterTypes,
   bytesToUtf8,
+  captureChapterWebView,
   createShimResolver,
   defaultCover,
   isUrlAbsolute,
@@ -80,6 +81,27 @@ describe("isUrlAbsolute", () => {
     expect(isUrlAbsolute("/foo/bar")).toBe(false);
     expect(isUrlAbsolute("./relative")).toBe(false);
     expect(isUrlAbsolute("plain")).toBe(false);
+  });
+});
+
+describe("captureChapterWebView", () => {
+  it("enables native response capture for chapter navigation", async () => {
+    invokeMock.mockResolvedValueOnce("captured");
+
+    await expect(
+      captureChapterWebView("https://source.test/chapter/1", {
+        scraperExecutor: "pool:1",
+      }),
+    ).resolves.toBe("captured");
+
+    expect(invokeMock).toHaveBeenCalledWith("webview_extract", {
+      url: "https://source.test/chapter/1",
+      beforeScript: null,
+      captureResources: true,
+      timeoutMs: 30_000,
+      userAgent: globalThis.navigator?.userAgent ?? null,
+      queue: "pool:1",
+    });
   });
 });
 

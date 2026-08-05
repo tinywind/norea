@@ -27,9 +27,11 @@
 //!   the host asks the WebView to start an async browser fetch and
 //!   polls a page-local result slot through `eval_with_callback`.
 
-use std::collections::HashMap;
 #[cfg(desktop)]
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+#[cfg(all(desktop, target_os = "windows"))]
+use std::collections::HashSet;
 #[cfg(desktop)]
 use std::hash::{Hash, Hasher};
 #[cfg(desktop)]
@@ -470,6 +472,9 @@ pub struct ScraperState {
     /// generation before waiting for the executor lock and rejects itself if a
     /// cancellation advanced it while queued or in flight.
     cancel_generations: Mutex<HashMap<String, Arc<AtomicU64>>>,
+    captured_resources: Arc<crate::webview_resource_capture::CapturedResourceStore>,
+    #[cfg(target_os = "windows")]
+    resource_capture_handlers: Mutex<HashSet<String>>,
 }
 
 #[cfg(not(desktop))]
@@ -830,6 +835,12 @@ fn scraper_handle_for_key(
             .lock()
             .expect("scraper webviews mutex")
             .remove(key);
+        #[cfg(target_os = "windows")]
+        state
+            .resource_capture_handlers
+            .lock()
+            .expect("scraper resource capture handlers mutex")
+            .remove(key);
     }
 
     let label = scraper_label_from_key(key);
@@ -944,6 +955,34 @@ fn scraper_handle_for_key(
     Ok(webview)
 }
 
+#[cfg(all(desktop, target_os = "windows"))]
+async fn ensure_resource_capture_handler(
+    scraper: &ScraperWebview,
+    state: &ScraperState,
+    executor: &str,
+) -> Result<(), String> {
+    if state
+        .resource_capture_handlers
+        .lock()
+        .expect("scraper resource capture handlers mutex")
+        .contains(executor)
+    {
+        return Ok(());
+    }
+    crate::webview_resource_capture::install_windows_capture(
+        scraper,
+        executor.to_string(),
+        Arc::clone(&state.captured_resources),
+    )
+    .await?;
+    state
+        .resource_capture_handlers
+        .lock()
+        .expect("scraper resource capture handlers mutex")
+        .insert(executor.to_string());
+    Ok(())
+}
+
 #[cfg(desktop)]
 fn hide_scraper_surface_for_key(
     app: &AppHandle,
@@ -982,6 +1021,13 @@ fn close_scraper_webview_for_key(
         .webviews
         .lock()
         .expect("scraper webviews mutex")
+        .remove(key);
+    state.captured_resources.clear(key);
+    #[cfg(target_os = "windows")]
+    state
+        .resource_capture_handlers
+        .lock()
+        .expect("scraper resource capture handlers mutex")
         .remove(key);
     let Some(entry) = entry else {
         return Ok(false);
@@ -2535,6 +2581,36 @@ pub async fn scraper_media_fetch(
 
 #[cfg(desktop)]
 #[tauri::command]
+pub fn scraper_take_captured_resource(
+    state: tauri::State<'_, ScraperState>,
+    url: String,
+    queue: Option<String>,
+) -> Result<Option<FetchResult>, String> {
+    let queue = normalize_scraper_executor(queue.as_deref())?;
+    Ok(state
+        .captured_resources
+        .take(&queue, &url)
+        .map(|resource| FetchResult {
+            status: resource.status,
+            status_text: resource.status_text,
+            body_base64: encode_base64(&resource.body),
+            headers: resource.headers,
+            final_url: resource.final_url,
+        }))
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn scraper_take_captured_resource(
+    _state: tauri::State<'_, ScraperState>,
+    _url: String,
+    _queue: Option<String>,
+) -> Result<Option<FetchResult>, String> {
+    Ok(None)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
 pub async fn scraper_cancel_executor(
     app: AppHandle,
     state: tauri::State<'_, ScraperState>,
@@ -2542,6 +2618,7 @@ pub async fn scraper_cancel_executor(
     message: Option<String>,
 ) -> Result<bool, String> {
     let queue = normalize_scraper_executor(queue.as_deref())?;
+    state.captured_resources.clear(&queue);
     let generation = scraper_executor_cancel_generation(&state, &queue);
     let next_generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
     log::debug!(
@@ -2634,6 +2711,7 @@ pub async fn webview_extract(
     timeout_ms: Option<u64>,
     user_agent: Option<String>,
     queue: Option<String>,
+    capture_resources: Option<bool>,
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
     let queue = normalize_scraper_executor(queue.as_deref())?;
@@ -2643,6 +2721,16 @@ pub async fn webview_extract(
     let _queue_guard = queue_lock.lock().await;
     ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
     let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+    let capture_resources = capture_resources.unwrap_or(false) && cfg!(target_os = "windows");
+    #[cfg(target_os = "windows")]
+    if capture_resources {
+        ensure_resource_capture_handler(&scraper, &state, &queue).await?;
+    }
+    let _capture_guard = crate::webview_resource_capture::CaptureGuard::new(
+        Arc::clone(&state.captured_resources),
+        &queue,
+        capture_resources,
+    );
     let is_visible_browser = state
         .visible_key
         .lock()
@@ -2709,6 +2797,7 @@ pub async fn webview_extract(
         .await?;
         ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
         install_webview_extract_before_script(&scraper, before_script, &request_id)?;
+        let mut capture_id = capture_resources.then(|| state.captured_resources.begin(&queue));
 
         log::trace!(
             "[scraper:extract] navigate queue={queue} url={url} target_url={target_url_str} attempt={attempt}"
@@ -2763,6 +2852,9 @@ pub async fn webview_extract(
                     && looks_like_browser_challenge_extract_result(&decoded)
                 {
                     retried_after_browser_challenge = true;
+                    if let Some(capture_id) = capture_id.take() {
+                        state.captured_resources.finish(&queue, capture_id);
+                    }
                     clear_webview_extract_result(&scraper, current_url.as_deref());
                     let remaining = timeout.checked_sub(start.elapsed()).unwrap_or_default();
                     let wait_budget = remaining.min(Duration::from_secs(20));
@@ -2802,7 +2894,13 @@ pub async fn webview_extract(
                             &queue,
                         )
                         .await?;
-                        install_webview_extract_before_script(&scraper, before_script, &request_id)?;
+                        install_webview_extract_before_script(
+                            &scraper,
+                            before_script,
+                            &request_id,
+                        )?;
+                        capture_id =
+                            capture_resources.then(|| state.captured_resources.begin(&queue));
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url}"
                         );
@@ -2815,6 +2913,16 @@ pub async fn webview_extract(
                 // Clear result state without leaving the source origin. Navigating
                 // away would force the next fetch to prepare the source context again.
                 clear_webview_extract_result(&scraper, current_url.as_deref());
+                if let Some(capture_id) = capture_id.take() {
+                    state.captured_resources.finish(&queue, capture_id);
+                    let capture_wait = timeout
+                        .saturating_sub(start.elapsed())
+                        .min(Duration::from_secs(5));
+                    state
+                        .captured_resources
+                        .wait_until_idle(&queue, capture_id, capture_wait)
+                        .await;
+                }
                 let current_for_log = current_url.as_deref().unwrap_or("<script-result>");
                 let result_len = decoded.len();
                 log::trace!(
@@ -2828,6 +2936,10 @@ pub async fn webview_extract(
                 log_scraper_cookies(&scraper, &queue, "after_webview_extract", cookie_targets);
                 return Ok(decoded);
             }
+        }
+
+        if let Some(capture_id) = capture_id.take() {
+            state.captured_resources.finish(&queue, capture_id);
         }
 
         if attempt < max_attempts {
@@ -2867,6 +2979,7 @@ pub async fn webview_extract(
     _timeout_ms: Option<u64>,
     _user_agent: Option<String>,
     _queue: Option<String>,
+    _capture_resources: Option<bool>,
 ) -> Result<String, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }

@@ -34,7 +34,7 @@ export interface HttpInit {
   timeoutMs?: number;
   /** Cancels the plugin-owned WebView request when the owning task is aborted. */
   signal?: AbortSignal;
-  /** Try the page-owning WebView cache before the native media transport. */
+  /** Prefer media captured by the page WebView before native transport. */
   preferBrowserCache?: boolean;
 }
 
@@ -176,6 +176,37 @@ function responseFromWire(result: FetchResultWire): Response {
     configurable: true,
   });
   return response;
+}
+
+async function takeCapturedMediaResponse(
+  url: string,
+  init: HttpInit,
+  scraperExecutor: ScraperExecutorId,
+): Promise<Response | null> {
+  if (!init.preferBrowserCache || isAndroidRuntime()) return null;
+  if (init.signal?.aborted) throw requestAbortedError();
+  try {
+    const result = await invoke<FetchResultWire | null>(
+      "scraper_take_captured_resource",
+      {
+        url,
+        queue: scraperExecutor,
+      },
+    );
+    if (result) {
+      console.debug("[plugin-media-fetch] captured response used", {
+        ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
+      });
+    }
+    return result ? responseFromWire(result) : null;
+  } catch (error) {
+    if (init.signal?.aborted) throw requestAbortedError();
+    console.debug("[plugin-media-fetch] captured response unavailable", {
+      error: fetchErrorMessage(error),
+      ...mediaFallbackLogContext(url, init, scraperExecutor),
+    });
+    return null;
+  }
 }
 
 function mediaFallbackHost(url: string): string {
@@ -540,10 +571,11 @@ export async function pluginFetch(
 }
 
 /**
- * Fetch chapter-local media. The browser WebView path is still tried first so
- * ordinary plugin traffic keeps browser session behavior. Some image CDNs allow
- * `<img>` loads but block JS `fetch()` reads; those static media requests fall
- * back to the scraper-owned native media fetch with plugin-declared headers.
+ * Fetch chapter-local media. A response captured during page navigation is
+ * consumed first, followed by a browser-cache fetch in the same WebView. Some
+ * image CDNs allow `<img>` loads but block JS `fetch()` reads; those static
+ * media requests fall back to the scraper-owned native media fetch with
+ * plugin-declared headers.
  */
 export async function pluginMediaFetch(
   url: string,
@@ -551,6 +583,12 @@ export async function pluginMediaFetch(
 ): Promise<Response> {
   const scraperExecutor =
     init.scraperExecutor ?? activeScraperExecutor(init.sourceId);
+  const capturedResponse = await takeCapturedMediaResponse(
+    url,
+    init,
+    scraperExecutor,
+  );
+  if (capturedResponse) return capturedResponse;
   if (shouldPreferNativeMediaFetch(url, init)) {
     let nativeError: unknown;
     try {

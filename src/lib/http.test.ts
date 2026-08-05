@@ -347,12 +347,14 @@ describe("pluginMediaFetch", () => {
   });
 
   it("uses the page WebView cache first for captured cross-host media", async () => {
-    invokeMock.mockResolvedValueOnce(
-      wireOk("image", {
-        finalUrl: "https://cdn.test/page.png?accessKey=signed",
-        headers: { "content-type": "image/png" },
-      }),
-    );
+    invokeMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        wireOk("image", {
+          finalUrl: "https://cdn.test/page.png?accessKey=signed",
+          headers: { "content-type": "image/png" },
+        }),
+      );
 
     const response = await pluginMediaFetch(
       "https://cdn.test/page.png?accessKey=signed",
@@ -364,8 +366,16 @@ describe("pluginMediaFetch", () => {
       },
     );
 
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("webview_fetch", {
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "scraper_take_captured_resource",
+      {
+        url: "https://cdn.test/page.png?accessKey=signed",
+        queue: "pool:1",
+      },
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "webview_fetch", {
       url: "https://cdn.test/page.png?accessKey=signed",
       init: {
         headers: undefined,
@@ -379,6 +389,50 @@ describe("pluginMediaFetch", () => {
       userAgent: globalThis.navigator?.userAgent ?? null,
     });
     expect(await response.text()).toBe("image");
+  });
+
+  it("uses the response body captured during chapter navigation", async () => {
+    const debugSpy = vi
+      .spyOn(console, "debug")
+      .mockImplementation(() => undefined);
+    invokeMock.mockResolvedValueOnce(
+      wireOk("captured-image", {
+        finalUrl: "https://cdn.test/page.png?accessKey=signed",
+        headers: { "content-type": "image/png" },
+      }),
+    );
+
+    try {
+      const response = await pluginMediaFetch(
+        "https://cdn.test/page.png?accessKey=signed",
+        {
+          contextUrl: "https://source.test/chapter/1",
+          preferBrowserCache: true,
+          scraperExecutor: "pool:1",
+          sourceId: "source-a",
+        },
+      );
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).toHaveBeenCalledWith(
+        "scraper_take_captured_resource",
+        {
+          url: "https://cdn.test/page.png?accessKey=signed",
+          queue: "pool:1",
+        },
+      );
+      expect(debugSpy).toHaveBeenCalledWith(
+        "[plugin-media-fetch] captured response used",
+        expect.objectContaining({
+          host: "cdn.test",
+          sanitizedUrl: "https://cdn.test/page.png",
+          status: 200,
+        }),
+      );
+      expect(await response.text()).toBe("captured-image");
+    } finally {
+      debugSpy.mockRestore();
+    }
   });
 
   it("retries native-first media fetches in the WebView on session-sensitive HTTP errors", async () => {

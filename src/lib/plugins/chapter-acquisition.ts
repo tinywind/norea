@@ -1,6 +1,6 @@
 import type { ChapterContentType } from "../chapter-content";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
-import { webViewFetch } from "./shims";
+import { captureChapterWebView } from "./shims";
 import type {
   ChapterAcquisitionPlan,
   ChapterCaptureLoadStrategy,
@@ -317,7 +317,7 @@ export async function captureChapterPage(
   plan: ChapterPageAcquisitionPlan,
   options: CaptureChapterPageOptions,
 ): Promise<CapturedChapterPage> {
-  const raw = await webViewFetch(navigationUrl(plan), {
+  const raw = await captureChapterWebView(navigationUrl(plan), {
     beforeContentScript: chapterCaptureScript(plan, options.contentType),
     scraperExecutor: options.executor,
     signal: options.signal,
