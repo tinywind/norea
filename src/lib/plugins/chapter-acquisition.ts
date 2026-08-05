@@ -162,6 +162,7 @@ function chapterCaptureScript(
   var lastHeight = -1;
   var stableHeightRounds = 0;
   var lastScrollAt = 0;
+  var imageWaitStartedAt = 0;
   function post(payload) {
     if (finished) return;
     finished = true;
@@ -189,15 +190,25 @@ function chapterCaptureScript(
     return "";
   }
   function materializeImageRequests(root) {
-    var elements = [root].concat(Array.from(root.querySelectorAll("*")));
-    elements.forEach(function (element) {
-      var tag = element.tagName ? element.tagName.toLowerCase() : "";
-      if (tag !== "img") return;
-      var lazySource = lazyImageSource(element);
-      var source = absolute(lazySource || element.getAttribute("src"));
+    var images = [];
+    if (root.tagName && root.tagName.toLowerCase() === "img") images.push(root);
+    images = images.concat(Array.from(root.querySelectorAll("img")));
+    images.forEach(function (image) {
+      var lazySource = lazyImageSource(image);
+      var source = absolute(lazySource || image.getAttribute("src"));
       if (!source.startsWith("https://") && !source.startsWith("http://")) return;
-      element.setAttribute("loading", "eager");
-      if (lazySource || !element.currentSrc) element.setAttribute("src", source);
+      image.setAttribute("loading", "eager");
+      if ((lazySource || !image.currentSrc) && image.getAttribute("src") !== source) {
+        image.setAttribute("src", source);
+      }
+    });
+    return images;
+  }
+  function hasPendingImageRequests(images) {
+    return images.some(function (image) {
+      var source = absolute(lazyImageSource(image) || image.getAttribute("src"));
+      return (source.startsWith("https://") || source.startsWith("http://")) &&
+        image.complete !== true;
     });
   }
   try {
@@ -240,13 +251,7 @@ function chapterCaptureScript(
       }
     });
   }
-  function capture() {
-    var root = document.querySelector(plan.contentSelector);
-    if (!root) {
-      fail("content-not-found", "Chapter content selector did not match.");
-      return;
-    }
-    if (contentType === "html") materializeImageRequests(root);
+  function capture(root) {
     var clone = root.cloneNode(true);
     normalizeClone(root, clone);
     clone.querySelectorAll("#__norea_scraper_controls").forEach(function (element) {
@@ -277,6 +282,11 @@ function chapterCaptureScript(
       setTimeout(poll, 100);
       return;
     }
+    var root = document.querySelector(plan.contentSelector);
+    if (!root) {
+      fail("content-not-found", "Chapter content selector did not match.");
+      return;
+    }
     if (plan.loadStrategy === "scroll-to-end") {
       var height = Math.max(document.body ? document.body.scrollHeight : 0,
         document.documentElement ? document.documentElement.scrollHeight : 0);
@@ -297,7 +307,17 @@ function chapterCaptureScript(
         return;
       }
     }
-    try { capture(); } catch (error) { fail("capture-failed", error); }
+    if (contentType === "html") {
+      var images = materializeImageRequests(root);
+      if (hasPendingImageRequests(images)) {
+        if (imageWaitStartedAt === 0) imageWaitStartedAt = Date.now();
+        if (Date.now() - imageWaitStartedAt < 5000) {
+          setTimeout(poll, 100);
+          return;
+        }
+      }
+    }
+    try { capture(root); } catch (error) { fail("capture-failed", error); }
   }
   poll();
 })(); true;`;

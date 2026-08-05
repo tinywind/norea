@@ -5,22 +5,26 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("./tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(() => false),
+  isWindowsRuntime: vi.fn(() => true),
 }));
 import { invoke } from "@tauri-apps/api/core";
-import { isAndroidRuntime } from "./tauri-runtime";
+import { isAndroidRuntime, isWindowsRuntime } from "./tauri-runtime";
 import {
   appFetchText,
   pluginFetch,
   pluginFetchText,
   pluginMediaFetch,
+  takeCapturedMediaHandle,
 } from "./http";
 
 const invokeMock = vi.mocked(invoke);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
+const isWindowsRuntimeMock = vi.mocked(isWindowsRuntime);
 
 beforeEach(() => {
   invokeMock.mockReset();
   isAndroidRuntimeMock.mockReturnValue(false);
+  isWindowsRuntimeMock.mockReturnValue(true);
 });
 
 function wireOk(
@@ -289,6 +293,39 @@ describe("pluginFetch", () => {
 });
 
 describe("pluginMediaFetch", () => {
+  it("takes a captured Windows response as a native body handle", async () => {
+    invokeMock.mockResolvedValueOnce({
+      bodyBytes: 3,
+      bodyHandle: "captured-media-1",
+      finalUrl: "https://cdn.test/page.png",
+      headers: { "content-type": "image/png" },
+      status: 200,
+      statusText: "OK",
+    });
+
+    await expect(
+      takeCapturedMediaHandle("https://cdn.test/page.png", {
+        contextUrl: "https://source.test/chapter/1",
+        preferBrowserCache: true,
+        scraperExecutor: "pool:1",
+        sourceId: "source-a",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        bodyBytes: 3,
+        bodyHandle: "captured-media-1",
+      }),
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "scraper_take_captured_resource_handle",
+      {
+        queue: "pool:1",
+        url: "https://cdn.test/page.png",
+      },
+    );
+  });
+
   it("uses native media fetch first when media and context hosts differ", async () => {
     const debugSpy = vi
       .spyOn(console, "debug")

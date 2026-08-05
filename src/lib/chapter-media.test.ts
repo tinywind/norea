@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("./http", () => ({
   pluginMediaFetch: vi.fn(),
+  takeCapturedMediaHandle: vi.fn(),
 }));
 const androidStorageMocks = vi.hoisted(() => ({
   androidStoragePathSize: vi.fn(),
@@ -43,10 +44,11 @@ import {
   resolveLocalChapterMediaPatches,
   restoreProtectedRemoteChapterMediaSources,
 } from "./chapter-media";
-import { pluginMediaFetch } from "./http";
+import { pluginMediaFetch, takeCapturedMediaHandle } from "./http";
 
 const invokeMock = vi.mocked(invoke);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
+const takeCapturedMediaHandleMock = vi.mocked(takeCapturedMediaHandle);
 const getChapterByIdMock = vi.mocked(getChapterById);
 const getNovelByIdMock = vi.mocked(getNovelById);
 
@@ -158,6 +160,8 @@ function installTemplateDocument(): void {
 beforeEach(() => {
   invokeMock.mockReset();
   pluginMediaFetchMock.mockReset();
+  takeCapturedMediaHandleMock.mockReset();
+  takeCapturedMediaHandleMock.mockResolvedValue(null);
   getChapterByIdMock.mockReset();
   getNovelByIdMock.mockReset();
   Object.values(androidStorageMocks).forEach((mock) => mock.mockReset());
@@ -410,6 +414,62 @@ describe("cacheHtmlChapterMedia", () => {
       "chapter_media_store",
       expect.anything(),
     );
+    expect(result.html).toContain(
+      'src="norea-media://reader-asset/0001-page.png"',
+    );
+  });
+
+  it("stores a captured Windows response handle without renderer byte copies", async () => {
+    takeCapturedMediaHandleMock.mockResolvedValueOnce({
+      bodyBytes: 3,
+      bodyHandle: "captured-media-1",
+      finalUrl: "https://source.test/page.png",
+      headers: { "content-type": "image/png" },
+      status: 200,
+      statusText: "OK",
+    });
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_store_handle") {
+        const input = args as { fileName: string };
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      if (command === "chapter_media_archive_cache") return 3;
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_total_size") return 0;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: `<img src="/page.png">`,
+      novelId: 9,
+      novelPath: "/novel/sample",
+      preferBrowserCache: true,
+      scraperExecutor: "pool:1",
+      sourceId: "demo",
+    });
+
+    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_store_handle", {
+      chapterId: 42,
+      fileName: "0001-page.png",
+      handle: "captured-media-1",
+      novelId: 9,
+      novelPath: "/novel/sample",
+      sourceId: "demo",
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "native_stream_create",
+      expect.anything(),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "native_stream_write_chunk",
+      expect.anything(),
+    );
+    expect(result.mediaBytes).toBe(3);
     expect(result.html).toContain(
       'src="norea-media://reader-asset/0001-page.png"',
     );

@@ -443,6 +443,17 @@ pub struct FetchResult {
     pub final_url: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedResourceHandleResult {
+    pub status: u16,
+    pub status_text: String,
+    pub body_handle: String,
+    pub body_bytes: u64,
+    pub headers: HashMap<String, String>,
+    pub final_url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScraperControlMessage {
@@ -2599,6 +2610,57 @@ pub fn scraper_take_captured_resource(
             headers: resource.headers,
             final_url: resource.final_url,
         }))
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn scraper_take_captured_resource_handle(
+    app: AppHandle,
+    state: tauri::State<'_, ScraperState>,
+    url: String,
+    queue: Option<String>,
+) -> Result<Option<CapturedResourceHandleResult>, String> {
+    let queue = normalize_scraper_executor(queue.as_deref())?;
+    let Some(resource) = state.captured_resources.take(&queue, &url) else {
+        return Ok(None);
+    };
+    let crate::webview_resource_capture::CapturedResource {
+        status,
+        status_text,
+        body,
+        headers,
+        final_url,
+    } = resource;
+    let (body_handle, body_bytes) = tauri::async_runtime::spawn_blocking(move || {
+        let stream_state = app.state::<crate::native_stream::NativeStreamState>();
+        crate::native_stream::register_finished_bytes(
+            &app,
+            stream_state.inner(),
+            crate::native_stream::CHAPTER_MEDIA_STREAM_DOMAIN,
+            body,
+        )
+    })
+    .await
+    .map_err(|error| format!("scraper: captured media handle task: {error}"))??;
+    Ok(Some(CapturedResourceHandleResult {
+        status,
+        status_text,
+        body_handle,
+        body_bytes,
+        headers,
+        final_url,
+    }))
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub async fn scraper_take_captured_resource_handle(
+    _app: AppHandle,
+    _state: tauri::State<'_, ScraperState>,
+    _url: String,
+    _queue: Option<String>,
+) -> Result<Option<CapturedResourceHandleResult>, String> {
+    Ok(None)
 }
 
 #[cfg(not(desktop))]

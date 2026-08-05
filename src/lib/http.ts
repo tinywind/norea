@@ -3,7 +3,7 @@ import {
   androidWebviewFetch,
   cancelAndroidScraperExecutor,
 } from "./android-scraper";
-import { isAndroidRuntime } from "./tauri-runtime";
+import { isAndroidRuntime, isWindowsRuntime } from "./tauri-runtime";
 import { getSourceRequestTimeoutMs } from "../store/browse";
 import { getScraperUserAgent } from "../store/user-agent";
 import {
@@ -54,6 +54,15 @@ interface FetchResultWire {
   bodyBase64?: string;
   headers: Record<string, string>;
   finalUrl: string;
+}
+
+export interface CapturedMediaHandle {
+  bodyBytes: number;
+  bodyHandle: string;
+  finalUrl: string;
+  headers: Record<string, string>;
+  status: number;
+  statusText: string;
 }
 
 interface AppFetchSendResult {
@@ -183,7 +192,7 @@ async function takeCapturedMediaResponse(
   init: HttpInit,
   scraperExecutor: ScraperExecutorId,
 ): Promise<Response | null> {
-  if (!init.preferBrowserCache || isAndroidRuntime()) return null;
+  if (!init.preferBrowserCache || !isWindowsRuntime()) return null;
   if (init.signal?.aborted) throw requestAbortedError();
   try {
     const result = await invoke<FetchResultWire | null>(
@@ -202,6 +211,39 @@ async function takeCapturedMediaResponse(
   } catch (error) {
     if (init.signal?.aborted) throw requestAbortedError();
     console.debug("[plugin-media-fetch] captured response unavailable", {
+      error: fetchErrorMessage(error),
+      ...mediaFallbackLogContext(url, init, scraperExecutor),
+    });
+    return null;
+  }
+}
+
+export async function takeCapturedMediaHandle(
+  url: string,
+  init: HttpInit = {},
+): Promise<CapturedMediaHandle | null> {
+  if (!init.preferBrowserCache || !isWindowsRuntime()) return null;
+  if (init.signal?.aborted) throw requestAbortedError();
+  const scraperExecutor =
+    init.scraperExecutor ?? activeScraperExecutor(init.sourceId);
+  try {
+    const result = await invoke<CapturedMediaHandle | null>(
+      "scraper_take_captured_resource_handle",
+      {
+        url,
+        queue: scraperExecutor,
+      },
+    );
+    if (result) {
+      console.debug("[plugin-media-fetch] captured response handle used", {
+        ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
+        bodyBytes: result.bodyBytes,
+      });
+    }
+    return result;
+  } catch (error) {
+    if (init.signal?.aborted) throw requestAbortedError();
+    console.debug("[plugin-media-fetch] captured response handle unavailable", {
       error: fetchErrorMessage(error),
       ...mediaFallbackLogContext(url, init, scraperExecutor),
     });

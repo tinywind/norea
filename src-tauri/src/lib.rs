@@ -164,6 +164,7 @@ pub fn run() {
             scraper::webview_fetch,
             scraper::scraper_media_fetch,
             scraper::scraper_take_captured_resource,
+            scraper::scraper_take_captured_resource_handle,
             scraper::webview_extract,
             scraper::scraper_cancel_executor,
             scraper::scraper_navigate,

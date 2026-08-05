@@ -20,7 +20,11 @@ import {
   type ChapterStorageChapterPathInput,
   type ChapterStorageNovelPathInput,
 } from "./chapter-storage-path";
-import { pluginMediaFetch, type HttpInit } from "./http";
+import {
+  pluginMediaFetch,
+  takeCapturedMediaHandle,
+  type HttpInit,
+} from "./http";
 import {
   cancelNativeStream,
   createNativeStream,
@@ -1123,6 +1127,25 @@ async function storeChapterMediaHandle(
     if (isNativeStoreFallbackError(error)) {
       return storeChapterMediaLegacy(input);
     }
+    throw error;
+  }
+}
+
+async function storeCapturedChapterMediaHandle(
+  input: Omit<ChapterMediaStoreInput, "body" | "contentType">,
+  handle: string,
+): Promise<string> {
+  try {
+    const storedSrc = await invoke<string>("chapter_media_store_handle", {
+      handle,
+      ...chapterMediaStoreArgs(input),
+    });
+    if (typeof storedSrc !== "string" || storedSrc.trim() === "") {
+      throw new Error("chapter media captured handle store unavailable");
+    }
+    return storedSrc;
+  } catch (error) {
+    await cancelNativeStream(handle).catch(() => undefined);
     throw error;
   }
 }
@@ -2272,6 +2295,7 @@ export async function cacheHtmlChapterMedia({
     index: number,
   ): Promise<void> => {
     if (terminalDownloadError !== undefined) return;
+    let capturedHandle: Awaited<ReturnType<typeof takeCapturedMediaHandle>> = null;
     try {
       throwIfAborted(signal);
       const mediaIndex = urls.indexOf(url);
@@ -2283,7 +2307,7 @@ export async function cacheHtmlChapterMedia({
         });
         return;
       }
-      const response = await pluginMediaFetch(url, {
+      const mediaRequest = {
         ...requestInit,
         headers: {
           Accept: DEFAULT_MEDIA_ACCEPT,
@@ -2294,15 +2318,28 @@ export async function cacheHtmlChapterMedia({
         ...(scraperExecutor ? { scraperExecutor } : {}),
         signal,
         ...(sourceId ? { sourceId } : {}),
-      });
-      if (!response.ok) {
+      };
+      capturedHandle = await takeCapturedMediaHandle(url, mediaRequest);
+      const response = capturedHandle
+        ? null
+        : await pluginMediaFetch(url, mediaRequest);
+      const status = capturedHandle?.status ?? response?.status ?? 0;
+      const statusText = capturedHandle?.statusText ?? response?.statusText ?? "";
+      const responseOk = capturedHandle
+        ? capturedHandle.status >= 200 && capturedHandle.status < 300
+        : response?.ok === true;
+      if (!responseOk) {
+        if (capturedHandle) {
+          await cancelNativeStream(capturedHandle.bodyHandle).catch(() => undefined);
+          capturedHandle = null;
+        }
         await runMediaUpdate(async () => {
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
-            error: `HTTP ${response.status} ${response.statusText}`,
+            error: `HTTP ${status} ${statusText}`,
             scraperExecutor,
             sourceId,
-            status: response.status,
+            status,
             url,
           });
           applyRemoteMediaFallback({
@@ -2315,9 +2352,9 @@ export async function cacheHtmlChapterMedia({
         });
       } else {
         throwIfAborted(signal);
-        const body = bytesFromArrayBuffer(await response.arrayBuffer());
-        throwIfAborted(signal);
-        const contentType = response.headers.get("content-type");
+        const contentType = capturedHandle
+          ? new Headers(capturedHandle.headers).get("content-type")
+          : response!.headers.get("content-type");
         const manifestFile =
           mediaFilesBySourceUrl.get(url) ??
           ({
@@ -2334,24 +2371,49 @@ export async function cacheHtmlChapterMedia({
             updatedAt: Date.now(),
           } satisfies ChapterMediaManifestFile);
         const fileName = manifestFile.fileName;
-        const src = await storeChapterMedia({
-          body,
-          chapterId,
-          contentType,
-          fileName,
-          chapterName,
-          chapterNumber,
-          chapterPosition,
-          novelId,
-          novelName,
-          novelPath,
-          sourceId,
-        });
+        let storedBytes: number;
+        let src: string;
+        if (capturedHandle) {
+          storedBytes = capturedHandle.bodyBytes;
+          const bodyHandle = capturedHandle.bodyHandle;
+          capturedHandle = null;
+          src = await storeCapturedChapterMediaHandle(
+            {
+              chapterId,
+              fileName,
+              chapterName,
+              chapterNumber,
+              chapterPosition,
+              novelId,
+              novelName,
+              novelPath,
+              sourceId,
+            },
+            bodyHandle,
+          );
+        } else {
+          const body = bytesFromArrayBuffer(await response!.arrayBuffer());
+          throwIfAborted(signal);
+          storedBytes = chapterMediaByteLength(body);
+          src = await storeChapterMedia({
+            body,
+            chapterId,
+            contentType,
+            fileName,
+            chapterName,
+            chapterNumber,
+            chapterPosition,
+            novelId,
+            novelName,
+            novelPath,
+            sourceId,
+          });
+        }
         await runMediaUpdate(async () => {
           localSources.set(url, src);
           mediaFilesBySourceUrl.set(url, {
             ...manifestFile,
-            bytes: chapterMediaByteLength(body),
+            bytes: storedBytes,
             ...(contentType ? { contentType } : {}),
             fileName,
             path: `media/${fileName}`,
@@ -2377,6 +2439,10 @@ export async function cacheHtmlChapterMedia({
         });
       }
     } catch (error) {
+      if (capturedHandle) {
+        await cancelNativeStream(capturedHandle.bodyHandle).catch(() => undefined);
+        capturedHandle = null;
+      }
       if (signal?.aborted) {
         terminalDownloadError ??= new DOMException(
           "Task was cancelled.",

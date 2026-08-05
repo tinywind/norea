@@ -12,7 +12,7 @@ use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::native_stream::{self, NativeStreamState};
+use crate::native_stream::{self, NativeStreamState, CHAPTER_MEDIA_STREAM_DOMAIN};
 use tauri::State;
 
 pub(crate) const MEDIA_ROOT_DIR: &str = "chapter-media";
@@ -26,7 +26,6 @@ const LEGACY_STORAGE_MANIFEST_FILE: &str = "storage-manifest.json";
 const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
 const MEDIA_RESTORE_BACKUP_INFIX: &str = ".restore-backup-";
-const CHAPTER_MEDIA_STREAM_DOMAIN: &str = "chapter-media";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ChapterMediaClearContext {

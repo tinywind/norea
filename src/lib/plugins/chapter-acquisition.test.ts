@@ -14,6 +14,7 @@ import {
 const mockedCaptureChapterWebView = vi.mocked(captureChapterWebView);
 
 interface CaptureElement {
+  complete: boolean;
   currentSrc: string;
   getAttribute: (name: string) => string | null;
   removeAttribute: (name: string) => void;
@@ -21,7 +22,10 @@ interface CaptureElement {
   tagName: string;
 }
 
-function captureImage(attributes: Record<string, string>): {
+function captureImage(
+  attributes: Record<string, string>,
+  complete = true,
+): {
   attributes: Map<string, string>;
   element: CaptureElement;
 } {
@@ -29,6 +33,7 @@ function captureImage(attributes: Record<string, string>): {
   return {
     attributes: values,
     element: {
+      complete,
       currentSrc: "",
       getAttribute: (name) => values.get(name) ?? null,
       removeAttribute: (name) => values.delete(name),
@@ -40,11 +45,17 @@ function captureImage(attributes: Record<string, string>): {
 
 function executeChapterCaptureScript(
   script: string,
-  { includeHostControls = false }: { includeHostControls?: boolean } = {},
-): string {
+  {
+    includeHostControls = false,
+    settleImageAfterFirstPoll = false,
+  }: {
+    includeHostControls?: boolean;
+    settleImageAfterFirstPoll?: boolean;
+  } = {},
+): { message: string; postedBeforeImageSettled: boolean } {
   const sourceImage = captureImage({
     "data-src": "/assets/page.jpg?accessKey=asset",
-  });
+  }, !settleImageAfterFirstPoll);
   const clonedImage = captureImage(
     Object.fromEntries(sourceImage.attributes.entries()),
   );
@@ -73,6 +84,7 @@ function executeChapterCaptureScript(
       return `<img${attributes}>${hostControls}`;
     },
     querySelectorAll: (selector: string) => {
+      if (selector === "img") return [clonedImage.element];
       if (selector === "*") {
         return includeHostControls
           ? [clonedImage.element, clonedHostControls]
@@ -96,6 +108,7 @@ function executeChapterCaptureScript(
       return cloneRoot;
     },
     querySelectorAll: (selector: string) => {
+      if (selector === "img") return [sourceImage.element];
       if (selector !== "*") return [];
       return includeHostControls
         ? [sourceImage.element, sourceHostControls]
@@ -104,6 +117,7 @@ function executeChapterCaptureScript(
     tagName: "ARTICLE",
   };
   let postedMessage: string | undefined;
+  const scheduledCallbacks: Array<() => void> = [];
 
   runInNewContext(script, {
     URL,
@@ -113,7 +127,9 @@ function executeChapterCaptureScript(
       readyState: "complete",
     },
     location: { href: "https://source.test/chapter/1" },
-    setTimeout: vi.fn(),
+    setTimeout: (callback: () => void) => {
+      scheduledCallbacks.push(callback);
+    },
     window: {
       ReactNativeWebView: {
         postMessage: (message: string) => {
@@ -123,8 +139,15 @@ function executeChapterCaptureScript(
     },
   });
 
+  const postedBeforeImageSettled = postedMessage !== undefined;
+  if (settleImageAfterFirstPoll) {
+    sourceImage.element.complete = true;
+    while (!postedMessage && scheduledCallbacks.length > 0) {
+      scheduledCallbacks.shift()?.();
+    }
+  }
   if (!postedMessage) throw new Error("Capture script did not post a result.");
-  return postedMessage;
+  return { message: postedMessage, postedBeforeImageSettled };
 }
 
 beforeEach(() => {
@@ -169,11 +192,16 @@ describe("validateChapterAcquisitionPlan", () => {
 
 describe("captureChapterPage", () => {
   it("loads a lazy-only image in the WebView before capture", async () => {
+    let postedBeforeImageSettled = true;
     mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
       if (!options?.beforeContentScript) {
         throw new Error("Expected chapter capture script.");
       }
-      return executeChapterCaptureScript(options.beforeContentScript);
+      const execution = executeChapterCaptureScript(options.beforeContentScript, {
+        settleImageAfterFirstPoll: true,
+      });
+      postedBeforeImageSettled = execution.postedBeforeImageSettled;
+      return execution.message;
     });
     const plan = validateChapterAcquisitionPlan({
       type: "page",
@@ -189,6 +217,7 @@ describe("captureChapterPage", () => {
       sourceId: "source-a",
     });
 
+    expect(postedBeforeImageSettled).toBe(false);
     expect(result.content).toBe(
       '<img data-src="https://source.test/assets/page.jpg?accessKey=asset" loading="eager" src="https://source.test/assets/page.jpg?accessKey=asset">',
     );
@@ -201,7 +230,7 @@ describe("captureChapterPage", () => {
       }
       return executeChapterCaptureScript(options.beforeContentScript, {
         includeHostControls: true,
-      });
+      }).message;
     });
     const plan = validateChapterAcquisitionPlan({
       type: "page",

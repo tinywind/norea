@@ -17,6 +17,7 @@ const DEFAULT_NATIVE_STREAM_BYTES: u64 = MAX_INLINE_IPC_BYTES;
 const DEFAULT_TTL_MS: u64 = 30 * 60 * 1000;
 const MAX_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 const STREAM_ROOT_DIR: &str = "native-stream";
+pub(crate) const CHAPTER_MEDIA_STREAM_DOMAIN: &str = "chapter-media";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +84,27 @@ struct NativeStreamRegistry {
 }
 
 impl NativeStreamRegistry {
+    #[cfg(any(test, target_os = "windows"))]
+    fn create_finished_bytes(
+        &mut self,
+        root: &Path,
+        domain: String,
+        body: Vec<u8>,
+    ) -> Result<NativeStreamInfo, String> {
+        let max_bytes = u64::try_from(body.len())
+            .map_err(|_| "native stream: body size overflow".to_string())?
+            .max(1);
+        let created = self.create(root, domain, Some(max_bytes), None)?;
+        let handle = created.handle.clone();
+        let result = self
+            .write_chunk(root, &handle, body, Some(0))
+            .and_then(|_| self.finish(root, &handle));
+        if result.is_err() {
+            let _ = self.cancel(root, &handle);
+        }
+        result
+    }
+
     fn create(
         &mut self,
         root: &Path,
@@ -548,6 +570,22 @@ pub(crate) fn take_finished_path(
     registry.take_finished_path(&root, handle, expected_domain)
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn register_finished_bytes(
+    app: &AppHandle,
+    state: &NativeStreamState,
+    domain: &str,
+    body: Vec<u8>,
+) -> Result<(String, u64), String> {
+    let root = stream_root(app)?;
+    let mut registry = state
+        .registry
+        .lock()
+        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
+    let stream = registry.create_finished_bytes(&root, domain.to_string(), body)?;
+    Ok((stream.handle, stream.size))
+}
+
 pub fn cleanup_startup(app: &AppHandle) -> Result<NativeStreamCleanupResult, String> {
     let root = stream_root(app)?;
     let root = prepare_stream_root(&root)?;
@@ -755,6 +793,28 @@ mod tests {
         registry.delete(&root, &created.handle).expect("delete");
         assert!(!path.exists());
         assert!(registry.info(&root, &created.handle).is_err());
+    }
+
+    #[test]
+    fn creates_a_finished_stream_from_native_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let root = test_root(dir.path());
+        let mut registry = NativeStreamRegistry::default();
+
+        let stream = registry
+            .create_finished_bytes(
+                &root,
+                CHAPTER_MEDIA_STREAM_DOMAIN.to_string(),
+                vec![1, 2, 3],
+            )
+            .expect("create finished bytes");
+
+        assert!(stream.finished);
+        assert_eq!(stream.size, 3);
+        let path = registry
+            .take_finished_path(&root, &stream.handle, Some(CHAPTER_MEDIA_STREAM_DOMAIN))
+            .expect("take finished path");
+        assert_eq!(fs::read(path).expect("read stream"), vec![1, 2, 3]);
     }
 
     #[test]
