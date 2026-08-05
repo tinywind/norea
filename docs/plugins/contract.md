@@ -138,14 +138,16 @@ The host then:
 1. converts text or Markdown to reader HTML and sanitizes captured content;
 2. persists partial HTML before downloading remote media;
 3. records normalized asset URLs and local filenames in the chapter manifest;
-4. on Windows, consumes matching media response bodies captured by WebView2
-   during the chapter navigation;
-5. when no captured body is available, tries the page-owning WebView cache
+4. materializes lazy image URLs in the page WebView so browser-owned responses
+   exist for the captured content;
+5. on Windows, consumes matching media response bodies captured by WebView2
+   during the chapter navigation after the response stream settles;
+6. when no captured body is available, tries the page-owning WebView cache
    before native media fallback;
-6. downloads missing assets through the assigned scraper WebView executor
+7. downloads missing assets through the assigned scraper WebView executor
    without an app-configurable resource slot limit;
-7. updates the manifest after each completed asset and creates `media.zip`;
-8. resumes from stored partial HTML and the manifest without navigating the
+8. updates the manifest after each completed asset and creates `media.zip`;
+9. resumes from stored partial HTML and the manifest without navigating the
    chapter page again.
 
 An explicit media repair is not a download resume. For a page plan, the host

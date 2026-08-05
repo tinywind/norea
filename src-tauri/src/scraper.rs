@@ -499,6 +499,8 @@ const SCRAPER_RESULT_PATH_PREFIX: &str = "/__norea_scraper_result__/";
 const SITE_BROWSER_HIDDEN_EVENT: &str = "site-browser-hidden";
 #[cfg(desktop)]
 const IMMEDIATE_EXECUTOR: &str = "immediate";
+#[cfg(desktop)]
+const RESOURCE_CAPTURE_QUIET_PERIOD: Duration = Duration::from_millis(750);
 
 #[cfg(desktop)]
 fn log_windows_scraper_event(message: &str) {
@@ -2914,14 +2916,19 @@ pub async fn webview_extract(
                 // away would force the next fetch to prepare the source context again.
                 clear_webview_extract_result(&scraper, current_url.as_deref());
                 if let Some(capture_id) = capture_id.take() {
-                    state.captured_resources.finish(&queue, capture_id);
                     let capture_wait = timeout
                         .saturating_sub(start.elapsed())
                         .min(Duration::from_secs(5));
                     state
                         .captured_resources
-                        .wait_until_idle(&queue, capture_id, capture_wait)
+                        .wait_until_settled(
+                            &queue,
+                            capture_id,
+                            RESOURCE_CAPTURE_QUIET_PERIOD,
+                            capture_wait,
+                        )
                         .await;
+                    state.captured_resources.finish(&queue, capture_id);
                 }
                 let current_for_log = current_url.as_deref().unwrap_or("<script-result>");
                 let result_len = decoded.len();

@@ -19,6 +19,7 @@ pub struct CapturedResource {
 struct CaptureSession {
     id: u64,
     active: bool,
+    activity: u64,
     pending: usize,
     total_bytes: usize,
     resources: HashMap<String, CapturedResource>,
@@ -56,6 +57,7 @@ impl CapturedResourceStore {
         if !session.active {
             return None;
         }
+        session.activity = session.activity.wrapping_add(1);
         session.pending += 1;
         Some(session.id)
     }
@@ -71,6 +73,7 @@ impl CapturedResourceStore {
         if session.id != capture_id {
             return;
         }
+        session.activity = session.activity.wrapping_add(1);
         session.pending = session.pending.saturating_sub(1);
         let Some(resource) = resource else {
             return;
@@ -118,18 +121,43 @@ impl CapturedResourceStore {
         }
     }
 
-    pub async fn wait_until_idle(&self, executor: &str, capture_id: u64, timeout: Duration) {
+    pub async fn wait_until_settled(
+        &self,
+        executor: &str,
+        capture_id: u64,
+        quiet_period: Duration,
+        timeout: Duration,
+    ) {
         let started = Instant::now();
+        let Some(mut observed_activity) = self
+            .sessions
+            .lock()
+            .expect("captured resource sessions mutex")
+            .get(executor)
+            .filter(|session| session.id == capture_id)
+            .map(|session| session.activity)
+        else {
+            return;
+        };
+        let mut quiet_started = Instant::now();
         loop {
-            let pending = self
+            let state = self
                 .sessions
                 .lock()
                 .expect("captured resource sessions mutex")
                 .get(executor)
                 .filter(|session| session.id == capture_id)
-                .map(|session| session.pending)
-                .unwrap_or(0);
-            if pending == 0 || started.elapsed() >= timeout {
+                .map(|session| (session.pending, session.activity));
+            let Some((pending, activity)) = state else {
+                return;
+            };
+            if activity != observed_activity {
+                observed_activity = activity;
+                quiet_started = Instant::now();
+            }
+            if (pending == 0 && quiet_started.elapsed() >= quiet_period)
+                || started.elapsed() >= timeout
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -311,7 +339,15 @@ mod windows_capture {
                 let worker_status_text = status_text.clone();
                 let worker_headers = headers.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    let body = read_stream(stream).ok();
+                    let body = match read_stream(stream) {
+                        Ok(body) => Some(body),
+                        Err(error) => {
+                            log::debug!(
+                                "[scraper:resource_capture] stream read failed executor={worker_executor}: {error}"
+                            );
+                            None
+                        }
+                    };
                     let resource = body.map(|body| CapturedResource {
                         status: status as u16,
                         status_text: worker_status_text,
@@ -493,5 +529,47 @@ mod tests {
         store.finish("pool:1", current_id);
 
         assert!(store.take("pool:1", "https://cdn.test/stale.png").is_none());
+    }
+
+    #[test]
+    fn waits_for_a_response_that_starts_after_extraction() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let store = Arc::new(CapturedResourceStore::default());
+            let capture_id = store.begin("pool:1");
+            let producer_store = Arc::clone(&store);
+            let producer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                assert_eq!(producer_store.claim("pool:1"), Some(capture_id));
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                producer_store.complete(
+                    "pool:1",
+                    capture_id,
+                    Some(resource("https://cdn.test/late.png", b"late")),
+                );
+            });
+
+            let started = Instant::now();
+            store
+                .wait_until_settled(
+                    "pool:1",
+                    capture_id,
+                    Duration::from_millis(30),
+                    Duration::from_millis(250),
+                )
+                .await;
+            producer.await.unwrap();
+
+            assert!(started.elapsed() >= Duration::from_millis(50));
+            assert_eq!(
+                store
+                    .take("pool:1", "https://cdn.test/late.png")
+                    .map(|resource| resource.body),
+                Some(b"late".to_vec())
+            );
+        });
     }
 }

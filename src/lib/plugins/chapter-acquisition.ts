@@ -180,6 +180,26 @@ function chapterCaptureScript(
   function markActivity() {
     lastActivityAt = Date.now();
   }
+  function lazyImageSource(image) {
+    var attributes = ["data-src", "data-original", "data-lazy-src", "data-orig-src"];
+    for (var index = 0; index < attributes.length; index += 1) {
+      var value = image.getAttribute(attributes[index]);
+      if (value) return value;
+    }
+    return "";
+  }
+  function materializeImageRequests(root) {
+    var elements = [root].concat(Array.from(root.querySelectorAll("*")));
+    elements.forEach(function (element) {
+      var tag = element.tagName ? element.tagName.toLowerCase() : "";
+      if (tag !== "img") return;
+      var lazySource = lazyImageSource(element);
+      var source = absolute(lazySource || element.getAttribute("src"));
+      if (!source.startsWith("https://") && !source.startsWith("http://")) return;
+      element.setAttribute("loading", "eager");
+      if (lazySource || !element.currentSrc) element.setAttribute("src", source);
+    });
+  }
   try {
     if (typeof PerformanceObserver === "function") {
       new PerformanceObserver(markActivity).observe({ type: "resource", buffered: true });
@@ -201,14 +221,12 @@ function chapterCaptureScript(
       if (tag === "img") {
         var src = source.currentSrc || source.getAttribute("src");
         if (src) clone.setAttribute("src", absolute(src));
-        else {
-          ["data-src", "data-original", "data-lazy-src", "data-orig-src"].forEach(
-            function (attribute) {
-              var lazySrc = source.getAttribute(attribute);
-              if (lazySrc) clone.setAttribute(attribute, absolute(lazySrc));
-            }
-          );
-        }
+        ["data-src", "data-original", "data-lazy-src", "data-orig-src"].forEach(
+          function (attribute) {
+            var lazySrc = source.getAttribute(attribute);
+            if (lazySrc) clone.setAttribute(attribute, absolute(lazySrc));
+          }
+        );
         clone.removeAttribute("srcset");
       } else if (tag === "source") {
         var sourceSrc = source.getAttribute("src");
@@ -228,6 +246,7 @@ function chapterCaptureScript(
       fail("content-not-found", "Chapter content selector did not match.");
       return;
     }
+    if (contentType === "html") materializeImageRequests(root);
     var clone = root.cloneNode(true);
     normalizeClone(root, clone);
     clone.querySelectorAll("#__norea_scraper_controls").forEach(function (element) {

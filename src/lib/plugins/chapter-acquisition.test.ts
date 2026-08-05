@@ -88,7 +88,13 @@ function executeChapterCaptureScript(
     tagName: "ARTICLE",
   };
   const sourceRoot = {
-    cloneNode: () => cloneRoot,
+    cloneNode: () => {
+      clonedImage.attributes.clear();
+      for (const [name, value] of sourceImage.attributes) {
+        clonedImage.attributes.set(name, value);
+      }
+      return cloneRoot;
+    },
     querySelectorAll: (selector: string) => {
       if (selector !== "*") return [];
       return includeHostControls
@@ -162,7 +168,7 @@ describe("validateChapterAcquisitionPlan", () => {
 });
 
 describe("captureChapterPage", () => {
-  it("keeps a lazy-only image URL inert while making it absolute", async () => {
+  it("loads a lazy-only image in the WebView before capture", async () => {
     mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
       if (!options?.beforeContentScript) {
         throw new Error("Expected chapter capture script.");
@@ -184,9 +190,8 @@ describe("captureChapterPage", () => {
     });
 
     expect(result.content).toBe(
-      '<img data-src="https://source.test/assets/page.jpg?accessKey=asset">',
+      '<img data-src="https://source.test/assets/page.jpg?accessKey=asset" loading="eager" src="https://source.test/assets/page.jpg?accessKey=asset">',
     );
-    expect(result.content).not.toContain(" src=");
   });
 
   it("removes host scraper controls from captured chapter content", async () => {
