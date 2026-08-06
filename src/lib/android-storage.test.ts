@@ -139,6 +139,55 @@ describe("android storage bridge facade", () => {
     );
   });
 
+  it("keeps opened-file methods bound to the injected Android bridge", async () => {
+    const bridge: TestBridge = {};
+    const describeContentUri = vi.fn(function (
+      this: TestBridge,
+      _uri: string,
+    ) {
+      if (this !== bridge) throw new Error("missing injected bridge receiver");
+      return JSON.stringify({
+        fileName: "Manual.pdf",
+        mimeType: "application/pdf",
+        ok: true,
+        size: 4,
+      });
+    });
+    const readContentUriFile = vi.fn(function (
+      this: TestBridge,
+      _uri: string,
+      _maxBytes: string,
+    ) {
+      if (this !== bridge) throw new Error("missing injected bridge receiver");
+      return JSON.stringify({
+        bytes: 4,
+        mimeType: "application/pdf",
+        ok: true,
+        path: "/cache/android-storage-bridge/manual.tmp",
+      });
+    });
+    bridge.describeContentUri = describeContentUri;
+    bridge.readContentUriFile = readContentUriFile;
+    installBridge(bridge);
+
+    await expect(
+      describeAndroidContentUri("content://documents/Manual.pdf"),
+    ).resolves.toMatchObject({
+      fileName: "Manual.pdf",
+      mimeType: "application/pdf",
+      size: 4,
+    });
+    await expect(
+      copyAndroidContentUriToTempFile(
+        "content://documents/Manual.pdf",
+        8192,
+      ),
+    ).resolves.toMatchObject({
+      bytes: 4,
+      mimeType: "application/pdf",
+    });
+  });
+
   it("returns null for temp file reads when the bridge lacks the method", async () => {
     installBridge({});
 

@@ -326,10 +326,12 @@ export async function copyAndroidContentUriToTempFile(
   maxBytes: number = MAX_BACKUP_ARCHIVE_BYTES,
 ): Promise<AndroidStorageTempFile | null> {
   const bridge = androidStorageBridge();
-  const reader = bridge.readContentUriFile;
-  if (!reader) return null;
+  if (!bridge.readContentUriFile) return null;
   const response = parseStorageResponse<AndroidStorageTempFileResponse>(
-    reader(uri, String(normalizeContentUriMaxBytes(maxBytes))),
+    bridge.readContentUriFile(
+      uri,
+      String(normalizeContentUriMaxBytes(maxBytes)),
+    ),
   );
   if (!response.path) {
     throw new Error("Android storage bridge did not return a temp file path.");
@@ -344,12 +346,12 @@ export async function copyAndroidContentUriToTempFile(
 export async function describeAndroidContentUri(
   uri: string,
 ): Promise<AndroidContentUriDescriptor> {
-  const describe = androidStorageBridge().describeContentUri;
-  if (!describe) {
+  const bridge = androidStorageBridge();
+  if (!bridge.describeContentUri) {
     throw new Error("Android content URI descriptor bridge is unavailable.");
   }
   const response = parseStorageResponse<AndroidContentUriDescriptorResponse>(
-    describe(uri),
+    bridge.describeContentUri(uri),
   );
   if (!response.fileName) {
     throw new Error("Android content URI descriptor has no file name.");

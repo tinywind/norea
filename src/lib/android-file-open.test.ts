@@ -137,6 +137,38 @@ describe("Android file open bridge", () => {
     expect(onError).toHaveBeenCalledWith(cleanupError);
   });
 
+  it("uses the Markdown limit for Android-opened md files", async () => {
+    describeContentUriMock.mockResolvedValue({
+      fileName: "Chapter.md",
+      mimeType: "text/markdown",
+      size: 4,
+    });
+    copyContentUriMock.mockResolvedValue({
+      bytes: 4,
+      mimeType: "text/markdown",
+      path: "/data/user/0/norea/cache/android-storage-bridge/content.tmp",
+    });
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "android_open_file_url_take") return [CONTENT_URI];
+      if (command === "android_open_file_temp_read") {
+        return new TextEncoder().encode("# MD").buffer;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const files = await takePendingAndroidOpenFiles();
+
+    expect(files[0]).toMatchObject({
+      name: "Chapter.md",
+      size: 4,
+      type: "text/markdown",
+    });
+    expect(copyContentUriMock).toHaveBeenCalledWith(
+      CONTENT_URI,
+      LOCAL_IMPORT_LIMITS.markdownBytes,
+    );
+  });
+
   it("preserves descriptor failures as reviewable file errors", async () => {
     const error = new Error("Content provider denied metadata access.");
     describeContentUriMock.mockRejectedValue(error);

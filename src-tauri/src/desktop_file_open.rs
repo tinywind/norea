@@ -189,6 +189,7 @@ pub fn desktop_open_file_discard(
 fn supported_mime_type(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "txt" => Some("text/plain"),
+        "md" => Some("text/markdown"),
         "pdf" => Some("application/pdf"),
         "epub" => Some("application/epub+zip"),
         _ => None,
@@ -208,6 +209,10 @@ mod tests {
         assert_eq!(
             supported_mime_type(Path::new("Book.Pdf")),
             Some("application/pdf")
+        );
+        assert_eq!(
+            supported_mime_type(Path::new("Book.MD")),
+            Some("text/markdown")
         );
         assert_eq!(
             supported_mime_type(Path::new("Book.ePUB")),

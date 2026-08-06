@@ -55,6 +55,18 @@
       },
       {
         "ext": [
+          "md"
+        ],
+        "name": "Markdown Document",
+        "description": "Norea Markdown document",
+        "role": "Viewer",
+        "mimeType": "text/markdown",
+        "androidIntentActionFilters": [
+          "view"
+        ]
+      },
+      {
+        "ext": [
           "pdf"
         ],
         "name": "PDF Document",
