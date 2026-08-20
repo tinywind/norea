@@ -80,6 +80,7 @@ export type MainTaskKind =
 export type MainLaneTaskKind = MainTaskKind;
 
 export type SourceTaskKind =
+  | "source.clearCookies"
   | "source.openSite"
   | "source.openNovel"
   | "source.listPopular"

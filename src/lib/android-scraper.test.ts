@@ -4,7 +4,10 @@ vi.mock("./tauri-runtime", () => ({
   isAndroidRuntime: () => true,
 }));
 
-import { androidScraperNavigate } from "./android-scraper";
+import {
+  androidScraperClearCookies,
+  androidScraperNavigate,
+} from "./android-scraper";
 
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
@@ -23,6 +26,7 @@ function installScraperBridge() {
   vi.stubGlobal("window", {
     __NoreaAndroidScraper: {
       cancel,
+      clearCookies: vi.fn(),
       extract: vi.fn(),
       fetch: vi.fn(),
       hide: vi.fn(),
@@ -102,5 +106,33 @@ describe("Android scraper navigation", () => {
     expect(JSON.parse(cancel.mock.calls[0][0] as string)).toMatchObject({
       id: payload.id,
     });
+  });
+});
+
+describe("Android scraper cookie clearing", () => {
+  beforeEach(() => {
+    installScraperBridge();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the plugin URL and resolves the deleted cookie count", async () => {
+    const clearCookies = vi.mocked(
+      window.__NoreaAndroidScraper!.clearCookies,
+    );
+    const clearing = androidScraperClearCookies("https://example.com/");
+    const payload = JSON.parse(
+      clearCookies.mock.calls[0][0] as string,
+    ) as { id: string; url: string };
+
+    expect(payload.url).toBe("https://example.com/");
+    window.__lnrAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({ ok: true, result: 3 }),
+    );
+
+    await expect(clearing).resolves.toBe(3);
   });
 });

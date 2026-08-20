@@ -14,6 +14,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.webkit.CookieManagerCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.util.concurrent.ExecutorService
@@ -80,6 +81,26 @@ class AndroidScraperBridge(
     val names = header.split(";")
       .mapNotNull { cookie -> cookie.substringBefore("=").trim().takeIf { it.isNotEmpty() } }
     return "count=${names.size} names=${names.joinToString(",")}"
+  }
+
+  private fun expiredCookieHeader(cookieInfo: String): String? {
+    val parts = cookieInfo.split(";").map { it.trim() }.filter { it.isNotEmpty() }
+    val name = parts.firstOrNull()?.substringBefore("=")?.trim()
+      ?.takeIf { it.isNotEmpty() }
+      ?: return null
+    val identityAttributes = parts.drop(1).filter { attribute ->
+      val attributeName = attribute.substringBefore("=").trim().lowercase()
+      attributeName == "domain" ||
+        attributeName == "path" ||
+        attributeName == "secure" ||
+        attributeName == "partitioned"
+    }
+    return buildList {
+      add("$name=")
+      add("Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+      add("Max-Age=0")
+      addAll(identityAttributes)
+    }.joinToString("; ")
   }
 
   private fun jsonKeysForLog(json: JSONObject?): String {
@@ -152,6 +173,65 @@ class AndroidScraperBridge(
       val state = queueState(executorFromPayload(json))
       cancelQueuedWhere(state, message) { true }
       if (state.busy) cancelActive(state, message)
+    }
+  }
+
+  @JavascriptInterface
+  fun clearCookies(payload: String) {
+    parseCommand(payload, BridgeCapabilities.SCRAPER_CLEAR_COOKIES) { json ->
+      val id = json.getString("id")
+      val url = json.getString("url")
+      val parsed = Uri.parse(url)
+      if (
+        parsed.scheme !in setOf("http", "https") ||
+        parsed.host.isNullOrBlank()
+      ) {
+        sendError(id, "scraper: expected an HTTP(S) plugin url")
+        return@parseCommand
+      }
+      if (!WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO)) {
+        sendError(
+          id,
+          "scraper: per-site cookie clearing requires an updated Android System WebView",
+        )
+        return@parseCommand
+      }
+
+      val cookieManager = CookieManager.getInstance()
+      val expiredHeaders = runCatching {
+        CookieManagerCompat.getCookieInfo(cookieManager, url)
+          .mapNotNull(::expiredCookieHeader)
+      }.getOrElse { error ->
+        sendError(id, "scraper: read cookies: ${error.message ?: error.toString()}")
+        return@parseCommand
+      }
+      if (expiredHeaders.isEmpty()) {
+        sendResult(id, JSONObject().put("ok", true).put("result", 0))
+        return@parseCommand
+      }
+
+      var remaining = expiredHeaders.size
+      var deleted = 0
+      var rejected = false
+      expiredHeaders.forEach { header ->
+        cookieManager.setCookie(url, header) { accepted ->
+          if (closed) return@setCookie
+          if (accepted) {
+            deleted += 1
+          } else {
+            rejected = true
+          }
+          remaining -= 1
+          if (remaining == 0) {
+            cookieManager.flush()
+            if (rejected) {
+              sendError(id, "scraper: one or more cookies could not be deleted")
+            } else {
+              sendResult(id, JSONObject().put("ok", true).put("result", deleted))
+            }
+          }
+        }
+      }
     }
   }
 

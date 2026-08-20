@@ -4,6 +4,7 @@ import type { ScraperExecutorId } from "./tasks/scraper-queue";
 interface AndroidScraperBridge {
   cancel?(payload: string): void;
   cancelBackground?(payload: string): void;
+  clearCookies(payload: string): void;
   fetch(payload: string): void;
   extract(payload: string): void;
   hide(): void;
@@ -94,7 +95,7 @@ function bridge(): AndroidScraperBridge {
 }
 
 function callNative<T>(
-  method: "fetch" | "extract" | "navigate",
+  method: "clearCookies" | "fetch" | "extract" | "navigate",
   payload: Record<string, unknown>,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -179,6 +180,10 @@ export function cancelAndroidScraperExecutor(
   if (!nativeBridge?.cancelBackground) return false;
   nativeBridge.cancelBackground(JSON.stringify({ message, queue: executor }));
   return true;
+}
+
+export function androidScraperClearCookies(url: string): Promise<number> {
+  return callNative<number>("clearCookies", { url }, 10_000);
 }
 
 export function androidWebviewFetch(

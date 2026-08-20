@@ -1331,39 +1331,51 @@ pub async fn scraper_poll_control_message(
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
 
-/// Delete all cookies held by the scraper WebView cookie jar.
+/// Delete cookies available to one plugin URL from the shared scraper cookie jar.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn scraper_clear_cookies(app: AppHandle) -> Result<usize, String> {
-    let state = app.state::<ScraperState>();
-    let labels: Vec<String> = state
-        .webviews
-        .lock()
-        .expect("scraper webviews mutex")
-        .values()
-        .map(|entry| entry.label.clone())
-        .collect();
-    let mut count = 0;
-    for label in labels {
-        let Some(scraper) = app.get_webview(&label) else {
-            continue;
-        };
-        let cookies = scraper
-            .cookies()
-            .map_err(|err| format!("scraper: read cookies for {label}: {err}"))?;
-        count += cookies.len();
-        for cookie in cookies {
-            scraper
-                .delete_cookie(cookie)
-                .map_err(|err| format!("scraper: delete cookie for {label}: {err}"))?;
-        }
+pub async fn scraper_clear_cookies(
+    app: AppHandle,
+    state: tauri::State<'_, ScraperState>,
+    url: String,
+    user_agent: Option<String>,
+    queue: Option<String>,
+) -> Result<usize, String> {
+    let parsed: Url = url
+        .parse()
+        .map_err(|err| format!("scraper_clear_cookies: invalid url '{url}': {err}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(format!(
+            "scraper_clear_cookies: expected an HTTP(S) plugin url, got '{url}'"
+        ));
+    }
+
+    let queue = normalize_scraper_executor(queue.as_deref())?;
+    let user_agent = normalize_user_agent(user_agent);
+    let executor_lock = scraper_executor_lock(&state, &queue);
+    let _executor_guard = executor_lock.lock().await;
+    let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+    let cookies = scraper
+        .cookies_for_url(parsed)
+        .map_err(|err| format!("scraper_clear_cookies: read cookies for '{url}': {err}"))?;
+    let count = cookies.len();
+    for cookie in cookies {
+        scraper
+            .delete_cookie(cookie)
+            .map_err(|err| format!("scraper_clear_cookies: delete cookie for '{url}': {err}"))?;
     }
     Ok(count)
 }
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub async fn scraper_clear_cookies(_app: AppHandle) -> Result<usize, String> {
+pub async fn scraper_clear_cookies(
+    _app: AppHandle,
+    _state: tauri::State<'_, ScraperState>,
+    _url: String,
+    _user_agent: Option<String>,
+    _queue: Option<String>,
+) -> Result<usize, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
 

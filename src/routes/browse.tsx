@@ -15,6 +15,7 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import {
   CheckGlyph,
   ClockGlyph,
@@ -52,9 +53,13 @@ import {
 } from "../db/queries/repository";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
-import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
+import {
+  enqueueOpenSiteTask,
+  enqueueSourceTask,
+} from "../lib/tasks/source-tasks";
 import { PluginSearchSection } from "./global-search";
 import { getPluginBaseUrl } from "../lib/plugins/base-url";
+import { clearPluginCookies } from "../lib/plugin-cookies";
 import { isValidPluginItem, pluginManager } from "../lib/plugins/manager";
 import { clearSourceFilterStorage } from "../lib/plugins/source-filter-storage";
 import type { Plugin, PluginItem } from "../lib/plugins/types";
@@ -343,6 +348,7 @@ export function BrowsePage({
 
   const [addOpen, setAddOpen] = useState(false);
   const [url, setUrl] = useState("");
+  const [cookiePlugin, setCookiePlugin] = useState<Plugin | null>(null);
   const [settingsPlugin, setSettingsPlugin] = useState<Plugin | null>(null);
   const [sourceTemplate, setSourceTemplate] = useState<PluginItem | null>(null);
   const [sourceForm, setSourceForm] = useState<SourceInstanceForm>(
@@ -585,6 +591,37 @@ export function BrowsePage({
     },
   });
 
+  const clearCookiesMutation = useMutation({
+    mutationFn: async (plugin: Plugin): Promise<number> => {
+      const pluginUrl = getPluginBaseUrl(plugin);
+      return enqueueSourceTask({
+        plugin,
+        kind: "source.clearCookies",
+        priority: "user",
+        title: t("tasks.task.clearCookies", { name: plugin.name }),
+        subject: { url: pluginUrl },
+        dedupeKey: `source.clearCookies:${plugin.id}`,
+        run: ({ executor }) => {
+          if (!executor) {
+            throw new Error("Plugin cookie clearing requires a scraper executor");
+          }
+          return clearPluginCookies(pluginUrl, executor);
+        },
+      }).promise;
+    },
+    onSuccess: (count, plugin) => {
+      setCookiePlugin(null);
+      notifications.show({
+        color: "green",
+        title: t("browse.cookies.clearedTitle"),
+        message: t("browse.cookies.cleared", {
+          count,
+          name: plugin.name,
+        }),
+      });
+    },
+  });
+
   return (
     <PageFrame size="wide" className="lnr-browse-page">
       <PageHeader
@@ -690,9 +727,16 @@ export function BrowsePage({
             <InstalledSection
               plugins={filteredInstalledPlugins}
               locale={locale}
+              canClearCookies={isTauriRuntime()}
+              clearingCookiePluginId={
+                clearCookiesMutation.isPending
+                  ? (clearCookiesMutation.variables?.id ?? null)
+                  : null
+              }
               onUninstall={(id) => uninstallMutation.mutate(id)}
               uninstalling={uninstallMutation.isPending}
               lastUsedPluginId={lastUsedPluginId}
+              onClearCookies={setCookiePlugin}
               onOpenSettings={setSettingsPlugin}
               onOpenSource={(plugin) => {
                 setLastUsedPluginId(plugin.id);
@@ -934,6 +978,48 @@ export function BrowsePage({
             onSaved={() => setSettingsPlugin(null)}
           />
         ) : null}
+      </Modal>
+      <Modal
+        opened={active && cookiePlugin !== null}
+        onClose={() => {
+          if (!clearCookiesMutation.isPending) setCookiePlugin(null);
+        }}
+        closeOnClickOutside={!clearCookiesMutation.isPending}
+        closeOnEscape={!clearCookiesMutation.isPending}
+        title={
+          cookiePlugin
+            ? t("browse.cookies.confirmTitle", { name: cookiePlugin.name })
+            : t("browse.cookies.clear")
+        }
+        withCloseButton={!clearCookiesMutation.isPending}
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            {cookiePlugin
+              ? t("browse.cookies.confirmMessage", {
+                  name: cookiePlugin.name,
+                })
+              : null}
+          </Text>
+          <Group justify="flex-end">
+            <TextButton
+              variant="subtle"
+              disabled={clearCookiesMutation.isPending}
+              onClick={() => setCookiePlugin(null)}
+            >
+              {t("common.cancel")}
+            </TextButton>
+            <TextButton
+              tone="danger"
+              loading={clearCookiesMutation.isPending}
+              onClick={() => {
+                if (cookiePlugin) clearCookiesMutation.mutate(cookiePlugin);
+              }}
+            >
+              {t("browse.cookies.clear")}
+            </TextButton>
+          </Group>
+        </Stack>
       </Modal>
     </PageFrame>
   );
@@ -1182,9 +1268,12 @@ function LocalPluginSection({
 interface InstalledSectionProps {
   plugins: Plugin[];
   locale: AppLocale;
+  canClearCookies: boolean;
+  clearingCookiePluginId: string | null;
   onUninstall: (id: string) => void;
   uninstalling: boolean;
   lastUsedPluginId: string | null;
+  onClearCookies: (plugin: Plugin) => void;
   onOpenSource: (plugin: Plugin) => void;
   onOpenSettings: (plugin: Plugin) => void;
 }
@@ -1213,6 +1302,9 @@ interface PluginRowProps {
   plugin: Plugin;
   locale: AppLocale;
   lastUsed: boolean;
+  canClearCookies: boolean;
+  clearingCookiePluginId: string | null;
+  onClearCookies: (plugin: Plugin) => void;
   onOpenSource: (plugin: Plugin) => void;
   onOpenSettings: (plugin: Plugin) => void;
   onUninstall: (id: string) => void;
@@ -1223,12 +1315,17 @@ function PluginRow({
   plugin,
   locale,
   lastUsed,
+  canClearCookies,
+  clearingCookiePluginId,
+  onClearCookies,
   onOpenSource,
   onOpenSettings,
   onUninstall,
   uninstalling,
 }: PluginRowProps) {
   const { t } = useTranslation();
+  const actionsDisabled =
+    uninstalling || clearingCookiePluginId !== null;
 
   return (
     <div key={plugin.id} className="lnr-browse-plugin-row">
@@ -1267,8 +1364,14 @@ function PluginRow({
             truncate
             onClick={(event) => {
               event.preventDefault();
-              openSite(plugin, t("tasks.task.openSite", { source: plugin.name }));
+              if (!actionsDisabled) {
+                openSite(
+                  plugin,
+                  t("tasks.task.openSite", { source: plugin.name }),
+                );
+              }
             }}
+            aria-disabled={actionsDisabled}
             title={t("common.openSiteInApp")}
           >
             {getPluginBaseUrl(plugin)}
@@ -1280,7 +1383,7 @@ function PluginRow({
               label={`${t("common.settings")}: ${plugin.name}`}
               size="lg"
               variant="subtle"
-              disabled={uninstalling}
+              disabled={actionsDisabled}
               title={t("common.settings")}
               onClick={() => onOpenSettings(plugin)}
             >
@@ -1291,7 +1394,7 @@ function PluginRow({
             label={`${t("common.source")}: ${plugin.name}`}
             size="lg"
             variant="subtle"
-            disabled={uninstalling}
+            disabled={actionsDisabled}
             title={t("common.source")}
             onClick={() => onOpenSource(plugin)}
           >
@@ -1301,7 +1404,7 @@ function PluginRow({
             label={`${t("common.openSite")}: ${plugin.name}`}
             size="lg"
             variant="default"
-            disabled={uninstalling}
+            disabled={actionsDisabled}
             title={t("common.openSite")}
             onClick={() =>
               openSite(plugin, t("tasks.task.openSite", { source: plugin.name }))
@@ -1309,11 +1412,26 @@ function PluginRow({
           >
             <ExternalLinkGlyph />
           </IconButton>
+          {canClearCookies ? (
+            <IconButton
+              label={`${t("browse.cookies.clear")}: ${plugin.name}`}
+              size="lg"
+              tone="warning"
+              variant="subtle"
+              disabled={actionsDisabled}
+              loading={clearingCookiePluginId === plugin.id}
+              title={t("browse.cookies.clear")}
+              onClick={() => onClearCookies(plugin)}
+            >
+              <RefreshGlyph />
+            </IconButton>
+          ) : null}
           <IconButton
             label={`${t("browse.uninstall")}: ${plugin.name}`}
             size="lg"
             tone="danger"
             variant="subtle"
+            disabled={actionsDisabled}
             loading={uninstalling}
             title={t("browse.uninstall")}
             onClick={() => onUninstall(plugin.id)}
@@ -1329,9 +1447,12 @@ function PluginRow({
 function InstalledSection({
   plugins,
   locale,
+  canClearCookies,
+  clearingCookiePluginId,
   onUninstall,
   uninstalling,
   lastUsedPluginId,
+  onClearCookies,
   onOpenSource,
   onOpenSettings,
 }: InstalledSectionProps) {
@@ -1352,6 +1473,9 @@ function InstalledSection({
                 plugin={plugin}
                 locale={locale}
                 lastUsed={plugin.id === lastUsedPluginId}
+                canClearCookies={canClearCookies}
+                clearingCookiePluginId={clearingCookiePluginId}
+                onClearCookies={onClearCookies}
                 onOpenSource={onOpenSource}
                 onOpenSettings={onOpenSettings}
                 onUninstall={onUninstall}
