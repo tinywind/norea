@@ -10,9 +10,10 @@ import {
   storedChapterContentType,
 } from "../chapter-content";
 import {
-  readStoredChapterContentMirror,
+  reconcileAndReadStoredChapterContent,
   writeStoredChapterContentMirror,
 } from "../chapter-content-storage";
+import { clearResolvedChapterStorageDirs } from "../chapter-storage-resolution";
 import {
   MAX_ZIP_ENTRY_BYTES,
   MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
@@ -283,7 +284,12 @@ function toNovel(row: RawNovelRow): BackupNovel {
   };
 }
 
-function toChapter(row: RawChapterRow, content: string | null): BackupChapter {
+function toChapter(
+  row: RawChapterRow,
+  content: string | null,
+  mediaBytes: number,
+  contentType = row.contentType,
+): BackupChapter {
   return {
     id: row.id,
     novelId: row.novelId,
@@ -295,12 +301,12 @@ function toChapter(row: RawChapterRow, content: string | null): BackupChapter {
     bookmark: sqliteBoolean(row.bookmark),
     unread: sqliteBoolean(row.unread),
     progress: row.progress,
-    isDownloaded: sqliteBoolean(row.isDownloaded),
+    isDownloaded: content !== null,
     contentType: storedChapterContentType(
-      normalizeChapterContentType(row.contentType),
+      normalizeChapterContentType(contentType),
     ),
     content,
-    mediaBytes: row.mediaBytes,
+    mediaBytes,
     releaseTime: row.releaseTime,
     readAt: row.readAt,
     createdAt: row.createdAt,
@@ -310,10 +316,21 @@ function toChapter(row: RawChapterRow, content: string | null): BackupChapter {
 }
 
 async function toBackupChapter(row: RawChapterRow): Promise<BackupChapter> {
-  const content = sqliteBoolean(row.isDownloaded)
-    ? await readStoredChapterContentMirror(row.id)
-    : null;
-  return toChapter(row, content);
+  const { artifacts, content } =
+    await reconcileAndReadStoredChapterContent(row.id);
+  const contentType =
+    artifacts.status === "present" && artifacts.contentFile.endsWith(".pdf")
+      ? "pdf"
+      : artifacts.status === "present" &&
+          normalizeChapterContentType(row.contentType) === "pdf"
+        ? "html"
+        : row.contentType;
+  return toChapter(
+    row,
+    content,
+    artifacts.status === "present" ? artifacts.mediaBytes : 0,
+    contentType,
+  );
 }
 
 function parseBackupChapterMediaSource(
@@ -541,11 +558,16 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
       db.select<RawInstalledPluginRow[]>(SELECT_INSTALLED_PLUGINS),
     ]);
 
+  const backupChapters: BackupChapter[] = [];
+  for (const chapter of chapters) {
+    backupChapters.push(await toBackupChapter(chapter));
+  }
+
   return {
     version: BACKUP_FORMAT_VERSION,
     exportedAt: Math.floor(Date.now() / 1000),
     novels: novels.map(toNovel),
-    chapters: await Promise.all(chapters.map(toBackupChapter)),
+    chapters: backupChapters,
     categories: categories.map(toCategory),
     novelCategories,
     repositories,
@@ -563,6 +585,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
 export async function applyBackupSnapshot(
   manifest: BackupManifest,
 ): Promise<void> {
+  clearResolvedChapterStorageDirs();
   await getDb();
   let mediaRestoreToken: string | null = null;
   let mediaBytesByChapterId = new Map<number, number>();
@@ -602,6 +625,7 @@ export async function applyBackupSnapshot(
         },
       );
     }
+    clearResolvedChapterStorageDirs();
     throw error;
   }
 
@@ -615,6 +639,7 @@ export async function applyBackupSnapshot(
       console.warn("[backup] media staging cleanup failed", error);
     });
   }
+  clearResolvedChapterStorageDirs();
 
   if (manifest.settings !== undefined) {
     writeBackupSettings(manifest.settings);

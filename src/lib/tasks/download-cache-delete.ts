@@ -1,12 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getChapterById } from "../../db/queries/chapter";
+import { listNonLocalDownloadCacheDeleteChapterIds } from "../../db/queries/download-cache";
+import { getNovelById } from "../../db/queries/novel";
 import {
-  listDownloadCacheChapters,
-  listDownloadCacheNovels,
-} from "../../db/queries/download-cache";
-import { clearChapterMedia } from "../chapter-media";
-import { clearStoredChapterContentMirror } from "../chapter-content-storage";
+  deleteAndroidStoragePath,
+  listAndroidChapterStorageDirs,
+} from "../android-storage";
+import {
+  chapterStorageIdentityPrefix,
+  chapterStorageRelativeDir,
+  novelStorageIdentitySuffix,
+  sourceStorageRelativeDir,
+} from "../chapter-storage-path";
+import { forgetResolvedChapterStorageDir } from "../chapter-storage-resolution";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
+import { waitForChapterDownloadQueueMutations } from "./chapter-download";
 import {
   taskScheduler,
   type TaskHandle,
@@ -128,12 +137,22 @@ async function cancelConflictingDownloads(
   const chapterIds = await chapterIdsForDownloadCacheScope(scope, targetIds);
   const chapterIdSet = new Set(chapterIds);
   const cancelledChapterIds = new Set<number>(chapterIds);
+  await waitForChapterDownloadQueueMutations();
+  await removeBackendQueuedDownloads([...cancelledChapterIds]);
+  const conflictingTaskIds: string[] = [];
   for (const task of taskScheduler.getSnapshot().records) {
     if (!isTaskInDeleteScope(task, scope, targetIdSet, chapterIdSet)) continue;
+    conflictingTaskIds.push(task.id);
     if (taskScheduler.cancel(task.id) && task.subject?.chapterId) {
       cancelledChapterIds.add(task.subject.chapterId);
     }
   }
+  await Promise.all(
+    conflictingTaskIds.map((taskId) =>
+      taskScheduler.waitForSourceTaskSettlement(taskId),
+    ),
+  );
+  await waitForChapterDownloadQueueMutations();
   await removeBackendQueuedDownloads([...cancelledChapterIds]);
 }
 
@@ -204,18 +223,42 @@ async function chapterIdsForDownloadCacheScope(
   scope: DownloadCacheDeleteScope,
   targetIds: readonly number[],
 ): Promise<number[]> {
-  if (scope === "chapter") return [...targetIds];
-  if (scope === "novel") {
-    const chapters = await Promise.all(
-      targetIds.map((novelId) => listDownloadCacheChapters(novelId)),
-    );
-    return chapters.flat().map((chapter) => chapter.id);
+  if (scope === "chapter") {
+    return listNonLocalDownloadCacheDeleteChapterIds({
+      chapterIds: targetIds,
+    });
   }
-  const novels = await listDownloadCacheNovels();
-  const chapters = await Promise.all(
-    novels.map((novel) => listDownloadCacheChapters(novel.novelId)),
-  );
-  return chapters.flat().map((chapter) => chapter.id);
+  if (scope === "novel") {
+    return listNonLocalDownloadCacheDeleteChapterIds({ novelIds: targetIds });
+  }
+  return listNonLocalDownloadCacheDeleteChapterIds();
+}
+
+async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
+  const chapter = await getChapterById(chapterId);
+  const novel = chapter ? await getNovelById(chapter.novelId) : null;
+  if (chapter && novel && !novel.isLocal) {
+    const preferredChapterDir = chapterStorageRelativeDir(novel, chapter);
+    const chapterDirs = await listAndroidChapterStorageDirs({
+      preferredChapterDir,
+      sourceDir: sourceStorageRelativeDir(novel),
+      novelIdentitySuffix: novelStorageIdentitySuffix(novel),
+      chapterIdentityPrefix: chapterStorageIdentityPrefix(chapter),
+    });
+    if (chapterDirs.length > 1) {
+      throw new Error(
+        `Multiple stored chapter folders match chapter ${chapterId}; delete the intended chapter folders manually.`,
+      );
+    }
+    for (const chapterDir of new Set([
+      ...chapterDirs,
+      preferredChapterDir,
+    ])) {
+      await deleteAndroidStoragePath(chapterDir);
+    }
+  }
+  await deleteAndroidStoragePath(`chapter-media/${chapterId}`);
+  forgetResolvedChapterStorageDir(chapterId);
 }
 
 async function clearAndroidDownloadArtifacts(
@@ -234,8 +277,7 @@ async function clearAndroidDownloadArtifacts(
       );
     }
     const chapterId = chapterIds[index]!;
-    await clearStoredChapterContentMirror(chapterId);
-    await clearChapterMedia(chapterId);
+    await clearAndroidChapterArtifacts(chapterId);
     const current = index + 1;
     context.setProgress({ current, total: chapterIds.length });
     if (progressLabel) {

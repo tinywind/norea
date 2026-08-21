@@ -1363,6 +1363,12 @@ describe("TaskScheduler", () => {
     await settle();
     expect(scheduler.cancel(cancelled.id)).toBe(true);
     await expect(cancelled.promise).rejects.toThrow("Task was cancelled.");
+    let executionSettled = false;
+    const executionSettlement = scheduler
+      .waitForSourceTaskSettlement(cancelled.id)
+      .then(() => {
+        executionSettled = true;
+      });
 
     const next = scheduler.enqueueSource({
       kind: "source.search",
@@ -1376,10 +1382,13 @@ describe("TaskScheduler", () => {
 
     await settle();
     expect(order).toEqual(["cancelled:start"]);
+    expect(executionSettled).toBe(false);
 
     settleCancelled();
+    await executionSettlement;
     await next.promise;
 
+    expect(executionSettled).toBe(true);
     expect(order).toEqual(["cancelled:start", "next:start"]);
   });
 

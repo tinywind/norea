@@ -14,14 +14,14 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("../chapter-content-storage", () => ({
-  readStoredChapterContentMirror: vi.fn(),
+  reconcileAndReadStoredChapterContent: vi.fn(),
   writeStoredChapterContentMirror: vi.fn(),
 }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db/client";
 import {
-  readStoredChapterContentMirror,
+  reconcileAndReadStoredChapterContent,
   writeStoredChapterContentMirror,
 } from "../chapter-content-storage";
 import {
@@ -34,8 +34,8 @@ import { attachBackupChapterMediaFiles } from "./unpack";
 
 const mockedGetDb = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
-const readStoredChapterContentMirrorMock = vi.mocked(
-  readStoredChapterContentMirror,
+const reconcileAndReadStoredChapterContentMock = vi.mocked(
+  reconcileAndReadStoredChapterContent,
 );
 const writeStoredChapterContentMirrorMock = vi.mocked(
   writeStoredChapterContentMirror,
@@ -64,7 +64,15 @@ beforeEach(() => {
     execute: mockExecute,
   } as never);
   invokeMock.mockResolvedValue(undefined);
-  readStoredChapterContentMirrorMock.mockResolvedValue("<p>hi</p>");
+  reconcileAndReadStoredChapterContentMock.mockResolvedValue({
+    artifacts: {
+      status: "present",
+      contentFile: "contents/demo/novel/chapter/content.html",
+      contentBytes: 9,
+      mediaBytes: 5,
+    },
+    content: "<p>hi</p>",
+  });
   writeStoredChapterContentMirrorMock.mockResolvedValue(undefined);
 });
 
@@ -173,9 +181,9 @@ const RAW_CHAPTER = {
   bookmark: 0,
   unread: 1,
   progress: 0,
-  isDownloaded: 1,
+  isDownloaded: 0,
   contentType: "html",
-  mediaBytes: 5,
+  mediaBytes: 99,
   releaseTime: null,
   readAt: null,
   createdAt: 1_700_000_000,
@@ -227,6 +235,23 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.chapters[0]?.content).toBe("<p>hi</p>");
     expect(manifest.chapters[0]?.mediaBytes).toBe(5);
     expect(manifest.categories[0]?.isSystem).toBe(true);
+  });
+
+  it("uses the physical final content type in the backup", async () => {
+    reconcileAndReadStoredChapterContentMock.mockResolvedValueOnce({
+      artifacts: {
+        status: "present",
+        contentFile: "contents/demo/novel/chapter/content.pdf",
+        contentBytes: 24,
+        mediaBytes: 0,
+      },
+      content: "data:application/pdf;base64,JVBERi0xLjQ=",
+    });
+    primeSelect();
+
+    const manifest = await gatherBackupSnapshot();
+
+    expect(manifest.chapters[0]?.contentType).toBe("pdf");
   });
 
   it("calls one SELECT per backup table", async () => {

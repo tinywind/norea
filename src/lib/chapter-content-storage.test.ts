@@ -9,13 +9,17 @@ vi.mock("../db/client", () => ({
 }));
 
 vi.mock("../db/queries/chapter", () => ({
+  adoptStoredChapterContentMetadata: vi.fn(),
+  markStoredChapterContentMissing: vi.fn(),
   saveChapterContentMetadata: vi.fn(),
   saveChapterPartialContentMetadata: vi.fn(),
 }));
 
 vi.mock("./android-storage", () => ({
   deleteAndroidStoragePath: vi.fn(),
+  inspectAndroidChapterArtifacts: vi.fn(),
   readAndroidStorageText: vi.fn(),
+  renameAndroidStoragePath: vi.fn(),
   writeAndroidStorageText: vi.fn(),
 }));
 
@@ -27,17 +31,22 @@ vi.mock("./tauri-runtime", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../db/client";
 import {
+  adoptStoredChapterContentMetadata,
+  markStoredChapterContentMissing,
   saveChapterContentMetadata,
   saveChapterPartialContentMetadata,
 } from "../db/queries/chapter";
 import {
   deleteAndroidStoragePath,
+  inspectAndroidChapterArtifacts,
   readAndroidStorageText,
+  renameAndroidStoragePath,
   writeAndroidStorageText,
 } from "./android-storage";
 import {
   clearStoredChapterContentMirror,
   readStoredChapterContentMirror,
+  reconcileStoredChapterContent,
   saveStoredChapterContent,
   saveStoredChapterPartialContent,
   writeStoredChapterContentMirror,
@@ -46,10 +55,20 @@ import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
 const getDbMock = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
+const adoptStoredChapterContentMetadataMock = vi.mocked(
+  adoptStoredChapterContentMetadata,
+);
+const markStoredChapterContentMissingMock = vi.mocked(
+  markStoredChapterContentMissing,
+);
 const saveChapterContentMetadataMock = vi.mocked(saveChapterContentMetadata);
 const saveChapterPartialContentMetadataMock = vi.mocked(saveChapterPartialContentMetadata);
 const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
+const inspectAndroidChapterArtifactsMock = vi.mocked(
+  inspectAndroidChapterArtifacts,
+);
 const readAndroidStorageTextMock = vi.mocked(readAndroidStorageText);
+const renameAndroidStoragePathMock = vi.mocked(renameAndroidStoragePath);
 const writeAndroidStorageTextMock = vi.mocked(writeAndroidStorageText);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
@@ -72,6 +91,7 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
     cover: null,
     genres: null,
     inLibrary: 1,
+    isDownloaded: 1,
     isLocal: 0,
     lastReadAt: null,
     libraryAddedAt: 1_700_000_000,
@@ -100,14 +120,46 @@ beforeEach(() => {
   getDbMock.mockResolvedValue({ select: selectMock } as never);
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
-  invokeMock.mockResolvedValue(undefined);
+  invokeMock.mockImplementation(async (command) => {
+    if (command === "chapter_content_mirror_inspect") {
+      return {
+        status: "present",
+        contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+        contentBytes: 10,
+        mediaBytes: 0,
+      };
+    }
+    return undefined;
+  });
+  inspectAndroidChapterArtifactsMock.mockResolvedValue({
+    status: "present",
+    contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+    contentBytes: 10,
+    mediaBytes: 0,
+  });
+  adoptStoredChapterContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
+  markStoredChapterContentMissingMock.mockResolvedValue({ rowsAffected: 1 });
   saveChapterContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
   saveChapterPartialContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
+  renameAndroidStoragePathMock.mockResolvedValue(undefined);
 });
 
 describe("chapter content storage", () => {
   it("reads chapter content from the storage file", async () => {
-    invokeMock.mockResolvedValueOnce("<p>stored</p>");
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+          contentBytes: 13,
+          mediaBytes: 0,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") {
+        return "<p>stored</p>";
+      }
+      return undefined;
+    });
 
     await expect(readStoredChapterContentMirror(10)).resolves.toBe(
       "<p>stored</p>",
@@ -119,6 +171,62 @@ describe("chapter content storage", () => {
     expect(invokeMock).toHaveBeenCalledWith("chapter_content_mirror_read_file", {
       contentFile: expect.stringContaining("content.html"),
     });
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      10,
+      13,
+      0,
+      "html",
+    );
+  });
+
+  it("treats an empty final content file as downloaded", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+          contentBytes: 0,
+          mediaBytes: 0,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") return "";
+      return undefined;
+    });
+
+    await expect(readStoredChapterContentMirror(10)).resolves.toBe("");
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      10,
+      0,
+      0,
+      "html",
+    );
+  });
+
+  it("normalizes adopted text metadata to the physical HTML file", async () => {
+    selectMock.mockResolvedValueOnce([chapterRow({ contentType: "text" })]);
+
+    await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
+      status: "present",
+      contentFile: expect.stringContaining("content.html"),
+    });
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      10,
+      10,
+      0,
+      "html",
+    );
+  });
+
+  it("marks non-local metadata missing when no final content file exists", async () => {
+    invokeMock.mockResolvedValueOnce({
+      status: "missing",
+      contentFile: null,
+      contentBytes: 0,
+      mediaBytes: 0,
+    });
+
+    await expect(readStoredChapterContentMirror(10)).resolves.toBeNull();
+    expect(markStoredChapterContentMissingMock).toHaveBeenCalledWith(10);
   });
 
   it("writes chapter content to the storage file and saves metadata", async () => {
@@ -152,7 +260,7 @@ describe("chapter content storage", () => {
       "html",
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_content_mirror_store",
+      "chapter_content_mirror_store_partial",
       expect.objectContaining({ content: "<p>partial</p>" }),
     );
   });
@@ -171,20 +279,27 @@ describe("chapter content storage", () => {
       expect.stringContaining("content.html"),
     );
     expect(writeAndroidStorageTextMock).toHaveBeenCalledWith(
-      expect.stringContaining("content.html"),
+      expect.stringContaining("content.html.tmp"),
       "<p>android</p>",
+    );
+    expect(renameAndroidStoragePathMock).toHaveBeenCalledWith(
+      expect.stringContaining("content.html.tmp"),
+      "content.html",
     );
     expect(deleteAndroidStoragePathMock).toHaveBeenCalledWith(
       expect.stringContaining("content.html"),
     );
   });
 
-  it("returns null for optional Android storage read failures", async () => {
+  it("preserves metadata when Android storage is inaccessible", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
-    readAndroidStorageTextMock.mockRejectedValueOnce(
-      new Error("Cannot open storage file for reading."),
+    inspectAndroidChapterArtifactsMock.mockRejectedValueOnce(
+      new Error("Android storage folder is not readable."),
     );
 
-    await expect(readStoredChapterContentMirror(10)).resolves.toBeNull();
+    await expect(readStoredChapterContentMirror(10)).rejects.toThrow(
+      "Android storage folder is not readable.",
+    );
+    expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
   });
 });

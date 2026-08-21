@@ -54,6 +54,8 @@ vi.mock("../chapter-media", () => ({
 }));
 vi.mock("../chapter-content-storage", () => ({
   readStoredChapterContentMirror: vi.fn(),
+  readStoredChapterPartialContentMirror: vi.fn(),
+  reconcileStoredChapterContent: vi.fn(),
   saveStoredChapterContent: vi.fn(),
   saveStoredChapterPartialContent: vi.fn(),
 }));
@@ -98,6 +100,8 @@ import {
 } from "../chapter-media";
 import {
   readStoredChapterContentMirror,
+  readStoredChapterPartialContentMirror,
+  reconcileStoredChapterContent,
   saveStoredChapterContent,
   saveStoredChapterPartialContent,
 } from "../chapter-content-storage";
@@ -242,6 +246,13 @@ beforeEach(() => {
   vi.mocked(hasRemoteChapterMedia).mockReturnValue(true);
   vi.mocked(localChapterMediaSources).mockReturnValue([]);
   vi.mocked(readStoredChapterContentMirror).mockResolvedValue(null);
+  vi.mocked(readStoredChapterPartialContentMirror).mockResolvedValue(null);
+  vi.mocked(reconcileStoredChapterContent).mockResolvedValue({
+    status: "missing",
+    contentFile: null,
+    contentBytes: 0,
+    mediaBytes: 0,
+  });
   vi.mocked(saveStoredChapterContent).mockResolvedValue({ rowsAffected: 1 });
   vi.mocked(saveStoredChapterPartialContent).mockResolvedValue({ rowsAffected: 1 });
   vi.mocked(convertEpubToHtml).mockResolvedValue({
@@ -542,22 +553,32 @@ describe("startChapterDownloadQueueExecutor", () => {
     });
     for (const job of jobs) backendQueueValues.set(job.id, job);
     vi.mocked(getChapterById).mockImplementation(async (chapterId) => {
-      if (chapterId === 1) {
-        return { isDownloaded: true } as never;
-      }
       if (chapterId === 2) {
         return null as never;
       }
-      return { isDownloaded: false } as never;
+      return { isDownloaded: chapterId === 3 } as never;
     });
-    pluginMocks.loadInstalledFromDb.mockRejectedValueOnce(
-      new Error("database is not ready"),
+    vi.mocked(reconcileStoredChapterContent).mockImplementation(
+      async (chapterId) =>
+        chapterId === 1
+          ? {
+              status: "present",
+              contentFile: "contents/source-a/novel/1-Chapter/content.html",
+              contentBytes: 24,
+              mediaBytes: 0,
+            }
+          : {
+              status: "missing",
+              contentFile: null,
+              contentBytes: 0,
+              mediaBytes: 0,
+            },
     );
 
     await startChapterDownloadQueueExecutor();
     await flushMicrotasks(50);
 
-    expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledTimes(1);
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
       restoredJobCount - 2,
     );
@@ -588,6 +609,48 @@ describe("enqueueChapterDownload", () => {
     });
 
     expect(capturedSpec?.requiresForegroundExecutor).toBeUndefined();
+  });
+
+  it("finishes without plugin or network work when final content exists", async () => {
+    const getBaseUrl = vi.fn(() => "https://source.test");
+    pluginMocks.getPlugin.mockReturnValueOnce({
+      apiVersion: "0.2",
+      id: "source-a",
+      name: "Source A",
+      getBaseUrl,
+      getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan,
+      getChapterResource: pluginMocks.getChapterResource,
+    });
+    vi.mocked(reconcileStoredChapterContent).mockResolvedValueOnce({
+      status: "present",
+      contentFile: "contents/source-a/novel/7-Chapter/content.html",
+      contentBytes: 24,
+      mediaBytes: 8,
+    });
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({
+      executor: "pool:1",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    });
+
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(getBaseUrl).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
+    expect(getChapterById).not.toHaveBeenCalled();
   });
 
   it("yields the foreground executor when paused during the download preamble", async () => {
@@ -658,6 +721,50 @@ describe("enqueueChapterDownload", () => {
     );
   });
 
+  it.each([
+    ["text", "plain <chapter>", 'data-source-format="text"'],
+    ["markdown", "# Chapter 7", 'class="reader-markdown-content"'],
+  ] as const)(
+    "accepts a normalized html request backed by a %s resource",
+    async (resourceContentType, content, expectedHtml) => {
+      pluginMocks.getChapterResource.mockResolvedValueOnce(
+        contentResource(content, resourceContentType),
+      );
+      vi.mocked(getChapterById).mockResolvedValueOnce({
+        contentType: "html",
+        id: 7,
+      } as never);
+      vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
+
+      enqueueChapterDownload({
+        id: 7,
+        pluginId: "source-a",
+        chapterPath: "/chapter/7",
+        contentType: "html",
+        title: "Chapter 7",
+      });
+
+      if (!capturedSpec) throw new Error("Task spec was not captured.");
+      await capturedSpec.run({
+        setDetail: vi.fn(),
+        setProgress: vi.fn(),
+        signal: new AbortController().signal,
+        taskId: "task-1",
+      });
+
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledWith(
+        "/chapter/7",
+        "html",
+      );
+      expect(saveStoredChapterContent).toHaveBeenCalledWith(
+        7,
+        expect.stringContaining(expectedHtml),
+        "html",
+        { mediaBytes: 0 },
+      );
+    },
+  );
+
   it("uses stored chapter HTML as the media download source", async () => {
     const storedHtml = `<img src="norea-media://reader-asset/page.png">`;
     pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
@@ -665,7 +772,7 @@ describe("enqueueChapterDownload", () => {
       url: "https://source.test/chapter/7",
       contentSelector: "article.chapter",
     });
-    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(
+    vi.mocked(readStoredChapterPartialContentMirror).mockResolvedValueOnce(
       storedHtml,
     );
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
@@ -771,7 +878,7 @@ describe("enqueueChapterDownload", () => {
     pluginMocks.getChapterResource.mockResolvedValueOnce(
       contentResource(`<img src="/page.png">`),
     );
-    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(
+    vi.mocked(readStoredChapterPartialContentMirror).mockResolvedValueOnce(
       null,
     );
     vi.mocked(getChapterById).mockResolvedValueOnce({

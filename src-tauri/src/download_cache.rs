@@ -265,7 +265,7 @@ fn push_target_filter(
     }
 }
 
-async fn select_downloaded_chapters(
+async fn select_target_chapters(
     pool: &SqlitePool,
     work: &DownloadCacheDeleteWork,
 ) -> Result<Vec<DownloadCacheChapterRow>, String> {
@@ -282,8 +282,7 @@ async fn select_downloaded_chapters(
           c.position       AS chapter_position
         FROM chapter c
         JOIN novel n ON n.id = c.novel_id
-        WHERE c.is_downloaded = 1
-          AND n.is_local = 0
+        WHERE n.is_local = 0
         "#,
     );
     push_target_filter(&mut query, &work.scope, &work.target_ids)?;
@@ -293,7 +292,7 @@ async fn select_downloaded_chapters(
         .build()
         .fetch_all(pool)
         .await
-        .map_err(|err| format!("download cache: select downloaded chapters: {err}"))?;
+        .map_err(|err| format!("download cache: select target chapters: {err}"))?;
 
     rows.into_iter()
         .map(|row| {
@@ -442,8 +441,7 @@ async fn mark_chapters_deleted(pool: &SqlitePool, chapter_ids: &[i64]) -> Result
           media_bytes_checked_at = NULL,
           is_downloaded = 0,
           updated_at = unixepoch()
-        WHERE is_downloaded = 1
-          AND id IN (
+        WHERE id IN (
         "#,
     );
     let mut separated = query.separated(", ");
@@ -665,7 +663,7 @@ async fn run_download_cache_delete_work<R: Runtime>(
         });
     }
 
-    let rows = select_downloaded_chapters(&pool, &work).await?;
+    let rows = select_target_chapters(&pool, &work).await?;
     let total = rows.len().min(i64::MAX as usize) as i64;
     if !mark_work_running(&pool, &work.id, total).await? {
         let current = get_work(&pool, &work.id).await?;
@@ -905,6 +903,16 @@ mod tests {
                 .expect("open in-memory db");
             create_fixture_schema(&pool).await;
             seed_downloaded_novel(&pool, 120).await;
+            sqlx::query(
+                r#"
+                UPDATE chapter
+                SET is_downloaded = 0
+                WHERE id = 120
+                "#,
+            )
+            .execute(&pool)
+            .await
+            .expect("mark chapter as not downloaded");
 
             let mut dbs = HashMap::new();
             dbs.insert(DB_URL.to_string(), DbPool::Sqlite(pool.clone()));

@@ -423,6 +423,10 @@ export class TaskScheduler {
   private readonly pausedSourceIds = new Set<string>();
   private readonly cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly snapshotListeners = new Set<() => void>();
+  private readonly sourceTaskSettlementWaiters = new Map<
+    string,
+    Set<() => void>
+  >();
   private readonly sourceCooldownTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -1120,6 +1124,20 @@ export class TaskScheduler {
     return id ? this.getTask(id) : undefined;
   }
 
+  /** Wait until the current source-task execution releases its executor. */
+  waitForSourceTaskSettlement(id: string): Promise<void> {
+    const entry = this.entries.get(id);
+    if (!entry || entry.record.lane !== "source" || entry.activeReleased) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters =
+        this.sourceTaskSettlementWaiters.get(id) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.sourceTaskSettlementWaiters.set(id, waiters);
+    });
+  }
+
   subscribe = (listener: () => void): (() => void) => {
     this.snapshotListeners.add(listener);
     return () => {
@@ -1735,6 +1753,13 @@ export class TaskScheduler {
       }
       entry.sourceExecutorId = undefined;
       entry.activeReleased = true;
+      const settlementWaiters = this.sourceTaskSettlementWaiters.get(
+        entry.record.id,
+      );
+      if (settlementWaiters) {
+        this.sourceTaskSettlementWaiters.delete(entry.record.id);
+        for (const resolve of settlementWaiters) resolve();
+      }
       this.setSourceCooldown(entry);
     }
 

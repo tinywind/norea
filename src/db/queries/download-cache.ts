@@ -44,6 +44,11 @@ export interface DownloadCacheChapter {
   totalBytes: number;
 }
 
+export type DownloadCacheDeleteChapterIdFilter =
+  | { chapterIds: readonly number[]; novelIds?: never }
+  | { chapterIds?: never; novelIds: readonly number[] }
+  | { chapterIds?: undefined; novelIds?: undefined };
+
 interface RawDownloadCacheChapter
   extends Omit<DownloadCacheChapter, "unread" | "mediaRepairNeeded"> {
   unread: number;
@@ -142,6 +147,44 @@ export async function listDownloadCacheChapters(
     unread: !!row.unread,
     mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
   }));
+}
+
+export async function listNonLocalDownloadCacheDeleteChapterIds(
+  filter: DownloadCacheDeleteChapterIdFilter = {},
+): Promise<number[]> {
+  const db = await getDb();
+  const requestedIds = filter.chapterIds ?? filter.novelIds;
+  if (requestedIds?.length === 0) return [];
+
+  const targetIds = requestedIds
+    ? [
+        ...new Set(
+          requestedIds.filter((id) => Number.isInteger(id) && id > 0),
+        ),
+      ].sort((left, right) => left - right)
+    : [];
+  if (requestedIds && targetIds.length === 0) return [];
+
+  const targetColumn = filter.chapterIds
+    ? "c.id"
+    : filter.novelIds
+      ? "c.novel_id"
+      : null;
+  const targetFilter = targetColumn
+    ? `AND ${targetColumn} IN (${targetIds
+        .map((_, index) => `$${index + 1}`)
+        .join(", ")})`
+    : "";
+  const rows = await db.select<Array<{ id: number }>>(
+    `SELECT c.id
+     FROM chapter c
+     JOIN novel n ON n.id = c.novel_id
+     WHERE n.is_local = 0
+       ${targetFilter}
+     ORDER BY c.novel_id, c.position, c.id`,
+    targetIds,
+  );
+  return rows.map((row) => row.id);
 }
 
 export async function deleteDownloadCacheChapter(

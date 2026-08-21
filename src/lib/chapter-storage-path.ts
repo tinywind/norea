@@ -57,6 +57,25 @@ function chapterNumberSegment(chapter: ChapterStorageChapterPathInput): string {
   return safeSegment(chapter.chapterNumber, fallback);
 }
 
+export function chapterStorageIdentityPrefix(
+  chapter: ChapterStorageChapterPathInput,
+): string {
+  return `${chapterNumberSegment(chapter)}-`;
+}
+
+export function novelStorageIdentitySuffix(
+  novel: ChapterStorageNovelPathInput,
+): string {
+  const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
+  return `-${novelAddress}`;
+}
+
+export function sourceStorageRelativeDir(
+  novel: ChapterStorageNovelPathInput,
+): string {
+  return `${CONTENTS_ROOT_DIR}/${safeSegment(novel.pluginId, "source")}`;
+}
+
 export function chapterStorageRelativeDir(
   novel: ChapterStorageNovelPathInput,
   chapter: ChapterStorageChapterPathInput,
@@ -71,10 +90,9 @@ export function chapterStorageRelativeDir(
 export function novelStorageRelativeDir(
   novel: ChapterStorageNovelPathInput,
 ): string {
-  const sourceId = safeSegment(novel.pluginId, "source");
   const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
   const novelSegment = `${safeLabelSegment(novel.name, "novel")}-${novelAddress}`;
-  return `${CONTENTS_ROOT_DIR}/${sourceId}/${novelSegment}`;
+  return `${sourceStorageRelativeDir(novel)}/${novelSegment}`;
 }
 
 export function novelCoverRelativePath(

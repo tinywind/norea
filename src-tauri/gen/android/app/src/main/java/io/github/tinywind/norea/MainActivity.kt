@@ -726,6 +726,139 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
+    fun inspectChapterArtifacts(
+      rootUri: String,
+      preferredChapterDir: String,
+      sourceDir: String,
+      novelIdentitySuffix: String,
+      chapterIdentityPrefix: String,
+      preferredContentFileName: String,
+    ): String = storageResponse {
+      val root = storageRoot(rootUri)
+      require(root.canRead()) { "Android storage folder is not readable." }
+      val preferredName = safeStorageSegments(preferredContentFileName).singleOrNull()
+        ?: throw IllegalArgumentException("Android storage content file name is invalid.")
+      val contentNames = linkedSetOf(preferredName, "content.html", "content.pdf")
+
+      fun inspectDirectory(directory: DocumentFile, relativeDir: String): JSONObject? {
+        require(directory.isDirectory) { "Android storage chapter path is not a folder: $relativeDir" }
+        require(directory.canRead()) { "Android storage chapter path is not readable: $relativeDir" }
+        val content = contentNames.firstNotNullOfOrNull { name ->
+          directory.findFile(name)?.also { candidate ->
+            require(candidate.isFile) {
+              "Android storage content path is not a file: $relativeDir/$name"
+            }
+          }
+        } ?: return null
+        require(content.canRead()) { "Android storage content file is not readable: $relativeDir" }
+        val contentName = content.name ?: preferredName
+        val archive = directory.findFile("media.zip")
+        val archiveBytes = archive
+          ?.takeIf { it.isFile }
+          ?.length()
+          ?.coerceAtLeast(0L)
+          ?: 0L
+        return JSONObject()
+          .put("ok", true)
+          .put("status", "present")
+          .put("contentFile", "$relativeDir/$contentName")
+          .put("contentBytes", content.length().coerceAtLeast(0L))
+          .put("mediaBytes", archiveBytes)
+      }
+
+      storageDocumentAt(rootUri, preferredChapterDir)?.let { preferred ->
+        inspectDirectory(preferred, preferredChapterDir)?.let { return@storageResponse it }
+      }
+
+      val matches = mutableListOf<JSONObject>()
+      val source = storageDocumentAt(rootUri, sourceDir)
+      if (source != null) {
+        require(source.isDirectory) { "Android storage source path is not a folder: $sourceDir" }
+        require(source.canRead()) { "Android storage source path is not readable: $sourceDir" }
+        for (novel in source.listFiles()) {
+          val novelName = novel.name ?: continue
+          if (!novelName.endsWith(novelIdentitySuffix)) continue
+          require(novel.isDirectory) { "Android storage novel path is not a folder: $novelName" }
+          require(novel.canRead()) { "Android storage novel path is not readable: $novelName" }
+          for (chapter in novel.listFiles()) {
+            val chapterName = chapter.name ?: continue
+            if (!chapterName.startsWith(chapterIdentityPrefix)) continue
+            require(chapter.isDirectory) {
+              "Android storage chapter path is not a folder: $chapterName"
+            }
+            require(chapter.canRead()) {
+              "Android storage chapter path is not readable: $chapterName"
+            }
+            inspectDirectory(chapter, "$sourceDir/$novelName/$chapterName")
+              ?.let(matches::add)
+          }
+        }
+      }
+
+      when (matches.size) {
+        0 -> JSONObject()
+          .put("ok", true)
+          .put("status", "missing")
+          .put("contentBytes", 0)
+          .put("mediaBytes", 0)
+        1 -> matches.single()
+        else -> throw IllegalStateException(
+          "Multiple stored chapter folders match source identity $chapterIdentityPrefix",
+        )
+      }
+    }
+
+    @JavascriptInterface
+    fun listChapterStorageDirs(
+      rootUri: String,
+      preferredChapterDir: String,
+      sourceDir: String,
+      novelIdentitySuffix: String,
+      chapterIdentityPrefix: String,
+    ): String = storageResponse {
+      val root = storageRoot(rootUri)
+      require(root.canRead()) { "Android storage folder is not readable." }
+      val chapterDirs = linkedSetOf<String>()
+
+      storageDocumentAt(rootUri, preferredChapterDir)?.let { preferred ->
+        require(preferred.isDirectory) {
+          "Android storage chapter path is not a folder: $preferredChapterDir"
+        }
+        require(preferred.canRead()) {
+          "Android storage chapter path is not readable: $preferredChapterDir"
+        }
+        chapterDirs.add(preferredChapterDir)
+      }
+
+      val source = storageDocumentAt(rootUri, sourceDir)
+      if (source != null) {
+        require(source.isDirectory) { "Android storage source path is not a folder: $sourceDir" }
+        require(source.canRead()) { "Android storage source path is not readable: $sourceDir" }
+        for (novel in source.listFiles()) {
+          val novelName = novel.name ?: continue
+          if (!novelName.endsWith(novelIdentitySuffix)) continue
+          require(novel.isDirectory) { "Android storage novel path is not a folder: $novelName" }
+          require(novel.canRead()) { "Android storage novel path is not readable: $novelName" }
+          for (chapter in novel.listFiles()) {
+            val chapterName = chapter.name ?: continue
+            if (!chapterName.startsWith(chapterIdentityPrefix)) continue
+            require(chapter.isDirectory) {
+              "Android storage chapter path is not a folder: $chapterName"
+            }
+            require(chapter.canRead()) {
+              "Android storage chapter path is not readable: $chapterName"
+            }
+            chapterDirs.add("$sourceDir/$novelName/$chapterName")
+          }
+        }
+      }
+
+      JSONObject()
+        .put("ok", true)
+        .put("chapterDirs", JSONArray(chapterDirs.toList()))
+    }
+
+    @JavascriptInterface
     fun readBase64(rootUri: String, relativePath: String): String = storageResponse {
       Log.d(TAG, "Android storage readBase64 path=$relativePath root=$rootUri")
       val bytes = openStorageInputStream(rootUri, relativePath)?.use { input ->
@@ -957,7 +1090,11 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun deletePath(rootUri: String, relativePath: String): String = storageResponse {
-      storageDocumentAt(rootUri, relativePath)?.delete()
+      storageDocumentAt(rootUri, relativePath)?.let { document ->
+        if (!document.delete()) {
+          throw IllegalStateException("Cannot delete Android storage path: $relativePath")
+        }
+      }
       JSONObject().put("ok", true)
     }
 
@@ -1010,16 +1147,47 @@ class MainActivity : TauriActivity() {
     @JavascriptInterface
     fun renamePath(rootUri: String, relativePath: String, newName: String): String =
       storageResponse {
-        val safeNewName = safeZipEntryName(newName)
+        val safeNewName = safeStorageSegments(newName).singleOrNull()
           ?: throw IllegalArgumentException("Android storage target name is invalid: $newName")
         val document = storageDocumentAt(rootUri, relativePath)
           ?: throw IllegalArgumentException("Android storage path not found: $relativePath")
         val parentPath = safeStorageSegments(relativePath).dropLast(1).joinToString("/")
-        if (parentPath.isNotEmpty()) {
-          storageDocumentAt(rootUri, "$parentPath/$safeNewName")?.delete()
+        val parent = if (parentPath.isEmpty()) {
+          storageRoot(rootUri)
+        } else {
+          storageDocumentAt(rootUri, parentPath)
+            ?: throw IllegalStateException("Android storage parent path not found: $parentPath")
+        }
+        if (document.name == safeNewName) {
+          return@storageResponse JSONObject().put("ok", true)
+        }
+        val backupName = "$safeNewName.bak"
+        val existing = parent.findFile(safeNewName)
+        var backup = parent.findFile(backupName)
+        if (existing != null) {
+          if (backup != null && !backup.delete()) {
+            throw IllegalStateException("Cannot remove Android storage backup: $backupName")
+          }
+          if (!existing.renameTo(backupName)) {
+            throw IllegalStateException("Cannot backup Android storage path: $safeNewName")
+          }
+          backup = existing
         }
         if (!document.renameTo(safeNewName)) {
+          val rollbackBackup = backup
+          if (rollbackBackup != null) {
+            if (!rollbackBackup.renameTo(safeNewName)) {
+              throw IllegalStateException(
+                "Cannot restore Android storage path after rename failure: $safeNewName",
+              )
+            }
+          }
           throw IllegalStateException("Cannot rename Android storage path: $relativePath")
+        }
+        parent.findFile(backupName)?.let { publishedBackup ->
+          if (!publishedBackup.delete()) {
+            throw IllegalStateException("Cannot remove Android storage backup: $backupName")
+          }
         }
         JSONObject().put("ok", true)
       }

@@ -13,6 +13,7 @@ import {
   writeAndroidStorageText,
 } from "./android-storage";
 import {
+  chapterStorageRelativeDir,
   chapterMediaArchiveRelativePath,
   chapterMediaDirectoryRelativePath,
   chapterMediaManifestRelativePath,
@@ -20,6 +21,7 @@ import {
   type ChapterStorageChapterPathInput,
   type ChapterStorageNovelPathInput,
 } from "./chapter-storage-path";
+import { resolvedChapterStorageDir } from "./chapter-storage-resolution";
 import {
   pluginMediaFetch,
   takeCapturedMediaHandle,
@@ -638,11 +640,29 @@ function androidChapterMediaRelativePathForContext(
       fileName,
     );
   }
-  return chapterMediaRelativePath(
+  return resolvedAndroidChapterStoragePath(
+    context,
+    chapterMediaRelativePath(
+      storageNovelPathInput(context),
+      storageChapterPathInput(context),
+      fileName,
+    ),
+  );
+}
+
+function resolvedAndroidChapterStoragePath(
+  context: ChapterMediaStorageContext,
+  preferredPath: string,
+): string {
+  const resolvedDir = resolvedChapterStorageDir(context.chapterId);
+  if (!resolvedDir) return preferredPath;
+  const preferredDir = chapterStorageRelativeDir(
     storageNovelPathInput(context),
     storageChapterPathInput(context),
-    fileName,
   );
+  if (preferredPath === preferredDir) return resolvedDir;
+  if (!preferredPath.startsWith(`${preferredDir}/`)) return preferredPath;
+  return `${resolvedDir}${preferredPath.slice(preferredDir.length)}`;
 }
 
 function uniqueAndroidStoragePaths(paths: string[]): string[] {
@@ -670,9 +690,12 @@ function androidChapterMediaArchiveRelativePathForContext(
   if (!hasStorageContext(context)) {
     return `chapter-media/${context?.chapterId ?? 0}/media.zip`;
   }
-  return chapterMediaArchiveRelativePath(
-    storageNovelPathInput(context),
-    storageChapterPathInput(context),
+  return resolvedAndroidChapterStoragePath(
+    context,
+    chapterMediaArchiveRelativePath(
+      storageNovelPathInput(context),
+      storageChapterPathInput(context),
+    ),
   );
 }
 
@@ -715,9 +738,12 @@ function androidChapterMediaManifestRelativePath(
   if (!hasStorageContext(context)) {
     return `chapter-media/${context?.chapterId ?? 0}/${CHAPTER_MEDIA_MANIFEST_FILE}`;
   }
-  return chapterMediaManifestRelativePath(
-    storageNovelPathInput(context),
-    storageChapterPathInput(context),
+  return resolvedAndroidChapterStoragePath(
+    context,
+    chapterMediaManifestRelativePath(
+      storageNovelPathInput(context),
+      storageChapterPathInput(context),
+    ),
   );
 }
 
@@ -3126,22 +3152,19 @@ export async function clearChapterMedia(
     if (hasStorageContext(resolvedContext)) {
       await Promise.all([
         deleteAndroidStoragePath(
-          chapterMediaDirectoryRelativePath(
-            storageNovelPathInput(resolvedContext),
-            storageChapterPathInput(resolvedContext),
+          resolvedAndroidChapterStoragePath(
+            resolvedContext,
+            chapterMediaDirectoryRelativePath(
+              storageNovelPathInput(resolvedContext),
+              storageChapterPathInput(resolvedContext),
+            ),
           ),
         ),
         deleteAndroidStoragePath(
-          chapterMediaArchiveRelativePath(
-            storageNovelPathInput(resolvedContext),
-            storageChapterPathInput(resolvedContext),
-          ),
+          androidChapterMediaArchiveRelativePathForContext(resolvedContext),
         ),
         deleteAndroidStoragePath(
-          chapterMediaManifestRelativePath(
-            storageNovelPathInput(resolvedContext),
-            storageChapterPathInput(resolvedContext),
-          ),
+          androidChapterMediaManifestRelativePath(resolvedContext),
         ),
       ]);
     }

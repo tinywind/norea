@@ -799,6 +799,51 @@ export async function saveChapterPartialContentMetadata(
   return { rowsAffected: result.rowsAffected };
 }
 
+export async function adoptStoredChapterContentMetadata(
+  chapterId: number,
+  contentBytes: number,
+  mediaBytes: number,
+  contentType: ChapterContentType | null,
+): Promise<ChapterMutationResult> {
+  const db = await getDb();
+  const result = await db.execute(
+    `UPDATE chapter
+     SET
+       content_bytes  = $2,
+       media_bytes    = $3,
+       media_repair_needed = 0,
+       media_bytes_checked_at = unixepoch(),
+       content_type   = COALESCE($4, content_type),
+       is_downloaded  = 1
+     WHERE id = $1`,
+    [chapterId, contentBytes, mediaBytes, contentType],
+  );
+  return { rowsAffected: result.rowsAffected };
+}
+
+export async function markStoredChapterContentMissing(
+  chapterId: number,
+): Promise<ChapterMutationResult> {
+  const db = await getDb();
+  const result = await db.execute(
+    `UPDATE chapter
+     SET
+       content_bytes  = 0,
+       media_bytes    = 0,
+       media_repair_needed = 0,
+       media_bytes_checked_at = NULL,
+       is_downloaded  = 0
+     WHERE id = $1
+       AND novel_id IN (
+         SELECT id
+         FROM novel
+         WHERE is_local = 0
+       )`,
+    [chapterId],
+  );
+  return { rowsAffected: result.rowsAffected };
+}
+
 export async function clearChapterContent(
   chapterId: number,
 ): Promise<void> {

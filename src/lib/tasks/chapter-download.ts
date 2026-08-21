@@ -25,6 +25,8 @@ import {
 } from "../chapter-media";
 import {
   readStoredChapterContentMirror,
+  readStoredChapterPartialContentMirror,
+  reconcileStoredChapterContent,
   saveStoredChapterContent,
   saveStoredChapterPartialContent,
 } from "../chapter-content-storage";
@@ -306,7 +308,10 @@ function validateChapterContentResource(
   if (candidate.type !== "content") {
     throw new Error("Chapter resource must be a text content resource.");
   }
-  if (candidate.contentType !== contentType) {
+  const isNormalizedHtmlSource =
+    contentType === "html" &&
+    (candidate.contentType === "text" || candidate.contentType === "markdown");
+  if (candidate.contentType !== contentType && !isNormalizedHtmlSource) {
     throw new Error(
       `Chapter resource contentType "${candidate.contentType}" does not match "${contentType}".`,
     );
@@ -538,7 +543,7 @@ function queueBackendChapterDownloadMutation(
     });
 }
 
-async function waitForBackendChapterDownloadQueueMutations(): Promise<void> {
+export async function waitForChapterDownloadQueueMutations(): Promise<void> {
   await backendChapterDownloadQueueMutation.catch(() => undefined);
 }
 
@@ -787,10 +792,8 @@ function enqueueChapterDownloadForExecutor(
     waitForBackendQueue?: boolean;
   } = {},
 ): TaskHandle<void> {
-  const sourcePlugin = pluginManager.getPlugin(job.pluginId);
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
-  const sourceBaseUrl = sourcePlugin ? getPluginBaseUrl(sourcePlugin) : undefined;
-  const sourceCooldownKey = sourceBaseDomainKey(sourceBaseUrl) ?? job.pluginId;
+  const sourceCooldownKey = job.pluginId;
   const waitForBackendQueue =
     options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
   const removeQueuedJobOnFailure = options.removeQueuedJobOnFailure ?? true;
@@ -834,8 +837,19 @@ function enqueueChapterDownloadForExecutor(
         if (waitForBackendQueue) {
           await abortableStep(
             signal,
-            waitForBackendChapterDownloadQueueMutations(),
+            waitForChapterDownloadQueueMutations(),
           );
+        }
+        if (signal.aborted) throw abortReason(signal);
+        const storedArtifacts = await reconcileStoredChapterContent(job.id);
+        if (signal.aborted) throw abortReason(signal);
+        if (storedArtifacts.status === "present") {
+          settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+          reportProgress(
+            { current: progressTotal, total: progressTotal },
+            { force: true },
+          );
+          return;
         }
         if (isTauriRuntime()) {
           await abortableStep(signal, pluginManager.loadInstalledFromDb());
@@ -869,7 +883,7 @@ function enqueueChapterDownloadForExecutor(
         const previousHtml =
           !isBinaryChapterContentType(contentType) &&
           isHtmlLikeChapterContentType(savedContentType)
-            ? await readStoredChapterContentMirror(job.id)
+            ? await readStoredChapterPartialContentMirror(job.id)
             : null;
         const storageContext = {
           chapterId: job.id,
@@ -987,6 +1001,7 @@ function enqueueChapterDownloadForExecutor(
           html = storedHtmlSource;
         } else {
           let rawContent: string;
+          let acquiredContentType = contentType;
           if (acquisitionPlan.type === "page") {
             const captured = await captureChapterPage(acquisitionPlan, {
               contentType,
@@ -1002,14 +1017,18 @@ function enqueueChapterDownloadForExecutor(
               contentType,
             );
             rawContent = resource.content;
+            acquiredContentType = resource.contentType;
             baseUrl = resource.baseUrl ?? baseUrl;
           }
           if (signal.aborted) {
             throw new DOMException("Task was cancelled.", "AbortError");
           }
-          const convertedHtml = chapterContentToHtml(rawContent, contentType);
+          const convertedHtml = chapterContentToHtml(
+            rawContent,
+            acquiredContentType,
+          );
           html =
-            contentType === "html"
+            acquiredContentType === "html"
               ? sanitizeReaderHtml(convertedHtml)
               : convertedHtml;
         }
@@ -1500,7 +1519,7 @@ export function subscribeChapterMediaPatches(
 async function pendingBackendChapterDownloadJobs(): Promise<
   BackendChapterDownloadLease
 > {
-  await waitForBackendChapterDownloadQueueMutations();
+  await waitForChapterDownloadQueueMutations();
   const jobs = await leaseBackendChapterDownloadJobs();
   if (jobs.length === 0) {
     return { leased: 0, pendingJobs: [] };
@@ -1512,17 +1531,22 @@ async function pendingBackendChapterDownloadJobs(): Promise<
     const job = jobs[index]!;
     try {
       const chapter = await getChapterById(job.id);
-      if (!chapter || chapter.isDownloaded) {
+      if (!chapter) {
         completedChapterIds.push(job.id);
       } else {
-        pendingJobs.push(job);
+        const storedArtifacts = await reconcileStoredChapterContent(job.id);
+        if (storedArtifacts.status === "present") {
+          completedChapterIds.push(job.id);
+        } else {
+          pendingJobs.push(job);
+        }
       }
     } catch (error) {
       console.warn(
         "[chapter-download] failed to inspect queued chapter:",
         error,
       );
-      pendingJobs.push(job);
+      throw error;
     }
     if (
       (index + 1) % CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL ===
@@ -1538,25 +1562,12 @@ async function pendingBackendChapterDownloadJobs(): Promise<
 }
 
 async function runBackendChapterDownloadExecutor(): Promise<void> {
-  let pluginsLoaded = false;
   for (;;) {
     const { leased, pendingJobs } = await pendingBackendChapterDownloadJobs();
     if (pendingJobs.length === 0) {
       if (leased === 0) return;
       continue;
     }
-    if (!pluginsLoaded) {
-      pluginsLoaded = true;
-      try {
-        await pluginManager.loadInstalledFromDb();
-      } catch (error) {
-        console.warn(
-          "[chapter-download] failed to load plugins for restore:",
-          error,
-        );
-      }
-    }
-
     const restoreHandle = enqueueChapterDownloadBatch({
       jobs: pendingJobs.map((job) => ({ ...job, priority: "background" })),
       persist: false,

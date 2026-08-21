@@ -22,6 +22,21 @@ interface AndroidStorageBridge {
   beginRestore: (rootUri: string, token: string) => string;
   commitRestore: (rootUri: string, token: string) => string;
   pathSize: (rootUri: string, relativePath: string) => string;
+  inspectChapterArtifacts: (
+    rootUri: string,
+    preferredChapterDir: string,
+    sourceDir: string,
+    novelIdentitySuffix: string,
+    chapterIdentityPrefix: string,
+    preferredContentFileName: string,
+  ) => string;
+  listChapterStorageDirs: (
+    rootUri: string,
+    preferredChapterDir: string,
+    sourceDir: string,
+    novelIdentitySuffix: string,
+    chapterIdentityPrefix: string,
+  ) => string;
   prepareReaderMediaCache?: (
     rootUri: string,
     mediaRelativePath: string,
@@ -127,6 +142,31 @@ interface AndroidContentUriDescriptorResponse extends AndroidStorageResponse {
 
 interface AndroidStorageExistsResponse extends AndroidStorageResponse {
   exists?: boolean;
+}
+
+interface AndroidChapterArtifactsResponse extends AndroidStorageResponse {
+  status?: "missing" | "present";
+  contentFile?: string;
+  contentBytes?: number;
+  mediaBytes?: number;
+}
+
+interface AndroidChapterStorageDirsResponse extends AndroidStorageResponse {
+  chapterDirs?: string[];
+}
+
+export interface AndroidChapterArtifacts {
+  status: "missing" | "present";
+  contentFile: string | null;
+  contentBytes: number;
+  mediaBytes: number;
+}
+
+export interface AndroidChapterStorageLookupInput {
+  preferredChapterDir: string;
+  sourceDir: string;
+  novelIdentitySuffix: string;
+  chapterIdentityPrefix: string;
 }
 
 export interface AndroidContentUriDescriptor {
@@ -417,6 +457,44 @@ export async function readAndroidStorageText(
     if (error instanceof Error && /not found/i.test(error.message)) return null;
     throw error;
   }
+}
+
+export async function inspectAndroidChapterArtifacts(input: AndroidChapterStorageLookupInput & {
+  preferredContentFileName: string;
+}): Promise<AndroidChapterArtifacts> {
+  const root = await androidStorageRoot();
+  const response = parseStorageResponse<AndroidChapterArtifactsResponse>(
+    androidStorageBridge().inspectChapterArtifacts(
+      root,
+      input.preferredChapterDir,
+      input.sourceDir,
+      input.novelIdentitySuffix,
+      input.chapterIdentityPrefix,
+      input.preferredContentFileName,
+    ),
+  );
+  return {
+    status: response.status === "present" ? "present" : "missing",
+    contentFile: response.contentFile ?? null,
+    contentBytes: response.contentBytes ?? 0,
+    mediaBytes: response.mediaBytes ?? 0,
+  };
+}
+
+export async function listAndroidChapterStorageDirs(
+  input: AndroidChapterStorageLookupInput,
+): Promise<string[]> {
+  const root = await androidStorageRoot();
+  const response = parseStorageResponse<AndroidChapterStorageDirsResponse>(
+    androidStorageBridge().listChapterStorageDirs(
+      root,
+      input.preferredChapterDir,
+      input.sourceDir,
+      input.novelIdentitySuffix,
+      input.chapterIdentityPrefix,
+    ),
+  );
+  return [...new Set(response.chapterDirs ?? [])];
 }
 
 export async function readAndroidStorageDataUrl(

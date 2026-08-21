@@ -122,7 +122,10 @@ type ChapterResource =
     };
 ```
 
-The returned content type must match the chapter row. `baseUrl`, when present,
+The returned content type must match the chapter row. When re-downloading a
+text or Markdown chapter that the host previously normalized to stored HTML,
+the host may request `html`; the resource may retain its original `text` or
+`markdown` type so the host can convert it again. `baseUrl`, when present,
 must be an absolute HTTP(S) URL and is used to resolve relative media. Binary
 resources must be non-empty and their media type must match their chapter type.
 
@@ -133,10 +136,20 @@ scraper executor. The capture therefore shares the browser cookie jar,
 challenge state, cache, cancellation signal, and foreground/background
 scheduling rules with plugin browsing.
 
+Before asking a plugin for an acquisition plan or starting network traffic, the
+host checks the resolved chapter directory for a final `content.*` file. An
+existing final content file is authoritative: the host trusts it as downloaded,
+reconciles the database metadata, and completes the task without validating the
+file, comparing plugin versions, or requiring a manifest or media archive.
+Missing or damaged media does not invalidate final chapter content. An
+inaccessible storage location is an error, not evidence that the file is
+missing.
+
 The host then:
 
 1. converts text or Markdown to reader HTML and sanitizes captured content;
-2. persists partial HTML before downloading remote media;
+2. persists partial HTML as non-authoritative resume state before downloading
+   remote media, without publishing it as final `content.*`;
 3. records normalized asset URLs and local filenames in the chapter manifest;
 4. materializes lazy image URLs in the page WebView so browser-owned responses
    exist for the captured content;
@@ -147,8 +160,15 @@ The host then:
 7. downloads missing assets through the assigned scraper WebView executor
    without an app-configurable resource slot limit;
 8. updates the manifest after each completed asset and creates `media.zip`;
-9. resumes from stored partial HTML and the manifest without navigating the
-   chapter page again.
+9. publishes final `content.*` only after the acquisition pipeline completes;
+10. resumes incomplete work from stored partial HTML and the manifest without
+    navigating the chapter page again.
+
+Once final `content.*` exists, the incomplete-work resume path does not run.
+Users can force a fresh download with the in-app chapter deletion action, or by
+closing Norea and deleting the chapter's entire directory under `contents/`.
+Deleting only `media.zip` or `manifest.json` does not request a fresh download
+while final content remains.
 
 An explicit media repair is not a download resume. For a page plan, the host
 evaluates the plan again and captures the chapter page before extracting media.

@@ -87,12 +87,6 @@ type ReaderChapterRow = ChapterRow & {
   content: string | null;
 };
 
-function shouldReadStoredReaderContent(
-  chapter: Pick<ChapterRow, "contentBytes" | "isDownloaded">,
-): boolean {
-  return chapter.isDownloaded || chapter.contentBytes > 0;
-}
-
 const READER_RENDERABLE_MEDIA_SELECTOR =
   "img,video,audio,source,embed,track,object,iframe,link[rel~='preload']";
 
@@ -609,10 +603,12 @@ export function ReaderPage() {
     queryFn: async () => {
       const chapter = await getChapterById(chapterId);
       if (!chapter) return null;
-      const content = shouldReadStoredReaderContent(chapter)
-        ? await readStoredChapterContentMirror(chapter.id)
-        : null;
-      return { ...chapter, content } satisfies ReaderChapterRow;
+      const content = await readStoredChapterContentMirror(chapter.id);
+      const reconciledChapter = await getChapterById(chapterId);
+      return {
+        ...(reconciledChapter ?? chapter),
+        content,
+      } satisfies ReaderChapterRow;
     },
     enabled: chapterId > 0,
   });

@@ -34,6 +34,7 @@ import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
 } from "./lib/chapter-media-storage";
+import { startChapterContentStorageMirrorSweep } from "./lib/chapter-content-storage";
 import { pluginManager } from "./lib/plugins/manager";
 import { isAndroidRuntime, isTauriRuntime } from "./lib/tauri-runtime";
 import { router } from "./router";
@@ -518,6 +519,13 @@ function ChapterMediaStorageGate({
   useEffect(() => {
     if (!storageReady || !isTauriRuntime()) return;
 
+    const stopStorageSweep = startChapterContentStorageMirrorSweep({
+      onComplete: () => {
+        void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+        void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+        void queryClient.invalidateQueries({ queryKey: ["novel"] });
+      },
+    });
     void pluginManager.loadInstalledFromDb().catch((unknownError: unknown) => {
       // eslint-disable-next-line no-console
       console.warn(
@@ -525,6 +533,7 @@ function ChapterMediaStorageGate({
         unknownError,
       );
     });
+    return stopStorageSweep;
   }, [storageReady]);
 
   async function chooseStorageRoot(): Promise<void> {

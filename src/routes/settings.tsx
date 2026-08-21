@@ -43,6 +43,7 @@ import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
 } from "../lib/chapter-media-storage";
+import { restartChapterContentStorageMirrorSweep } from "../lib/chapter-content-storage";
 import { pluginManager } from "../lib/plugins/manager";
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
@@ -243,6 +244,13 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
       const root = await selectChapterMediaStorageRoot();
       if (root) {
         setMediaStorageRoot(root);
+        restartChapterContentStorageMirrorSweep({
+          onComplete: () => {
+            void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+            void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+            void queryClient.invalidateQueries({ queryKey: ["novel"] });
+          },
+        });
         showSettingsToast(
           "green",
           t("settings.toast.saved"),
