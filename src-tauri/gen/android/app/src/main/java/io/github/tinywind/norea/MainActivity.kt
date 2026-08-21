@@ -38,6 +38,18 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
+internal fun inferAndroidStorageMimeType(
+  relativePath: String,
+  mimeTypeForExtension: (String) -> String?,
+): String {
+  val extension = relativePath.substringAfterLast('.', "")
+    .lowercase()
+    .takeIf { it.isNotBlank() }
+  return extension
+    ?.let(mimeTypeForExtension)
+    ?: "application/octet-stream"
+}
+
 class MainActivity : TauriActivity() {
   private data class ContentUriMetadata(
     val fileName: String?,
@@ -2183,10 +2195,8 @@ class MainActivity : TauriActivity() {
     return total
   }
 
-  private fun textMimeTypeForPath(relativePath: String): String {
-    val mimeType = mimeTypeForPath(relativePath, "")
-    return if (mimeType == "application/octet-stream") "text/plain" else mimeType
-  }
+  private fun textMimeTypeForPath(relativePath: String): String =
+    mimeTypeForPath(relativePath, "")
 
   private fun imageMimeType(input: InputStream): String? {
     val header = ByteArray(IMAGE_SIGNATURE_MAX_BYTES)
@@ -2268,12 +2278,9 @@ class MainActivity : TauriActivity() {
 
   private fun mimeTypeForPath(relativePath: String, fallback: String): String {
     if (fallback.isNotBlank()) return fallback
-    val extension = relativePath.substringAfterLast('.', "")
-      .lowercase()
-      .takeIf { it.isNotBlank() }
-    return extension
-      ?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
-      ?: "application/octet-stream"
+    return inferAndroidStorageMimeType(relativePath) { extension ->
+      MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+    }
   }
 
   private fun storageDocumentSize(
