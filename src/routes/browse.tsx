@@ -981,17 +981,12 @@ export function BrowsePage({
       </Modal>
       <Modal
         opened={active && cookiePlugin !== null}
-        onClose={() => {
-          if (!clearCookiesMutation.isPending) setCookiePlugin(null);
-        }}
-        closeOnClickOutside={!clearCookiesMutation.isPending}
-        closeOnEscape={!clearCookiesMutation.isPending}
+        onClose={() => setCookiePlugin(null)}
         title={
           cookiePlugin
             ? t("browse.cookies.confirmTitle", { name: cookiePlugin.name })
             : t("browse.cookies.clear")
         }
-        withCloseButton={!clearCookiesMutation.isPending}
       >
         <Stack gap="md">
           <Text size="sm">
@@ -1004,7 +999,6 @@ export function BrowsePage({
           <Group justify="flex-end">
             <TextButton
               variant="subtle"
-              disabled={clearCookiesMutation.isPending}
               onClick={() => setCookiePlugin(null)}
             >
               {t("common.cancel")}

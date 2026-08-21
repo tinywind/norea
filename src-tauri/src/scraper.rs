@@ -59,6 +59,12 @@ use tauri::{
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 #[cfg(desktop)]
 use tokio::time::timeout;
+#[cfg(all(desktop, target_os = "windows"))]
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+#[cfg(all(desktop, target_os = "windows"))]
+use webview2_com::GetCookiesCompletedHandler;
+#[cfg(all(desktop, target_os = "windows"))]
+use windows::core::{HSTRING, Interface, PCWSTR};
 
 #[cfg(desktop)]
 const SCRAPER_LABEL: &str = "scraper";
@@ -512,6 +518,8 @@ const SITE_BROWSER_HIDDEN_EVENT: &str = "site-browser-hidden";
 const IMMEDIATE_EXECUTOR: &str = "immediate";
 #[cfg(desktop)]
 const RESOURCE_CAPTURE_QUIET_PERIOD: Duration = Duration::from_millis(750);
+#[cfg(desktop)]
+const SCRAPER_COOKIE_CLEAR_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[cfg(desktop)]
 fn log_windows_scraper_event(message: &str) {
@@ -1333,6 +1341,129 @@ pub async fn scraper_poll_control_message(
 
 /// Delete cookies available to one plugin URL from the shared scraper cookie jar.
 #[cfg(desktop)]
+async fn await_cookie_clear_completion(
+    receiver: oneshot::Receiver<Result<usize, String>>,
+    wait: Duration,
+) -> Result<usize, String> {
+    timeout(wait, receiver)
+        .await
+        .map_err(|_| "scraper_clear_cookies: WebView2 cookie callback timed out".to_string())?
+        .map_err(|_| "scraper_clear_cookies: WebView2 cookie callback dropped".to_string())?
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn existing_cookie_store_webview(
+    app: &AppHandle,
+    state: &ScraperState,
+    queue: &str,
+) -> Result<ScraperWebview, String> {
+    let labels = {
+        let entries = state.webviews.lock().expect("scraper webviews mutex");
+        let mut labels = Vec::with_capacity(entries.len());
+        if let Some(entry) = entries.get(queue) {
+            labels.push(entry.label.clone());
+        }
+        labels.extend(
+            entries
+                .iter()
+                .filter(|(key, _)| key.as_str() != queue)
+                .map(|(_, entry)| entry.label.clone()),
+        );
+        labels
+    };
+    for label in labels {
+        if let Some(webview) = app.get_webview(&label) {
+            return Ok(webview);
+        }
+    }
+    app.get_webview("main")
+        .ok_or_else(|| "scraper_clear_cookies: no WebView cookie store is available".to_string())
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+async fn clear_windows_cookies_for_url(
+    webview: &ScraperWebview,
+    url: &Url,
+) -> Result<usize, String> {
+    let (sender, receiver) = oneshot::channel::<Result<usize, String>>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let sender_for_start = Arc::clone(&sender);
+    let uri = HSTRING::from(url.as_str());
+
+    webview
+        .with_webview(move |platform_webview| {
+            let sender_for_callback = Arc::clone(&sender_for_start);
+            let start_result = (|| -> windows::core::Result<()> {
+                let core = unsafe { platform_webview.controller().CoreWebView2()? };
+                let core = core.cast::<ICoreWebView2_2>()?;
+                let cookie_manager = unsafe { core.CookieManager()? };
+                let callback_cookie_manager = cookie_manager.clone();
+                let handler = GetCookiesCompletedHandler::create(Box::new(
+                    move |error_code, cookies| {
+                        let result = (|| -> Result<usize, String> {
+                            error_code.map_err(|error| {
+                                format!(
+                                    "scraper_clear_cookies: WebView2 cookie query failed: {error}"
+                                )
+                            })?;
+                            let cookies = cookies.ok_or_else(|| {
+                                "scraper_clear_cookies: WebView2 returned no cookie list"
+                                    .to_string()
+                            })?;
+                            let mut count = 0;
+                            unsafe {
+                                cookies.Count(&mut count).map_err(|error| {
+                                    format!(
+                                        "scraper_clear_cookies: read WebView2 cookie count: {error}"
+                                    )
+                                })?;
+                                for index in 0..count {
+                                    let cookie =
+                                        cookies.GetValueAtIndex(index).map_err(|error| {
+                                            format!(
+                                                "scraper_clear_cookies: read WebView2 cookie: {error}"
+                                            )
+                                        })?;
+                                    callback_cookie_manager
+                                        .DeleteCookie(&cookie)
+                                        .map_err(|error| {
+                                            format!(
+                                                "scraper_clear_cookies: delete WebView2 cookie: {error}"
+                                            )
+                                        })?;
+                                }
+                            }
+                            Ok(count as usize)
+                        })();
+                        if let Ok(mut sender) = sender_for_callback.lock() {
+                            if let Some(sender) = sender.take() {
+                                let _ = sender.send(result);
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+                unsafe {
+                    cookie_manager.GetCookies(PCWSTR::from_raw(uri.as_ptr()), &handler)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = start_result {
+                if let Ok(mut sender) = sender_for_start.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(Err(format!(
+                            "scraper_clear_cookies: start WebView2 cookie query: {error}"
+                        )));
+                    }
+                }
+            }
+        })
+        .map_err(|error| format!("scraper_clear_cookies: dispatch WebView2 query: {error}"))?;
+
+    await_cookie_clear_completion(receiver, SCRAPER_COOKIE_CLEAR_TIMEOUT).await
+}
+
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn scraper_clear_cookies(
     app: AppHandle,
@@ -1351,20 +1482,33 @@ pub async fn scraper_clear_cookies(
     }
 
     let queue = normalize_scraper_executor(queue.as_deref())?;
-    let user_agent = normalize_user_agent(user_agent);
     let executor_lock = scraper_executor_lock(&state, &queue);
-    let _executor_guard = executor_lock.lock().await;
-    let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
-    let cookies = scraper
-        .cookies_for_url(parsed)
-        .map_err(|err| format!("scraper_clear_cookies: read cookies for '{url}': {err}"))?;
-    let count = cookies.len();
-    for cookie in cookies {
-        scraper
-            .delete_cookie(cookie)
-            .map_err(|err| format!("scraper_clear_cookies: delete cookie for '{url}': {err}"))?;
+    let _executor_guard = timeout(SCRAPER_COOKIE_CLEAR_TIMEOUT, executor_lock.lock())
+        .await
+        .map_err(|_| "scraper_clear_cookies: scraper executor lock timed out".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = user_agent;
+        let webview = existing_cookie_store_webview(&app, &state, &queue)?;
+        clear_windows_cookies_for_url(&webview, &parsed).await
     }
-    Ok(count)
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let user_agent = normalize_user_agent(user_agent);
+        let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+        let cookies = scraper
+            .cookies_for_url(parsed)
+            .map_err(|err| format!("scraper_clear_cookies: read cookies for '{url}': {err}"))?;
+        let count = cookies.len();
+        for cookie in cookies {
+            scraper
+                .delete_cookie(cookie)
+                .map_err(|err| format!("scraper_clear_cookies: delete cookie for '{url}': {err}"))?;
+        }
+        Ok(count)
+    }
 }
 
 #[cfg(not(desktop))]
@@ -3193,6 +3337,40 @@ mod tests {
             .starts_with("window.__noreaScraperControlsEnabled = false;"));
         assert!(scraper_initialization_script(IMMEDIATE_EXECUTOR)
             .starts_with("window.__noreaScraperControlsEnabled = true;"));
+    }
+
+    #[tokio::test]
+    async fn cookie_clear_completion_returns_deleted_count() {
+        let (sender, receiver) = oneshot::channel();
+        sender.send(Ok(3)).unwrap();
+
+        assert_eq!(
+            await_cookie_clear_completion(receiver, Duration::from_millis(10))
+                .await
+                .unwrap(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn cookie_clear_completion_reports_dropped_callback() {
+        let (sender, receiver) = oneshot::channel::<Result<usize, String>>();
+        drop(sender);
+
+        assert!(await_cookie_clear_completion(receiver, Duration::from_millis(10))
+            .await
+            .unwrap_err()
+            .contains("callback dropped"));
+    }
+
+    #[tokio::test]
+    async fn cookie_clear_completion_times_out() {
+        let (_sender, receiver) = oneshot::channel::<Result<usize, String>>();
+
+        assert!(await_cookie_clear_completion(receiver, Duration::from_millis(1))
+            .await
+            .unwrap_err()
+            .contains("timed out"));
     }
 
     #[test]
