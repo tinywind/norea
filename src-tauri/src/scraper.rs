@@ -1340,7 +1340,7 @@ pub async fn scraper_poll_control_message(
 }
 
 /// Delete cookies available to one plugin URL from the shared scraper cookie jar.
-#[cfg(desktop)]
+#[cfg(all(desktop, any(target_os = "windows", test)))]
 async fn await_cookie_clear_completion(
     receiver: oneshot::Receiver<Result<usize, String>>,
     wait: Duration,
