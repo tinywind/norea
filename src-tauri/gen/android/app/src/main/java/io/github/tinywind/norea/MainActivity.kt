@@ -34,6 +34,8 @@ import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -57,6 +59,9 @@ class MainActivity : TauriActivity() {
   )
 
   private val bridgeSession = BridgeSession()
+  private val storageExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "NoreaStorageBridge").apply { isDaemon = true }
+  }
   private var androidScraperBridge: AndroidScraperBridge? = null
   private var scraperBackPressedCallback: OnBackPressedCallback? = null
   private var mainWebView: WebView? = null
@@ -132,6 +137,7 @@ class MainActivity : TauriActivity() {
     scraperBackPressedCallback = null
     androidScraperBridge?.destroy()
     androidScraperBridge = null
+    storageExecutor.shutdownNow()
     super.onDestroy()
   }
 
@@ -739,6 +745,30 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun inspectChapterArtifacts(
+      requestId: String,
+      rootUri: String,
+      preferredChapterDir: String,
+      sourceDir: String,
+      novelIdentitySuffix: String,
+      chapterIdentityPrefix: String,
+      preferredContentFileName: String,
+    ) {
+      storageExecutor.execute {
+        resolveChapterArtifactInspection(
+          requestId,
+          inspectChapterArtifactsResponse(
+            rootUri,
+            preferredChapterDir,
+            sourceDir,
+            novelIdentitySuffix,
+            chapterIdentityPrefix,
+            preferredContentFileName,
+          ),
+        )
+      }
+    }
+
+    private fun inspectChapterArtifactsResponse(
       rootUri: String,
       preferredChapterDir: String,
       sourceDir: String,
@@ -1384,6 +1414,15 @@ class MainActivity : TauriActivity() {
     val script =
       "window.__lnrResolveAndroidStoragePick && window.__lnrResolveAndroidStoragePick(" +
         "${JSONObject.quote(requestId)}, $payload);"
+    mainWebView?.post {
+      mainWebView?.evaluateJavascript(script, null)
+    }
+  }
+
+  private fun resolveChapterArtifactInspection(requestId: String, response: String) {
+    val script =
+      "window.__lnrResolveAndroidChapterArtifacts && window.__lnrResolveAndroidChapterArtifacts(" +
+        "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)
     }

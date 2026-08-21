@@ -23,13 +23,14 @@ interface AndroidStorageBridge {
   commitRestore: (rootUri: string, token: string) => string;
   pathSize: (rootUri: string, relativePath: string) => string;
   inspectChapterArtifacts: (
+    requestId: string,
     rootUri: string,
     preferredChapterDir: string,
     sourceDir: string,
     novelIdentitySuffix: string,
     chapterIdentityPrefix: string,
     preferredContentFileName: string,
-  ) => string;
+  ) => void;
   listChapterStorageDirs: (
     rootUri: string,
     preferredChapterDir: string,
@@ -190,6 +191,7 @@ const pickResolvers = new Map<
   string,
   (payload: AndroidStoragePickPayload) => void
 >();
+const chapterArtifactResolvers = new Map<string, (response: string) => void>();
 const nomediaRoots = new Set<string>();
 
 declare global {
@@ -197,6 +199,10 @@ declare global {
     __lnrResolveAndroidStoragePick?: (
       requestId: string,
       payload: AndroidStoragePickPayload,
+    ) => void;
+    __lnrResolveAndroidChapterArtifacts?: (
+      requestId: string,
+      response: string,
     ) => void;
     __NoreaAndroidStorage?: AndroidStorageBridge;
   }
@@ -284,6 +290,15 @@ function ensurePickResolver(): void {
     if (!resolve) return;
     pickResolvers.delete(requestId);
     resolve(payload);
+  };
+}
+
+function ensureChapterArtifactResolver(): void {
+  window.__lnrResolveAndroidChapterArtifacts ??= (requestId, response) => {
+    const resolve = chapterArtifactResolvers.get(requestId);
+    if (!resolve) return;
+    chapterArtifactResolvers.delete(requestId);
+    resolve(response);
   };
 }
 
@@ -463,15 +478,28 @@ export async function inspectAndroidChapterArtifacts(input: AndroidChapterStorag
   preferredContentFileName: string;
 }): Promise<AndroidChapterArtifacts> {
   const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
+  ensureChapterArtifactResolver();
+  const requestId = makeRequestId();
+  const rawResponse = await new Promise<string>((resolve, reject) => {
+    chapterArtifactResolvers.set(requestId, resolve);
+    try {
+      bridge.inspectChapterArtifacts(
+        requestId,
+        root,
+        input.preferredChapterDir,
+        input.sourceDir,
+        input.novelIdentitySuffix,
+        input.chapterIdentityPrefix,
+        input.preferredContentFileName,
+      );
+    } catch (error) {
+      chapterArtifactResolvers.delete(requestId);
+      reject(error);
+    }
+  });
   const response = parseStorageResponse<AndroidChapterArtifactsResponse>(
-    androidStorageBridge().inspectChapterArtifacts(
-      root,
-      input.preferredChapterDir,
-      input.sourceDir,
-      input.novelIdentitySuffix,
-      input.chapterIdentityPrefix,
-      input.preferredContentFileName,
-    ),
+    rawResponse,
   );
   return {
     status: response.status === "present" ? "present" : "missing",

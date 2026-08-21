@@ -10,6 +10,7 @@ import {
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
   describeAndroidContentUri,
+  inspectAndroidChapterArtifacts,
   prepareAndroidReaderMediaCache,
   readAndroidStorageText,
   selectAndroidStorageRoot,
@@ -22,6 +23,7 @@ type TestBridge = {
   deleteTempFile?: ReturnType<typeof vi.fn>;
   describeContentUri?: ReturnType<typeof vi.fn>;
   ensureNoMedia?: ReturnType<typeof vi.fn>;
+  inspectChapterArtifacts?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
@@ -231,6 +233,66 @@ describe("android storage bridge facade", () => {
       root,
       "contents/demo/chapter/content.html",
     );
+  });
+
+  it("resolves chapter artifact inspections through an asynchronous callback", async () => {
+    const root = "content://tree/primary%3ANoreaInspect";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    let requestId = "";
+    const inspectChapterArtifacts = vi.fn((candidateRequestId: string) => {
+      requestId = candidateRequestId;
+    });
+    invokeMock.mockResolvedValue(root);
+    installBridge({ ensureNoMedia, inspectChapterArtifacts });
+
+    const inspection = inspectAndroidChapterArtifacts({
+      chapterIdentityPrefix: "1-",
+      novelIdentitySuffix: "-novel-1",
+      preferredChapterDir: "contents/demo/Novel-novel-1/1-Chapter",
+      preferredContentFileName: "content.html",
+      sourceDir: "contents/demo",
+    });
+
+    await vi.waitFor(() => expect(inspectChapterArtifacts).toHaveBeenCalled());
+    expect(inspectChapterArtifacts).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      "contents/demo/Novel-novel-1/1-Chapter",
+      "contents/demo",
+      "-novel-1",
+      "1-",
+      "content.html",
+    );
+
+    let settled = false;
+    void inspection.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    window.__lnrResolveAndroidChapterArtifacts?.(
+      requestId,
+      JSON.stringify({
+        contentBytes: 12,
+        contentFile: "contents/demo/Novel-novel-1/1-Chapter/content.html",
+        mediaBytes: 3,
+        ok: true,
+        status: "present",
+      }),
+    );
+
+    await expect(inspection).resolves.toEqual({
+      contentBytes: 12,
+      contentFile: "contents/demo/Novel-novel-1/1-Chapter/content.html",
+      mediaBytes: 3,
+      status: "present",
+    });
   });
 
   it("ensures .nomedia after selecting a storage root", async () => {
