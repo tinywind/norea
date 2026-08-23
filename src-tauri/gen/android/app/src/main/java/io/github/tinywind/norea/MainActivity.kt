@@ -30,15 +30,30 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.zip.CRC32
 import java.util.zip.ZipEntry
+import java.util.zip.ZipException
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+
+private const val ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES = 256L * 1024L * 1024L
+private const val ANDROID_CHAPTER_MEDIA_MAX_ENTRIES = 100_000
+private const val ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES = 2L * 1024L * 1024L * 1024L
+private const val ANDROID_CHAPTER_MEDIA_COPY_BUFFER_BYTES = 64 * 1024
+private const val CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE = "media.zip.bak"
+private const val CHAPTER_MEDIA_ARCHIVE_FILE = "media.zip"
+private const val CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE = "media.zip.rollback"
+private const val CHAPTER_MEDIA_ARCHIVE_TEMP_FILE = "media.zip.tmp.zip"
+private const val CHAPTER_MEDIA_MANIFEST_BACKUP_FILE = "manifest.json.bak"
+private const val CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json"
+private const val CHAPTER_MEDIA_MANIFEST_TEMP_FILE = "manifest.json.tmp"
 
 internal fun inferAndroidStorageMimeType(
   relativePath: String,
@@ -121,10 +136,654 @@ internal fun androidChapterStorageTransferSiblingName(
 internal fun androidChapterStorageTransferMarkerName(token: String): String =
   ".norea-transfer-${validateAndroidChapterStorageTransferToken(token)}"
 
+internal fun androidChapterMediaArchiveStagingFileName(
+  recoverySourceFileName: String?,
+  hasBackup: Boolean,
+  hasRollback: Boolean,
+): String {
+  require(
+    recoverySourceFileName == null ||
+      recoverySourceFileName == CHAPTER_MEDIA_ARCHIVE_FILE ||
+      recoverySourceFileName == CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE ||
+      recoverySourceFileName == CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE,
+  ) {
+    "Android chapter media archive recovery source is invalid."
+  }
+  return when {
+    recoverySourceFileName == CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE ->
+      CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE
+    recoverySourceFileName == CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE ->
+      CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE
+    !hasRollback -> CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE
+    !hasBackup -> CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE
+    else -> CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE
+  }
+}
+
+internal interface AndroidChapterMediaManifestArtifactStore {
+  fun delete(fileName: String): Boolean
+
+  fun exists(fileName: String): Boolean
+
+  fun isFile(fileName: String): Boolean
+
+  fun rename(sourceFileName: String, targetFileName: String): Boolean
+}
+
+private class AndroidChapterMediaManifestDocumentStore(
+  private val directory: DocumentFile,
+) : AndroidChapterMediaManifestArtifactStore {
+  override fun delete(fileName: String): Boolean =
+    directory.findFile(fileName)?.delete() ?: true
+
+  override fun exists(fileName: String): Boolean = directory.findFile(fileName) != null
+
+  override fun isFile(fileName: String): Boolean = directory.findFile(fileName)?.isFile == true
+
+  override fun rename(sourceFileName: String, targetFileName: String): Boolean {
+    if (directory.findFile(targetFileName) != null) return false
+    return directory.findFile(sourceFileName)?.renameTo(targetFileName) == true
+  }
+}
+
+private fun androidChapterMediaManifestArtifactsAreFiles(
+  store: AndroidChapterMediaManifestArtifactStore,
+): Boolean = listOf(
+  CHAPTER_MEDIA_MANIFEST_FILE,
+  CHAPTER_MEDIA_MANIFEST_TEMP_FILE,
+  CHAPTER_MEDIA_MANIFEST_BACKUP_FILE,
+).all { fileName -> !store.exists(fileName) || store.isFile(fileName) }
+
+private fun requireAndroidChapterMediaManifestArtifactsAreFiles(
+  store: AndroidChapterMediaManifestArtifactStore,
+) {
+  check(androidChapterMediaManifestArtifactsAreFiles(store)) {
+    "Android chapter media manifest artifact path is not a file."
+  }
+}
+
+private fun deleteAndroidChapterMediaManifestArtifact(
+  store: AndroidChapterMediaManifestArtifactStore,
+  fileName: String,
+  errorMessage: String,
+) {
+  if (store.exists(fileName) && !store.delete(fileName)) {
+    throw IllegalStateException(errorMessage)
+  }
+}
+
+internal fun publishAndroidChapterMediaArtifactWithRollback(
+  publicationErrorMessage: String,
+  restorationErrorMessage: String,
+  publish: () -> Boolean,
+  restore: (() -> Boolean)?,
+) {
+  if (publish()) return
+
+  val publicationError = IllegalStateException(publicationErrorMessage)
+  if (restore != null) {
+    val restorationError = try {
+      if (restore()) null else IllegalStateException(restorationErrorMessage)
+    } catch (restorationCause: Exception) {
+      IllegalStateException(restorationErrorMessage, restorationCause)
+    }
+    if (restorationError != null) {
+      throw IllegalStateException(
+        "$publicationErrorMessage $restorationErrorMessage",
+        publicationError,
+      ).apply {
+        addSuppressed(restorationError)
+      }
+    }
+  }
+  throw publicationError
+}
+
+internal fun runAndroidChapterMediaRecoveryPreservingPrimaryFailure(
+  primaryFailure: IllegalStateException,
+  recovery: () -> Unit,
+) {
+  try {
+    recovery()
+  } catch (recoveryFailure: Exception) {
+    throw IllegalStateException(
+      "${primaryFailure.message} ${recoveryFailure.message}",
+      primaryFailure,
+    ).apply {
+      addSuppressed(recoveryFailure)
+    }
+  }
+}
+
+internal fun recoverInvalidPublishedAndroidChapterMediaArchive(
+  deletePublished: () -> Boolean,
+  restorePrevious: (() -> Boolean)?,
+) {
+  val validationFailure = IllegalStateException(
+    "Published Android chapter media archive failed validation.",
+  )
+  runAndroidChapterMediaRecoveryPreservingPrimaryFailure(validationFailure) {
+    if (!deletePublished()) {
+      throw IllegalStateException("Cannot remove invalid published chapter media archive.")
+    }
+    if (restorePrevious != null && !restorePrevious()) {
+      throw IllegalStateException("Cannot restore previous Android chapter media archive.")
+    }
+  }
+}
+
+internal fun <T> recoverAndroidChapterMediaManifestArtifacts(
+  store: AndroidChapterMediaManifestArtifactStore,
+  readValid: (String) -> T?,
+): T? {
+  if (!androidChapterMediaManifestArtifactsAreFiles(store)) return null
+
+  val temp = if (store.exists(CHAPTER_MEDIA_MANIFEST_TEMP_FILE)) {
+    readValid(CHAPTER_MEDIA_MANIFEST_TEMP_FILE)
+  } else {
+    null
+  }
+  val publishedBeforeRecovery = if (store.exists(CHAPTER_MEDIA_MANIFEST_FILE)) {
+    readValid(CHAPTER_MEDIA_MANIFEST_FILE)
+  } else {
+    null
+  }
+  if (temp != null) {
+    val hadPublishedManifest = publishedBeforeRecovery != null
+    if (hadPublishedManifest) {
+      deleteAndroidChapterMediaManifestArtifact(
+        store,
+        CHAPTER_MEDIA_MANIFEST_BACKUP_FILE,
+        "Cannot remove stale Android chapter media manifest backup.",
+      )
+      if (!store.rename(CHAPTER_MEDIA_MANIFEST_FILE, CHAPTER_MEDIA_MANIFEST_BACKUP_FILE)) {
+        throw IllegalStateException("Cannot backup Android chapter media manifest.")
+      }
+    } else {
+      deleteAndroidChapterMediaManifestArtifact(
+        store,
+        CHAPTER_MEDIA_MANIFEST_FILE,
+        "Cannot remove invalid Android chapter media manifest.",
+      )
+    }
+    publishAndroidChapterMediaArtifactWithRollback(
+      publicationErrorMessage = "Cannot publish Android chapter media manifest temp file.",
+      restorationErrorMessage = "Cannot restore Android chapter media manifest backup.",
+      publish = {
+        store.rename(CHAPTER_MEDIA_MANIFEST_TEMP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)
+      },
+      restore = if (hadPublishedManifest) {
+        {
+          store.rename(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)
+        }
+      } else {
+        null
+      },
+    )
+    val published = readValid(CHAPTER_MEDIA_MANIFEST_FILE)
+    if (published == null) {
+      val validationFailure = IllegalStateException(
+        "Published Android chapter media manifest failed validation.",
+      )
+      runAndroidChapterMediaRecoveryPreservingPrimaryFailure(validationFailure) {
+        if (!store.rename(CHAPTER_MEDIA_MANIFEST_FILE, CHAPTER_MEDIA_MANIFEST_TEMP_FILE)) {
+          throw IllegalStateException("Cannot preserve invalid Android chapter media manifest.")
+        }
+        if (
+          hadPublishedManifest &&
+          !store.rename(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)
+        ) {
+          throw IllegalStateException("Cannot restore Android chapter media manifest backup.")
+        }
+      }
+      throw validationFailure
+    }
+    deleteAndroidChapterMediaManifestArtifact(
+      store,
+      CHAPTER_MEDIA_MANIFEST_BACKUP_FILE,
+      "Cannot remove Android chapter media manifest backup.",
+    )
+    return published
+  }
+  if (publishedBeforeRecovery != null) return publishedBeforeRecovery
+
+  val backup = if (store.exists(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE)) {
+    readValid(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE)
+  } else {
+    null
+  }
+  if (backup != null) {
+    deleteAndroidChapterMediaManifestArtifact(
+      store,
+      CHAPTER_MEDIA_MANIFEST_FILE,
+      "Cannot remove invalid Android chapter media manifest.",
+    )
+    if (!store.rename(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)) {
+      throw IllegalStateException("Cannot restore Android chapter media manifest backup.")
+    }
+    val published = readValid(CHAPTER_MEDIA_MANIFEST_FILE)
+    if (published == null) {
+      val validationFailure = IllegalStateException(
+        "Restored Android chapter media manifest failed validation.",
+      )
+      runAndroidChapterMediaRecoveryPreservingPrimaryFailure(validationFailure) {
+        if (!store.rename(CHAPTER_MEDIA_MANIFEST_FILE, CHAPTER_MEDIA_MANIFEST_BACKUP_FILE)) {
+          throw IllegalStateException("Cannot preserve invalid Android chapter media manifest.")
+        }
+      }
+      throw validationFailure
+    }
+    deleteAndroidChapterMediaManifestArtifact(
+      store,
+      CHAPTER_MEDIA_MANIFEST_TEMP_FILE,
+      "Cannot remove invalid Android chapter media manifest temp file.",
+    )
+    return published
+  }
+
+  return null
+}
+
+internal fun <T> replaceAndroidChapterMediaManifestAtomically(
+  store: AndroidChapterMediaManifestArtifactStore,
+  writeTemp: () -> Unit,
+  readValid: (String) -> T?,
+): T {
+  recoverAndroidChapterMediaManifestArtifacts(store, readValid)
+  requireAndroidChapterMediaManifestArtifactsAreFiles(store)
+  deleteAndroidChapterMediaManifestArtifact(
+    store,
+    CHAPTER_MEDIA_MANIFEST_TEMP_FILE,
+    "Cannot remove stale Android chapter media manifest temp file.",
+  )
+
+  writeTemp()
+  requireAndroidChapterMediaManifestArtifactsAreFiles(store)
+  if (
+    !store.exists(CHAPTER_MEDIA_MANIFEST_TEMP_FILE) ||
+    readValid(CHAPTER_MEDIA_MANIFEST_TEMP_FILE) == null
+  ) {
+    throw IllegalStateException("Android chapter media manifest temp file failed validation.")
+  }
+
+  val hadPublishedManifest = store.exists(CHAPTER_MEDIA_MANIFEST_FILE)
+  if (hadPublishedManifest) {
+    deleteAndroidChapterMediaManifestArtifact(
+      store,
+      CHAPTER_MEDIA_MANIFEST_BACKUP_FILE,
+      "Cannot remove stale Android chapter media manifest backup.",
+    )
+    if (!store.rename(CHAPTER_MEDIA_MANIFEST_FILE, CHAPTER_MEDIA_MANIFEST_BACKUP_FILE)) {
+      throw IllegalStateException("Cannot backup Android chapter media manifest.")
+    }
+  }
+
+  publishAndroidChapterMediaArtifactWithRollback(
+    publicationErrorMessage = "Cannot publish Android chapter media manifest.",
+    restorationErrorMessage = "Cannot restore Android chapter media manifest backup.",
+    publish = {
+      store.rename(CHAPTER_MEDIA_MANIFEST_TEMP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)
+    },
+    restore = if (hadPublishedManifest) {
+      {
+        store.rename(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)
+      }
+    } else {
+      null
+    },
+  )
+
+  val published = readValid(CHAPTER_MEDIA_MANIFEST_FILE)
+  if (published == null) {
+    val validationFailure = IllegalStateException(
+      "Published Android chapter media manifest failed validation.",
+    )
+    runAndroidChapterMediaRecoveryPreservingPrimaryFailure(validationFailure) {
+      if (!store.rename(CHAPTER_MEDIA_MANIFEST_FILE, CHAPTER_MEDIA_MANIFEST_TEMP_FILE)) {
+        throw IllegalStateException("Cannot preserve invalid Android chapter media manifest.")
+      }
+      if (hadPublishedManifest) {
+        if (!store.rename(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE, CHAPTER_MEDIA_MANIFEST_FILE)) {
+          throw IllegalStateException("Cannot restore Android chapter media manifest backup.")
+        }
+      }
+    }
+    throw validationFailure
+  }
+
+  deleteAndroidChapterMediaManifestArtifact(
+    store,
+    CHAPTER_MEDIA_MANIFEST_BACKUP_FILE,
+    "Cannot remove Android chapter media manifest backup.",
+  )
+  return published
+}
+
+internal data class AndroidChapterMediaManifestFile(
+  val bytes: Long,
+  val fileName: String,
+  val path: String,
+  val status: String,
+)
+
+internal data class AndroidChapterMediaStoredFile(
+  val fileName: String,
+  val bytes: Long,
+)
+
+internal data class AndroidChapterMediaLooseFile(
+  val fileName: String,
+  val bytes: Long,
+  val isRegularFile: Boolean = true,
+)
+
+private fun isSafeAndroidChapterMediaFileName(fileName: String): Boolean =
+  fileName.isNotEmpty() &&
+    fileName == fileName.trim() &&
+    fileName != "." &&
+    fileName != ".." &&
+    !fileName.contains('/') &&
+    !fileName.contains('\\') &&
+    !fileName.contains('\u0000') &&
+    fileName.all { character ->
+      character.isLetterOrDigit() ||
+        character == '.' ||
+        character == '_' ||
+        character == '-'
+    }
+
+private fun requireAndroidChapterMediaStoredFiles(
+  storedFiles: List<AndroidChapterMediaStoredFile>,
+) {
+  require(storedFiles.size <= ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) {
+    "Chapter media manifest has too many stored files."
+  }
+  val fileNames = mutableSetOf<String>()
+  var totalBytes = 0L
+  storedFiles.forEach { file ->
+    require(isSafeAndroidChapterMediaFileName(file.fileName)) {
+      "Chapter media manifest contains an unsafe stored file name."
+    }
+    require(fileNames.add(file.fileName)) {
+      "Chapter media manifest contains a duplicate stored file name."
+    }
+    require(file.bytes in 0L..ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES) {
+      "Chapter media manifest stored file size is invalid."
+    }
+    totalBytes = Math.addExact(totalBytes, file.bytes)
+    require(totalBytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+      "Chapter media manifest stored files exceed the total byte limit."
+    }
+  }
+}
+
+internal fun androidChapterMediaStoredFiles(
+  manifestFiles: List<AndroidChapterMediaManifestFile>,
+): List<AndroidChapterMediaStoredFile> {
+  require(manifestFiles.size <= ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) {
+    "Chapter media manifest has too many files."
+  }
+  val storedFiles = manifestFiles.mapNotNull { file ->
+    require(file.status == "remote" || file.status == "stored") {
+      "Chapter media manifest contains an invalid file status."
+    }
+    if (file.status == "remote") return@mapNotNull null
+    require(isSafeAndroidChapterMediaFileName(file.fileName)) {
+      "Chapter media manifest contains an unsafe stored file name."
+    }
+    require(file.path == "media/${file.fileName}") {
+      "Chapter media manifest stored path does not match its file name."
+    }
+    AndroidChapterMediaStoredFile(file.fileName, file.bytes)
+  }.sortedBy(AndroidChapterMediaStoredFile::fileName)
+  requireAndroidChapterMediaStoredFiles(storedFiles)
+  return storedFiles
+}
+
+internal fun validateAndroidChapterMediaLooseFiles(
+  storedFiles: List<AndroidChapterMediaStoredFile>,
+  looseFiles: List<AndroidChapterMediaLooseFile>,
+  requireAllStoredFiles: Boolean,
+) {
+  requireAndroidChapterMediaStoredFiles(storedFiles)
+  val expectedByName = storedFiles.associateBy(AndroidChapterMediaStoredFile::fileName)
+  val looseNames = mutableSetOf<String>()
+  looseFiles.forEach { loose ->
+    require(loose.isRegularFile && isSafeAndroidChapterMediaFileName(loose.fileName)) {
+      "Chapter media staging directory contains an unsupported entry."
+    }
+    require(!loose.fileName.endsWith(".part")) {
+      "Chapter media staging directory contains a partial file."
+    }
+    require(looseNames.add(loose.fileName)) {
+      "Chapter media staging directory contains a duplicate file name."
+    }
+    val expected = expectedByName[loose.fileName]
+      ?: throw IllegalArgumentException(
+        "Chapter media staging directory contains an unexpected file.",
+      )
+    require(loose.bytes == expected.bytes) {
+      "Chapter media staged file size does not match its manifest entry."
+    }
+  }
+  if (requireAllStoredFiles) {
+    require(looseNames == expectedByName.keys) {
+      "Chapter media staging directory is missing a stored manifest file."
+    }
+  }
+}
+
+private fun copyAndroidChapterMediaFile(
+  input: InputStream,
+  output: OutputStream,
+  expectedBytes: Long,
+) {
+  val buffer = ByteArray(ANDROID_CHAPTER_MEDIA_COPY_BUFFER_BYTES)
+  var copied = 0L
+  while (true) {
+    val read = input.read(buffer)
+    if (read < 0) break
+    copied = Math.addExact(copied, read.toLong())
+    require(copied <= expectedBytes) {
+      "Chapter media file is larger than its manifest entry."
+    }
+    output.write(buffer, 0, read)
+  }
+  require(copied == expectedBytes) {
+    "Chapter media file is smaller than its manifest entry."
+  }
+}
+
+internal fun writeAndroidChapterMediaArchive(
+  storedFiles: List<AndroidChapterMediaStoredFile>,
+  output: OutputStream,
+  openFile: (String) -> InputStream?,
+) {
+  mergeAndroidChapterMediaArchive(
+    storedFiles = storedFiles,
+    looseFileNames = storedFiles.mapTo(mutableSetOf()) { it.fileName },
+    existingArchive = null,
+    output = output,
+    openLooseFile = openFile,
+  )
+}
+
+private fun consumeAndroidChapterMediaArchiveEntry(
+  zip: ZipInputStream,
+  entry: ZipEntry,
+  expectedBytes: Long?,
+  output: OutputStream?,
+): Long {
+  require(entry.size < 0L || entry.size <= ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES) {
+    "Chapter media archive entry exceeds the byte limit."
+  }
+  if (expectedBytes != null) {
+    require(entry.size < 0L || entry.size == expectedBytes) {
+      "Chapter media archive entry size does not match its manifest entry."
+    }
+  }
+  val crc = CRC32()
+  val buffer = ByteArray(ANDROID_CHAPTER_MEDIA_COPY_BUFFER_BYTES)
+  var bytes = 0L
+  while (true) {
+    val read = zip.read(buffer)
+    if (read < 0) break
+    bytes = Math.addExact(bytes, read.toLong())
+    require(bytes <= (expectedBytes ?: ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES)) {
+      "Chapter media archive entry exceeds its byte limit."
+    }
+    crc.update(buffer, 0, read)
+    output?.write(buffer, 0, read)
+  }
+  if (expectedBytes != null) {
+    require(bytes == expectedBytes) {
+      "Chapter media archive entry size does not match its manifest entry."
+    }
+  }
+  require(entry.crc < 0L || entry.crc == crc.value) {
+    "Chapter media archive entry CRC is invalid."
+  }
+  return bytes
+}
+
+internal fun mergeAndroidChapterMediaArchive(
+  storedFiles: List<AndroidChapterMediaStoredFile>,
+  looseFileNames: Set<String>,
+  existingArchive: InputStream?,
+  output: OutputStream,
+  openLooseFile: (String) -> InputStream?,
+) {
+  requireAndroidChapterMediaStoredFiles(storedFiles)
+  val expectedByName = storedFiles.associateBy(AndroidChapterMediaStoredFile::fileName)
+  require(looseFileNames.all(expectedByName::containsKey)) {
+    "Chapter media staging set contains an unexpected file."
+  }
+  ZipOutputStream(output.buffered()).use { zip ->
+    val sourcedNames = mutableSetOf<String>()
+    existingArchive?.use { input ->
+      ZipInputStream(input.buffered()).use { previousZip ->
+        val previousNames = mutableSetOf<String>()
+        var previousBytes = 0L
+        var entry = previousZip.nextEntry
+        while (entry != null) {
+          require(!entry.isDirectory) {
+            "Chapter media archive contains a directory entry."
+          }
+          val entryName = entry.name
+          require(isSafeAndroidChapterMediaFileName(entryName)) {
+            "Chapter media archive contains an unsafe entry name."
+          }
+          require(previousNames.add(entryName)) {
+            "Chapter media archive contains a duplicate entry."
+          }
+          val expected = expectedByName[entryName]
+            ?: throw IllegalArgumentException(
+              "Chapter media archive contains an unexpected entry.",
+            )
+          val useLooseFile = entryName in looseFileNames
+          if (!useLooseFile) {
+            require(sourcedNames.add(entryName)) {
+              "Chapter media archive contains a duplicate stored entry."
+            }
+            zip.putNextEntry(ZipEntry(entryName))
+          }
+          val copied = consumeAndroidChapterMediaArchiveEntry(
+            previousZip,
+            entry,
+            expectedBytes = if (useLooseFile) null else expected.bytes,
+            output = if (useLooseFile) null else zip,
+          )
+          previousBytes = Math.addExact(previousBytes, copied)
+          require(previousBytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+            "Chapter media archive exceeds the total byte limit."
+          }
+          previousZip.closeEntry()
+          if (!useLooseFile) zip.closeEntry()
+          entry = previousZip.nextEntry
+        }
+      }
+    }
+
+    storedFiles.filter { it.fileName in looseFileNames }.forEach { file ->
+      require(sourcedNames.add(file.fileName)) {
+        "Chapter media archive contains a duplicate stored entry."
+      }
+      zip.putNextEntry(ZipEntry(file.fileName))
+      val input = openLooseFile(file.fileName)
+        ?: throw IllegalStateException("Cannot open staged chapter media file.")
+      input.use { source ->
+        copyAndroidChapterMediaFile(source, zip, file.bytes)
+      }
+      zip.closeEntry()
+    }
+    require(sourcedNames == expectedByName.keys) {
+      "Chapter media sources are missing a stored manifest entry."
+    }
+  }
+}
+
+internal fun validateAndroidChapterMediaArchive(
+  storedFiles: List<AndroidChapterMediaStoredFile>,
+  input: InputStream,
+) {
+  requireAndroidChapterMediaStoredFiles(storedFiles)
+  val expectedByName = storedFiles.associateBy(AndroidChapterMediaStoredFile::fileName)
+  val seenNames = mutableSetOf<String>()
+  var totalBytes = 0L
+  ZipInputStream(input.buffered()).use { zip ->
+    var entry = zip.nextEntry
+    while (entry != null) {
+      require(!entry.isDirectory) {
+        "Chapter media archive contains a directory entry."
+      }
+      val entryName = entry.name
+      require(isSafeAndroidChapterMediaFileName(entryName)) {
+        "Chapter media archive contains an unsafe entry name."
+      }
+      require(seenNames.add(entryName)) {
+        "Chapter media archive contains a duplicate entry."
+      }
+      val expected = expectedByName[entryName]
+        ?: throw IllegalArgumentException("Chapter media archive contains an unexpected entry.")
+      val copied = consumeAndroidChapterMediaArchiveEntry(
+        zip,
+        entry,
+        expectedBytes = expected.bytes,
+        output = null,
+      )
+      totalBytes = Math.addExact(totalBytes, copied)
+      require(totalBytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+        "Chapter media archive exceeds the total byte limit."
+      }
+      zip.closeEntry()
+      entry = zip.nextEntry
+    }
+  }
+  require(seenNames == expectedByName.keys) {
+    "Chapter media archive is missing a stored manifest entry."
+  }
+}
+
 class MainActivity : TauriActivity() {
   private data class ContentUriMetadata(
     val fileName: String?,
     val size: Long?,
+  )
+
+  private data class ChapterMediaManifest(
+    val complete: Boolean,
+    val files: List<AndroidChapterMediaManifestFile>,
+    val json: JSONObject,
+  )
+
+  private data class ChapterMediaManifestReadResult(
+    val exists: Boolean,
+    val manifest: ChapterMediaManifest?,
+  )
+
+  private data class ChapterMediaLooseDocument(
+    val document: DocumentFile,
+    val file: AndroidChapterMediaLooseFile,
   )
 
   private data class ChapterStorageTransferEntry(
@@ -671,14 +1330,28 @@ class MainActivity : TauriActivity() {
     fun writeText(rootUri: String, relativePath: String, text: String): String =
       storageResponse {
         val bytes = text.toByteArray(Charsets.UTF_8)
-        val file = ensureStorageFile(
-          rootUri,
-          relativePath,
-          textMimeTypeForPath(relativePath),
-        )
-        contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
-          output.write(bytes)
-        } ?: throw IllegalStateException("Cannot open storage file for writing.")
+        val segments = safeStorageSegments(relativePath)
+        if (segments.last() == CHAPTER_MEDIA_MANIFEST_FILE) {
+          var directory = storageRoot(rootUri)
+          for (segment in segments.dropLast(1)) {
+            directory = ensureStorageDirectory(directory, segment)
+          }
+          writeChapterMediaManifestAtomically(
+            rootUri,
+            directory,
+            segments.dropLast(1).joinToString("/"),
+            bytes,
+          )
+        } else {
+          val file = ensureStorageFile(
+            rootUri,
+            relativePath,
+            textMimeTypeForPath(relativePath),
+          )
+          contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
+            output.write(bytes)
+          } ?: throw IllegalStateException("Cannot open storage file for writing.")
+        }
         JSONObject()
           .put("ok", true)
           .put("bytes", bytes.size)
@@ -690,138 +1363,32 @@ class MainActivity : TauriActivity() {
       sourceRelativePath: String,
       archiveRelativePath: String,
     ): String = storageResponse {
-      val sourceDir = storageDocumentAt(rootUri, sourceRelativePath)
-      val existingArchive = storageDocumentAt(rootUri, archiveRelativePath)
-        ?.takeIf { it.isFile }
-      if (sourceDir == null || !sourceDir.isDirectory) {
-        return@storageResponse JSONObject()
-          .put("ok", true)
-          .put("bytes", existingArchive?.length()?.coerceAtLeast(0L) ?: 0L)
-      }
-
+      val sourceSegments = safeStorageSegments(sourceRelativePath)
       val archiveSegments = safeStorageSegments(archiveRelativePath)
-      val archiveName = archiveSegments.last()
-      val tempArchiveRelativePath = (archiveSegments.dropLast(1) + "$archiveName.tmp.zip")
-        .joinToString("/")
-      val tempArchive = ensureStorageFile(
+      require(
+        sourceSegments.lastOrNull() == "media" &&
+          archiveSegments.lastOrNull() == "media.zip" &&
+          sourceSegments.dropLast(1) == archiveSegments.dropLast(1),
+      ) {
+        "Android chapter media archive paths do not share a chapter directory."
+      }
+      val chapterRelativeDir = sourceSegments.dropLast(1).joinToString("/")
+      val chapterDirectory = storageDocumentAt(rootUri, chapterRelativeDir)
+        ?: throw IllegalStateException("Android chapter media directory is unavailable.")
+      require(chapterDirectory.isDirectory && chapterDirectory.canRead()) {
+        "Android chapter media path is not a readable folder."
+      }
+      val mediaBytes = finalizeChapterMediaArtifacts(
         rootUri,
-        tempArchiveRelativePath,
-        "application/zip",
+        chapterDirectory,
+        chapterRelativeDir,
+        allowLegacyWithoutManifest = false,
+      ) ?: throw IllegalStateException(
+        "Android chapter media files do not match the manifest.",
       )
-      val newFiles = sourceDir.listFiles()
-        .filter {
-          val entryName = safeZipEntryName(it.name)
-          it.isFile && entryName != null && !entryName.endsWith(".part")
-        }
-        .sortedBy { it.name ?: "" }
-      val newEntryNames = newFiles.mapNotNull { safeZipEntryName(it.name) }.toSet()
-      val writtenEntryNames = mutableSetOf<String>()
-      var writtenZipEntryCount = 0
-      var writtenZipBytes = 0L
-
-      contentResolver.openOutputStream(tempArchive.uri, "wt")?.use { output ->
-        ZipOutputStream(output.buffered()).use { zip ->
-          if (existingArchive != null) {
-            openStorageInputStream(rootUri, archiveRelativePath, existingArchive)?.use { input ->
-              ZipInputStream(input.buffered()).use { previousZip ->
-                var entry = previousZip.nextEntry
-                while (entry != null) {
-                  writtenZipEntryCount = nextZipEntryCount(
-                    writtenZipEntryCount,
-                    "Media archive",
-                  )
-                  val entryName = safeZipEntryName(entry.name)
-                  if (
-                    !entry.isDirectory &&
-                    entryName != null &&
-                    !entryName.endsWith(".part") &&
-                    entryName !in newEntryNames &&
-                    writtenEntryNames.add(entryName)
-                  ) {
-                    requireZipEntrySize(entry, "Media archive entry")
-                    zip.putNextEntry(ZipEntry(entryName))
-                    val copied = copyToWithLimit(
-                      previousZip,
-                      zip,
-                      MAX_ZIP_ENTRY_BYTES,
-                    )
-                    writtenZipBytes = addZipTotalBytes(
-                      writtenZipBytes,
-                      copied,
-                      "Media archive",
-                    )
-                    zip.closeEntry()
-                  }
-                  previousZip.closeEntry()
-                  entry = previousZip.nextEntry
-                }
-              }
-            }
-          }
-
-          newFiles.forEach { file ->
-            val entryName = safeZipEntryName(file.name) ?: return@forEach
-            if (!writtenEntryNames.add(entryName)) return@forEach
-            requireStorageFileZipEntrySize(file, "Media archive entry")
-            writtenZipEntryCount = nextZipEntryCount(
-              writtenZipEntryCount,
-              "Media archive",
-            )
-            zip.putNextEntry(ZipEntry(entryName))
-            val copied = openStorageInputStream(
-              rootUri,
-              "$sourceRelativePath/$entryName",
-              file,
-            )?.use { input ->
-              copyToWithLimit(input, zip, MAX_ZIP_ENTRY_BYTES)
-            } ?: throw IllegalStateException("Cannot open media file for archiving.")
-            writtenZipBytes = addZipTotalBytes(
-              writtenZipBytes,
-              copied,
-              "Media archive",
-            )
-            zip.closeEntry()
-          }
-        }
-      } ?: throw IllegalStateException("Cannot open media archive for writing.")
-
-      val backupArchiveName = "$archiveName.bak"
-      val backupArchiveRelativePath = (archiveSegments.dropLast(1) + backupArchiveName)
-        .joinToString("/")
-      storageDocumentAt(rootUri, backupArchiveRelativePath)?.let { staleBackup ->
-        if (!staleBackup.delete()) {
-          throw IllegalStateException(
-            "Cannot remove stale media archive backup: $backupArchiveRelativePath",
-          )
-        }
-      }
-      if (existingArchive != null && !existingArchive.renameTo(backupArchiveName)) {
-        throw IllegalStateException("Cannot backup media archive: $archiveRelativePath")
-      }
-      if (!tempArchive.renameTo(archiveName)) {
-        storageDocumentAt(rootUri, backupArchiveRelativePath)?.renameTo(archiveName)
-        throw IllegalStateException("Cannot finalize media archive: $archiveRelativePath")
-      }
-      storageDocumentAt(rootUri, backupArchiveRelativePath)?.let { backup ->
-        if (!backup.delete()) {
-          throw IllegalStateException(
-            "Cannot remove media archive backup: $backupArchiveRelativePath",
-          )
-        }
-      }
-      sourceDir.listFiles().forEach { child ->
-        if (!child.delete()) {
-          throw IllegalStateException("Cannot remove staged media file: ${child.name}")
-        }
-      }
-      if (!sourceDir.delete()) {
-        throw IllegalStateException("Cannot remove media staging directory: $sourceRelativePath")
-      }
-      val archive = storageDocumentAt(rootUri, archiveRelativePath)
-        ?: throw IllegalStateException("Media archive was not created: $archiveRelativePath")
       JSONObject()
         .put("ok", true)
-        .put("bytes", archive.length().coerceAtLeast(0L))
+        .put("bytes", mediaBytes)
     }
 
     @JavascriptInterface
@@ -886,12 +1453,12 @@ class MainActivity : TauriActivity() {
         } ?: return null
         require(content.canRead()) { "Android storage content file is not readable: $relativeDir" }
         val contentName = content.name ?: preferredName
-        val archive = directory.findFile("media.zip")
-        val archiveBytes = archive
-          ?.takeIf { it.isFile }
-          ?.length()
-          ?.coerceAtLeast(0L)
-          ?: 0L
+        val archiveBytes = finalizeChapterMediaArtifacts(
+          rootUri,
+          directory,
+          relativeDir,
+          allowLegacyWithoutManifest = true,
+        ) ?: return null
         return JSONObject()
           .put("ok", true)
           .put("status", "present")
@@ -1855,6 +2422,640 @@ class MainActivity : TauriActivity() {
       current = current.findFile(segment) ?: return null
     }
     return current
+  }
+
+  private fun chapterMediaJsonLong(value: Any?, field: String): Long {
+    val number = value as? Number
+      ?: throw IllegalArgumentException("Chapter media manifest $field is not a number.")
+    val doubleValue = number.toDouble()
+    val longValue = number.toLong()
+    require(doubleValue.isFinite() && doubleValue == longValue.toDouble() && longValue >= 0L) {
+      "Chapter media manifest $field is invalid."
+    }
+    return longValue
+  }
+
+  private fun parseChapterMediaManifest(json: JSONObject): ChapterMediaManifest {
+    require(chapterMediaJsonLong(json.opt("version"), "version") == 1L) {
+      "Chapter media manifest version is unsupported."
+    }
+    val complete = json.opt("complete") as? Boolean
+      ?: throw IllegalArgumentException("Chapter media manifest completion state is invalid.")
+    chapterMediaJsonLong(json.opt("updatedAt"), "updatedAt")
+    val media = json.optJSONObject("media")
+      ?: throw IllegalArgumentException("Chapter media manifest media value is invalid.")
+    val filesJson = media.optJSONArray("files")
+      ?: throw IllegalArgumentException("Chapter media manifest file list is invalid.")
+    require(filesJson.length() <= ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) {
+      "Chapter media manifest has too many files."
+    }
+    val files = (0 until filesJson.length()).map { index ->
+      val file = filesJson.optJSONObject(index)
+        ?: throw IllegalArgumentException("Chapter media manifest file entry is invalid.")
+      val bytes = chapterMediaJsonLong(file.opt("bytes"), "file bytes")
+      require(bytes <= ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES) {
+        "Chapter media manifest file exceeds the byte limit."
+      }
+      val fileName = file.opt("fileName") as? String
+        ?: throw IllegalArgumentException("Chapter media manifest file name is invalid.")
+      val path = file.opt("path") as? String
+        ?: throw IllegalArgumentException("Chapter media manifest file path is invalid.")
+      file.opt("sourceUrl") as? String
+        ?: throw IllegalArgumentException("Chapter media manifest source URL is invalid.")
+      val status = file.opt("status") as? String
+        ?: throw IllegalArgumentException("Chapter media manifest file status is invalid.")
+      chapterMediaJsonLong(file.opt("updatedAt"), "file updatedAt")
+      if (file.has("contentType") && !file.isNull("contentType")) {
+        require(file.opt("contentType") is String) {
+          "Chapter media manifest content type is invalid."
+        }
+      }
+      AndroidChapterMediaManifestFile(
+        bytes = bytes,
+        fileName = fileName,
+        path = path,
+        status = status,
+      )
+    }
+    androidChapterMediaStoredFiles(files)
+    return ChapterMediaManifest(
+      complete = complete,
+      files = files,
+      json = json,
+    )
+  }
+
+  private fun readChapterMediaManifestDocument(
+    rootUri: String,
+    relativePath: String,
+    document: DocumentFile,
+  ): ChapterMediaManifest? {
+    if (!document.isFile) return null
+    if (!document.canRead()) {
+      throw IllegalStateException("Android chapter media manifest is not readable.")
+    }
+    val raw = try {
+      openStorageInputStream(rootUri, relativePath, document)?.use { input ->
+        readBytesWithLimit(input, MAX_CHAPTER_MEDIA_MANIFEST_BYTES)
+          .toString(Charsets.UTF_8)
+      } ?: throw IllegalStateException("Cannot open Android chapter media manifest.")
+    } catch (_: IllegalArgumentException) {
+      return null
+    }
+    return try {
+      parseChapterMediaManifest(JSONObject(raw))
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun readChapterMediaManifest(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+  ): ChapterMediaManifestReadResult {
+    val store = AndroidChapterMediaManifestDocumentStore(directory)
+    val manifestExists = listOf(
+      CHAPTER_MEDIA_MANIFEST_FILE,
+      CHAPTER_MEDIA_MANIFEST_TEMP_FILE,
+      CHAPTER_MEDIA_MANIFEST_BACKUP_FILE,
+    ).any(store::exists)
+    fun readValid(fileName: String): ChapterMediaManifest? {
+      val document = directory.findFile(fileName) ?: return null
+      return readChapterMediaManifestDocument(
+        rootUri,
+        "$relativeDir/$fileName",
+        document,
+      )
+    }
+    return ChapterMediaManifestReadResult(
+      exists = manifestExists,
+      manifest = recoverAndroidChapterMediaManifestArtifacts(store, ::readValid),
+    )
+  }
+
+  private fun writeChapterMediaManifestAtomically(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+    body: ByteArray,
+  ): ChapterMediaManifest {
+    val store = AndroidChapterMediaManifestDocumentStore(directory)
+    fun readValid(fileName: String): ChapterMediaManifest? {
+      val document = directory.findFile(fileName) ?: return null
+      return readChapterMediaManifestDocument(
+        rootUri,
+        "$relativeDir/$fileName",
+        document,
+      )
+    }
+    return replaceAndroidChapterMediaManifestAtomically(
+      store,
+      writeTemp = {
+        val tempRelativePath = "$relativeDir/$CHAPTER_MEDIA_MANIFEST_TEMP_FILE"
+        val tempManifest = ensureStorageFile(
+          rootUri,
+          tempRelativePath,
+          "application/json",
+        )
+        contentResolver.openOutputStream(tempManifest.uri, "wt")?.use { output ->
+          output.write(body)
+        } ?: throw IllegalStateException("Cannot write Android chapter media manifest temp file.")
+      },
+      readValid = ::readValid,
+    )
+  }
+
+  private fun chapterMediaLooseDocuments(
+    directory: DocumentFile,
+  ): List<ChapterMediaLooseDocument>? {
+    val documents = mutableListOf<ChapterMediaLooseDocument>()
+    for (document in directory.listFiles()) {
+      val fileName = document.name ?: return null
+      val isRegularFile = document.isFile
+      if (isRegularFile && !document.canRead()) {
+        throw IllegalStateException("Android staged chapter media file is not readable.")
+      }
+      documents.add(
+        ChapterMediaLooseDocument(
+          document = document,
+          file = AndroidChapterMediaLooseFile(
+            fileName = fileName,
+            bytes = if (isRegularFile) document.length() else 0L,
+            isRegularFile = isRegularFile,
+          ),
+        ),
+      )
+    }
+    return documents
+  }
+
+  private fun hasValidChapterMediaLooseFiles(
+    storedFiles: List<AndroidChapterMediaStoredFile>,
+    looseFiles: List<AndroidChapterMediaLooseFile>,
+    requireAllStoredFiles: Boolean,
+  ): Boolean = try {
+    validateAndroidChapterMediaLooseFiles(
+      storedFiles,
+      looseFiles,
+      requireAllStoredFiles,
+    )
+    true
+  } catch (_: IllegalArgumentException) {
+    false
+  } catch (_: ArithmeticException) {
+    false
+  }
+
+  private fun hasValidChapterMediaArchive(
+    rootUri: String,
+    relativePath: String,
+    archive: DocumentFile,
+    storedFiles: List<AndroidChapterMediaStoredFile>,
+  ): Boolean {
+    if (!archive.isFile) return false
+    if (!archive.canRead()) {
+      throw IllegalStateException("Android chapter media archive is not readable.")
+    }
+    val input = openStorageInputStream(rootUri, relativePath, archive)
+      ?: throw IllegalStateException("Cannot open Android chapter media archive.")
+    return try {
+      input.use { validateAndroidChapterMediaArchive(storedFiles, it) }
+      true
+    } catch (_: IllegalArgumentException) {
+      false
+    } catch (_: ArithmeticException) {
+      false
+    } catch (_: EOFException) {
+      false
+    } catch (_: ZipException) {
+      false
+    }
+  }
+
+  private fun deleteChapterMediaLooseDirectory(
+    directory: DocumentFile,
+    relativeDir: String,
+  ) {
+    directory.listFiles().forEach { child ->
+      if (!child.delete()) {
+        throw IllegalStateException("Cannot remove staged chapter media file: ${child.name}")
+      }
+    }
+    if (!directory.delete()) {
+      throw IllegalStateException("Cannot remove chapter media staging directory: $relativeDir/media")
+    }
+  }
+
+  private fun deleteChapterMediaArchiveWorkFiles(directory: DocumentFile): Boolean {
+    for (fileName in listOf(
+      CHAPTER_MEDIA_ARCHIVE_TEMP_FILE,
+      CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE,
+      CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE,
+    )) {
+      val artifact = directory.findFile(fileName) ?: continue
+      if (!artifact.isFile) return false
+      if (!artifact.delete()) {
+        throw IllegalStateException("Cannot remove stale Android chapter media archive artifact.")
+      }
+    }
+    return true
+  }
+
+  private fun publishValidatedChapterMediaArchive(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+    candidate: DocumentFile,
+    storedFiles: List<AndroidChapterMediaStoredFile>,
+    recoverySourceRelativePath: String? = null,
+  ): DocumentFile? {
+    val recoverySourceFileName = recoverySourceRelativePath?.substringAfterLast('/')
+    val archiveBackup = directory.findFile(CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE)
+    val archiveRollback = directory.findFile(CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE)
+    val stagingFileName = androidChapterMediaArchiveStagingFileName(
+      recoverySourceFileName,
+      hasBackup = archiveBackup != null,
+      hasRollback = archiveRollback != null,
+    )
+    val currentArchive = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+    if (currentArchive != null) {
+      val staleStagingFile = when (stagingFileName) {
+        CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE -> archiveBackup
+        else -> archiveRollback
+      }
+      staleStagingFile?.let { staleArtifact ->
+        if (!staleArtifact.isFile) return null
+        if (!staleArtifact.delete()) {
+          throw IllegalStateException("Cannot remove stale Android chapter media archive staging file.")
+        }
+      }
+      if (!currentArchive.renameTo(stagingFileName)) {
+        throw IllegalStateException("Cannot stage Android chapter media archive rollback.")
+      }
+    }
+    publishAndroidChapterMediaArtifactWithRollback(
+      publicationErrorMessage = "Cannot publish Android chapter media archive.",
+      restorationErrorMessage = "Cannot restore previous Android chapter media archive.",
+      publish = { candidate.renameTo(CHAPTER_MEDIA_ARCHIVE_FILE) },
+      restore = if (currentArchive != null) {
+        {
+          val stagedArchive = directory.findFile(stagingFileName)
+            ?: throw IllegalStateException(
+              "Android chapter media archive rollback is unavailable.",
+            )
+          stagedArchive.renameTo(CHAPTER_MEDIA_ARCHIVE_FILE)
+        }
+      } else {
+        null
+      },
+    )
+    val published = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+      ?: throw IllegalStateException("Published Android chapter media archive is unavailable.")
+    if (
+      !hasValidChapterMediaArchive(
+        rootUri,
+        "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_FILE",
+        published,
+        storedFiles,
+      )
+    ) {
+      recoverInvalidPublishedAndroidChapterMediaArchive(
+        deletePublished = { published.delete() },
+        restorePrevious = if (currentArchive != null) {
+          {
+            val stagedArchive = directory.findFile(stagingFileName)
+              ?: throw IllegalStateException(
+                "Android chapter media archive rollback is unavailable.",
+              )
+            stagedArchive.renameTo(CHAPTER_MEDIA_ARCHIVE_FILE)
+          }
+        } else {
+          null
+        },
+      )
+      return null
+    }
+    if (!deleteChapterMediaArchiveWorkFiles(directory)) return null
+    return published
+  }
+
+  private fun createValidatedChapterMediaArchive(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+    storedFiles: List<AndroidChapterMediaStoredFile>,
+    looseDocuments: List<ChapterMediaLooseDocument>,
+    sourceArchive: DocumentFile?,
+    sourceArchiveRelativePath: String?,
+  ): DocumentFile? {
+    val looseByName = looseDocuments.associateBy { it.file.fileName }
+    val looseNames = looseByName.keys
+    val needsSourceArchive = looseNames != storedFiles.mapTo(mutableSetOf()) { it.fileName }
+    if (needsSourceArchive && (sourceArchive == null || sourceArchiveRelativePath == null)) {
+      return null
+    }
+    val tempRelativePath = "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_TEMP_FILE"
+    directory.findFile(CHAPTER_MEDIA_ARCHIVE_TEMP_FILE)?.let { staleTemp ->
+      if (!staleTemp.isFile) return null
+      if (!staleTemp.delete()) {
+        throw IllegalStateException("Cannot remove stale Android chapter media archive temp file.")
+      }
+    }
+    val tempArchive = ensureStorageFile(rootUri, tempRelativePath, "application/zip")
+    try {
+      contentResolver.openOutputStream(tempArchive.uri, "wt")?.use { output ->
+        val previousArchive = if (needsSourceArchive) {
+          openStorageInputStream(
+            rootUri,
+            sourceArchiveRelativePath!!,
+            sourceArchive!!,
+          ) ?: throw IllegalStateException("Cannot open existing Android chapter media archive.")
+        } else {
+          null
+        }
+        mergeAndroidChapterMediaArchive(
+          storedFiles = storedFiles,
+          looseFileNames = looseNames,
+          existingArchive = previousArchive,
+          output = output,
+        ) { fileName ->
+          val loose = looseByName[fileName]
+            ?: throw IllegalArgumentException("Stored chapter media file is unavailable.")
+          openStorageInputStream(
+            rootUri,
+            "$relativeDir/media/$fileName",
+            loose.document,
+          ) ?: throw IllegalStateException("Cannot open staged Android chapter media file.")
+        }
+      } ?: throw IllegalStateException("Cannot open Android chapter media archive for writing.")
+    } catch (_: IllegalArgumentException) {
+      if (!tempArchive.delete()) {
+        throw IllegalStateException("Cannot remove invalid Android chapter media archive temp file.")
+      }
+      return null
+    } catch (_: ArithmeticException) {
+      if (!tempArchive.delete()) {
+        throw IllegalStateException("Cannot remove invalid Android chapter media archive temp file.")
+      }
+      return null
+    } catch (_: EOFException) {
+      if (!tempArchive.delete()) {
+        throw IllegalStateException("Cannot remove invalid Android chapter media archive temp file.")
+      }
+      return null
+    } catch (_: ZipException) {
+      if (!tempArchive.delete()) {
+        throw IllegalStateException("Cannot remove invalid Android chapter media archive temp file.")
+      }
+      return null
+    }
+    if (!hasValidChapterMediaArchive(rootUri, tempRelativePath, tempArchive, storedFiles)) {
+      if (!tempArchive.delete()) {
+        throw IllegalStateException("Cannot remove invalid Android chapter media archive temp file.")
+      }
+      return null
+    }
+
+    return publishValidatedChapterMediaArchive(
+      rootUri,
+      directory,
+      relativeDir,
+      tempArchive,
+      storedFiles,
+      recoverySourceRelativePath = sourceArchiveRelativePath,
+    )
+  }
+
+  private fun writeCompletedChapterMediaManifest(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+    manifest: ChapterMediaManifest,
+  ) {
+    val completeJson = JSONObject(manifest.json.toString())
+      .put("complete", true)
+      .put("updatedAt", System.currentTimeMillis())
+    val body = "${completeJson.toString(2)}\n".toByteArray(Charsets.UTF_8)
+    if (
+      !writeChapterMediaManifestAtomically(
+        rootUri,
+        directory,
+        relativeDir,
+        body,
+      ).complete
+    ) {
+      throw IllegalStateException("Completed Android chapter media manifest failed validation.")
+    }
+  }
+
+  private fun finalizeChapterMediaArtifacts(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+    allowLegacyWithoutManifest: Boolean,
+  ): Long? {
+    val manifestResult = readChapterMediaManifest(rootUri, directory, relativeDir)
+    if (!manifestResult.exists) {
+      if (!allowLegacyWithoutManifest) return null
+      val legacyArchive = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+      if (legacyArchive != null && legacyArchive.isFile && !legacyArchive.canRead()) {
+        throw IllegalStateException("Android legacy chapter media archive is not readable.")
+      }
+      return legacyArchive
+        ?.takeIf { it.isFile }
+        ?.length()
+        ?.coerceAtLeast(0L)
+        ?: 0L
+    }
+    val manifest = manifestResult.manifest ?: return null
+    val storedFiles = try {
+      androidChapterMediaStoredFiles(manifest.files)
+    } catch (_: IllegalArgumentException) {
+      return null
+    } catch (_: ArithmeticException) {
+      return null
+    }
+
+    val looseDirectory = directory.findFile(CHAPTER_MEDIA_DIRECTORY)
+    if (looseDirectory != null) {
+      if (!looseDirectory.isDirectory) return null
+      if (!looseDirectory.canRead()) {
+        throw IllegalStateException("Android chapter media staging directory is not readable.")
+      }
+    }
+    var archive = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+    if (archive != null) {
+      if (!archive.isFile) return null
+      if (!archive.canRead()) {
+        throw IllegalStateException("Android chapter media archive is not readable.")
+      }
+    }
+
+    val archiveTemp = directory.findFile(CHAPTER_MEDIA_ARCHIVE_TEMP_FILE)
+    val archiveBackup = directory.findFile(CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE)
+    val archiveRollback = directory.findFile(CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE)
+    val manifestTemp = directory.findFile(CHAPTER_MEDIA_MANIFEST_TEMP_FILE)
+    val manifestBackup = directory.findFile(CHAPTER_MEDIA_MANIFEST_BACKUP_FILE)
+    if (manifestTemp != null && !manifestTemp.isFile) return null
+    if (manifestBackup != null && !manifestBackup.isFile) return null
+    if (
+      manifest.complete &&
+        looseDirectory == null &&
+        archiveTemp == null &&
+        archiveBackup == null &&
+        archiveRollback == null &&
+        manifestTemp == null &&
+        manifestBackup == null
+    ) {
+      if (storedFiles.isEmpty() && archive == null) return 0L
+      if (storedFiles.isNotEmpty() && archive != null && archive.length() > 0L) {
+        return archive.length().coerceAtLeast(0L)
+      }
+    }
+
+    val looseDocuments = looseDirectory?.let(::chapterMediaLooseDocuments)
+      ?: if (looseDirectory == null) emptyList() else return null
+    var archiveValid = archive?.let {
+      hasValidChapterMediaArchive(
+        rootUri,
+        "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_FILE",
+        it,
+        storedFiles,
+      )
+    } == true
+
+    if (!archiveValid) {
+      val tempArchive = archiveTemp
+      if (tempArchive != null) {
+        if (!tempArchive.isFile) return null
+        if (!tempArchive.canRead()) {
+          throw IllegalStateException("Android chapter media archive temp file is not readable.")
+        }
+        if (
+          hasValidChapterMediaArchive(
+            rootUri,
+            "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_TEMP_FILE",
+            tempArchive,
+            storedFiles,
+          )
+        ) {
+          archive = publishValidatedChapterMediaArchive(
+            rootUri,
+            directory,
+            relativeDir,
+            tempArchive,
+            storedFiles,
+          ) ?: return null
+          archiveValid = true
+        }
+      }
+    }
+
+    if (storedFiles.isEmpty()) {
+      if (
+        !hasValidChapterMediaLooseFiles(
+          storedFiles,
+          looseDocuments.map(ChapterMediaLooseDocument::file),
+          requireAllStoredFiles = true,
+        )
+      ) {
+        return null
+      }
+      if (archive != null && !archiveValid) return null
+      for (artifactName in listOf(
+        CHAPTER_MEDIA_ARCHIVE_TEMP_FILE,
+        CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE,
+        CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE,
+      )) {
+        val artifact = directory.findFile(artifactName) ?: continue
+        if (!artifact.isFile) return null
+        if (!artifact.canRead()) {
+          throw IllegalStateException("Android chapter media archive artifact is not readable.")
+        }
+        if (
+          !hasValidChapterMediaArchive(
+            rootUri,
+            "$relativeDir/$artifactName",
+            artifact,
+            storedFiles,
+          )
+        ) {
+          return null
+        }
+      }
+      if (archive != null && !archive.delete()) {
+        throw IllegalStateException("Cannot remove empty Android chapter media archive.")
+      }
+      if (!deleteChapterMediaArchiveWorkFiles(directory)) return null
+      looseDirectory?.let { deleteChapterMediaLooseDirectory(it, relativeDir) }
+      writeCompletedChapterMediaManifest(rootUri, directory, relativeDir, manifest)
+      return 0L
+    }
+
+    if (
+      !hasValidChapterMediaLooseFiles(
+        storedFiles,
+        looseDocuments.map(ChapterMediaLooseDocument::file),
+        requireAllStoredFiles = false,
+      )
+    ) {
+      return null
+    }
+    if (!archiveValid || looseDocuments.isNotEmpty()) {
+      val looseNames = looseDocuments.mapTo(mutableSetOf()) { it.file.fileName }
+      val expectedNames = storedFiles.mapTo(mutableSetOf()) { it.fileName }
+      var rebuiltArchive: DocumentFile? = null
+      if (looseNames == expectedNames) {
+        rebuiltArchive = createValidatedChapterMediaArchive(
+          rootUri,
+          directory,
+          relativeDir,
+          storedFiles,
+          looseDocuments,
+          sourceArchive = null,
+          sourceArchiveRelativePath = null,
+        )
+      } else {
+        val validatedArchive = archive?.takeIf { archiveValid }
+        val sourceArchives = validatedArchive?.let { source ->
+          listOf(source to "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_FILE")
+        } ?: listOfNotNull(
+          directory.findFile(CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE)?.let { source ->
+            source to "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE"
+          },
+          directory.findFile(CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE)?.let { source ->
+            source to "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE"
+          },
+          archive?.let { source ->
+            source to "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_FILE"
+          },
+        )
+        for ((source, sourceRelativePath) in sourceArchives) {
+          if (!source.isFile) return null
+          if (!source.canRead()) {
+            throw IllegalStateException("Android chapter media archive source is not readable.")
+          }
+          rebuiltArchive = createValidatedChapterMediaArchive(
+            rootUri,
+            directory,
+            relativeDir,
+            storedFiles,
+            looseDocuments,
+            source,
+            sourceRelativePath,
+          )
+          if (rebuiltArchive != null) break
+        }
+      }
+      archive = rebuiltArchive ?: return null
+      archiveValid = true
+    }
+    if (!archiveValid || archive == null) return null
+    if (!deleteChapterMediaArchiveWorkFiles(directory)) return null
+    looseDirectory?.let { deleteChapterMediaLooseDirectory(it, relativeDir) }
+    writeCompletedChapterMediaManifest(rootUri, directory, relativeDir, manifest)
+    return archive.length().coerceAtLeast(0L)
   }
 
   private fun chapterStorageTransferToken(): String =
@@ -3152,12 +4353,14 @@ class MainActivity : TauriActivity() {
     private const val ANDROID_LOCAL_MEDIA_PATH = "__norea_android_media__"
     private const val ANDROID_ZIP_MEDIA_PATH = "zip"
     private const val BYTES_PER_MIB = 1024L * 1024L
+    private const val CHAPTER_MEDIA_DIRECTORY = "media"
     private const val CONTENTS_ROOT_DIR = "contents"
     private const val DEFAULT_STORAGE_COPY_BUFFER_BYTES = 64 * 1024
     private const val IMAGE_SIGNATURE_MAX_BYTES = 256
     private const val STORAGE_ROOT_CONFIG_FILE = "chapter-media-storage-root.txt"
     private const val TAG = "NoreaStorage"
     private const val MAX_ANDROID_TEMP_BYTES = 2L * 1024L * BYTES_PER_MIB
+    private const val MAX_CHAPTER_MEDIA_MANIFEST_BYTES = 8L * BYTES_PER_MIB
     private const val MAX_UPDATE_BYTES = 512L * BYTES_PER_MIB
     private const val MAX_ZIP_ENTRY_BYTES = 256L * BYTES_PER_MIB
     private const val MAX_ZIP_ENTRIES = 100_000

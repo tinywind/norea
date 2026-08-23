@@ -1,8 +1,9 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{self, BufReader, BufWriter, ErrorKind, Read},
+    io::{self, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -640,6 +641,56 @@ fn relative_storage_path(root: &Path, path: &Path) -> Result<String, String> {
         .map_err(|_| "chapter media: stored chapter path is outside the storage root".to_string())
 }
 
+fn validate_chapter_dir_under_storage_root(root: &Path, chapter_dir: &Path) -> Result<(), String> {
+    let relative_dir = chapter_dir
+        .strip_prefix(root)
+        .map_err(|_| "chapter media: chapter path is outside the storage root".to_string())?;
+    if relative_dir.as_os_str().is_empty() {
+        return Err("chapter media: chapter path is the storage root".to_string());
+    }
+
+    let root_metadata =
+        fs::metadata(root).map_err(|err| format!("chapter media: inspect storage root: {err}"))?;
+    if !root_metadata.is_dir() {
+        return Err("chapter media: storage root is not a directory".to_string());
+    }
+
+    let mut current_path = root.to_path_buf();
+    for component in relative_dir.components() {
+        let Component::Normal(segment) = component else {
+            return Err("chapter media: invalid chapter storage path".to_string());
+        };
+        current_path.push(segment);
+        let metadata = fs::symlink_metadata(&current_path).map_err(|err| {
+            format!(
+                "chapter media: inspect chapter storage path '{}': {err}",
+                current_path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "chapter media: chapter storage path contains a symbolic link: {}",
+                current_path.display()
+            ));
+        }
+        if !metadata.file_type().is_dir() {
+            return Err(format!(
+                "chapter media: chapter storage path is not a directory: {}",
+                current_path.display()
+            ));
+        }
+    }
+
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|err| format!("chapter media: resolve storage root: {err}"))?;
+    let canonical_chapter = fs::canonicalize(chapter_dir)
+        .map_err(|err| format!("chapter media: resolve chapter storage path: {err}"))?;
+    if !canonical_chapter.starts_with(&canonical_root) {
+        return Err("chapter media: resolved chapter path is outside the storage root".to_string());
+    }
+    Ok(())
+}
+
 fn stored_content_path_in_dir(
     chapter_dir: &Path,
     preferred_file_name: &str,
@@ -653,11 +704,11 @@ fn stored_content_path_in_dir(
 
     for file_name in file_names {
         let path = chapter_dir.join(file_name);
-        match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => return Ok(Some(path)),
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => return Ok(Some(path)),
             Ok(_) => {
                 return Err(format!(
-                    "chapter media: stored content path is not a file: {}",
+                    "chapter media: stored content path is not a regular file: {}",
                     path.display()
                 ));
             }
@@ -681,14 +732,32 @@ fn inspect_content_chapter_dir(
     let Some(content_path) = stored_content_path_in_dir(chapter_dir, preferred_file_name)? else {
         return Ok(None);
     };
-    let content_bytes = fs::metadata(&content_path)
-        .map_err(|err| format!("chapter media: read stored chapter size: {err}"))?
-        .len();
-    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
-    let media_bytes = fs::metadata(&archive_path)
-        .ok()
-        .filter(|metadata| metadata.is_file())
-        .map_or(0, |metadata| metadata.len());
+    let content_metadata = fs::symlink_metadata(&content_path)
+        .map_err(|err| format!("chapter media: read stored chapter size: {err}"))?;
+    if !content_metadata.file_type().is_file() {
+        return Err(format!(
+            "chapter media: stored content path is not a regular file: {}",
+            content_path.display()
+        ));
+    }
+    let content_bytes = content_metadata.len();
+    let media_bytes = match finalize_chapter_media_artifacts(root, chapter_dir)? {
+        ChapterMediaFinalization::Incomplete(reason) => {
+            log::warn!(
+                "[chapter-media] stored chapter is incomplete dir={} reason={reason}",
+                chapter_dir.display()
+            );
+            return Ok(None);
+        }
+        ChapterMediaFinalization::ManifestMissing => {
+            let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+            fs::symlink_metadata(&archive_path)
+                .ok()
+                .filter(|metadata| metadata.file_type().is_file())
+                .map_or(0, |metadata| metadata.len())
+        }
+        ChapterMediaFinalization::Ready(media_bytes) => media_bytes,
+    };
     Ok(Some(ChapterContentInspection {
         status: "present".to_string(),
         content_file: Some(relative_storage_path(root, &content_path)?),
@@ -860,31 +929,6 @@ fn chapter_content_relative_path(
     ))
 }
 
-fn chapter_archive_path_at(
-    root: &Path,
-    source_id: &str,
-    novel_id: i64,
-    novel_path: Option<&str>,
-    novel_name: Option<&str>,
-    chapter_id: i64,
-    chapter_number: Option<&str>,
-    chapter_name: Option<&str>,
-    chapter_position: Option<i64>,
-) -> Result<PathBuf, String> {
-    Ok(content_chapter_dir_at(
-        root,
-        source_id,
-        novel_id,
-        novel_path,
-        novel_name,
-        chapter_id,
-        chapter_number,
-        chapter_name,
-        chapter_position,
-    )?
-    .join(MEDIA_ARCHIVE_FILE))
-}
-
 fn chapter_archives_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
     if !dir.is_dir() {
         return Ok(Vec::new());
@@ -917,21 +961,23 @@ fn clear_content_media_artifacts(chapter_dir: &Path) -> Result<(), String> {
         fs::remove_file(&archive_path)
             .map_err(|err| format!("chapter media: remove media archive: {err}"))?;
     }
-    let backup_path = archive_backup_path(&chapter_dir.join(MEDIA_ARCHIVE_FILE));
-    if backup_path.exists() {
-        fs::remove_file(&backup_path)
-            .map_err(|err| format!("chapter media: remove media archive backup: {err}"))?;
-    }
+    remove_known_publication_file(
+        &chapter_dir.join(MEDIA_ARCHIVE_FILE),
+        "chapter media: remove media archive",
+    )?;
+    remove_stale_chapter_media_archive_publication_files(chapter_dir)?;
     let manifest_path = chapter_media_manifest_path(chapter_dir);
-    if manifest_path.exists() {
-        fs::remove_file(&manifest_path)
-            .map_err(|err| format!("chapter media: remove media manifest: {err}"))?;
-    }
+    remove_known_publication_file(&manifest_path, "chapter media: remove media manifest")?;
+    remove_stale_chapter_media_manifest_publication_files(chapter_dir)?;
     Ok(())
 }
 
 fn archive_backup_path(archive_path: &Path) -> PathBuf {
     archive_path.with_file_name(format!("{MEDIA_ARCHIVE_FILE}.bak"))
+}
+
+fn archive_rollback_path(archive_path: &Path) -> PathBuf {
+    archive_path.with_file_name(format!("{MEDIA_ARCHIVE_FILE}.rollback"))
 }
 
 fn replace_storage_file(
@@ -961,28 +1007,132 @@ fn replace_storage_file(
     Ok(())
 }
 
+fn publication_file_exists(path: &Path, context: &str) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(format!("{context}: publication path is not a regular file")),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!("{context}: inspect publication path: {err}")),
+    }
+}
+
+fn remove_known_publication_file(path: &Path, context: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            fs::remove_file(path).map_err(|err| format!("{context}: {err}"))
+        }
+        Ok(_) => Err(format!("{context}: path is not a regular file")),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("{context}: inspect path: {err}")),
+    }
+}
+
+fn create_publication_temp_file(path: &Path, context: &str) -> Result<File, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            fs::remove_file(path)
+                .map_err(|err| format!("{context}: remove stale temp publication file: {err}"))?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "{context}: temp publication path is not a regular file"
+            ));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("{context}: inspect temp publication path: {err}")),
+    }
+    File::options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| format!("{context}: create temp publication file: {err}"))
+}
+
+fn replace_file_preserving_recovery_backup(
+    temp_path: &Path,
+    final_path: &Path,
+    backup_path: &Path,
+    rollback_path: &Path,
+    context: &str,
+) -> Result<(), String> {
+    match fs::symlink_metadata(temp_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(format!(
+                "{context}: temp publication path is not a regular file"
+            ))
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Err(format!("{context}: temp publication file is missing"));
+        }
+        Err(err) => return Err(format!("{context}: inspect temp publication file: {err}")),
+    }
+
+    let had_final = publication_file_exists(final_path, context)?;
+    let had_recovery_backup = publication_file_exists(backup_path, context)?;
+    let had_rollback = publication_file_exists(rollback_path, context)?;
+    let active_rollback_path = if had_recovery_backup {
+        rollback_path
+    } else {
+        backup_path
+    };
+    let active_rollback_exists = (active_rollback_path == backup_path && had_recovery_backup)
+        || (active_rollback_path == rollback_path && had_rollback);
+    let mut final_was_staged = false;
+    if had_final {
+        if active_rollback_exists {
+            fs::remove_file(final_path)
+                .map_err(|err| format!("{context}: remove current file before publish: {err}"))?;
+        } else {
+            fs::rename(final_path, active_rollback_path)
+                .map_err(|err| format!("{context}: move current file to rollback: {err}"))?;
+            final_was_staged = true;
+        }
+    }
+
+    if let Err(publish_error) = fs::rename(temp_path, final_path) {
+        if final_was_staged {
+            if let Err(restore_error) = fs::rename(active_rollback_path, final_path) {
+                return Err(format!(
+                    "{context}: publish file: {publish_error}; restore current file: {restore_error}"
+                ));
+            }
+        }
+        return Err(format!("{context}: publish file: {publish_error}"));
+    }
+
+    for stale_path in [backup_path, rollback_path] {
+        remove_known_publication_file(stale_path, context)?;
+    }
+    Ok(())
+}
+
 fn replace_media_archive(temp_archive_path: &Path, archive_path: &Path) -> Result<(), String> {
     let backup_path = archive_backup_path(archive_path);
-    if backup_path.exists() {
-        fs::remove_file(&backup_path)
-            .map_err(|err| format!("chapter media: remove stale archive backup: {err}"))?;
-    }
-    let had_archive = archive_path.exists();
-    if had_archive {
-        fs::rename(archive_path, &backup_path)
-            .map_err(|err| format!("chapter media: backup archive: {err}"))?;
-    }
+    replace_file_preserving_recovery_backup(
+        temp_archive_path,
+        archive_path,
+        &backup_path,
+        &archive_rollback_path(archive_path),
+        "chapter media: publish media archive",
+    )
+}
 
-    if let Err(err) = fs::rename(temp_archive_path, archive_path) {
-        if had_archive {
-            let _ = fs::rename(&backup_path, archive_path);
-        }
-        return Err(format!("chapter media: move archive: {err}"));
-    }
+fn chapter_media_archive_publication_paths(chapter_dir: &Path) -> [PathBuf; 3] {
+    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+    [
+        chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp")),
+        archive_backup_path(&archive_path),
+        archive_rollback_path(&archive_path),
+    ]
+}
 
-    if backup_path.exists() {
-        fs::remove_file(&backup_path)
-            .map_err(|err| format!("chapter media: remove archive backup: {err}"))?;
+fn remove_stale_chapter_media_archive_publication_files(chapter_dir: &Path) -> Result<(), String> {
+    for path in chapter_media_archive_publication_paths(chapter_dir) {
+        remove_known_publication_file(
+            &path,
+            "chapter media: remove stale media archive publication file",
+        )?;
     }
     Ok(())
 }
@@ -995,41 +1145,875 @@ fn chapter_media_manifest_backup_path(path: &Path) -> PathBuf {
     path.with_extension("json.bak")
 }
 
+fn chapter_media_manifest_rollback_path(path: &Path) -> PathBuf {
+    path.with_extension("json.rollback")
+}
+
+fn chapter_media_manifest_publication_paths(chapter_dir: &Path) -> [PathBuf; 3] {
+    let manifest_path = chapter_media_manifest_path(chapter_dir);
+    [
+        manifest_path.with_extension("json.tmp"),
+        chapter_media_manifest_backup_path(&manifest_path),
+        chapter_media_manifest_rollback_path(&manifest_path),
+    ]
+}
+
+fn remove_stale_chapter_media_manifest_publication_files(chapter_dir: &Path) -> Result<(), String> {
+    for path in chapter_media_manifest_publication_paths(chapter_dir) {
+        remove_known_publication_file(
+            &path,
+            "chapter media: remove stale media manifest publication file",
+        )?;
+    }
+    Ok(())
+}
+
 fn write_chapter_media_manifest(path: &Path, manifest: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("chapter media: create media manifest dir: {err}"))?;
     }
-    let temp_path = path.with_extension("json.tmp");
     let mut body = serde_json::to_vec_pretty(manifest)
         .map_err(|err| format!("chapter media: encode media manifest: {err}"))?;
     body.push(b'\n');
-    fs::write(&temp_path, body)
+    let temp_path = path.with_extension("json.tmp");
+    let mut temp_file =
+        create_publication_temp_file(&temp_path, "chapter media: write media manifest")?;
+    temp_file
+        .write_all(&body)
         .map_err(|err| format!("chapter media: write media manifest temp: {err}"))?;
+    temp_file
+        .flush()
+        .map_err(|err| format!("chapter media: flush media manifest temp: {err}"))?;
+    drop(temp_file);
 
     let backup_path = chapter_media_manifest_backup_path(path);
-    if backup_path.exists() {
-        fs::remove_file(&backup_path)
-            .map_err(|err| format!("chapter media: remove stale media manifest backup: {err}"))?;
-    }
-    let had_manifest = path.exists();
-    if had_manifest {
-        fs::rename(path, &backup_path)
-            .map_err(|err| format!("chapter media: backup media manifest: {err}"))?;
+    replace_file_preserving_recovery_backup(
+        &temp_path,
+        path,
+        &backup_path,
+        &chapter_media_manifest_rollback_path(path),
+        "chapter media: publish media manifest",
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChapterMediaArchiveManifest {
+    complete: bool,
+    media: ChapterMediaArchiveManifestMedia,
+    #[serde(rename = "updatedAt")]
+    _updated_at: u64,
+    version: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ChapterMediaArchiveManifestMedia {
+    files: Vec<ChapterMediaArchiveManifestFile>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChapterMediaArchiveManifestFile {
+    bytes: u64,
+    #[serde(rename = "contentType")]
+    _content_type: Option<String>,
+    file_name: String,
+    path: String,
+    #[serde(rename = "sourceUrl")]
+    _source_url: String,
+    status: ChapterMediaArchiveManifestFileStatus,
+    #[serde(rename = "updatedAt")]
+    _updated_at: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ChapterMediaArchiveManifestFileStatus {
+    Remote,
+    Stored,
+}
+
+#[derive(Debug)]
+struct ExpectedStoredChapterMedia {
+    bytes: u64,
+    file_name: String,
+}
+
+#[derive(Debug)]
+struct ValidChapterMediaArchiveManifest {
+    complete: bool,
+    raw: serde_json::Value,
+    stored_files: Vec<ExpectedStoredChapterMedia>,
+}
+
+#[derive(Debug)]
+enum ChapterMediaArchiveManifestState {
+    Invalid(String),
+    Missing,
+    Valid(ValidChapterMediaArchiveManifest),
+}
+
+#[derive(Debug)]
+enum ChapterMediaArtifactState {
+    Invalid(String),
+    Missing,
+    Valid(HashSet<String>),
+}
+
+#[derive(Debug)]
+enum ChapterMediaFinalization {
+    Incomplete(String),
+    ManifestMissing,
+    Ready(u64),
+}
+
+fn is_safe_manifest_media_file_name(file_name: &str) -> bool {
+    safe_media_relative_path(file_name).is_ok()
+        && matches!(
+            Path::new(file_name)
+                .components()
+                .collect::<Vec<_>>()
+                .as_slice(),
+            [Component::Normal(_)]
+        )
+}
+
+fn parse_chapter_media_archive_manifest(
+    raw: &str,
+) -> Result<ValidChapterMediaArchiveManifest, String> {
+    let raw_value = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => value,
+        Err(err) => return Err(format!("invalid manifest JSON: {err}")),
+    };
+    let manifest = match serde_json::from_value::<ChapterMediaArchiveManifest>(raw_value.clone()) {
+        Ok(manifest) => manifest,
+        Err(err) => return Err(format!("invalid manifest schema: {err}")),
+    };
+    if manifest.version != 1 {
+        return Err(format!("unsupported manifest version {}", manifest.version));
     }
 
-    if let Err(err) = fs::rename(&temp_path, path) {
-        if had_manifest {
-            let _ = fs::rename(&backup_path, path);
+    let mut stored_file_names = HashSet::new();
+    let mut stored_files = Vec::new();
+    for file in manifest.media.files {
+        if !matches!(file.status, ChapterMediaArchiveManifestFileStatus::Stored) {
+            continue;
         }
-        return Err(format!("chapter media: move media manifest: {err}"));
+        if !is_safe_manifest_media_file_name(&file.file_name)
+            || file.file_name.to_ascii_lowercase().ends_with(".part")
+            || file.path != format!("{MEDIA_DOWNLOAD_DIR}/{}", file.file_name)
+        {
+            return Err(format!("invalid stored media path '{}'", file.path));
+        }
+        if !stored_file_names.insert(file.file_name.clone()) {
+            return Err(format!("duplicate stored media file '{}'", file.file_name));
+        }
+        stored_files.push(ExpectedStoredChapterMedia {
+            bytes: file.bytes,
+            file_name: file.file_name,
+        });
+    }
+    stored_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+
+    Ok(ValidChapterMediaArchiveManifest {
+        complete: manifest.complete,
+        raw: raw_value,
+        stored_files,
+    })
+}
+
+fn read_chapter_media_archive_manifest_at(
+    manifest_path: &Path,
+) -> Result<ChapterMediaArchiveManifestState, String> {
+    match fs::symlink_metadata(manifest_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Ok(ChapterMediaArchiveManifestState::Invalid(format!(
+                "manifest candidate '{}' is not a regular file",
+                manifest_path.display()
+            )));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(ChapterMediaArchiveManifestState::Missing);
+        }
+        Err(err) => return Err(format!("chapter media: inspect media manifest: {err}")),
+    }
+    let raw = fs::read_to_string(manifest_path)
+        .map_err(|err| format!("chapter media: read media manifest: {err}"))?;
+    Ok(match parse_chapter_media_archive_manifest(&raw) {
+        Ok(manifest) => ChapterMediaArchiveManifestState::Valid(manifest),
+        Err(reason) => ChapterMediaArchiveManifestState::Invalid(reason),
+    })
+}
+
+fn read_chapter_media_archive_manifest(
+    chapter_dir: &Path,
+) -> Result<ChapterMediaArchiveManifestState, String> {
+    let manifest_path = chapter_media_manifest_path(chapter_dir);
+    let manifest = read_chapter_media_archive_manifest_at(&manifest_path)?;
+    let final_was_missing = matches!(&manifest, ChapterMediaArchiveManifestState::Missing);
+    let mut invalid_candidates = Vec::new();
+    let final_manifest = match manifest {
+        ChapterMediaArchiveManifestState::Valid(manifest) => Some(manifest),
+        ChapterMediaArchiveManifestState::Invalid(reason) => {
+            invalid_candidates.push(format!("final manifest: {reason}"));
+            None
+        }
+        ChapterMediaArchiveManifestState::Missing => None,
+    };
+    let temp_path = manifest_path.with_extension("json.tmp");
+    match read_chapter_media_archive_manifest_at(&temp_path)? {
+        ChapterMediaArchiveManifestState::Invalid(reason) => {
+            invalid_candidates.push(format!("{}: {reason}", temp_path.display()));
+        }
+        ChapterMediaArchiveManifestState::Missing => {}
+        ChapterMediaArchiveManifestState::Valid(temp_manifest) => {
+            replace_file_preserving_recovery_backup(
+                &temp_path,
+                &manifest_path,
+                &chapter_media_manifest_backup_path(&manifest_path),
+                &chapter_media_manifest_rollback_path(&manifest_path),
+                "chapter media: recover media manifest publication",
+            )?;
+            return Ok(ChapterMediaArchiveManifestState::Valid(temp_manifest));
+        }
+    }
+    if let Some(manifest) = final_manifest {
+        return Ok(ChapterMediaArchiveManifestState::Valid(manifest));
     }
 
-    if backup_path.exists() {
-        fs::remove_file(&backup_path)
-            .map_err(|err| format!("chapter media: remove media manifest backup: {err}"))?;
+    let candidate_paths = [
+        chapter_media_manifest_backup_path(&manifest_path),
+        chapter_media_manifest_rollback_path(&manifest_path),
+    ];
+    for candidate_path in candidate_paths {
+        match read_chapter_media_archive_manifest_at(&candidate_path)? {
+            ChapterMediaArchiveManifestState::Invalid(reason) => {
+                invalid_candidates.push(format!("{}: {reason}", candidate_path.display()));
+            }
+            ChapterMediaArchiveManifestState::Missing => {}
+            ChapterMediaArchiveManifestState::Valid(manifest) => {
+                write_chapter_media_manifest(&manifest_path, &manifest.raw)?;
+                return Ok(ChapterMediaArchiveManifestState::Valid(manifest));
+            }
+        }
     }
-    Ok(())
+    if final_was_missing && invalid_candidates.is_empty() {
+        Ok(ChapterMediaArchiveManifestState::Missing)
+    } else {
+        Ok(ChapterMediaArchiveManifestState::Invalid(format!(
+            "interrupted manifest publication has no valid candidate: {}",
+            invalid_candidates.join("; ")
+        )))
+    }
+}
+
+fn expected_stored_media_by_name(
+    stored_files: &[ExpectedStoredChapterMedia],
+) -> HashMap<&str, u64> {
+    stored_files
+        .iter()
+        .map(|file| (file.file_name.as_str(), file.bytes))
+        .collect()
+}
+
+fn validate_loose_chapter_media(
+    media_dir: &Path,
+    stored_files: &[ExpectedStoredChapterMedia],
+) -> Result<ChapterMediaArtifactState, String> {
+    match fs::symlink_metadata(media_dir) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Ok(ChapterMediaArtifactState::Invalid(
+                "loose media path is not a directory".to_string(),
+            ));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(ChapterMediaArtifactState::Missing);
+        }
+        Err(err) => return Err(format!("chapter media: inspect loose media dir: {err}")),
+    }
+
+    let expected = expected_stored_media_by_name(stored_files);
+    let mut found = HashSet::new();
+    for entry in fs::read_dir(media_dir)
+        .map_err(|err| format!("chapter media: read loose media dir: {err}"))?
+    {
+        let entry = entry.map_err(|err| format!("chapter media: read loose media entry: {err}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("chapter media: read loose media entry type: {err}"))?;
+        let file_name = match entry.file_name().into_string() {
+            Ok(file_name) => file_name,
+            Err(_) => {
+                return Ok(ChapterMediaArtifactState::Invalid(
+                    "loose media contains a non-Unicode entry name".to_string(),
+                ));
+            }
+        };
+        if !file_type.is_file() {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "loose media entry '{file_name}' is not a regular file"
+            )));
+        }
+        let Some(expected_bytes) = expected.get(file_name.as_str()) else {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "unexpected loose media file '{file_name}'"
+            )));
+        };
+        let actual_bytes = entry
+            .metadata()
+            .map_err(|err| format!("chapter media: read loose media file metadata: {err}"))?
+            .len();
+        if actual_bytes != *expected_bytes {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "loose media file '{file_name}' has {actual_bytes} bytes, expected {expected_bytes}"
+            )));
+        }
+        if !found.insert(file_name) {
+            return Ok(ChapterMediaArtifactState::Invalid(
+                "loose media contains duplicate file names".to_string(),
+            ));
+        }
+    }
+
+    Ok(ChapterMediaArtifactState::Valid(found))
+}
+
+fn completed_manifest_media_bytes(
+    chapter_dir: &Path,
+    manifest: &ValidChapterMediaArchiveManifest,
+) -> Result<Option<u64>, String> {
+    if !manifest.complete {
+        return Ok(None);
+    }
+
+    let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+    match fs::symlink_metadata(&media_dir) {
+        Ok(_) => return Ok(None),
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("chapter media: inspect loose media dir: {err}")),
+    }
+    for path in chapter_media_archive_publication_paths(chapter_dir)
+        .into_iter()
+        .chain(chapter_media_manifest_publication_paths(chapter_dir))
+    {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(None),
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "chapter media: inspect media publication file: {err}"
+                ));
+            }
+        }
+    }
+
+    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+    if manifest.stored_files.is_empty() {
+        return match fs::symlink_metadata(&archive_path) {
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(Some(0)),
+            Err(err) => Err(format!("chapter media: inspect media archive: {err}")),
+            Ok(_) => Ok(None),
+        };
+    }
+
+    match fs::symlink_metadata(&archive_path) {
+        Ok(metadata) if metadata.file_type().is_file() && metadata.len() > 0 => {
+            Ok(Some(metadata.len()))
+        }
+        Ok(_) => Ok(None),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("chapter media: inspect media archive: {err}")),
+    }
+}
+
+fn validate_chapter_media_archive(
+    archive_path: &Path,
+    stored_files: &[ExpectedStoredChapterMedia],
+) -> Result<ChapterMediaArtifactState, String> {
+    match fs::symlink_metadata(archive_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Ok(ChapterMediaArtifactState::Invalid(
+                "media archive path is not a regular file".to_string(),
+            ));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(ChapterMediaArtifactState::Missing);
+        }
+        Err(err) => return Err(format!("chapter media: inspect media archive: {err}")),
+    }
+
+    let archive_file = File::open(archive_path)
+        .map_err(|err| format!("chapter media: open media archive: {err}"))?;
+    let mut archive = match ZipArchive::new(BufReader::new(archive_file)) {
+        Ok(archive) => archive,
+        Err(err) => {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "invalid media archive: {err}"
+            )));
+        }
+    };
+    let expected = expected_stored_media_by_name(stored_files);
+    let mut found = HashSet::new();
+
+    for index in 0..archive.len() {
+        let mut entry = match archive.by_index(index) {
+            Ok(entry) => entry,
+            Err(err) => {
+                return Ok(ChapterMediaArtifactState::Invalid(format!(
+                    "invalid media archive entry: {err}"
+                )));
+            }
+        };
+        let file_name = entry.name().to_string();
+        if !entry.is_file() || !is_safe_manifest_media_file_name(&file_name) {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "invalid media archive entry '{file_name}'"
+            )));
+        }
+        let Some(expected_bytes) = expected.get(file_name.as_str()) else {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "unexpected media archive entry '{file_name}'"
+            )));
+        };
+        if !found.insert(file_name.clone()) {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "duplicate media archive entry '{file_name}'"
+            )));
+        }
+        if entry.size() != *expected_bytes {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "media archive entry '{file_name}' has {} bytes, expected {expected_bytes}",
+                entry.size()
+            )));
+        }
+
+        let mut sink = io::sink();
+        let actual_bytes = match io::copy(&mut entry, &mut sink) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return Ok(ChapterMediaArtifactState::Invalid(format!(
+                    "cannot read media archive entry '{file_name}': {err}"
+                )));
+            }
+        };
+        if actual_bytes != *expected_bytes {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "media archive entry '{file_name}' read {actual_bytes} bytes, expected {expected_bytes}"
+            )));
+        }
+    }
+
+    Ok(ChapterMediaArtifactState::Valid(found))
+}
+
+fn stored_media_sources_cover_manifest(
+    stored_files: &[ExpectedStoredChapterMedia],
+    loose_file_names: &HashSet<String>,
+    archive_file_names: &HashSet<String>,
+) -> bool {
+    stored_files.iter().all(|file| {
+        loose_file_names.contains(&file.file_name) || archive_file_names.contains(&file.file_name)
+    })
+}
+
+fn recover_chapter_media_archive_source(
+    chapter_dir: &Path,
+    stored_files: &[ExpectedStoredChapterMedia],
+    loose_file_names: &HashSet<String>,
+) -> Result<(ChapterMediaArtifactState, PathBuf), String> {
+    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+    let [temp_archive_path, backup_archive_path, rollback_archive_path] =
+        chapter_media_archive_publication_paths(chapter_dir);
+    let archive_state = validate_chapter_media_archive(&archive_path, stored_files)?;
+    if matches!(&archive_state, ChapterMediaArtifactState::Valid(file_names)
+        if stored_media_sources_cover_manifest(stored_files, loose_file_names, file_names))
+    {
+        return Ok((archive_state, archive_path));
+    }
+
+    let temp_state = validate_chapter_media_archive(&temp_archive_path, stored_files)?;
+
+    let temp_issue = match temp_state {
+        ChapterMediaArtifactState::Valid(file_names) => {
+            if file_names.len() == stored_files.len() {
+                replace_media_archive(&temp_archive_path, &archive_path)?;
+                return Ok((ChapterMediaArtifactState::Valid(file_names), archive_path));
+            }
+            Some("interrupted media archive temp is incomplete".to_string())
+        }
+        ChapterMediaArtifactState::Invalid(reason) => Some(reason),
+        ChapterMediaArtifactState::Missing => None,
+    };
+
+    let backup_state = validate_chapter_media_archive(&backup_archive_path, stored_files)?;
+    if matches!(&backup_state, ChapterMediaArtifactState::Valid(file_names)
+        if stored_media_sources_cover_manifest(stored_files, loose_file_names, file_names))
+    {
+        return Ok((backup_state, backup_archive_path));
+    }
+
+    let rollback_state = validate_chapter_media_archive(&rollback_archive_path, stored_files)?;
+    if matches!(&rollback_state, ChapterMediaArtifactState::Valid(file_names)
+        if stored_media_sources_cover_manifest(stored_files, loose_file_names, file_names))
+    {
+        return Ok((rollback_state, rollback_archive_path));
+    }
+
+    if matches!(&archive_state, ChapterMediaArtifactState::Valid(_)) {
+        return Ok((archive_state, archive_path));
+    }
+    if matches!(&backup_state, ChapterMediaArtifactState::Valid(_)) {
+        return Ok((backup_state, backup_archive_path));
+    }
+    if matches!(&rollback_state, ChapterMediaArtifactState::Valid(_)) {
+        return Ok((rollback_state, rollback_archive_path));
+    }
+    if matches!(&archive_state, ChapterMediaArtifactState::Invalid(_)) {
+        return Ok((archive_state, archive_path));
+    }
+    if matches!(&backup_state, ChapterMediaArtifactState::Invalid(_)) {
+        return Ok((backup_state, backup_archive_path));
+    }
+    if matches!(&rollback_state, ChapterMediaArtifactState::Invalid(_)) {
+        return Ok((rollback_state, rollback_archive_path));
+    }
+    if let Some(reason) = temp_issue {
+        return Ok((
+            ChapterMediaArtifactState::Invalid(reason),
+            temp_archive_path,
+        ));
+    }
+
+    Ok((archive_state, archive_path))
+}
+
+fn build_validated_chapter_media_archive(
+    chapter_dir: &Path,
+    stored_files: &[ExpectedStoredChapterMedia],
+    loose_file_names: &HashSet<String>,
+    archive_file_names: &HashSet<String>,
+    archive_source_path: &Path,
+) -> Result<ChapterMediaArtifactState, String> {
+    let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+    let temp_archive_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
+    let needs_existing_archive = stored_files
+        .iter()
+        .any(|file| !loose_file_names.contains(&file.file_name));
+    let mut existing_archive = if needs_existing_archive {
+        let archive_file = File::open(archive_source_path)
+            .map_err(|err| format!("chapter media: reopen media archive: {err}"))?;
+        Some(
+            ZipArchive::new(BufReader::new(archive_file))
+                .map_err(|err| format!("chapter media: reopen media archive: {err}"))?,
+        )
+    } else {
+        None
+    };
+    let temp_file =
+        create_publication_temp_file(&temp_archive_path, "chapter media: create media archive")?;
+    let mut archive = ZipWriter::new(BufWriter::new(temp_file));
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+
+    for file in stored_files {
+        archive
+            .start_file(&file.file_name, options)
+            .map_err(|err| format!("chapter media: start media archive entry: {err}"))?;
+        let written_bytes = if loose_file_names.contains(&file.file_name) {
+            let path = media_dir.join(&file.file_name);
+            let mut input = File::open(&path)
+                .map_err(|err| format!("chapter media: open loose media file: {err}"))?;
+            io::copy(&mut input, &mut archive)
+                .map_err(|err| format!("chapter media: write loose media archive entry: {err}"))?
+        } else if archive_file_names.contains(&file.file_name) {
+            let Some(existing_archive) = existing_archive.as_mut() else {
+                return Ok(ChapterMediaArtifactState::Invalid(format!(
+                    "media archive source '{}' is unavailable",
+                    file.file_name
+                )));
+            };
+            let mut input = match existing_archive.by_name(&file.file_name) {
+                Ok(input) => input,
+                Err(err) => {
+                    return Ok(ChapterMediaArtifactState::Invalid(format!(
+                        "cannot reopen media archive entry '{}': {err}",
+                        file.file_name
+                    )));
+                }
+            };
+            io::copy(&mut input, &mut archive)
+                .map_err(|err| format!("chapter media: copy existing media archive entry: {err}"))?
+        } else {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "stored media source '{}' is missing",
+                file.file_name
+            )));
+        };
+        if written_bytes != file.bytes {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "media file '{}' changed while archiving",
+                file.file_name
+            )));
+        }
+    }
+    drop(existing_archive);
+
+    let mut output = archive
+        .finish()
+        .map_err(|err| format!("chapter media: finalize media archive: {err}"))?;
+    output
+        .flush()
+        .map_err(|err| format!("chapter media: flush media archive: {err}"))?;
+    drop(output);
+
+    match validate_chapter_media_archive(&temp_archive_path, stored_files)? {
+        ChapterMediaArtifactState::Valid(file_names) if file_names.len() == stored_files.len() => {}
+        ChapterMediaArtifactState::Valid(_) => {
+            return Ok(ChapterMediaArtifactState::Invalid(
+                "created media archive is incomplete".to_string(),
+            ));
+        }
+        ChapterMediaArtifactState::Invalid(reason) => {
+            return Ok(ChapterMediaArtifactState::Invalid(format!(
+                "created media archive failed validation: {reason}"
+            )));
+        }
+        ChapterMediaArtifactState::Missing => {
+            return Ok(ChapterMediaArtifactState::Invalid(
+                "created media archive is missing".to_string(),
+            ));
+        }
+    }
+    replace_media_archive(&temp_archive_path, &archive_path)?;
+    Ok(ChapterMediaArtifactState::Valid(
+        stored_files
+            .iter()
+            .map(|file| file.file_name.clone())
+            .collect(),
+    ))
+}
+
+fn mark_chapter_media_manifest_complete(
+    chapter_dir: &Path,
+    manifest: &mut ValidChapterMediaArchiveManifest,
+) -> Result<(), String> {
+    let Some(manifest_object) = manifest.raw.as_object_mut() else {
+        return Err("chapter media: media manifest root is not an object".to_string());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    manifest_object.insert("complete".to_string(), serde_json::Value::Bool(true));
+    manifest_object.insert(
+        "updatedAt".to_string(),
+        serde_json::Value::Number(now.into()),
+    );
+    write_chapter_media_manifest(&chapter_media_manifest_path(chapter_dir), &manifest.raw)
+}
+
+fn chapter_media_finalization_lock(chapter_dir: &Path) -> Result<Arc<Mutex<()>>, String> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+
+    let canonical_chapter = fs::canonicalize(chapter_dir)
+        .map_err(|err| format!("chapter media: resolve finalization path: {err}"))?;
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&canonical_chapter).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(canonical_chapter, Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+fn finalize_chapter_media_artifacts(
+    root: &Path,
+    chapter_dir: &Path,
+) -> Result<ChapterMediaFinalization, String> {
+    validate_chapter_dir_under_storage_root(root, chapter_dir)?;
+    let finalization_lock = chapter_media_finalization_lock(chapter_dir)?;
+    let _finalization_guard = finalization_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    finalize_chapter_media_artifacts_locked(chapter_dir)
+}
+
+fn finalize_chapter_media_artifacts_locked(
+    chapter_dir: &Path,
+) -> Result<ChapterMediaFinalization, String> {
+    let mut manifest = match read_chapter_media_archive_manifest(chapter_dir)? {
+        ChapterMediaArchiveManifestState::Invalid(reason) => {
+            return Ok(ChapterMediaFinalization::Incomplete(reason));
+        }
+        ChapterMediaArchiveManifestState::Missing => {
+            return Ok(ChapterMediaFinalization::ManifestMissing);
+        }
+        ChapterMediaArchiveManifestState::Valid(manifest) => manifest,
+    };
+
+    if let Some(media_bytes) = completed_manifest_media_bytes(chapter_dir, &manifest)? {
+        return Ok(ChapterMediaFinalization::Ready(media_bytes));
+    }
+
+    let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+    let loose_state = validate_loose_chapter_media(&media_dir, &manifest.stored_files)?;
+
+    if let ChapterMediaArtifactState::Invalid(reason) = &loose_state {
+        return Ok(ChapterMediaFinalization::Incomplete(reason.clone()));
+    }
+    let empty_file_names = HashSet::new();
+    let loose_file_names = match &loose_state {
+        ChapterMediaArtifactState::Valid(file_names) => file_names,
+        ChapterMediaArtifactState::Invalid(reason) => {
+            return Ok(ChapterMediaFinalization::Incomplete(reason.clone()));
+        }
+        ChapterMediaArtifactState::Missing => &empty_file_names,
+    };
+    let (archive_state, archive_source_path) = recover_chapter_media_archive_source(
+        chapter_dir,
+        &manifest.stored_files,
+        loose_file_names,
+    )?;
+
+    if manifest.stored_files.is_empty() {
+        if let ChapterMediaArtifactState::Invalid(reason) = &archive_state {
+            return Ok(ChapterMediaFinalization::Incomplete(reason.clone()));
+        }
+        if matches!(&archive_state, ChapterMediaArtifactState::Valid(_)) {
+            if archive_source_path != archive_path {
+                let empty_file_names = HashSet::new();
+                match build_validated_chapter_media_archive(
+                    chapter_dir,
+                    &manifest.stored_files,
+                    &empty_file_names,
+                    &empty_file_names,
+                    &archive_source_path,
+                )? {
+                    ChapterMediaArtifactState::Valid(_) => {}
+                    ChapterMediaArtifactState::Invalid(reason) => {
+                        return Ok(ChapterMediaFinalization::Incomplete(reason));
+                    }
+                    ChapterMediaArtifactState::Missing => {
+                        return Ok(ChapterMediaFinalization::Incomplete(
+                            "created empty media archive is missing".to_string(),
+                        ));
+                    }
+                }
+            }
+            match validate_chapter_media_archive(&archive_path, &manifest.stored_files)? {
+                ChapterMediaArtifactState::Valid(file_names) if file_names.is_empty() => {}
+                ChapterMediaArtifactState::Valid(_) => {
+                    return Ok(ChapterMediaFinalization::Incomplete(
+                        "published empty media archive contains stored entries".to_string(),
+                    ));
+                }
+                ChapterMediaArtifactState::Invalid(reason) => {
+                    return Ok(ChapterMediaFinalization::Incomplete(reason));
+                }
+                ChapterMediaArtifactState::Missing => {
+                    return Ok(ChapterMediaFinalization::Incomplete(
+                        "published empty media archive is missing".to_string(),
+                    ));
+                }
+            }
+            fs::remove_file(&archive_path)
+                .map_err(|err| format!("chapter media: remove empty media archive: {err}"))?;
+        }
+        remove_stale_chapter_media_archive_publication_files(chapter_dir)?;
+        remove_stale_chapter_media_manifest_publication_files(chapter_dir)?;
+        if matches!(&loose_state, ChapterMediaArtifactState::Valid(_)) {
+            fs::remove_dir_all(&media_dir)
+                .map_err(|err| format!("chapter media: remove empty loose media dir: {err}"))?;
+        }
+        mark_chapter_media_manifest_complete(chapter_dir, &mut manifest)?;
+        return Ok(ChapterMediaFinalization::Ready(0));
+    }
+
+    let archive_file_names = match &archive_state {
+        ChapterMediaArtifactState::Valid(file_names) => file_names,
+        ChapterMediaArtifactState::Invalid(_) | ChapterMediaArtifactState::Missing => {
+            &empty_file_names
+        }
+    };
+    let missing_file = manifest.stored_files.iter().find(|file| {
+        !loose_file_names.contains(&file.file_name) && !archive_file_names.contains(&file.file_name)
+    });
+    if let Some(missing_file) = missing_file {
+        let archive_reason = match &archive_state {
+            ChapterMediaArtifactState::Invalid(reason) => format!("; {reason}"),
+            _ => String::new(),
+        };
+        return Ok(ChapterMediaFinalization::Incomplete(format!(
+            "stored media source '{}' is missing{archive_reason}",
+            missing_file.file_name
+        )));
+    }
+
+    let archive_is_published_and_complete = archive_source_path == archive_path
+        && archive_file_names.len() == manifest.stored_files.len()
+        && loose_file_names.is_empty();
+    if !archive_is_published_and_complete {
+        match build_validated_chapter_media_archive(
+            chapter_dir,
+            &manifest.stored_files,
+            loose_file_names,
+            archive_file_names,
+            &archive_source_path,
+        )? {
+            ChapterMediaArtifactState::Valid(_) => {}
+            ChapterMediaArtifactState::Invalid(reason) => {
+                return Ok(ChapterMediaFinalization::Incomplete(reason));
+            }
+            ChapterMediaArtifactState::Missing => {
+                return Ok(ChapterMediaFinalization::Incomplete(
+                    "created media archive is missing".to_string(),
+                ));
+            }
+        }
+    }
+
+    let media_bytes = match validate_chapter_media_archive(&archive_path, &manifest.stored_files)? {
+        ChapterMediaArtifactState::Valid(file_names)
+            if file_names.len() == manifest.stored_files.len() =>
+        {
+            fs::symlink_metadata(&archive_path)
+                .map_err(|err| format!("chapter media: inspect published media archive: {err}"))?
+                .len()
+        }
+        ChapterMediaArtifactState::Valid(_) => {
+            return Ok(ChapterMediaFinalization::Incomplete(
+                "published media archive is incomplete".to_string(),
+            ));
+        }
+        ChapterMediaArtifactState::Invalid(reason) => {
+            return Ok(ChapterMediaFinalization::Incomplete(reason));
+        }
+        ChapterMediaArtifactState::Missing => {
+            return Ok(ChapterMediaFinalization::Incomplete(
+                "published media archive is missing".to_string(),
+            ));
+        }
+    };
+    remove_stale_chapter_media_archive_publication_files(chapter_dir)?;
+    remove_stale_chapter_media_manifest_publication_files(chapter_dir)?;
+    if matches!(&loose_state, ChapterMediaArtifactState::Valid(_)) {
+        fs::remove_dir_all(&media_dir)
+            .map_err(|err| format!("chapter media: remove loose media dir: {err}"))?;
+    }
+    mark_chapter_media_manifest_complete(chapter_dir, &mut manifest)?;
+    Ok(ChapterMediaFinalization::Ready(media_bytes))
 }
 
 fn delete_legacy_storage_manifest(root: &Path) -> Result<(), String> {
@@ -1595,24 +2579,6 @@ pub async fn chapter_media_store_handle(
     .await
 }
 
-fn archive_cache_entry_paths(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|err| format!("chapter media: read cache dir: {err}"))? {
-        let entry = entry.map_err(|err| format!("chapter media: read cache entry: {err}"))?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let file_name = safe_segment(&entry.file_name().to_string_lossy(), "media");
-        if file_name.ends_with(".part") {
-            continue;
-        }
-        entries.push((file_name, path));
-    }
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(entries)
-}
-
 #[tauri::command]
 pub async fn chapter_media_archive_cache(
     app: AppHandle,
@@ -1657,7 +2623,6 @@ fn chapter_media_archive_cache_sync(
         .as_deref()
         .ok_or_else(|| "chapter media: missing source id".to_string())?;
     let media_root = media_root(&app)?;
-    ensure_contents_nomedia(&media_root)?;
     let chapter_dir = content_chapter_dir_at(
         &media_root,
         source_id,
@@ -1669,116 +2634,29 @@ fn chapter_media_archive_cache_sync(
         chapter_name.as_deref(),
         chapter_position,
     )?;
-    let archive_path = chapter_archive_path_at(
-        &media_root,
-        source_id,
-        novel_id,
-        novel_path.as_deref(),
-        novel_name.as_deref(),
-        chapter_id,
-        chapter_number.as_deref(),
-        chapter_name.as_deref(),
-        chapter_position,
-    )?;
-    let cache_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
-
-    if !cache_dir.is_dir() {
-        match fs::metadata(&archive_path) {
-            Ok(metadata) if metadata.is_file() => return Ok(metadata.len()),
-            Ok(_) => {}
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => return Err(format!("chapter media: read archive metadata: {err}")),
+    validate_chapter_dir_under_storage_root(&media_root, &chapter_dir)?;
+    ensure_contents_nomedia(&media_root)?;
+    let media_bytes = match finalize_chapter_media_artifacts(&media_root, &chapter_dir)? {
+        ChapterMediaFinalization::Incomplete(reason) => {
+            return Err(format!(
+                "chapter media: media archive finalization incomplete: {reason}"
+            ));
         }
-        return Ok(0);
-    }
-
-    let entries = archive_cache_entry_paths(&cache_dir)?;
-    if entries.is_empty() {
-        fs::remove_dir_all(&cache_dir)
-            .map_err(|err| format!("chapter media: remove empty cache dir: {err}"))?;
-        match fs::metadata(&archive_path) {
-            Ok(metadata) if metadata.is_file() => return Ok(metadata.len()),
-            Ok(_) => {}
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => return Err(format!("chapter media: read archive metadata: {err}")),
+        ChapterMediaFinalization::ManifestMissing => {
+            return Err("chapter media: media manifest is missing".to_string());
         }
-        return Ok(0);
-    }
-
-    fs::create_dir_all(&chapter_dir)
-        .map_err(|err| format!("chapter media: create chapter dir: {err}"))?;
-    let temp_archive_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
-    let temp_file = File::create(&temp_archive_path)
-        .map_err(|err| format!("chapter media: create archive: {err}"))?;
-    let mut archive = ZipWriter::new(BufWriter::new(temp_file));
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o644);
-
-    let new_entry_names: HashSet<String> = entries
-        .iter()
-        .map(|(entry_name, _)| entry_name.clone())
-        .collect();
-    let mut written_entry_names = HashSet::new();
-
-    if archive_path.is_file() {
-        let archive_file = File::open(&archive_path)
-            .map_err(|err| format!("chapter media: open existing archive: {err}"))?;
-        let mut existing_archive = ZipArchive::new(BufReader::new(archive_file))
-            .map_err(|err| format!("chapter media: read existing archive: {err}"))?;
-        for index in 0..existing_archive.len() {
-            let mut entry = existing_archive
-                .by_index(index)
-                .map_err(|err| format!("chapter media: open existing archive entry: {err}"))?;
-            if !entry.is_file() {
-                continue;
-            }
-            let entry_name = safe_segment(entry.name(), "media");
-            if entry_name.ends_with(".part")
-                || new_entry_names.contains(&entry_name)
-                || !written_entry_names.insert(entry_name.clone())
-            {
-                continue;
-            }
-            archive
-                .start_file(&entry_name, options)
-                .map_err(|err| format!("chapter media: start archive entry: {err}"))?;
-            io::copy(&mut entry, &mut archive)
-                .map_err(|err| format!("chapter media: copy existing archive entry: {err}"))?;
-        }
-    }
-
-    for (entry_name, path) in entries {
-        if !written_entry_names.insert(entry_name.clone()) {
-            continue;
-        }
-        archive
-            .start_file(&entry_name, options)
-            .map_err(|err| format!("chapter media: start archive entry: {err}"))?;
-        let mut input =
-            File::open(&path).map_err(|err| format!("chapter media: open cache file: {err}"))?;
-        io::copy(&mut input, &mut archive)
-            .map_err(|err| format!("chapter media: write archive entry: {err}"))?;
-    }
-
-    archive
-        .finish()
-        .map_err(|err| format!("chapter media: finalize archive: {err}"))?;
-    replace_media_archive(&temp_archive_path, &archive_path)?;
-    fs::remove_dir_all(&cache_dir)
-        .map_err(|err| format!("chapter media: remove media dir: {err}"))?;
+        ChapterMediaFinalization::Ready(media_bytes) => media_bytes,
+    };
 
     for root in media_roots_for_lookup(&app)? {
         for old_chapter_dir in content_chapter_dirs_for_lookup(&root, chapter_id)? {
             if old_chapter_dir != chapter_dir {
+                validate_chapter_dir_under_storage_root(&root, &old_chapter_dir)?;
                 clear_content_media_artifacts(&old_chapter_dir)?;
             }
         }
     }
-
-    fs::metadata(&archive_path)
-        .map(|metadata| metadata.len())
-        .map_err(|err| format!("chapter media: read archive size: {err}"))
+    Ok(media_bytes)
 }
 
 fn required_content_chapter_dir(
@@ -1874,15 +2752,11 @@ fn chapter_media_prepare_workspace_sync(
                 .map_err(|err| format!("chapter media: remove media dir: {err}"))?;
         }
         let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
-        if archive_path.exists() {
-            fs::remove_file(&archive_path)
-                .map_err(|err| format!("chapter media: remove media archive: {err}"))?;
-        }
+        remove_known_publication_file(&archive_path, "chapter media: remove media archive")?;
+        remove_stale_chapter_media_archive_publication_files(&chapter_dir)?;
         let manifest_path = chapter_media_manifest_path(&chapter_dir);
-        if manifest_path.exists() {
-            fs::remove_file(&manifest_path)
-                .map_err(|err| format!("chapter media: remove media manifest: {err}"))?;
-        }
+        remove_known_publication_file(&manifest_path, "chapter media: remove media manifest")?;
+        remove_stale_chapter_media_manifest_publication_files(&chapter_dir)?;
     }
     Ok(())
 }
@@ -3932,6 +4806,849 @@ mod tests {
         assert!(!manifest.contains("old.png"));
         assert!(!manifest_path.with_extension("json.tmp").exists());
         assert!(!chapter_media_manifest_backup_path(&manifest_path).exists());
+    }
+
+    #[test]
+    fn manifest_publication_replaces_current_when_recovery_slots_are_occupied() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest_path = dir.path().join(CHAPTER_MEDIA_MANIFEST_FILE);
+        let backup_path = chapter_media_manifest_backup_path(&manifest_path);
+        let rollback_path = chapter_media_manifest_rollback_path(&manifest_path);
+        fs::write(&manifest_path, b"current").expect("write current manifest");
+        fs::write(&backup_path, b"recovery").expect("write recovery manifest");
+        fs::write(&rollback_path, b"blocked").expect("write rollback blocker");
+
+        write_chapter_media_manifest(
+            &manifest_path,
+            &serde_json::json!({
+                "version": 1,
+                "complete": true,
+                "updatedAt": 1,
+                "media": { "files": [] }
+            }),
+        )
+        .expect("publish manifest");
+
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&manifest_path).expect("read published manifest"),
+        )
+        .expect("parse published manifest");
+        assert_eq!(manifest["complete"], true);
+        assert!(!backup_path.exists());
+        assert!(!rollback_path.exists());
+    }
+
+    fn write_recovery_manifest(chapter_dir: &Path, complete: bool, files: serde_json::Value) {
+        write_chapter_media_manifest(
+            &chapter_media_manifest_path(chapter_dir),
+            &serde_json::json!({
+                "version": 1,
+                "complete": complete,
+                "updatedAt": 1,
+                "media": { "files": files }
+            }),
+        )
+        .expect("write recovery manifest");
+    }
+
+    fn stored_manifest_file(file_name: &str, bytes: u64) -> serde_json::Value {
+        serde_json::json!({
+            "bytes": bytes,
+            "contentType": "image/png",
+            "fileName": file_name,
+            "path": format!("media/{file_name}"),
+            "sourceUrl": format!("https://example.test/{file_name}"),
+            "status": "stored",
+            "updatedAt": 1
+        })
+    }
+
+    #[test]
+    fn chapter_media_manifest_rejects_unsafe_stored_file_names() {
+        let manifest = serde_json::json!({
+            "version": 1,
+            "complete": false,
+            "updatedAt": 1,
+            "media": { "files": [stored_manifest_file("page:stream.png", 5)] }
+        });
+
+        let error = parse_chapter_media_archive_manifest(&manifest.to_string())
+            .expect_err("reject unsafe stored media name");
+
+        assert!(error.contains("invalid stored media path"));
+    }
+
+    fn remote_manifest_file(file_name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "bytes": 0,
+            "fileName": file_name,
+            "path": format!("media/{file_name}"),
+            "sourceUrl": format!("https://example.test/{file_name}"),
+            "status": "remote",
+            "updatedAt": 1
+        })
+    }
+
+    fn write_test_media_archive(chapter_dir: &Path, entries: &[(&str, &[u8])]) {
+        let archive_file =
+            File::create(chapter_dir.join(MEDIA_ARCHIVE_FILE)).expect("create media archive");
+        let mut archive = ZipWriter::new(BufWriter::new(archive_file));
+        for (file_name, body) in entries {
+            archive
+                .start_file(*file_name, SimpleFileOptions::default())
+                .expect("start media archive entry");
+            io::copy(&mut &body[..], &mut archive).expect("write media archive entry");
+        }
+        archive.finish().expect("finish media archive");
+    }
+
+    fn recovery_chapter_dir(root: &Path) -> PathBuf {
+        root.join(CONTENTS_ROOT_DIR)
+            .join("source")
+            .join("Novel-path")
+            .join("1-Chapter")
+    }
+
+    #[test]
+    fn chapter_media_finalization_uses_one_lock_per_chapter() {
+        use std::sync::TryLockError;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        let first_lock = chapter_media_finalization_lock(&chapter_dir).expect("first lock");
+        let second_lock = chapter_media_finalization_lock(&chapter_dir).expect("second lock");
+        assert!(Arc::ptr_eq(&first_lock, &second_lock));
+
+        let _guard = first_lock.lock().expect("lock chapter finalization");
+        assert!(matches!(
+            second_lock.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn chapter_media_recovery_archives_complete_loose_media_before_adoption() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("page.png"), b"image").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            true,
+            serde_json::json!([
+                stored_manifest_file("page.png", 5),
+                remote_manifest_file("fallback.png")
+            ]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(inspection.media_bytes > 0);
+        assert!(!media_dir.exists());
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let archive_file = File::open(&archive_path).expect("open recovered archive");
+        let mut archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 1);
+        let mut body = Vec::new();
+        archive
+            .by_name("page.png")
+            .expect("open recovered entry")
+            .read_to_end(&mut body)
+            .expect("read recovered entry");
+        assert_eq!(body, b"image");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(chapter_media_manifest_path(&chapter_dir))
+                .expect("read finalized manifest"),
+        )
+        .expect("parse finalized manifest");
+        assert_eq!(manifest["complete"], true);
+    }
+
+    #[test]
+    fn chapter_media_recovery_rejects_missing_stored_media_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter");
+
+        assert!(inspection.is_none());
+        assert!(media_dir.is_dir());
+        assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(chapter_media_manifest_path(&chapter_dir))
+                .expect("read incomplete manifest"),
+        )
+        .expect("parse incomplete manifest");
+        assert_eq!(manifest["complete"], false);
+    }
+
+    #[test]
+    fn chapter_media_recovery_rejects_unexpected_loose_files_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("page.png"), b"image").expect("write loose media");
+        fs::write(media_dir.join("stale.part"), b"partial").expect("write unexpected media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter");
+
+        assert!(inspection.is_none());
+        assert!(media_dir.join("page.png").is_file());
+        assert!(media_dir.join("stale.part").is_file());
+        assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chapter_media_recovery_rejects_a_chapter_directory_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let external_dir = tempfile::tempdir().expect("external tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(chapter_dir.parent().expect("chapter parent"))
+            .expect("create chapter parent");
+        let external_chapter_dir = external_dir.path().join("chapter");
+        let external_media_dir = external_chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&external_media_dir).expect("create external media dir");
+        fs::write(external_chapter_dir.join("content.html"), b"chapter")
+            .expect("write external content");
+        fs::write(external_media_dir.join("page.png"), b"image").expect("write external media");
+        write_recovery_manifest(
+            &external_chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+        symlink(&external_chapter_dir, &chapter_dir).expect("create chapter symlink");
+
+        let error = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect_err("reject chapter symlink escape");
+
+        assert!(error.contains("symbolic link"));
+        assert!(external_media_dir.join("page.png").is_file());
+        assert!(!external_chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(chapter_media_manifest_path(&external_chapter_dir))
+                .expect("read external manifest"),
+        )
+        .expect("parse external manifest");
+        assert_eq!(manifest["complete"], false);
+    }
+
+    #[test]
+    fn chapter_media_recovery_combines_existing_archive_and_loose_media() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("new.png"), b"newer").expect("write new loose media");
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old")]);
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([
+                stored_manifest_file("old.png", 3),
+                stored_manifest_file("new.png", 5)
+            ]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(!media_dir.exists());
+        let archive_file =
+            File::open(chapter_dir.join(MEDIA_ARCHIVE_FILE)).expect("open combined archive");
+        let mut archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 2);
+        let mut old_body = Vec::new();
+        archive
+            .by_name("old.png")
+            .expect("open old entry")
+            .read_to_end(&mut old_body)
+            .expect("read old entry");
+        assert_eq!(old_body, b"old");
+        let mut new_body = Vec::new();
+        archive
+            .by_name("new.png")
+            .expect("open new entry")
+            .read_to_end(&mut new_body)
+            .expect("read new entry");
+        assert_eq!(new_body, b"newer");
+    }
+
+    #[test]
+    fn chapter_media_recovery_removes_partial_loose_copy_of_a_complete_archive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("new.png"), b"newer").expect("write leftover loose media");
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old"), ("new.png", b"older")]);
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        let rollback_path = archive_rollback_path(&archive_path);
+        fs::copy(&archive_path, &backup_path).expect("copy archive backup");
+        fs::copy(&archive_path, &rollback_path).expect("copy archive rollback");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([
+                stored_manifest_file("old.png", 3),
+                stored_manifest_file("new.png", 5)
+            ]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(!media_dir.exists());
+        assert!(!backup_path.exists());
+        assert!(!rollback_path.exists());
+        let archive_file = File::open(&archive_path).expect("open complete archive");
+        let mut archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 2);
+        let mut new_body = Vec::new();
+        archive
+            .by_name("new.png")
+            .expect("open rebuilt entry")
+            .read_to_end(&mut new_body)
+            .expect("read rebuilt entry");
+        assert_eq!(new_body, b"newer");
+    }
+
+    #[test]
+    fn chapter_media_recovery_restores_an_interrupted_manifest_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("page.png"), b"image").expect("write loose media");
+        let manifest_path = chapter_media_manifest_path(&chapter_dir);
+        let backup_path = chapter_media_manifest_backup_path(&manifest_path);
+        fs::write(
+            &backup_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "complete": false,
+                "updatedAt": 1,
+                "media": { "files": [stored_manifest_file("page.png", 5)] }
+            }))
+            .expect("encode backup manifest"),
+        )
+        .expect("write backup manifest");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(manifest_path.is_file());
+        assert!(!backup_path.exists());
+        assert!(!media_dir.exists());
+        assert!(chapter_dir.join(MEDIA_ARCHIVE_FILE).is_file());
+    }
+
+    #[test]
+    fn chapter_media_recovery_prefers_valid_manifest_temp_over_valid_final() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("page.png"), b"image").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([remote_manifest_file("page.png")]),
+        );
+        let manifest_path = chapter_media_manifest_path(&chapter_dir);
+        let temp_path = manifest_path.with_extension("json.tmp");
+        fs::write(
+            &temp_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "complete": false,
+                "updatedAt": 0,
+                "media": { "files": [stored_manifest_file("page.png", 5)] }
+            }))
+            .expect("encode temp manifest"),
+        )
+        .expect("write temp manifest");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(!temp_path.exists());
+        assert!(!media_dir.exists());
+        assert!(chapter_dir.join(MEDIA_ARCHIVE_FILE).is_file());
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&manifest_path).expect("read recovered manifest"),
+        )
+        .expect("parse recovered manifest");
+        assert_eq!(manifest["complete"], true);
+        assert_eq!(manifest["media"]["files"][0]["status"], "stored");
+    }
+
+    #[test]
+    fn chapter_media_recovery_uses_backup_when_the_final_manifest_is_invalid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("page.png"), b"image").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+        let manifest_path = chapter_media_manifest_path(&chapter_dir);
+        let backup_path = chapter_media_manifest_backup_path(&manifest_path);
+        fs::copy(&manifest_path, &backup_path).expect("copy recovery manifest");
+        fs::write(&manifest_path, b"invalid manifest").expect("corrupt final manifest");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(!backup_path.exists());
+        assert!(!media_dir.exists());
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&manifest_path).expect("read recovered manifest"),
+        )
+        .expect("parse recovered manifest");
+        assert_eq!(manifest["complete"], true);
+    }
+
+    #[test]
+    fn chapter_media_recovery_restores_an_interrupted_manifest_rollback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("page.png"), b"image").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+        let manifest_path = chapter_media_manifest_path(&chapter_dir);
+        let rollback_path = chapter_media_manifest_rollback_path(&manifest_path);
+        fs::rename(&manifest_path, &rollback_path).expect("stage manifest rollback");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(manifest_path.is_file());
+        assert!(!rollback_path.exists());
+        assert!(!media_dir.exists());
+        assert!(chapter_dir.join(MEDIA_ARCHIVE_FILE).is_file());
+    }
+
+    #[test]
+    fn chapter_media_recovery_publishes_a_valid_interrupted_archive_temp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("new.png"), b"newer").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([
+                stored_manifest_file("old.png", 3),
+                stored_manifest_file("new.png", 5)
+            ]),
+        );
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        let temp_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old")]);
+        fs::rename(&archive_path, &backup_path).expect("move old archive to backup");
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old"), ("new.png", b"newer")]);
+        fs::rename(&archive_path, &temp_path).expect("move new archive to temp");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(archive_path.is_file());
+        assert!(!backup_path.exists());
+        assert!(!temp_path.exists());
+        assert!(!media_dir.exists());
+        let archive_file = File::open(&archive_path).expect("open published archive");
+        let archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 2);
+    }
+
+    #[test]
+    fn chapter_media_recovery_publishes_exact_temp_when_all_slots_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        let rollback_path = archive_rollback_path(&archive_path);
+        let temp_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
+        write_test_media_archive(&chapter_dir, &[]);
+        fs::rename(&archive_path, &backup_path).expect("stage archive backup");
+        write_test_media_archive(&chapter_dir, &[]);
+        fs::rename(&archive_path, &rollback_path).expect("stage archive rollback");
+        write_test_media_archive(&chapter_dir, &[("page.png", b"image")]);
+        fs::rename(&archive_path, &temp_path).expect("stage exact archive temp");
+        write_test_media_archive(&chapter_dir, &[]);
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(archive_path.is_file());
+        assert!(!backup_path.exists());
+        assert!(!rollback_path.exists());
+        assert!(!temp_path.exists());
+        let archive_file = File::open(&archive_path).expect("open published archive");
+        let archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 1);
+    }
+
+    #[test]
+    fn chapter_media_recovery_combines_archive_backup_with_loose_media() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("new.png"), b"newer").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([
+                stored_manifest_file("old.png", 3),
+                stored_manifest_file("new.png", 5)
+            ]),
+        );
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old")]);
+        fs::rename(&archive_path, &backup_path).expect("move archive to backup");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(archive_path.is_file());
+        assert!(!backup_path.exists());
+        assert!(!media_dir.exists());
+        let archive_file = File::open(&archive_path).expect("open combined archive");
+        let archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 2);
+    }
+
+    #[test]
+    fn chapter_media_recovery_combines_archive_rollback_with_loose_media() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(media_dir.join("new.png"), b"newer").expect("write loose media");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([
+                stored_manifest_file("old.png", 3),
+                stored_manifest_file("new.png", 5)
+            ]),
+        );
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        let rollback_path = archive_rollback_path(&archive_path);
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old")]);
+        fs::rename(&archive_path, &rollback_path).expect("stage archive rollback");
+        write_test_media_archive(&chapter_dir, &[]);
+        fs::rename(&archive_path, &backup_path).expect("stage incomplete archive backup");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(archive_path.is_file());
+        assert!(!backup_path.exists());
+        assert!(!rollback_path.exists());
+        assert!(!media_dir.exists());
+        let archive_file = File::open(&archive_path).expect("open combined archive");
+        let archive = ZipArchive::new(BufReader::new(archive_file)).expect("read archive");
+        assert_eq!(archive.len(), 2);
+    }
+
+    #[test]
+    fn chapter_media_recovery_preserves_incomplete_archive_candidates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([
+                stored_manifest_file("old.png", 3),
+                stored_manifest_file("new.png", 5)
+            ]),
+        );
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        let temp_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
+        write_test_media_archive(&chapter_dir, &[("old.png", b"old")]);
+        fs::rename(&archive_path, &backup_path).expect("move archive to backup");
+        fs::copy(&backup_path, &temp_path).expect("copy partial archive temp");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter");
+
+        assert!(inspection.is_none());
+        assert!(!archive_path.exists());
+        assert!(backup_path.is_file());
+        assert!(temp_path.is_file());
+    }
+
+    #[test]
+    fn chapter_media_recovery_finishes_from_an_existing_valid_archive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_test_media_archive(&chapter_dir, &[("page.png", b"image")]);
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(inspection.media_bytes > 0);
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(chapter_media_manifest_path(&chapter_dir))
+                .expect("read finalized manifest"),
+        )
+        .expect("parse finalized manifest");
+        assert_eq!(manifest["complete"], true);
+    }
+
+    #[test]
+    fn chapter_media_recovery_does_not_reopen_a_structurally_complete_archive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        fs::write(chapter_dir.join(MEDIA_ARCHIVE_FILE), b"not-opened")
+            .expect("write structurally complete archive");
+        write_recovery_manifest(
+            &chapter_dir,
+            true,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("completed chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert_eq!(inspection.media_bytes, 10);
+    }
+
+    #[test]
+    fn chapter_media_recovery_cleans_stale_archive_publication_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_test_media_archive(&chapter_dir, &[("page.png", b"image")]);
+        write_recovery_manifest(
+            &chapter_dir,
+            true,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let backup_path = archive_backup_path(&archive_path);
+        let temp_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
+        fs::copy(&archive_path, &backup_path).expect("copy stale archive backup");
+        fs::write(&temp_path, b"invalid temp").expect("write stale archive temp");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert!(archive_path.is_file());
+        assert!(!backup_path.exists());
+        assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn chapter_media_recovery_cleans_stale_manifest_publication_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_test_media_archive(&chapter_dir, &[("page.png", b"image")]);
+        write_recovery_manifest(
+            &chapter_dir,
+            true,
+            serde_json::json!([stored_manifest_file("page.png", 5)]),
+        );
+        let manifest_paths = chapter_media_manifest_publication_paths(&chapter_dir);
+        for path in &manifest_paths {
+            fs::write(path, b"stale manifest publication file")
+                .expect("write stale manifest publication file");
+        }
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.status, "present");
+        for path in manifest_paths {
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn clear_content_media_artifacts_removes_transaction_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = dir.path().join("chapter");
+        fs::create_dir_all(chapter_dir.join(MEDIA_DOWNLOAD_DIR)).expect("create media dir");
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        let manifest_path = chapter_media_manifest_path(&chapter_dir);
+        let mut paths = vec![archive_path, manifest_path];
+        paths.extend(chapter_media_archive_publication_paths(&chapter_dir));
+        paths.extend(chapter_media_manifest_publication_paths(&chapter_dir));
+        for path in &paths {
+            fs::write(path, b"transaction artifact").expect("write transaction artifact");
+        }
+
+        clear_content_media_artifacts(&chapter_dir).expect("clear media artifacts");
+
+        assert!(!chapter_dir.join(MEDIA_DOWNLOAD_DIR).exists());
+        for path in paths {
+            assert!(!path.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_archive_publication_symlink_is_preserved() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = dir.path().join("chapter");
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        let target_path = dir.path().join("target");
+        fs::write(&target_path, b"target").expect("write target");
+        let temp_path = chapter_dir.join(format!("{MEDIA_ARCHIVE_FILE}.tmp"));
+        symlink(&target_path, &temp_path).expect("create temp symlink");
+
+        remove_stale_chapter_media_archive_publication_files(&chapter_dir)
+            .expect_err("reject publication symlink");
+
+        assert!(fs::symlink_metadata(&temp_path)
+            .expect("inspect temp symlink")
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target_path).expect("read target"), b"target");
+    }
+
+    #[test]
+    fn chapter_media_recovery_completes_remote_only_manifest_without_an_archive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
+        fs::create_dir_all(&media_dir).expect("create empty media dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+        write_recovery_manifest(
+            &chapter_dir,
+            false,
+            serde_json::json!([remote_manifest_file("fallback.png")]),
+        );
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("recovered chapter");
+
+        assert_eq!(inspection.media_bytes, 0);
+        assert!(!media_dir.exists());
+        assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(chapter_media_manifest_path(&chapter_dir))
+                .expect("read finalized manifest"),
+        )
+        .expect("parse finalized manifest");
+        assert_eq!(manifest["complete"], true);
+    }
+
+    #[test]
+    fn chapter_media_recovery_keeps_manifestless_legacy_content_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter_dir = recovery_chapter_dir(dir.path());
+        fs::create_dir_all(&chapter_dir).expect("create chapter dir");
+        fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
+
+        let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+            .expect("inspect chapter")
+            .expect("legacy chapter");
+
+        assert_eq!(inspection.status, "present");
+        assert_eq!(inspection.media_bytes, 0);
     }
 
     fn transfer_entry(entry_id: &str, source: &str, target: &str) -> ChapterStorageTransferEntry {
