@@ -37,6 +37,10 @@ import {
   validateChapterAcquisitionPlan,
 } from "../plugins/chapter-acquisition";
 import { pluginManager } from "../plugins/manager";
+import {
+  normalizeSourceAccessRequiredError,
+  sourceAccessScopeKey,
+} from "../plugins/source-access";
 import type {
   ChapterBinaryResource,
   ChapterContentResource,
@@ -788,6 +792,24 @@ function resolveSourceTaskName(
   return pluginManager.getPlugin(pluginId)?.name ?? trimmedName ?? pluginId;
 }
 
+async function resolveChapterDownloadSourceAccessUrl(
+  job: ChapterDownloadJob,
+): Promise<string> {
+  if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
+  const plugin = pluginManager.getPluginForExecutor(job.pluginId, "immediate");
+  const chapter = await getChapterById(job.id);
+  if (!chapter) throw missingLocalChapterError(job);
+  const contentType = normalizeChapterContentType(
+    chapter.sourceContentType ?? job.contentType ?? chapter.contentType,
+  );
+  const acquisitionPlan = validateChapterAcquisitionPlan(
+    plugin.getChapterAcquisitionPlan(job.chapterPath, contentType),
+  );
+  return acquisitionPlan.type === "page"
+    ? acquisitionPlan.url
+    : (absolutePluginUrl(plugin, job.chapterPath) ?? getPluginBaseUrl(plugin));
+}
+
 function enqueueChapterDownloadForExecutor(
   job: ChapterDownloadJob,
   options: {
@@ -824,14 +846,20 @@ function enqueueChapterDownloadForExecutor(
       batchTitle: job.batchTitle,
     },
     dedupeKey: chapterDownloadDedupeKey(job.id),
+    resolveSourceAccessUrl: () =>
+      resolveChapterDownloadSourceAccessUrl(job),
+    sourceAccessVerificationKey: `chapter.download:${job.pluginId}:${job.id}`,
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
     run: async ({
+      confirmSourceAccess,
       executor,
       setDetail,
       setProgress,
+      setSourceAccessUrl,
       shouldYield,
       signal,
+      sourceAccessVerification,
     }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       const liveReaderUpdates = shouldEmitLiveChapterDownloadUpdates(job);
@@ -849,7 +877,7 @@ function enqueueChapterDownloadForExecutor(
         if (signal.aborted) throw abortReason(signal);
         const storedArtifacts = await reconcileStoredChapterContent(job.id);
         if (signal.aborted) throw abortReason(signal);
-        if (storedArtifacts.status === "present") {
+        if (!sourceAccessVerification && storedArtifacts.status === "present") {
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
           reportProgress(
             { current: progressTotal, total: progressTotal },
@@ -885,6 +913,17 @@ function enqueueChapterDownloadForExecutor(
         const acquisitionPlan = validateChapterAcquisitionPlan(
           plugin.getChapterAcquisitionPlan(job.chapterPath, contentType),
         );
+        const acquisitionUrl =
+          acquisitionPlan.type === "page"
+            ? acquisitionPlan.url
+            : (absolutePluginUrl(plugin, job.chapterPath) ??
+              getPluginBaseUrl(plugin));
+        let trustedAccessUrl = acquisitionUrl;
+        if (setSourceAccessUrl?.(acquisitionUrl) === false) {
+          throw new Error(
+            "Chapter source access URL does not match the verification scope.",
+          );
+        }
         const savedContentType = storedChapterContentType(contentType);
         const previousHtml =
           !isBinaryChapterContentType(contentType) &&
@@ -932,6 +971,7 @@ function enqueueChapterDownloadForExecutor(
             await loadChapterResource(plugin, job.chapterPath, contentType),
             contentType,
           );
+          confirmSourceAccess?.();
           if (signal.aborted) {
             throw new DOMException("Task was cancelled.", "AbortError");
           }
@@ -997,7 +1037,7 @@ function enqueueChapterDownloadForExecutor(
           return;
         }
         let baseUrl = absolutePluginUrl(plugin, job.chapterPath);
-        const storedHtmlSource = previousHtml?.trim()
+        const storedHtmlSource = !sourceAccessVerification && previousHtml?.trim()
           ? restoreProtectedRemoteChapterMediaSources(previousHtml, baseUrl)
           : null;
         const usesStoredHtmlSource = storedHtmlSource !== null;
@@ -1017,11 +1057,19 @@ function enqueueChapterDownloadForExecutor(
             });
             rawContent = captured.content;
             baseUrl = captured.baseUrl;
+            if (setSourceAccessUrl?.(baseUrl) === false) {
+              throw new Error(
+                "Chapter source access URL does not match the verification scope.",
+              );
+            }
+            trustedAccessUrl = baseUrl;
+            confirmSourceAccess?.();
           } else {
             const resource = validateChapterContentResource(
               await loadChapterResource(plugin, job.chapterPath, contentType),
               contentType,
             );
+            confirmSourceAccess?.();
             rawContent = resource.content;
             acquiredContentType = resource.contentType;
             baseUrl = resource.baseUrl ?? baseUrl;
@@ -1058,6 +1106,9 @@ function enqueueChapterDownloadForExecutor(
             }
             const media = await cacheHtmlChapterMedia({
               ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
+              ...(trustedAccessUrl
+                ? { sourceAccessUrl: trustedAccessUrl }
+                : {}),
               chapterId: job.id,
               chapterName: chapter.name,
               chapterNumber: chapter.chapterNumber ?? String(chapter.position),
@@ -1096,6 +1147,7 @@ function enqueueChapterDownloadForExecutor(
               signal,
               sourceId: job.pluginId,
             });
+            if (usesStoredHtmlSource) confirmSourceAccess?.();
             html = media.html;
             mediaBytes = media.mediaBytes;
             if (media.mediaFailures.length > 0) {
@@ -1136,7 +1188,11 @@ function enqueueChapterDownloadForExecutor(
           { force: true },
         );
       } catch (error) {
-        if (!isPauseAbort(signal) && !isPauseAbortError(error)) {
+        if (
+          !normalizeSourceAccessRequiredError(error) &&
+          !isPauseAbort(signal) &&
+          !isPauseAbortError(error)
+        ) {
           settleChapterDownloadBatchJob(
             job.batchId,
             job.id,
@@ -1171,6 +1227,9 @@ export function enqueueChapterMediaRepair(
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
   const sourceBaseUrl = sourcePlugin ? getPluginBaseUrl(sourcePlugin) : undefined;
   const sourceCooldownKey = sourceBaseDomainKey(sourceBaseUrl) ?? job.pluginId;
+  const sourceAccessScope = sourceBaseUrl
+    ? sourceAccessScopeKey(sourceBaseUrl)
+    : undefined;
   return taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
     priority: job.priority ?? "user",
@@ -1181,12 +1240,17 @@ export function enqueueChapterMediaRepair(
       pluginId: job.pluginId,
     },
     dedupeKey: chapterMediaRepairDedupeKey(job.id),
+    ...(sourceAccessScope
+      ? { sourceAccessScopeKey: sourceAccessScope }
+      : {}),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
     run: async ({
+      confirmSourceAccess,
       executor,
       setDetail,
       setProgress,
+      setSourceAccessUrl,
       shouldYield,
       signal,
     }) => {
@@ -1231,6 +1295,16 @@ export function enqueueChapterMediaRepair(
         plugin.getChapterAcquisitionPlan(chapter.path, sourceContentType),
       );
       let baseUrl = absolutePluginUrl(plugin, chapter.path);
+      const acquisitionUrl =
+        acquisitionPlan.type === "page"
+          ? acquisitionPlan.url
+          : (baseUrl ?? getPluginBaseUrl(plugin));
+      let trustedAccessUrl = acquisitionUrl;
+      if (setSourceAccessUrl?.(acquisitionUrl) === false) {
+        throw new Error(
+          "Chapter source access URL does not match the verification scope.",
+        );
+      }
       let repairHtml = content;
       const preferBrowserCache = acquisitionPlan.type === "page";
       if (acquisitionPlan.type === "page") {
@@ -1257,6 +1331,13 @@ export function enqueueChapterMediaRepair(
             ? sanitizeReaderHtml(convertedHtml)
             : convertedHtml;
         baseUrl = captured.baseUrl;
+        if (setSourceAccessUrl?.(baseUrl) === false) {
+          throw new Error(
+            "Chapter source access URL does not match the verification scope.",
+          );
+        }
+        trustedAccessUrl = baseUrl;
+        confirmSourceAccess?.();
       }
       if (!baseUrl) {
         throw new Error(
@@ -1301,6 +1382,7 @@ export function enqueueChapterMediaRepair(
         chapterNumber: chapter.chapterNumber ?? String(chapter.position),
         chapterPosition: chapter.position,
         contextUrl: baseUrl,
+        ...(trustedAccessUrl ? { sourceAccessUrl: trustedAccessUrl } : {}),
         html: repairHtml,
         novelId: storageContext.novelId,
         novelName: storageContext.novelName,
@@ -1342,6 +1424,7 @@ export function enqueueChapterMediaRepair(
         signal,
         sourceId: job.pluginId,
       });
+      if (acquisitionPlan.type !== "page") confirmSourceAccess?.();
       const mediaBytes = await getStoredChapterMediaBytes(
         media.html,
         storageContext,

@@ -10,6 +10,7 @@ import {
   captureChapterPage,
   validateChapterAcquisitionPlan,
 } from "./chapter-acquisition";
+import { isSourceAccessRequiredError } from "./source-access";
 
 const mockedCaptureChapterWebView = vi.mocked(captureChapterWebView);
 
@@ -47,9 +48,11 @@ function executeChapterCaptureScript(
   script: string,
   {
     includeHostControls = false,
+    manualAction,
     settleImageAfterFirstPoll = false,
   }: {
     includeHostControls?: boolean;
+    manualAction?: "captcha" | "cloudflare" | "legacy";
     settleImageAfterFirstPoll?: boolean;
   } = {},
 ): { message: string; postedBeforeImageSettled: boolean } {
@@ -122,8 +125,18 @@ function executeChapterCaptureScript(
   runInNewContext(script, {
     URL,
     document: {
-      querySelector: (selector: string) =>
-        selector === "[data-norea-manual-action]" ? null : sourceRoot,
+      querySelector: (selector: string) => {
+        if (selector !== "[data-norea-manual-action]") return sourceRoot;
+        if (!manualAction) return null;
+        return {
+          getAttribute: (name: string) =>
+            name === "data-norea-manual-action"
+              ? manualAction === "legacy"
+                ? ""
+                : manualAction
+              : null,
+        };
+      },
       readyState: "complete",
     },
     location: { href: "https://source.test/chapter/1" },
@@ -310,5 +323,36 @@ describe("captureChapterPage", () => {
         sourceId: "source-a",
       }),
     ).rejects.toThrow("manual-action-required");
+  });
+
+  it("turns a CAPTCHA marker into a typed source access error", async () => {
+    mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
+      if (!options?.beforeContentScript) {
+        throw new Error("Expected chapter capture script.");
+      }
+      return executeChapterCaptureScript(options.beforeContentScript, {
+        manualAction: "captcha",
+      }).message;
+    });
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      loadStrategy: "selector",
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    const promise = captureChapterPage(plan, {
+      contentType: "html",
+      executor: "immediate",
+      sourceId: "source-a",
+    });
+
+    await expect(promise).rejects.toSatisfy(
+      (error: unknown) =>
+        isSourceAccessRequiredError(error) &&
+        error.challenge.kind === "captcha" &&
+        error.challenge.url === "https://source.test/chapter/1",
+    );
   });
 });

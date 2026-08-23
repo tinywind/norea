@@ -119,15 +119,40 @@ class AndroidScraperBridge(
       "bodyLength=${body?.length ?: 0}"
   }
 
+  private fun urlForLog(url: String?): String {
+    if (url.isNullOrBlank()) return "<none>"
+    val parsed = runCatching { Uri.parse(url) }.getOrNull()
+    val scheme = parsed?.scheme?.lowercase()
+    if (scheme == "http" || scheme == "https") {
+      val origin = parsed?.let(::originUrl)
+      if (origin != null) {
+        return origin
+      }
+    }
+    if (!scheme.isNullOrBlank()) return "<$scheme-url>"
+
+    val secretBoundary = listOf(url.indexOf('?'), url.indexOf('#'))
+      .filter { it >= 0 }
+      .minOrNull()
+    val withoutSecrets = if (secretBoundary == null) url else url.substring(0, secretBoundary)
+    return MALFORMED_URL_USER_INFO.replaceFirst(withoutSecrets) { match ->
+      match.groupValues[1]
+    }
+  }
+
+  private fun redactUrlsForLog(message: String): String {
+    return HTTP_URL_IN_LOG_MESSAGE.replace(message) { match -> urlForLog(match.value) }
+  }
+
   private fun logState(state: QueueState, message: String, url: String? = null) {
     requireMainThread()
     Log.d(
       TAG,
-      "[${state.key}] $message busy=${state.busy} queue=${state.queue.size} " +
-        "browserVisible=$browserVisible currentUrl=${state.currentUrl} " +
+      "[${state.key}] ${redactUrlsForLog(message)} busy=${state.busy} queue=${state.queue.size} " +
+        "browserVisible=$browserVisible currentUrl=${urlForLog(state.currentUrl)} " +
         "knownQueues=${queues.keys.joinToString(",")} " +
         "webViews=${queues.values.count { it.webView != null }} " +
-        "targetUrl=$url currentCookies=${cookieSummary(state.currentUrl)} " +
+        "targetUrl=${urlForLog(url)} currentCookies=${cookieSummary(state.currentUrl)} " +
         "targetCookies=${cookieSummary(url)}",
     )
   }
@@ -137,8 +162,9 @@ class AndroidScraperBridge(
     val bodyBase64 = result.optString("bodyBase64").takeIf { result.has("bodyBase64") }
     return "success=${result.optBoolean("success", false)} " +
       "status=${result.opt("status")} statusText=${result.opt("statusText")} " +
-      "finalUrl=${result.opt("finalUrl")} headers=${jsonKeysForLog(result.optJSONObject("headers"))} " +
-      "error=${result.opt("error")} bodyLength=${body?.length ?: 0} " +
+      "finalUrl=${urlForLog(result.optString("finalUrl").takeIf { result.has("finalUrl") })} " +
+      "headers=${jsonKeysForLog(result.optJSONObject("headers"))} " +
+      "errorLength=${result.optString("error").length} bodyLength=${body?.length ?: 0} " +
       "bodyBase64Length=${bodyBase64?.length ?: 0} payloadLength=$payloadLength"
   }
 
@@ -149,11 +175,12 @@ class AndroidScraperBridge(
       val bodyBase64 = result.optString("bodyBase64").takeIf { result.has("bodyBase64") }
       return "ok=${envelope.optBoolean("ok", false)} " +
         "status=${result.opt("status")} statusText=${result.opt("statusText")} " +
-        "finalUrl=${result.opt("finalUrl")} headers=${jsonKeysForLog(result.optJSONObject("headers"))} " +
-        "error=${envelope.opt("error")} bodyLength=${body?.length ?: 0} " +
+        "finalUrl=${urlForLog(result.optString("finalUrl").takeIf { result.has("finalUrl") })} " +
+        "headers=${jsonKeysForLog(result.optJSONObject("headers"))} " +
+        "errorLength=${envelope.optString("error").length} bodyLength=${body?.length ?: 0} " +
         "bodyBase64Length=${bodyBase64?.length ?: 0}"
     }
-    return "ok=${envelope.optBoolean("ok", false)} error=${envelope.opt("error")} " +
+    return "ok=${envelope.optBoolean("ok", false)} errorLength=${envelope.optString("error").length} " +
       "resultType=${result?.javaClass?.name ?: "null"}"
   }
 
@@ -236,6 +263,23 @@ class AndroidScraperBridge(
   }
 
   @JavascriptInterface
+  fun currentOrigin(payload: String) {
+    parseCommand(payload, BridgeCapabilities.SCRAPER_CURRENT_ORIGIN) { json ->
+      val id = json.getString("id")
+      val origin = queueState(IMMEDIATE_EXECUTOR).webView
+        ?.takeIf { webView -> browserVisible && isForegroundBrowser(webView) }
+        ?.url
+        ?.let { url -> runCatching { originUrl(Uri.parse(url)) }.getOrNull() }
+      sendResult(
+        id,
+        JSONObject()
+          .put("ok", true)
+          .put("result", origin ?: JSONObject.NULL),
+      )
+    }
+  }
+
+  @JavascriptInterface
   fun fetch(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_FETCH) { json ->
       val state = queueState(executorFromPayload(json))
@@ -301,7 +345,7 @@ class AndroidScraperBridge(
 
   @JavascriptInterface
   fun hide() {
-    mainHandler.post { hideScraper() }
+    mainHandler.post { hideScraper(emitHiddenEvent = false) }
   }
 
   fun destroy() {
@@ -677,7 +721,7 @@ class AndroidScraperBridge(
     logState(state, "showScraper after")
   }
 
-  private fun hideScraper() {
+  private fun hideScraper(emitHiddenEvent: Boolean = true) {
     val state = queueState(IMMEDIATE_EXECUTOR)
     logState(state, "hideScraper before")
     cancelQueuedWhere(state, "scraper: site browser closed") { it.browserAction }
@@ -688,7 +732,7 @@ class AndroidScraperBridge(
     }
     hideScraperSurface(state)
     CookieManager.getInstance().flush()
-    emitSiteBrowserHidden()
+    if (emitHiddenEvent) emitSiteBrowserHidden()
     logState(state, "hideScraper after")
     runNext(state)
   }
@@ -944,12 +988,19 @@ class AndroidScraperBridge(
   }
 
   private fun originUrl(uri: Uri): String? {
-    val scheme = uri.scheme ?: return null
-    val host = uri.host ?: return null
+    val scheme = uri.scheme?.lowercase() ?: return null
+    if (scheme != "http" && scheme != "https") return null
+    val host = uri.host?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
     val defaultPort = effectivePortForScheme(scheme)
     val port = uri.port
+    if (port < -1 || port > 65_535) return null
     val portPart = if (port != -1 && port != defaultPort) ":$port" else ""
-    return "$scheme://$host$portPart"
+    val serializedHost = if (host.contains(':')) {
+      "[${host.removePrefix("[").removeSuffix("]")}]"
+    } else {
+      host
+    }
+    return "$scheme://$serializedHost$portPart"
   }
 
   private fun sameOrigin(left: String?, right: String): Boolean {
@@ -1016,13 +1067,14 @@ class AndroidScraperBridge(
   }
 
   private fun finishError(state: QueueState, id: String, message: String) {
-    logState(state, "finishError id=$id message=$message")
+    val safeMessage = redactUrlsForLog(message)
+    logState(state, "finishError id=$id message=$safeMessage")
     finish(
       state,
       id,
       JSONObject()
         .put("ok", false)
-        .put("error", message),
+        .put("error", safeMessage),
     )
   }
 
@@ -1091,12 +1143,13 @@ class AndroidScraperBridge(
   }
 
   private fun sendError(id: String, message: String) {
-    Log.d(TAG, "sendError id=$id message=$message")
+    val safeMessage = redactUrlsForLog(message)
+    Log.d(TAG, "sendError id=$id message=$safeMessage")
     sendResult(
       id,
       JSONObject()
         .put("ok", false)
-        .put("error", message),
+        .put("error", safeMessage),
     )
   }
 
@@ -1275,7 +1328,7 @@ class AndroidScraperBridge(
             const message = (error && (error.message || error.toString())) || String(error);
             AndroidScraper.postFetchResultWithNonce(requestId, requestNonce, JSON.stringify({
               success: false,
-              error: "scraper: browser fetch to " + request.url + " failed: " + message
+              error: "scraper: browser fetch failed: " + message
             }));
           } finally {
             try {
@@ -1295,6 +1348,8 @@ class AndroidScraperBridge(
     private const val PRIORITY_NORMAL = 2
     private const val PRIORITY_DEFERRED = 3
     private const val PRIORITY_BACKGROUND = 4
+    private val HTTP_URL_IN_LOG_MESSAGE = Regex("""(?i)\bhttps?://[^\s"'<>]+""")
+    private val MALFORMED_URL_USER_INFO = Regex("""(?i)^([a-z][a-z\d+.-]*://)[^/@\s]+@""")
 
     private val INIT_SCRIPT = """
       (function () {

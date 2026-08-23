@@ -113,6 +113,56 @@
   color: var(--lnr-design-error);
 }
 
+.lnr-task-summary-pill[data-tone="warning"] {
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-orange-6) 10%,
+    var(--lnr-design-surface)
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--mantine-color-orange-6) 35%,
+    var(--lnr-design-rule)
+  );
+  color: var(--mantine-color-orange-7);
+}
+
+.lnr-source-access-banners {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.lnr-source-access-banner {
+  align-items: center;
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-orange-6) 7%,
+    var(--lnr-design-surface)
+  );
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--mantine-color-orange-6) 35%,
+      var(--lnr-design-rule)
+    );
+  border-radius: 8px;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.75rem;
+}
+
+.lnr-source-access-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.lnr-source-access-copy h2,
+.lnr-source-access-copy p {
+  margin: 0;
+}
+
 .lnr-task-shell {
   border: 1px solid var(--lnr-design-rule);
   border-radius: 8px;
@@ -444,6 +494,11 @@
 }
 
 @media (max-width: 575px) {
+  .lnr-source-access-banner {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .lnr-task-summary-strip {
     gap: 0.25rem;
   }

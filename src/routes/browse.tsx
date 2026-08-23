@@ -53,6 +53,7 @@ import {
 } from "../db/queries/repository";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
+import { redactUrlForLog } from "../lib/url-log";
 import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
@@ -1279,7 +1280,9 @@ interface InstalledSectionProps {
  */
 function openSite(plugin: Plugin, title: string): void {
   const url = getPluginBaseUrl(plugin);
-  console.debug("[site-browser] open site clicked", { url });
+  console.debug("[site-browser] open site clicked", {
+    url: redactUrlForLog(url),
+  });
   void enqueueOpenSiteTask(plugin, url, title).promise.catch(
     () => undefined,
   );

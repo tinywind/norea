@@ -11,7 +11,7 @@ import type { NovelItem, Plugin } from "./types";
 type OpenNovelPluginManager = Pick<PluginManager, "getPluginForExecutor">;
 
 export interface OpenNovelFromSourceTaskOptions {
-  plugin: Pick<Plugin, "id" | "name">;
+  plugin: Pick<Plugin, "getBaseUrl" | "id" | "name">;
   item: NovelItem;
   title: string;
   priority?: Exclude<TaskPriority, "background">;
@@ -46,7 +46,10 @@ export function enqueueOpenNovelFromSourceTask({
     run: (context) => {
       const executor: ScraperExecutorId = context.executor ?? "immediate";
       const runtimePlugin = manager.getPluginForExecutor(plugin.id, executor);
-      return importNovelFromSource(runtimePlugin, item, importOptions);
+      const effectiveImportOptions = context.sourceAccessVerification
+        ? { ...importOptions, forceRefresh: true }
+        : importOptions;
+      return importNovelFromSource(runtimePlugin, item, effectiveImportOptions);
     },
   });
 }

@@ -34,9 +34,11 @@ import {
   writeNativeStream,
   type NativeStreamInfo,
 } from "./native-stream";
+import { isSourceAccessRequiredError } from "./plugins/source-access";
 import { TASK_PAUSE_ABORT_MESSAGE } from "./tasks/scheduler";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { redactUrlForLog } from "./url-log";
 
 const LOCAL_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 const CHAPTER_MEDIA_STREAM_DOMAIN = "chapter-media";
@@ -148,6 +150,7 @@ interface CacheChapterMediaOptions {
   shouldYield?: () => boolean;
   signal?: AbortSignal;
   sourceId?: string;
+  sourceAccessUrl?: string;
 }
 
 export interface ChapterMediaElementPatch {
@@ -2066,15 +2069,6 @@ function mediaFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function sanitizedMediaUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url.split(/[?#]/, 1)[0] ?? url;
-  }
-}
-
 function mediaFailureHost(url: string): string {
   try {
     return new URL(url).host;
@@ -2112,7 +2106,7 @@ function recordChapterMediaFailure(
     contextHost: mediaFailureContextHost(input.contextUrl),
     error: message,
     host: mediaFailureHost(input.url),
-    sanitizedUrl: sanitizedMediaUrl(input.url),
+    sanitizedUrl: redactUrlForLog(input.url),
     scraperExecutor: input.scraperExecutor,
     sourceId: input.sourceId,
     status: input.status,
@@ -2141,6 +2135,7 @@ export async function cacheHtmlChapterMedia({
   shouldYield,
   signal,
   sourceId,
+  sourceAccessUrl,
 }: CacheChapterMediaOptions): Promise<CacheChapterMediaResult> {
   if (!isTauriRuntime() || typeof document === "undefined") {
     return {
@@ -2344,6 +2339,7 @@ export async function cacheHtmlChapterMedia({
         ...(scraperExecutor ? { scraperExecutor } : {}),
         signal,
         ...(sourceId ? { sourceId } : {}),
+        ...(sourceAccessUrl ? { sourceAccessUrl } : {}),
       };
       capturedHandle = await takeCapturedMediaHandle(url, mediaRequest);
       const response = capturedHandle
@@ -2477,6 +2473,10 @@ export async function cacheHtmlChapterMedia({
         return;
       }
       if (isMediaAbortError(error)) {
+        terminalDownloadError ??= error;
+        return;
+      }
+      if (isSourceAccessRequiredError(error)) {
         terminalDownloadError ??= error;
         return;
       }

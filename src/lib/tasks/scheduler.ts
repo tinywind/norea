@@ -43,6 +43,14 @@ import {
 } from "./scraper-queue";
 import { recordPerformanceObservation } from "../observability";
 import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
+import {
+  isSourceAccessRequiredError,
+  normalizeSourceAccessRequiredError,
+  sourceAccessScopeKey,
+  type SourceAccessChallenge,
+  type SourceAccessRequiredErrorShape,
+} from "../plugins/source-access";
+import { redactUrlsForLog } from "../url-log";
 
 const TASK_BULK_EVENT_CHUNK_SIZE = 250;
 
@@ -170,6 +178,20 @@ export type SourceQueueSortMode =
   | "newestTask"
   | "queuedCount";
 
+export interface SourceAccessBlock {
+  challenge: SourceAccessChallenge;
+  challengeUrlRedacted?: boolean;
+  detectedAt: number;
+  originTaskId?: string;
+  originTaskKey?: string;
+  revision: number;
+  scopeKey: string;
+  sourceIds: string[];
+  verificationError?: string;
+  verificationRequested: boolean;
+  verificationTaskId?: string;
+}
+
 export interface TaskSnapshot {
   pausedSourceIds: string[];
   records: TaskRecord[];
@@ -180,6 +202,7 @@ export interface TaskSnapshot {
   sourceQueuesTotal: number;
   sourceQueuesTruncated: boolean;
   sourceQueuesPaused: boolean;
+  sourceAccessBlocks: SourceAccessBlock[];
   total: number;
   running: number;
   queued: number;
@@ -194,9 +217,12 @@ export interface TaskEvent {
 }
 
 export interface TaskRunContext {
+  confirmSourceAccess?: () => boolean;
   executor?: ScraperExecutorId;
+  setSourceAccessUrl?: (url: string) => boolean;
   shouldYield?: () => boolean;
   signal: AbortSignal;
+  sourceAccessVerification?: boolean;
   taskId: string;
   setDetail: (detail: string) => void;
   setProgress: (progress: TaskProgress | undefined) => void;
@@ -213,6 +239,9 @@ export interface TaskSpec<T> {
   canCancel?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;
+  resolveSourceAccessUrl?: () => string | Promise<string>;
+  sourceAccessScopeKey?: string;
+  sourceAccessVerificationKey?: string;
   sourceCooldownKey?: string;
   sourceCooldownMs?: number;
   run: (context: TaskRunContext) => Promise<T>;
@@ -250,7 +279,14 @@ interface TaskEntry {
   reject: (error: unknown) => void;
   resolve: (value: unknown) => void;
   sourceExecutorId?: ScraperExecutorId;
+  sourceAccessPauseRequested?: boolean;
+  sourceAccessVerificationRevision?: number;
   spec: TaskSpec<unknown>;
+}
+
+interface SourceAccessBlockState
+  extends Omit<SourceAccessBlock, "sourceIds"> {
+  sourceIds: Set<string>;
 }
 
 const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
@@ -291,6 +327,32 @@ function isBackgroundPriority(priority: TaskPriority): boolean {
 
 function isOpenSiteSourceKind(kind: TaskKind): boolean {
   return kind === "source.openSite";
+}
+
+function canVerifySourceAccess(kind: TaskKind, isOriginTask: boolean): boolean {
+  return (
+    !isOpenSiteSourceKind(kind) &&
+    kind !== "source.clearCookies" &&
+    (kind !== "chapter.repairMedia" || isOriginTask)
+  );
+}
+
+function normalizedSourceAccessUrl(
+  value: string,
+  scopeKey: string,
+): string | null {
+  try {
+    if (sourceAccessScopeKey(value) !== scopeKey) return null;
+    return new URL(value).href;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedSourceAccessTaskKey(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const key = value.trim();
+  return key && key.length <= 512 ? key : undefined;
 }
 
 function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
@@ -409,7 +471,9 @@ function makeTaskId(): string {
 }
 
 function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactUrlsForLog(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 function isAbortError(error: unknown): boolean {
@@ -437,6 +501,10 @@ export class TaskScheduler {
     ReturnType<typeof setTimeout>
   >();
   private readonly sourceCooldownUntilByKey = new Map<string, number>();
+  private readonly sourceAccessBlocks = new Map<
+    string,
+    SourceAccessBlockState
+  >();
   private readonly sourceQueueOrder: string[] = [];
   private readonly sourceQueues = new Map<string, string[]>();
   private sourceForegroundConcurrency: number;
@@ -444,6 +512,7 @@ export class TaskScheduler {
   private readonly sourceBackgroundConcurrencyFollowsForeground: boolean;
   private readonly terminalTaskRetentionMs: number;
   private sourceQueuesPaused: boolean;
+  private sourceAccessRevision = 0;
   private activeBackgroundCount = 0;
   private activeImmediateTaskId: string | null = null;
   private activeMainTaskId: string | null = null;
@@ -467,6 +536,7 @@ export class TaskScheduler {
     sourceQueuesTotal: 0,
     sourceQueuesTruncated: false,
     sourceQueuesPaused: false,
+    sourceAccessBlocks: [],
     total: 0,
     running: 0,
     queued: 0,
@@ -518,6 +588,8 @@ export class TaskScheduler {
       mainQueueLength: this.mainQueue.length,
       pausedSourceIds: [...this.pausedSourceIds].sort(),
       priority: entry?.record.priority,
+      sourceAccessScopeKey: entry?.spec.sourceAccessScopeKey,
+      sourceAccessScopesBlocked: this.sourceAccessBlocks.size,
       sourceId: entry?.record.source?.id,
       sourceName: entry?.record.source?.name,
       sourceQueueLength: entry?.record.source
@@ -602,6 +674,7 @@ export class TaskScheduler {
     };
 
     this.entries.set(id, entry);
+    this.registerSourceAccessScopeEntry(entry);
     if (spec.dedupeKey) {
       this.activeDedupeByKey.set(spec.dedupeKey, id);
       this.latestByDedupeKey.set(spec.dedupeKey, id);
@@ -873,14 +946,415 @@ export class TaskScheduler {
     return true;
   }
 
+  private nextSourceAccessRevision(): number {
+    this.sourceAccessRevision += 1;
+    return this.sourceAccessRevision;
+  }
+
+  private isSourceAccessScopeBlocked(scopeKey: string | undefined): boolean {
+    return Boolean(scopeKey && this.sourceAccessBlocks.has(scopeKey));
+  }
+
+  private matchesSourceAccessBlock(
+    entry: TaskEntry,
+    block: SourceAccessBlockState,
+  ): boolean {
+    const sourceId = entry.record.source?.id;
+    return (
+      entry.spec.sourceAccessScopeKey === block.scopeKey ||
+      Boolean(sourceId && block.sourceIds.has(sourceId))
+    );
+  }
+
+  private isSourceAccessBlocked(entry: TaskEntry): boolean {
+    if (this.isSourceAccessScopeBlocked(entry.spec.sourceAccessScopeKey)) {
+      return true;
+    }
+    for (const block of this.sourceAccessBlocks.values()) {
+      if (this.matchesSourceAccessBlock(entry, block)) return true;
+    }
+    return false;
+  }
+
+  private registerSourceAccessScopeEntry(entry: TaskEntry): void {
+    const scopeKey = entry.spec.sourceAccessScopeKey;
+    const sourceId = entry.record.source?.id;
+    if (!scopeKey || !sourceId) return;
+    this.sourceAccessBlocks.get(scopeKey)?.sourceIds.add(sourceId);
+  }
+
+  private setSourceAccessUrlForEntry(entry: TaskEntry, url: string): boolean {
+    if (entry.record.status !== "running" || entry.pauseRequested) return false;
+    let scopeKey: string;
+    try {
+      scopeKey = sourceAccessScopeKey(url);
+    } catch {
+      return false;
+    }
+
+    const configuredScopeKey = entry.spec.sourceAccessScopeKey?.trim();
+    if (
+      configuredScopeKey &&
+      configuredScopeKey !== scopeKey &&
+      entry.sourceAccessVerificationRevision !== undefined
+    ) {
+      return false;
+    }
+    if (configuredScopeKey !== scopeKey) {
+      entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
+    }
+
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (!block || entry.sourceAccessVerificationRevision !== undefined) {
+      return true;
+    }
+    const sourceId = entry.record.source?.id;
+    if (sourceId) block.sourceIds.add(sourceId);
+    entry.sourceAccessPauseRequested = true;
+    entry.pauseRequested = true;
+    entry.controller.abort(
+      new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError"),
+    );
+    this.publishSnapshot();
+    return false;
+  }
+
+  private sourceAccessBlockRecords(): SourceAccessBlock[] {
+    return [...this.sourceAccessBlocks.values()]
+      .map((block) => ({
+        challenge: { ...block.challenge },
+        ...(block.challengeUrlRedacted
+          ? { challengeUrlRedacted: true }
+          : {}),
+        detectedAt: block.detectedAt,
+        ...(block.originTaskId ? { originTaskId: block.originTaskId } : {}),
+        ...(block.originTaskKey ? { originTaskKey: block.originTaskKey } : {}),
+        revision: block.revision,
+        scopeKey: block.scopeKey,
+        sourceIds: [...block.sourceIds].sort(),
+        ...(block.verificationError
+          ? { verificationError: block.verificationError }
+          : {}),
+        verificationRequested: block.verificationRequested,
+        ...(block.verificationTaskId
+          ? { verificationTaskId: block.verificationTaskId }
+          : {}),
+      }))
+      .sort((left, right) => left.detectedAt - right.detectedAt);
+  }
+
+  private recordSourceAccessChallenge(
+    entry: TaskEntry,
+    error: SourceAccessRequiredErrorShape,
+  ): boolean {
+    const challengeScopeKey = sourceAccessScopeKey(error.challenge.url);
+    const configuredScopeKey = entry.spec.sourceAccessScopeKey?.trim();
+    if (!configuredScopeKey || configuredScopeKey !== challengeScopeKey) {
+      return false;
+    }
+    const scopeKey = configuredScopeKey;
+
+    const existing = this.sourceAccessBlocks.get(scopeKey);
+    const invalidatesVerification = Boolean(
+      existing?.verificationRequested || existing?.verificationTaskId,
+    );
+    const challengeChanged = Boolean(
+      existing &&
+        (existing.challenge.kind !== error.challenge.kind ||
+          existing.challenge.url !== error.challenge.url),
+    );
+    const replacesChallenge = invalidatesVerification || challengeChanged;
+    const originTaskKey = replacesChallenge || !existing
+      ? normalizedSourceAccessTaskKey(entry.spec.sourceAccessVerificationKey)
+      : existing.originTaskKey;
+    if (existing?.verificationTaskId) {
+      const verificationEntry = this.entries.get(existing.verificationTaskId);
+      if (verificationEntry) {
+        verificationEntry.sourceAccessVerificationRevision = undefined;
+      }
+    }
+    const revision =
+      !existing || replacesChallenge
+        ? this.nextSourceAccessRevision()
+        : existing.revision;
+    const sourceId = entry.record.source?.id;
+    const sourceIds = new Set(existing?.sourceIds ?? []);
+    for (const candidate of this.entries.values()) {
+      const candidateSourceId = candidate.record.source?.id;
+      if (
+        candidate.spec.sourceAccessScopeKey !== scopeKey &&
+        (!sourceId || candidateSourceId !== sourceId)
+      ) {
+        continue;
+      }
+      if (candidateSourceId) sourceIds.add(candidateSourceId);
+    }
+    if (sourceId) sourceIds.add(sourceId);
+
+    const block: SourceAccessBlockState = {
+      challenge: { ...error.challenge },
+      detectedAt: Date.now(),
+      originTaskId:
+        !existing || replacesChallenge
+          ? entry.record.id
+          : existing.originTaskId,
+      ...(originTaskKey ? { originTaskKey } : {}),
+      revision,
+      scopeKey,
+      sourceIds,
+      ...(invalidatesVerification
+        ? { verificationError: describeError(error) }
+        : !challengeChanged && existing?.verificationError
+          ? { verificationError: existing.verificationError }
+          : {}),
+      verificationRequested: false,
+    };
+    this.sourceAccessBlocks.set(scopeKey, block);
+    this.publishSnapshot();
+
+    this.pauseRunningSourceTasks(
+      undefined,
+      (candidate) => this.matchesSourceAccessBlock(candidate, block),
+      { includeNonCancellable: true, sourceAccess: true },
+    );
+    if (!entry.pauseRequested) {
+      entry.pauseRequested = true;
+      entry.controller.abort(
+        new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError"),
+      );
+    }
+    this.debug("source access required", entry, {
+      challengeKind: error.challenge.kind,
+      scopeKey,
+      sourceAccessRevision: revision,
+    });
+    this.requeuePausedRunningAfterSettlement(entry);
+    return true;
+  }
+
+  private hasRunningSourceAccessTask(scopeKey: string): boolean {
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (!block) return false;
+    for (const entry of this.entries.values()) {
+      if (
+        entry.record.lane === "source" &&
+        entry.record.status === "running" &&
+        this.matchesSourceAccessBlock(entry, block)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private sourceAccessVerificationCandidates(
+    scopeKey: string,
+    block: SourceAccessBlockState,
+  ): TaskEntry[] {
+    return [...this.entries.values()].filter(
+      (entry) => {
+        const entryScopeKey = entry.spec.sourceAccessScopeKey;
+        return (
+          entry.record.lane === "source" &&
+          entry.record.status === "queued" &&
+          (entry.record.canCancel || entry.record.id === block.originTaskId) &&
+          canVerifySourceAccess(
+            entry.record.kind,
+            entry.record.id === block.originTaskId,
+          ) &&
+          this.matchesSourceAccessBlock(entry, block) &&
+          (!entryScopeKey || entryScopeKey === scopeKey)
+        );
+      },
+    );
+  }
+
+  private preferredSourceAccessVerificationCandidate(
+    scopeKey: string,
+    block: SourceAccessBlockState,
+  ): TaskEntry | null {
+    const candidates = this.sourceAccessVerificationCandidates(
+      scopeKey,
+      block,
+    );
+    const origin = block.originTaskId
+      ? candidates.find((entry) => entry.record.id === block.originTaskId)
+      : undefined;
+    const persistedOrigin = block.originTaskKey
+      ? candidates.find(
+          (entry) =>
+            normalizedSourceAccessTaskKey(
+              entry.spec.sourceAccessVerificationKey,
+            ) === block.originTaskKey,
+        )
+      : undefined;
+    candidates.sort((left, right) => this.compareTaskOrder(left, right));
+    return origin ?? persistedOrigin ?? candidates[0] ?? null;
+  }
+
+  private prepareSourceAccessVerificationTask(): TaskEntry | null {
+    for (const [scopeKey, block] of this.sourceAccessBlocks) {
+      if (
+        !block.verificationRequested ||
+        block.verificationTaskId ||
+        this.hasRunningSourceAccessTask(scopeKey)
+      ) {
+        continue;
+      }
+
+      const entry = this.preferredSourceAccessVerificationCandidate(
+        scopeKey,
+        block,
+      );
+      if (!entry) {
+        this.sourceAccessBlocks.set(scopeKey, {
+          ...block,
+          verificationRequested: false,
+        });
+        this.debug("source access verification request reset", undefined, {
+          scopeKey,
+          sourceAccessRevision: block.revision,
+        });
+        this.publishSnapshot();
+        continue;
+      }
+
+      if (!entry.spec.sourceAccessScopeKey) {
+        entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
+      }
+      entry.sourceAccessVerificationRevision = block.revision;
+      this.sourceAccessBlocks.set(scopeKey, {
+        ...block,
+        verificationRequested: false,
+        verificationTaskId: entry.record.id,
+      });
+      this.debug("source access verification started", entry, {
+        scopeKey,
+        sourceAccessRevision: block.revision,
+      });
+      this.publishSnapshot();
+      return entry;
+    }
+    return null;
+  }
+
+  private confirmSourceAccessForEntry(
+    entry: TaskEntry,
+    expectedRevision: number | undefined,
+  ): boolean {
+    const scopeKey = entry.spec.sourceAccessScopeKey;
+    if (!scopeKey || expectedRevision === undefined) return false;
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (
+      !block ||
+      block.revision !== expectedRevision ||
+      entry.sourceAccessVerificationRevision !== expectedRevision ||
+      block.verificationTaskId !== entry.record.id
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private completeSourceAccessVerificationForEntry(
+    entry: TaskEntry,
+    expectedRevision: number,
+  ): boolean {
+    const scopeKey = entry.spec.sourceAccessScopeKey;
+    if (!scopeKey) return false;
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (
+      !block ||
+      block.revision !== expectedRevision ||
+      entry.sourceAccessVerificationRevision !== expectedRevision ||
+      block.verificationTaskId !== entry.record.id
+    ) {
+      return false;
+    }
+
+    entry.sourceAccessVerificationRevision = undefined;
+    this.sourceAccessBlocks.delete(scopeKey);
+    this.debug("source access verified", entry, {
+      scopeKey,
+      sourceAccessRevision: expectedRevision,
+    });
+    this.publishSnapshot();
+    this.requestDrain();
+    return true;
+  }
+
+  private requeueFailedSourceAccessVerification(
+    entry: TaskEntry,
+    error: unknown,
+  ): boolean {
+    const scopeKey = entry.spec.sourceAccessScopeKey;
+    const revision = entry.sourceAccessVerificationRevision;
+    if (!scopeKey || revision === undefined) return false;
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (
+      !block ||
+      block.revision !== revision ||
+      block.verificationTaskId !== entry.record.id
+    ) {
+      return false;
+    }
+
+    const nextRevision = this.nextSourceAccessRevision();
+    entry.sourceAccessVerificationRevision = undefined;
+    this.sourceAccessBlocks.set(scopeKey, {
+      ...block,
+      revision: nextRevision,
+      verificationError: describeError(error),
+      verificationRequested: false,
+      verificationTaskId: undefined,
+    });
+    entry.pauseRequested = true;
+    this.debug("source access verification failed", entry, {
+      error: describeError(error),
+      scopeKey,
+      sourceAccessRevision: nextRevision,
+    });
+    this.publishSnapshot();
+    this.requeuePausedRunningAfterSettlement(entry);
+    return true;
+  }
+
+  private revokeSourceAccessVerificationForEntry(entry: TaskEntry): void {
+    const scopeKey = entry.spec.sourceAccessScopeKey;
+    const revision = entry.sourceAccessVerificationRevision;
+    entry.sourceAccessVerificationRevision = undefined;
+    if (!scopeKey || revision === undefined) return;
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (
+      !block ||
+      block.revision !== revision ||
+      block.verificationTaskId !== entry.record.id
+    ) {
+      return;
+    }
+
+    this.sourceAccessBlocks.set(scopeKey, {
+      ...block,
+      revision: this.nextSourceAccessRevision(),
+      verificationRequested: false,
+      verificationTaskId: undefined,
+    });
+    this.publishSnapshot();
+  }
+
   private pauseRunningSourceTasks(
     sourceId?: string,
     shouldPause: (entry: TaskEntry) => boolean = () => true,
+    options: {
+      includeNonCancellable?: boolean;
+      sourceAccess?: boolean;
+    } = {},
   ): number {
     let paused = 0;
     for (const entry of this.entries.values()) {
       if (
-        !entry.record.canCancel ||
+        (!options.includeNonCancellable && !entry.record.canCancel) ||
         entry.record.lane !== "source" ||
         entry.record.status !== "running" ||
         entry.record.kind === "source.openSite" ||
@@ -891,6 +1365,9 @@ export class TaskScheduler {
       }
       if (!entry.pauseRequested) {
         paused += 1;
+      }
+      if (options.sourceAccess) {
+        entry.sourceAccessPauseRequested = true;
       }
       entry.pauseRequested = true;
       entry.controller.abort(
@@ -1096,6 +1573,230 @@ export class TaskScheduler {
     return true;
   }
 
+  hydrateSourceAccessBlocks(blocks: Iterable<SourceAccessBlock>): void {
+    const hydrated = new Map<string, SourceAccessBlockState>();
+    let highestRevision = this.sourceAccessRevision;
+
+    for (const block of blocks) {
+      const scopeKey = block.scopeKey?.trim();
+      const revision = Math.floor(block.revision);
+      if (
+        !scopeKey ||
+        !Number.isFinite(block.detectedAt) ||
+        !Number.isFinite(revision) ||
+        revision <= 0 ||
+        !isSourceAccessRequiredError({
+          challenge: block.challenge,
+          code: "source-access-required",
+        })
+      ) {
+        continue;
+      }
+
+      try {
+        if (sourceAccessScopeKey(block.challenge.url) !== scopeKey) continue;
+      } catch {
+        continue;
+      }
+
+      const sourceIds = new Set(
+        Array.isArray(block.sourceIds)
+          ? block.sourceIds
+              .filter((sourceId) => typeof sourceId === "string")
+              .map((sourceId) => sourceId.trim())
+              .filter(Boolean)
+          : [],
+      );
+      const current = hydrated.get(scopeKey);
+      if (current && current.revision > revision) continue;
+      hydrated.set(scopeKey, {
+        challenge: { ...block.challenge },
+        ...(block.challengeUrlRedacted
+          ? { challengeUrlRedacted: true }
+          : {}),
+        detectedAt: block.detectedAt,
+        ...(normalizedSourceAccessTaskKey(block.originTaskKey)
+          ? { originTaskKey: normalizedSourceAccessTaskKey(block.originTaskKey) }
+          : {}),
+        revision,
+        scopeKey,
+        sourceIds,
+        ...(typeof block.verificationError === "string" &&
+        block.verificationError.trim()
+          ? { verificationError: block.verificationError }
+          : {}),
+        verificationRequested: false,
+      });
+      highestRevision = Math.max(highestRevision, revision);
+    }
+
+    this.sourceAccessBlocks.clear();
+    for (const [scopeKey, block] of hydrated) {
+      this.sourceAccessBlocks.set(scopeKey, block);
+    }
+    this.sourceAccessRevision = highestRevision;
+    for (const entry of this.entries.values()) {
+      entry.sourceAccessVerificationRevision = undefined;
+      this.registerSourceAccessScopeEntry(entry);
+    }
+    this.pauseRunningSourceTasks(
+      undefined,
+      (entry) => this.isSourceAccessBlocked(entry),
+      { includeNonCancellable: true, sourceAccess: true },
+    );
+    this.debug("source access blocks hydrated", undefined, {
+      sourceAccessScopesBlocked: this.sourceAccessBlocks.size,
+    });
+    this.publishSnapshot();
+    this.drain();
+  }
+
+  canBeginSourceAccessVerification(scopeKey: string): boolean {
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    return Boolean(
+      block &&
+        !block.verificationRequested &&
+        block.verificationTaskId === undefined &&
+        this.sourceAccessVerificationCandidates(scopeKey, block).length > 0,
+    );
+  }
+
+  async resolveSourceAccessVerificationUrl(
+    scopeKey: string,
+    expectedRevision: number,
+  ): Promise<{
+    revision: number;
+    scopeKey: string;
+    url: string;
+  } | null> {
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (!block || block.revision !== expectedRevision) return null;
+    const fallbackUrl = normalizedSourceAccessUrl(
+      block.challenge.url,
+      scopeKey,
+    );
+
+    const entry = this.preferredSourceAccessVerificationCandidate(
+      scopeKey,
+      block,
+    );
+    if (!entry) return null;
+    let candidateScopeKey = entry.spec.sourceAccessScopeKey;
+    if (!block.challengeUrlRedacted && candidateScopeKey === scopeKey) {
+      return fallbackUrl
+        ? { revision: block.revision, scopeKey, url: fallbackUrl }
+        : null;
+    }
+
+    let rebuiltUrl: string | null = null;
+    try {
+      const value = await entry.spec.resolveSourceAccessUrl?.();
+      if (typeof value === "string") {
+        const resolvedScopeKey = candidateScopeKey ?? sourceAccessScopeKey(value);
+        rebuiltUrl = normalizedSourceAccessUrl(value, resolvedScopeKey);
+        if (rebuiltUrl && !candidateScopeKey) {
+          candidateScopeKey = resolvedScopeKey;
+        }
+      }
+    } catch {
+      rebuiltUrl = null;
+    }
+    candidateScopeKey ??= scopeKey;
+
+    const current = this.sourceAccessBlocks.get(scopeKey);
+    if (
+      !current ||
+      current.revision !== expectedRevision ||
+      current.verificationRequested ||
+      current.verificationTaskId !== undefined ||
+      !this.sourceAccessVerificationCandidates(scopeKey, current).some(
+        (candidate) => candidate.record.id === entry.record.id,
+      )
+    ) {
+      return null;
+    }
+    if (candidateScopeKey !== scopeKey) {
+      if (!entry.spec.sourceAccessScopeKey) {
+        entry.spec = { ...entry.spec, sourceAccessScopeKey: candidateScopeKey };
+        this.registerSourceAccessScopeEntry(entry);
+        this.publishSnapshot();
+      }
+      return null;
+    }
+    const resolvedUrl = rebuiltUrl ?? fallbackUrl;
+    if (!resolvedUrl) return null;
+    if (rebuiltUrl) {
+      this.sourceAccessBlocks.set(scopeKey, {
+        ...current,
+        challenge: { ...current.challenge, url: rebuiltUrl },
+        challengeUrlRedacted: undefined,
+        originTaskId: entry.record.id,
+        originTaskKey: normalizedSourceAccessTaskKey(
+          entry.spec.sourceAccessVerificationKey,
+        ),
+      });
+      this.publishSnapshot();
+    }
+    return { revision: current.revision, scopeKey, url: resolvedUrl };
+  }
+
+  beginSourceAccessVerification(scopeKey: string): boolean {
+    if (!this.canBeginSourceAccessVerification(scopeKey)) return false;
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (!block) return false;
+
+    this.sourceAccessBlocks.set(scopeKey, {
+      ...block,
+      verificationError: undefined,
+      verificationRequested: true,
+    });
+    this.debug("source access verification requested", undefined, {
+      scopeKey,
+      sourceAccessRevision: block.revision,
+    });
+    this.publishSnapshot();
+    this.drain();
+    return true;
+  }
+
+  keepSourceAccessBlocked(scopeKey: string): boolean {
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (!block) return false;
+
+    const verificationTaskId = block.verificationTaskId;
+    if (!block.verificationRequested && verificationTaskId === undefined) {
+      return true;
+    }
+
+    const verificationEntry = verificationTaskId
+      ? this.entries.get(verificationTaskId)
+      : undefined;
+    if (verificationEntry) {
+      verificationEntry.sourceAccessVerificationRevision = undefined;
+    }
+    const revision = this.nextSourceAccessRevision();
+    this.sourceAccessBlocks.set(scopeKey, {
+      ...block,
+      revision,
+      verificationRequested: false,
+      verificationTaskId: undefined,
+    });
+    if (verificationTaskId) {
+      this.pauseRunningSourceTasks(
+        undefined,
+        (entry) => entry.record.id === verificationTaskId,
+        { includeNonCancellable: true, sourceAccess: true },
+      );
+    }
+    this.debug("source access verification stopped", verificationEntry, {
+      scopeKey,
+      sourceAccessRevision: revision,
+    });
+    this.publishSnapshot();
+    this.drain();
+    return true;
+  }
+
   setSourceForegroundConcurrency(concurrency: number): void {
     const nextConcurrency = Number.isFinite(concurrency)
       ? Math.max(1, Math.round(concurrency))
@@ -1205,6 +1906,11 @@ export class TaskScheduler {
     );
     if (next) {
       this.startSource(next, "immediate");
+      return;
+    }
+    const verification = this.prepareSourceAccessVerificationTask();
+    if (verification) {
+      this.startSource(verification, "immediate");
       return;
     }
     const browse = this.pickSourceTask(
@@ -1437,7 +2143,8 @@ export class TaskScheduler {
     const sourceId = entry.record.source?.id;
     return (
       this.sourceQueuesPaused ||
-      (sourceId !== undefined && this.pausedSourceIds.has(sourceId))
+      (sourceId !== undefined && this.pausedSourceIds.has(sourceId)) ||
+      this.isSourceAccessBlocked(entry)
     );
   }
 
@@ -1540,10 +2247,25 @@ export class TaskScheduler {
     });
     this.debug("started", entry);
 
+    const sourceAccessVerificationRevision =
+      entry.sourceAccessVerificationRevision;
+    let sourceAccessConfirmed = false;
     const context: TaskRunContext = {
+      confirmSourceAccess: () => {
+        const confirmed = this.confirmSourceAccessForEntry(
+          entry,
+          sourceAccessVerificationRevision,
+        );
+        sourceAccessConfirmed ||= confirmed;
+        return confirmed;
+      },
       executor: entry.sourceExecutorId,
+      setSourceAccessUrl: (url) =>
+        this.setSourceAccessUrlForEntry(entry, url),
       shouldYield: () => entry.pauseRequested === true,
       signal: entry.controller.signal,
+      sourceAccessVerification:
+        sourceAccessVerificationRevision !== undefined,
       taskId: entry.record.id,
       setDetail: (detail) => {
         entry.record = { ...entry.record, detail };
@@ -1560,10 +2282,42 @@ export class TaskScheduler {
       .then((value) => {
         if (entry.controller.signal.aborted) {
           if (entry.pauseRequested && entry.record.lane === "source") {
-            this.requeuePausedRunningAfterSettlement(entry);
+            if (
+              entry.sourceAccessPauseRequested &&
+              entry.spec.canCancel === false &&
+              sourceAccessVerificationRevision === undefined
+            ) {
+              entry.sourceAccessPauseRequested = false;
+              entry.pauseRequested = false;
+            } else {
+              this.requeuePausedRunningAfterSettlement(entry);
+              return;
+            }
+          } else {
+            this.finishCancelledRunningAfterSettlement(entry);
             return;
           }
-          this.finishCancelledRunningAfterSettlement(entry);
+        }
+        if (
+          sourceAccessVerificationRevision !== undefined &&
+          !sourceAccessConfirmed &&
+          this.requeueFailedSourceAccessVerification(
+            entry,
+            new Error("Source access verification was not confirmed."),
+          )
+        ) {
+          return;
+        }
+        if (
+          sourceAccessVerificationRevision !== undefined &&
+          sourceAccessConfirmed &&
+          !this.completeSourceAccessVerificationForEntry(
+            entry,
+            sourceAccessVerificationRevision,
+          )
+        ) {
+          entry.pauseRequested = true;
+          this.requeuePausedRunningAfterSettlement(entry);
           return;
         }
         this.finishRunning(entry, "succeeded", {
@@ -1575,12 +2329,28 @@ export class TaskScheduler {
       })
       .catch((error) => {
         const cancelled = entry.controller.signal.aborted || isAbortError(error);
+        const sourceAccessError = normalizeSourceAccessRequiredError(error);
+        if (cancelled && entry.record.status === "cancelled") {
+          this.finishCancelledRunningAfterSettlement(entry);
+          return;
+        }
+        if (
+          entry.record.lane === "source" &&
+          entry.record.status === "running" &&
+          sourceAccessError &&
+          this.recordSourceAccessChallenge(entry, sourceAccessError)
+        ) {
+          return;
+        }
         if (entry.pauseRequested && entry.record.lane === "source" && cancelled) {
           this.requeuePausedRunningAfterSettlement(entry);
           return;
         }
-        if (cancelled && entry.record.status === "cancelled") {
-          this.finishCancelledRunningAfterSettlement(entry);
+        if (
+          entry.record.lane === "source" &&
+          entry.record.status === "running" &&
+          this.requeueFailedSourceAccessVerification(entry, error)
+        ) {
           return;
         }
         if (!cancelled) {
@@ -1643,6 +2413,8 @@ export class TaskScheduler {
   private cancelRunningEntry(entry: TaskEntry): boolean {
     if (entry.record.status !== "running") return false;
     this.debug("cancel requested", entry);
+    this.revokeSourceAccessVerificationForEntry(entry);
+    entry.sourceAccessPauseRequested = false;
     entry.pauseRequested = false;
     entry.controller.abort();
     this.cancelRunning(entry);
@@ -1681,6 +2453,7 @@ export class TaskScheduler {
     if (entry.activeReleased) return;
     const previousStatus = entry.record.status;
     const sourceCooldownKey = entry.spec.sourceCooldownKey;
+    this.revokeSourceAccessVerificationForEntry(entry);
     this.debug("paused task settled", entry);
     this.releaseActive(entry);
     if (sourceCooldownKey) {
@@ -1690,6 +2463,7 @@ export class TaskScheduler {
       this.activeDedupeByKey.set(entry.dedupeKey, entry.record.id);
     }
     entry.controller = new AbortController();
+    entry.sourceAccessPauseRequested = false;
     entry.pauseRequested = false;
 
     const nextRecord = { ...entry.record };
@@ -2080,6 +2854,7 @@ export class TaskScheduler {
       sourceQueuesTotal,
       sourceQueuesTruncated: false,
       sourceQueuesPaused: this.sourceQueuesPaused,
+      sourceAccessBlocks: this.sourceAccessBlockRecords(),
       total,
       running: counts.running,
       queued: counts.queued,

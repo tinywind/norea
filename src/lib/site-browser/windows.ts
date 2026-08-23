@@ -1,33 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getScraperUserAgent } from "../../store/user-agent";
+import { redactUrlForLog, redactUrlsForLog } from "../url-log";
 import { invokeDesktopNavigation } from "./desktop-navigation";
 import type {
   SiteBrowserBounds,
-  SiteBrowserControlMessage,
   SiteBrowserPlatformApi,
 } from "./types";
 
 function debugWindowsSiteBrowser(message: string, data?: unknown): void {
   console.debug(`[site-browser:windows] ${message}`, data);
-}
-
-function fullWindowBounds(): SiteBrowserBounds {
-  const bounds = {
-    x: 0,
-    y: 0,
-    width: Math.max(1, window.innerWidth),
-    height: Math.max(1, window.innerHeight),
-  };
-  debugWindowsSiteBrowser("bounds measured from window", {
-    bounds,
-    viewport: {
-      width: window.innerWidth,
-      height: window.innerHeight,
-      visualWidth: window.visualViewport?.width ?? null,
-      visualHeight: window.visualViewport?.height ?? null,
-    },
-  });
-  return bounds;
 }
 
 function rectBounds(node: HTMLDivElement | null): SiteBrowserBounds | null {
@@ -62,16 +43,19 @@ function invokeArgs(bounds: SiteBrowserBounds, url: string): {
 export const windowsSiteBrowser: SiteBrowserPlatformApi = {
   name: "windows",
   chromeMode: "react",
-  boundsFor: (node) => rectBounds(node) ?? fullWindowBounds(),
+  boundsFor: rectBounds,
+  currentOrigin: async () =>
+    await invoke<string | null>("scraper_current_origin"),
   setBounds: async (bounds, url) => {
     if (!url) {
       debugWindowsSiteBrowser("setBounds skipped: url is empty", { bounds });
       return;
     }
     const args = invokeArgs(bounds, url);
-    debugWindowsSiteBrowser("setBounds invoke", args);
+    const logArgs = { ...args, url: redactUrlForLog(url) };
+    debugWindowsSiteBrowser("setBounds invoke", logArgs);
     await invoke("scraper_set_bounds", args);
-    debugWindowsSiteBrowser("setBounds complete", args);
+    debugWindowsSiteBrowser("setBounds complete", logArgs);
   },
   navigate: async (url, options) => {
     const args = {
@@ -80,19 +64,19 @@ export const windowsSiteBrowser: SiteBrowserPlatformApi = {
       resetHistory: options?.resetHistory ?? false,
       timeoutMs: options?.timeoutMs ?? null,
     };
-    debugWindowsSiteBrowser("navigate invoke", args);
+    const logArgs = { ...args, url: redactUrlForLog(url) };
+    debugWindowsSiteBrowser("navigate invoke", logArgs);
     await invokeDesktopNavigation(args, options?.signal, (error) => {
-      debugWindowsSiteBrowser("navigate cancellation failed", error);
+      debugWindowsSiteBrowser(
+        "navigate cancellation failed",
+        redactUrlsForLog(error instanceof Error ? error.message : String(error)),
+      );
     });
-    debugWindowsSiteBrowser("navigate complete", args);
+    debugWindowsSiteBrowser("navigate complete", logArgs);
   },
   hide: async () => {
     debugWindowsSiteBrowser("hide invoke");
     await invoke("scraper_hide");
     debugWindowsSiteBrowser("hide complete");
   },
-  pollControlMessage: async () =>
-    await invoke<SiteBrowserControlMessage | null>(
-      "scraper_poll_control_message",
-    ),
 };

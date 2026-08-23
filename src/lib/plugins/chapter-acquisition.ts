@@ -1,6 +1,7 @@
 import type { ChapterContentType } from "../chapter-content";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import { captureChapterWebView } from "./shims";
+import { sourceAccessErrorFromEnvelope } from "./source-access";
 import type {
   ChapterAcquisitionPlan,
   ChapterCaptureLoadStrategy,
@@ -171,8 +172,10 @@ function chapterCaptureScript(
   function message(error) {
     return (error && (error.message || error.toString())) || String(error);
   }
-  function fail(code, error) {
-    post({ ok: false, code: code, error: message(error) });
+  function fail(code, error, challenge) {
+    var payload = { ok: false, code: code, error: message(error) };
+    if (challenge) payload.challenge = challenge;
+    post(payload);
   }
   function absolute(value) {
     if (!value || /^data:|^blob:/i.test(value)) return value || "";
@@ -272,8 +275,13 @@ function chapterCaptureScript(
   }
   function poll() {
     if (finished) return;
-    if (document.querySelector("[data-norea-manual-action]")) {
-      fail("manual-action-required", "The source page requires manual action.");
+    var manualAction = document.querySelector("[data-norea-manual-action]");
+    if (manualAction) {
+      var kind = manualAction.getAttribute("data-norea-manual-action");
+      var challenge = kind === "captcha" || kind === "cloudflare"
+        ? { kind: kind, url: location.href }
+        : null;
+      fail("manual-action-required", "The source page requires manual action.", challenge);
       return;
     }
     var readySelector = plan.readySelector || plan.contentSelector;
@@ -323,7 +331,10 @@ function chapterCaptureScript(
 })(); true;`;
 }
 
-function parseCaptureResult(raw: string): CapturedChapterPage {
+function parseCaptureResult(
+  raw: string,
+  fallbackUrl: string,
+): CapturedChapterPage {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -335,9 +346,7 @@ function parseCaptureResult(raw: string): CapturedChapterPage {
   }
   const envelope = value as Record<string, unknown>;
   if (envelope.ok !== true) {
-    const code = typeof envelope.code === "string" ? envelope.code : "capture-failed";
-    const error = typeof envelope.error === "string" ? envelope.error : "Chapter page capture failed.";
-    throw new Error(`${code}: ${error}`);
+    throw sourceAccessErrorFromEnvelope(envelope, fallbackUrl);
   }
   if (envelope.result === null || typeof envelope.result !== "object") {
     throw new Error("Chapter page capture returned an invalid result.");
@@ -363,5 +372,5 @@ export async function captureChapterPage(
     sourceId: options.sourceId,
     timeoutMs: plan.timeoutMs,
   });
-  return parseCaptureResult(raw);
+  return parseCaptureResult(raw, plan.url);
 }

@@ -106,6 +106,7 @@ import {
   saveStoredChapterPartialContent,
 } from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
+import { SourceAccessRequiredError } from "../plugins/source-access";
 import { isTauriRuntime } from "../tauri-runtime";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 import {
@@ -113,6 +114,7 @@ import {
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
+  getActiveChapterDownloadBatchProgress,
   startChapterDownloadQueueExecutor,
   type ChapterDownloadJob,
 } from "./chapter-download";
@@ -348,6 +350,69 @@ describe("enqueueChapterDownloadBatch", () => {
     expect([...backendQueueValues.keys()]).toEqual([1, 2, 3, 4]);
     expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
     expect(capturedSpec?.subject?.batchTitle).toBe("Download 4 chapters");
+  });
+
+  it("does not settle a batch job while source access is blocked", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValueOnce(undefined);
+    const deferred = createDeferred<void>();
+    schedulerMocks.enqueueSource.mockImplementationOnce(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        return { id: "task-1", promise: deferred.promise };
+      },
+    );
+    const accessError = Object.assign(new Error("Complete the CAPTCHA."), {
+      code: "manual-action-required" as const,
+      challenge: {
+        kind: "captcha",
+        url: "https://source.test/chapter/7",
+      },
+    });
+    pluginMocks.getChapterResource.mockRejectedValueOnce(accessError);
+    const progressBefore = getActiveChapterDownloadBatchProgress() ?? {
+      current: 0,
+      total: 0,
+    };
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [
+        {
+          id: 7,
+          pluginId: "source-a",
+          chapterPath: "/chapter/7",
+          title: "Chapter 7",
+        },
+      ],
+      title: "Download blocked chapter",
+      total: 1,
+    });
+    await flushMicrotasks();
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(
+      capturedSpec.run({
+        setDetail: vi.fn(),
+        setProgress: vi.fn(),
+        signal: new AbortController().signal,
+        taskId: "task-1",
+      }),
+    ).rejects.toBe(accessError);
+
+    expect(getActiveChapterDownloadBatchProgress()).toEqual({
+      current: progressBefore.current,
+      total: progressBefore.total + 1,
+    });
+    expect([...backendQueueValues.keys()]).toEqual([7]);
+
+    expect(cancelChapterDownloadBatches([handle.id])).toBe(1);
+    deferred.reject(new DOMException("Task was cancelled.", "AbortError"));
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 1,
+      failed: 0,
+      succeeded: 0,
+      total: 1,
+    });
   });
 
   it("refills the bounded batch window after a cancelled task settles", async () => {
@@ -597,6 +662,40 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
+  it("removes the backend queue job when the scheduler rejects source verification", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const accessError = new SourceAccessRequiredError(
+      "Complete the Cloudflare verification.",
+      {
+        kind: "cloudflare",
+        url: "https://source.test/chapter/7",
+      },
+    );
+    schedulerMocks.enqueueSource.mockImplementationOnce(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        return { id: "task-1", promise: Promise.reject(accessError) };
+      },
+    );
+
+    const handle = enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    await expect(handle.promise).rejects.toBe(accessError);
+    await flushMicrotasks();
+
+    expect([...backendQueueValues.keys()]).toEqual([]);
+    expect(
+      tauriMocks.invoke.mock.calls.filter(
+        ([command]) => command === "chapter_download_queue_remove",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("keeps chapter downloads off the interaction executor", () => {
     pluginMocks.getPlugin.mockReturnValueOnce({
       apiVersion: "0.2",
@@ -615,6 +714,32 @@ describe("enqueueChapterDownload", () => {
     });
 
     expect(capturedSpec?.requiresForegroundExecutor).toBeUndefined();
+  });
+
+  it("rebuilds the page-plan URL for persisted source verification", async () => {
+    const pageUrl =
+      "https://source.test/chapter/7?signed=fresh-proof#challenge";
+    pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
+      type: "page",
+      url: pageUrl,
+      contentSelector: "article.chapter",
+    });
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      contentType: "html",
+      title: "Chapter 7",
+    });
+
+    await expect(capturedSpec?.resolveSourceAccessUrl?.()).resolves.toBe(
+      pageUrl,
+    );
+    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
+      "/chapter/7",
+      "text",
+    );
   });
 
   it("finishes without plugin or network work when final content exists", async () => {
@@ -657,6 +782,43 @@ describe("enqueueChapterDownload", () => {
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
     expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
     expect(getChapterById).not.toHaveBeenCalled();
+  });
+
+  it("reacquires final content when verifying source access", async () => {
+    const confirmSourceAccess = vi.fn(() => true);
+    const setSourceAccessUrl = vi.fn(() => true);
+    vi.mocked(reconcileStoredChapterContent).mockResolvedValueOnce({
+      status: "present",
+      contentFile: "contents/source-a/novel/7-Chapter/content.html",
+      contentBytes: 24,
+      mediaBytes: 8,
+    });
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({
+      confirmSourceAccess,
+      executor: "immediate",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      setSourceAccessUrl,
+      signal: new AbortController().signal,
+      sourceAccessVerification: true,
+      taskId: "task-1",
+    });
+
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledOnce();
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledWith(
+      "/chapter/7",
+      "text",
+    );
+    expect(confirmSourceAccess).toHaveBeenCalledOnce();
   });
 
   it("yields the foreground executor when paused during the download preamble", async () => {
@@ -757,6 +919,48 @@ describe("enqueueChapterDownload", () => {
     expect(pluginMocks.getChapterResource).toHaveBeenCalledWith(
       "/chapter/7",
       "text",
+    );
+  });
+
+  it("binds a resource plan to its resolved chapter URL before acquisition", async () => {
+    const setSourceAccessUrl = vi.fn(() => true);
+    pluginMocks.getChapterResource.mockResolvedValueOnce({
+      type: "content",
+      contentType: "text",
+      content: "plain <chapter>",
+      baseUrl: "https://cdn.test/assets/",
+    });
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      contentType: "text",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      setSourceAccessUrl,
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    });
+
+    expect(setSourceAccessUrl).toHaveBeenCalledWith(
+      "https://source.test/chapter/7",
+    );
+    expect(setSourceAccessUrl).toHaveBeenCalledOnce();
+    expect(setSourceAccessUrl.mock.invocationCallOrder[0]).toBeLessThan(
+      pluginMocks.getChapterResource.mock.invocationCallOrder[0] ?? Infinity,
+    );
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: "https://cdn.test/assets/",
+        contextUrl: "https://cdn.test/assets/",
+        sourceAccessUrl: "https://source.test/chapter/7",
+      }),
     );
   });
 
@@ -865,7 +1069,58 @@ describe("enqueueChapterDownload", () => {
     });
   });
 
+  it("recaptures a page plan when verifying source access", async () => {
+    const confirmSourceAccess = vi.fn(() => true);
+    const setSourceAccessUrl = vi.fn(() => true);
+    const storedHtml = `<img src="norea-media://reader-asset/page.png">`;
+    pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
+      type: "page",
+      url: "https://source.test/chapter/7",
+      contentSelector: "article.chapter",
+    });
+    vi.mocked(readStoredChapterPartialContentMirror).mockResolvedValueOnce(
+      storedHtml,
+    );
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      contentType: "html",
+      id: 7,
+      isDownloaded: false,
+    } as never);
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      contentType: "html",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({
+      confirmSourceAccess,
+      executor: "immediate",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      setSourceAccessUrl,
+      signal: new AbortController().signal,
+      sourceAccessVerification: true,
+      taskId: "task-1",
+    });
+
+    expect(acquisitionMocks.captureChapterPage).toHaveBeenCalledOnce();
+    expect(confirmSourceAccess).toHaveBeenCalledOnce();
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: `<img src="https://cdn.test/page.png?accessKey=signed">`,
+        previousHtml: storedHtml,
+        repair: false,
+      }),
+    );
+  });
+
   it("captures page plans on the assigned executor and reuses its browser cache", async () => {
+    const confirmSourceAccess = vi.fn(() => true);
+    const setSourceAccessUrl = vi.fn(() => true);
     pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
       type: "page",
       url: "https://source.test/chapter/7?accessKey=chapter",
@@ -887,9 +1142,11 @@ describe("enqueueChapterDownload", () => {
 
     if (!capturedSpec) throw new Error("Task spec was not captured.");
     await capturedSpec.run({
+      confirmSourceAccess,
       executor: "pool:2",
       setDetail: vi.fn(),
       setProgress: vi.fn(),
+      setSourceAccessUrl,
       signal: new AbortController().signal,
       taskId: "task-1",
     });
@@ -903,12 +1160,29 @@ describe("enqueueChapterDownload", () => {
       }),
     );
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(setSourceAccessUrl).toHaveBeenNthCalledWith(
+      1,
+      "https://source.test/chapter/7?accessKey=chapter",
+    );
+    expect(setSourceAccessUrl.mock.invocationCallOrder[0]).toBeLessThan(
+      acquisitionMocks.captureChapterPage.mock.invocationCallOrder[0] ??
+        Infinity,
+    );
+    expect(setSourceAccessUrl).toHaveBeenNthCalledWith(
+      2,
+      "https://source.test/chapter/7",
+    );
+    expect(setSourceAccessUrl.mock.invocationCallOrder[1]).toBeLessThan(
+      confirmSourceAccess.mock.invocationCallOrder[0] ?? Infinity,
+    );
+    expect(confirmSourceAccess).toHaveBeenCalledOnce();
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
         baseUrl: "https://source.test/chapter/7",
         contextUrl: "https://source.test/chapter/7",
         preferBrowserCache: true,
         scraperExecutor: "pool:2",
+        sourceAccessUrl: "https://source.test/chapter/7",
       }),
     );
   });
@@ -1502,6 +1776,8 @@ describe("enqueueChapterMediaRepair", () => {
   });
 
   it("recaptures page plans before repairing media", async () => {
+    const confirmSourceAccess = vi.fn(() => true);
+    const setSourceAccessUrl = vi.fn(() => true);
     const setDetail = vi.fn();
     const signal = new AbortController().signal;
     const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
@@ -1526,6 +1802,7 @@ describe("enqueueChapterMediaRepair", () => {
       chapterNumber: "7",
       content: storedHtml,
       contentType: "html",
+      sourceContentType: "html",
       id: 7,
       isDownloaded: true,
       name: "Chapter 7",
@@ -1554,9 +1831,11 @@ describe("enqueueChapterMediaRepair", () => {
 
     if (!capturedSpec) throw new Error("Task spec was not captured.");
     await capturedSpec.run({
+      confirmSourceAccess,
       executor: "pool:1",
       setDetail,
       setProgress: vi.fn(),
+      setSourceAccessUrl,
       signal,
       taskId: "task-1",
     });
@@ -1575,6 +1854,16 @@ describe("enqueueChapterMediaRepair", () => {
       sourceId: "source-a",
     });
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(setSourceAccessUrl).toHaveBeenNthCalledWith(1, pagePlan.url);
+    expect(setSourceAccessUrl).toHaveBeenNthCalledWith(
+      2,
+      "https://source.test/chapter/7?accessKey=fresh",
+    );
+    expect(setSourceAccessUrl).toHaveBeenCalledTimes(2);
+    expect(setSourceAccessUrl.mock.invocationCallOrder[1]).toBeLessThan(
+      confirmSourceAccess.mock.invocationCallOrder[0] ?? Infinity,
+    );
+    expect(confirmSourceAccess).toHaveBeenCalledOnce();
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
         baseUrl: "https://source.test/chapter/7?accessKey=fresh",
@@ -1586,6 +1875,7 @@ describe("enqueueChapterMediaRepair", () => {
         requestInit: { headers: { Referer: "https://source.test/" } },
         scraperExecutor: "pool:1",
         sourceId: "source-a",
+        sourceAccessUrl: "https://source.test/chapter/7?accessKey=fresh",
       }),
     );
     expect(saveStoredChapterContent).toHaveBeenCalledWith(7, repairedHtml, "html", {
@@ -1609,6 +1899,7 @@ describe("enqueueChapterMediaRepair", () => {
       chapterNumber: "7",
       content: storedHtml,
       contentType: "epub",
+      sourceContentType: "epub",
       id: 7,
       isDownloaded: true,
       name: "Chapter 7",

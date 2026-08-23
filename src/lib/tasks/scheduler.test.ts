@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildSyntheticSourceTasks } from "../../test/fixtures/performance";
+import { SourceAccessRequiredError } from "../plugins/source-access";
 import {
   taskWorkQueueKey,
   TaskScheduler,
@@ -1153,6 +1154,1635 @@ describe("TaskScheduler", () => {
 
     expect(runCount).toBe(2);
     expect(scheduler.getTask(download.id)?.status).toBe("succeeded");
+  });
+
+  it("blocks and requeues every running task in the challenged access scope", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 3,
+      sourceQueuesPaused: false,
+    });
+    const challengedScope = "site:source.test";
+    let sameScopeAborted = false;
+    let finishOtherScope!: () => void;
+    let challengedSettled = false;
+    let siblingSettled = false;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: challengedScope,
+      run: async () => {
+        throw new SourceAccessRequiredError("Complete the CAPTCHA.", {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        });
+      },
+    });
+    const sibling = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Sibling download",
+      priority: "background",
+      source: { id: "source-b", name: "Source B" },
+      sourceAccessScopeKey: challengedScope,
+      run: (context) =>
+        new Promise<void>((_resolve, reject) => {
+          context.signal.addEventListener(
+            "abort",
+            () => {
+              sameScopeAborted = true;
+              reject(new DOMException("Task was paused.", "AbortError"));
+            },
+            { once: true },
+          );
+        }),
+    });
+    const other = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Other download",
+      priority: "background",
+      source: { id: "source-c", name: "Source C" },
+      sourceAccessScopeKey: "site:other.test",
+      run: () =>
+        new Promise<void>((resolve) => {
+          finishOtherScope = resolve;
+        }),
+    });
+    void challenged.promise.then(
+      () => {
+        challengedSettled = true;
+      },
+      () => {
+        challengedSettled = true;
+      },
+    );
+    void sibling.promise.then(
+      () => {
+        siblingSettled = true;
+      },
+      () => {
+        siblingSettled = true;
+      },
+    );
+
+    await settle();
+    await scheduler.waitForSourceTaskSettlement(sibling.id);
+    await settle();
+
+    expect(sameScopeAborted).toBe(true);
+    expect(challengedSettled).toBe(false);
+    expect(siblingSettled).toBe(false);
+    expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+    expect(scheduler.getTask(sibling.id)?.status).toBe("queued");
+    expect(scheduler.getTask(other.id)?.status).toBe("running");
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        },
+        revision: 1,
+        scopeKey: challengedScope,
+        sourceIds: ["source-a", "source-b"],
+        verificationRequested: false,
+      },
+    ]);
+
+    finishOtherScope();
+    await other.promise;
+    scheduler.cancel(challenged.id);
+    scheduler.cancel(sibling.id);
+    await Promise.allSettled([challenged.promise, sibling.promise]);
+  });
+
+  it("increments the block revision when the challenge payload changes", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 2,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    let rejectFirst!: (error: unknown) => void;
+    let rejectSecond!: (error: unknown) => void;
+
+    const first = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "First challenged download",
+      priority: "normal",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectFirst = reject;
+        }),
+    });
+    const second = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Second challenged download",
+      priority: "normal",
+      source: { id: "source-b", name: "Source B" },
+      sourceAccessScopeKey: scopeKey,
+      run: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSecond = reject;
+        }),
+    });
+
+    await settle();
+    rejectFirst(
+      new SourceAccessRequiredError("Complete the CAPTCHA.", {
+        kind: "captcha",
+        url: "https://source.test/chapter/1",
+      }),
+    );
+    await settle();
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      challenge: { kind: "captcha", url: "https://source.test/chapter/1" },
+      revision: 1,
+    });
+
+    rejectSecond(
+      new SourceAccessRequiredError("Complete the Cloudflare check.", {
+        kind: "cloudflare",
+        url: "https://source.test/chapter/2",
+      }),
+    );
+    await settle();
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      challenge: {
+        kind: "cloudflare",
+        url: "https://source.test/chapter/2",
+      },
+      originTaskId: second.id,
+      revision: 2,
+    });
+
+    scheduler.cancel(first.id);
+    scheduler.cancel(second.id);
+    await Promise.allSettled([first.promise, second.promise]);
+  });
+
+  it("aborts and requeues non-cancellable work when source access is blocked", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 2,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    let mergeAborted = false;
+    let mergeRunCount = 0;
+    let rejectFirstMerge!: (error: unknown) => void;
+
+    const merge = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Merge novel",
+      priority: "interactive",
+      source: { id: "source-b", name: "Source B" },
+      sourceAccessScopeKey: scopeKey,
+      canCancel: false,
+      run: (context) => {
+        mergeRunCount += 1;
+        if (mergeRunCount > 1) return Promise.resolve();
+        return new Promise<void>((_resolve, reject) => {
+          rejectFirstMerge = reject;
+          context.signal.addEventListener(
+            "abort",
+            () => {
+              mergeAborted = true;
+              reject(new DOMException("Task was paused.", "AbortError"));
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+    await settle();
+
+    let challengeRunCount = 0;
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        challengeRunCount += 1;
+        if (challengeRunCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "cloudflare",
+            url: "https://source.test/chapter/1",
+          });
+        }
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+
+    await settle();
+    if (mergeAborted) {
+      await scheduler.waitForSourceTaskSettlement(merge.id);
+      await settle();
+    }
+    const mergeStatusAfterBlock = scheduler.getTask(merge.id)?.status;
+    if (!mergeAborted) {
+      rejectFirstMerge(new DOMException("Test cleanup.", "AbortError"));
+      await Promise.allSettled([merge.promise]);
+    } else {
+      expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+      await Promise.all([challenged.promise, merge.promise]);
+    }
+    if (scheduler.getTask(challenged.id)?.status !== "succeeded") {
+      scheduler.cancel(challenged.id);
+      await Promise.allSettled([challenged.promise]);
+    }
+
+    expect(mergeAborted).toBe(true);
+    expect(mergeStatusAfterBlock).toBe("queued");
+    expect(mergeRunCount).toBe(2);
+  });
+
+  it("settles non-cancellable work that completes after a source access abort", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 2,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    let finishMerge!: () => void;
+    let mergeAborted = false;
+    let mergeRunCount = 0;
+
+    const merge = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Atomic merge",
+      priority: "interactive",
+      source: { id: "source-b", name: "Source B" },
+      sourceAccessScopeKey: scopeKey,
+      canCancel: false,
+      run: (context) => {
+        mergeRunCount += 1;
+        context.signal.addEventListener(
+          "abort",
+          () => {
+            mergeAborted = true;
+          },
+          { once: true },
+        );
+        return new Promise<void>((resolve) => {
+          finishMerge = resolve;
+        });
+      },
+    });
+    await settle();
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => {
+        throw new SourceAccessRequiredError("Complete the challenge.", {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        });
+      },
+    });
+
+    await settle();
+    finishMerge();
+    await merge.promise;
+
+    expect(mergeAborted).toBe(true);
+    expect(mergeRunCount).toBe(1);
+    expect(scheduler.getTask(merge.id)?.status).toBe("succeeded");
+
+    scheduler.cancel(challenged.id);
+    await Promise.allSettled([challenged.promise]);
+  });
+
+  it("blocks dynamically scoped tasks that belong to the challenged source", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 2,
+      sourceQueuesPaused: false,
+    });
+    let siblingRan = false;
+    let queuedRan = false;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Unscoped challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      run: async (context) => {
+        expect(
+          context.setSourceAccessUrl?.("https://source.test/chapter/1"),
+        ).toBe(true);
+        throw new SourceAccessRequiredError("Complete the CAPTCHA.", {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        });
+      },
+    });
+    const sibling = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Unscoped sibling download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      run: async () => {
+        siblingRan = true;
+      },
+    });
+    const queued = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Unscoped queued download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      run: async () => {
+        queuedRan = true;
+      },
+    });
+
+    await settle();
+
+    expect(siblingRan).toBe(false);
+    expect(queuedRan).toBe(false);
+    expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+    expect(scheduler.getTask(sibling.id)?.status).toBe("queued");
+    expect(scheduler.getTask(queued.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        scopeKey: "site:source.test",
+        sourceIds: ["source-a"],
+      },
+    ]);
+
+    scheduler.cancel(challenged.id);
+    scheduler.cancel(sibling.id);
+    scheduler.cancel(queued.id);
+    await Promise.allSettled([
+      challenged.promise,
+      sibling.promise,
+      queued.promise,
+    ]);
+  });
+
+  it("rejects an unscoped source challenge instead of trusting its URL", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const task = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Unscoped challenge",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      run: async () => {
+        throw new SourceAccessRequiredError("Untrusted challenge URL.", {
+          kind: "captcha",
+          url: "https://attacker.test/chapter/1",
+        });
+      },
+    });
+    void task.promise.catch(() => undefined);
+
+    await settle();
+    const status = scheduler.getTask(task.id)?.status;
+    const blocks = scheduler.getSnapshot().sourceAccessBlocks;
+    scheduler.cancel(task.id);
+    await Promise.allSettled([task.promise]);
+
+    expect(status).toBe("failed");
+    expect(blocks).toEqual([]);
+  });
+
+  it("normalizes a transport manual-action challenge before blocking", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    let settled = false;
+    const task = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Transport challenge",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => {
+        throw Object.assign(new Error("Complete the Cloudflare check."), {
+          challenge: {
+            kind: "cloudflare",
+            url: "https://source.test/chapter/1",
+          },
+          code: "manual-action-required",
+        });
+      },
+    });
+    void task.promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await settle();
+
+    expect(settled).toBe(false);
+    expect(scheduler.getTask(task.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        challenge: { kind: "cloudflare" },
+        scopeKey,
+      },
+    ]);
+
+    scheduler.cancel(task.id);
+    await Promise.allSettled([task.promise]);
+  });
+
+  it("fails a challenge whose hostname does not match the task scope", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const task = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Mismatched challenge",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: "site:source.test",
+      run: async () => {
+        throw new SourceAccessRequiredError("Untrusted challenge URL.", {
+          kind: "captcha",
+          url: "https://attacker.test/chapter/1",
+        });
+      },
+    });
+
+    await expect(task.promise).rejects.toThrow("Untrusted challenge URL.");
+
+    expect(scheduler.getTask(task.id)?.status).toBe("failed");
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+  });
+
+  it("runs one verification canary without clearing the user pause", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    const observations: string[] = [];
+    let runCount = 0;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        runCount += 1;
+        expect(context.sourceAccessVerification).toBe(runCount === 2);
+        observations.push(`challenged:${context.executor}:${runCount}`);
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "cloudflare",
+            url: "https://source.test/chapter/1",
+          });
+        }
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+    const sibling = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Sibling download",
+      priority: "background",
+      source: { id: "source-b", name: "Source B" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        observations.push(`sibling:${context.executor}`);
+      },
+    });
+
+    await settle();
+    expect(scheduler.pauseSourceQueue()).toBe(true);
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(false);
+
+    await challenged.promise;
+    await settle();
+
+    expect(observations).toEqual([
+      "challenged:pool:0:1",
+      "challenged:immediate:2",
+    ]);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+    expect(scheduler.getTask(sibling.id)?.status).toBe("queued");
+
+    expect(scheduler.resumeSourceQueue()).toBe(true);
+    await sibling.promise;
+  });
+
+  it("keeps the scope blocked when a canary does not confirm source access", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    let runCount = 0;
+    let settled = false;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Unconfirmed canary",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => {
+        runCount += 1;
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "cloudflare",
+            url: "https://source.test/chapter/1",
+          });
+        }
+      },
+    });
+    void challenged.promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await settle();
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await settle();
+
+    expect(runCount).toBe(2);
+    expect(settled).toBe(false);
+    expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        scopeKey,
+        verificationRequested: false,
+      },
+    ]);
+
+    scheduler.cancel(challenged.id);
+    await Promise.allSettled([challenged.promise]);
+  });
+
+  it("does not let a canary rebind an existing block to another hostname", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    const rebindResults: Array<boolean | undefined> = [];
+    let runCount = 0;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Changed host canary",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        runCount += 1;
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "cloudflare",
+            url: "https://source.test/chapter/1",
+          });
+        }
+        expect(context.confirmSourceAccess?.()).toBe(true);
+        const rebound = context.setSourceAccessUrl?.("https://attacker.test/");
+        rebindResults.push(rebound);
+        if (!rebound) throw new Error("Source access hostname changed.");
+      },
+    });
+
+    await settle();
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await settle();
+
+    expect(rebindResults).toEqual([false]);
+    expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      { scopeKey, verificationRequested: false },
+    ]);
+
+    scheduler.cancel(challenged.id);
+    await Promise.allSettled([challenged.promise]);
+  });
+
+  it("keeps the scope blocked when a canary reports an untrusted challenge", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let runCount = 0;
+    let settled = false;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Untrusted challenge canary",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => {
+        runCount += 1;
+        throw new SourceAccessRequiredError(
+          runCount === 1
+            ? "Complete the challenge."
+            : "Untrusted challenge URL.",
+          {
+            kind: "cloudflare",
+            url:
+              runCount === 1
+                ? "https://source.test/chapter/1"
+                : "https://attacker.test/chapter/1",
+          },
+        );
+      },
+    });
+    void challenged.promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await settle();
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await settle();
+
+    const block = scheduler.getSnapshot().sourceAccessBlocks[0];
+    expect(runCount).toBe(2);
+    expect(settled).toBe(false);
+    expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+    expect(block).toMatchObject({
+      scopeKey,
+      verificationError: "Untrusted challenge URL.",
+      verificationRequested: false,
+    });
+    expect(block?.verificationTaskId).toBeUndefined();
+
+    scheduler.cancel(challenged.id);
+    await Promise.allSettled([challenged.promise]);
+  });
+
+  it("keeps the scope blocked when a verification canary sees another challenge", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    let currentConfirm!: () => boolean;
+    let finishCurrentVerification!: () => void;
+    let staleConfirm!: () => boolean;
+    let runCount = 0;
+    let settled = false;
+
+    const challenged = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: (context) => {
+        runCount += 1;
+        if (runCount === 3) {
+          if (!context.confirmSourceAccess) {
+            throw new Error("Expected a source access confirmation callback.");
+          }
+          currentConfirm = context.confirmSourceAccess;
+          return new Promise<void>((resolve) => {
+            finishCurrentVerification = resolve;
+          });
+        }
+        if (runCount === 2) {
+          if (!context.confirmSourceAccess) {
+            throw new Error("Expected a source access confirmation callback.");
+          }
+          staleConfirm = context.confirmSourceAccess;
+        }
+        return Promise.reject(
+          new SourceAccessRequiredError("Challenge is still active.", {
+            kind: "cloudflare",
+            url: "https://source.test/chapter/1",
+          }),
+        );
+      },
+    });
+    void challenged.promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await settle();
+    const firstRevision = scheduler.getSnapshot().sourceAccessBlocks[0]?.revision;
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await settle();
+
+    const block = scheduler.getSnapshot().sourceAccessBlocks[0];
+    expect(runCount).toBe(2);
+    expect(settled).toBe(false);
+    expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+    expect(block?.revision).toBeGreaterThan(firstRevision ?? 0);
+    expect(block?.verificationTaskId).toBeUndefined();
+    expect(staleConfirm()).toBe(false);
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await settle();
+
+    expect(runCount).toBe(3);
+    expect(staleConfirm()).toBe(false);
+    expect(currentConfirm()).toBe(true);
+    finishCurrentVerification();
+    await challenged.promise;
+  });
+
+  it("hydrates source access blocks before dispatching queued work", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const scopeKey = "site:source.test";
+    const observations: string[] = [];
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: true,
+        verificationTaskId: "stale-task",
+      },
+    ]);
+    const task = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Restored download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        observations.push(String(context.executor));
+        context.confirmSourceAccess?.();
+      },
+    });
+
+    await settle();
+    expect(observations).toEqual([]);
+    expect(scheduler.getTask(task.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      revision: 7,
+      verificationRequested: false,
+    });
+    expect(
+      scheduler.getSnapshot().sourceAccessBlocks[0]?.verificationTaskId,
+    ).toBeUndefined();
+
+    expect(scheduler.canBeginSourceAccessVerification(scopeKey)).toBe(true);
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await task.promise;
+
+    expect(observations).toEqual(["immediate"]);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+  });
+
+  it("does not request source access verification without a queued canary", () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+
+    expect(scheduler.canBeginSourceAccessVerification(scopeKey)).toBe(false);
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(false);
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+  });
+
+  it("rebuilds a redacted challenge URL from its queued canary", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    const freshUrl =
+      "https://source.test/chapter/1?signed=fresh-proof#challenge";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        },
+        challengeUrlRedacted: true,
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Restored download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => freshUrl,
+      run: async () => undefined,
+    });
+
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(scopeKey, 7),
+    ).resolves.toEqual({ revision: 7, scopeKey, url: freshUrl });
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      challenge: { url: freshUrl },
+      originTaskId: canary.id,
+      scopeKey,
+    });
+    expect(
+      scheduler.getSnapshot().sourceAccessBlocks[0],
+    ).not.toHaveProperty("challengeUrlRedacted");
+
+    scheduler.cancel(canary.id);
+    await Promise.allSettled([canary.promise]);
+  });
+
+  it("keeps a restored block when a configured task uses another host", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const oldScopeKey = "site:old-source.test";
+    const newScopeKey = "site:new-source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://old-source.test/chapter/1",
+        },
+        detectedAt: 10,
+        originTaskKey: "source-a:search",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "source.search",
+      title: "Search replacement host",
+      priority: "interactive",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => "https://new-source.test/",
+      sourceAccessScopeKey: newScopeKey,
+      sourceAccessVerificationKey: "source-a:search",
+      run: async () => undefined,
+    });
+
+    expect(scheduler.canBeginSourceAccessVerification(oldScopeKey)).toBe(false);
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toBeNull();
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        challenge: { url: "https://old-source.test/chapter/1" },
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+      },
+    ]);
+
+    scheduler.cancel(canary.id);
+    await Promise.allSettled([canary.promise]);
+  });
+
+  it("keeps a restored chapter block when its exact URL changes host", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const oldScopeKey = "site:old-source.test";
+    const freshUrl =
+      "https://new-source.test/chapter/1?signed=fresh-proof#challenge";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://old-source.test/chapter/1",
+        },
+        challengeUrlRedacted: true,
+        detectedAt: 10,
+        originTaskKey: "chapter.download:source-a:chapter-1",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Restored chapter download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => freshUrl,
+      sourceAccessVerificationKey: "chapter.download:source-a:chapter-1",
+      run: async (context) => {
+        expect(context.setSourceAccessUrl?.(freshUrl)).toBe(true);
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toBeNull();
+    expect(scheduler.canBeginSourceAccessVerification(oldScopeKey)).toBe(false);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        challenge: { url: "https://old-source.test/chapter/1" },
+        originTaskKey: "chapter.download:source-a:chapter-1",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+      },
+    ]);
+
+    scheduler.cancel(canary.id);
+    await Promise.allSettled([canary.promise]);
+  });
+
+  it("tries another queued canary after the persisted origin changes host", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const oldScopeKey = "site:old-source.test";
+    const sameHostUrl =
+      "https://old-source.test/chapter/2?signed=fresh-proof#challenge";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://old-source.test/chapter/1",
+        },
+        challengeUrlRedacted: true,
+        detectedAt: 10,
+        originTaskKey: "chapter.download:source-a:chapter-1",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const movedOrigin = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Moved original chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => "https://new-source.test/chapter/1",
+      sourceAccessVerificationKey: "chapter.download:source-a:chapter-1",
+      run: async () => undefined,
+    });
+    const sameHost = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Same-host chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => sameHostUrl,
+      sourceAccessVerificationKey: "chapter.download:source-a:chapter-2",
+      run: async () => undefined,
+    });
+
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toBeNull();
+    expect(scheduler.canBeginSourceAccessVerification(oldScopeKey)).toBe(true);
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toEqual({
+      revision: 7,
+      scopeKey: oldScopeKey,
+      url: sameHostUrl,
+    });
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      originTaskId: sameHost.id,
+      originTaskKey: "chapter.download:source-a:chapter-2",
+      revision: 7,
+      scopeKey: oldScopeKey,
+    });
+
+    scheduler.cancel(movedOrigin.id);
+    scheduler.cancel(sameHost.id);
+    await Promise.allSettled([movedOrigin.promise, sameHost.promise]);
+  });
+
+  it("uses persisted origin proof among multiple acquisition hosts", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source-a.test";
+    const freshUrl = "https://source-a.test/chapter/1?signed=fresh-proof";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source-a.test/chapter/1",
+        },
+        challengeUrlRedacted: true,
+        detectedAt: 10,
+        originTaskKey: "chapter.download:source-a:chapter-1",
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const otherHost = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Other-host chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => "https://source-b.test/chapter/2",
+      sourceAccessVerificationKey: "chapter.download:source-a:chapter-2",
+      run: async () => undefined,
+    });
+    const origin = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Original challenged chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => freshUrl,
+      sourceAccessVerificationKey: "chapter.download:source-a:chapter-1",
+      run: async () => undefined,
+    });
+
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(scopeKey, 7),
+    ).resolves.toEqual({ revision: 7, scopeKey, url: freshUrl });
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      originTaskId: origin.id,
+      originTaskKey: "chapter.download:source-a:chapter-1",
+      scopeKey,
+    });
+
+    scheduler.cancel(otherHost.id);
+    scheduler.cancel(origin.id);
+    await Promise.allSettled([otherHost.promise, origin.promise]);
+  });
+
+  it("does not migrate a restored block without matching origin proof", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const oldScopeKey = "site:source-a.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source-a.test/chapter/1",
+        },
+        challengeUrlRedacted: true,
+        detectedAt: 10,
+        originTaskKey: "chapter.download:source-a:chapter-1",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const otherHost = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Other-host chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => "https://source-b.test/chapter/2",
+      sourceAccessVerificationKey: "chapter.download:source-a:chapter-2",
+      run: async () => undefined,
+    });
+
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toBeNull();
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        originTaskKey: "chapter.download:source-a:chapter-1",
+        revision: 7,
+        scopeKey: oldScopeKey,
+      },
+    ]);
+
+    scheduler.cancel(otherHost.id);
+    await Promise.allSettled([otherHost.promise]);
+  });
+
+  it("keeps every source in a shared block when one task changes host", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const oldScopeKey = "site:old-source.test";
+    const newScopeKey = "site:new-source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://old-source.test/chapter/1",
+        },
+        detectedAt: 10,
+        originTaskKey: "source-a:search",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a", "source-b"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "source.search",
+      title: "Search replacement host",
+      priority: "interactive",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => "https://new-source.test/",
+      sourceAccessScopeKey: newScopeKey,
+      sourceAccessVerificationKey: "source-a:search",
+      run: async () => undefined,
+    });
+
+    expect(scheduler.canBeginSourceAccessVerification(oldScopeKey)).toBe(false);
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toBeNull();
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a", "source-b"],
+      },
+    ]);
+
+    scheduler.cancel(canary.id);
+    await Promise.allSettled([canary.promise]);
+  });
+
+  it("preserves an old-host block when the replacement host is also blocked", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const oldScopeKey = "site:old-source.test";
+    const newScopeKey = "site:new-source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://old-source.test/chapter/1",
+        },
+        detectedAt: 10,
+        originTaskKey: "source-a:search",
+        revision: 7,
+        scopeKey: oldScopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://new-source.test/chapter/2",
+        },
+        detectedAt: 20,
+        revision: 8,
+        scopeKey: newScopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "source.search",
+      title: "Search replacement host",
+      priority: "interactive",
+      source: { id: "source-a", name: "Source A" },
+      resolveSourceAccessUrl: () => "https://new-source.test/",
+      sourceAccessScopeKey: newScopeKey,
+      sourceAccessVerificationKey: "source-a:search",
+      run: async () => undefined,
+    });
+
+    await expect(
+      scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
+    ).resolves.toBeNull();
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      { revision: 7, scopeKey: oldScopeKey, sourceIds: ["source-a"] },
+      { revision: 8, scopeKey: newScopeKey, sourceIds: ["source-a"] },
+    ]);
+
+    scheduler.cancel(canary.id);
+    await Promise.allSettled([canary.promise]);
+  });
+
+  it("resets a verification request when its queued canary is cancelled", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let finishImmediate!: () => void;
+
+    const immediate = scheduler.enqueueSource({
+      kind: "source.openSite",
+      title: "Open another source",
+      priority: "interactive",
+      source: { id: "source-b", name: "Source B" },
+      run: () =>
+        new Promise<void>((resolve) => {
+          finishImmediate = resolve;
+        }),
+    });
+    await settle();
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "captcha",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Queued canary",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => undefined,
+    });
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    expect(scheduler.cancel(canary.id)).toBe(true);
+    await Promise.allSettled([canary.promise]);
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: true,
+    });
+
+    finishImmediate();
+    await immediate.promise;
+    await settle();
+
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+  });
+
+  it("releases a source access verification when its running canary is cancelled", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let canaryStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      canaryStarted = resolve;
+    });
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const canary = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Running canary",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: (context) =>
+        new Promise<void>((_resolve, reject) => {
+          canaryStarted();
+          context.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Task was cancelled.", "AbortError")),
+            { once: true },
+          );
+        }),
+    });
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await started;
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      revision: 7,
+      verificationTaskId: canary.id,
+    });
+
+    expect(scheduler.cancel(canary.id)).toBe(true);
+    await Promise.allSettled([canary.promise]);
+    await settle();
+
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+    expect(
+      scheduler.getSnapshot().sourceAccessBlocks[0]?.verificationTaskId,
+    ).toBeUndefined();
+    expect(
+      scheduler.getSnapshot().sourceAccessBlocks[0]?.revision,
+    ).toBeGreaterThan(7);
+
+    const replacement = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Replacement canary",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await replacement.promise;
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+  });
+
+  it("does not use cookie clearing as a source access canary", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const clearCookies = scheduler.enqueueSource({
+      kind: "source.clearCookies",
+      title: "Clear cookies",
+      priority: "user",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => undefined,
+    });
+
+    const started = scheduler.beginSourceAccessVerification(scopeKey);
+    await settle();
+    scheduler.cancel(clearCookies.id);
+    await Promise.allSettled([clearCookies.promise]);
+
+    expect(started).toBe(false);
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+  });
+
+  it("does not use media repair as a source access canary", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const repair = scheduler.enqueueSource({
+      kind: "chapter.repairMedia",
+      title: "Repair media",
+      priority: "user",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => undefined,
+    });
+
+    const started = scheduler.beginSourceAccessVerification(scopeKey);
+    await settle();
+    scheduler.cancel(repair.id);
+    await Promise.allSettled([repair.promise]);
+
+    expect(started).toBe(false);
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+  });
+
+  it("reuses media repair only when it created the access block", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let runCount = 0;
+
+    const repair = scheduler.enqueueSource({
+      kind: "chapter.repairMedia",
+      title: "Challenged repair",
+      priority: "user",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        runCount += 1;
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "captcha",
+            url: "https://source.test/chapter/1",
+          });
+        }
+        expect(context.sourceAccessVerification).toBe(true);
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+
+    await settle();
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      originTaskId: repair.id,
+      scopeKey,
+    });
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await repair.promise;
+
+    expect(runCount).toBe(2);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+  });
+
+  it("does not use non-cancellable work as a source access canary", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const merge = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Merge novel",
+      priority: "interactive",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      canCancel: false,
+      run: async () => undefined,
+    });
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(false);
+    expect(scheduler.getTask(merge.id)).toMatchObject({
+      canCancel: false,
+      status: "queued",
+    });
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+  });
+
+  it("reuses a non-cancellable task only when it created the access block", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let runCount = 0;
+
+    const merge = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Challenged merge",
+      priority: "interactive",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      canCancel: false,
+      run: async (context) => {
+        runCount += 1;
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "cloudflare",
+            url: "https://source.test/novel/1",
+          });
+        }
+        expect(context.sourceAccessVerification).toBe(true);
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+
+    await settle();
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      originTaskId: merge.id,
+      scopeKey,
+      verificationRequested: false,
+    });
+    expect(scheduler.getTask(merge.id)).toMatchObject({
+      canCancel: false,
+      status: "queued",
+    });
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await merge.promise;
+
+    expect(runCount).toBe(2);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+  });
+
+  it("requeues a running non-cancellable origin canary when verification is stopped", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let canaryStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      canaryStarted = resolve;
+    });
+    let runCount = 0;
+
+    const merge = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Paused merge canary",
+      priority: "interactive",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      canCancel: false,
+      run: (context) => {
+        runCount += 1;
+        if (runCount === 1) {
+          return Promise.reject(
+            new SourceAccessRequiredError("Complete the challenge.", {
+              kind: "cloudflare",
+              url: "https://source.test/novel/1",
+            }),
+          );
+        }
+        if (runCount === 2) {
+          return new Promise<void>((resolve) => {
+            canaryStarted();
+            context.signal.addEventListener(
+              "abort",
+              () => resolve(),
+              { once: true },
+            );
+          });
+        }
+        expect(context.confirmSourceAccess?.()).toBe(true);
+        return Promise.resolve();
+      },
+    });
+
+    await settle();
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await started;
+
+    const activeRevision =
+      scheduler.getSnapshot().sourceAccessBlocks[0]?.revision ?? 0;
+    expect(scheduler.keepSourceAccessBlocked(scopeKey)).toBe(true);
+    await scheduler.waitForSourceTaskSettlement(merge.id);
+    await settle();
+
+    expect(scheduler.getTask(merge.id)).toMatchObject({
+      canCancel: false,
+      status: "queued",
+    });
+    expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+      scopeKey,
+      verificationRequested: false,
+    });
+    expect(
+      scheduler.getSnapshot().sourceAccessBlocks[0]?.verificationTaskId,
+    ).toBeUndefined();
+    expect(
+      scheduler.getSnapshot().sourceAccessBlocks[0]?.revision,
+    ).toBeGreaterThan(activeRevision);
+
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await merge.promise;
+    expect(runCount).toBe(3);
   });
 
   it("requeues only running interruptible downloads", async () => {

@@ -4,8 +4,14 @@ import {
   cancelAndroidScraperExecutor,
 } from "./android-scraper";
 import { isAndroidRuntime, isWindowsRuntime } from "./tauri-runtime";
+import { cancelNativeStream } from "./native-stream";
 import { getSourceRequestTimeoutMs } from "../store/browse";
 import { getScraperUserAgent } from "../store/user-agent";
+import {
+  isSourceAccessRequiredError,
+  sourceAccessErrorFromEnvelope,
+} from "./plugins/source-access";
+import { redactUrlForLog, redactUrlsForLog } from "./url-log";
 import {
   activeScraperExecutor,
   activeScraperExecutorSignal,
@@ -26,6 +32,8 @@ export interface HttpInit {
   body?: unknown;
   /** Plugin-owned site origin to prepare in the scraper WebView. */
   contextUrl?: string;
+  /** Host-trusted source URL used only to attribute manual-action failures. */
+  sourceAccessUrl?: string;
   /** Source id used to infer an executor when no explicit scraper executor is bound. */
   sourceId?: string;
   /** Executor-owned WebView that must execute plugin-owned site traffic. */
@@ -52,6 +60,7 @@ interface FetchResultWire {
   statusText: string;
   body?: string;
   bodyBase64?: string;
+  cloudflareChallenge?: boolean;
   headers: Record<string, string>;
   finalUrl: string;
 }
@@ -59,6 +68,7 @@ interface FetchResultWire {
 export interface CapturedMediaHandle {
   bodyBytes: number;
   bodyHandle: string;
+  cloudflareChallenge?: boolean;
   finalUrl: string;
   headers: Record<string, string>;
   status: number;
@@ -187,6 +197,76 @@ function responseFromWire(result: FetchResultWire): Response {
   return response;
 }
 
+function wireHeader(
+  headers: Record<string, string>,
+  name: string,
+): string | undefined {
+  const normalizedName = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalizedName) return value;
+  }
+  return undefined;
+}
+
+function wireTextBody(result: FetchResultWire): string {
+  if (result.body !== undefined) return result.body;
+  if (result.bodyBase64 === undefined) return "";
+  try {
+    return new TextDecoder().decode(decodeBase64Body(result.bodyBase64));
+  } catch {
+    return "";
+  }
+}
+
+function isCloudflareChallengeResponse(result: FetchResultWire): boolean {
+  if (result.cloudflareChallenge) return true;
+  if (wireHeader(result.headers, "cf-mitigated")?.toLowerCase() === "challenge") {
+    return true;
+  }
+  const contentType = wireHeader(result.headers, "content-type")?.toLowerCase();
+  if (!contentType?.includes("text/html")) return false;
+  const body = wireTextBody(result).slice(0, 512 * 1024);
+  return (
+    /\/cdn-cgi\/challenge-platform\//i.test(body) ||
+    /\b(?:cf-chl-|__cf_chl_)/i.test(body) ||
+    /id=["']challenge-(?:form|running|stage)["']/i.test(body) ||
+    (/cloudflare ray id/i.test(body) &&
+      /attention required|sorry, you have been blocked/i.test(body))
+  );
+}
+
+function cloudflareAccessError(
+  result: FetchResultWire,
+  requestUrl: string,
+): Error | null {
+  if (!isCloudflareChallengeResponse(result)) return null;
+  return sourceAccessErrorFromEnvelope(
+    {
+      ok: false,
+      code: "manual-action-required",
+      error: "Cloudflare verification is required.",
+      challenge: {
+        kind: "cloudflare",
+        url: result.finalUrl || requestUrl,
+      },
+    },
+    requestUrl,
+  );
+}
+
+function checkedResponseFromWire(
+  result: FetchResultWire,
+  requestUrl: string,
+): Response {
+  const accessError = cloudflareAccessError(result, requestUrl);
+  if (accessError) throw accessError;
+  return responseFromWire(result);
+}
+
+function sourceAccessFallbackUrl(url: string, init: HttpInit): string {
+  return init.sourceAccessUrl ?? init.contextUrl ?? url;
+}
+
 async function takeCapturedMediaResponse(
   url: string,
   init: HttpInit,
@@ -207,9 +287,12 @@ async function takeCapturedMediaResponse(
         ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
       });
     }
-    return result ? responseFromWire(result) : null;
+    return result
+      ? checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init))
+      : null;
   } catch (error) {
     if (init.signal?.aborted) throw requestAbortedError();
+    if (isSourceAccessRequiredError(error)) throw error;
     console.debug("[plugin-media-fetch] captured response unavailable", {
       error: fetchErrorMessage(error),
       ...mediaFallbackLogContext(url, init, scraperExecutor),
@@ -235,6 +318,14 @@ export async function takeCapturedMediaHandle(
       },
     );
     if (result) {
+      const accessError = cloudflareAccessError(
+        result,
+        sourceAccessFallbackUrl(url, init),
+      );
+      if (accessError) {
+        await cancelNativeStream(result.bodyHandle).catch(() => undefined);
+        throw accessError;
+      }
       console.debug("[plugin-media-fetch] captured response handle used", {
         ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
         bodyBytes: result.bodyBytes,
@@ -243,6 +334,7 @@ export async function takeCapturedMediaHandle(
     return result;
   } catch (error) {
     if (init.signal?.aborted) throw requestAbortedError();
+    if (isSourceAccessRequiredError(error)) throw error;
     console.debug("[plugin-media-fetch] captured response handle unavailable", {
       error: fetchErrorMessage(error),
       ...mediaFallbackLogContext(url, init, scraperExecutor),
@@ -256,15 +348,6 @@ function mediaFallbackHost(url: string): string {
     return new URL(url).host;
   } catch {
     return "";
-  }
-}
-
-function sanitizedFetchUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url.split(/[?#]/, 1)[0] ?? url;
   }
 }
 
@@ -294,7 +377,9 @@ function shouldRetryNativeMediaWithBrowser(response: Response): boolean {
 }
 
 function fetchErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactUrlsForLog(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 function mediaFallbackLogContext(
@@ -306,7 +391,7 @@ function mediaFallbackLogContext(
   return {
     contextHost: mediaFallbackContextHost(init.contextUrl),
     host: mediaFallbackHost(url),
-    sanitizedUrl: sanitizedFetchUrl(url),
+    sanitizedUrl: redactUrlForLog(url),
     scraperExecutor,
     sourceId: init.sourceId,
     status,
@@ -334,7 +419,7 @@ async function nativeMediaResponse(
   console.debug("[plugin-media-fetch] native fetch finished", {
     ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
   });
-  return responseFromWire(result);
+  return checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init));
 }
 
 export async function cancelScraperExecutor(
@@ -536,7 +621,7 @@ export async function appFetchText(
   const response = await appFetch(url, init);
   if (!response.ok) {
     throw new Error(
-      `HTTP ${response.status} ${response.statusText} on ${url}`,
+      `HTTP ${response.status} ${response.statusText} on ${redactUrlForLog(url)}`,
     );
   }
   return response.text();
@@ -593,16 +678,16 @@ async function pluginFetchInternal(
   } catch (error) {
     if (logFailures && !isRequestAbortError(error)) {
       console.error("[plugin-fetch] failed", {
-        contextUrl,
-        error,
+        contextUrl: contextUrl ? redactUrlForLog(contextUrl) : null,
+        error: fetchErrorMessage(error),
         scraperExecutor,
         sourceId: init.sourceId,
-        url,
+        url: redactUrlForLog(url),
       });
     }
     throw error;
   }
-  return responseFromWire(result);
+  return checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init));
 }
 
 export async function pluginFetch(
@@ -656,6 +741,7 @@ export async function pluginMediaFetch(
         },
       );
     } catch (error) {
+      if (isSourceAccessRequiredError(error)) throw error;
       if (isRequestAbortError(error)) {
         throw error;
       }
@@ -669,6 +755,7 @@ export async function pluginMediaFetch(
     try {
       return await pluginFetchInternal(url, init, { logFailures: false });
     } catch (browserError) {
+      if (isSourceAccessRequiredError(browserError)) throw browserError;
       if (isRequestAbortError(browserError)) {
         throw browserError;
       }
@@ -678,7 +765,7 @@ export async function pluginMediaFetch(
         nativeError: fetchErrorMessage(nativeError),
       });
       throw new Error(
-        `Media fetch failed for ${sanitizedFetchUrl(url)}; native: ${fetchErrorMessage(
+        `Media fetch failed for ${redactUrlForLog(url)}; native: ${fetchErrorMessage(
           nativeError,
         )}; browser: ${fetchErrorMessage(browserError)}`,
         { cause: browserError },
@@ -690,6 +777,7 @@ export async function pluginMediaFetch(
   try {
     return await pluginFetchInternal(url, init, { logFailures: false });
   } catch (error) {
+    if (isSourceAccessRequiredError(error)) throw error;
     if (isRequestAbortError(error)) {
       throw error;
     }
@@ -725,8 +813,9 @@ export async function pluginMediaFetch(
     console.debug("[plugin-media-fetch] native fallback finished", {
       ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
     });
-    return responseFromWire(result);
+    return checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init));
   } catch (nativeError) {
+    if (isSourceAccessRequiredError(nativeError)) throw nativeError;
     if (isRequestAbortError(nativeError)) {
       throw nativeError;
     }
@@ -736,7 +825,7 @@ export async function pluginMediaFetch(
       nativeError: fetchErrorMessage(nativeError),
     });
     throw new Error(
-      `Media fetch failed for ${sanitizedFetchUrl(url)}; browser: ${fetchErrorMessage(
+      `Media fetch failed for ${redactUrlForLog(url)}; browser: ${fetchErrorMessage(
         browserError,
       )}; native: ${fetchErrorMessage(nativeError)}`,
       { cause: nativeError },
@@ -756,7 +845,7 @@ export async function pluginFetchText(
   const response = await pluginFetch(url, init);
   if (!response.ok) {
     throw new Error(
-      `HTTP ${response.status} ${response.statusText} on ${url}`,
+      `HTTP ${response.status} ${response.statusText} on ${redactUrlForLog(url)}`,
     );
   }
   return response.text();

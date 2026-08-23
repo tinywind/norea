@@ -45,6 +45,7 @@ import {
   restoreProtectedRemoteChapterMediaSources,
 } from "./chapter-media";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "./http";
+import { SourceAccessRequiredError } from "./plugins/source-access";
 
 const invokeMock = vi.mocked(invoke);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
@@ -752,7 +753,7 @@ describe("cacheHtmlChapterMedia", () => {
   it("keeps failed image assets on remote URLs while storing successful assets", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     pluginMediaFetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/missing.png")) {
+      if (String(url).includes("/missing.png")) {
         throw new Error("CDN blocked");
       }
       return new Response(new Uint8Array([1, 2, 3]), {
@@ -777,13 +778,13 @@ describe("cacheHtmlChapterMedia", () => {
       const result = await cacheHtmlChapterMedia({
         baseUrl: "https://source.test/chapter/1",
         chapterId: 42,
-        html: `<img src="./ok.png"><img src="./missing.png">`,
+        html: `<img src="./ok.png"><img src="https://source.test/signed/path-token/missing.png?token=query-secret">`,
       });
 
       expect(result.mediaFailures).toEqual([
         expect.objectContaining({
           message: "CDN blocked",
-          url: "https://source.test/chapter/missing.png",
+          url: "https://source.test/signed/path-token/missing.png?token=query-secret",
         }),
       ]);
       expect(result.storedMediaCount).toBe(1);
@@ -792,10 +793,53 @@ describe("cacheHtmlChapterMedia", () => {
         'src="norea-media://reader-asset/0001-ok.png"',
       );
       expect(result.html).toContain(
-        'src="https://source.test/chapter/missing.png"',
+        'src="https://source.test/signed/path-token/missing.png?token=query-secret"',
       );
       expect(result.html).not.toContain('src=""');
       expect(result.html).not.toContain("data-norea-media");
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[chapter-media] media asset using remote fallback",
+        expect.objectContaining({ sanitizedUrl: "https://source.test" }),
+      );
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toMatch(
+        /signed|path-token|query-secret/,
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("propagates source access errors without using remote media fallbacks", async () => {
+    const accessError = new SourceAccessRequiredError(
+      "Complete the Cloudflare challenge.",
+      {
+        kind: "cloudflare",
+        url: "https://source.test/chapter/1",
+      },
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    pluginMediaFetchMock.mockRejectedValue(accessError);
+
+    try {
+      await expect(
+        cacheHtmlChapterMedia({
+          baseUrl: "https://cdn.test/assets/",
+          chapterId: 42,
+          contextUrl: "https://cdn.test/assets/",
+          html: `<img src="./one.png"><img src="./two.png">`,
+          sourceAccessUrl: "https://source.test/chapter/1",
+        }),
+      ).rejects.toBe(accessError);
+
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+      expect(pluginMediaFetchMock).toHaveBeenCalledWith(
+        "https://cdn.test/assets/one.png",
+        expect.objectContaining({
+          contextUrl: "https://cdn.test/assets/",
+          sourceAccessUrl: "https://source.test/chapter/1",
+        }),
+      );
+      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }

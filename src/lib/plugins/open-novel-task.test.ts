@@ -107,4 +107,29 @@ describe("enqueueOpenNovelFromSourceTask", () => {
       undefined,
     );
   });
+
+  it("forces a source refresh when verifying source access", async () => {
+    const plugin = makePlugin();
+    const manager = {
+      getPluginForExecutor: vi.fn(() => plugin),
+    };
+
+    enqueueOpenNovelFromSourceTask({
+      plugin,
+      item: novel,
+      title: "Verify Novel",
+      importOptions: { forceRefresh: false },
+      manager,
+    });
+
+    const options = vi.mocked(enqueueSourceTask).mock.calls[0]![0];
+    await options.run({
+      ...makeContext("immediate"),
+      sourceAccessVerification: true,
+    });
+
+    expect(importNovelFromSource).toHaveBeenCalledWith(plugin, novel, {
+      forceRefresh: true,
+    });
+  });
 });

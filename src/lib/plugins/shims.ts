@@ -30,6 +30,7 @@ import {
   getPluginInputValue,
   setPluginInputValue,
 } from "./inputs";
+import { sourceAccessErrorFromEnvelope } from "./source-access";
 import { NovelStatus } from "./types";
 
 export interface WebViewFetchOptions {
@@ -57,12 +58,6 @@ interface WebViewNavigateResult {
   title?: string;
 }
 
-type WebViewEnvelope = {
-  ok?: boolean;
-  error?: string;
-  result?: unknown;
-};
-
 function webViewSnapshotScript(
   includeContent: boolean,
   beforeContentScript?: string,
@@ -80,7 +75,79 @@ function webViewSnapshotScript(
     if (!beforeContentScript) return;
     (0, eval)(beforeContentScript);
   }
+  function isVisible(element) {
+    if (!element || typeof element.getBoundingClientRect !== "function") return false;
+    var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
+      return false;
+    }
+    var rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function hasVisibleSelector(selectors) {
+    for (var index = 0; index < selectors.length; index += 1) {
+      var elements = document.querySelectorAll(selectors[index]);
+      for (var elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
+        if (isVisible(elements[elementIndex])) return true;
+      }
+    }
+    return false;
+  }
+  function manualActionKind() {
+    var title = (document.title || "").toLowerCase();
+    var body = ((document.body && document.body.innerText) || "").toLowerCase();
+    if (body.length > 12000) body = body.slice(0, 12000);
+    var hasCloudflareEvidence = document.querySelector(
+      "script[src*='/cdn-cgi/challenge-platform/'], link[href*='/cdn-cgi/challenge-platform/'], [data-ray], #cf-error-details"
+    ) !== null || /cloudflare ray id|cf-ray|cf-chl/.test(body);
+    var hasChallengeText =
+      title.indexOf("just a moment") !== -1 ||
+      title.indexOf("attention required") !== -1 ||
+      body.indexOf("checking if the site connection is secure") !== -1 ||
+      body.indexOf("enable javascript and cookies to continue") !== -1;
+    if (hasVisibleSelector([
+      "#challenge-running",
+      "#cf-challenge-running",
+      "#challenge-stage",
+      "form#challenge-form",
+      ".cf-browser-verification",
+      ".cf-turnstile",
+      "iframe[src*='challenges.cloudflare.com']"
+    ]) || (hasCloudflareEvidence && hasChallengeText)) {
+      return "cloudflare";
+    }
+    if (hasVisibleSelector([
+      "iframe[src*='recaptcha']",
+      "iframe[src*='hcaptcha']",
+      "iframe[src*='captcha']",
+      ".g-recaptcha",
+      ".h-captcha",
+      ".geetest_panel",
+      ".geetest_holder",
+      "[class*='captcha-slider']",
+      "[class*='slider-captcha']",
+      "[class*='puzzle-captcha']",
+      "#tcaptcha_iframe_dy",
+      ".tcaptcha-transform",
+      ".secsdk-captcha-drag-icon"
+    ])) {
+      return "captcha";
+    }
+    return null;
+  }
   function readPage() {
+    var challengeKind = manualActionKind();
+    if (challengeKind) {
+      post({
+        ok: false,
+        code: "manual-action-required",
+        error: challengeKind === "captcha"
+          ? "Complete the CAPTCHA in the source browser."
+          : "Complete the Cloudflare verification in the source browser.",
+        challenge: { kind: challengeKind, url: location.href }
+      });
+      return;
+    }
     var payload = {
       url: location.href,
       title: document.title || ""
@@ -114,7 +181,11 @@ function webViewSnapshotScript(
 })(); true;`;
 }
 
-function parseWebViewEnvelope(raw: string, operation: string): unknown {
+function parseWebViewEnvelope(
+  raw: string,
+  operation: string,
+  fallbackUrl: string,
+): unknown {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -125,9 +196,14 @@ function parseWebViewEnvelope(raw: string, operation: string): unknown {
       }`,
     );
   }
-  const parsed = asRecord(value) as WebViewEnvelope;
+  const parsed = asRecord(value);
   if (parsed.ok === false) {
-    throw new Error(parsed.error ?? `${operation} failed`);
+    if (parsed.code === "manual-action-required") {
+      throw sourceAccessErrorFromEnvelope(parsed, fallbackUrl);
+    }
+    throw new Error(
+      typeof parsed.error === "string" ? parsed.error : `${operation} failed`,
+    );
   }
   if (parsed.ok !== true) {
     throw new Error(`${operation} returned an invalid result envelope`);
@@ -142,8 +218,10 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function parseWebViewLoadResult(raw: string): WebViewLoadResult {
-  const value = asRecord(parseWebViewEnvelope(raw, "webViewLoad"));
+function parseWebViewLoadResult(raw: string, fallbackUrl: string): WebViewLoadResult {
+  const value = asRecord(
+    parseWebViewEnvelope(raw, "webViewLoad", fallbackUrl),
+  );
   return {
     html: typeof value.html === "string" ? value.html : "",
     text: typeof value.text === "string" ? value.text : "",
@@ -152,8 +230,13 @@ function parseWebViewLoadResult(raw: string): WebViewLoadResult {
   };
 }
 
-function parseWebViewNavigateResult(raw: string): WebViewNavigateResult {
-  const value = asRecord(parseWebViewEnvelope(raw, "webViewNavigate"));
+function parseWebViewNavigateResult(
+  raw: string,
+  fallbackUrl: string,
+): WebViewNavigateResult {
+  const value = asRecord(
+    parseWebViewEnvelope(raw, "webViewNavigate", fallbackUrl),
+  );
   const url = typeof value.url === "string" ? value.url : "";
   const title = typeof value.title === "string" ? value.title : undefined;
   return title ? { url, title } : { url };
@@ -271,7 +354,7 @@ async function webViewLoad(
       options.beforeContentScript,
     ),
   });
-  return parseWebViewLoadResult(raw);
+  return parseWebViewLoadResult(raw, url);
 }
 
 async function webViewNavigate(
@@ -285,7 +368,7 @@ async function webViewNavigate(
       options.beforeContentScript,
     ),
   });
-  return parseWebViewNavigateResult(raw);
+  return parseWebViewNavigateResult(raw, url);
 }
 
 function createWebViewFetch(

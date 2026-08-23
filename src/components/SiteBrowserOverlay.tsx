@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Group, Loader, Text } from "@mantine/core";
-import { listen } from "@tauri-apps/api/event";
+import { Box, Button, Group, Loader, Text } from "@mantine/core";
 import { CloseGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
 import { useTranslation } from "../i18n";
@@ -9,18 +8,22 @@ import {
   type SiteBrowserPlatformApi,
 } from "../lib/site-browser";
 import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
+import { sourceAccessScopeKey } from "../lib/plugins/source-access";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { taskScheduler } from "../lib/tasks/scheduler";
+import { redactUrlForLog, redactUrlsForLog } from "../lib/url-log";
 import { useSiteBrowserStore } from "../store/site-browser";
 
 const CHROME_HEIGHT = 40;
 const BOUNDS_RESYNC_DELAYS_MS = [100, 500, 1000, 2000] as const;
-const SCRAPER_CONTROL_POLL_INTERVAL_MS = 250;
-const SITE_BROWSER_HIDDEN_EVENT = "site-browser-hidden";
+const SCRAPER_ORIGIN_POLL_INTERVAL_MS = 500;
 const SITE_BROWSER_HIDDEN_DOM_EVENT = "norea-site-browser-hidden";
 
 function reportScraperError(action: string, error: unknown): void {
-  console.error(`[site-browser] ${action} failed`, error);
+  console.error(
+    `[site-browser] ${action} failed`,
+    redactUrlsForLog(error instanceof Error ? error.message : String(error)),
+  );
 }
 
 function debugSiteBrowser(message: string, data?: unknown): void {
@@ -34,6 +37,30 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+function sourceAccessOrigin(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+interface SourceAccessOriginObservation {
+  openSequence: number;
+  origin: string;
+  revision: number;
+  taskId: string;
+}
+
 function syncSiteBrowserBounds(
   platform: SiteBrowserPlatformApi,
   node: HTMLDivElement | null,
@@ -42,7 +69,7 @@ function syncSiteBrowserBounds(
   debugSiteBrowser("sync bounds requested", {
     platform: platform.name,
     hasNode: node !== null,
-    url,
+    url: url ? redactUrlForLog(url) : null,
   });
   const bounds = platform.boundsFor(node);
   if (!bounds) return Promise.resolve();
@@ -70,12 +97,23 @@ export function SiteBrowserOverlay() {
   const browserTaskId = useSiteBrowserStore((s) => s.taskId);
   const phase = useSiteBrowserStore((s) => s.phase);
   const openSequence = useSiteBrowserStore((s) => s.openSequence);
+  const context = useSiteBrowserStore((s) => s.context);
   const hide = useSiteBrowserStore((s) => s.hide);
   const markReady = useSiteBrowserStore((s) => s.markReady);
+  const sourceAccessContext = context?.mode === "source-access" ? context : null;
+  const sourceAccessTitle = sourceAccessContext
+    ? sourceAccessContext.challenge.kind === "captcha"
+      ? t("sourceAccess.captchaTitle")
+      : t("sourceAccess.cloudflareTitle")
+    : null;
+  const keepPausedLabel = t("sourceAccess.keepPaused");
+  const verifyLabel = t("sourceAccess.verifyAndResume");
   const inPageControls = platform.chromeMode === "in-page";
   const deferDesktopBounds =
     platform.name === "windows" || platform.name === "linux";
   const [loading, setLoading] = useState(false);
+  const [originObservation, setOriginObservation] =
+    useState<SourceAccessOriginObservation | null>(null);
 
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   const lastOpenSequence = useRef<number | null>(null);
@@ -107,9 +145,109 @@ export function SiteBrowserOverlay() {
     }
   };
 
+  const finishSourceAccess = useCallback(
+    (
+      expectedTaskId: string | null,
+      expectedRevision: number,
+      expectedOpenSequence: number,
+      outcome: "keep-paused" | "verify",
+    ): boolean => {
+      const state = useSiteBrowserStore.getState();
+      if (
+        !state.visible ||
+        !expectedTaskId ||
+        state.taskId !== expectedTaskId ||
+        state.openSequence !== expectedOpenSequence ||
+        state.context?.mode !== "source-access" ||
+        state.context.revision !== expectedRevision ||
+        (outcome === "verify" && state.phase !== "ready")
+      ) {
+        return false;
+      }
+      if (!state.complete(expectedTaskId, expectedRevision, outcome)) {
+        return false;
+      }
+      navigationController.current?.abort();
+      navigationController.current = null;
+      setLoading(false);
+      setOriginObservation(null);
+      return true;
+    },
+    [],
+  );
+
+  const verifySourceAccess = useCallback(
+    async (
+      expectedTaskId: string | null,
+      expectedRevision: number,
+      expectedOpenSequence: number,
+      expectedScopeKey: string,
+    ): Promise<boolean> => {
+      let origin: string | null = null;
+      try {
+        origin = sourceAccessOrigin(await platform.currentOrigin());
+      } catch (error) {
+        reportScraperError("read current origin", error);
+      }
+      const state = useSiteBrowserStore.getState();
+      if (
+        !state.visible ||
+        !expectedTaskId ||
+        state.phase !== "ready" ||
+        state.taskId !== expectedTaskId ||
+        state.openSequence !== expectedOpenSequence ||
+        state.context?.mode !== "source-access" ||
+        state.context.scopeKey !== expectedScopeKey ||
+        state.context.revision !== expectedRevision
+      ) {
+        return false;
+      }
+      if (!origin || sourceAccessScopeKey(origin) !== expectedScopeKey) {
+        setOriginObservation(null);
+        return false;
+      }
+      setOriginObservation({
+        openSequence: expectedOpenSequence,
+        origin,
+        revision: expectedRevision,
+        taskId: expectedTaskId,
+      });
+      const currentBlock = taskScheduler
+        .getSnapshot()
+        .sourceAccessBlocks.find(
+          (block) =>
+            block.scopeKey === expectedScopeKey &&
+            block.revision === expectedRevision,
+        );
+      if (
+        !currentBlock ||
+        !taskScheduler.beginSourceAccessVerification(expectedScopeKey)
+      ) {
+        return false;
+      }
+      const finished = finishSourceAccess(
+        expectedTaskId,
+        expectedRevision,
+        expectedOpenSequence,
+        "verify",
+      );
+      if (!finished) taskScheduler.keepSourceAccessBlocked(expectedScopeKey);
+      return finished;
+    },
+    [finishSourceAccess, platform],
+  );
+
   const closeBrowser = useCallback((): boolean => {
     const state = useSiteBrowserStore.getState();
     if (!state.visible) return false;
+    if (state.context?.mode === "source-access") {
+      return finishSourceAccess(
+        state.taskId,
+        state.context.revision,
+        state.openSequence,
+        "keep-paused",
+      );
+    }
     navigationController.current?.abort();
     navigationController.current = null;
     setLoading(false);
@@ -118,7 +256,7 @@ export function SiteBrowserOverlay() {
     }
     hide();
     return true;
-  }, [hide]);
+  }, [finishSourceAccess, hide]);
 
   useEffect(() => {
     if (!visible) return;
@@ -149,7 +287,7 @@ export function SiteBrowserOverlay() {
       debugSiteBrowser("open requested", {
         platform: platform.name,
         chromeMode: platform.chromeMode,
-        currentUrl,
+        currentUrl: redactUrlForLog(currentUrl),
         openSequence,
         hasPlaceholder: placeholderRef.current !== null,
       });
@@ -178,7 +316,7 @@ export function SiteBrowserOverlay() {
           const nextNode = placeholderRef.current;
           debugSiteBrowser("navigate returned", {
             platform: platform.name,
-            currentUrl,
+            currentUrl: redactUrlForLog(currentUrl),
             openSequence,
             hasPlaceholder: nextNode !== null,
           });
@@ -192,15 +330,26 @@ export function SiteBrowserOverlay() {
             setLoading(false);
           }
         } catch (error) {
-          if (navigationController.current === controller) {
+          const ownsNavigation = navigationController.current === controller;
+          if (ownsNavigation) {
             navigationController.current = null;
             lastOpenSequence.current = null;
             setLoading(false);
           }
           if (!isAbortError(error)) {
             reportScraperError("navigate", error);
-            if (browserTaskId) taskScheduler.cancel(browserTaskId);
-            useSiteBrowserStore.getState().hide();
+            const state = useSiteBrowserStore.getState();
+            if (
+              ownsNavigation &&
+              state.visible &&
+              state.currentUrl === currentUrl &&
+              state.openSequence === openSequence &&
+              state.phase === "loading" &&
+              state.taskId === browserTaskId
+            ) {
+              if (browserTaskId) taskScheduler.cancel(browserTaskId);
+              state.hide();
+            }
           }
         }
       })();
@@ -219,8 +368,6 @@ export function SiteBrowserOverlay() {
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
     const handleNativeHidden = () => {
       if (!useSiteBrowserStore.getState().visible) {
         nativeHiddenRef.current = false;
@@ -230,47 +377,77 @@ export function SiteBrowserOverlay() {
       debugSiteBrowser("native hidden event received", {
         platform: platform.name,
       });
-      useSiteBrowserStore.getState().hide();
+      closeBrowser();
     };
     window.addEventListener(SITE_BROWSER_HIDDEN_DOM_EVENT, handleNativeHidden);
-    void listen(SITE_BROWSER_HIDDEN_EVENT, handleNativeHidden)
-      .then((nextUnlisten) => {
-        if (disposed) {
-          nextUnlisten();
-          return;
-        }
-        unlisten = nextUnlisten;
-      })
-      .catch((error) => reportScraperError("listen hidden event", error));
     return () => {
-      disposed = true;
       window.removeEventListener(
         SITE_BROWSER_HIDDEN_DOM_EVENT,
         handleNativeHidden,
       );
-      unlisten?.();
     };
-  }, [platform.name]);
+  }, [closeBrowser, platform.name]);
 
   useEffect(() => {
-    if (!visible || !inPageControls || phase !== "ready") return;
+    setOriginObservation(null);
+    if (
+      !visible ||
+      phase !== "ready" ||
+      !browserTaskId ||
+      !sourceAccessContext
+    ) {
+      return;
+    }
+
     let disposed = false;
     const poll = () => {
       void platform
-        .pollControlMessage()
-        .then((message) => {
-          if (disposed || message?.action !== "close") return;
-          closeBrowser();
+        .currentOrigin()
+        .then((origin) => {
+          const state = useSiteBrowserStore.getState();
+          if (
+            disposed ||
+            !state.visible ||
+            state.phase !== "ready" ||
+            state.taskId !== browserTaskId ||
+            state.openSequence !== openSequence ||
+            state.context?.mode !== "source-access" ||
+            state.context.scopeKey !== sourceAccessContext.scopeKey ||
+            state.context.revision !== sourceAccessContext.revision
+          ) {
+            return;
+          }
+          const normalizedOrigin = sourceAccessOrigin(origin);
+          setOriginObservation(
+            normalizedOrigin
+              ? {
+                  openSequence,
+                  origin: normalizedOrigin,
+                  revision: sourceAccessContext.revision,
+                  taskId: browserTaskId,
+                }
+              : null,
+          );
         })
-        .catch((error) => reportScraperError("poll controls", error));
+        .catch((error) => {
+          if (!disposed) setOriginObservation(null);
+          reportScraperError("read current origin", error);
+        });
     };
     poll();
-    const timer = window.setInterval(poll, SCRAPER_CONTROL_POLL_INTERVAL_MS);
+    const timer = window.setInterval(poll, SCRAPER_ORIGIN_POLL_INTERVAL_MS);
     return () => {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [closeBrowser, currentUrl, inPageControls, phase, platform, visible]);
+  }, [
+    browserTaskId,
+    openSequence,
+    phase,
+    platform,
+    sourceAccessContext,
+    visible,
+  ]);
 
   useEffect(() => {
     if (!visible) return;
@@ -324,16 +501,36 @@ export function SiteBrowserOverlay() {
 
   if (!visible) return null;
   const browserLoading = phase !== "ready" || loading;
+  const displayedOrigin =
+    originObservation &&
+    originObservation.taskId === browserTaskId &&
+    originObservation.openSequence === openSequence &&
+    originObservation.revision === sourceAccessContext?.revision
+      ? originObservation.origin
+      : null;
+  const expectedOrigin = sourceAccessContext
+    ? sourceAccessOrigin(sourceAccessContext.challenge.url)
+    : null;
+  const displayedOriginLabel = browserLoading
+    ? (expectedOrigin ?? "")
+    : (displayedOrigin ?? t("sourceAccess.originUnavailable"));
+  const canVerifySourceAccess =
+    !browserLoading &&
+    displayedOrigin !== null &&
+    sourceAccessContext !== null &&
+    sourceAccessScopeKey(displayedOrigin) === sourceAccessContext.scopeKey;
   if (inPageControls) {
     debugSiteBrowser("react overlay skipped for in-page chrome", {
       platform: platform.name,
-      currentUrl,
+      currentUrl: currentUrl ? redactUrlForLog(currentUrl) : null,
       openSequence,
     });
     if (!browserLoading) return null;
     return (
       <Box
         aria-busy="true"
+        aria-labelledby="norea-site-browser-loading-title"
+        aria-modal="true"
         role="dialog"
         style={{
           position: "fixed",
@@ -346,9 +543,13 @@ export function SiteBrowserOverlay() {
       >
         <Group gap="sm">
           <Loader size="sm" />
-          <Text>{t("common.loading")}</Text>
+          <Text id="norea-site-browser-loading-title">
+            {sourceAccessTitle ?? t("common.loading")}
+          </Text>
           <IconButton
-            label={t("siteBrowser.close")}
+            label={
+              sourceAccessContext ? keepPausedLabel : t("siteBrowser.close")
+            }
             size="lg"
             onClick={closeBrowser}
           >
@@ -361,6 +562,12 @@ export function SiteBrowserOverlay() {
 
   return (
     <Box
+      aria-describedby={
+        sourceAccessContext ? "norea-site-browser-instructions" : undefined
+      }
+      aria-labelledby="norea-site-browser-title"
+      aria-modal="true"
+      role="dialog"
       style={{
         position: "fixed",
         inset: 0,
@@ -387,11 +594,30 @@ export function SiteBrowserOverlay() {
           zIndex: 1,
         }}
       >
-        <Text size="sm" c="dimmed" lineClamp={1} style={{ flex: 1, minWidth: 0 }}>
-          {currentUrl ?? ""}
-        </Text>
+        {sourceAccessContext ? (
+          <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+            <Text id="norea-site-browser-title" size="sm" fw={600}>
+              {sourceAccessTitle}
+            </Text>
+            <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0 }}>
+              {displayedOriginLabel}
+            </Text>
+          </Group>
+        ) : (
+          <Text
+            id="norea-site-browser-title"
+            size="sm"
+            c="dimmed"
+            lineClamp={1}
+            style={{ flex: 1, minWidth: 0 }}
+          >
+            {currentUrl ?? ""}
+          </Text>
+        )}
         <IconButton
-          label={t("siteBrowser.close")}
+          label={
+            sourceAccessContext ? keepPausedLabel : t("siteBrowser.close")
+          }
           size="lg"
           onClick={closeBrowser}
         >
@@ -422,6 +648,54 @@ export function SiteBrowserOverlay() {
           </Box>
         ) : null}
       </div>
+      {sourceAccessContext ? (
+        <Box
+          id="norea-site-browser-instructions"
+          px="md"
+          py="sm"
+          style={{
+            borderTop: "1px solid var(--mantine-color-default-border)",
+            backgroundColor: "var(--mantine-color-body)",
+            flexShrink: 0,
+          }}
+        >
+          <Group justify="space-between" align="center" wrap="wrap" gap="sm">
+            <Text size="sm">
+              {t("sourceAccess.browserInstructions", {
+                source: sourceAccessContext.sourceName,
+              })}
+            </Text>
+            <Group gap="xs">
+              <Button
+                variant="default"
+                onClick={() =>
+                  finishSourceAccess(
+                    browserTaskId,
+                    sourceAccessContext.revision,
+                    openSequence,
+                    "keep-paused",
+                  )
+                }
+              >
+                {keepPausedLabel}
+              </Button>
+              <Button
+                disabled={!canVerifySourceAccess}
+                onClick={() =>
+                  void verifySourceAccess(
+                    browserTaskId,
+                    sourceAccessContext.revision,
+                    openSequence,
+                    sourceAccessContext.scopeKey,
+                  )
+                }
+              >
+                {verifyLabel}
+              </Button>
+            </Group>
+          </Group>
+        </Box>
+      ) : null}
     </Box>
   );
 }

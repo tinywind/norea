@@ -11,6 +11,7 @@ import {
 } from "../chapter-content";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { markUpdatesIndexDirty } from "../updates/update-index-events";
+import { normalizeSourceAccessRequiredError } from "./source-access";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 
 export interface SyncNovelFromSourceOptions {
@@ -338,6 +339,8 @@ export async function syncNovelFromSource(
       cover,
     );
   } catch (error) {
+    const sourceAccessError = normalizeSourceAccessRequiredError(error);
+    if (sourceAccessError) throw sourceAccessError;
     console.warn("[sync-novel] failed to store novel cover", {
       error,
       novelId: result.novelId,

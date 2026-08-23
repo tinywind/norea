@@ -417,11 +417,18 @@ mod windows_capture {
         let content_type = headers
             .get("content-type")
             .map(|value| value.split(';').next().unwrap_or("").trim())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(content_type.as_str(), "text/html" | "application/xhtml+xml") {
+            return false;
+        }
         if content_type.starts_with("image/")
             || content_type.starts_with("audio/")
             || content_type.starts_with("video/")
-            || matches!(content_type, "application/octet-stream" | "application/pdf")
+            || matches!(
+                content_type.as_str(),
+                "application/octet-stream" | "application/pdf"
+            )
         {
             return true;
         }
@@ -436,6 +443,34 @@ mod windows_capture {
         ]
         .iter()
         .any(|extension| path.ends_with(extension))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::is_media_response;
+        use std::collections::HashMap;
+
+        #[test]
+        fn rejects_html_even_when_the_url_has_a_media_extension() {
+            let headers = HashMap::from([(
+                "content-type".to_string(),
+                "text/html; charset=utf-8".to_string(),
+            )]);
+
+            assert!(!is_media_response("https://cdn.test/page.png", &headers));
+        }
+
+        #[test]
+        fn retains_media_content_types_and_extension_fallbacks() {
+            assert!(is_media_response(
+                "https://cdn.test/resource",
+                &HashMap::from([("content-type".to_string(), "image/png".to_string())]),
+            ));
+            assert!(is_media_response(
+                "https://cdn.test/page.png",
+                &HashMap::new(),
+            ));
+        }
     }
 
     fn read_stream(stream: AgileReference<IStream>) -> Result<Vec<u8>, String> {

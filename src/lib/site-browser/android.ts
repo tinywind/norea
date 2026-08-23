@@ -1,4 +1,5 @@
 import {
+  androidScraperCurrentOrigin,
   androidScraperHide,
   androidScraperNavigate,
   androidScraperSetBounds,
@@ -21,6 +22,7 @@ export const androidSiteBrowser: SiteBrowserPlatformApi = {
   name: "android",
   chromeMode: "react",
   boundsFor: (node) => rectBounds(node),
+  currentOrigin: androidScraperCurrentOrigin,
   setBounds: async (bounds) => {
     androidScraperSetBounds(bounds, getScraperUserAgent());
   },
@@ -34,5 +36,4 @@ export const androidSiteBrowser: SiteBrowserPlatformApi = {
   hide: async () => {
     androidScraperHide();
   },
-  pollControlMessage: async () => null,
 };

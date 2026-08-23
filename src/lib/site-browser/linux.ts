@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getScraperUserAgent } from "../../store/user-agent";
+import { redactUrlForLog, redactUrlsForLog } from "../url-log";
 import { invokeDesktopNavigation } from "./desktop-navigation";
 import type {
   SiteBrowserBounds,
-  SiteBrowserControlMessage,
   SiteBrowserPlatformApi,
 } from "./types";
 
@@ -11,31 +11,23 @@ function debugLinuxSiteBrowser(message: string, data?: unknown): void {
   console.debug(`[site-browser:linux] ${message}`, data);
 }
 
-function fullWindowBounds(): SiteBrowserBounds {
-  const bounds = {
-    x: 0,
-    y: 0,
-    width: Math.max(1, window.innerWidth),
-    height: Math.max(1, window.innerHeight),
+function rectBounds(node: HTMLDivElement | null): SiteBrowserBounds | null {
+  if (!node) return null;
+  const rect = node.getBoundingClientRect();
+  return {
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height,
   };
-  debugLinuxSiteBrowser("bounds measured from window", {
-    bounds,
-    viewport: {
-      height: window.innerHeight,
-      outerHeight: window.outerHeight,
-      outerWidth: window.outerWidth,
-      visualHeight: window.visualViewport?.height ?? null,
-      visualWidth: window.visualViewport?.width ?? null,
-      width: window.innerWidth,
-    },
-  });
-  return bounds;
 }
 
 export const linuxSiteBrowser: SiteBrowserPlatformApi = {
   name: "linux",
-  chromeMode: "in-page",
-  boundsFor: () => fullWindowBounds(),
+  chromeMode: "react",
+  boundsFor: rectBounds,
+  currentOrigin: async () =>
+    await invoke<string | null>("scraper_current_origin"),
   setBounds: async (bounds, url) => {
     if (!url) {
       debugLinuxSiteBrowser("setBounds skipped: url is empty", { bounds });
@@ -49,9 +41,15 @@ export const linuxSiteBrowser: SiteBrowserPlatformApi = {
       height: bounds.height,
       userAgent: getScraperUserAgent(),
     };
-    debugLinuxSiteBrowser("setBounds invoke", args);
+    debugLinuxSiteBrowser("setBounds invoke", {
+      ...args,
+      url: redactUrlForLog(url),
+    });
     await invoke("scraper_set_bounds", args);
-    debugLinuxSiteBrowser("setBounds complete", args);
+    debugLinuxSiteBrowser("setBounds complete", {
+      ...args,
+      url: redactUrlForLog(url),
+    });
   },
   navigate: async (url, options) => {
     const args = {
@@ -60,19 +58,19 @@ export const linuxSiteBrowser: SiteBrowserPlatformApi = {
       resetHistory: options?.resetHistory ?? false,
       timeoutMs: options?.timeoutMs ?? null,
     };
-    debugLinuxSiteBrowser("navigate invoke", args);
+    const logArgs = { ...args, url: redactUrlForLog(url) };
+    debugLinuxSiteBrowser("navigate invoke", logArgs);
     await invokeDesktopNavigation(args, options?.signal, (error) => {
-      debugLinuxSiteBrowser("navigate cancellation failed", error);
+      debugLinuxSiteBrowser(
+        "navigate cancellation failed",
+        redactUrlsForLog(error instanceof Error ? error.message : String(error)),
+      );
     });
-    debugLinuxSiteBrowser("navigate complete", args);
+    debugLinuxSiteBrowser("navigate complete", logArgs);
   },
   hide: async () => {
     debugLinuxSiteBrowser("hide invoke");
     await invoke("scraper_hide");
     debugLinuxSiteBrowser("hide complete");
   },
-  pollControlMessage: async () =>
-    await invoke<SiteBrowserControlMessage | null>(
-      "scraper_poll_control_message",
-    ),
 };

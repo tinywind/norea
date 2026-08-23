@@ -1,4 +1,4 @@
-import { Progress, Text } from "@mantine/core";
+import { Button, Progress, Text } from "@mantine/core";
 import {
   memo,
   useEffect,
@@ -27,8 +27,13 @@ import { useTranslation, type TranslationKey } from "../i18n";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
 import {
+  openSourceAccessBrowser,
+  sourceAccessBlockSourceNames,
+} from "../lib/tasks/source-access-coordinator";
+import {
   taskWorkQueueKey,
   taskScheduler,
+  type SourceAccessBlock,
   type SourceQueueSortMode,
   type TaskPriority,
   type TaskQueueSortMode,
@@ -36,6 +41,7 @@ import {
   type TaskSnapshot,
   type TaskStatus,
 } from "../lib/tasks/scheduler";
+import { useSiteBrowserStore } from "../store/site-browser";
 import "../styles/tasks.css";
 
 const TASK_ROW_HEIGHT = 64;
@@ -793,12 +799,79 @@ function SummaryPill({
   tone,
 }: {
   children: string;
-  tone?: "error";
+  tone?: "error" | "warning";
 }) {
   return (
     <span className="lnr-task-summary-pill" data-tone={tone}>
       {children}
     </span>
+  );
+}
+
+function SourceAccessBanner({
+  block,
+  snapshot,
+}: {
+  block: SourceAccessBlock;
+  snapshot: TaskSnapshot;
+}) {
+  const { t } = useTranslation();
+  const browserVisible = useSiteBrowserStore((state) => state.visible);
+  const sourceNames = sourceAccessBlockSourceNames(block, snapshot);
+  const hostname = (() => {
+    try {
+      return new URL(block.challenge.url).hostname;
+    } catch {
+      return block.scopeKey.replace(/^site:/, "");
+    }
+  })();
+  const sourceLabel = sourceNames.length > 0 ? sourceNames.join(", ") : hostname;
+  const title =
+    block.challenge.kind === "captcha"
+      ? t("sourceAccess.captchaTitle")
+      : t("sourceAccess.cloudflareTitle");
+  const verifying =
+    block.verificationRequested || block.verificationTaskId !== undefined;
+  const canOpenVerification =
+    taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
+
+  return (
+    <section className="lnr-source-access-banner" role="alert">
+      <div className="lnr-source-access-copy">
+        <Text component="h2" fw={700} size="sm">
+          {title} · {hostname}
+        </Text>
+        <Text c="dimmed" component="p" size="sm">
+          {t("sourceAccess.scopeBlocked", { sources: sourceLabel })}
+        </Text>
+        {block.verificationError ? (
+          <Text c="red" component="p" size="sm">
+            {t("sourceAccess.verificationFailed")}
+          </Text>
+        ) : null}
+        {!verifying && !canOpenVerification ? (
+          <Text c="dimmed" component="p" size="sm">
+            {t("sourceAccess.queueTaskToVerify")}
+          </Text>
+        ) : null}
+      </div>
+      <Button
+        disabled={browserVisible || verifying || !canOpenVerification}
+        loading={verifying}
+        onClick={() => {
+          void openSourceAccessBrowser(block, {
+            sourceName: sourceLabel,
+            title,
+          });
+        }}
+        size="xs"
+        variant="light"
+      >
+        {verifying
+          ? t("sourceAccess.verifying")
+          : t("sourceAccess.openVerification")}
+      </Button>
+    </section>
   );
 }
 
@@ -1146,6 +1219,15 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
             <SummaryPill>
               {t("tasks.summary.queued", { count: taskStats.queued })}
             </SummaryPill>
+            <SummaryPill
+              tone={
+                snapshot.sourceAccessBlocks.length > 0 ? "warning" : undefined
+              }
+            >
+              {t("tasks.summary.blocked", {
+                count: snapshot.sourceAccessBlocks.length,
+              })}
+            </SummaryPill>
             <SummaryPill tone={taskStats.failed > 0 ? "error" : undefined}>
               {t("tasks.summary.failed", { count: taskStats.failed })}
             </SummaryPill>
@@ -1155,6 +1237,18 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           </div>
         }
       />
+
+      {snapshot.sourceAccessBlocks.length > 0 ? (
+        <div className="lnr-source-access-banners">
+          {snapshot.sourceAccessBlocks.map((block) => (
+            <SourceAccessBanner
+              block={block}
+              key={block.scopeKey}
+              snapshot={snapshot}
+            />
+          ))}
+        </div>
+      ) : null}
 
       {tasks.length === 0 ? (
         <StateView

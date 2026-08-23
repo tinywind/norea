@@ -22,6 +22,28 @@ export type ChapterCaptureErrorCode =
   | "capture-failed"
   | "cancelled";
 
+export type SourceAccessChallengeKind = "captcha" | "cloudflare";
+
+export interface SourceAccessChallenge {
+  kind: SourceAccessChallengeKind;
+  /** Absolute HTTP(S) URL where the challenge was observed. */
+  url: string;
+}
+
+export type ChapterCaptureFailureEnvelope =
+  | {
+      ok: false;
+      code: "manual-action-required";
+      error: string;
+      challenge?: SourceAccessChallenge;
+    }
+  | {
+      ok: false;
+      code: Exclude<ChapterCaptureErrorCode, "manual-action-required">;
+      error: string;
+      challenge?: never;
+    };
+
 export type TextChapterContentType = Extract<
   ChapterContentType,
   "html" | "text" | "markdown"

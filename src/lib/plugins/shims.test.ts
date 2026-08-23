@@ -320,6 +320,44 @@ describe("createShimResolver", () => {
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "immediate",
     });
+    expect(invokeMock.mock.calls[0]?.[1]).toMatchObject({
+      beforeScript: expect.stringContaining("manual-action-required"),
+    });
+    const beforeScript = String(
+      (invokeMock.mock.calls[0]?.[1] as { beforeScript?: unknown })
+        ?.beforeScript ?? "",
+    );
+    expect(beforeScript).toContain(
+      "hasCloudflareEvidence && hasChallengeText",
+    );
+    expect(beforeScript).not.toContain('".cf-challenge",');
+  });
+
+  it("@libs/webView preserves a manual source access challenge", async () => {
+    invokeMock.mockResolvedValueOnce(
+      JSON.stringify({
+        ok: false,
+        code: "manual-action-required",
+        error: "Complete the Cloudflare verification.",
+        challenge: {
+          kind: "cloudflare",
+          url: "https://attacker.test/challenge",
+        },
+      }),
+    );
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (url: string) => Promise<unknown>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/page"),
+    ).rejects.toMatchObject({
+      code: "source-access-required",
+      challenge: {
+        kind: "cloudflare",
+        url: "https://source.test/page",
+      },
+    });
   });
 
   it("@libs/webView exposes executor-bound navigation", async () => {

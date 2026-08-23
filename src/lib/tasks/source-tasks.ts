@@ -1,7 +1,14 @@
-import { useSiteBrowserStore } from "../../store/site-browser";
+import {
+  useSiteBrowserStore,
+  type SiteBrowserContext,
+} from "../../store/site-browser";
+import { getPluginBaseUrl } from "../plugins/base-url";
+import { sourceAccessScopeKey } from "../plugins/source-access";
 import type { Plugin } from "../plugins/types";
+import { redactUrlForLog } from "../url-log";
 import {
   taskScheduler,
+  type SourceAccessBlock,
   type SourceTaskKind,
   type TaskHandle,
   type TaskPriority,
@@ -9,8 +16,10 @@ import {
   type TaskSubject,
 } from "./scheduler";
 
+export type SourceAccessBrowserOutcome = "keep-paused" | "verify";
+
 interface SourceTaskOptions<T> {
-  plugin: Pick<Plugin, "id" | "name">;
+  plugin: Pick<Plugin, "getBaseUrl" | "id" | "name">;
   kind: SourceTaskKind;
   title: string;
   priority?: Exclude<TaskPriority, "background">;
@@ -36,6 +45,8 @@ export function enqueueSourceTask<T>({
   subject,
   title,
 }: SourceTaskOptions<T>): TaskHandle<T> {
+  const sourceAccessUrl = getPluginBaseUrl(plugin);
+  const sourceAccessScope = sourceAccessScopeKey(sourceAccessUrl);
   return taskScheduler.enqueueSource<T>({
     kind,
     priority,
@@ -45,14 +56,23 @@ export function enqueueSourceTask<T>({
     dedupeKey,
     canCancel,
     exclusive,
-    run,
+    sourceAccessScopeKey: sourceAccessScope,
+    run:
+      kind === "source.openSite" || kind === "source.clearCookies"
+        ? run
+        : async (context) => {
+            const result = await run(context);
+            context.confirmSourceAccess?.();
+            return result;
+          },
   });
 }
 
-export function enqueueOpenSiteTask(
-  plugin: Pick<Plugin, "id" | "name">,
+function enqueueSiteBrowserTask(
+  plugin: Pick<Plugin, "getBaseUrl" | "id" | "name">,
   url: string,
   title: string,
+  context: SiteBrowserContext,
 ): TaskHandle<void> {
   const handle = enqueueSourceTask<void>({
     plugin,
@@ -77,7 +97,7 @@ export function enqueueOpenSiteTask(
           sourceId: plugin.id,
           sourceName: plugin.name,
           taskId,
-          url,
+          url: redactUrlForLog(url),
         });
         const handleAbort = () => {
           const siteBrowser = useSiteBrowserStore.getState();
@@ -91,7 +111,7 @@ export function enqueueOpenSiteTask(
           debugOpenSiteTask("cancelled", {
             sourceId: plugin.id,
             taskId,
-            url,
+            url: redactUrlForLog(url),
           });
           cleanup();
           reject(new DOMException("Task was cancelled.", "AbortError"));
@@ -109,9 +129,11 @@ export function enqueueOpenSiteTask(
             debugOpenSiteTask("closed", {
               sourceId: plugin.id,
               taskId,
-              url,
+              url: redactUrlForLog(url),
               visible: state.visible,
-              currentUrl: state.currentUrl,
+              currentUrl: state.currentUrl
+                ? redactUrlForLog(state.currentUrl)
+                : null,
             });
             cleanup();
             resolve();
@@ -122,12 +144,55 @@ export function enqueueOpenSiteTask(
         debugOpenSiteTask("openAt", {
           sourceId: plugin.id,
           taskId,
-          url,
+          url: redactUrlForLog(url),
         });
         useSiteBrowserStore.getState().startLoading(url, taskId);
         if (signal.aborted) handleAbort();
       }),
   });
-  useSiteBrowserStore.getState().queueAt(url, handle.id);
+  useSiteBrowserStore.getState().queueAt(url, handle.id, context);
   return handle;
+}
+
+export function enqueueOpenSiteTask(
+  plugin: Pick<Plugin, "getBaseUrl" | "id" | "name">,
+  url: string,
+  title: string,
+): TaskHandle<void> {
+  return enqueueSiteBrowserTask(plugin, url, title, { mode: "browse" });
+}
+
+export function enqueueSourceAccessBrowserTask(
+  plugin: Pick<Plugin, "getBaseUrl" | "id" | "name">,
+  block: SourceAccessBlock,
+  title: string,
+): TaskHandle<SourceAccessBrowserOutcome> {
+  const handle = enqueueSiteBrowserTask(
+    plugin,
+    block.challenge.url,
+    title,
+    {
+      mode: "source-access",
+      challenge: { ...block.challenge },
+      revision: block.revision,
+      scopeKey: block.scopeKey,
+      sourceName: plugin.name,
+    },
+  );
+  return {
+    id: handle.id,
+    promise: handle.promise.then(() => {
+      const completion = useSiteBrowserStore.getState().completion;
+      if (
+        completion?.taskId === handle.id &&
+        completion.revision === block.revision &&
+        completion.scopeKey === block.scopeKey &&
+        (completion.outcome === "keep-paused" ||
+          completion.outcome === "verify")
+      ) {
+        return completion.outcome;
+      }
+      throw new DOMException("Task was cancelled.", "AbortError");
+    }),
+  };
 }

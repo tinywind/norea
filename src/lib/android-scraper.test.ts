@@ -6,6 +6,7 @@ vi.mock("./tauri-runtime", () => ({
 
 import {
   androidScraperClearCookies,
+  androidScraperCurrentOrigin,
   androidScraperNavigate,
 } from "./android-scraper";
 
@@ -27,6 +28,7 @@ function installScraperBridge() {
     __NoreaAndroidScraper: {
       cancel,
       clearCookies: vi.fn(),
+      currentOrigin: vi.fn(),
       extract: vi.fn(),
       fetch: vi.fn(),
       hide: vi.fn(),
@@ -106,6 +108,36 @@ describe("Android scraper navigation", () => {
     expect(JSON.parse(cancel.mock.calls[0][0] as string)).toMatchObject({
       id: payload.id,
     });
+  });
+});
+
+describe("Android scraper browser state", () => {
+  beforeEach(() => {
+    installScraperBridge();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the current origin from the native WebView", async () => {
+    const currentOrigin = vi.mocked(
+      window.__NoreaAndroidScraper!.currentOrigin,
+    );
+    const reading = androidScraperCurrentOrigin();
+    const payload = JSON.parse(currentOrigin.mock.calls[0][0] as string) as {
+      id: string;
+    };
+
+    window.__lnrAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({
+        ok: true,
+        result: "https://redirected.example:8443",
+      }),
+    );
+
+    await expect(reading).resolves.toBe("https://redirected.example:8443");
   });
 });
 

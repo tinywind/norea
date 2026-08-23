@@ -37,6 +37,8 @@ import {
 import { startChapterContentStorageMirrorSweep } from "./lib/chapter-content-storage";
 import { pluginManager } from "./lib/plugins/manager";
 import { isAndroidRuntime, isTauriRuntime } from "./lib/tauri-runtime";
+import { initializeSourceAccessCoordinator } from "./lib/tasks/source-access-coordinator";
+import { redactUrlsForLog } from "./lib/url-log";
 import { router } from "./router";
 import {
   normalizeAndroidViewScalePercent,
@@ -104,7 +106,10 @@ const queryClient = new QueryClient({
  */
 window.addEventListener("unhandledrejection", (event) => {
   // eslint-disable-next-line no-console
-  console.error("[unhandledrejection]", event.reason);
+  console.error(
+    "[unhandledrejection]",
+    redactUrlsForLog(describeError(event.reason)),
+  );
 });
 
 const rootElement = document.getElementById("root");
@@ -780,6 +785,7 @@ function AppProviders() {
   );
 }
 
+initializeSourceAccessCoordinator();
 createRoot(rootElement).render(
   <StrictMode>
     <AppProviders />

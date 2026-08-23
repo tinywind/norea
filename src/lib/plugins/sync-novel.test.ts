@@ -24,6 +24,7 @@ import {
   upsertSourceChaptersInDb,
 } from "../../db/queries/chapter";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
+import { isSourceAccessRequiredError } from "./source-access";
 import { syncNovelFromSource } from "./sync-novel";
 import type { Plugin, SourceNovel } from "./types";
 
@@ -343,6 +344,25 @@ describe("syncNovelFromSource", () => {
       },
       "https://source.test/cover.jpg",
     );
+  });
+
+  it("propagates a source access challenge from cover storage", async () => {
+    mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
+      Object.assign(new Error("Complete the Cloudflare check."), {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://example.test/cdn-cgi/challenge-platform/",
+        },
+        code: "manual-action-required",
+      }),
+    );
+
+    const request = syncNovelFromSource(makePlugin(), {
+      name: "Novel",
+      path: "/novel",
+    });
+
+    await expect(request).rejects.toSatisfy(isSourceAccessRequiredError);
   });
 
   it("rejects explicit unsupported chapter content types", async () => {

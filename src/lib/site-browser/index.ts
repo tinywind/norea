@@ -34,6 +34,5 @@ export function getSiteBrowserPlatform(): SiteBrowserPlatformApi {
 export type {
   SiteBrowserBounds,
   SiteBrowserChromeMode,
-  SiteBrowserControlMessage,
   SiteBrowserPlatformApi,
 } from "./types";

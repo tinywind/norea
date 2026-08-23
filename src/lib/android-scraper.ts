@@ -5,6 +5,7 @@ interface AndroidScraperBridge {
   cancel?(payload: string): void;
   cancelBackground?(payload: string): void;
   clearCookies(payload: string): void;
+  currentOrigin(payload: string): void;
   fetch(payload: string): void;
   extract(payload: string): void;
   hide(): void;
@@ -95,7 +96,12 @@ function bridge(): AndroidScraperBridge {
 }
 
 function callNative<T>(
-  method: "clearCookies" | "fetch" | "extract" | "navigate",
+  method:
+    | "clearCookies"
+    | "currentOrigin"
+    | "extract"
+    | "fetch"
+    | "navigate",
   payload: Record<string, unknown>,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -184,6 +190,10 @@ export function cancelAndroidScraperExecutor(
 
 export function androidScraperClearCookies(url: string): Promise<number> {
   return callNative<number>("clearCookies", { url }, 10_000);
+}
+
+export function androidScraperCurrentOrigin(): Promise<string | null> {
+  return callNative<string | null>("currentOrigin", {}, 5_000);
 }
 
 export function androidWebviewFetch(

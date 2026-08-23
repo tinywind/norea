@@ -48,9 +48,9 @@ use std::path::PathBuf;
 #[cfg(desktop)]
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Url};
 #[cfg(desktop)]
-use tauri::{Emitter, Manager, Url, WebviewUrl};
+use tauri::{Manager, WebviewUrl};
 #[cfg(desktop)]
 use tauri::{
     webview::PageLoadEvent, LogicalPosition, LogicalSize, Rect, Webview, WebviewBuilder,
@@ -204,207 +204,6 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
     }
   } catch (e) {}
 
-  function installNoreaControls() {
-    try {
-      if (window.top !== window.self) return;
-    } catch (e) {
-      return;
-    }
-    if (window.__noreaScraperControlsInstalled) return;
-    window.__noreaScraperControlsInstalled = true;
-
-    function applyStyle(node, styles) {
-      for (var key in styles) node.style.setProperty(key, styles[key], "important");
-    }
-
-    function publish(action) {
-      window.__noreaScraperControlMessage = {
-        action: action,
-        sequence: Date.now()
-      };
-    }
-
-    function navigateToControl(action) {
-      var sequence = Date.now();
-      location.href = "https://norea.localhost/__norea_scraper_control__/" + action + "?sequence=" + sequence;
-    }
-
-    function requestClose() {
-      publish("close");
-      try {
-        var internals = window.__TAURI_INTERNALS__;
-        if (internals && typeof internals.invoke === "function") {
-          internals.invoke("scraper_hide", {}).catch(function () {
-            navigateToControl("close");
-          });
-          return;
-        }
-      } catch (e) {}
-      navigateToControl("close");
-    }
-
-    function mount() {
-      if (!document.body) return;
-      var host = document.getElementById("__norea_scraper_controls");
-      if (!host) {
-        host = document.createElement("div");
-        host.id = "__norea_scraper_controls";
-
-        var url = document.createElement("span");
-        url.id = "__norea_scraper_controls_url";
-        var move = document.createElement("button");
-        move.id = "__norea_scraper_controls_move";
-        move.type = "button";
-        var close = document.createElement("button");
-        close.id = "__norea_scraper_controls_close";
-        close.type = "button";
-        close.textContent = "Close";
-
-        host.appendChild(url);
-        host.appendChild(move);
-        host.appendChild(close);
-        document.body.appendChild(host);
-
-        var edge = "top";
-        var lastActivation = 0;
-
-        function setEdge(nextEdge) {
-          edge = nextEdge === "bottom" ? "bottom" : "top";
-          host.style.setProperty("top", edge === "top" ? "12px" : "auto", "important");
-          host.style.setProperty("bottom", edge === "bottom" ? "12px" : "auto", "important");
-          move.textContent = edge === "top" ? "Move bottom" : "Move top";
-        }
-
-        function activate(event, handler) {
-          if (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-          }
-          var now = Date.now();
-          if (now - lastActivation < 150) return;
-          lastActivation = now;
-          handler();
-        }
-
-        function bind(button, handler) {
-          var events = ["pointerdown", "mousedown", "touchstart", "click"];
-          for (var i = 0; i < events.length; i += 1) {
-            button.addEventListener(events[i], function (event) {
-              activate(event, handler);
-            }, true);
-          }
-        }
-
-        function bindPressedState(button) {
-          function setPressed(pressed) {
-            if (pressed) {
-              button.setAttribute("data-pressed", "true");
-            } else {
-              button.removeAttribute("data-pressed");
-            }
-          }
-          button.addEventListener("pointerdown", function () { setPressed(true); }, true);
-          button.addEventListener("mousedown", function () { setPressed(true); }, true);
-          button.addEventListener("touchstart", function () { setPressed(true); }, true);
-          button.addEventListener("pointerup", function () { setPressed(false); }, true);
-          button.addEventListener("pointercancel", function () { setPressed(false); }, true);
-          button.addEventListener("mouseup", function () { setPressed(false); }, true);
-          button.addEventListener("mouseleave", function () { setPressed(false); }, true);
-          button.addEventListener("touchend", function () { setPressed(false); }, true);
-          button.addEventListener("touchcancel", function () { setPressed(false); }, true);
-          button.addEventListener("blur", function () { setPressed(false); }, true);
-        }
-
-        bindPressedState(move);
-        bind(move, function () {
-          setEdge(edge === "top" ? "bottom" : "top");
-        });
-        bind(close, function () {
-          requestClose();
-        });
-
-        setEdge(edge);
-      }
-
-      var urlNode = document.getElementById("__norea_scraper_controls_url");
-      applyStyle(host, {
-        "position": "fixed",
-        "left": "50%",
-        "right": "auto",
-        "width": "calc(100vw - 24px)",
-        "max-width": "720px",
-        "height": "40px",
-        "transform": "translateX(-50%)",
-        "z-index": "2147483647",
-        "display": "flex",
-        "align-items": "center",
-        "gap": "8px",
-        "box-sizing": "border-box",
-        "padding": "7px 8px",
-        "border": "1px solid rgba(255,255,255,.22)",
-        "border-radius": "12px",
-        "background": "rgba(22,22,24,.94)",
-        "box-shadow": "0 10px 30px rgba(0,0,0,.35)",
-        "color": "#fff",
-        "font": "13px system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif",
-        "pointer-events": "auto"
-      });
-      if (urlNode) {
-        urlNode.textContent = location.href;
-        applyStyle(urlNode, {
-          "flex": "1",
-          "min-width": "0",
-          "overflow": "hidden",
-          "text-overflow": "ellipsis",
-          "white-space": "nowrap",
-          "color": "rgba(255,255,255,.82)"
-        });
-      }
-      var buttons = [
-        document.getElementById("__norea_scraper_controls_move"),
-        document.getElementById("__norea_scraper_controls_close")
-      ];
-      for (var index = 0; index < buttons.length; index += 1) {
-        var button = buttons[index];
-        if (!button) continue;
-        var isMoveButton = button.id === "__norea_scraper_controls_move";
-        var isPressed = isMoveButton && button.getAttribute("data-pressed") === "true";
-        applyStyle(button, {
-          "border": "1px solid rgba(255,255,255,.25)",
-          "border-radius": "8px",
-          "background": isPressed ? "rgba(255,255,255,.28)" : "rgba(255,255,255,.12)",
-          "box-shadow": isPressed ? "0 0 0 2px rgba(255,255,255,.22)" : "none",
-          "color": "#fff",
-          "font": "inherit",
-          "padding": "5px 9px",
-          "cursor": "pointer",
-          "transform": isPressed ? "scale(1.04)" : "scale(1)",
-          "transition": "background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease"
-        });
-      }
-      if (host.parentNode !== document.body || document.body.lastElementChild !== host) {
-        document.body.appendChild(host);
-      }
-    }
-
-    function mountSoon() {
-      try {
-        mount();
-      } catch (e) {}
-    }
-
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", mountSoon, { once: true });
-    } else {
-      mountSoon();
-    }
-    window.setInterval(mountSoon, 500);
-  }
-
-  if (window.__noreaScraperControlsEnabled === true) {
-    installNoreaControls();
-  }
 })();
 "##;
 
@@ -456,15 +255,9 @@ pub struct CapturedResourceHandleResult {
     pub status_text: String,
     pub body_handle: String,
     pub body_bytes: u64,
+    pub cloudflare_challenge: bool,
     pub headers: HashMap<String, String>,
     pub final_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScraperControlMessage {
-    pub action: String,
-    pub sequence: Option<u64>,
 }
 
 /// Lazily-created scraper WebViews keyed by scraper executor id.
@@ -507,13 +300,9 @@ const BACKGROUND_RENDER_WIDTH: f64 = 1280.0;
 #[cfg(desktop)]
 const BACKGROUND_RENDER_HEIGHT: f64 = 900.0;
 #[cfg(desktop)]
-const SCRAPER_CONTROL_HOST: &str = "norea.localhost";
-#[cfg(desktop)]
-const SCRAPER_CONTROL_PATH_PREFIX: &str = "/__norea_scraper_control__/";
+const SCRAPER_SENTINEL_HOST: &str = "norea.localhost";
 #[cfg(desktop)]
 const SCRAPER_RESULT_PATH_PREFIX: &str = "/__norea_scraper_result__/";
-#[cfg(desktop)]
-const SITE_BROWSER_HIDDEN_EVENT: &str = "site-browser-hidden";
 #[cfg(desktop)]
 const IMMEDIATE_EXECUTOR: &str = "immediate";
 #[cfg(desktop)]
@@ -528,17 +317,6 @@ fn log_windows_scraper_event(message: &str) {
     }
 }
 
-#[cfg(desktop)]
-fn scraper_control_action(url: &Url) -> Option<&str> {
-    if url.scheme() == "https"
-        && url.host_str() == Some(SCRAPER_CONTROL_HOST)
-        && url.path().starts_with(SCRAPER_CONTROL_PATH_PREFIX)
-    {
-        return url.path().strip_prefix(SCRAPER_CONTROL_PATH_PREFIX);
-    }
-    None
-}
-
 /// Parse the fetch-completion sentinel a page navigates to when its browser
 /// fetch settles, returning the request id it carries. The sentinel is
 /// intercepted (and cancelled) in `on_navigation`, so it never actually leaves
@@ -546,7 +324,7 @@ fn scraper_control_action(url: &Url) -> Option<&str> {
 #[cfg(desktop)]
 fn scraper_result_request_id(url: &Url) -> Option<String> {
     if url.scheme() == "https"
-        && url.host_str() == Some(SCRAPER_CONTROL_HOST)
+        && url.host_str() == Some(SCRAPER_SENTINEL_HOST)
         && url.path().starts_with(SCRAPER_RESULT_PATH_PREFIX)
     {
         let encoded = url.path().strip_prefix(SCRAPER_RESULT_PATH_PREFIX)?;
@@ -640,10 +418,11 @@ fn record_navigation_page_load(
                     return;
                 };
                 navigation.started = true;
+                let requested_url = scraper_url_for_log(&navigation.requested_url);
+                let event_url = scraper_url_for_log(url.as_str());
                 log::trace!(
-                    "[scraper:navigate] page started executor={executor} request_id={} requested_url={} event_url={url}",
+                    "[scraper:navigate] page started executor={executor} request_id={} requested_url={requested_url} event_url={event_url}",
                     navigation.request_id,
-                    navigation.requested_url,
                 );
                 None
             }
@@ -655,10 +434,11 @@ fn record_navigation_page_load(
         }
     };
     if let Some(navigation) = completion {
+        let requested_url = scraper_url_for_log(&navigation.requested_url);
+        let final_url = scraper_url_for_log(url.as_str());
         log::trace!(
-            "[scraper:navigate] page finished executor={executor} request_id={} requested_url={} final_url={url}",
+            "[scraper:navigate] page finished executor={executor} request_id={} requested_url={requested_url} final_url={final_url}",
             navigation.request_id,
-            navigation.requested_url,
         );
         let _ = navigation.sender.send(url.to_string());
     }
@@ -685,13 +465,6 @@ impl Drop for NavigationGuard<'_> {
         {
             pending.remove(&self.executor);
         }
-    }
-}
-
-#[cfg(desktop)]
-fn emit_site_browser_hidden(app: &AppHandle) {
-    if let Err(err) = app.emit(SITE_BROWSER_HIDDEN_EVENT, ()) {
-        log::warn!("[scraper] failed to emit site browser hidden event: {err}");
     }
 }
 
@@ -820,11 +593,8 @@ fn scraper_label_from_key(key: &str) -> String {
 }
 
 #[cfg(desktop)]
-fn scraper_initialization_script(executor: &str) -> String {
-    let controls_enabled = executor == IMMEDIATE_EXECUTOR;
-    format!(
-        "window.__noreaScraperControlsEnabled = {controls_enabled};\n{SCRAPER_INIT_SCRIPT}"
-    )
+fn scraper_initialization_script() -> String {
+    SCRAPER_INIT_SCRIPT.to_string()
 }
 
 #[cfg(desktop)]
@@ -890,7 +660,7 @@ fn scraper_handle_for_key(
     let app_for_navigation = app.clone();
     let app_for_page_load = app.clone();
     let key_for_page_load = key.to_string();
-    let initialization_script = scraper_initialization_script(key);
+    let initialization_script = scraper_initialization_script();
     let mut builder = WebviewBuilder::new(
         label.clone(),
         WebviewUrl::App(PathBuf::from(SCRAPER_HOMEPAGE_PATH)),
@@ -899,18 +669,6 @@ fn scraper_handle_for_key(
         if let Some(request_id) = scraper_result_request_id(url) {
             let state = app_for_navigation.state::<ScraperState>();
             fire_completion(&state, &request_id);
-            return false;
-        }
-        if scraper_control_action(url) == Some("close") {
-            log_windows_scraper_event("scraper control close navigation received");
-            let app = app_for_navigation.clone();
-            if let Err(err) = app_for_navigation.run_on_main_thread(move || {
-                if let Err(err) = scraper_hide(app) {
-                    log::error!("[scraper] control close failed: {err}");
-                }
-            }) {
-                log::error!("[scraper] failed to schedule control close: {err}");
-            }
             return false;
         }
         true
@@ -1199,14 +957,20 @@ pub async fn scraper_set_bounds(
 ) -> Result<(), String> {
     let user_agent = normalize_user_agent(user_agent);
     if cfg!(target_os = "windows") {
+        let url_for_log = scraper_url_for_log(&url);
         log::trace!(
-            "[scraper:windows] scraper_set_bounds start url={url} x={x} y={y} width={width} height={height}"
+            "[scraper:windows] scraper_set_bounds start url={url_for_log} x={x} y={y} width={width} height={height}"
         );
     }
     let executor_lock = scraper_executor_lock(&state, IMMEDIATE_EXECUTOR);
     let _executor_guard = executor_lock.lock().await;
     let key = IMMEDIATE_EXECUTOR.to_string();
-    let scraper = scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
+    let scraper = scraper_handle_for_key(
+        &app,
+        &state,
+        IMMEDIATE_EXECUTOR,
+        user_agent.as_deref(),
+    )?;
     let previous_key = state
         .visible_key
         .lock()
@@ -1273,7 +1037,6 @@ pub fn scraper_hide(app: AppHandle) -> Result<(), String> {
     if !hide_scraper_surface_for_key(&app, &state, &visible_key)? {
         log_windows_scraper_event("scraper_hide skipped: visible webview missing");
     }
-    emit_site_browser_hidden(&app);
     log_windows_scraper_event("scraper_hide complete");
     Ok(())
 }
@@ -1284,12 +1047,93 @@ pub fn scraper_hide(_app: AppHandle) -> Result<(), String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
 
-/// Poll the in-page scraper controls for user actions while the browser is open.
+#[cfg(desktop)]
+fn browser_http_origin(url: &Url) -> Option<String> {
+    matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
+}
+
+fn scraper_url_for_log(value: &str) -> String {
+    if let Ok(parsed) = Url::parse(value) {
+        if matches!(parsed.scheme(), "http" | "https") {
+            return parsed.origin().ascii_serialization();
+        }
+        return format!("<{}-url>", parsed.scheme());
+    }
+    if value.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    }) {
+        return "<http-url>".to_string();
+    }
+
+    let secret_boundary = [value.find('?'), value.find('#')]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(value.len());
+    let without_secrets = &value[..secret_boundary];
+    let Some(scheme_end) = without_secrets.find("://") else {
+        return without_secrets.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_and_path = &without_secrets[authority_start..];
+    let authority_end = authority_and_path
+        .find('/')
+        .unwrap_or(authority_and_path.len());
+    let authority = &authority_and_path[..authority_end];
+    let Some(userinfo_end) = authority.rfind('@') else {
+        return without_secrets.to_string();
+    };
+    format!(
+        "{}{}{}",
+        &without_secrets[..authority_start],
+        &authority[userinfo_end + 1..],
+        &authority_and_path[authority_end..]
+    )
+}
+
+fn redact_urls_for_log(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut remaining = value;
+
+    loop {
+        let start = remaining.char_indices().find_map(|(index, _)| {
+            let candidate = &remaining[index..];
+            ["http://", "https://"]
+                .into_iter()
+                .any(|prefix| {
+                    candidate
+                        .get(..prefix.len())
+                        .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+                })
+                .then_some(index)
+        });
+        let Some(start) = start else {
+            output.push_str(remaining);
+            break;
+        };
+
+        output.push_str(&remaining[..start]);
+        let candidate = &remaining[start..];
+        let end = candidate
+            .char_indices()
+            .skip(1)
+            .find_map(|(index, character)| {
+                (character.is_whitespace()
+                    || matches!(character, '"' | '\'' | '<' | '>' | ')' | ']' | '}'))
+                .then_some(index)
+            })
+            .unwrap_or(candidate.len());
+        output.push_str(&scraper_url_for_log(&candidate[..end]));
+        remaining = &candidate[end..];
+    }
+
+    output
+}
+
+/// Return the visible native WebView's current HTTP(S) origin.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn scraper_poll_control_message(
-    app: AppHandle,
-) -> Result<Option<ScraperControlMessage>, String> {
+pub fn scraper_current_origin(app: AppHandle) -> Result<Option<String>, String> {
     let state = app.state::<ScraperState>();
     let visible_key = state
         .visible_key
@@ -1309,33 +1153,15 @@ pub async fn scraper_poll_control_message(
     else {
         return Ok(None);
     };
-    let message = eval_json::<Option<ScraperControlMessage>>(
-        &scraper,
-        r#"(function () {
-  const message = window.__noreaScraperControlMessage || null;
-  window.__noreaScraperControlMessage = null;
-  return message;
-})()"#
-            .to_string(),
-    )
-    .await?;
-    if let Some(message) = &message {
-        if cfg!(target_os = "windows") {
-            log::trace!(
-                "[scraper:windows] scraper_poll_control_message action={} sequence={:?}",
-                message.action,
-                message.sequence
-            );
-        }
-    }
-    Ok(message)
+    let url = scraper
+        .url()
+        .map_err(|err| format!("scraper_current_origin: read current url: {err}"))?;
+    Ok(browser_http_origin(&url))
 }
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub async fn scraper_poll_control_message(
-    _app: AppHandle,
-) -> Result<Option<ScraperControlMessage>, String> {
+pub fn scraper_current_origin(_app: AppHandle) -> Result<Option<String>, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
 
@@ -1472,12 +1298,13 @@ pub async fn scraper_clear_cookies(
     user_agent: Option<String>,
     queue: Option<String>,
 ) -> Result<usize, String> {
+    let url_for_log = scraper_url_for_log(&url);
     let parsed: Url = url
         .parse()
-        .map_err(|err| format!("scraper_clear_cookies: invalid url '{url}': {err}"))?;
+        .map_err(|err| format!("scraper_clear_cookies: invalid url '{url_for_log}': {err}"))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err(format!(
-            "scraper_clear_cookies: expected an HTTP(S) plugin url, got '{url}'"
+            "scraper_clear_cookies: expected an HTTP(S) plugin url, got '{url_for_log}'"
         ));
     }
 
@@ -1497,15 +1324,24 @@ pub async fn scraper_clear_cookies(
     #[cfg(not(target_os = "windows"))]
     {
         let user_agent = normalize_user_agent(user_agent);
-        let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+        let scraper = scraper_handle_for_key(
+            &app,
+            &state,
+            &queue,
+            user_agent.as_deref(),
+        )?;
         let cookies = scraper
             .cookies_for_url(parsed)
-            .map_err(|err| format!("scraper_clear_cookies: read cookies for '{url}': {err}"))?;
+            .map_err(|err| {
+                format!("scraper_clear_cookies: read cookies for '{url_for_log}': {err}")
+            })?;
         let count = cookies.len();
         for cookie in cookies {
             scraper
                 .delete_cookie(cookie)
-                .map_err(|err| format!("scraper_clear_cookies: delete cookie for '{url}': {err}"))?;
+                .map_err(|err| {
+                    format!("scraper_clear_cookies: delete cookie for '{url_for_log}': {err}")
+                })?;
         }
         Ok(count)
     }
@@ -1542,9 +1378,10 @@ pub async fn scraper_navigate(
     let request_started = Instant::now();
     let generation = scraper_executor_cancel_generation(&state, IMMEDIATE_EXECUTOR);
     let expected_generation = generation.load(Ordering::Acquire);
+    let url_for_log = scraper_url_for_log(&url);
     if cfg!(target_os = "windows") {
         log::trace!(
-            "[scraper:windows] scraper_navigate start url={url} reset_history={reset_history} timeout_ms={} ",
+            "[scraper:windows] scraper_navigate start url={url_for_log} reset_history={reset_history} timeout_ms={} ",
             request_timeout.as_millis(),
         );
     }
@@ -1574,10 +1411,15 @@ pub async fn scraper_navigate(
         "navigate",
         IMMEDIATE_EXECUTOR,
     )?;
-    let scraper = scraper_handle_for_key(&app, &state, IMMEDIATE_EXECUTOR, user_agent.as_deref())?;
+    let scraper = scraper_handle_for_key(
+        &app,
+        &state,
+        IMMEDIATE_EXECUTOR,
+        user_agent.as_deref(),
+    )?;
     let parsed: Url = url
         .parse()
-        .map_err(|err| format!("scraper_navigate: invalid url '{url}': {err}"))?;
+        .map_err(|err| format!("scraper_navigate: invalid url '{url_for_log}': {err}"))?;
 
     let ready_budget = request_timeout
         .saturating_sub(request_started.elapsed())
@@ -1614,7 +1456,10 @@ pub async fn scraper_navigate(
         request_id,
     };
     if let Err(err) = scraper.navigate(parsed) {
-        return Err(format!("scraper_navigate: {err}"));
+        return Err(format!(
+            "scraper_navigate: {}",
+            redact_urls_for_log(&err.to_string())
+        ));
     }
 
     let remaining = request_timeout.saturating_sub(request_started.elapsed());
@@ -1650,7 +1495,8 @@ pub async fn scraper_navigate(
     if !document_ready {
         stop_scraper_loading(&scraper);
         return Err(format!(
-            "scraper_navigate: page finished without a ready document: {final_url}"
+            "scraper_navigate: page finished without a ready document: {}",
+            scraper_url_for_log(&final_url)
         ));
     }
     *state
@@ -1674,9 +1520,8 @@ pub async fn scraper_navigate(
     _reset_history: Option<bool>,
     _timeout_ms: Option<u64>,
 ) -> Result<(), String> {
-    Err(format!(
-        "scraper_navigate is handled by the Android native scraper bridge: {url}"
-    ))
+    let _ = url;
+    Err("scraper_navigate is handled by the Android native scraper bridge".to_string())
 }
 
 #[cfg(not(any(desktop, target_os = "android")))]
@@ -1756,7 +1601,7 @@ fn scraper_current_url_for_log(_scraper: &ScraperWebview) -> String {
 fn scraper_current_url_for_log(scraper: &ScraperWebview) -> String {
     scraper
         .url()
-        .map(|url| url.to_string())
+        .map(|url| scraper_url_for_log(url.as_str()))
         .unwrap_or_else(|err| format!("<unavailable: {err}>"))
 }
 
@@ -1864,16 +1709,23 @@ fn log_scraper_cookies(
 ) {
     let mut targets = Vec::new();
     for (label, url) in urls {
+        let url_for_log = scraper_url_for_log(&url);
         match url.parse::<Url>() {
             Ok(parsed) => match scraper.cookies_for_url(parsed) {
                 Ok(cookies) => targets.push(format!(
-                    "{label} url={url} count={} cookies={:?}",
+                    "{label} url={url_for_log} count={} cookies={:?}",
                     cookies.len(),
                     cookie_details_for_log(&cookies)
                 )),
-                Err(err) => targets.push(format!("{label} url={url} error={err}")),
+                Err(err) => targets.push(format!(
+                    "{label} url={url_for_log} error={}",
+                    redact_urls_for_log(&err.to_string())
+                )),
             },
-            Err(err) => targets.push(format!("{label} url={url} parse_error={err}")),
+            Err(err) => targets.push(format!(
+                "{label} url={url_for_log} parse_error={}",
+                redact_urls_for_log(&err.to_string())
+            )),
         }
     }
     log::trace!(
@@ -1959,35 +1811,62 @@ async fn wait_for_scraper_bridge_ready(
 }
 
 #[cfg(desktop)]
-async fn document_has_browser_challenge(scraper: &ScraperWebview) -> bool {
-    let challenged = eval_json::<bool>(
-        scraper,
-        r##"(function () {
+const BROWSER_CHALLENGE_DETECTOR_SCRIPT: &str = r##"(function () {
   var title = (document.title || "").toLowerCase();
   var body = ((document.body && document.body.innerText) || "").toLowerCase();
   if (body.length > 12000) body = body.slice(0, 12000);
   var selectors = [
     "#challenge-running",
     "#cf-challenge-running",
+    "#challenge-stage",
+    "form#challenge-form",
     ".cf-browser-verification",
-    ".cf-challenge",
     ".cf-turnstile",
-    "input[name=\"cf-turnstile-response\"]",
     "iframe[src*=\"challenges.cloudflare.com\"]"
   ];
-  for (var i = 0; i < selectors.length; i += 1) {
-    if (document.querySelector(selectors[i])) return true;
+  function isVisibleChallengeElement(element) {
+    if (!element || typeof element.getClientRects !== "function") return false;
+    if (element.hidden || element.getAttribute("aria-hidden") === "true") {
+      return false;
+    }
+    try {
+      var style = getComputedStyle(element);
+      if (style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          Number(style.opacity) === 0) {
+        return false;
+      }
+    } catch (_) {}
+    var rects = element.getClientRects();
+    for (var rectIndex = 0; rectIndex < rects.length; rectIndex += 1) {
+      if (Number(rects[rectIndex].width) > 0 &&
+          Number(rects[rectIndex].height) > 0) {
+        return true;
+      }
+    }
+    return false;
   }
-  return title.indexOf("just a moment") !== -1 ||
-    title.indexOf("attention required") !== -1 ||
-    body.indexOf("checking if the site connection is secure") !== -1 ||
-    body.indexOf("verify you are human") !== -1 ||
-    body.indexOf("enable javascript and cookies to continue") !== -1 ||
-    body.indexOf("cf-chl") !== -1;
-})()"##
-            .to_string(),
-    )
-    .await;
+  for (var i = 0; i < selectors.length; i += 1) {
+    var elements = document.querySelectorAll(selectors[i]);
+    for (var elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
+      if (isVisibleChallengeElement(elements[elementIndex])) return true;
+    }
+  }
+  var hasCloudflareEvidence = !!document.querySelector(
+    "script[src*='/cdn-cgi/challenge-platform/']," +
+    "link[href*='/cdn-cgi/challenge-platform/']," +
+    "[data-ray],#cf-error-details"
+  ) || /cloudflare ray id|\bcf-ray\b|\bcf-chl\b/.test(body);
+  var hasChallengeText =
+    /just a moment|attention required/.test(title) ||
+    /checking if the site connection is secure|verify you are human|enable javascript and cookies to continue|sorry, you have been blocked/.test(body);
+  return hasCloudflareEvidence && hasChallengeText;
+})()"##;
+
+#[cfg(desktop)]
+async fn document_has_browser_challenge(scraper: &ScraperWebview) -> bool {
+    let challenged = eval_json::<bool>(scraper, BROWSER_CHALLENGE_DETECTOR_SCRIPT.to_string()).await;
     challenged.unwrap_or(false)
 }
 
@@ -1997,6 +1876,30 @@ fn looks_like_browser_challenge_extract_result(value: &str) -> bool {
     lower.contains("cloudflare challenge")
         || lower.contains("\"kind\":\"cf\"")
         || lower.contains("\"kind\": \"cf\"")
+        || lower.contains("\"kind\":\"cloudflare\"")
+        || lower.contains("\"kind\": \"cloudflare\"")
+}
+
+#[cfg(desktop)]
+fn browser_challenge_envelope(kind: &str, url: &str) -> String {
+    serde_json::json!({
+        "ok": false,
+        "code": "manual-action-required",
+        "error": "The source page requires manual action.",
+        "challenge": {
+            "kind": kind,
+            "url": url,
+        },
+    })
+    .to_string()
+}
+
+#[cfg(desktop)]
+fn browser_challenge_url(scraper: &ScraperWebview, fallback: &str) -> String {
+    scraper
+        .url()
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| fallback.to_string())
 }
 
 #[cfg(desktop)]
@@ -2009,6 +1912,7 @@ async fn wait_for_browser_challenge_to_clear(
     expected_generation: u64,
     executor: &str,
 ) -> Result<bool, String> {
+    let url_for_log = scraper_url_for_log(url);
     let started = Instant::now();
     let mut poll_interval = Duration::from_millis(250);
     let max_poll_interval = Duration::from_millis(1000);
@@ -2029,7 +1933,7 @@ async fn wait_for_browser_challenge_to_clear(
         if document_has_browser_challenge(scraper).await {
             if !challenge_logged {
                 log::debug!(
-                    "[scraper:{operation}] waiting browser challenge before retry url={url}"
+                    "[scraper:{operation}] waiting browser challenge before retry url={url_for_log}"
                 );
                 challenge_logged = true;
             }
@@ -2060,8 +1964,9 @@ async fn prepare_scraper_context(
     let Some(context_url) = context_url else {
         return Ok(());
     };
+    let context_url_for_log = scraper_url_for_log(context_url);
     let target: Url = context_url.parse().map_err(|err| {
-        format!("scraper: invalid {operation} context url '{context_url}': {err}")
+        format!("scraper: invalid {operation} context url '{context_url_for_log}': {err}")
     })?;
 
     if scraper_is_at_origin(scraper, &target)
@@ -2071,10 +1976,17 @@ async fn prepare_scraper_context(
         return Ok(());
     }
 
-    log::debug!("[scraper:{operation}] prepare context navigate url={context_url}");
+    log::debug!(
+        "[scraper:{operation}] prepare context navigate url={context_url_for_log}"
+    );
     scraper
         .navigate(target.clone())
-        .map_err(|err| format!("scraper: navigate {operation} context: {err}"))?;
+        .map_err(|err| {
+            format!(
+                "scraper: navigate {operation} context: {}",
+                redact_urls_for_log(&err.to_string())
+            )
+        })?;
 
     let deadline = Duration::from_secs(15);
     let mut poll_interval = Duration::from_millis(150);
@@ -2095,19 +2007,21 @@ async fn prepare_scraper_context(
             if wait_for_browser_challenge && document_has_browser_challenge(scraper).await {
                 if !challenge_logged {
                     log::debug!(
-                        "[scraper:{operation}] prepare context waiting browser challenge url={context_url}"
+                        "[scraper:{operation}] prepare context waiting browser challenge url={context_url_for_log}"
                     );
                     challenge_logged = true;
                 }
                 continue;
             }
-            log::debug!("[scraper:{operation}] prepare context ready url={context_url}");
+            log::debug!(
+                "[scraper:{operation}] prepare context ready url={context_url_for_log}"
+            );
             return Ok(());
         }
     }
 
     Err(format!(
-        "scraper: timed out preparing {operation} context {context_url}"
+        "scraper: timed out preparing {operation} context {context_url_for_log}"
     ))
 }
 
@@ -2136,7 +2050,12 @@ fn reset_extract_navigation(
     log::debug!("[scraper:{operation}] reset context navigate url={context_url}");
     scraper
         .navigate(context)
-        .map_err(|err| format!("scraper: reset {operation} context: {err}"))
+        .map_err(|err| {
+            format!(
+                "scraper: reset {operation} context: {}",
+                redact_urls_for_log(&err.to_string())
+            )
+        })
 }
 
 #[cfg(desktop)]
@@ -2185,15 +2104,21 @@ async fn prepare_extract_context(
 
 #[cfg(desktop)]
 fn fetch_context_urls(url: &str, context_url: Option<&str>) -> Result<Vec<String>, String> {
+    let url_for_log = scraper_url_for_log(url);
     let request_url: Url = url
         .parse()
-        .map_err(|err| format!("scraper: invalid fetch url '{url}': {err}"))?;
+        .map_err(|err| format!("scraper: invalid fetch url '{url_for_log}': {err}"))?;
     let Some(context_url) = context_url else {
         return Ok(vec![origin_url(&request_url)]);
     };
     let parsed_context_url: Url = context_url
         .parse()
-        .map_err(|err| format!("scraper: invalid context url '{context_url}': {err}"))?;
+        .map_err(|err| {
+            format!(
+                "scraper: invalid context url '{}': {err}",
+                scraper_url_for_log(context_url)
+            )
+        })?;
     if same_origin(&request_url, &parsed_context_url) {
         return Ok(vec![context_url.to_string()]);
     }
@@ -2458,9 +2383,10 @@ async fn webview_fetch_with_ready_scraper(
     expected_generation: u64,
     executor: &str,
 ) -> Result<FetchResult, String> {
+    let url_for_log = scraper_url_for_log(&url);
     let _: Url = url
         .parse()
-        .map_err(|err| format!("scraper: invalid url '{url}': {err}"))?;
+        .map_err(|err| format!("scraper: invalid url '{url_for_log}': {err}"))?;
     prepare_fetch_context(
         scraper,
         context_url.as_deref(),
@@ -2538,7 +2464,10 @@ async fn webview_fetch_with_ready_scraper(
             let error = result
                 .error
                 .unwrap_or_else(|| "unknown browser fetch error".to_string());
-            return Err(format!("scraper: browser fetch to {url} failed: {error}"));
+            return Err(format!(
+                "scraper: browser fetch to {url_for_log} failed: {}",
+                redact_urls_for_log(&error)
+            ));
         }
 
         return Ok(FetchResult {
@@ -2557,7 +2486,7 @@ async fn webview_fetch_with_ready_scraper(
     }
 
     Err(format!(
-        "scraper: browser fetch to {url} timed out after {}ms",
+        "scraper: browser fetch to {url_for_log} timed out after {}ms",
         deadline.as_millis()
     ))
 }
@@ -2583,11 +2512,23 @@ pub async fn webview_fetch(
     ensure_executor_generation(&generation, expected_generation, "fetch", &queue)?;
     let fetch_contexts = fetch_context_urls(&url, context_url.as_deref())?;
     let init_log = fetch_init_for_log(&init);
+    let url_for_log = scraper_url_for_log(&url);
+    let context_for_log = context_url
+        .as_deref()
+        .map(scraper_url_for_log);
+    let fetch_contexts_for_log: Vec<String> = fetch_contexts
+        .iter()
+        .map(|value| scraper_url_for_log(value))
+        .collect();
     log::trace!(
-        "[scraper:fetch] request queue={queue} request_url={url} configured_context={:?} fetch_contexts={fetch_contexts:?} timeout_ms={timeout_ms:?} user_agent={user_agent:?} init={init_log}",
-        context_url
+        "[scraper:fetch] request queue={queue} request_url={url_for_log} configured_context={context_for_log:?} fetch_contexts={fetch_contexts_for_log:?} timeout_ms={timeout_ms:?} user_agent={user_agent:?} init={init_log}"
     );
-    let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+    let scraper = scraper_handle_for_key(
+        &app,
+        &state,
+        &queue,
+        user_agent.as_deref(),
+    )?;
     log_scraper_cookies(
         &scraper,
         &queue,
@@ -2618,26 +2559,33 @@ pub async fn webview_fetch(
             break;
         }
         if let Err(err) = &result {
+            let fetch_context_for_log = scraper_url_for_log(fetch_context);
+            let error_for_log = redact_urls_for_log(err);
             log::debug!(
-                "[scraper:fetch] retrying with fallback context queue={queue} request_url={url} failed_context={fetch_context} error={err}"
+                "[scraper:fetch] retrying with fallback context queue={queue} request_url={url_for_log} failed_context={fetch_context_for_log} error={error_for_log}"
             );
         }
     }
     match &result {
         Ok(result) => {
             let header_names: Vec<&String> = result.headers.keys().collect();
+            let final_url_for_log = scraper_url_for_log(&result.final_url);
             log::trace!(
-                "[scraper:fetch] response queue={queue} request_url={url} status={} final_url={} header_names={:?}",
+                "[scraper:fetch] response queue={queue} request_url={url_for_log} status={} final_url={final_url_for_log} header_names={:?}",
                 result.status,
-                result.final_url,
                 header_names
             );
         }
         Err(err) if err.contains("Request cancelled") => {
-            log::debug!("[scraper:fetch] cancelled queue={queue} request_url={url}");
+            log::debug!(
+                "[scraper:fetch] cancelled queue={queue} request_url={url_for_log}"
+            );
         }
         Err(err) => {
-            log::error!("[scraper:fetch] failed queue={queue} request_url={url} error={err}");
+            let error_for_log = redact_urls_for_log(err);
+            log::error!(
+                "[scraper:fetch] failed queue={queue} request_url={url_for_log} error={error_for_log}"
+            );
         }
     }
     let mut cookie_log_urls = vec![("request", url.clone())];
@@ -2675,8 +2623,9 @@ pub async fn scraper_media_fetch(
 ) -> Result<FetchResult, String> {
     let user_agent = normalize_user_agent(user_agent);
     let init_log = fetch_init_for_log(&init);
+    let url_for_log = scraper_url_for_log(&url);
     log::debug!(
-        "[scraper:media_fetch] request url={url} timeout_ms={timeout_ms:?} user_agent={user_agent:?} init={init_log}"
+        "[scraper:media_fetch] request url={url_for_log} timeout_ms={timeout_ms:?} user_agent={user_agent:?} init={init_log}"
     );
 
     let init = init.unwrap_or_default();
@@ -2713,7 +2662,12 @@ pub async fn scraper_media_fetch(
     let response = request
         .send()
         .await
-        .map_err(|err| format!("scraper: native media fetch to {url} failed: {err}"))?;
+        .map_err(|err| {
+            format!(
+                "scraper: native media fetch to {url_for_log} failed: {}",
+                redact_urls_for_log(&err.to_string())
+            )
+        })?;
     let status = response.status();
     let final_url = response.url().to_string();
     let status_text = status.canonical_reason().unwrap_or("").to_string();
@@ -2731,10 +2685,16 @@ pub async fn scraper_media_fetch(
     let body = response
         .bytes()
         .await
-        .map_err(|err| format!("scraper: native media fetch body from {url} failed: {err}"))?;
+        .map_err(|err| {
+            format!(
+                "scraper: native media fetch body from {url_for_log} failed: {}",
+                redact_urls_for_log(&err.to_string())
+            )
+        })?;
 
+    let final_url_for_log = scraper_url_for_log(&final_url);
     log::debug!(
-        "[scraper:media_fetch] response url={url} status={} final_url={final_url} header_names={header_names:?} body_len={}",
+        "[scraper:media_fetch] response url={url_for_log} status={} final_url={final_url_for_log} header_names={header_names:?} body_len={}",
         status.as_u16(),
         body.len()
     );
@@ -2769,6 +2729,51 @@ pub fn scraper_take_captured_resource(
 }
 
 #[cfg(target_os = "windows")]
+fn captured_resource_is_cloudflare_challenge(
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> bool {
+    let header_value = |name: &str| {
+        headers
+            .iter()
+            .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
+    };
+    if header_value("cf-mitigated")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("challenge"))
+    {
+        return true;
+    }
+
+    let prefix = &body[..body.len().min(512 * 1024)];
+    let body_text = String::from_utf8_lossy(prefix).to_ascii_lowercase();
+    let trimmed = body_text.trim_start_matches(|character: char| {
+        character.is_ascii_whitespace() || character == '\u{feff}'
+    });
+    let content_type = header_value("content-type")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let looks_like_html = content_type.contains("text/html")
+        || content_type.contains("application/xhtml+xml")
+        || ["<!doctype html", "<html", "<head", "<body"]
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix));
+    if !looks_like_html {
+        return false;
+    }
+
+    body_text.contains("/cdn-cgi/challenge-platform/")
+        || body_text.contains("cf-chl-")
+        || body_text.contains("__cf_chl_")
+        || ["form", "running", "stage"].iter().any(|suffix| {
+            body_text.contains(&format!("id=\"challenge-{suffix}\""))
+                || body_text.contains(&format!("id='challenge-{suffix}'"))
+        })
+        || (body_text.contains("cloudflare ray id")
+            && (body_text.contains("attention required")
+                || body_text.contains("sorry, you have been blocked")))
+}
+
+#[cfg(target_os = "windows")]
 #[tauri::command]
 pub async fn scraper_take_captured_resource_handle(
     app: AppHandle,
@@ -2787,6 +2792,7 @@ pub async fn scraper_take_captured_resource_handle(
         headers,
         final_url,
     } = resource;
+    let cloudflare_challenge = captured_resource_is_cloudflare_challenge(&headers, &body);
     let (body_handle, body_bytes) = tauri::async_runtime::spawn_blocking(move || {
         let stream_state = app.state::<crate::native_stream::NativeStreamState>();
         crate::native_stream::register_finished_bytes(
@@ -2803,6 +2809,7 @@ pub async fn scraper_take_captured_resource_handle(
         status_text,
         body_handle,
         body_bytes,
+        cloudflare_challenge,
         headers,
         final_url,
     }))
@@ -2934,13 +2941,19 @@ pub async fn webview_extract(
     capture_resources: Option<bool>,
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
+    let url_for_log = scraper_url_for_log(&url);
     let queue = normalize_scraper_executor(queue.as_deref())?;
     let generation = scraper_executor_cancel_generation(&state, &queue);
     let expected_generation = generation.load(Ordering::Acquire);
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
     ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-    let scraper = scraper_handle_for_key(&app, &state, &queue, user_agent.as_deref())?;
+    let scraper = scraper_handle_for_key(
+        &app,
+        &state,
+        &queue,
+        user_agent.as_deref(),
+    )?;
     let capture_resources = capture_resources.unwrap_or(false) && cfg!(target_os = "windows");
     #[cfg(target_os = "windows")]
     if capture_resources {
@@ -2961,7 +2974,7 @@ pub async fn webview_extract(
         show_scraper_webview_for_background_render(&scraper)?;
     }
     log::trace!(
-        "[scraper:extract] request queue={queue} url={url} timeout_ms={timeout_ms:?} user_agent={user_agent:?} before_script_len={}",
+        "[scraper:extract] request queue={queue} url={url_for_log} timeout_ms={timeout_ms:?} user_agent={user_agent:?} before_script_len={}",
         before_script
             .as_ref()
             .map(|script| script.len())
@@ -2976,10 +2989,11 @@ pub async fn webview_extract(
 
     let before_script = before_script.as_deref().filter(|script| !script.is_empty());
     let target_url_str = url.clone();
+    let target_url_for_log = scraper_url_for_log(&target_url_str);
 
     let parsed: Url = target_url_str
         .parse()
-        .map_err(|err| format!("webview_extract: invalid url '{target_url_str}': {err}"))?;
+        .map_err(|err| format!("webview_extract: invalid url '{target_url_for_log}': {err}"))?;
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let result_marker = "#__lnr_result__=";
@@ -2998,14 +3012,23 @@ pub async fn webview_extract(
     let mut signaled = false;
 
     for attempt in 1..=max_attempts {
-        prepare_extract_context(
+        let prepare_result = prepare_extract_context(
             &scraper,
             &parsed,
             &generation,
             expected_generation,
             &queue,
         )
-        .await?;
+        .await;
+        if let Err(error) = prepare_result {
+            if generation.load(Ordering::Acquire) == expected_generation
+                && document_has_browser_challenge(&scraper).await
+            {
+                let challenge_url = browser_challenge_url(&scraper, &url);
+                return Ok(browser_challenge_envelope("cloudflare", &challenge_url));
+            }
+            return Err(error);
+        }
         let _ = wait_for_scraper_bridge_ready(
             &scraper,
             "extract",
@@ -3020,12 +3043,17 @@ pub async fn webview_extract(
         let mut capture_id = capture_resources.then(|| state.captured_resources.begin(&queue));
 
         log::trace!(
-            "[scraper:extract] navigate queue={queue} url={url} target_url={target_url_str} attempt={attempt}"
+            "[scraper:extract] navigate queue={queue} url={url_for_log} target_url={target_url_for_log} attempt={attempt}"
         );
 
         scraper
             .navigate(parsed.clone())
-            .map_err(|err| format!("webview_extract: navigate: {err}"))?;
+            .map_err(|err| {
+                format!(
+                    "webview_extract: navigate: {}",
+                    redact_urls_for_log(&err.to_string())
+                )
+            })?;
 
         let start = Instant::now();
         let mut poll_interval = Duration::from_millis(150);
@@ -3033,8 +3061,12 @@ pub async fn webview_extract(
             if generation.load(Ordering::Acquire) != expected_generation {
                 clear_webview_extract_result(&scraper, None);
                 stop_scraper_loading(&scraper);
-                log::debug!("[scraper:extract] cancelled queue={queue} url={url}");
-                return Err(format!("webview_extract: {url} Request cancelled"));
+                log::debug!(
+                    "[scraper:extract] cancelled queue={queue} url={url_for_log}"
+                );
+                return Err(format!(
+                    "webview_extract: {url_for_log} Request cancelled"
+                ));
             }
             if signaled {
                 tokio::time::sleep(poll_interval).await;
@@ -3122,10 +3154,13 @@ pub async fn webview_extract(
                         capture_id =
                             capture_resources.then(|| state.captured_resources.begin(&queue));
                         log::debug!(
-                            "[scraper:extract] retry after browser challenge queue={queue} url={url}"
+                            "[scraper:extract] retry after browser challenge queue={queue} url={url_for_log}"
                         );
                         scraper.navigate(parsed.clone()).map_err(|err| {
-                            format!("webview_extract: retry after browser challenge: {err}")
+                            format!(
+                                "webview_extract: retry after browser challenge: {}",
+                                redact_urls_for_log(&err.to_string())
+                            )
                         })?;
                         continue;
                     }
@@ -3148,10 +3183,13 @@ pub async fn webview_extract(
                         .await;
                     state.captured_resources.finish(&queue, capture_id);
                 }
-                let current_for_log = current_url.as_deref().unwrap_or("<script-result>");
+                let current_for_log = current_url
+                    .as_deref()
+                    .map(scraper_url_for_log)
+                    .unwrap_or_else(|| "<script-result>".to_string());
                 let result_len = decoded.len();
                 log::trace!(
-                    "[scraper:extract] complete queue={queue} url={url} current_url={current} result_len={result_len}",
+                    "[scraper:extract] complete queue={queue} url={url_for_log} current_url={current} result_len={result_len}",
                     current = current_for_log,
                 );
                 let mut cookie_targets = vec![("request", url.clone())];
@@ -3169,7 +3207,7 @@ pub async fn webview_extract(
 
         if attempt < max_attempts {
             log::debug!(
-                "[scraper:extract] timeout before extract result; retrying queue={queue} url={url} attempt={attempt}"
+                "[scraper:extract] timeout before extract result; retrying queue={queue} url={url_for_log} attempt={attempt}"
             );
             ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
             reset_extract_navigation(&scraper, &parsed, "extract")?;
@@ -3177,8 +3215,16 @@ pub async fn webview_extract(
     }
 
     clear_webview_extract_result(&scraper, None);
+    if document_has_browser_challenge(&scraper).await {
+        let challenge_url = browser_challenge_url(&scraper, &url);
+        let challenge_url_for_log = scraper_url_for_log(&challenge_url);
+        log::debug!(
+            "[scraper:extract] browser challenge requires manual action queue={queue} url={challenge_url_for_log}"
+        );
+        return Ok(browser_challenge_envelope("cloudflare", &challenge_url));
+    }
     log::error!(
-        "[scraper:extract] timeout queue={queue} url={url} current_url={}",
+        "[scraper:extract] timeout queue={queue} url={url_for_log} current_url={}",
         scraper_current_url_for_log(&scraper)
     );
     log_scraper_cookies(
@@ -3237,15 +3283,6 @@ mod tests {
             let url = Url::parse(raw).unwrap();
             assert_eq!(scraper_result_request_id(&url), None, "should reject {raw}");
         }
-    }
-
-    #[test]
-    fn result_and_control_sentinels_are_disjoint() {
-        let result =
-            Url::parse("https://norea.localhost/__norea_scraper_result__/extract-1").unwrap();
-        assert_eq!(scraper_control_action(&result), None);
-        let control = Url::parse("https://norea.localhost/__norea_scraper_control__/close").unwrap();
-        assert_eq!(scraper_result_request_id(&control), None);
     }
 
     #[test]
@@ -3332,11 +3369,117 @@ mod tests {
     }
 
     #[test]
-    fn pool_initialization_disables_linux_controls() {
-        assert!(scraper_initialization_script("pool:0")
-            .starts_with("window.__noreaScraperControlsEnabled = false;"));
-        assert!(scraper_initialization_script(IMMEDIATE_EXECUTOR)
-            .starts_with("window.__noreaScraperControlsEnabled = true;"));
+    fn initialization_script_has_no_remote_page_controls() {
+        let script = scraper_initialization_script();
+
+        assert!(!script.contains("__noreaScraperControl"));
+        assert!(!script.contains("keep-paused"));
+        assert!(!script.contains("publish(\"verify\")"));
+    }
+
+    #[test]
+    fn browser_challenge_detector_requires_visible_or_correlated_evidence() {
+        assert!(BROWSER_CHALLENGE_DETECTOR_SCRIPT.contains("getClientRects"));
+        assert!(
+            BROWSER_CHALLENGE_DETECTOR_SCRIPT
+                .contains("hasCloudflareEvidence && hasChallengeText")
+        );
+        assert!(!BROWSER_CHALLENGE_DETECTOR_SCRIPT
+            .contains("if (document.querySelector(selectors[i]))"));
+    }
+
+    #[test]
+    fn browser_http_origin_preserves_scheme_host_and_port() {
+        let url = Url::parse("https://Source.Test:8443/a?x=1#fragment").unwrap();
+        assert_eq!(
+            browser_http_origin(&url).as_deref(),
+            Some("https://source.test:8443")
+        );
+
+        let default_port = Url::parse("https://source.test:443/path").unwrap();
+        assert_eq!(
+            browser_http_origin(&default_port).as_deref(),
+            Some("https://source.test")
+        );
+
+        for raw in ["file:///tmp/challenge", "data:text/plain,challenge"] {
+            assert_eq!(browser_http_origin(&Url::parse(raw).unwrap()), None);
+        }
+    }
+
+    #[test]
+    fn scraper_url_log_redaction_keeps_only_the_http_origin() {
+        assert_eq!(
+            scraper_url_for_log(
+                "https://user:password@Source.Test:8443/signed/path-token?token=secret#proof"
+            ),
+            "https://source.test:8443"
+        );
+        assert_eq!(
+            scraper_url_for_log("not a url?token=secret#proof"),
+            "not a url"
+        );
+        assert_eq!(
+            scraper_url_for_log("https://%zz/signed-path?token=secret"),
+            "<http-url>"
+        );
+    }
+
+    #[test]
+    fn scraper_error_log_redaction_removes_embedded_url_secrets() {
+        let message = redact_urls_for_log(
+            "request https://source.test/signed-path-one?token=first#proof failed via http://user:pass@fallback.test/signed-path-two?token=second",
+        );
+
+        assert_eq!(
+            message,
+            "request https://source.test failed via http://fallback.test"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn captured_resource_challenge_detector_sniffs_html_without_trusting_headers() {
+        let body =
+            b"<!DOCTYPE html><html><script src='/cdn-cgi/challenge-platform/h/g'></script></html>";
+
+        assert!(captured_resource_is_cloudflare_challenge(
+            &HashMap::new(),
+            body
+        ));
+        assert!(captured_resource_is_cloudflare_challenge(
+            &HashMap::from([("content-type".to_string(), "image/png".to_string())]),
+            body
+        ));
+        assert!(captured_resource_is_cloudflare_challenge(
+            &HashMap::from([("CF-Mitigated".to_string(), "challenge".to_string())]),
+            b"binary"
+        ));
+        assert!(!captured_resource_is_cloudflare_challenge(
+            &HashMap::from([("content-type".to_string(), "image/png".to_string())]),
+            b"\x89PNG\r\ncloudflare"
+        ));
+        assert!(!captured_resource_is_cloudflare_challenge(
+            &HashMap::from([("content-type".to_string(), "image/svg+xml".to_string())]),
+            b"<svg><text>/cdn-cgi/challenge-platform/</text></svg>"
+        ));
+    }
+
+    #[test]
+    fn browser_challenge_envelope_uses_the_manual_action_contract() {
+        let raw = browser_challenge_envelope(
+            "cloudflare",
+            "https://source.test/chapter/1?token=quoted%22value",
+        );
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["code"], "manual-action-required");
+        assert_eq!(value["challenge"]["kind"], "cloudflare");
+        assert_eq!(
+            value["challenge"]["url"],
+            "https://source.test/chapter/1?token=quoted%22value"
+        );
     }
 
     #[tokio::test]

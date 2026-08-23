@@ -93,6 +93,66 @@ an element with `data-norea-manual-action`. The host fails the acquisition with
 triggered only when the user has enabled an explicit plugin input for that
 action.
 
+### Access challenges
+
+Use the exact marker `data-norea-manual-action="captcha"` for a CAPTCHA and
+`data-norea-manual-action="cloudflare"` for a Cloudflare browser challenge.
+The page capture failure may then include this additive envelope data:
+
+```ts
+type SourceAccessChallenge = {
+  kind: "captcha" | "cloudflare";
+  url: string;
+};
+
+type ChapterCaptureFailureEnvelope =
+  | {
+      ok: false;
+      code: "manual-action-required";
+      error: string;
+      challenge?: SourceAccessChallenge;
+    }
+  | {
+      ok: false;
+      code: Exclude<ChapterCaptureErrorCode, "manual-action-required">;
+      error: string;
+      challenge?: never;
+    };
+```
+
+`challenge.url` must be an absolute HTTP(S) URL for the page where the
+challenge was observed. The host accepts it only when its hostname matches the
+trusted acquisition URL; otherwise the host uses the trusted URL. Credentials
+embedded in a URL are rejected.
+
+A typed CAPTCHA or Cloudflare challenge blocks the source's full task queue,
+including individual and batch chapter downloads, and keeps affected promises
+pending. The block survives an application restart. Norea opens the source in
+its session-owning browser so the user can complete the challenge, then offers
+**Keep paused** and **Verify**. Verify runs one queued task as a canary and
+unblocks the source only after that task explicitly confirms successful source
+access and completes. Chapter canaries bypass final-content and partial-resume
+fast paths so verification performs a real source acquisition. A repeated
+challenge or an unconfirmed canary leaves the queue blocked.
+
+Restart recovery persists only the challenge URL origin, because paths, query
+strings, and fragments may contain credentials or short-lived proof tokens. When
+a queued chapter download can safely rebuild its current trusted acquisition
+URL, Norea validates that the rebuilt URL still belongs to the blocked hostname
+before opening the browser. Generic source tasks whose exact request URL cannot
+be reconstructed safely open the persisted origin instead. Their canary remains
+subject to the block: if the challenge persists at a more specific URL, the
+fresh challenge replaces the in-memory URL and a later manual attempt opens that
+exact page. A hostname change does not migrate or clear a source-wide block
+automatically; the source remains blocked and the verification action stays
+disabled until a same-host canary is available. Only explicit confirmation
+followed by full canary success clears either flow.
+
+An untyped `data-norea-manual-action` marker remains a generic acquisition
+failure and does not create a source-wide access block. Plugins identify the
+challenge; they must not solve, bypass, or relay it. These optional failure
+fields are additive, so the contract version remains 0.2.
+
 ### Resource plans
 
 Use a resource plan only when there is no navigable content page, such as:
@@ -126,8 +186,12 @@ The returned content type must match the chapter row. When re-downloading a
 text or Markdown chapter that the host previously normalized to stored HTML,
 the host may request `html`; the resource may retain its original `text` or
 `markdown` type so the host can convert it again. `baseUrl`, when present,
-must be an absolute HTTP(S) URL and is used to resolve relative media. Binary
-resources must be non-empty and their media type must match their chapter type.
+must be an absolute HTTP(S) URL and is used only to resolve relative media and
+prepare media transport. It does not change the source-access scope or the
+trusted challenge URL. API 0.2 has no plugin-declared access-origin allowlist,
+so a CDN that requires independent top-level manual verification is not
+supported as a separate authentication scope. Binary resources must be
+non-empty and their media type must match their chapter type.
 
 ## Host-owned page and media pipeline
 
