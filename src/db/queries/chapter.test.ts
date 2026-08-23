@@ -8,6 +8,7 @@ vi.mock("../client", () => ({
 import { getDb, runDatabaseTransaction } from "../client";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import {
+  adoptStoredChapterContentMetadata,
   clearChapterContent,
   clearNovelHistory,
   getAdjacentChapter,
@@ -19,7 +20,9 @@ import {
   listLibraryUpdatesPage,
   listRecentlyRead,
   markChapterOpened,
+  markStoredChapterContentMissing,
   saveChapterContentMetadata,
+  saveChapterPartialContentMetadata,
   setChapterBookmark,
   updateChapterProgress,
   upsertChapter,
@@ -64,16 +67,46 @@ describe("listChaptersByNovel", () => {
 
 describe("getChapterById", () => {
   it("returns the row when present", async () => {
-    mockSelect.mockResolvedValueOnce([{ id: 7, novelId: 1 }]);
+    mockSelect.mockResolvedValueOnce([
+      {
+        id: 7,
+        novelId: 1,
+        sourceContentType: "text",
+        storedContentType: "html",
+      },
+    ]);
     const row = await getChapterById(7);
     const [sql] = mockSelect.mock.calls[0]!;
     expect(sql).not.toContain("content,");
-    expect(row).toMatchObject({ id: 7, novelId: 1 });
+    expect(sql).toContain("content_type   AS sourceContentType");
+    expect(sql).toContain("stored_content_type AS storedContentType");
+    expect(row).toMatchObject({
+      id: 7,
+      novelId: 1,
+      sourceContentType: "text",
+      contentType: "html",
+    });
   });
 
   it("returns null on miss", async () => {
     mockSelect.mockResolvedValueOnce([]);
     expect(await getChapterById(999)).toBeNull();
+  });
+
+  it("falls back to the source type when no stored representation exists", async () => {
+    mockSelect.mockResolvedValueOnce([
+      {
+        id: 8,
+        novelId: 1,
+        sourceContentType: "epub",
+        storedContentType: null,
+      },
+    ]);
+
+    await expect(getChapterById(8)).resolves.toMatchObject({
+      sourceContentType: "epub",
+      contentType: "epub",
+    });
   });
 });
 
@@ -177,6 +210,7 @@ describe("upsertChapter", () => {
     expect(sql).toContain("ON CONFLICT(novel_id, path) DO UPDATE");
     expect(sql).toContain("name           = excluded.name");
     expect(sql).toContain("content_type   = excluded.content_type");
+    expect(sql).not.toContain("stored_content_type");
     expect(sql).toContain("created_at");
     expect(sql).toContain("found_at");
     expect(sql).not.toContain("found_at       = excluded.found_at");
@@ -232,6 +266,7 @@ describe("upsertSourceChapters", () => {
     expect(sql).toContain("VALUES ($1, $2, $3, $4, $5, $6, $7, $8");
     expect(sql).toContain("($9, $10, $11, $12, $13, $14, $15, $16");
     expect(sql).toContain("ON CONFLICT(novel_id, path) DO UPDATE");
+    expect(sql).not.toContain("stored_content_type");
     expect(sql).not.toContain("content        =");
     expect(params).toEqual([
       7,
@@ -336,6 +371,8 @@ describe("upsertDownloadedChapters", () => {
     expect(mockedRunDatabaseTransaction).toHaveBeenCalledOnce();
     const [sql, params] = mockExecute.mock.calls[0]!;
     expect(sql).toContain("content_bytes");
+    expect(sql).toContain("content_type");
+    expect(sql).toContain("stored_content_type");
     expect(sql).toContain("media_repair_needed");
     expect(sql).toContain("media_bytes_checked_at = NULL");
     expect(sql).toContain("is_downloaded  = 1");
@@ -347,6 +384,7 @@ describe("upsertDownloadedChapters", () => {
       null,
       "1",
       null,
+      "text",
       "html",
       1,
     ]);
@@ -451,7 +489,8 @@ describe("saveChapterContentMetadata", () => {
     const [sql, params] = mockExecute.mock.calls[0]!;
     expect(sql).toContain("UPDATE chapter");
     expect(sql).not.toContain("content        =");
-    expect(sql).toContain("content_type   = $2");
+    expect(sql).toContain("stored_content_type = $2");
+    expect(sql).not.toContain("content_type   = $2");
     expect(sql).toContain("content_bytes  = $3");
     expect(sql).toContain("media_bytes    = $4");
     expect(sql).toContain("media_repair_needed = $5");
@@ -493,6 +532,36 @@ describe("saveChapterContentMetadata", () => {
   });
 });
 
+describe("stored chapter content metadata", () => {
+  it("records partial and adopted physical types without changing the source type", async () => {
+    mockExecute.mockResolvedValue({ rowsAffected: 1 });
+
+    await saveChapterPartialContentMetadata(7, "partial", "markdown");
+    await adoptStoredChapterContentMetadata(7, 12, 4, "pdf");
+
+    const [partialSql, partialParams] = mockExecute.mock.calls[0]!;
+    expect(partialSql).toContain("stored_content_type = $2");
+    expect(partialSql).not.toContain("content_type   = $2");
+    expect(partialParams?.[1]).toBe("html");
+
+    const [adoptSql, adoptParams] = mockExecute.mock.calls[1]!;
+    expect(adoptSql).toContain(
+      "stored_content_type = COALESCE($4, stored_content_type)",
+    );
+    expect(adoptSql).not.toContain("content_type   = COALESCE");
+    expect(adoptParams).toEqual([7, 12, 4, "pdf"]);
+  });
+
+  it("clears the physical type when stored content is missing", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
+
+    await markStoredChapterContentMissing(7);
+
+    const [sql] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("stored_content_type = NULL");
+  });
+});
+
 describe("clearChapterContent", () => {
   it("resets content metadata and is_downloaded", async () => {
     mockExecute.mockResolvedValueOnce(undefined);
@@ -503,6 +572,7 @@ describe("clearChapterContent", () => {
     expect(sql).toContain("media_bytes    = 0");
     expect(sql).toContain("media_repair_needed = 0");
     expect(sql).toContain("media_bytes_checked_at = NULL");
+    expect(sql).toContain("stored_content_type = NULL");
     expect(sql).toContain("is_downloaded  = 0");
     expect(sql).toContain("FROM novel");
     expect(sql).toContain("is_local = 0");
@@ -547,7 +617,9 @@ describe("listLibraryUpdates", () => {
     expect(sql).toContain("n.in_library = 1");
     expect(sql).toContain("c.unread = 1");
     expect(sql).toContain("c.path");
-    expect(sql).toContain("c.content_type    AS contentType");
+    expect(sql).toContain(
+      "COALESCE(c.stored_content_type, c.content_type) AS contentType",
+    );
     expect(sql).toContain("c.found_at        AS foundAt");
     expect(sql).toContain("ORDER BY foundAt DESC");
     expect(sql).not.toContain("OFFSET");

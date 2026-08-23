@@ -30,6 +30,7 @@ function makeRawDb(): RawDbMock {
       .mockResolvedValue([
         { name: "media_repair_needed" },
         { name: "media_bytes_checked_at" },
+        { name: "stored_content_type" },
       ]),
   };
 }
@@ -53,6 +54,24 @@ describe("getDb", () => {
 
     expect(sqlPluginMock.get).toHaveBeenCalledWith("sqlite:norea.db");
     expect(sqlPluginMock.load).not.toHaveBeenCalled();
+  });
+
+  it("backfills the stored content type when the column is missing", async () => {
+    const rawDb = makeRawDb();
+    rawDb.select.mockResolvedValue([
+      { name: "media_repair_needed" },
+      { name: "media_bytes_checked_at" },
+    ]);
+    const { getDb } = await loadClient(rawDb);
+
+    await getDb();
+
+    expect(rawDb.execute).toHaveBeenCalledWith(
+      expect.stringContaining("ADD COLUMN stored_content_type text"),
+    );
+    expect(rawDb.execute).toHaveBeenCalledWith(
+      expect.stringContaining("SET stored_content_type ="),
+    );
   });
 });
 

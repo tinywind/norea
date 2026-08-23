@@ -286,6 +286,71 @@ describe("useReaderStore", () => {
     expect(useReaderStore.getState().novelPageIndexByNovel[7]).toBe(4);
   });
 
+  it("moves A reader state to B and remaps the last-read chapter", () => {
+    useReaderStore.setState({
+      lastReadChapterByNovel: { 1: 11 },
+      novelPageIndexByNovel: { 1: 4 },
+      readerSettingsByNovel: {
+        1: { enabled: true, appearance: { textSize: 24 } },
+      },
+    });
+
+    useReaderStore.getState().mergeNovelReaderState({
+      sourceNovelId: 1,
+      targetNovelId: 2,
+      chapterIdMap: { 11: 21 },
+    });
+
+    const state = useReaderStore.getState();
+    expect(state.lastReadChapterByNovel).toEqual({ 2: 21 });
+    expect(state.novelPageIndexByNovel).toEqual({ 2: 4 });
+    expect(state.readerSettingsByNovel).toEqual({
+      2: { enabled: true, appearance: { textSize: 24 } },
+    });
+  });
+
+  it("keeps existing B reader overrides while always deleting A keys", () => {
+    useReaderStore.setState({
+      lastReadChapterByNovel: { 1: 11, 2: 22 },
+      novelPageIndexByNovel: { 1: 4, 2: 8 },
+      readerSettingsByNovel: {
+        1: { enabled: true, appearance: { textSize: 24 } },
+        2: { enabled: true, appearance: { textSize: 18 } },
+      },
+    });
+
+    useReaderStore.getState().mergeNovelReaderState({
+      sourceNovelId: 1,
+      targetNovelId: 2,
+      chapterIdMap: { 11: 21 },
+      preferredLastReadChapterId: 23,
+    });
+
+    const state = useReaderStore.getState();
+    expect(state.lastReadChapterByNovel).toEqual({ 2: 23 });
+    expect(state.novelPageIndexByNovel).toEqual({ 2: 8 });
+    expect(state.readerSettingsByNovel).toEqual({
+      2: { enabled: true, appearance: { textSize: 18 } },
+    });
+  });
+
+  it("drops an excluded A last-read pointer when B has no replacement", () => {
+    useReaderStore.setState({
+      lastReadChapterByNovel: { 1: 11 },
+      novelPageIndexByNovel: { 1: 4 },
+      readerSettingsByNovel: {},
+    });
+
+    useReaderStore.getState().mergeNovelReaderState({
+      sourceNovelId: 1,
+      targetNovelId: 2,
+      chapterIdMap: {},
+    });
+
+    expect(useReaderStore.getState().lastReadChapterByNovel).toEqual({});
+    expect(useReaderStore.getState().novelPageIndexByNovel).toEqual({});
+  });
+
   it("resetReaderSettings returns general + appearance to defaults", () => {
     useReaderStore
       .getState()

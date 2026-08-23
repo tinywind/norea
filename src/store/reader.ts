@@ -211,6 +211,13 @@ export interface ReaderSettingsOverride {
 export type ReaderNovelSettingsOverride = ReaderSettingsOverride;
 export type ReaderSourceSettingsOverride = ReaderSettingsOverride;
 
+export interface MergeNovelReaderStateInput {
+  sourceNovelId: number;
+  targetNovelId: number;
+  chapterIdMap: Readonly<Record<number, number>>;
+  preferredLastReadChapterId?: number | null;
+}
+
 interface ReaderState {
   general: ReaderGeneralSettings;
   appearance: ReaderAppearanceSettings;
@@ -256,6 +263,7 @@ interface ReaderState {
   setFullPageReaderChromeVisible: (visible: boolean) => void;
   setLastReadChapter: (novelId: number, chapterId: number) => void;
   setNovelPageIndex: (novelId: number, pageIndex: number) => void;
+  mergeNovelReaderState: (input: MergeNovelReaderStateInput) => void;
   resetReadingProgress: () => void;
   resetSourceReaderSettings: (sourceId: string) => void;
   resetNovelReaderSettings: (novelId: number) => void;
@@ -1241,6 +1249,58 @@ export const useReaderStore = create<ReaderState>()(
             [novelId]: Math.max(1, Math.round(pageIndex)),
           },
         })),
+      mergeNovelReaderState: ({
+        chapterIdMap,
+        preferredLastReadChapterId,
+        sourceNovelId,
+        targetNovelId,
+      }) =>
+        set((state) => {
+          if (sourceNovelId === targetNovelId) return state;
+
+          const {
+            [sourceNovelId]: sourceLastReadChapterId,
+            ...lastReadChapterByNovel
+          } = state.lastReadChapterByNovel;
+          const {
+            [sourceNovelId]: sourcePageIndex,
+            ...novelPageIndexByNovel
+          } = state.novelPageIndexByNovel;
+          const {
+            [sourceNovelId]: sourceReaderSettings,
+            ...readerSettingsByNovel
+          } = state.readerSettingsByNovel;
+
+          const mappedSourceLastReadChapterId = sourceLastReadChapterId
+            ? chapterIdMap[sourceLastReadChapterId]
+            : undefined;
+          const nextLastReadChapterId =
+            preferredLastReadChapterId ??
+            lastReadChapterByNovel[targetNovelId] ??
+            mappedSourceLastReadChapterId;
+          if (nextLastReadChapterId) {
+            lastReadChapterByNovel[targetNovelId] = nextLastReadChapterId;
+          }
+          if (
+            novelPageIndexByNovel[targetNovelId] === undefined &&
+            mappedSourceLastReadChapterId !== undefined &&
+            sourcePageIndex !== undefined
+          ) {
+            novelPageIndexByNovel[targetNovelId] = sourcePageIndex;
+          }
+          if (
+            readerSettingsByNovel[targetNovelId] === undefined &&
+            sourceReaderSettings !== undefined
+          ) {
+            readerSettingsByNovel[targetNovelId] = sourceReaderSettings;
+          }
+
+          return {
+            lastReadChapterByNovel,
+            novelPageIndexByNovel,
+            readerSettingsByNovel,
+          };
+        }),
       resetReadingProgress: () =>
         set({
           lastReadChapterByNovel: {},

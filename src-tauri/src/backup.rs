@@ -247,6 +247,7 @@ struct BackupRestoreChapter {
     progress: i64,
     is_downloaded: bool,
     content_type: Option<String>,
+    source_content_type: Option<String>,
     content: Option<String>,
     media_bytes: Option<i64>,
     release_time: Option<String>,
@@ -301,6 +302,16 @@ fn bool_to_int(value: bool) -> i64 {
 
 fn backup_content_type(value: Option<&str>) -> &str {
     match value {
+        Some("pdf") => "pdf",
+        Some("epub") => "epub",
+        _ => "html",
+    }
+}
+
+fn backup_source_content_type(value: Option<&str>) -> &str {
+    match value {
+        Some("text") => "text",
+        Some("markdown") => "markdown",
         Some("pdf") => "pdf",
         Some("epub") => "epub",
         _ => "html",
@@ -511,9 +522,10 @@ async fn execute_restore_snapshot(
             "INSERT INTO chapter (
                 id, novel_id, path, name, chapter_number, position, page,
                 bookmark, unread, progress, is_downloaded, content_bytes,
-                media_bytes, media_repair_needed, content_type, release_time,
-                read_at, created_at, found_at, updated_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+                media_bytes, media_repair_needed, content_type,
+                stored_content_type, release_time, read_at, created_at,
+                found_at, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
         )
         .bind(chapter.id)
         .bind(chapter.novel_id)
@@ -532,7 +544,17 @@ async fn execute_restore_snapshot(
             chapter.content.as_deref(),
             chapter.content_type.as_deref(),
         ))
-        .bind(backup_content_type(chapter.content_type.as_deref()))
+        .bind(backup_source_content_type(
+            chapter
+                .source_content_type
+                .as_deref()
+                .or(chapter.content_type.as_deref()),
+        ))
+        .bind(if restored_downloaded {
+            Some(backup_content_type(chapter.content_type.as_deref()))
+        } else {
+            None
+        })
         .bind(chapter.release_time.as_deref())
         .bind(chapter.read_at)
         .bind(chapter.created_at)
@@ -1597,6 +1619,13 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn backup_source_content_type_preserves_plugin_acquisition_type() {
+        assert_eq!(backup_source_content_type(Some("text")), "text");
+        assert_eq!(backup_source_content_type(Some("markdown")), "markdown");
+        assert_eq!(backup_source_content_type(None), "html");
     }
 
     #[test]

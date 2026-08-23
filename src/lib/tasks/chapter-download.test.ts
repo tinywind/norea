@@ -107,6 +107,7 @@ import {
 } from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { isTauriRuntime } from "../tauri-runtime";
+import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 import {
   cancelChapterDownloadBatches,
   enqueueChapterDownloadBatch,
@@ -239,6 +240,7 @@ beforeEach(() => {
   });
   vi.mocked(getChapterById).mockResolvedValue({
     contentType: "text",
+    sourceContentType: "text",
     id: 7,
   } as never);
   vi.mocked(getNovelById).mockResolvedValue(null);
@@ -526,8 +528,19 @@ describe("enqueueChapterDownloadBatch", () => {
 });
 
 describe("startChapterDownloadQueueExecutor", () => {
-  it("keeps failed restored downloads queued after pruning completed entries", async () => {
+  it("does not restore queue entries removed by a storage operation", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const storageOperationStarted = createDeferred<void>();
+    const releaseStorageOperation = createDeferred<void>();
+    const storageOperation = runExclusiveChapterStorageOperation(
+      { kind: "sources", sourceIds: ["source-a"] },
+      undefined,
+      async () => {
+        storageOperationStarted.resolve();
+        await releaseStorageOperation.promise;
+      },
+    );
+    await storageOperationStarted.promise;
     schedulerMocks.enqueueSource.mockImplementation(
       (spec: SourceTaskSpec<void>) => {
         capturedSpec = spec;
@@ -558,27 +571,20 @@ describe("startChapterDownloadQueueExecutor", () => {
       }
       return { isDownloaded: chapterId === 3 } as never;
     });
-    vi.mocked(reconcileStoredChapterContent).mockImplementation(
-      async (chapterId) =>
-        chapterId === 1
-          ? {
-              status: "present",
-              contentFile: "contents/source-a/novel/1-Chapter/content.html",
-              contentBytes: 24,
-              mediaBytes: 0,
-            }
-          : {
-              status: "missing",
-              contentFile: null,
-              contentBytes: 0,
-              mediaBytes: 0,
-            },
-    );
-
     await startChapterDownloadQueueExecutor();
+    await flushMicrotasks();
+
+    expect(getChapterById).not.toHaveBeenCalled();
+    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+
+    backendQueueValues.delete(1);
+    releaseStorageOperation.resolve();
+    await storageOperation;
     await flushMicrotasks(50);
 
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
     expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
       restoredJobCount - 2,
     );
@@ -718,6 +724,39 @@ describe("enqueueChapterDownload", () => {
     expect(clearChapterMedia).toHaveBeenCalledWith(
       7,
       expect.objectContaining({ chapterId: 7, sourceId: "source-a" }),
+    );
+  });
+
+  it("uses the current source type instead of the stored effective type", async () => {
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      contentType: "html",
+      sourceContentType: "text",
+      id: 7,
+    } as never);
+    vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      contentType: "html",
+      title: "Chapter 7",
+    });
+
+    await capturedSpec?.run({
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    });
+
+    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
+      "/chapter/7",
+      "text",
+    );
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledWith(
+      "/chapter/7",
+      "text",
     );
   });
 
@@ -1424,6 +1463,44 @@ describe("enqueueChapterDownload", () => {
 });
 
 describe("enqueueChapterMediaRepair", () => {
+  it("uses the source type for acquisition and the effective type for stored HTML", async () => {
+    const storedHtml = `<img src="https://cdn.test/page.png">`;
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      chapterNumber: "7",
+      contentType: "html",
+      sourceContentType: "text",
+      id: 7,
+      isDownloaded: true,
+      name: "Chapter 7",
+      novelId: 11,
+      path: "/chapter/7",
+      position: 7,
+    } as never);
+
+    enqueueChapterMediaRepair({
+      id: 7,
+      pluginId: "source-a",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    });
+
+    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
+      "/chapter/7",
+      "text",
+    );
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<img>", "html", {
+      mediaBytes: 3,
+    });
+  });
+
   it("recaptures page plans before repairing media", async () => {
     const setDetail = vi.fn();
     const signal = new AbortController().signal;

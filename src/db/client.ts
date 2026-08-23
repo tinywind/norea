@@ -7,6 +7,7 @@ const DB_BUSY_TIMEOUT_MS = 5000;
 const CHAPTER_CONTENT_COLUMN = "content";
 const MEDIA_REPAIR_NEEDED_COLUMN = "media_repair_needed";
 const MEDIA_BYTES_CHECKED_AT_COLUMN = "media_bytes_checked_at";
+const STORED_CONTENT_TYPE_COLUMN = "stored_content_type";
 
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
@@ -48,6 +49,30 @@ async function ensureMediaBytesCheckedAtColumn(db: Database): Promise<void> {
     `UPDATE chapter
      SET media_bytes_checked_at = unixepoch()
      WHERE media_bytes > 0`,
+  );
+}
+
+async function ensureStoredContentTypeColumn(db: Database): Promise<void> {
+  const columns = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(chapter)",
+  );
+  if (columns.some((column) => column.name === STORED_CONTENT_TYPE_COLUMN)) {
+    return;
+  }
+
+  await db.execute(
+    `ALTER TABLE chapter
+     ADD COLUMN stored_content_type text`,
+  );
+  await db.execute(
+    `UPDATE chapter
+     SET stored_content_type =
+       CASE content_type
+         WHEN 'text' THEN 'html'
+         WHEN 'markdown' THEN 'html'
+         ELSE content_type
+       END
+     WHERE is_downloaded = 1`,
   );
 }
 
@@ -108,6 +133,7 @@ async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   await ensureMediaRepairNeededColumn(db);
   await ensureMediaBytesCheckedAtColumn(db);
+  await ensureStoredContentTypeColumn(db);
   await ensureNoChapterContentColumn(db);
   await ensureChapterDownloadQueueTable(db);
   await ensureDownloadCacheWorkTable(db);

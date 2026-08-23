@@ -1,0 +1,327 @@
+.lnr-novel-merge-page {
+  --lnr-page-max-width: 90rem;
+  min-height: var(--lnr-app-content-height);
+}
+
+.lnr-novel-merge-header {
+  align-items: flex-start;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.lnr-novel-merge-loading {
+  min-height: 12rem;
+}
+
+.lnr-novel-merge-source-summary,
+.lnr-novel-merge-target-search,
+.lnr-novel-merge-decision-section {
+  display: grid;
+  gap: 1rem;
+}
+
+.lnr-novel-merge-source-summary {
+  max-width: 38rem;
+}
+
+.lnr-novel-merge-summary-card {
+  align-items: center;
+  display: grid;
+  gap: 0.875rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.lnr-novel-merge-summary-copy {
+  min-width: 0;
+}
+
+.lnr-novel-merge-summary-label {
+  color: var(--lnr-design-accent);
+  font-family: var(--lnr-font-meta);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lnr-novel-merge-summary-title {
+  color: var(--lnr-design-ink);
+  font-family: var(--lnr-font-heading);
+  font-size: 1.125rem;
+  line-height: 1.25;
+  margin-block: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.lnr-novel-merge-overview {
+  align-items: center;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+}
+
+.lnr-novel-merge-direction {
+  color: var(--lnr-design-accent);
+  font-family: var(--lnr-font-heading);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.lnr-novel-merge-search-state {
+  border: 1px solid var(--lnr-design-rule);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+}
+
+.lnr-novel-merge-search-results {
+  display: grid;
+  gap: 0.875rem;
+}
+
+.lnr-novel-merge-source-results {
+  border: 1px solid var(--lnr-design-rule);
+  border-radius: 0.375rem;
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+.lnr-novel-merge-result-grid {
+  display: grid;
+  gap: 0.625rem;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+}
+
+.lnr-novel-merge-result-card {
+  align-items: center;
+  background: var(--lnr-design-surface);
+  border: 1px solid var(--lnr-design-rule);
+  border-radius: 0.375rem;
+  color: var(--lnr-design-ink);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.625rem;
+  text-align: center;
+}
+
+.lnr-novel-merge-result-card:hover:not(:disabled),
+.lnr-novel-merge-result-card:focus-visible {
+  background: var(--lnr-design-panel);
+  border-color: var(--lnr-design-accent);
+}
+
+.lnr-novel-merge-result-card:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.lnr-novel-merge-result-name {
+  display: -webkit-box;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.3;
+  min-height: 2.1em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.lnr-novel-merge-result-action {
+  align-items: center;
+  color: var(--lnr-design-accent);
+  display: inline-flex;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  min-height: 1rem;
+}
+
+.lnr-novel-merge-progress {
+  background: var(--lnr-design-accent-soft);
+  border: 1px solid var(--lnr-design-accent);
+  border-radius: 999rem;
+  color: var(--lnr-design-accent);
+  font-family: var(--lnr-font-meta);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.375rem 0.75rem;
+}
+
+.lnr-novel-merge-workbench {
+  align-items: stretch;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(15rem, 1fr) minmax(13rem, 0.7fr) minmax(15rem, 1fr);
+  min-width: 0;
+}
+
+.lnr-novel-merge-chapter-column,
+.lnr-novel-merge-decision-column {
+  background: var(--lnr-design-panel);
+  border: 1px solid var(--lnr-design-rule);
+  border-radius: 0.375rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 22rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.lnr-novel-merge-column-header {
+  align-items: center;
+  background: var(--lnr-design-surface);
+  border-bottom: 1px solid var(--lnr-design-rule);
+  display: flex;
+  gap: 0.625rem;
+  justify-content: space-between;
+  min-height: 3rem;
+  padding: 0.625rem 0.75rem;
+}
+
+.lnr-novel-merge-chapter-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  max-height: min(58vh, 40rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem;
+}
+
+.lnr-novel-merge-chapter-button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.3125rem;
+  color: var(--lnr-design-ink);
+  cursor: pointer;
+  display: grid;
+  gap: 0.1875rem;
+  min-width: 0;
+  padding: 0.5625rem 0.625rem;
+  text-align: left;
+  width: 100%;
+}
+
+.lnr-novel-merge-chapter-button:hover:not(:disabled),
+.lnr-novel-merge-chapter-button:focus-visible {
+  background: var(--lnr-design-surface);
+  border-color: var(--lnr-design-rule-strong);
+}
+
+.lnr-novel-merge-chapter-button[data-active="true"],
+.lnr-novel-merge-target-row[data-active="true"] > .lnr-novel-merge-chapter-button {
+  background: var(--lnr-design-accent-soft);
+  border-color: var(--lnr-design-accent);
+}
+
+.lnr-novel-merge-chapter-button[data-decided="true"]
+  .lnr-novel-merge-chapter-status {
+  color: var(--lnr-design-ok);
+}
+
+.lnr-novel-merge-chapter-button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.lnr-novel-merge-chapter-name {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lnr-novel-merge-chapter-status {
+  color: var(--lnr-design-ink-subtle);
+  font-family: var(--lnr-font-meta);
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lnr-novel-merge-decision-card,
+.lnr-novel-merge-empty {
+  padding: 0.875rem;
+}
+
+.lnr-novel-merge-target-row {
+  border-bottom: 1px solid var(--lnr-design-rule);
+  display: grid;
+  gap: 0.375rem;
+  padding-block: 0.125rem 0.5rem;
+}
+
+.lnr-novel-merge-target-row:last-child {
+  border-bottom: 0;
+}
+
+.lnr-novel-merge-artifact-field {
+  color: var(--lnr-design-ink-subtle);
+  display: grid;
+  font-size: 0.6875rem;
+  gap: 0.25rem;
+  padding-inline: 0.625rem;
+}
+
+.lnr-novel-merge-artifact-field select {
+  background: var(--lnr-design-surface);
+  border: 1px solid var(--lnr-design-rule-strong);
+  border-radius: 0.3125rem;
+  color: var(--lnr-design-ink);
+  font: inherit;
+  min-height: 2rem;
+  padding-inline: 0.5rem;
+  width: 100%;
+}
+
+@media (max-width: 991px) {
+  .lnr-novel-merge-overview {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .lnr-novel-merge-overview > .lnr-text-button {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+
+  .lnr-novel-merge-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .lnr-novel-merge-chapter-column,
+  .lnr-novel-merge-decision-column {
+    min-height: 0;
+  }
+
+  .lnr-novel-merge-chapter-list {
+    max-height: 22rem;
+  }
+}
+
+@media (max-width: 575px) {
+  .lnr-novel-merge-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .lnr-novel-merge-direction {
+    transform: rotate(90deg);
+  }
+
+  .lnr-novel-merge-overview > .lnr-text-button {
+    grid-column: auto;
+    justify-self: stretch;
+  }
+
+  .lnr-novel-merge-result-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

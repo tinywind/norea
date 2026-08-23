@@ -44,6 +44,7 @@ const VALID_MANIFEST: BackupManifest = {
       progress: 0,
       isDownloaded: false,
       contentType: "html",
+      sourceContentType: "text",
       content: null,
       mediaBytes: 0,
       releaseTime: null,
@@ -137,6 +138,13 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(round.chapters[0]?.content).toContain("reader-epub-content");
   });
 
+  it("preserves source and physical chapter content types separately", () => {
+    const round = parseBackupManifest(encodeBackupManifest(VALID_MANIFEST));
+
+    expect(round.chapters[0]?.sourceContentType).toBe("text");
+    expect(round.chapters[0]?.contentType).toBe("html");
+  });
+
   it("normalizes older v1 manifests that lack discovery timestamps", () => {
     const legacy = JSON.parse(
       encodeBackupManifest(VALID_MANIFEST),
@@ -148,6 +156,7 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     delete legacy.settings;
     delete chapters[0]!.createdAt;
     delete chapters[0]!.contentType;
+    delete chapters[0]!.sourceContentType;
     delete chapters[0]!.foundAt;
 
     const parsed = parseBackupManifest(JSON.stringify(legacy));
@@ -157,6 +166,7 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
       VALID_MANIFEST.chapters[0]?.updatedAt,
     );
     expect(parsed.chapters[0]?.contentType).toBe("html");
+    expect(parsed.chapters[0]?.sourceContentType).toBe("html");
     expect(parsed.chapters[0]?.foundAt).toBe(
       VALID_MANIFEST.chapters[0]?.updatedAt,
     );

@@ -87,7 +87,8 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
     chapterPath: "/c/1",
     chapterUpdatedAt: 1_700_000_000,
     contentBytes: 10,
-    contentType: "html",
+    sourceContentType: "text",
+    storedContentType: "html",
     cover: null,
     genres: null,
     inLibrary: 1,
@@ -203,7 +204,9 @@ describe("chapter content storage", () => {
   });
 
   it("normalizes adopted text metadata to the physical HTML file", async () => {
-    selectMock.mockResolvedValueOnce([chapterRow({ contentType: "text" })]);
+    selectMock.mockResolvedValueOnce([
+      chapterRow({ sourceContentType: "text", storedContentType: null }),
+    ]);
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
       status: "present",

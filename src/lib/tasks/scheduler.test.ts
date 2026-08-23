@@ -549,6 +549,53 @@ describe("TaskScheduler", () => {
     expect(order).toEqual(["a1:start", "b:start"]);
   });
 
+  it("does not cancel queued or running tasks that opt out", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const source = { id: "p", name: "Plugin" };
+    let finishRunning!: () => void;
+
+    const running = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Running merge",
+      priority: "interactive",
+      source,
+      canCancel: false,
+      run: () =>
+        new Promise<void>((resolve) => {
+          finishRunning = resolve;
+        }),
+    });
+
+    await settle();
+
+    const queued = scheduler.enqueueSource({
+      kind: "source.mergeNovel",
+      title: "Queued merge",
+      priority: "interactive",
+      source,
+      canCancel: false,
+      run: async () => undefined,
+    });
+
+    expect(scheduler.getTask(running.id)).toMatchObject({
+      status: "running",
+      canCancel: false,
+    });
+    expect(scheduler.getTask(queued.id)).toMatchObject({
+      status: "queued",
+      canCancel: false,
+    });
+    expect(scheduler.cancel(running.id)).toBe(false);
+    expect(scheduler.cancel(queued.id)).toBe(false);
+    expect(scheduler.cancelActiveTasks({ sourceId: source.id })).toBe(0);
+
+    finishRunning();
+    await Promise.all([running.promise, queued.promise]);
+  });
+
   it("discards queued source tasks with a single snapshot publish", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
@@ -852,6 +899,31 @@ describe("TaskScheduler", () => {
     expect(scheduler.getTask(task.id)?.lane).toBe("source");
     expect(observations).toEqual(["immediate:immediate"]);
   });
+
+  it.each(["source.previewNovel", "source.mergeNovel"] as const)(
+    "runs %s on the immediate source executor",
+    async (kind) => {
+      const scheduler = new TaskScheduler({
+        sourceForegroundConcurrency: 1,
+        sourceQueuesPaused: false,
+      });
+      const observations: string[] = [];
+
+      const task = scheduler.enqueueSource({
+        kind,
+        title: "Novel merge interaction",
+        priority: "interactive",
+        source: { id: "p", name: "Plugin" },
+        run: async (context) => {
+          observations.push(String(context.executor));
+        },
+      });
+
+      await task.promise;
+
+      expect(observations).toEqual(["immediate"]);
+    },
+  );
 
   it("reserves the immediate executor for open site work without blocking the pool", async () => {
     const scheduler = new TaskScheduler({

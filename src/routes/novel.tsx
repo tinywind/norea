@@ -56,6 +56,7 @@ import {
   RefreshGlyph,
   RetryGlyph,
   SortGlyph,
+  SourceGlyph,
 } from "../components/ActionGlyphs";
 import {
   ConsoleChip,
@@ -1418,6 +1419,7 @@ function NovelWorkspace({
   toggleBusy,
 }: NovelWorkspaceProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { titleRef, titleStyle } = useAutoFitNovelTitle(novel.name);
   const coverSource = useNovelCoverSource(novel);
   const genres = useMemo(() => splitGenres(novel.genres), [novel.genres]);
@@ -1533,6 +1535,20 @@ function NovelWorkspace({
             onRefresh={onRefreshMetadata}
             refreshing={metadataRefreshing}
           />
+          {novel.inLibrary ? (
+            <NovelActionButton
+              label={t("novel.mergeSource")}
+              onClick={() =>
+                void navigate({
+                  replace: true,
+                  search: { sourceNovelId: novel.id },
+                  to: "/novel-merge",
+                })
+              }
+            >
+              <SourceGlyph />
+            </NovelActionButton>
+          ) : null}
         </>
       )}
       <NovelActionButton

@@ -28,6 +28,7 @@ export interface ChapterRow {
   unread: boolean;
   progress: number;
   isDownloaded: boolean;
+  sourceContentType: ChapterContentType;
   contentType: ChapterContentType;
   contentBytes: number;
   mediaBytes: number;
@@ -43,12 +44,18 @@ export type ChapterListRow = ChapterRow;
 
 type RawChapterListRow = Omit<
   ChapterListRow,
-  "bookmark" | "unread" | "isDownloaded" | "contentType" | "mediaRepairNeeded"
+  | "bookmark"
+  | "unread"
+  | "isDownloaded"
+  | "sourceContentType"
+  | "contentType"
+  | "mediaRepairNeeded"
 > & {
   bookmark: unknown;
   unread: unknown;
   isDownloaded: unknown;
-  contentType: string | null;
+  sourceContentType: string | null;
+  storedContentType: string | null;
   mediaRepairNeeded: unknown;
 };
 
@@ -66,7 +73,8 @@ const CHAPTER_LIST_SELECT_FIELDS = `
   unread,
   progress,
   is_downloaded  AS isDownloaded,
-  content_type   AS contentType,
+  content_type   AS sourceContentType,
+  stored_content_type AS storedContentType,
   content_bytes   AS contentBytes,
   media_bytes     AS mediaBytes,
   media_repair_needed AS mediaRepairNeeded,
@@ -97,12 +105,18 @@ function sqliteBoolean(value: unknown): boolean {
 }
 
 function normalizeChapterListRow(row: RawChapterListRow): ChapterListRow {
+  const { storedContentType: rawStoredContentType, ...chapter } = row;
+  const sourceContentType = normalizeChapterContentType(row.sourceContentType);
+  const storedContentType = rawStoredContentType
+    ? normalizeChapterContentType(rawStoredContentType)
+    : null;
   return {
-    ...row,
+    ...chapter,
     bookmark: sqliteBoolean(row.bookmark),
     unread: sqliteBoolean(row.unread),
     isDownloaded: sqliteBoolean(row.isDownloaded),
-    contentType: normalizeChapterContentType(row.contentType),
+    sourceContentType,
+    contentType: storedContentType ?? sourceContentType,
     mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
   };
 }
@@ -177,7 +191,7 @@ const FINISHED_PROGRESS = 100;
 const SQLITE_BIND_PARAMETER_BUDGET = 900;
 const SOURCE_CHAPTER_PARAM_COUNT = 8;
 const SOURCE_CHAPTER_PATH_PARAM_COUNT = 4;
-const DOWNLOADED_CHAPTER_PARAM_COUNT = 9;
+const DOWNLOADED_CHAPTER_PARAM_COUNT = 10;
 const SOURCE_CHAPTER_CHUNK_SIZE = Math.max(
   1,
   Math.min(
@@ -309,7 +323,7 @@ function downloadedChapterValuesSql(
   return inputs
     .map((_, index) => {
       const param = index * DOWNLOADED_CHAPTER_PARAM_COUNT + 1;
-      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, $${param + 8}, 0, 1, unixepoch(), unixepoch())`;
+      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, $${param + 8}, $${param + 9}, 0, 1, unixepoch(), unixepoch())`;
     })
     .join(", ");
 }
@@ -325,6 +339,7 @@ function downloadedChapterParams(
     input.chapterNumber ?? null,
     input.page ?? "1",
     input.releaseTime ?? null,
+    normalizeChapterContentType(input.contentType),
     storedChapterContentType(normalizeChapterContentType(input.contentType)),
     input.contentBytes,
   ]);
@@ -430,7 +445,7 @@ async function executeDownloadedChapterChunk(
 ): Promise<number> {
   const result = await db.execute(
     `INSERT INTO chapter
-       (novel_id, path, name, position, chapter_number, page, release_time, content_type, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
+       (novel_id, path, name, position, chapter_number, page, release_time, content_type, stored_content_type, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
      VALUES ${downloadedChapterValuesSql(chunk)}
      ON CONFLICT(novel_id, path) DO UPDATE SET
        name           = excluded.name,
@@ -439,6 +454,7 @@ async function executeDownloadedChapterChunk(
        page           = excluded.page,
        release_time   = excluded.release_time,
        content_type   = excluded.content_type,
+       stored_content_type = excluded.stored_content_type,
        content_bytes  = excluded.content_bytes,
        media_repair_needed = 0,
        media_bytes_checked_at = NULL,
@@ -451,6 +467,7 @@ async function executeDownloadedChapterChunk(
         OR page IS NOT excluded.page
         OR release_time IS NOT excluded.release_time
         OR content_type IS NOT excluded.content_type
+        OR stored_content_type IS NOT excluded.stored_content_type
         OR content_bytes IS NOT excluded.content_bytes
         OR media_repair_needed IS NOT 0
         OR is_downloaded IS NOT 1`,
@@ -751,7 +768,7 @@ export async function saveChapterContentMetadata(
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content_type   = $2,
+       stored_content_type = $2,
        content_bytes  = $3,
        media_bytes    = $4,
        media_repair_needed = $5,
@@ -783,7 +800,7 @@ export async function saveChapterPartialContentMetadata(
   const result = await db.execute(
     `UPDATE chapter
      SET
-       content_type   = $2,
+       stored_content_type = $2,
        content_bytes  = $3,
        media_repair_needed = $4,
        media_bytes_checked_at = NULL,
@@ -806,6 +823,9 @@ export async function adoptStoredChapterContentMetadata(
   contentType: ChapterContentType | null,
 ): Promise<ChapterMutationResult> {
   const db = await getDb();
+  const normalizedContentType = contentType
+    ? storedChapterContentType(normalizeChapterContentType(contentType))
+    : null;
   const result = await db.execute(
     `UPDATE chapter
      SET
@@ -813,10 +833,10 @@ export async function adoptStoredChapterContentMetadata(
        media_bytes    = $3,
        media_repair_needed = 0,
        media_bytes_checked_at = unixepoch(),
-       content_type   = COALESCE($4, content_type),
+       stored_content_type = COALESCE($4, stored_content_type),
        is_downloaded  = 1
      WHERE id = $1`,
-    [chapterId, contentBytes, mediaBytes, contentType],
+    [chapterId, contentBytes, mediaBytes, normalizedContentType],
   );
   return { rowsAffected: result.rowsAffected };
 }
@@ -832,6 +852,7 @@ export async function markStoredChapterContentMissing(
        media_bytes    = 0,
        media_repair_needed = 0,
        media_bytes_checked_at = NULL,
+       stored_content_type = NULL,
        is_downloaded  = 0
      WHERE id = $1
        AND novel_id IN (
@@ -855,6 +876,7 @@ export async function clearChapterContent(
        media_bytes    = 0,
        media_repair_needed = 0,
        media_bytes_checked_at = NULL,
+       stored_content_type = NULL,
        is_downloaded  = 0,
        updated_at     = unixepoch()
      WHERE id = $1
@@ -949,7 +971,7 @@ export async function listLibraryUpdates(
        ip.name           AS pluginName,
        n.path            AS novelPath,
        c.name            AS chapterName,
-       c.content_type    AS contentType,
+       COALESCE(c.stored_content_type, c.content_type) AS contentType,
        c.position,
        c.found_at        AS foundAt,
        c.is_downloaded   AS isDownloaded,

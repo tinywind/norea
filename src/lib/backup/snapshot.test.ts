@@ -182,7 +182,8 @@ const RAW_CHAPTER = {
   unread: 1,
   progress: 0,
   isDownloaded: 0,
-  contentType: "html",
+  sourceContentType: "text",
+  storedContentType: "html",
   mediaBytes: 99,
   releaseTime: null,
   readAt: null,
@@ -232,6 +233,7 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.chapters[0]?.unread).toBe(true);
     expect(manifest.chapters[0]?.isDownloaded).toBe(true);
     expect(manifest.chapters[0]?.contentType).toBe("html");
+    expect(manifest.chapters[0]?.sourceContentType).toBe("text");
     expect(manifest.chapters[0]?.content).toBe("<p>hi</p>");
     expect(manifest.chapters[0]?.mediaBytes).toBe(5);
     expect(manifest.categories[0]?.isSystem).toBe(true);
@@ -259,9 +261,14 @@ describe("gatherBackupSnapshot", () => {
     await gatherBackupSnapshot();
 
     const sqls = mockSelect.mock.calls.map((call) => call[0] as string);
+    const chapterSql = sqls.find((sql) => /FROM chapter\b/m.test(sql));
     expect(sqls).toHaveLength(6);
     expect(sqls.some((s) => /FROM novel\b\s*$/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM chapter\b/m.test(s))).toBe(true);
+    expect(chapterSql).toContain("content_type   AS sourceContentType");
+    expect(chapterSql).toContain(
+      "stored_content_type AS storedContentType",
+    );
     expect(sqls.some((s) => /FROM category\b/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM novel_category\b/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM repository\b/m.test(s))).toBe(true);

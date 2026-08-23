@@ -70,6 +70,12 @@ pub fn run() {
             sql: include_str!("schema_download_cache_work.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "separate stored chapter content type",
+            sql: include_str!("schema_chapter_stored_content_type.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let desktop_open_files = desktop_file_open::DesktopOpenFileState::from_process_args();
@@ -139,8 +145,11 @@ pub fn run() {
             chapter_media::chapter_media_use_default_storage_root,
             chapter_media::chapter_media_write_manifest,
             chapter_media::chapter_storage_prune_dir_children,
+            chapter_media::chapter_storage_prepare_transfer,
+            chapter_media::chapter_storage_finalize_transfer,
             chapter_media::chapter_storage_relocate_dir,
             chapter_media::chapter_storage_remove_dir,
+            chapter_media::chapter_storage_rollback_transfer,
             chapter_media::novel_cover_read_manifest,
             chapter_media::novel_cover_store,
             desktop_file_open::desktop_open_file_discard,

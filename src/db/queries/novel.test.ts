@@ -854,6 +854,7 @@ describe("upsertLocalNovelChapters", () => {
     const [chapterSql, chapterParams] = db.execute.mock.calls[0]!;
     expect(chapterSql).toContain("INSERT INTO chapter");
     expect(chapterSql).toContain("content_type");
+    expect(chapterSql).toContain("stored_content_type");
     expect(chapterSql).toContain("media_repair_needed");
     expect(chapterSql).toContain("is_downloaded");
     expect(chapterParams).toEqual([
@@ -864,6 +865,7 @@ describe("upsertLocalNovelChapters", () => {
       null,
       "1",
       null,
+      "text",
       "html",
       12,
     ]);
@@ -1093,6 +1095,7 @@ describe("upsertLocalNovel", () => {
     const [chapterSql, chapterParams] = db.execute.mock.calls[1]!;
     expect(chapterSql).toContain("INSERT INTO chapter");
     expect(chapterSql).toContain("content_type");
+    expect(chapterSql).toContain("stored_content_type");
     expect(chapterSql).toContain("content_bytes");
     expect(chapterSql).toContain("media_repair_needed");
     expect(chapterSql).toContain("is_downloaded");
@@ -1105,6 +1108,7 @@ describe("upsertLocalNovel", () => {
       "1",
       "1",
       "2026-01-01",
+      "text",
       "html",
       12,
     ]);

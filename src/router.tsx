@@ -9,6 +9,7 @@ import { DownloadsPage } from "./routes/downloads";
 import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
 import { NovelDetailPage } from "./routes/novel";
+import { NovelMergePage } from "./routes/novel-merge";
 import { ReaderPage } from "./routes/reader";
 import { SettingsPage } from "./routes/settings";
 import { SourcePage } from "./routes/source";
@@ -58,6 +59,15 @@ export const novelRoute = createRoute({
     id: asPositiveId(search.id),
   }),
   component: NovelDetailPage,
+});
+
+export const novelMergeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/novel-merge",
+  validateSearch: (search: Record<string, unknown>) => ({
+    sourceNovelId: asPositiveId(search.sourceNovelId),
+  }),
+  component: NovelMergePage,
 });
 
 export const settingsRoute = createRoute({
@@ -110,6 +120,7 @@ const routeTree = rootRoute.addChildren([
   readerRoute,
   settingsRoute,
   novelRoute,
+  novelMergeRoute,
   historyRoute,
   updatesRoute,
   downloadsRoute,

@@ -3,6 +3,10 @@ import {
   MAX_BACKUP_ARCHIVE_BYTES,
   assertByteBudget,
 } from "./performance-budgets";
+import type {
+  ChapterStorageTransferEntry,
+  ChapterStorageTransferPreparation,
+} from "./chapter-storage-transfer";
 
 interface AndroidStorageBridge {
   archiveDirectory: (
@@ -31,6 +35,11 @@ interface AndroidStorageBridge {
     chapterIdentityPrefix: string,
     preferredContentFileName: string,
   ) => void;
+  finalizeChapterStorageTransfer: (
+    requestId: string,
+    rootUri: string,
+    preparationJson: string,
+  ) => void;
   listChapterStorageDirs: (
     rootUri: string,
     preferredChapterDir: string,
@@ -45,6 +54,11 @@ interface AndroidStorageBridge {
     cacheToken: string,
   ) => string;
   pickMediaStorageRoot: (requestId: string) => void;
+  prepareChapterStorageTransfer: (
+    requestId: string,
+    rootUri: string,
+    entriesJson: string,
+  ) => void;
   readBase64: (rootUri: string, relativePath: string) => string;
   readContentUriBase64: (uri: string) => string;
   readContentUriFile?: (uri: string, maxBytes: string) => string;
@@ -69,7 +83,17 @@ interface AndroidStorageBridge {
     relativePath: string,
     newName: string,
   ) => string;
+  removeChapterStorageDirectory: (
+    requestId: string,
+    rootUri: string,
+    relativeDir: string,
+  ) => void;
   rollbackRestore: (rootUri: string, token: string) => string;
+  rollbackChapterStorageTransfer: (
+    requestId: string,
+    rootUri: string,
+    preparationJson: string,
+  ) => void;
   deleteTempFile?: (path: string) => string;
   writeContentUriFile: (
     uri: string,
@@ -156,6 +180,10 @@ interface AndroidChapterStorageDirsResponse extends AndroidStorageResponse {
   chapterDirs?: string[];
 }
 
+interface AndroidChapterStorageTransferResponse extends AndroidStorageResponse {
+  preparation?: ChapterStorageTransferPreparation;
+}
+
 export interface AndroidChapterArtifacts {
   status: "missing" | "present";
   contentFile: string | null;
@@ -192,6 +220,10 @@ const pickResolvers = new Map<
   (payload: AndroidStoragePickPayload) => void
 >();
 const chapterArtifactResolvers = new Map<string, (response: string) => void>();
+const chapterStorageTransferResolvers = new Map<
+  string,
+  (response: string) => void
+>();
 const nomediaRoots = new Set<string>();
 
 declare global {
@@ -201,6 +233,10 @@ declare global {
       payload: AndroidStoragePickPayload,
     ) => void;
     __lnrResolveAndroidChapterArtifacts?: (
+      requestId: string,
+      response: string,
+    ) => void;
+    __lnrResolveAndroidChapterStorageTransfer?: (
       requestId: string,
       response: string,
     ) => void;
@@ -300,6 +336,38 @@ function ensureChapterArtifactResolver(): void {
     chapterArtifactResolvers.delete(requestId);
     resolve(response);
   };
+}
+
+function ensureChapterStorageTransferResolver(): void {
+  window.__lnrResolveAndroidChapterStorageTransfer ??= (
+    requestId,
+    response,
+  ) => {
+    const resolve = chapterStorageTransferResolvers.get(requestId);
+    if (!resolve) return;
+    chapterStorageTransferResolvers.delete(requestId);
+    resolve(response);
+  };
+}
+
+async function runAndroidChapterStorageTransfer(
+  start: (requestId: string, root: string) => void,
+): Promise<AndroidChapterStorageTransferResponse> {
+  const root = await androidStorageRoot();
+  ensureChapterStorageTransferResolver();
+  const requestId = makeRequestId();
+  const rawResponse = await new Promise<string>((resolve, reject) => {
+    chapterStorageTransferResolvers.set(requestId, resolve);
+    try {
+      start(requestId, root);
+    } catch (error) {
+      chapterStorageTransferResolvers.delete(requestId);
+      reject(error);
+    }
+  });
+  return parseStorageResponse<AndroidChapterStorageTransferResponse>(
+    rawResponse,
+  );
 }
 
 export async function selectAndroidStorageRoot(): Promise<string | null> {
@@ -672,6 +740,60 @@ export async function deleteAndroidStoragePath(
 ): Promise<void> {
   const root = await androidStorageRoot();
   parseStorageResponse(androidStorageBridge().deletePath(root, relativePath));
+}
+
+export async function prepareAndroidChapterStorageTransfer(
+  entries: readonly ChapterStorageTransferEntry[],
+): Promise<ChapterStorageTransferPreparation> {
+  const response = await runAndroidChapterStorageTransfer((requestId, root) => {
+    androidStorageBridge().prepareChapterStorageTransfer(
+      requestId,
+      root,
+      JSON.stringify(entries),
+    );
+  });
+  if (!response.preparation) {
+    throw new Error(
+      "Android storage bridge did not return a transfer preparation.",
+    );
+  }
+  return response.preparation;
+}
+
+export async function finalizeAndroidChapterStorageTransfer(
+  preparation: ChapterStorageTransferPreparation,
+): Promise<void> {
+  await runAndroidChapterStorageTransfer((requestId, root) => {
+    androidStorageBridge().finalizeChapterStorageTransfer(
+      requestId,
+      root,
+      JSON.stringify(preparation),
+    );
+  });
+}
+
+export async function rollbackAndroidChapterStorageTransfer(
+  preparation: ChapterStorageTransferPreparation,
+): Promise<void> {
+  await runAndroidChapterStorageTransfer((requestId, root) => {
+    androidStorageBridge().rollbackChapterStorageTransfer(
+      requestId,
+      root,
+      JSON.stringify(preparation),
+    );
+  });
+}
+
+export async function removeAndroidChapterStorageDirectory(
+  relativeDir: string,
+): Promise<void> {
+  await runAndroidChapterStorageTransfer((requestId, root) => {
+    androidStorageBridge().removeChapterStorageDirectory(
+      requestId,
+      root,
+      relativeDir,
+    );
+  });
 }
 
 export async function beginAndroidStorageRestore(): Promise<string> {

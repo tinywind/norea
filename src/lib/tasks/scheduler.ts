@@ -83,6 +83,8 @@ export type SourceTaskKind =
   | "source.clearCookies"
   | "source.openSite"
   | "source.openNovel"
+  | "source.previewNovel"
+  | "source.mergeNovel"
   | "source.listPopular"
   | "source.listLatest"
   | "source.search"
@@ -208,6 +210,7 @@ export interface TaskSpec<T> {
   source?: TaskSource;
   subject?: TaskSubject;
   dedupeKey?: string;
+  canCancel?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;
   sourceCooldownKey?: string;
@@ -293,6 +296,8 @@ function isOpenSiteSourceKind(kind: TaskKind): boolean {
 function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
   return (
     kind === "source.openNovel" ||
+    kind === "source.previewNovel" ||
+    kind === "source.mergeNovel" ||
     kind === "source.listPopular" ||
     kind === "source.listLatest" ||
     kind === "source.search"
@@ -591,7 +596,7 @@ export class TaskScheduler {
         subject: spec.subject,
         status: "queued",
         createdAt: Date.now(),
-        canCancel: true,
+        canCancel: spec.canCancel ?? true,
         canRetry: false,
       },
     };
@@ -625,7 +630,7 @@ export class TaskScheduler {
 
   cancel(id: string): boolean {
     const entry = this.entries.get(id);
-    if (!entry) return false;
+    if (!entry || !entry.record.canCancel) return false;
 
     if (entry.record.status === "running") {
       return this.cancelRunningEntry(entry);
@@ -1529,7 +1534,7 @@ export class TaskScheduler {
 
   private start(entry: TaskEntry): void {
     this.setStatus(entry, "running", {
-      canCancel: true,
+      canCancel: entry.spec.canCancel ?? true,
       canRetry: false,
       startedAt: Date.now(),
     });
@@ -1694,7 +1699,7 @@ export class TaskScheduler {
     entry.record = {
       ...nextRecord,
       status: "queued",
-      canCancel: true,
+      canCancel: entry.spec.canCancel ?? true,
       canRetry: false,
     };
     this.entries.set(entry.record.id, entry);

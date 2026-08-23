@@ -22,6 +22,7 @@ import {
   type TaskRecord,
   type TaskRunContext,
 } from "./scheduler";
+import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 
 const DOWNLOAD_CACHE_DELETE_PROGRESS_EVENT =
   "download-cache-delete-progress";
@@ -156,6 +157,14 @@ async function cancelConflictingDownloads(
   await removeBackendQueuedDownloads([...cancelledChapterIds]);
 }
 
+export async function cancelNovelChapterDownloadWork(
+  novelIds: readonly number[],
+): Promise<void> {
+  const targetIds = normalizeTargetIds("novel", novelIds);
+  if (targetIds.length === 0) return;
+  await cancelConflictingDownloads("novel", targetIds);
+}
+
 async function enqueueNativeWork(
   workId: string,
   scope: DownloadCacheDeleteScope,
@@ -217,6 +226,14 @@ async function listenForNativeProgress(
 
 async function yieldAndroidDeletion(): Promise<void> {
   await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+function throwIfDownloadCacheDeleteAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  throw (
+    signal.reason ??
+    new DOMException("Download cache deletion was cancelled.", "AbortError")
+  );
 }
 
 async function chapterIdsForDownloadCacheScope(
@@ -294,16 +311,33 @@ async function runDownloadCacheDelete(
   context: TaskRunContext,
   progressLabel?: (completed: number, total: number) => string,
 ): Promise<DownloadCacheDeleteResult> {
-  const unlisten = await listenForNativeProgress(
-    work.id,
-    context,
-    progressLabel,
-  );
+  let cancellation: Promise<void> | undefined;
+  const requestCancellation = () => {
+    if (!cancellation) {
+      cancellation = cancelNativeWork(work.id);
+      void cancellation.catch(() => undefined);
+    }
+    return cancellation;
+  };
   const abortListener = () => {
-    void cancelNativeWork(work.id);
+    void requestCancellation();
   };
   context.signal.addEventListener("abort", abortListener, { once: true });
+  let unlisten: (() => void) | undefined;
   try {
+    if (context.signal.aborted) {
+      await requestCancellation();
+      throwIfDownloadCacheDeleteAborted(context.signal);
+    }
+    unlisten = await listenForNativeProgress(
+      work.id,
+      context,
+      progressLabel,
+    );
+    if (context.signal.aborted) {
+      await requestCancellation();
+      throwIfDownloadCacheDeleteAborted(context.signal);
+    }
     if (isAndroidRuntime()) {
       await clearAndroidDownloadArtifacts(
         work.scope,
@@ -311,12 +345,17 @@ async function runDownloadCacheDelete(
         context,
         progressLabel,
       );
-      return await runNativeWork(work.id, false);
+      const result = await runNativeWork(work.id, false);
+      throwIfDownloadCacheDeleteAborted(context.signal);
+      return result;
     }
-    return await runNativeWork(work.id, true);
+    const result = await runNativeWork(work.id, true);
+    throwIfDownloadCacheDeleteAborted(context.signal);
+    return result;
   } finally {
     context.signal.removeEventListener("abort", abortListener);
-    unlisten();
+    unlisten?.();
+    if (cancellation) await cancellation;
   }
 }
 
@@ -342,11 +381,35 @@ export function enqueueDownloadCacheDelete({
     subject: taskSubjectForScope(resolvedScope, targetIds),
     dedupeKey: `download-cache-delete:${id}`,
     run: async (context) => {
-      await cancelConflictingDownloads(resolvedScope, targetIds);
-      const work =
-        existingWork ??
-        (await enqueueNativeWork(id, resolvedScope, targetIds, resolvedTitle));
-      return runDownloadCacheDelete(work, context, progressLabel);
+      let enteredStorageOperation = false;
+      try {
+        return await runExclusiveChapterStorageOperation(
+          { kind: "all" },
+          context.signal,
+          async () => {
+            enteredStorageOperation = true;
+            await cancelConflictingDownloads(resolvedScope, targetIds);
+            if (context.signal.aborted && existingWork) {
+              await cancelNativeWork(existingWork.id);
+            }
+            throwIfDownloadCacheDeleteAborted(context.signal);
+            const work =
+              existingWork ??
+              (await enqueueNativeWork(
+                id,
+                resolvedScope,
+                targetIds,
+                resolvedTitle,
+              ));
+            return runDownloadCacheDelete(work, context, progressLabel);
+          },
+        );
+      } catch (error) {
+        if (!enteredStorageOperation && context.signal.aborted && existingWork) {
+          await cancelNativeWork(existingWork.id);
+        }
+        throw error;
+      }
     },
   });
 }

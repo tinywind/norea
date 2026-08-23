@@ -16,6 +16,7 @@ interface SourceTaskOptions<T> {
   priority?: Exclude<TaskPriority, "background">;
   subject?: TaskSubject;
   dedupeKey?: string;
+  canCancel?: boolean;
   exclusive?: boolean;
   run: (context: TaskRunContext) => Promise<T>;
 }
@@ -25,6 +26,7 @@ function debugOpenSiteTask(message: string, data?: unknown): void {
 }
 
 export function enqueueSourceTask<T>({
+  canCancel,
   dedupeKey,
   exclusive,
   kind,
@@ -41,6 +43,7 @@ export function enqueueSourceTask<T>({
     source: { id: plugin.id, name: plugin.name },
     subject: { ...subject, pluginId: plugin.id },
     dedupeKey,
+    canCancel,
     exclusive,
     run,
   });

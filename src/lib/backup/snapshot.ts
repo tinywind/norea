@@ -95,7 +95,8 @@ interface RawChapterRow {
   unread: unknown;
   progress: number;
   isDownloaded: unknown;
-  contentType: string;
+  sourceContentType: string;
+  storedContentType: string | null;
   mediaBytes: number;
   releaseTime: string | null;
   readAt: number | null;
@@ -170,7 +171,8 @@ const SELECT_CHAPTERS = `
     unread,
     progress,
     is_downloaded  AS isDownloaded,
-    content_type   AS contentType,
+    content_type   AS sourceContentType,
+    stored_content_type AS storedContentType,
     media_bytes    AS mediaBytes,
     release_time   AS releaseTime,
     read_at        AS readAt,
@@ -288,7 +290,7 @@ function toChapter(
   row: RawChapterRow,
   content: string | null,
   mediaBytes: number,
-  contentType = row.contentType,
+  contentType = row.storedContentType ?? row.sourceContentType,
 ): BackupChapter {
   return {
     id: row.id,
@@ -302,6 +304,7 @@ function toChapter(
     unread: sqliteBoolean(row.unread),
     progress: row.progress,
     isDownloaded: content !== null,
+    sourceContentType: normalizeChapterContentType(row.sourceContentType),
     contentType: storedChapterContentType(
       normalizeChapterContentType(contentType),
     ),
@@ -322,9 +325,11 @@ async function toBackupChapter(row: RawChapterRow): Promise<BackupChapter> {
     artifacts.status === "present" && artifacts.contentFile.endsWith(".pdf")
       ? "pdf"
       : artifacts.status === "present" &&
-          normalizeChapterContentType(row.contentType) === "pdf"
+          normalizeChapterContentType(
+            row.storedContentType ?? row.sourceContentType,
+          ) === "pdf"
         ? "html"
-        : row.contentType;
+        : (row.storedContentType ?? row.sourceContentType);
   return toChapter(
     row,
     content,

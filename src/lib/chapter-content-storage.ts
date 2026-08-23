@@ -51,7 +51,8 @@ interface ChapterStorageRow {
   chapterPath: string;
   chapterUpdatedAt: number;
   contentBytes: number;
-  contentType: string;
+  sourceContentType: string;
+  storedContentType: string | null;
   cover: string | null;
   genres: string | null;
   inLibrary: unknown;
@@ -144,7 +145,8 @@ const SELECT_CHAPTER_STORAGE_ROW = `
     c.unread,
     c.progress,
     c.is_downloaded  AS isDownloaded,
-    c.content_type   AS contentType,
+    c.content_type   AS sourceContentType,
+    c.stored_content_type AS storedContentType,
     c.content_bytes  AS contentBytes,
     c.media_bytes    AS mediaBytes,
     c.release_time   AS releaseTime,
@@ -246,7 +248,9 @@ function storageMetadata(row: ChapterStorageRow) {
       progress: row.progress,
       isDownloaded: sqliteBoolean(row.isDownloaded),
       contentType: normalizeChapterContentType(
-        row.contentType ?? DEFAULT_CHAPTER_CONTENT_TYPE,
+        row.storedContentType ??
+          row.sourceContentType ??
+          DEFAULT_CHAPTER_CONTENT_TYPE,
       ),
       contentBytes: row.contentBytes,
       mediaBytes: row.mediaBytes,
@@ -351,7 +355,9 @@ async function reconcileStoredChapterStorageRow(
   const artifacts = await inspectStoredChapterArtifactsForRow(row);
   if (artifacts.status === "present") {
     rememberResolvedChapterStorageDir(row.chapterId, artifacts.contentFile);
-    const normalizedContentType = normalizeChapterContentType(row.contentType);
+    const normalizedContentType = normalizeChapterContentType(
+      row.storedContentType ?? row.sourceContentType,
+    );
     await adoptStoredChapterContentMetadata(
       row.chapterId,
       artifacts.contentBytes,

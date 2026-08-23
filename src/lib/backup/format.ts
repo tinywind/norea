@@ -51,6 +51,9 @@ export interface BackupChapter {
   unread: boolean;
   progress: number;
   isDownloaded: boolean;
+  /** Plugin acquisition type. Falls back to contentType for older v1 backups. */
+  sourceContentType?: ChapterContentType;
+  /** Physical/effective type of the backed-up content body. */
   contentType?: ChapterContentType;
   /** Inline reader body. Null when the chapter wasn't downloaded yet. */
   content: string | null;
@@ -185,6 +188,12 @@ function isChapter(value: unknown): value is BackupChapter {
       value.contentType === "pdf" ||
       value.contentType === "markdown" ||
       value.contentType === "epub") &&
+    (value.sourceContentType === undefined ||
+      value.sourceContentType === "html" ||
+      value.sourceContentType === "text" ||
+      value.sourceContentType === "pdf" ||
+      value.sourceContentType === "markdown" ||
+      value.sourceContentType === "epub") &&
     (value.mediaBytes === undefined || typeof value.mediaBytes === "number") &&
     typeof value.updatedAt === "number" &&
     (value.createdAt === undefined || typeof value.createdAt === "number") &&
@@ -202,13 +211,15 @@ function normalizeNovel(novel: BackupNovel): BackupNovel {
 
 function normalizeChapter(chapter: BackupChapter): BackupChapter {
   const createdAt = chapter.createdAt ?? chapter.updatedAt;
+  const contentType = normalizeChapterContentType(
+    chapter.contentType ?? DEFAULT_CHAPTER_CONTENT_TYPE,
+  );
   return {
     ...chapter,
-    contentType: storedChapterContentType(
-      normalizeChapterContentType(
-        chapter.contentType ?? DEFAULT_CHAPTER_CONTENT_TYPE,
-      ),
+    sourceContentType: normalizeChapterContentType(
+      chapter.sourceContentType ?? contentType,
     ),
+    contentType: storedChapterContentType(contentType),
     mediaBytes: chapter.mediaBytes ?? 0,
     createdAt,
     foundAt: chapter.foundAt ?? Math.max(createdAt, chapter.updatedAt),

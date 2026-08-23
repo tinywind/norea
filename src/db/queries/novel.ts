@@ -3,7 +3,6 @@ import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import { upsertDownloadedChaptersInDb } from "./chapter";
 import {
   normalizeChapterContentType,
-  storedChapterContentType,
   type ChapterContentType,
 } from "../../lib/chapter-content";
 import type { EpubHtmlResource } from "../../lib/epub-html";
@@ -1072,9 +1071,7 @@ export async function upsertLocalNovelChapters(
         chapterNumber: chapter.chapterNumber ?? null,
         page: chapter.page ?? "1",
         releaseTime: chapter.releaseTime ?? null,
-        contentType: storedChapterContentType(
-          normalizeChapterContentType(chapter.contentType),
-        ),
+        contentType: normalizeChapterContentType(chapter.contentType),
         contentBytes: chapter.contentBytes,
       })),
     );
@@ -1270,9 +1267,7 @@ export async function upsertLocalNovel(
         chapterNumber: chapter.chapterNumber ?? null,
         page: chapter.page ?? "1",
         releaseTime: chapter.releaseTime ?? null,
-        contentType: storedChapterContentType(
-          normalizeChapterContentType(chapter.contentType),
-        ),
+        contentType: normalizeChapterContentType(chapter.contentType),
         contentBytes: chapter.contentBytes,
       })),
     );

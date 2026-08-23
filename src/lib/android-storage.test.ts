@@ -11,8 +11,12 @@ import {
   deleteAndroidContentUriTempFile,
   describeAndroidContentUri,
   inspectAndroidChapterArtifacts,
+  finalizeAndroidChapterStorageTransfer,
+  prepareAndroidChapterStorageTransfer,
   prepareAndroidReaderMediaCache,
   readAndroidStorageText,
+  removeAndroidChapterStorageDirectory,
+  rollbackAndroidChapterStorageTransfer,
   selectAndroidStorageRoot,
   writeAndroidContentUriFile,
 } from "./android-storage";
@@ -24,10 +28,14 @@ type TestBridge = {
   describeContentUri?: ReturnType<typeof vi.fn>;
   ensureNoMedia?: ReturnType<typeof vi.fn>;
   inspectChapterArtifacts?: ReturnType<typeof vi.fn>;
+  finalizeChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
+  prepareChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
   readText?: ReturnType<typeof vi.fn>;
+  removeChapterStorageDirectory?: ReturnType<typeof vi.fn>;
+  rollbackChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   writeBytes?: ReturnType<typeof vi.fn>;
   writeContentUriFile?: ReturnType<typeof vi.fn>;
   writeContentUriFileCapped?: ReturnType<typeof vi.fn>;
@@ -293,6 +301,116 @@ describe("android storage bridge facade", () => {
       mediaBytes: 3,
       status: "present",
     });
+  });
+
+  it("runs chapter storage transfers through asynchronous bridge callbacks", async () => {
+    const root = "content://tree/primary%3ANoreaTransfer";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const requests = new Map<string, string>();
+    const prepareChapterStorageTransfer = vi.fn(
+      (requestId: string, _rootUri: string, payload: string) => {
+        requests.set("prepare", requestId);
+        expect(JSON.parse(payload)).toEqual([
+          {
+            entryId: "chapter-1",
+            sourceRelativeDir: "contents/source-a/Novel-a/1-Opening",
+            targetRelativeDir: "contents/source-b/Novel-b/1-Opening",
+          },
+        ]);
+      },
+    );
+    const finalizeChapterStorageTransfer = vi.fn((requestId: string) => {
+      requests.set("finalize", requestId);
+    });
+    const rollbackChapterStorageTransfer = vi.fn((requestId: string) => {
+      requests.set("rollback", requestId);
+    });
+    const removeChapterStorageDirectory = vi.fn((requestId: string) => {
+      requests.set("remove", requestId);
+    });
+    invokeMock.mockResolvedValue(root);
+    installBridge({
+      ensureNoMedia,
+      finalizeChapterStorageTransfer,
+      prepareChapterStorageTransfer,
+      removeChapterStorageDirectory,
+      rollbackChapterStorageTransfer,
+    });
+    const entries = [
+      {
+        entryId: "chapter-1",
+        sourceRelativeDir: "contents/source-a/Novel-a/1-Opening",
+        targetRelativeDir: "contents/source-b/Novel-b/1-Opening",
+      },
+    ];
+    const preparation = {
+      entries: [
+        {
+          ...entries[0]!,
+          contentBytes: 12,
+          contentFile: "contents/source-b/Novel-b/1-Opening/content.html",
+          mediaBytes: 3,
+          outcome: "copiedSource" as const,
+          replacedTarget: false,
+        },
+      ],
+      token: "transfer-token",
+    };
+
+    const prepared = prepareAndroidChapterStorageTransfer(entries);
+    await vi.waitFor(() => expect(requests.get("prepare")).toBeTruthy());
+    window.__lnrResolveAndroidChapterStorageTransfer?.(
+      requests.get("prepare")!,
+      JSON.stringify({ ok: true, preparation }),
+    );
+    await expect(prepared).resolves.toEqual(preparation);
+
+    const finalized = finalizeAndroidChapterStorageTransfer(preparation);
+    await vi.waitFor(() => expect(requests.get("finalize")).toBeTruthy());
+    window.__lnrResolveAndroidChapterStorageTransfer?.(
+      requests.get("finalize")!,
+      JSON.stringify({ ok: true }),
+    );
+    await expect(finalized).resolves.toBeUndefined();
+
+    const rolledBack = rollbackAndroidChapterStorageTransfer(preparation);
+    await vi.waitFor(() => expect(requests.get("rollback")).toBeTruthy());
+    window.__lnrResolveAndroidChapterStorageTransfer?.(
+      requests.get("rollback")!,
+      JSON.stringify({ ok: true }),
+    );
+    await expect(rolledBack).resolves.toBeUndefined();
+
+    const removed = removeAndroidChapterStorageDirectory(
+      entries[0]!.sourceRelativeDir,
+    );
+    await vi.waitFor(() => expect(requests.get("remove")).toBeTruthy());
+    window.__lnrResolveAndroidChapterStorageTransfer?.(
+      requests.get("remove")!,
+      JSON.stringify({ ok: true }),
+    );
+    await expect(removed).resolves.toBeUndefined();
+
+    expect(prepareChapterStorageTransfer).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      expect.any(String),
+    );
+    expect(finalizeChapterStorageTransfer).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      JSON.stringify(preparation),
+    );
+    expect(rollbackChapterStorageTransfer).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      JSON.stringify(preparation),
+    );
+    expect(removeChapterStorageDirectory).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      entries[0]!.sourceRelativeDir,
+    );
   });
 
   it("ensures .nomedia after selecting a storage root", async () => {
