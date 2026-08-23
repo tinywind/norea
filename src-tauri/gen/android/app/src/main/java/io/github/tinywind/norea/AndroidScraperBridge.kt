@@ -135,9 +135,7 @@ class AndroidScraperBridge(
       .filter { it >= 0 }
       .minOrNull()
     val withoutSecrets = if (secretBoundary == null) url else url.substring(0, secretBoundary)
-    return MALFORMED_URL_USER_INFO.replaceFirst(withoutSecrets) { match ->
-      match.groupValues[1]
-    }
+    return MALFORMED_URL_USER_INFO.replaceFirst(withoutSecrets, "\$1")
   }
 
   private fun redactUrlsForLog(message: String): String {
