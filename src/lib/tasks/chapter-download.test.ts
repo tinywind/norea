@@ -47,6 +47,13 @@ vi.mock("../chapter-media", () => ({
   clearChapterMedia: vi.fn(),
   getStoredChapterMediaBytes: vi.fn(),
   hasRemoteChapterMedia: vi.fn(),
+  isChapterMediaFinalizationError: vi.fn(
+    (value: unknown) =>
+      value !== null &&
+      typeof value === "object" &&
+      (value as { code?: unknown }).code ===
+        "chapter-media-finalization-failed",
+  ),
   localChapterMediaSources: vi.fn(),
   protectRemoteChapterMediaForPartialHtml: vi.fn((html: string) => html),
   restoreProtectedRemoteChapterMediaSources: vi.fn((html: string) => html),
@@ -694,6 +701,37 @@ describe("enqueueChapterDownload", () => {
         ([command]) => command === "chapter_download_queue_remove",
       ),
     ).toHaveLength(1);
+  });
+
+  it("keeps the backend queue job when media finalization fails", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const finalizationError = Object.assign(
+      new Error("Chapter media archive finalization failed."),
+      { code: "chapter-media-finalization-failed" as const },
+    );
+    schedulerMocks.enqueueSource.mockImplementationOnce(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        return { id: "task-1", promise: Promise.reject(finalizationError) };
+      },
+    );
+
+    const handle = enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    await expect(handle.promise).rejects.toBe(finalizationError);
+    await flushMicrotasks();
+
+    expect([...backendQueueValues.keys()]).toEqual([7]);
+    expect(
+      tauriMocks.invoke.mock.calls.filter(
+        ([command]) => command === "chapter_download_queue_remove",
+      ),
+    ).toHaveLength(0);
   });
 
   it("keeps chapter downloads off the interaction executor", () => {

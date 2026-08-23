@@ -47,6 +47,7 @@ import {
   clearStoredChapterContentMirror,
   readStoredChapterContentMirror,
   reconcileStoredChapterContent,
+  restoreChapterContentStorageMirror,
   saveStoredChapterContent,
   saveStoredChapterPartialContent,
   writeStoredChapterContentMirror,
@@ -304,5 +305,49 @@ describe("chapter content storage", () => {
       "Android storage folder is not readable.",
     );
     expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
+  });
+
+  it("continues startup reconciliation after one chapter inspection fails", async () => {
+    selectMock.mockResolvedValueOnce([
+      chapterRow(),
+      chapterRow({
+        chapterId: 11,
+        chapterName: "Chapter 2",
+        chapterNumber: "2",
+        position: 2,
+      }),
+    ]);
+    let inspectionCount = 0;
+    invokeMock.mockImplementation(async (command) => {
+      if (command !== "chapter_content_mirror_inspect") return undefined;
+      inspectionCount += 1;
+      if (inspectionCount === 1) throw new Error("interrupted finalization");
+      return {
+        status: "present",
+        contentFile: "contents/demo/Sample-Novel-n-1/2-Chapter-2/content.html",
+        contentBytes: 12,
+        mediaBytes: 8,
+      };
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(restoreChapterContentStorageMirror()).resolves.toEqual({
+      chapters: 1,
+      cursorChapterId: 11,
+      novels: 0,
+      scannedChapters: 2,
+    });
+
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      11,
+      12,
+      8,
+      "html",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[storage] failed to reconcile stored chapter",
+      expect.objectContaining({ chapterId: 10 }),
+    );
+    warn.mockRestore();
   });
 });

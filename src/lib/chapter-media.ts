@@ -165,8 +165,37 @@ export interface ChapterMediaFailure {
   url: string;
 }
 
+export interface ChapterMediaFinalizationErrorShape extends Error {
+  readonly cause: unknown;
+  readonly code: "chapter-media-finalization-failed";
+}
+
+export class ChapterMediaFinalizationError
+  extends Error
+  implements ChapterMediaFinalizationErrorShape
+{
+  readonly cause: unknown;
+  readonly code = "chapter-media-finalization-failed" as const;
+
+  constructor(cause: unknown) {
+    super(`Chapter media finalization failed: ${mediaFailureMessage(cause)}`);
+    this.name = "ChapterMediaFinalizationError";
+    this.cause = cause;
+  }
+}
+
+export function isChapterMediaFinalizationError(
+  value: unknown,
+): value is ChapterMediaFinalizationErrorShape {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { code?: unknown }).code ===
+      "chapter-media-finalization-failed"
+  );
+}
+
 export interface CacheChapterMediaResult {
-  archiveFailure?: string;
   html: string;
   mediaFailures: ChapterMediaFailure[];
   mediaBytes: number;
@@ -761,6 +790,33 @@ function androidChapterMediaManifestRelativePathCandidates(
   ]);
 }
 
+async function deleteAndroidChapterMediaTransactionFiles(
+  {
+    archivePaths,
+    manifestPaths,
+  }: {
+    archivePaths: string[];
+    manifestPaths: string[];
+  },
+): Promise<void> {
+  const transactionPaths = uniqueAndroidStoragePaths(
+    [
+      ...archivePaths.flatMap((path) => [
+        path,
+        `${path}.tmp.zip`,
+        `${path}.bak`,
+        `${path}.rollback`,
+      ]),
+      ...manifestPaths.flatMap((path) => [
+        path,
+        `${path}.tmp`,
+        `${path}.bak`,
+      ]),
+    ],
+  );
+  await Promise.all(transactionPaths.map(deleteAndroidStoragePath));
+}
+
 function chapterMediaManifestLogContext(context: ChapterMediaStorageContext) {
   return {
     chapterId: context.chapterId,
@@ -1279,16 +1335,12 @@ async function prepareChapterMediaWorkspace(
       for (const path of androidChapterMediaRelativePathCandidates(context)) {
         await deleteAndroidStoragePath(path);
       }
-      for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
-        context,
-      )) {
-        await deleteAndroidStoragePath(archivePath);
-      }
-      for (const manifestPath of androidChapterMediaManifestRelativePathCandidates(
-        context,
-      )) {
-        await deleteAndroidStoragePath(manifestPath);
-      }
+      await deleteAndroidChapterMediaTransactionFiles({
+        archivePaths:
+          androidChapterMediaArchiveRelativePathCandidates(context),
+        manifestPaths:
+          androidChapterMediaManifestRelativePathCandidates(context),
+      });
     }
     return;
   }
@@ -1739,10 +1791,20 @@ function collectReusableMediaSources({
 async function filterExistingReusableMediaSources(
   reusableSources: Map<string, string>,
   context: ChapterMediaStorageContext,
+  manifest: ChapterMediaManifest,
 ): Promise<Map<string, string>> {
+  const filesBySourceUrl = new Map(
+    manifest.media.files.map((file) => [file.sourceUrl, file]),
+  );
   const existing = new Map<string, string>();
   for (const [url, src] of reusableSources) {
-    if ((await getStoredChapterMediaBytes(src, context)) > 0) {
+    const file = filesBySourceUrl.get(url);
+    if (
+      file?.status === "stored" &&
+      file.bytes > 0 &&
+      file.fileName === fileNameFromLocalMediaSrc(src, context.chapterId) &&
+      (await getStoredChapterMediaBytes(src, context)) === file.bytes
+    ) {
       existing.set(url, src);
     }
   }
@@ -1758,21 +1820,6 @@ async function collectStoredManifestMediaSources({
   manifest: ChapterMediaManifest;
   urls: string[];
 }): Promise<Map<string, string>> {
-  return collectStoredMediaFileSources({
-    context,
-    files: manifest.media.files,
-    urls,
-  });
-}
-
-function collectManifestMediaSources({
-  manifest,
-  urls,
-}: {
-  manifest: ChapterMediaManifest;
-  urls: string[];
-}): Map<string, string> {
-  if (!manifest.complete) return new Map();
   const requestedUrls = new Set(urls);
   const existing = new Map<string, string>();
   for (const file of manifest.media.files) {
@@ -1784,31 +1831,8 @@ function collectManifestMediaSources({
     ) {
       continue;
     }
-    existing.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
-  }
-  return existing;
-}
-
-async function collectStoredMediaFileSources({
-  context,
-  files,
-  urls,
-}: {
-  context: ChapterMediaStorageContext;
-  files: ChapterMediaManifestFile[];
-  urls: string[];
-}): Promise<Map<string, string>> {
-  const requestedUrls = new Set(urls);
-  const existing = new Map<string, string>();
-  for (const file of files) {
-    if (
-      !requestedUrls.has(file.sourceUrl) ||
-      !isFetchableMediaUrl(file.sourceUrl)
-    ) {
-      continue;
-    }
     const src = localChapterMediaSrc(file.fileName);
-    if ((await getStoredChapterMediaBytes(src, context)) > 0) {
+    if ((await getStoredChapterMediaBytes(src, context)) === file.bytes) {
       existing.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
     }
   }
@@ -2186,27 +2210,31 @@ export async function cacheHtmlChapterMedia({
       })
     : new Map<string, string>();
   const mediaFailures: ChapterMediaFailure[] = [];
-  const previousManifest = await readChapterMediaManifest(storageContext);
-  if (repair) {
+  let previousManifest = await readChapterMediaManifest(storageContext);
+  const fetchedSourceUrls = new Set(urls);
+  const resetChangedMedia =
+    !repair &&
+    previousManifest.media.files.some(
+      (file) => !fetchedSourceUrls.has(file.sourceUrl),
+    );
+  if (repair || resetChangedMedia) {
     await prepareChapterMediaWorkspace(storageContext, repair);
+  }
+  if (resetChangedMedia) {
+    previousManifest = emptyChapterMediaManifest();
   }
   const reusableSources = repair
     ? await filterExistingReusableMediaSources(
         reusableCandidates,
         storageContext,
+        previousManifest,
       )
     : new Map<string, string>();
-  const manifestSources =
-    repair || !previousManifest.complete
-      ? await collectStoredManifestMediaSources({
-          context: storageContext,
-          manifest: previousManifest,
-          urls,
-        })
-      : collectManifestMediaSources({
-          manifest: previousManifest,
-          urls,
-        });
+  const manifestSources = await collectStoredManifestMediaSources({
+    context: storageContext,
+    manifest: previousManifest,
+    urls,
+  });
   const missingManifestSources = repair
     ? await collectMissingManifestMediaSources({
         chapterId,
@@ -2221,11 +2249,20 @@ export async function cacheHtmlChapterMedia({
       localSources.set(url, src);
     }
   }
+  const currentSourceUrls = new Set([
+    ...urls,
+    ...missingManifestSources.keys(),
+  ]);
+  const retainedManifestFiles = repair
+    ? previousManifest.media.files
+    : previousManifest.media.files.filter((file) =>
+        currentSourceUrls.has(file.sourceUrl),
+      );
   const mediaFilesBySourceUrl = new Map(
-    previousManifest.media.files.map((file) => [file.sourceUrl, file]),
+    retainedManifestFiles.map((file) => [file.sourceUrl, file]),
   );
   const usedFileNames = new Set(
-    previousManifest.media.files.map((file) => file.fileName),
+    [...mediaFilesBySourceUrl.values()].map((file) => file.fileName),
   );
   for (const src of reusableSources.values()) {
     const fileName = fileNameFromLocalMediaSrc(src, chapterId);
@@ -2299,7 +2336,7 @@ export async function cacheHtmlChapterMedia({
     await emitHtmlUpdate(onHtmlUpdate, template);
     await emitMediaPatchUpdate(onMediaPatch, template, reusableChangedElements);
   }
-  if (!repair) {
+  if (!repair && !resetChangedMedia) {
     await prepareChapterMediaWorkspace(storageContext, repair, {
       preserveExisting: true,
     });
@@ -2534,29 +2571,12 @@ export async function cacheHtmlChapterMedia({
     throw new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError");
   }
 
-  await writeChapterMediaManifest({
-    context: storageContext,
-    files: [...mediaFilesBySourceUrl.values()],
-  });
-
-  if (localSources.size === 0) {
+  let mediaBytes: number;
+  try {
     await writeChapterMediaManifest({
-      complete: true,
       context: storageContext,
       files: [...mediaFilesBySourceUrl.values()],
     });
-    clearMediaSourceMetadata(template.content);
-    return {
-      html: normalizeLocalChapterMediaOutput(template.innerHTML),
-      mediaBytes: 0,
-      mediaFailures,
-      storedMediaCount,
-    };
-  }
-
-  let archiveFailure: string | undefined;
-  let mediaBytes = 0;
-  try {
     mediaBytes = await archiveChapterMediaCache({
       chapterId,
       chapterName,
@@ -2568,25 +2588,16 @@ export async function cacheHtmlChapterMedia({
       sourceId,
     });
   } catch (error) {
-    archiveFailure = mediaFailureMessage(error);
-    console.warn("[chapter-media] media archive failed", {
-      error: archiveFailure,
+    const finalizationError = new ChapterMediaFinalizationError(error);
+    console.warn("[chapter-media] media finalization failed", {
+      error: finalizationError.message,
       sourceId,
     });
-    mediaBytes = await getStoredChapterMediaBytes(
-      template.innerHTML,
-      storageContext,
-    );
+    throw finalizationError;
   }
-  await writeChapterMediaManifest({
-    complete: true,
-    context: storageContext,
-    files: [...mediaFilesBySourceUrl.values()],
-  });
   clearMediaSourceMetadata(template.content);
 
   return {
-    ...(archiveFailure ? { archiveFailure } : {}),
     html: normalizeLocalChapterMediaOutput(template.innerHTML),
     mediaFailures,
     mediaBytes,
@@ -2616,7 +2627,9 @@ export async function storeEmbeddedChapterMedia({
   novelPath?: string | null;
   resources: EmbeddedChapterMediaResource[];
   sourceId?: string | null;
-}): Promise<Pick<CacheChapterMediaResult, "archiveFailure" | "html" | "mediaBytes" | "storedMediaCount">> {
+}): Promise<
+  Pick<CacheChapterMediaResult, "html" | "mediaBytes" | "storedMediaCount">
+> {
   const uniqueResources = [
     ...new Map(resources.map((resource) => [resource.placeholder, resource])).values(),
   ].filter(
@@ -2675,11 +2688,9 @@ export async function storeEmbeddedChapterMedia({
     storedMediaCount += 1;
   }
 
-  await writeChapterMediaManifest({ context: storageContext, files });
-
-  let archiveFailure: string | undefined;
-  let mediaBytes = 0;
+  let mediaBytes: number;
   try {
+    await writeChapterMediaManifest({ context: storageContext, files });
     mediaBytes = await archiveChapterMediaCache({
       chapterId,
       chapterName,
@@ -2691,24 +2702,14 @@ export async function storeEmbeddedChapterMedia({
       sourceId: sourceId ?? undefined,
     });
   } catch (error) {
-    archiveFailure = mediaFailureMessage(error);
-    console.warn("[chapter-media] embedded media archive failed", {
-      error: archiveFailure,
+    const finalizationError = new ChapterMediaFinalizationError(error);
+    console.warn("[chapter-media] embedded media finalization failed", {
+      error: finalizationError.message,
       sourceId,
     });
-    mediaBytes = await getStoredChapterMediaBytes(
-      rewrittenHtml,
-      storageContext,
-    );
+    throw finalizationError;
   }
-  await writeChapterMediaManifest({
-    complete: true,
-    context: storageContext,
-    files,
-  });
-
   return {
-    ...(archiveFailure ? { archiveFailure } : {}),
     html: normalizeLocalChapterMediaOutput(rewrittenHtml),
     mediaBytes,
     storedMediaCount,
@@ -3160,12 +3161,14 @@ export async function clearChapterMedia(
             ),
           ),
         ),
-        deleteAndroidStoragePath(
-          androidChapterMediaArchiveRelativePathForContext(resolvedContext),
-        ),
-        deleteAndroidStoragePath(
-          androidChapterMediaManifestRelativePath(resolvedContext),
-        ),
+        deleteAndroidChapterMediaTransactionFiles({
+          archivePaths: [
+            androidChapterMediaArchiveRelativePathForContext(resolvedContext),
+          ],
+          manifestPaths: [
+            androidChapterMediaManifestRelativePath(resolvedContext),
+          ],
+        }),
       ]);
     }
     await deleteAndroidStoragePath(`chapter-media/${chapterId}`);

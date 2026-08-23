@@ -644,8 +644,16 @@ export async function restoreChapterContentStorageMirror(
   );
   let restoredChapters = 0;
   for (const row of rows) {
-    const artifacts = await reconcileStoredChapterStorageRow(row);
-    if (artifacts.status === "present") restoredChapters += 1;
+    try {
+      const artifacts = await reconcileStoredChapterStorageRow(row);
+      if (artifacts.status === "present") restoredChapters += 1;
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn("[storage] failed to reconcile stored chapter", {
+        chapterId: row.chapterId,
+        error,
+      });
+    }
   }
   return {
     chapters: restoredChapters,

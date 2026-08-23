@@ -17,6 +17,7 @@ import {
   clearChapterMedia,
   getStoredChapterMediaBytes,
   hasRemoteChapterMedia,
+  isChapterMediaFinalizationError,
   localChapterMediaSources,
   protectRemoteChapterMediaForPartialHtml,
   restoreProtectedRemoteChapterMediaSources,
@@ -650,6 +651,7 @@ function installChapterDownloadLifecycleListeners(): void {
 function shouldKeepQueuedChapterDownloadJobAfterRejection(
   error: unknown,
 ): boolean {
+  if (isChapterMediaFinalizationError(error)) return true;
   if (!isAbortError(error)) return false;
   if (chapterDownloadLifecycleSuspending) return true;
   return (
@@ -1154,8 +1156,6 @@ function enqueueChapterDownloadForExecutor(
               setDetail(
                 `${media.mediaFailures.length} media assets using remote fallback`,
               );
-            } else if (media.archiveFailure) {
-              setDetail("Media archive failed; using extracted media files");
             }
           }
         }
@@ -1444,8 +1444,6 @@ export function enqueueChapterMediaRepair(
         setDetail(
           `${media.mediaFailures.length} media assets using remote fallback`,
         );
-      } else if (media.archiveFailure) {
-        setDetail("Media archive failed; using extracted media files");
       } else {
         setDetail(`${media.storedMediaCount} media assets repaired`);
       }
