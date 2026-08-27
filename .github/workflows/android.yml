@@ -100,8 +100,8 @@ jobs:
           test -f "${resource_dir}/include/stddef.h"
           echo "CMAKE=$cmake_bin" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$libclang_path" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$sysroot -isystem ${resource_dir}/include" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android=--target=x86_64-linux-android24 --sysroot=$sysroot -isystem ${resource_dir}/include" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android=--target=x86_64-linux-android24 --sysroot=$sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
 
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
