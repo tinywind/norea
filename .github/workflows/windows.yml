@@ -13,6 +13,7 @@ on:
       - "src/**"
       - "src-tauri/**"
       - "drizzle/**"
+      - "public/**"
       - "index.html"
       - "vite.config.*"
       - "tsconfig*.json"
@@ -62,6 +63,28 @@ jobs:
         with:
           workspaces: src-tauri
           key: ${{ matrix.rust-target }}
+
+      - name: Configure OpenVPN native build tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $cmake = Get-Command cmake -ErrorAction Stop
+          & $cmake.Source --version
+
+          $libclangPath = Join-Path $env:ProgramFiles "LLVM\bin"
+          $libclang = Join-Path $libclangPath "libclang.dll"
+          if (-not (Test-Path $libclang -PathType Leaf)) {
+            throw "libclang was not found at $libclang"
+          }
+
+          $clang = Join-Path $libclangPath "clang++.exe"
+          if (-not (Test-Path $clang -PathType Leaf)) {
+            throw "Clang C++ was not found at $clang"
+          }
+          & $clang --version
+
+          "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
 
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile

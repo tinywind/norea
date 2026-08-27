@@ -264,6 +264,63 @@ Ordinary page chapters must use a page plan even if a static HTTP parser would
 appear simpler. This keeps challenge handling, logged-in sessions, rendered
 content, and browser cache behavior consistent.
 
+### App-local plugin VPN
+
+Windows and Android can route plugin-owned traffic through one app-local VPN
+session. The user imports one OpenVPN profile, and the resulting local proxy is
+shared by all source plugins. It is not configured per source. Norea does not
+install a system VPN adapter or change operating-system routes, so ordinary
+traffic from other applications is not automatically routed through it.
+
+On Windows, the proxy is applied to both the main and scraper WebViews. On
+Android, the process-scoped WebView proxy applies to every WebView owned by
+Norea. Native media acquisition uses the same local proxy. Source-owned browser
+profiles and their cookie, DOM storage, and browser cache isolation remain
+unchanged. Android requires an installed System WebView that reports the
+`PROXY_OVERRIDE` feature; source-owned profile isolation also requires
+`MULTI_PROFILE`. Startup remains blocked when the proxy override is unavailable.
+
+When the VPN is disabled, sanctioned plugin traffic connects directly. While a
+connection is starting or stopping, or after an unexpected VPN failure, plugin
+traffic fails closed instead of falling back to a direct connection. A user
+disconnect restores direct access only after teardown completes. When connected,
+plugin traffic is forwarded through the OpenVPN tunnel.
+
+Proxied plugin destination hostnames are resolved inside the userspace VPN
+network using a plain DNS server supplied by the tunnel. The OpenVPN profile's
+remote server hostname is bootstrap control traffic and is resolved by the
+device before the tunnel is available. Profiles without a usable in-tunnel DNS
+server are rejected. Profiles that require DNS over HTTPS, DNS over TLS, or
+DNSSEC validation are not supported.
+
+An imported profile must be one UTF-8 `.ovpn` file no larger than 1 MiB and
+must contain a remote endpoint. Certificates, private keys, and other referenced
+configuration must be inline. Includes, external configuration files, host
+scripts or plugins, upstream proxy directives, TAP mode, external PKI, and
+dynamic challenges are rejected. Connection credentials are supplied
+separately from the stored profile.
+
+App-owned and repository-owned requests, including update checks, remain on
+their existing direct HTTP paths and do not use the plugin VPN. Because the
+WebView proxy is shared inside the Norea process, any external request initiated
+by a Norea WebView follows that proxy while it is active. This broader WebView
+coverage prevents renderer-side plugin requests from silently escaping the
+plugin route; it does not reclassify app or repository HTTP helpers as plugin
+traffic.
+
+Plugin source currently runs in the main renderer, which is not a strong
+security boundary. These routing guarantees assume trusted, contract-compliant
+plugins that use the host shims. A malicious renderer plugin that deliberately
+invokes internal native IPC, including app-owned HTTP IPC, can bypass the
+contract. App-local proxying must not be represented as containment for
+arbitrary hostile plugin code.
+
+The loopback proxy uses an ephemeral port but does not authenticate local peer
+processes. Another local process that discovers that port could deliberately
+connect to it. The app-local guarantee therefore covers routing and automatic
+proxy configuration, not adversarial isolation from other software running on
+the same device.
+
 ## Required plugin surface
 
 Besides chapter acquisition, a plugin implements:

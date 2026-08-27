@@ -181,27 +181,28 @@ describe("createShimResolver", () => {
     expect(typeof lib.fetchProto).toBe("function");
   });
 
-  it("@libs/fetch appFetch uses the native app HTTP path", async () => {
+  it("@libs/fetch appFetch uses the source scraper path", async () => {
     invokeMock.mockImplementation(async (command, payload) => {
-      if (command === "plugin:http|fetch") {
+      if (command === "webview_fetch") {
         expect(payload).toEqual({
-          clientConfig: {
-            method: "GET",
-            url: "https://api.example.test/repos/demo/project",
-            headers: [["Accept", "application/json"]],
-            data: null,
+          contextUrl: null,
+          init: {
+            body: undefined,
+            headers: { Accept: "application/json" },
+            method: undefined,
           },
-        });
-        return 7;
-      }
-      if (command === "plugin:http|fetch_send") {
-        expect(payload).toEqual({ rid: 7 });
-        return {
-          status: 204,
-          statusText: "No Content",
+          queue: "immediate",
+          sourceId: "test-plugin",
+          timeoutMs: 30_000,
           url: "https://api.example.test/repos/demo/project",
+          userAgent: globalThis.navigator?.userAgent ?? null,
+        });
+        return {
+          bodyBase64: "",
+          finalUrl: "https://api.example.test/repos/demo/project",
           headers: {},
-          rid: 7,
+          status: 200,
+          statusText: "OK",
         };
       }
       throw new Error(`Unexpected command ${command}`);
@@ -218,7 +219,7 @@ describe("createShimResolver", () => {
       { headers: { Accept: "application/json" } },
     );
 
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(200);
     expect(response.url).toBe("https://api.example.test/repos/demo/project");
   });
 

@@ -30,6 +30,7 @@ import {
   installRuntimeLogLevelFilter,
   setRuntimeLogLevel,
 } from "./lib/logging";
+import { ensureAndroidPluginVpnProxy } from "./lib/plugin-vpn";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -482,13 +483,75 @@ function withAlpha(color: string, alpha: number): string {
   return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
 }
 
-interface ChapterMediaStorageGateProps {
+interface RuntimeGateProps {
   children: ReactNode;
+}
+
+function PluginVpnProxyGate({ children }: RuntimeGateProps) {
+  const appLocale = useAppearanceStore((state) => state.appLocale);
+  const android = isAndroidRuntime();
+  const [attempt, setAttempt] = useState(0);
+  const [checking, setChecking] = useState(android);
+  const [ready, setReady] = useState(!android);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!android) return;
+    let cancelled = false;
+    setChecking(true);
+    setError(null);
+    void ensureAndroidPluginVpnProxy()
+      .then(() => {
+        if (!cancelled) setReady(true);
+      })
+      .catch((unknownError: unknown) => {
+        if (cancelled) return;
+        setReady(false);
+        setError(describeError(unknownError));
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [android, attempt]);
+
+  if (!android || ready) return children;
+  return (
+    <div className="lnr-storage-setup">
+      <Paper className="lnr-storage-setup-card" withBorder>
+        <Stack gap="md">
+          <Stack gap="xs">
+            <Title order={1} className="lnr-storage-setup-title">
+              {translate(appLocale, "pluginVpn.bootstrap.title")}
+            </Title>
+            <Text className="lnr-storage-setup-copy">
+              {translate(appLocale, "pluginVpn.bootstrap.description")}
+            </Text>
+          </Stack>
+          {error ? (
+            <Text className="lnr-storage-setup-error" role="alert">
+              {translate(appLocale, "pluginVpn.bootstrap.failed", { error })}
+            </Text>
+          ) : null}
+          <Button
+            loading={checking}
+            onClick={() => {
+              setAttempt((value) => value + 1);
+            }}
+          >
+            {translate(appLocale, "pluginVpn.bootstrap.retry")}
+          </Button>
+        </Stack>
+      </Paper>
+    </div>
+  );
 }
 
 function ChapterMediaStorageGate({
   children,
-}: ChapterMediaStorageGateProps) {
+}: RuntimeGateProps) {
   const appLocale = useAppearanceStore((state) => state.appLocale);
   const [checking, setChecking] = useState(isTauriRuntime());
   const [storageReady, setStorageReady] = useState(!isTauriRuntime());
@@ -777,9 +840,11 @@ function AppProviders() {
     <MantineProvider theme={theme} forceColorScheme={colorScheme}>
       <Notifications position="top-right" />
       <QueryClientProvider client={queryClient}>
-        <ChapterMediaStorageGate>
-          <RouterProvider router={router} />
-        </ChapterMediaStorageGate>
+        <PluginVpnProxyGate>
+          <ChapterMediaStorageGate>
+            <RouterProvider router={router} />
+          </ChapterMediaStorageGate>
+        </PluginVpnProxyGate>
       </QueryClientProvider>
     </MantineProvider>
   );

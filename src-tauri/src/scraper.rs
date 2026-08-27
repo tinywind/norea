@@ -666,6 +666,12 @@ fn scraper_handle_for_key(
     })
     .initialization_script(initialization_script)
     .data_directory(data_directory);
+    #[cfg(target_os = "windows")]
+    {
+        let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
+        let browser_args = crate::plugin_vpn::windows_webview_browser_args(None, vpn.proxy_port())?;
+        builder = builder.additional_browser_args(&browser_args);
+    }
     if let Some(user_agent) = user_agent {
         builder = builder.user_agent(user_agent);
     }
@@ -2556,6 +2562,7 @@ pub async fn scraper_media_fetch(
     init: Option<FetchInit>,
     user_agent: Option<String>,
     timeout_ms: Option<u64>,
+    _vpn: tauri::State<'_, crate::plugin_vpn::PluginVpnState>,
 ) -> Result<FetchResult, String> {
     let user_agent = normalize_user_agent(user_agent);
     let init_log = fetch_init_for_log(&init);
@@ -2570,7 +2577,14 @@ pub async fn scraper_media_fetch(
         .map_err(|err| format!("scraper: invalid media fetch method '{method}': {err}"))?;
     let client = reqwest::Client::builder()
         .timeout(native_media_timeout(timeout_ms))
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .redirect(reqwest::redirect::Policy::limited(10));
+    #[cfg(any(target_os = "android", target_os = "windows"))]
+    let client = {
+        let proxy = reqwest::Proxy::all(_vpn.proxy_url())
+            .map_err(|err| format!("scraper: media fetch proxy: {err}"))?;
+        client.proxy(proxy)
+    };
+    let client = client
         .build()
         .map_err(|err| format!("scraper: media fetch client: {err}"))?;
 

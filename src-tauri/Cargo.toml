@@ -6,7 +6,7 @@ authors = ["Norea contributors"]
 license = "MIT"
 repository = "https://github.com/tinywind/norea"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.91"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,7 +30,7 @@ tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-opener = "2.5.4"
-tokio = { version = "1.52.3", features = ["sync", "time"] }
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls"] }
@@ -45,7 +45,14 @@ tauri-winrt-notification = "0.7.2"
 webview2-com = "0.38.2"
 windows = { version = "0.61", features = ["Foundation_Collections", "UI_Notifications", "Win32_Foundation", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
 
+[target.'cfg(any(target_os = "android", target_os = "windows"))'.dependencies]
+getrandom = "=0.4.2"
+openvpn-connect = { version = "=0.1.1", default-features = false, features = ["external-tun", "tokio", "vendor"] }
+smoltcp = { version = "=0.14.0", default-features = false, features = ["medium-ip", "proto-dns", "proto-ipv4", "proto-ipv6", "socket-dns", "socket-tcp", "std"] }
+
 [dev-dependencies]
+getrandom = "=0.4.2"
+smoltcp = { version = "=0.14.0", default-features = false, features = ["medium-ip", "proto-dns", "proto-ipv4", "proto-ipv6", "socket-dns", "socket-tcp", "std"] }
 tauri = { version = "2.11.1", features = ["test"] }
 tempfile = "3.27.0"
 

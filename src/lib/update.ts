@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { androidBridgeAuthority } from "./android-bridge";
 import { appFetch } from "./http";
 import {
   cancelNativeStream,
@@ -145,11 +146,6 @@ interface AndroidUpdateInstallBridge {
   openApk: (payload: string) => string;
 }
 
-interface AndroidBridgeInfoBridge {
-  nonce: () => string;
-  session: () => string;
-}
-
 interface AndroidUpdateInstallResult {
   error?: string;
   ok?: boolean;
@@ -163,7 +159,6 @@ interface Semver {
 
 declare global {
   interface Window {
-    __NoreaAndroidBridge?: AndroidBridgeInfoBridge;
     __NoreaAndroidUpdater?: AndroidUpdateInstallBridge;
   }
 }
@@ -790,31 +785,6 @@ function openAndroidInstaller(
   if (!result.ok) {
     throw new Error(result.error || "Android update installer failed to open.");
   }
-}
-
-function androidBridgeAuthority(
-  capability: string,
-): { capability: string; nonce: string; sessionToken: string } {
-  const bridge = window.__NoreaAndroidBridge;
-  if (!bridge) {
-    throw new Error("Android bridge session is unavailable.");
-  }
-
-  const session = objectRecord(JSON.parse(bridge.session()), "Android bridge session");
-  const sessionToken = readRequiredString(session.sessionToken, "sessionToken");
-  const capabilities = session.capabilities;
-  if (
-    Array.isArray(capabilities) &&
-    !capabilities.some((item) => item === capability)
-  ) {
-    throw new Error("Android bridge capability is unavailable.");
-  }
-  const nonce = readRequiredString(bridge.nonce(), "nonce");
-  return {
-    capability,
-    nonce,
-    sessionToken,
-  };
 }
 
 function selectReleaseAssetByName(

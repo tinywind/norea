@@ -9,6 +9,7 @@ mod download_cache;
 mod download_queue;
 mod native_stream;
 mod plugin_host;
+mod plugin_vpn;
 mod scraper;
 mod task_notifications;
 mod tray;
@@ -78,6 +79,30 @@ pub fn run() {
         },
     ];
 
+    let plugin_vpn = plugin_vpn::PluginVpnState::bind()
+        .expect("could not start the plugin VPN proxy");
+    #[cfg(target_os = "windows")]
+    let mut context = tauri::generate_context!();
+    #[cfg(not(target_os = "windows"))]
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    {
+        let main_window = context
+            .config_mut()
+            .app
+            .windows
+            .iter_mut()
+            .find(|window| window.label == "main")
+            .expect("main WebView configuration is missing");
+        main_window.additional_browser_args = Some(
+            plugin_vpn::windows_webview_browser_args(
+                main_window.additional_browser_args.as_deref(),
+                plugin_vpn.proxy_port(),
+            )
+            .expect("main WebView proxy configuration conflicts with existing browser arguments"),
+        );
+    }
+    let plugin_vpn_for_setup = plugin_vpn.clone();
     let desktop_open_files = desktop_file_open::DesktopOpenFileState::from_process_args();
     let builder = tauri::Builder::default();
 
@@ -92,6 +117,7 @@ pub fn run() {
         .manage(desktop_open_files)
         .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
+        .manage(plugin_vpn)
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
@@ -172,6 +198,11 @@ pub fn run() {
             native_stream::native_stream_write_chunk,
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
+            plugin_vpn::state::plugin_vpn_connect,
+            plugin_vpn::state::plugin_vpn_disconnect,
+            plugin_vpn::state::plugin_vpn_import_profile,
+            plugin_vpn::state::plugin_vpn_remove_profile,
+            plugin_vpn::state::plugin_vpn_status,
             scraper::webview_fetch,
             scraper::scraper_media_fetch,
             scraper::scraper_take_captured_resource,
@@ -194,11 +225,14 @@ pub fn run() {
             update::open_downloaded_update_handle,
             write_frontend_log,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             database::install_single_connection_sqlite_pool(app.handle())
                 .map_err(|err| format!("database init: {err}"))?;
             native_stream::cleanup_startup(app.handle())
                 .map_err(|err| format!("native stream init: {err}"))?;
+            plugin_vpn_for_setup
+                .initialize(app.handle())
+                .map_err(|err| format!("plugin VPN init: {err}"))?;
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;
@@ -216,7 +250,7 @@ pub fn run() {
             log::set_max_level(log::LevelFilter::Info);
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app, _event| {
             #[cfg(target_os = "android")]

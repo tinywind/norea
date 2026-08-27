@@ -5,18 +5,20 @@ import {
   ColorInput,
   Group,
   NumberInput,
+  PasswordInput,
   ScrollArea,
   Select,
   Slider,
   Stack,
   Switch,
   Text,
+  TextInput,
   Textarea,
   Title,
   UnstyledButton,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { PageFrame } from "../components/AppFrame";
 import { BrowseSettingsPanel } from "../components/BrowseSettingsPanel";
@@ -45,6 +47,18 @@ import {
 } from "../lib/chapter-media-storage";
 import { restartChapterContentStorageMirrorSweep } from "../lib/chapter-content-storage";
 import { pluginManager } from "../lib/plugins/manager";
+import {
+  canStartPluginVpnConnection,
+  connectPluginVpn,
+  disconnectPluginVpn,
+  getPluginVpnStatus,
+  importPluginVpnProfile,
+  isPluginVpnControlStatusReady,
+  removePluginVpnProfile,
+  type PluginVpnCredentials,
+  type PluginVpnPhase,
+  type PluginVpnStatus,
+} from "../lib/plugin-vpn";
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
 import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
@@ -311,6 +325,336 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
   );
 }
 
+const PLUGIN_VPN_QUERY_KEY = ["plugin-vpn"] as const;
+
+function emptyPluginVpnCredentials(): PluginVpnCredentials {
+  return {
+    challengeResponse: "",
+    password: "",
+    privateKeyPassword: "",
+    username: "",
+  };
+}
+
+const PLUGIN_VPN_PHASE_KEYS: Record<PluginVpnPhase, TranslationKey> = {
+  connected: "settings.data.pluginVpn.status.connected",
+  connecting: "settings.data.pluginVpn.status.connecting",
+  disabled: "settings.data.pluginVpn.status.disabled",
+  disconnecting: "settings.data.pluginVpn.status.disconnecting",
+  error: "settings.data.pluginVpn.status.error",
+};
+
+function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [vpnBusy, setVpnBusy] = useState<
+    "connect" | "disconnect" | "import" | "remove" | null
+  >(null);
+  const [credentials, setCredentials] = useState<PluginVpnCredentials>(
+    emptyPluginVpnCredentials,
+  );
+  const vpnQuery = useQuery({
+    queryKey: PLUGIN_VPN_QUERY_KEY,
+    queryFn: getPluginVpnStatus,
+    refetchInterval: (query) => {
+      const phase = (query.state.data as PluginVpnStatus | undefined)?.phase;
+      return phase === "connecting" ||
+        phase === "connected" ||
+        phase === "disconnecting"
+        ? 2_000
+        : false;
+    },
+  });
+  const status = vpnQuery.data;
+  const displayPhase =
+    vpnBusy === "connect"
+      ? "connecting"
+      : vpnBusy === "disconnect"
+        ? "disconnecting"
+        : status?.phase;
+  const controlStatusReady = isPluginVpnControlStatusReady(
+    status,
+    vpnQuery.isPending,
+    vpnQuery.isError,
+  );
+  const operationDisabled =
+    isBusy || vpnBusy !== null || !controlStatusReady;
+  const disconnected = status?.phase === "disabled";
+  const canConnect =
+    !operationDisabled && canStartPluginVpnConnection(status, credentials);
+  const showDisconnect = status !== undefined && status.phase !== "disabled";
+
+  function updateStatus(nextStatus: PluginVpnStatus): void {
+    queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, nextStatus);
+  }
+
+  async function importProfile(): Promise<void> {
+    setVpnBusy("import");
+    try {
+      const nextStatus = await importPluginVpnProfile();
+      if (nextStatus) {
+        setCredentials(emptyPluginVpnCredentials());
+        updateStatus(nextStatus);
+        showSettingsToast(
+          "green",
+          t("settings.data.pluginVpn.title"),
+          t("settings.data.pluginVpn.toast.imported"),
+        );
+      }
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        t("settings.data.pluginVpn.title"),
+        describeError(error),
+      );
+    } finally {
+      await vpnQuery.refetch();
+      setVpnBusy(null);
+    }
+  }
+
+  async function removeProfile(): Promise<void> {
+    if (!window.confirm(t("settings.data.pluginVpn.profile.removeConfirm"))) {
+      return;
+    }
+    setVpnBusy("remove");
+    try {
+      updateStatus(await removePluginVpnProfile());
+      setCredentials(emptyPluginVpnCredentials());
+      showSettingsToast(
+        "green",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.toast.removed"),
+      );
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        t("settings.data.pluginVpn.title"),
+        describeError(error),
+      );
+    } finally {
+      await vpnQuery.refetch();
+      setVpnBusy(null);
+    }
+  }
+
+  async function connect(): Promise<void> {
+    if (!canConnect) return;
+    const submitted = credentials;
+    setCredentials(emptyPluginVpnCredentials());
+    setVpnBusy("connect");
+    try {
+      updateStatus(await connectPluginVpn(submitted));
+      showSettingsToast(
+        "green",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.toast.connected"),
+      );
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        t("settings.data.pluginVpn.title"),
+        describeError(error),
+      );
+    } finally {
+      await vpnQuery.refetch();
+      setVpnBusy(null);
+    }
+  }
+
+  async function disconnect(): Promise<void> {
+    setVpnBusy("disconnect");
+    try {
+      updateStatus(await disconnectPluginVpn());
+      showSettingsToast(
+        "green",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.toast.disconnected"),
+      );
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        t("settings.data.pluginVpn.title"),
+        describeError(error),
+      );
+    } finally {
+      await vpnQuery.refetch();
+      setVpnBusy(null);
+    }
+  }
+
+  return (
+    <SettingsSection title={t("settings.data.pluginVpn.title")}>
+      {!vpnQuery.isError && status?.supported === false ? (
+        <Text>{t("settings.data.pluginVpn.unsupported")}</Text>
+      ) : (
+        <>
+          <SettingsFieldRow
+            label={t("settings.data.pluginVpn.status.label")}
+            description={t("settings.data.pluginVpn.status.description")}
+          >
+            <ConsoleChip tone={displayPhase === "connected" ? "accent" : undefined}>
+              {vpnQuery.isError
+                ? t("common.loadFailed")
+                : displayPhase
+                  ? t(PLUGIN_VPN_PHASE_KEYS[displayPhase])
+                  : t("settings.data.pluginVpn.status.loading")}
+            </ConsoleChip>
+          </SettingsFieldRow>
+          {vpnQuery.isError ? (
+            <Stack align="flex-start" gap="xs">
+              <Text className="lnr-storage-setup-error" role="alert">
+                {t("common.loadFailed")}
+              </Text>
+              <TextButton
+                loading={vpnQuery.isFetching}
+                variant="default"
+                onClick={() => {
+                  void vpnQuery.refetch();
+                }}
+              >
+                {t("common.retry")}
+              </TextButton>
+            </Stack>
+          ) : status?.error ? (
+            <Text className="lnr-storage-setup-error" role="alert">
+              {status.error}
+            </Text>
+          ) : null}
+          <SettingsFieldRow
+            label={t("settings.data.pluginVpn.profile.label")}
+            description={t("settings.data.pluginVpn.profile.description")}
+            layout="stacked"
+          >
+            <SettingsWideField>
+              <Stack gap="xs">
+                <Text>
+                  {status?.profile?.remoteHost ??
+                    t("settings.data.pluginVpn.profile.empty")}
+                </Text>
+                <SettingsInlineControls>
+                  <TextButton
+                    disabled={operationDisabled || !disconnected}
+                    loading={vpnBusy === "import"}
+                    onClick={() => {
+                      void importProfile();
+                    }}
+                  >
+                    {status?.profile
+                      ? t("settings.data.pluginVpn.profile.replace")
+                      : t("settings.data.pluginVpn.profile.import")}
+                  </TextButton>
+                  {status?.profile ? (
+                    <TextButton
+                      disabled={operationDisabled || !disconnected}
+                      loading={vpnBusy === "remove"}
+                      variant="default"
+                      onClick={() => {
+                        void removeProfile();
+                      }}
+                    >
+                      {t("settings.data.pluginVpn.profile.remove")}
+                    </TextButton>
+                  ) : null}
+                </SettingsInlineControls>
+              </Stack>
+            </SettingsWideField>
+          </SettingsFieldRow>
+          {status?.profile ? (
+            <SettingsFieldRow
+              label={t("settings.data.pluginVpn.credentials.label")}
+              description={t("settings.data.pluginVpn.credentials.description")}
+              layout="stacked"
+            >
+              <SettingsWideField>
+                <Stack gap="xs">
+                  <TextInput
+                    autoComplete="off"
+                    label={t("settings.data.pluginVpn.credentials.username")}
+                    value={credentials.username}
+                    disabled={!disconnected || operationDisabled}
+                    required={status.profile.requiresUsernamePassword}
+                    onChange={(event) =>
+                      setCredentials((current) => ({
+                        ...current,
+                        username: event.currentTarget.value,
+                      }))
+                    }
+                  />
+                  <PasswordInput
+                    autoComplete="new-password"
+                    label={t("settings.data.pluginVpn.credentials.password")}
+                    value={credentials.password}
+                    disabled={!disconnected || operationDisabled}
+                    required={status.profile.requiresUsernamePassword}
+                    onChange={(event) =>
+                      setCredentials((current) => ({
+                        ...current,
+                        password: event.currentTarget.value,
+                      }))
+                    }
+                  />
+                  <PasswordInput
+                    autoComplete="new-password"
+                    label={t("settings.data.pluginVpn.credentials.privateKeyPassword")}
+                    value={credentials.privateKeyPassword}
+                    disabled={!disconnected || operationDisabled}
+                    onChange={(event) =>
+                      setCredentials((current) => ({
+                        ...current,
+                        privateKeyPassword: event.currentTarget.value,
+                      }))
+                    }
+                  />
+                  <PasswordInput
+                    autoComplete="new-password"
+                    label={t("settings.data.pluginVpn.credentials.challengeResponse")}
+                    value={credentials.challengeResponse}
+                    disabled={!disconnected || operationDisabled}
+                    onChange={(event) =>
+                      setCredentials((current) => ({
+                        ...current,
+                        challengeResponse: event.currentTarget.value,
+                      }))
+                    }
+                  />
+                </Stack>
+              </SettingsWideField>
+            </SettingsFieldRow>
+          ) : null}
+          <SettingsFieldRow
+            label={t("settings.data.pluginVpn.connection.label")}
+            description={t("settings.data.pluginVpn.connection.description")}
+          >
+            {!showDisconnect ? (
+              <TextButton
+                disabled={!canConnect}
+                loading={vpnBusy === "connect"}
+                onClick={() => {
+                  void connect();
+                }}
+              >
+                {t("settings.data.pluginVpn.connection.connect")}
+              </TextButton>
+            ) : (
+              <TextButton
+                disabled={operationDisabled}
+                loading={vpnBusy === "disconnect"}
+                variant="default"
+                onClick={() => {
+                  void disconnect();
+                }}
+              >
+                {t("settings.data.pluginVpn.connection.disconnect")}
+              </TextButton>
+            )}
+          </SettingsFieldRow>
+        </>
+      )}
+    </SettingsSection>
+  );
+}
+
 function AppSettingsSection({ isBusy }: { isBusy: boolean }) {
   const appearance = useAppearanceStore();
   const notificationSettings = useNotificationStore();
@@ -570,6 +914,8 @@ function DataSettingsSection({
 
   return (
     <Stack gap="md">
+      <PluginVpnSettingsSection isBusy={isBusy} />
+
       <SettingsSection
         title={t("settings.data.backup.title")}
       >

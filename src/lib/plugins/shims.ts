@@ -5,7 +5,6 @@ import { Parser } from "htmlparser2";
 import { androidWebviewExtract } from "../android-scraper";
 import { getSourceRequestTimeoutMs } from "../../store/browse";
 import {
-  appFetch,
   cancelScraperExecutor,
   type ContextUrlProvider,
   createPluginFetch,
@@ -679,7 +678,7 @@ export function createShimResolver(
         return { encode: encodeURIComponent, decode: decodeURIComponent };
       case "@libs/fetch":
         return {
-          appFetch,
+          appFetch: fetchApi,
           fetchApi,
           fetchFile,
           fetchText,
