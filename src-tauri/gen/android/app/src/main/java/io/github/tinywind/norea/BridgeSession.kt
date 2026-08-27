@@ -19,6 +19,7 @@ data class BridgeAuthority(
 
 object BridgeCapabilities {
   const val SCRAPER_CANCEL = "scraper.cancel"
+  const val SCRAPER_CLEAR_CACHE = "scraper.clearCache"
   const val SCRAPER_CLEAR_COOKIES = "scraper.clearCookies"
   const val SCRAPER_CURRENT_ORIGIN = "scraper.currentOrigin"
   const val SCRAPER_FETCH = "scraper.fetch"
@@ -30,6 +31,7 @@ object BridgeCapabilities {
 
   val ALL = listOf(
     SCRAPER_CANCEL,
+    SCRAPER_CLEAR_CACHE,
     SCRAPER_CLEAR_COOKIES,
     SCRAPER_CURRENT_ORIGIN,
     SCRAPER_FETCH,

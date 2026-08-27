@@ -487,6 +487,138 @@ describe("cacheHtmlChapterMedia", () => {
     );
   });
 
+  it("stores captured media handles through a bounded parallel window", async () => {
+    const mediaCount = 5;
+    const storeGates = Array.from({ length: mediaCount }, () =>
+      createDeferred<string>(),
+    );
+    let activeStores = 0;
+    let maxActiveStores = 0;
+    let startedStores = 0;
+    takeCapturedMediaHandleMock.mockImplementation(async (url) => {
+      const fileName = new URL(url).pathname.split("/").at(-1) ?? "page.png";
+      return {
+        bodyBytes: 3,
+        bodyHandle: `captured-${fileName}`,
+        finalUrl: url,
+        headers: { "content-type": "image/png" },
+        status: 200,
+        statusText: "OK",
+      };
+    });
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_store_handle") {
+        const gate = storeGates[startedStores];
+        startedStores += 1;
+        activeStores += 1;
+        maxActiveStores = Math.max(maxActiveStores, activeStores);
+        return gate.promise.finally(() => {
+          activeStores -= 1;
+        });
+      }
+      if (command === "chapter_media_archive_cache") return mediaCount * 3;
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_total_size") return 0;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const resultPromise = cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: Array.from(
+        { length: mediaCount },
+        (_, index) => `<img src="/page-${index + 1}.png">`,
+      ).join(""),
+      novelId: 9,
+      novelPath: "/novel/sample",
+      preferBrowserCache: true,
+      scraperExecutor: "pool:1",
+      sourceId: "demo",
+    });
+
+    let storesStartedBeforeRelease = 0;
+    try {
+      await vi.waitFor(
+        () => {
+          expect(startedStores).toBeGreaterThan(1);
+        },
+        { timeout: 100 },
+      );
+      storesStartedBeforeRelease = startedStores;
+    } catch {
+      storesStartedBeforeRelease = startedStores;
+    } finally {
+      storeGates.forEach((gate, index) => {
+        gate.resolve(`norea-media://reader-asset/page-${index + 1}.png`);
+      });
+    }
+
+    const result = await resultPromise;
+    expect(storesStartedBeforeRelease).toBeGreaterThan(1);
+    expect(maxActiveStores).toBeLessThanOrEqual(4);
+    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+    expect(result.storedMediaCount).toBe(mediaCount);
+  });
+
+  it("drains active media stores before surfacing a progress callback error", async () => {
+    const mediaCount = 4;
+    const storeGate = createDeferred<void>();
+    const progressError = new Error("progress callback failed");
+    let finishedStores = 0;
+    let startedStores = 0;
+    takeCapturedMediaHandleMock.mockImplementation(async (url) => ({
+      bodyBytes: 3,
+      bodyHandle: `captured-${new URL(url).pathname}`,
+      finalUrl: url,
+      headers: { "content-type": "image/png" },
+      status: 200,
+      statusText: "OK",
+    }));
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_store_handle") {
+        startedStores += 1;
+        await storeGate.promise;
+        finishedStores += 1;
+        const input = args as { fileName: string };
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      if (command === "chapter_media_write_manifest") return null;
+      if (command === "chapter_media_total_size") return 0;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const resultPromise = cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      html: Array.from(
+        { length: mediaCount },
+        (_, index) => `<img src="/page-${index + 1}.png">`,
+      ).join(""),
+      novelId: 9,
+      novelPath: "/novel/sample",
+      onProgress: () => {
+        throw progressError;
+      },
+      preferBrowserCache: true,
+      scraperExecutor: "pool:1",
+      sourceId: "demo",
+    });
+
+    await vi.waitFor(() => expect(startedStores).toBe(mediaCount));
+    storeGate.resolve();
+
+    await expect(resultPromise).rejects.toBe(progressError);
+    expect(finishedStores).toBe(mediaCount);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "chapter_media_archive_cache",
+      expect.anything(),
+    );
+  });
+
   it("falls back to legacy desktop media store when the handle command is missing", async () => {
     pluginMediaFetchMock.mockImplementation(async () => {
       return new Response(new Uint8Array([4, 5]), {

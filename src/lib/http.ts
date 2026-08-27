@@ -280,6 +280,7 @@ async function takeCapturedMediaResponse(
       {
         url,
         queue: scraperExecutor,
+        userAgent: scraperUserAgent(init.headers),
         ...(init.sourceId ? { sourceId: init.sourceId } : {}),
       },
     );
@@ -316,6 +317,7 @@ export async function takeCapturedMediaHandle(
       {
         url,
         queue: scraperExecutor,
+        userAgent: scraperUserAgent(init.headers),
         ...(init.sourceId ? { sourceId: init.sourceId } : {}),
       },
     );

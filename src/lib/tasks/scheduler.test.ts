@@ -45,6 +45,125 @@ describe("TaskScheduler", () => {
     expect(scheduler.getSnapshot().running).toBe(0);
   });
 
+  it("waits for source executors and blocks new source work while clearing WebView cache", async () => {
+    const scheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+    });
+    const order: string[] = [];
+    let finishImmediate!: () => void;
+    let finishPool!: () => void;
+    let finishClear!: () => void;
+
+    const pool = scheduler.enqueueSource({
+      kind: "source.globalSearch",
+      title: "Pool work",
+      source: { id: "pool-source", name: "Pool source" },
+      run: () =>
+        new Promise<void>((resolve) => {
+          order.push("pool:start");
+          finishPool = resolve;
+        }),
+    });
+    const immediate = scheduler.enqueueSource({
+      kind: "source.openNovel",
+      title: "Immediate work",
+      priority: "interactive",
+      source: { id: "immediate-source", name: "Immediate source" },
+      run: () =>
+        new Promise<void>((resolve) => {
+          order.push("immediate:start");
+          finishImmediate = resolve;
+        }),
+    });
+
+    await settle();
+    expect(order).toEqual(["pool:start", "immediate:start"]);
+
+    const clearCache = scheduler.enqueueMain({
+      kind: "maintenance.clearWebViewCache",
+      title: "Clear WebView cache",
+      run: async () => {
+        order.push("clear:start");
+        await new Promise<void>((resolve) => {
+          finishClear = resolve;
+        });
+        order.push("clear:success");
+      },
+    });
+    const laterSource = scheduler.enqueueSource({
+      kind: "source.openNovel",
+      title: "Later source work",
+      priority: "interactive",
+      source: { id: "later-source", name: "Later source" },
+      run: async () => {
+        order.push("later:start");
+      },
+    });
+
+    await settle();
+    expect(scheduler.getTask(clearCache.id)?.status).toBe("queued");
+    expect(scheduler.getTask(clearCache.id)?.canCancel).toBe(false);
+    expect(scheduler.cancel(clearCache.id)).toBe(false);
+    expect(scheduler.getTask(laterSource.id)?.status).toBe("queued");
+
+    finishImmediate();
+    await immediate.promise;
+    await settle();
+    expect(scheduler.getTask(clearCache.id)?.status).toBe("queued");
+    expect(scheduler.getTask(laterSource.id)?.status).toBe("queued");
+
+    finishPool();
+    await pool.promise;
+    await settle();
+    expect(scheduler.getTask(clearCache.id)?.status).toBe("running");
+    expect(scheduler.getTask(clearCache.id)?.canCancel).toBe(false);
+    expect(scheduler.cancel(clearCache.id)).toBe(false);
+    expect(scheduler.getTask(laterSource.id)?.status).toBe("queued");
+    expect(order).toEqual(["pool:start", "immediate:start", "clear:start"]);
+
+    finishClear();
+    await Promise.all([clearCache.promise, laterSource.promise]);
+    expect(order).toEqual([
+      "pool:start",
+      "immediate:start",
+      "clear:start",
+      "clear:success",
+      "later:start",
+    ]);
+  });
+
+  it("keeps ordinary main work concurrent with source work", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const order: string[] = [];
+    let finishMain!: () => void;
+
+    const main = scheduler.enqueueMain({
+      kind: "backup.export",
+      title: "Export backup",
+      run: () =>
+        new Promise<void>((resolve) => {
+          order.push("main:start");
+          finishMain = resolve;
+        }),
+    });
+    const source = scheduler.enqueueSource({
+      kind: "source.search",
+      title: "Search source",
+      source: { id: "source-a", name: "Source A" },
+      run: async () => {
+        order.push("source:start");
+      },
+    });
+
+    await source.promise;
+    expect(order).toEqual(["main:start", "source:start"]);
+    expect(scheduler.getTask(main.id)?.status).toBe("running");
+
+    finishMain();
+    await main.promise;
+  });
+
   it("moves queued main work before it starts", async () => {
     const scheduler = new TaskScheduler();
     const order: string[] = [];

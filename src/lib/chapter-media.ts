@@ -35,6 +35,7 @@ import {
   type NativeStreamInfo,
 } from "./native-stream";
 import { isSourceAccessRequiredError } from "./plugins/source-access";
+import { runBoundedTaskBatch } from "./tasks/batch-window";
 import { TASK_PAUSE_ABORT_MESSAGE } from "./tasks/scheduler";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
@@ -126,6 +127,7 @@ const REMOTE_MEDIA_PENDING_PLACEHOLDER_SRC =
 const REMOTE_MEDIA_EMPTY_PLACEHOLDER_SRC =
   "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%2F%3E";
 const CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json";
+const CHAPTER_MEDIA_STORE_WINDOW = 4;
 type ChapterMediaRequestInit = Pick<HttpInit, "body" | "headers" | "method">;
 
 interface CacheChapterMediaOptions {
@@ -2309,6 +2311,7 @@ export async function cacheHtmlChapterMedia({
   let storedMediaCount = 0;
   let completedDownloadCount = 0;
   let terminalDownloadError: unknown;
+  let mediaAcquisitionQueue = Promise.resolve();
   let mediaUpdateQueue = Promise.resolve();
   const runMediaUpdate = async (
     update: () => Promise<void>,
@@ -2316,6 +2319,56 @@ export async function cacheHtmlChapterMedia({
     const pending = mediaUpdateQueue.then(update);
     mediaUpdateQueue = pending.catch(() => undefined);
     await pending;
+  };
+  const reportProgress = (): void => {
+    completedDownloadCount += 1;
+    try {
+      onProgress?.({
+        current: completedDownloadCount,
+        total: downloadUrls.length,
+      });
+    } catch (error) {
+      terminalDownloadError ??= error;
+    }
+  };
+  const acquireCapturedMedia = async (
+    url: string,
+    mediaRequest: HttpInit,
+  ): Promise<{
+    capturedHandle: Awaited<ReturnType<typeof takeCapturedMediaHandle>>;
+    releaseFallback?: () => void;
+  }> => {
+    const previous = mediaAcquisitionQueue;
+    let released = false;
+    let resolveNext!: () => void;
+    mediaAcquisitionQueue = new Promise<void>((resolve) => {
+      resolveNext = resolve;
+    });
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      resolveNext();
+    };
+    await previous;
+    try {
+      if (terminalDownloadError !== undefined) throw terminalDownloadError;
+      throwIfAborted(signal);
+      if (shouldYield?.()) {
+        throw new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError");
+      }
+      const capturedHandle = await takeCapturedMediaHandle(url, mediaRequest);
+      if (capturedHandle) {
+        release();
+        return { capturedHandle };
+      }
+      return { capturedHandle: null, releaseFallback: release };
+    } catch (error) {
+      if (isMediaAbortError(error) || isSourceAccessRequiredError(error)) {
+        terminalDownloadError ??= error;
+      }
+      release();
+      throw error;
+    }
   };
   tagCollectedMediaTargets(srcTargets, srcsetTargets);
   const reusableChangedElements = new Set<Element>();
@@ -2354,15 +2407,16 @@ export async function cacheHtmlChapterMedia({
   ): Promise<void> => {
     if (terminalDownloadError !== undefined) return;
     let capturedHandle: Awaited<ReturnType<typeof takeCapturedMediaHandle>> = null;
+    let releaseFallbackAcquisition: (() => void) | undefined;
+    const releaseMediaAcquisition = (): void => {
+      releaseFallbackAcquisition?.();
+      releaseFallbackAcquisition = undefined;
+    };
     try {
       throwIfAborted(signal);
       const mediaIndex = urls.indexOf(url);
       if (localSources.has(url)) {
-        completedDownloadCount += 1;
-        onProgress?.({
-          current: completedDownloadCount,
-          total: downloadUrls.length,
-        });
+        reportProgress();
         return;
       }
       const mediaRequest = {
@@ -2378,7 +2432,9 @@ export async function cacheHtmlChapterMedia({
         ...(sourceId ? { sourceId } : {}),
         ...(sourceAccessUrl ? { sourceAccessUrl } : {}),
       };
-      capturedHandle = await takeCapturedMediaHandle(url, mediaRequest);
+      const acquisition = await acquireCapturedMedia(url, mediaRequest);
+      capturedHandle = acquisition.capturedHandle;
+      releaseFallbackAcquisition = acquisition.releaseFallback;
       const response = capturedHandle
         ? null
         : await pluginMediaFetch(url, mediaRequest);
@@ -2503,6 +2559,7 @@ export async function cacheHtmlChapterMedia({
         capturedHandle = null;
       }
       if (signal?.aborted) {
+        releaseMediaAcquisition();
         terminalDownloadError ??= new DOMException(
           "Task was cancelled.",
           "AbortError",
@@ -2510,10 +2567,12 @@ export async function cacheHtmlChapterMedia({
         return;
       }
       if (isMediaAbortError(error)) {
+        releaseMediaAcquisition();
         terminalDownloadError ??= error;
         return;
       }
       if (isSourceAccessRequiredError(error)) {
+        releaseMediaAcquisition();
         terminalDownloadError ??= error;
         return;
       }
@@ -2535,10 +2594,12 @@ export async function cacheHtmlChapterMedia({
           });
         });
       } catch (updateError) {
+        releaseMediaAcquisition();
         terminalDownloadError ??= updateError;
         return;
       }
     }
+    releaseMediaAcquisition();
     if (signal?.aborted) {
       terminalDownloadError ??= new DOMException(
         "Task was cancelled.",
@@ -2546,23 +2607,18 @@ export async function cacheHtmlChapterMedia({
       );
       return;
     }
-    completedDownloadCount += 1;
-    onProgress?.({
-      current: completedDownloadCount,
-      total: downloadUrls.length,
-    });
+    reportProgress();
   };
 
-  for (const [index, url] of downloadUrls.entries()) {
-    if (
-      terminalDownloadError !== undefined ||
-      signal?.aborted === true ||
-      shouldYield?.() === true
-    ) {
-      break;
-    }
-    await materializeMedia(url, index);
-  }
+  await runBoundedTaskBatch({
+    items: downloadUrls,
+    materialize: materializeMedia,
+    shouldContinue: () =>
+      terminalDownloadError === undefined &&
+      signal?.aborted !== true &&
+      shouldYield?.() !== true,
+    windowSize: CHAPTER_MEDIA_STORE_WINDOW,
+  });
   if (terminalDownloadError !== undefined) {
     throw terminalDownloadError;
   }

@@ -4,6 +4,7 @@ import type { ScraperExecutorId } from "./tasks/scraper-queue";
 interface AndroidScraperBridge {
   cancel?(payload: string): void;
   cancelBackground?(payload: string): void;
+  clearCache(payload: string): void;
   clearCookies(payload: string): void;
   currentOrigin(payload: string): void;
   fetch(payload: string): void;
@@ -97,6 +98,7 @@ function bridge(): AndroidScraperBridge {
 
 function callNative<T>(
   method:
+    | "clearCache"
     | "clearCookies"
     | "currentOrigin"
     | "extract"
@@ -198,6 +200,10 @@ export function androidScraperClearCookies(
     { sourceId, url, queue: executor },
     10_000,
   );
+}
+
+export async function androidScraperClearCache(): Promise<void> {
+  await callNative<unknown>("clearCache", {}, 30_000);
 }
 
 export function androidScraperCurrentOrigin(

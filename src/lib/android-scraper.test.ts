@@ -5,6 +5,7 @@ vi.mock("./tauri-runtime", () => ({
 }));
 
 import {
+  androidScraperClearCache,
   androidScraperClearCookies,
   androidScraperCurrentOrigin,
   androidScraperNavigate,
@@ -28,6 +29,7 @@ function installScraperBridge() {
   vi.stubGlobal("window", {
     __NoreaAndroidScraper: {
       cancel,
+      clearCache: vi.fn(),
       clearCookies: vi.fn(),
       currentOrigin: vi.fn(),
       extract: vi.fn(),
@@ -180,5 +182,30 @@ describe("Android scraper cookie clearing", () => {
     );
 
     await expect(clearing).resolves.toBe(3);
+  });
+});
+
+describe("Android scraper cache clearing", () => {
+  beforeEach(() => {
+    installScraperBridge();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("resolves after the native WebView cache is cleared", async () => {
+    const clearCache = vi.mocked(window.__NoreaAndroidScraper!.clearCache);
+    const clearing = androidScraperClearCache();
+    const payload = JSON.parse(clearCache.mock.calls[0][0] as string) as {
+      id: string;
+    };
+
+    window.__lnrAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({ ok: true, result: null }),
+    );
+
+    await expect(clearing).resolves.toBeUndefined();
   });
 });

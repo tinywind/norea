@@ -77,6 +77,7 @@ export type MainTaskKind =
   | "library.refreshMetadata"
   | "maintenance.clearLibraryMembership"
   | "maintenance.clearDownloadedContent"
+  | "maintenance.clearWebViewCache"
   | "maintenance.clearReadingProgress"
   | "maintenance.clearUpdates"
   | "repository.add"
@@ -327,6 +328,14 @@ function isBackgroundPriority(priority: TaskPriority): boolean {
 
 function isOpenSiteSourceKind(kind: TaskKind): boolean {
   return kind === "source.openSite";
+}
+
+function isSourceBarrierMainKind(kind: TaskKind): boolean {
+  return kind === "maintenance.clearWebViewCache";
+}
+
+function taskCanCancel(kind: TaskKind, requested: boolean | undefined): boolean {
+  return !isSourceBarrierMainKind(kind) && (requested ?? true);
 }
 
 function canVerifySourceAccess(kind: TaskKind, isOriginTask: boolean): boolean {
@@ -668,7 +677,7 @@ export class TaskScheduler {
         subject: spec.subject,
         status: "queued",
         createdAt: Date.now(),
-        canCancel: spec.canCancel ?? true,
+        canCancel: taskCanCancel(spec.kind, spec.canCancel),
         canRetry: false,
       },
     };
@@ -1877,25 +1886,51 @@ export class TaskScheduler {
 
   private drain(): void {
     this.drainMain();
+    if (this.sourceDispatchBlockedByMainBarrier()) return;
     this.drainImmediateExecutor();
     this.drainSourcePool();
   }
 
   private drainMain(): void {
     if (this.activeMainTaskId || this.mainQueue.length === 0) return;
-    let nextIndex = -1;
-    let entry: TaskEntry | undefined;
+    const next = this.nextQueuedMainEntry();
+    if (!next) return;
+    if (
+      isSourceBarrierMainKind(next.entry.record.kind) &&
+      this.hasActiveSourceExecutor()
+    ) {
+      return;
+    }
+    this.mainQueue.splice(next.index, 1);
+    this.activeMainTaskId = next.entry.record.id;
+    this.start(next.entry);
+  }
+
+  private nextQueuedMainEntry(): { entry: TaskEntry; index: number } | null {
     for (let index = 0; index < this.mainQueue.length; index += 1) {
       const candidate = this.entries.get(this.mainQueue[index]);
       if (!candidate || candidate.record.status !== "queued") continue;
-      entry = candidate;
-      nextIndex = index;
-      break;
+      return { entry: candidate, index };
     }
-    if (!entry || nextIndex < 0) return;
-    this.mainQueue.splice(nextIndex, 1);
-    this.activeMainTaskId = entry.record.id;
-    this.start(entry);
+    return null;
+  }
+
+  private hasActiveSourceExecutor(): boolean {
+    return (
+      this.activeImmediateTaskId !== null ||
+      this.activePoolTaskIdsByExecutor.size > 0
+    );
+  }
+
+  private sourceDispatchBlockedByMainBarrier(): boolean {
+    if (this.activeMainTaskId) {
+      const activeMain = this.entries.get(this.activeMainTaskId);
+      return Boolean(
+        activeMain && isSourceBarrierMainKind(activeMain.record.kind),
+      );
+    }
+    const next = this.nextQueuedMainEntry();
+    return Boolean(next && isSourceBarrierMainKind(next.entry.record.kind));
   }
 
   private drainImmediateExecutor(): void {
@@ -2241,7 +2276,7 @@ export class TaskScheduler {
 
   private start(entry: TaskEntry): void {
     this.setStatus(entry, "running", {
-      canCancel: entry.spec.canCancel ?? true,
+      canCancel: taskCanCancel(entry.spec.kind, entry.spec.canCancel),
       canRetry: false,
       startedAt: Date.now(),
     });
@@ -2473,7 +2508,7 @@ export class TaskScheduler {
     entry.record = {
       ...nextRecord,
       status: "queued",
-      canCancel: entry.spec.canCancel ?? true,
+      canCancel: taskCanCancel(entry.spec.kind, entry.spec.canCancel),
       canRetry: false,
     };
     this.entries.set(entry.record.id, entry);

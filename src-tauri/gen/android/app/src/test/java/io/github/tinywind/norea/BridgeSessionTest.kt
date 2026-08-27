@@ -8,6 +8,11 @@ import org.junit.Test
 
 class BridgeSessionTest {
   @Test
+  fun exposesWebViewCacheClearingCapability() {
+    assertTrue(BridgeCapabilities.ALL.contains(BridgeCapabilities.SCRAPER_CLEAR_CACHE))
+  }
+
+  @Test
   fun acceptsLegacyCallsWithoutAuthorityFields() {
     val session = BridgeSession()
 

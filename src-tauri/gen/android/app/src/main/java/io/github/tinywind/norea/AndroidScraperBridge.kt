@@ -23,6 +23,36 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 import org.json.JSONObject
 
+private const val BLANK_PAGE_URL = "about:blank"
+
+internal enum class ForegroundBlankTiming {
+  BEFORE_NEXT_ACTION,
+  AFTER_ACTIVE_ACTION,
+}
+
+internal fun foregroundBlankTiming(activeBrowserAction: Boolean?): ForegroundBlankTiming =
+  if (activeBrowserAction == false) {
+    ForegroundBlankTiming.AFTER_ACTIVE_ACTION
+  } else {
+    ForegroundBlankTiming.BEFORE_NEXT_ACTION
+  }
+
+internal fun canStartQueuedAction(
+  busy: Boolean,
+  blankBeforeNextAction: Boolean,
+  blankNavigationInProgress: Boolean,
+): Boolean = !busy && !blankBeforeNextAction && !blankNavigationInProgress
+
+internal fun shouldCompleteBlankNavigation(
+  blankNavigationInProgress: Boolean,
+  isCurrentWebView: Boolean,
+  finishedUrl: String?,
+  timeoutElapsed: Boolean,
+): Boolean =
+  blankNavigationInProgress &&
+    isCurrentWebView &&
+    (timeoutElapsed || finishedUrl == BLANK_PAGE_URL)
+
 class AndroidScraperBridge(
   private val mainWebView: WebView,
   private val bridgeSession: BridgeSession,
@@ -59,6 +89,8 @@ class AndroidScraperBridge(
     var activeFetchId: String? = null
     var activeResultNonce: String? = null
     var activeTimeout: Runnable? = null
+    var blankBeforeNextAction = false
+    var blankNavigationInProgress = false
     var busy = false
     var currentUrl: String? = null
     var documentStartScriptEnabled = false
@@ -202,6 +234,20 @@ class AndroidScraperBridge(
       val state = queueState(executorFromPayload(json))
       cancelQueuedWhere(state, message) { true }
       if (state.busy) cancelActive(state, message)
+    }
+  }
+
+  @JavascriptInterface
+  fun clearCache(payload: String) {
+    parseCommand(payload, BridgeCapabilities.SCRAPER_CLEAR_CACHE) { json ->
+      val id = json.getString("id")
+      mainWebView.clearCache(true)
+      sendResult(
+        id,
+        JSONObject()
+          .put("ok", true)
+          .put("result", true),
+      )
     }
   }
 
@@ -354,6 +400,8 @@ class AndroidScraperBridge(
         state.activeExtractId = null
         state.activeFetchId = null
         state.activeResultNonce = null
+        state.blankBeforeNextAction = false
+        state.blankNavigationInProgress = false
         state.busy = false
       }
     }
@@ -523,7 +571,15 @@ class AndroidScraperBridge(
 
   private fun runNext(state: QueueState) {
     requireMainThread()
-    if (state.busy || state.queue.isEmpty()) return
+    if (
+      !canStartQueuedAction(
+        state.busy,
+        state.blankBeforeNextAction,
+        state.blankNavigationInProgress,
+      ) || state.queue.isEmpty()
+    ) {
+      return
+    }
     val index = takeNextActionIndex(state) ?: return
     val action = state.queue.removeAt(index)
     state.busy = true
@@ -542,8 +598,18 @@ class AndroidScraperBridge(
       state.activeAction = null
       state.busy = false
       sendError(action.id, "scraper: ${error.message ?: error.toString()}")
-      runNext(state)
+      runNextAfterPendingBlank(state)
     }
+  }
+
+  private fun runNextAfterPendingBlank(state: QueueState) {
+    requireMainThread()
+    if (state.busy) return
+    if (state.blankBeforeNextAction) {
+      loadBlankThenRunNext(state)
+      return
+    }
+    runNext(state)
   }
 
   private fun activateSource(state: QueueState, sourceId: String) {
@@ -777,16 +843,22 @@ class AndroidScraperBridge(
     val state = queueState(IMMEDIATE_EXECUTOR)
     logState(state, "hideScraper before")
     cancelQueuedWhere(state, "scraper: site browser closed") { it.browserAction }
-    if (state.activeAction?.browserAction == true) {
-      cancelActive(state, "scraper: site browser closed")
-    } else if (state.activeAction == null) {
-      state.webView?.stopLoading()
+    when (foregroundBlankTiming(state.activeAction?.browserAction)) {
+      ForegroundBlankTiming.BEFORE_NEXT_ACTION -> {
+        state.blankBeforeNextAction = true
+        if (state.activeAction?.browserAction == true) {
+          cancelActive(state, "scraper: site browser closed")
+        }
+      }
+      ForegroundBlankTiming.AFTER_ACTIVE_ACTION -> {
+        state.blankBeforeNextAction = true
+      }
     }
     hideScraperSurface(state)
     state.webView?.let { profileCookieManager(it).flush() }
     if (emitHiddenEvent) emitSiteBrowserHidden()
     logState(state, "hideScraper after")
-    runNext(state)
+    runNextAfterPendingBlank(state)
   }
 
   private fun hideScraperSurface(state: QueueState) {
@@ -802,6 +874,67 @@ class AndroidScraperBridge(
     webView.isFocusable = false
     webView.isFocusableInTouchMode = false
     webView.requestLayout()
+  }
+
+  private fun loadBlankThenRunNext(state: QueueState) {
+    requireMainThread()
+    if (state.busy || !state.blankBeforeNextAction || state.blankNavigationInProgress) return
+    val webView = state.webView
+    if (webView == null) {
+      state.blankBeforeNextAction = false
+      runNext(state)
+      return
+    }
+
+    state.blankNavigationInProgress = true
+    webView.stopLoading()
+    webView.webViewClient = makeClient(state) { finishedUrl ->
+      if (!shouldCompleteBlankNavigation(
+          blankNavigationInProgress = state.blankNavigationInProgress,
+          isCurrentWebView = state.webView === webView,
+          finishedUrl = finishedUrl,
+          timeoutElapsed = false,
+        )) {
+        return@makeClient
+      }
+      finishBlankNavigation(state, webView, recreateWebView = false)
+    }
+    clearTimeout(state)
+    val timeout = Runnable {
+      if (!shouldCompleteBlankNavigation(
+          blankNavigationInProgress = state.blankNavigationInProgress,
+          isCurrentWebView = state.webView === webView,
+          finishedUrl = null,
+          timeoutElapsed = true,
+        )) {
+        return@Runnable
+      }
+      Log.w(TAG, "[${state.key}] blank navigation timed out; recreating scraper WebView")
+      finishBlankNavigation(state, webView, recreateWebView = true)
+    }
+    state.activeTimeout = timeout
+    mainHandler.postDelayed(timeout, BLANK_NAVIGATION_TIMEOUT_MS)
+    webView.loadUrl(BLANK_PAGE_URL)
+  }
+
+  private fun finishBlankNavigation(
+    state: QueueState,
+    webView: WebView,
+    recreateWebView: Boolean,
+  ) {
+    clearTimeout(state)
+    webView.webViewClient = makeClient(state, null)
+    if (recreateWebView) {
+      webView.stopLoading()
+      scraperContainer().removeView(webView)
+      webView.destroy()
+      state.webView = null
+      state.currentUrl = null
+      state.documentStartScriptEnabled = false
+    }
+    state.blankNavigationInProgress = false
+    state.blankBeforeNextAction = false
+    runNext(state)
   }
 
   private fun emitSiteBrowserHidden() {
@@ -1220,17 +1353,19 @@ class AndroidScraperBridge(
   }
 
   private fun cancelActive(state: QueueState, message: String) {
+    val browserAction = state.activeAction?.browserAction == true
     val fetchId = state.activeFetchId
     val id = fetchId ?: state.activeExtractId ?: state.activeAction?.id
     if (fetchId != null) abortActiveFetch(state, fetchId)
     state.webView?.webViewClient = makeClient(state, null)
     state.webView?.stopLoading()
+    if (browserAction) state.blankBeforeNextAction = true
     if (id == null) {
       clearTimeout(state)
       state.activeResultNonce = null
       state.activeAction = null
       state.busy = false
-      runNext(state)
+      runNextAfterPendingBlank(state)
       return
     }
     finishError(state, id, message)
@@ -1264,7 +1399,7 @@ class AndroidScraperBridge(
     state.activeAction = null
     sendResult(id, envelope)
     state.busy = false
-    runNext(state)
+    runNextAfterPendingBlank(state)
   }
 
   private fun sendResult(id: String, envelope: JSONObject) {
@@ -1334,7 +1469,7 @@ class AndroidScraperBridge(
     if (!isExpectedResultNonce(state, activeId, nonce.orEmpty())) return
     state.webView?.let { profileCookieManager(it).flush() }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")
-    state.webView?.loadUrl("about:blank")
+    state.blankBeforeNextAction = true
     finishSuccess(state, activeId, payload)
   }
 
@@ -1444,6 +1579,7 @@ class AndroidScraperBridge(
 
   companion object {
     private const val TAG = "NoreaScraper"
+    private const val BLANK_NAVIGATION_TIMEOUT_MS = 5_000L
     private const val HEX_DIGITS = "0123456789abcdef"
     private const val IMMEDIATE_EXECUTOR = "immediate"
     private const val PRIORITY_INTERACTIVE = 0

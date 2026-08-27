@@ -393,6 +393,7 @@ describe("pluginMediaFetch", () => {
 
     const request = pluginMediaFetch("https://cdn.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
+      headers: { "User-Agent": "Captured Response Agent" },
       preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "source-a",
@@ -411,6 +412,7 @@ describe("pluginMediaFetch", () => {
         queue: "pool:1",
         sourceId: "source-a",
         url: "https://cdn.test/page.png",
+        userAgent: "Captured Response Agent",
       },
     );
   });
@@ -520,6 +522,7 @@ describe("pluginMediaFetch", () => {
     await expect(
       takeCapturedMediaHandle("https://cdn.test/page.png", {
         contextUrl: "https://source.test/chapter/1",
+        headers: { "user-agent": "Captured Handle Agent" },
         preferBrowserCache: true,
         scraperExecutor: "pool:1",
         sourceId: "source-a",
@@ -537,6 +540,7 @@ describe("pluginMediaFetch", () => {
         queue: "pool:1",
         sourceId: "source-a",
         url: "https://cdn.test/page.png",
+        userAgent: "Captured Handle Agent",
       },
     );
   });
@@ -684,6 +688,7 @@ describe("pluginMediaFetch", () => {
         url: "https://cdn.test/page.png?accessKey=signed",
         queue: "pool:1",
         sourceId: "source-a",
+        userAgent: globalThis.navigator?.userAgent ?? null,
       },
     );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "webview_fetch", {
@@ -775,6 +780,7 @@ describe("pluginMediaFetch", () => {
           url: "https://cdn.test/page.png?accessKey=signed",
           queue: "pool:1",
           sourceId: "source-a",
+          userAgent: globalThis.navigator?.userAgent ?? null,
         },
       );
       expect(debugSpy).toHaveBeenCalledWith(

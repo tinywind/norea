@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -80,6 +80,7 @@ struct CaptureSession {
     pending: usize,
     total_bytes: usize,
     resources: HashMap<String, CapturedResource>,
+    resource_order: VecDeque<String>,
 }
 
 #[derive(Default)]
@@ -105,6 +106,27 @@ impl CapturedResourceStore {
         id
     }
 
+    pub fn begin_or_resume(&self, executor: &str) -> u64 {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("captured resource sessions mutex");
+        if let Some(session) = sessions.get_mut(executor) {
+            session.active = true;
+            return session.id;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        sessions.insert(
+            executor.to_string(),
+            CaptureSession {
+                id,
+                active: true,
+                ..CaptureSession::default()
+            },
+        );
+        id
+    }
+
     pub fn claim(&self, executor: &str) -> Option<u64> {
         let mut sessions = self
             .sessions
@@ -120,6 +142,21 @@ impl CapturedResourceStore {
     }
 
     pub fn complete(&self, executor: &str, capture_id: u64, resource: Option<CapturedResource>) {
+        self.complete_with_total_limit(
+            executor,
+            capture_id,
+            resource,
+            MAX_CAPTURED_TOTAL_BYTES,
+        );
+    }
+
+    fn complete_with_total_limit(
+        &self,
+        executor: &str,
+        capture_id: u64,
+        resource: Option<CapturedResource>,
+        max_total_bytes: usize,
+    ) {
         let mut sessions = self
             .sessions
             .lock()
@@ -135,23 +172,26 @@ impl CapturedResourceStore {
         let Some(resource) = resource else {
             return;
         };
-        if resource.body.len() > MAX_CAPTURED_RESOURCE_BYTES {
+        if resource.body.len() > MAX_CAPTURED_RESOURCE_BYTES
+            || resource.body.len() > max_total_bytes
+        {
             return;
         }
         let key = normalized_resource_url(&resource.final_url);
-        let replaced_bytes = session
-            .resources
-            .get(&key)
-            .map(|existing| existing.body.len())
-            .unwrap_or(0);
-        let next_total = session
-            .total_bytes
-            .saturating_sub(replaced_bytes)
-            .saturating_add(resource.body.len());
-        if next_total > MAX_CAPTURED_TOTAL_BYTES {
-            return;
+        if let Some(replaced) = session.resources.remove(&key) {
+            session.total_bytes = session.total_bytes.saturating_sub(replaced.body.len());
+            session.resource_order.retain(|existing| existing != &key);
         }
-        session.total_bytes = next_total;
+        while session.total_bytes.saturating_add(resource.body.len()) > max_total_bytes {
+            let Some(oldest_key) = session.resource_order.pop_front() else {
+                return;
+            };
+            if let Some(evicted) = session.resources.remove(&oldest_key) {
+                session.total_bytes = session.total_bytes.saturating_sub(evicted.body.len());
+            }
+        }
+        session.total_bytes = session.total_bytes.saturating_add(resource.body.len());
+        session.resource_order.push_back(key.clone());
         session.resources.insert(key, resource);
     }
 
@@ -227,8 +267,10 @@ impl CapturedResourceStore {
             .lock()
             .expect("captured resource sessions mutex");
         let session = sessions.get_mut(executor)?;
-        let resource = session.resources.remove(&normalized_resource_url(url))?;
+        let key = normalized_resource_url(url);
+        let resource = session.resources.remove(&key)?;
         session.total_bytes = session.total_bytes.saturating_sub(resource.body.len());
+        session.resource_order.retain(|existing| existing != &key);
         Some(resource)
     }
 
@@ -237,6 +279,13 @@ impl CapturedResourceStore {
             .lock()
             .expect("captured resource sessions mutex")
             .remove(executor);
+    }
+
+    pub fn clear_all(&self) {
+        self.sessions
+            .lock()
+            .expect("captured resource sessions mutex")
+            .clear();
     }
 }
 
@@ -673,6 +722,210 @@ mod tests {
             Some(b"image".to_vec())
         );
         assert!(store.take("pool:1", "https://cdn.test/page.png").is_none());
+    }
+
+    #[test]
+    fn resumes_an_active_session_without_resetting_resources() {
+        let store = CapturedResourceStore::default();
+        let capture_id = store.begin_or_resume("foreground:source");
+        assert_eq!(store.claim("foreground:source"), Some(capture_id));
+        store.complete(
+            "foreground:source",
+            capture_id,
+            Some(resource("https://cdn.test/first.png", b"first")),
+        );
+
+        assert_eq!(store.begin_or_resume("foreground:source"), capture_id);
+        assert_eq!(
+            store
+                .take("foreground:source", "https://cdn.test/first.png")
+                .map(|resource| resource.body),
+            Some(b"first".to_vec())
+        );
+    }
+
+    #[test]
+    fn resumes_a_stopped_session_and_preserves_resources_by_url() {
+        let store = CapturedResourceStore::default();
+        let capture_id = store.begin_or_resume("foreground:source");
+        for (url, body) in [
+            ("https://cdn.test/first.png", b"first".as_slice()),
+            ("https://cdn.test/second.png#page", b"second".as_slice()),
+        ] {
+            assert_eq!(store.claim("foreground:source"), Some(capture_id));
+            store.complete("foreground:source", capture_id, Some(resource(url, body)));
+        }
+        store.stop("foreground:source");
+        assert_eq!(store.claim("foreground:source"), None);
+
+        assert_eq!(store.begin_or_resume("foreground:source"), capture_id);
+        assert_eq!(store.claim("foreground:source"), Some(capture_id));
+        store.complete(
+            "foreground:source",
+            capture_id,
+            Some(resource("https://cdn.test/third.png", b"third")),
+        );
+        store.finish("foreground:source", capture_id);
+
+        for (url, expected) in [
+            ("https://cdn.test/first.png", b"first".as_slice()),
+            ("https://cdn.test/second.png", b"second".as_slice()),
+            ("https://cdn.test/third.png", b"third".as_slice()),
+        ] {
+            assert_eq!(
+                store
+                    .take("foreground:source", url)
+                    .map(|resource| resource.body),
+                Some(expected.to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn evicts_oldest_resources_when_session_reaches_total_limit() {
+        let store = CapturedResourceStore::default();
+        let capture_id = store.begin("foreground:source");
+        for (url, body) in [
+            ("https://cdn.test/first.png", b"first".as_slice()),
+            ("https://cdn.test/second.png", b"second".as_slice()),
+            ("https://cdn.test/third.png", b"third".as_slice()),
+        ] {
+            assert_eq!(store.claim("foreground:source"), Some(capture_id));
+            store.complete_with_total_limit(
+                "foreground:source",
+                capture_id,
+                Some(resource(url, body)),
+                11,
+            );
+        }
+
+        assert!(store
+            .take("foreground:source", "https://cdn.test/first.png")
+            .is_none());
+        assert_eq!(
+            store
+                .take("foreground:source", "https://cdn.test/second.png")
+                .map(|resource| resource.body),
+            Some(b"second".to_vec())
+        );
+        assert_eq!(
+            store
+                .take("foreground:source", "https://cdn.test/third.png")
+                .map(|resource| resource.body),
+            Some(b"third".to_vec())
+        );
+    }
+
+    #[test]
+    fn refreshing_a_resource_moves_it_behind_older_resources() {
+        let store = CapturedResourceStore::default();
+        let capture_id = store.begin("foreground:source");
+        for (url, body) in [
+            ("https://cdn.test/first.png", b"old1".as_slice()),
+            ("https://cdn.test/second.png", b"two2".as_slice()),
+            ("https://cdn.test/first.png", b"new1".as_slice()),
+            ("https://cdn.test/third.png", b"tri3".as_slice()),
+        ] {
+            assert_eq!(store.claim("foreground:source"), Some(capture_id));
+            store.complete_with_total_limit(
+                "foreground:source",
+                capture_id,
+                Some(resource(url, body)),
+                8,
+            );
+        }
+
+        assert!(store
+            .take("foreground:source", "https://cdn.test/second.png")
+            .is_none());
+        assert_eq!(
+            store
+                .take("foreground:source", "https://cdn.test/first.png")
+                .map(|resource| resource.body),
+            Some(b"new1".to_vec())
+        );
+        assert_eq!(
+            store
+                .take("foreground:source", "https://cdn.test/third.png")
+                .map(|resource| resource.body),
+            Some(b"tri3".to_vec())
+        );
+    }
+
+    #[test]
+    fn taking_a_resource_releases_its_capacity_and_order_entry() {
+        let store = CapturedResourceStore::default();
+        let capture_id = store.begin("foreground:source");
+        for (url, body) in [
+            ("https://cdn.test/first.png", b"first".as_slice()),
+            ("https://cdn.test/second.png", b"other".as_slice()),
+        ] {
+            assert_eq!(store.claim("foreground:source"), Some(capture_id));
+            store.complete_with_total_limit(
+                "foreground:source",
+                capture_id,
+                Some(resource(url, body)),
+                10,
+            );
+        }
+
+        assert!(store
+            .take("foreground:source", "https://cdn.test/first.png")
+            .is_some());
+        {
+            let sessions = store
+                .sessions
+                .lock()
+                .expect("captured resource sessions mutex");
+            let session = sessions.get("foreground:source").unwrap();
+            assert_eq!(session.total_bytes, 5);
+            assert_eq!(
+                session.resource_order,
+                VecDeque::from(["https://cdn.test/second.png".to_string()])
+            );
+        }
+
+        assert_eq!(store.claim("foreground:source"), Some(capture_id));
+        store.complete_with_total_limit(
+            "foreground:source",
+            capture_id,
+            Some(resource("https://cdn.test/third.png", b"third")),
+            10,
+        );
+        for url in [
+            "https://cdn.test/second.png",
+            "https://cdn.test/third.png",
+        ] {
+            assert!(store.take("foreground:source", url).is_some());
+        }
+    }
+
+    #[test]
+    fn clears_every_capture_session() {
+        let store = CapturedResourceStore::default();
+        for executor in ["immediate", "pool:1"] {
+            let capture_id = store.begin(executor);
+            assert_eq!(store.claim(executor), Some(capture_id));
+            store.complete(
+                executor,
+                capture_id,
+                Some(resource(
+                    &format!("https://cdn.test/{executor}.png"),
+                    executor.as_bytes(),
+                )),
+            );
+        }
+
+        store.clear_all();
+
+        assert_eq!(store.claim("immediate"), None);
+        assert_eq!(store.claim("pool:1"), None);
+        assert!(store
+            .take("immediate", "https://cdn.test/immediate.png")
+            .is_none());
+        assert!(store
+            .take("pool:1", "https://cdn.test/pool:1.png")
+            .is_none());
     }
 
     #[test]

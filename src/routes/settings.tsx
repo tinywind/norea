@@ -75,6 +75,7 @@ import {
   type UpdateChannel,
 } from "../lib/update";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
+import { clearWebViewCache } from "../lib/webview-cache";
 import {
   formatDateTimeForLocale,
   SUPPORTED_APP_LOCALES,
@@ -929,12 +930,14 @@ function AppSettingsSection({ isBusy }: { isBusy: boolean }) {
 function DataSettingsSection({
   isBusy,
   onClearDownloadedContent,
+  onClearWebViewCache,
   onExport,
   onImport,
   onRunMaintenance,
 }: {
   isBusy: boolean;
   onClearDownloadedContent: () => void;
+  onClearWebViewCache: () => void;
   onExport: () => void;
   onImport: () => void;
   onRunMaintenance: (
@@ -1023,6 +1026,21 @@ function DataSettingsSection({
             }}
           >
             {t("common.clear")}
+          </TextButton>
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("settings.data.webViewCache.label")}
+          description={t("settings.data.webViewCache.description")}
+        >
+          <TextButton
+            disabled={isBusy}
+            loading={isBusy}
+            variant="default"
+            onClick={() => {
+              onClearWebViewCache();
+            }}
+          >
+            {t("settings.data.webViewCache.button")}
           </TextButton>
         </SettingsFieldRow>
         <SettingsFieldRow
@@ -1760,6 +1778,46 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     }
   }
 
+  async function handleClearWebViewCache(): Promise<void> {
+    const kind = "maintenance.clearWebViewCache";
+    const title = t("settings.data.webViewCache.button");
+    if (!window.confirm(t("settings.data.webViewCache.warning"))) {
+      return;
+    }
+    setBusyAction(kind);
+    showSettingsLoadingToast(
+      kind,
+      title,
+      t("settings.data.webViewCache.busy"),
+    );
+    try {
+      await enqueueMainTask({
+        kind,
+        title,
+        run: async () => {
+          await clearWebViewCache();
+          updateSettingsToast(
+            kind,
+            "green",
+            title,
+            t("settings.data.webViewCache.done"),
+          );
+        },
+      }).promise;
+    } catch (error) {
+      updateSettingsToast(
+        kind,
+        "red",
+        title,
+        t("settings.data.maintenanceFailed", {
+          error: describeError(error),
+        }),
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function openLatestRelease(): void {
     void openUrl(LATEST_RELEASE_URL).catch((error: unknown) => {
       showSettingsToast(
@@ -1801,6 +1859,9 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
           isBusy={isBusy}
           onClearDownloadedContent={() => {
             void clearDownloadedContent();
+          }}
+          onClearWebViewCache={() => {
+            void handleClearWebViewCache();
           }}
           onExport={() => {
             void handleExport();
