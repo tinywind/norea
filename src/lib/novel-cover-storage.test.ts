@@ -19,7 +19,6 @@ vi.mock("./http", () => ({
 vi.mock("./tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(),
   isTauriRuntime: vi.fn(),
-  isWindowsRuntime: vi.fn(),
 }));
 
 import {
@@ -37,11 +36,7 @@ import {
   saveNovelCoverFromSource,
   subscribeNovelCoverChanges,
 } from "./novel-cover-storage";
-import {
-  isAndroidRuntime,
-  isTauriRuntime,
-  isWindowsRuntime,
-} from "./tauri-runtime";
+import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import type { Plugin } from "./plugins/types";
 
 const invokeMock = vi.mocked(invoke);
@@ -53,7 +48,6 @@ const writeAndroidStorageBytesMock = vi.mocked(writeAndroidStorageBytes);
 const writeAndroidStorageTextMock = vi.mocked(writeAndroidStorageText);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
-const isWindowsRuntimeMock = vi.mocked(isWindowsRuntime);
 
 const novel = {
   id: 7,
@@ -97,7 +91,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
-  isWindowsRuntimeMock.mockReturnValue(false);
   deleteAndroidStoragePathMock.mockResolvedValue(undefined);
   invokeMock.mockImplementation((command) =>
     Promise.resolve(command === "novel_cover_read_manifest" ? null : undefined),
@@ -249,28 +242,7 @@ describe("saveNovelCoverFromSource", () => {
     );
   });
 
-  it("resolves a stored desktop cover to a norea-media URL", async () => {
-    invokeMock.mockResolvedValueOnce(
-      coverManifest("https://source.test/covers/cover.jpg"),
-    );
-
-    await expect(
-      resolveStoredNovelCoverSrc(novel),
-    ).resolves.toBe(
-      "norea-media://reader-asset/contents/demo/Sample-Novel-novel/cover.jpg",
-    );
-
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
-      novelId: 7,
-      novelName: "Sample Novel",
-      novelPath: "/novel",
-      sourceId: "demo",
-    });
-  });
-
   it("resolves a stored Windows desktop cover to the custom protocol host", async () => {
-    isWindowsRuntimeMock.mockReturnValue(true);
     invokeMock.mockResolvedValueOnce(
       coverManifest("https://source.test/covers/cover.jpg"),
     );
@@ -280,6 +252,14 @@ describe("saveNovelCoverFromSource", () => {
     ).resolves.toBe(
       "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg",
     );
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
+      novelId: 7,
+      novelName: "Sample Novel",
+      novelPath: "/novel",
+      sourceId: "demo",
+    });
   });
 
   it("resolves a stored Android cover to the direct storage URL", async () => {
@@ -323,7 +303,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(novel),
     ).resolves.toBe(
-      "norea-media://reader-asset/contents/demo/Sample-Novel-novel/cover.jpg",
+      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg",
     );
   });
 
@@ -340,12 +320,11 @@ describe("saveNovelCoverFromSource", () => {
         pluginId: "naver-webtoon",
       }),
     ).resolves.toBe(
-      "norea-media://reader-asset/contents/naver-webtoon/%EA%B4%91%EB%A7%88%ED%9A%8C%EA%B7%80-webtoon-list-titleId-776601/cover.jpg",
+      "http://norea-media.localhost/contents/naver-webtoon/%EA%B4%91%EB%A7%88%ED%9A%8C%EA%B7%80-webtoon-list-titleId-776601/cover.jpg",
     );
   });
 
   it("keeps Windows cover URLs content-relative when the novel folder has unicode", async () => {
-    isWindowsRuntimeMock.mockReturnValue(true);
     invokeMock.mockResolvedValueOnce(
       coverManifest("https://source.test/covers/cover.jpg"),
     );

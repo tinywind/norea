@@ -91,6 +91,7 @@ pub async fn download_and_open_update(
     file_name: String,
     metadata: UpdateInstallMetadata,
 ) -> Result<String, String> {
+    ensure_supported_update_platform()?;
     if !is_allowed_update_url(&url) {
         return Err("unsupported update host".to_string());
     }
@@ -182,6 +183,7 @@ pub fn open_downloaded_update_handle(
     file_name: String,
     metadata: UpdateInstallMetadata,
 ) -> Result<String, String> {
+    ensure_supported_update_platform()?;
     let source_path =
         native_stream::take_finished_path(&app, &state, &handle, Some(UPDATE_HANDLE_DOMAIN))?;
     let result = save_and_open_update_file(app, &file_name, &source_path, &metadata);
@@ -237,7 +239,6 @@ fn open_update_artifact(
         archive_path.to_path_buf()
     };
 
-    mark_executable_if_needed(&installer_path)?;
     open_installer(app, &installer_path)?;
 
     Ok(installer_path.to_string_lossy().to_string())
@@ -305,6 +306,13 @@ fn current_platform() -> String {
     format!("{os}-{arch}")
 }
 
+fn ensure_supported_update_platform() -> Result<(), String> {
+    match std::env::consts::OS {
+        "windows" | "android" => Ok(()),
+        os => Err(format!("updates are unavailable on {os}")),
+    }
+}
+
 fn is_allowed_update_url(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
@@ -362,13 +370,21 @@ fn is_installer_file_name(file_name: &str) -> bool {
 }
 
 fn extract_installer_from_zip(zip_path: &Path, updates_dir: &Path) -> Result<PathBuf, String> {
-    extract_installer_from_zip_with_limits(zip_path, updates_dir, UpdateZipLimits::DEFAULT)
+    extract_installer_from_zip_for_platform_with_limits(
+        zip_path,
+        updates_dir,
+        UpdateZipLimits::DEFAULT,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
 }
 
-fn extract_installer_from_zip_with_limits(
+fn extract_installer_from_zip_for_platform_with_limits(
     zip_path: &Path,
     updates_dir: &Path,
     limits: UpdateZipLimits,
+    target_os: &str,
+    target_arch: &str,
 ) -> Result<PathBuf, String> {
     let zip_file = File::open(zip_path).map_err(|err| format!("artifact open failed: {err}"))?;
     let mut archive =
@@ -395,7 +411,7 @@ fn extract_installer_from_zip_with_limits(
             continue;
         }
         let entry_name = safe_zip_entry_file_name(entry.name())?;
-        let Some(priority) = installer_priority(&entry_name) else {
+        let Some(priority) = installer_priority_for(target_os, target_arch, &entry_name) else {
             continue;
         };
         if selected_index
@@ -701,39 +717,40 @@ fn is_zip_symlink(unix_mode: Option<u32>) -> bool {
 }
 
 fn installer_priority(name: &str) -> Option<u8> {
+    installer_priority_for(std::env::consts::OS, std::env::consts::ARCH, name)
+}
+
+fn installer_priority_for(target_os: &str, target_arch: &str, name: &str) -> Option<u8> {
     let lower_name = name.to_ascii_lowercase();
 
-    match std::env::consts::OS {
+    match target_os {
         "windows" if lower_name.ends_with(".exe") => Some(0),
         "windows" if lower_name.ends_with(".msi") => Some(1),
-        "linux" if lower_name.ends_with(".appimage") => Some(0),
-        "linux" if lower_name.ends_with(".deb") => Some(1),
-        "linux" if lower_name.ends_with(".rpm") => Some(2),
-        "android" => android_apk_priority(&lower_name),
+        "android" => android_apk_priority(target_arch, &lower_name),
         _ => None,
     }
 }
 
-fn android_apk_priority(name: &str) -> Option<u8> {
+fn android_apk_priority(target_arch: &str, name: &str) -> Option<u8> {
     if !name.ends_with(".apk") {
         return None;
     }
 
-    if is_current_android_arch_apk(name) {
+    if is_current_android_arch_apk(target_arch, name) {
         return Some(0);
     }
     if is_universal_android_apk(name) {
         return Some(1);
     }
-    if is_other_android_arch_apk(name) {
+    if is_other_android_arch_apk(target_arch, name) {
         return None;
     }
 
     Some(2)
 }
 
-fn is_current_android_arch_apk(name: &str) -> bool {
-    match std::env::consts::ARCH {
+fn is_current_android_arch_apk(target_arch: &str, name: &str) -> bool {
+    match target_arch {
         "aarch64" => name.contains("arm64") || name.contains("aarch64"),
         "x86_64" => name.contains("x86_64") || name.contains("x64"),
         "arm" => name.contains("armeabi") || name.contains("armv7"),
@@ -742,40 +759,16 @@ fn is_current_android_arch_apk(name: &str) -> bool {
     }
 }
 
-fn is_other_android_arch_apk(name: &str) -> bool {
+fn is_other_android_arch_apk(target_arch: &str, name: &str) -> bool {
     let known_arch = [
         "arm64", "aarch64", "armeabi", "armv7", "x86_64", "x64", "x86",
     ];
-    known_arch.iter().any(|token| name.contains(token)) && !is_current_android_arch_apk(name)
+    known_arch.iter().any(|token| name.contains(token))
+        && !is_current_android_arch_apk(target_arch, name)
 }
 
 fn is_universal_android_apk(name: &str) -> bool {
     name.contains("universal") || name.contains("fat")
-}
-
-#[cfg(unix)]
-fn mark_executable_if_needed(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let is_app_image = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("AppImage"));
-    if !is_app_image {
-        return Ok(());
-    }
-
-    let mut permissions = fs::metadata(path)
-        .map_err(|err| format!("installer metadata failed: {err}"))?
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions)
-        .map_err(|err| format!("installer permission update failed: {err}"))
-}
-
-#[cfg(not(unix))]
-fn mark_executable_if_needed(_path: &Path) -> Result<(), String> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -816,25 +809,18 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "windows")]
     fn installer_fixture_names() -> (&'static str, &'static str) {
         ("norea.exe", "norea.msi")
     }
 
-    #[cfg(target_os = "linux")]
-    fn installer_fixture_names() -> (&'static str, &'static str) {
-        ("norea.AppImage", "norea.deb")
-    }
-
-    #[cfg(target_os = "android")]
-    fn installer_fixture_names() -> (&'static str, &'static str) {
-        if cfg!(target_arch = "aarch64") {
-            ("norea-arm64.apk", "norea-universal.apk")
-        } else if cfg!(target_arch = "x86_64") {
-            ("norea-x86_64.apk", "norea-universal.apk")
-        } else {
-            ("norea-universal.apk", "norea.apk")
-        }
+    fn extract_test_installer(
+        zip_path: &Path,
+        output_dir: &Path,
+        limits: UpdateZipLimits,
+    ) -> Result<PathBuf, String> {
+        extract_installer_from_zip_for_platform_with_limits(
+            zip_path, output_dir, limits, "windows", "x86_64",
+        )
     }
 
     #[test]
@@ -915,7 +901,6 @@ mod tests {
         assert!(error.contains("compression ratio"));
     }
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
     #[test]
     fn zip_extraction_selects_highest_priority_installer_entry() {
         let (preferred, fallback) = installer_fixture_names();
@@ -926,9 +911,8 @@ mod tests {
             &[(fallback, b"fallback"), (preferred, b"preferred")],
         );
 
-        let extracted =
-            extract_installer_from_zip_with_limits(&zip_path, dir.path(), test_zip_limits())
-                .expect("extract installer");
+        let extracted = extract_test_installer(&zip_path, dir.path(), test_zip_limits())
+            .expect("extract installer");
 
         assert_eq!(
             extracted.file_name().and_then(|name| name.to_str()),
@@ -937,7 +921,6 @@ mod tests {
         assert_eq!(fs::read(extracted).expect("read extracted"), b"preferred");
     }
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
     #[test]
     fn zip_extraction_rejects_traversal_installer_entry() {
         let (preferred, _) = installer_fixture_names();
@@ -946,15 +929,13 @@ mod tests {
         let traversal = format!("../{preferred}");
         write_zip(&zip_path, &[(traversal.as_str(), b"installer")]);
 
-        let result =
-            extract_installer_from_zip_with_limits(&zip_path, dir.path(), test_zip_limits());
+        let result = extract_test_installer(&zip_path, dir.path(), test_zip_limits());
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("unsafe entry name"), "error was: {err}");
     }
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
     #[test]
     fn zip_extraction_rejects_oversized_selected_entry() {
         let (preferred, _) = installer_fixture_names();
@@ -967,14 +948,13 @@ mod tests {
             ..test_zip_limits()
         };
 
-        let result = extract_installer_from_zip_with_limits(&zip_path, dir.path(), limits);
+        let result = extract_test_installer(&zip_path, dir.path(), limits);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("byte limit"), "error was: {err}");
     }
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
     #[test]
     fn zip_extraction_rejects_excessive_entry_count() {
         let (preferred, _) = installer_fixture_names();
@@ -986,14 +966,13 @@ mod tests {
             ..test_zip_limits()
         };
 
-        let result = extract_installer_from_zip_with_limits(&zip_path, dir.path(), limits);
+        let result = extract_test_installer(&zip_path, dir.path(), limits);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("entry limit"), "error was: {err}");
     }
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
     #[test]
     fn zip_extraction_rejects_excessive_total_uncompressed_size() {
         let (preferred, _) = installer_fixture_names();
@@ -1009,7 +988,7 @@ mod tests {
             ..test_zip_limits()
         };
 
-        let result = extract_installer_from_zip_with_limits(&zip_path, dir.path(), limits);
+        let result = extract_test_installer(&zip_path, dir.path(), limits);
 
         assert!(result.is_err());
         let err = result.unwrap_err();

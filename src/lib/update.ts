@@ -20,6 +20,12 @@ const UPDATE_MANIFEST_SCHEMA_VERSION = 1;
 const ANDROID_UPDATE_STREAM_TTL_MS = 30 * 60 * 1000;
 const ANDROID_UPDATE_OPEN_APK_CAPABILITY = "update.openApk";
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/i;
+const SUPPORTED_UPDATE_PLATFORMS = new Set([
+  "windows-x64",
+  "windows-arm64",
+  "android-arm64",
+  "android-x86_64",
+]);
 
 export type UpdateChannel = "official" | "dev";
 type UpdateManifestChannel = "stable" | "dev";
@@ -169,6 +175,7 @@ export function getBuildInfo(): Promise<BuildInfo> {
 export async function checkOfficialUpdate(
   buildInfo: BuildInfo,
 ): Promise<UpdateCandidate> {
+  assertSupportedUpdatePlatform(buildInfo.platform);
   const release = await fetchGithubJson<GitHubRelease>(
     `${GITHUB_API_BASE}/releases/latest`,
   );
@@ -203,6 +210,7 @@ export async function checkOfficialUpdate(
 export async function checkDevUpdate(
   buildInfo: BuildInfo,
 ): Promise<UpdateCandidate> {
+  assertSupportedUpdatePlatform(buildInfo.platform);
   const workflow = workflowForPlatform(buildInfo.platform);
   if (!workflow) {
     throw new Error(`No workflow matches ${buildInfo.platform}.`);
@@ -280,6 +288,7 @@ export async function installUpdate(
   candidate: UpdateCandidate,
   buildInfo?: BuildInfo | null,
 ): Promise<string> {
+  if (buildInfo) assertSupportedUpdatePlatform(buildInfo.platform);
   const integrity = candidateIntegrityForInstall(candidate);
 
   if (buildInfo?.targetOs === "android") {
@@ -847,18 +856,6 @@ function assetPreferences(platform: string): AssetPreference[] {
         { token: "norea-arm64", extensions: [".exe"] },
         { token: "norea-arm64", extensions: [".msi"] },
       ];
-    case "linux-x64":
-      return [
-        { token: "norea-linux-x64", extensions: [".appimage"] },
-        { token: "norea-linux-x64", extensions: [".deb"] },
-        { token: "norea-linux-x64", extensions: [".rpm"] },
-      ];
-    case "linux-arm64":
-      return [
-        { token: "norea-linux-arm64", extensions: [".appimage"] },
-        { token: "norea-linux-arm64", extensions: [".deb"] },
-        { token: "norea-linux-arm64", extensions: [".rpm"] },
-      ];
     case "android-arm64":
       return [
         {
@@ -876,7 +873,7 @@ function assetPreferences(platform: string): AssetPreference[] {
         },
       ];
     default:
-      return [{ token: platform }];
+      return [];
   }
 }
 
@@ -898,9 +895,14 @@ function matchesPreference(name: string, preference: AssetPreference): boolean {
 
 function workflowForPlatform(platform: string): string | null {
   if (platform.startsWith("windows-")) return "windows.yml";
-  if (platform.startsWith("linux-")) return "linux.yml";
   if (platform.startsWith("android-")) return "android.yml";
   return null;
+}
+
+function assertSupportedUpdatePlatform(platform: string): void {
+  if (!SUPPORTED_UPDATE_PLATFORMS.has(platform)) {
+    throw new Error(`Updates are unavailable on ${platform}.`);
+  }
 }
 
 function normalizeReleaseVersion(tagName: string): string | null {

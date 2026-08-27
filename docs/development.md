@@ -32,19 +32,19 @@ Use the same major versions as CI when possible.
 | Android build tools | `36.0.0` | APK signing and build tools |
 | Android NDK | `27.1.12297006` | Rust Android targets |
 | Android Rust targets | `aarch64-linux-android`, `x86_64-linux-android` | Device APK and emulator/WSA APK |
-| Linux Rust targets | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | Linux x64 and ARM64 release bundles |
 | Windows Rust targets | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | Windows x64 and ARM64 release bundles |
-
-Desktop Linux builds also need the Tauri 2 system packages used by CI:
-`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`,
-`librsvg2-dev`, `patchelf`, and `rpm`.
 
 ## Local Development
 
-Install dependencies and start the desktop app:
+Install dependencies on any development host:
 
 ```bash
 pnpm install
+```
+
+Start the native desktop app on Windows:
+
+```bash
 pnpm tauri dev
 ```
 
@@ -62,8 +62,10 @@ Use the smallest relevant check for the change.
 ```bash
 pnpm tsc
 pnpm test
-pnpm tauri build --debug
 ```
+
+Run `pnpm tauri build --debug` on Windows when the change touches native
+desktop integration.
 
 `pnpm db:generate` remains available for deliberate release-boundary schema
 generation work, but pre-release schema churn should not accumulate migration
@@ -127,7 +129,6 @@ artifact names and release-upload behavior used by maintainers.
 | Workflow | Artifact names |
 | --- | --- |
 | Windows Release Bundles | `norea-windows-x64-nsis`, `norea-windows-x64-msi`, `norea-windows-arm64-nsis`, `norea-windows-arm64-msi`, plus matching checksum artifacts |
-| Linux Release Bundles | `norea-linux-x64-appimage`, `norea-linux-x64-deb`, `norea-linux-x64-rpm`, `norea-linux-arm64-appimage`, `norea-linux-arm64-deb`, `norea-linux-arm64-rpm`, plus matching checksum artifacts |
 | Android Release APKs | `norea-arm64.apk`, `norea-x86_64.apk`, and `norea-android-checksums` |
 
 Pushes to `main` create workflow artifacts retained for 30 days and refresh the
@@ -138,7 +139,7 @@ matching GitHub Release.
 
 Use this path when checking that the app still works end to end:
 
-1. Start the desktop app with `pnpm tauri dev`.
+1. Start the Windows desktop app with `pnpm tauri dev`.
 2. Open Browse -> Sources.
 3. Set the repository URL to the sample catalog from the README.
 4. Refresh the repository and install one source plugin.
@@ -150,7 +151,7 @@ Use this path when checking that the app still works end to end:
    the reader.
 10. Export a local backup and import it into a clean test profile when the change
     touches library, progress, category, repository, or downloaded chapter data.
-11. On an installed Windows, Linux, or Android build, open TXT, MD, PDF, and EPUB
+11. On an installed Windows or Android build, open TXT, MD, PDF, and EPUB
     files from the system file browser while Norea is stopped and while it is
     already running; confirm each file creates or reuses a file-named local work
     and opens its imported chapter in the reader.

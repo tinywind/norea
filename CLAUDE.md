@@ -14,7 +14,7 @@ to the user's request.
 
 ## Project Shape
 
-Norea is a Tauri 2 light-novel reader for Windows, Linux, and Android.
+Norea is a Tauri 2 light-novel reader for Windows and Android.
 It uses a Rust host plus a React/TypeScript UI. The project is inspired by
 upstream `lnreader/lnreader`, but it is not a compatibility port. Upstream is
 reference material for behavior and edge cases only.
@@ -44,12 +44,11 @@ an archive or roadmap document.
 Targets:
 
 - Windows desktop.
-- Linux desktop.
 - Android sideload APK.
 
 Out of scope unless the user changes direction:
 
-- macOS and iOS builds.
+- Linux, macOS, and iOS builds.
 - Upstream backup zip round-trip compatibility.
 - Upstream MMKV/settings shape compatibility.
 - Strict pixel parity with upstream React Native UI.
@@ -152,7 +151,7 @@ release target that script produces.
 | --- | --- |
 | TypeScript or React | `pnpm tsc`, `pnpm test` |
 | Rust host | `cargo check`, `cargo test --lib` from `src-tauri` |
-| Desktop native integration | `pnpm tauri build --debug` |
+| Windows desktop native integration | `pnpm tauri build --debug` |
 | Android APK/release workflow | Targeted `pnpm exec tauri android build --apk --target <target>` plus device smoke when behavior is Android-only |
 | Data, backup, migration, or local-file behavior | Relevant unit tests plus compatibility review against `docs/release-compatibility.md` |
 | Docs only | Link/reference scan and `git diff --check` when requested |

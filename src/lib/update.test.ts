@@ -56,17 +56,17 @@ const ANDROID_BUILD_INFO: BuildInfo = {
   targetOs: "android",
 };
 
-const LINUX_BUILD_INFO: BuildInfo = {
+const WINDOWS_BUILD_INFO: BuildInfo = {
   buildChannel: "dev",
   buildTime: "2026-05-01T00:00:00Z",
   buildVersion: "1.0.0",
   gitSha: "local-sha",
   githubRunAttempt: "1",
   githubRunId: "100",
-  platform: "linux-x64",
+  platform: "windows-x64",
   targetArch: "x86_64",
-  targetFamily: "unix",
-  targetOs: "linux",
+  targetFamily: "windows",
+  targetOs: "windows",
 };
 
 function updateCandidate(
@@ -122,16 +122,16 @@ function stableManifest(overrides: Record<string, unknown> = {}) {
   return {
     assets: [
       {
-        artifactName: "norea-linux-x64.AppImage",
-        name: "norea-linux-x64.AppImage",
-        platform: "linux-x64",
+        artifactName: "norea-x64.exe",
+        name: "norea-x64.exe",
+        platform: "windows-x64",
         ...VALID_INTEGRITY,
       },
     ],
     channel: "stable",
     dev: null,
     generatedAt: "2026-05-10T00:00:00Z",
-    platform: "linux-x64",
+    platform: "windows-x64",
     schemaVersion: 1,
     signature: null,
     signingKeyId: null,
@@ -144,9 +144,9 @@ function mockDevUpdateRoutes(
   devOverrides: Record<string, unknown> = {},
 ): void {
   const manifestUrl =
-    "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-updates-linux-x64.json";
+    "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-updates-windows-x64.json";
   mockJsonRoutes({
-    [`${GITHUB_API_BASE}/actions/workflows/linux.yml/runs?branch=main&status=success&per_page=10`]:
+    [`${GITHUB_API_BASE}/actions/workflows/windows.yml/runs?branch=main&status=success&per_page=10`]:
       {
         workflow_runs: [
           {
@@ -165,7 +165,7 @@ function mockDevUpdateRoutes(
       artifacts: [
         {
           expired: false,
-          name: "norea-linux-x64.AppImage",
+          name: "norea-x64.exe",
           size_in_bytes: VALID_INTEGRITY.size,
         },
       ],
@@ -174,13 +174,13 @@ function mockDevUpdateRoutes(
       assets: [
         {
           browser_download_url:
-            "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-linux-x64.AppImage",
-          name: "norea-linux-x64.AppImage",
+            "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-x64.exe",
+          name: "norea-x64.exe",
           size: VALID_INTEGRITY.size,
         },
         {
           browser_download_url: manifestUrl,
-          name: "norea-updates-linux-x64.json",
+          name: "norea-updates-windows-x64.json",
           size: 300,
         },
       ],
@@ -192,9 +192,9 @@ function mockDevUpdateRoutes(
     [manifestUrl]: {
       assets: [
         {
-          artifactName: "norea-linux-x64.AppImage",
-          name: "norea-linux-x64.AppImage",
-          platform: "linux-x64",
+          artifactName: "norea-x64.exe",
+          name: "norea-x64.exe",
+          platform: "windows-x64",
           ...VALID_INTEGRITY,
         },
       ],
@@ -204,11 +204,11 @@ function mockDevUpdateRoutes(
         headSha: "remote-head-sha",
         runAttempt: "2",
         runId: "123",
-        workflow: "linux.yml",
+        workflow: "windows.yml",
         ...devOverrides,
       },
       generatedAt: "2026-05-11T00:10:00Z",
-      platform: "linux-x64",
+      platform: "windows-x64",
       schemaVersion: 1,
       signature: null,
       signingKeyId: null,
@@ -284,6 +284,21 @@ describe("update byte budgets", () => {
   });
 });
 
+describe("update platform support", () => {
+  it("rejects retired platforms before requesting update metadata", async () => {
+    await expect(
+      checkOfficialUpdate({
+        ...WINDOWS_BUILD_INFO,
+        platform: "linux-x64",
+        targetFamily: "unix",
+        targetOs: "linux",
+      }),
+    ).rejects.toThrow(/Updates are unavailable on linux-x64/);
+
+    expect(appFetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("update integrity metadata", () => {
   it("accepts payloads matching the metadata size and digest", async () => {
     await expect(
@@ -311,25 +326,25 @@ describe("update integrity metadata", () => {
 
   it("selects manifest metadata for stable update candidates", async () => {
     const manifestUrl =
-      "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-updates-linux-x64.json";
+      "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-updates-windows-x64.json";
     mockJsonRoutes({
       [`${GITHUB_API_BASE}/releases/latest`]: officialRelease([
         {
           browser_download_url:
-            "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-linux-x64.AppImage",
-          name: "norea-linux-x64.AppImage",
+            "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-x64.exe",
+          name: "norea-x64.exe",
           size: VALID_INTEGRITY.size,
         },
         {
           browser_download_url: manifestUrl,
-          name: "norea-updates-linux-x64.json",
+          name: "norea-updates-windows-x64.json",
           size: 300,
         },
       ]),
       [manifestUrl]: stableManifest(),
     });
 
-    const candidate = await checkOfficialUpdate(LINUX_BUILD_INFO);
+    const candidate = await checkOfficialUpdate(WINDOWS_BUILD_INFO);
 
     expect(candidate.integrity).toEqual(VALID_INTEGRITY);
     expect(candidate.downloadSize).toBe(VALID_INTEGRITY.size);
@@ -338,26 +353,26 @@ describe("update integrity metadata", () => {
 
   it("rejects stable manifest platform mismatches", async () => {
     const manifestUrl =
-      "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-updates-linux-x64.json";
+      "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-updates-windows-x64.json";
     mockJsonRoutes({
       [`${GITHUB_API_BASE}/releases/latest`]: officialRelease([
         {
           browser_download_url:
-            "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-linux-x64.AppImage",
-          name: "norea-linux-x64.AppImage",
+            "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-x64.exe",
+          name: "norea-x64.exe",
           size: VALID_INTEGRITY.size,
         },
         {
           browser_download_url: manifestUrl,
-          name: "norea-updates-linux-x64.json",
+          name: "norea-updates-windows-x64.json",
           size: 300,
         },
       ]),
-      [manifestUrl]: stableManifest({ platform: "windows-x64" }),
+      [manifestUrl]: stableManifest({ platform: "android-arm64" }),
     });
 
-    await expect(checkOfficialUpdate(LINUX_BUILD_INFO)).rejects.toThrow(
-      /platform windows-x64 does not match linux-x64/,
+    await expect(checkOfficialUpdate(WINDOWS_BUILD_INFO)).rejects.toThrow(
+      /platform android-arm64 does not match windows-x64/,
     );
   });
 
@@ -366,15 +381,15 @@ describe("update integrity metadata", () => {
       [`${GITHUB_API_BASE}/releases/latest`]: officialRelease([
         {
           browser_download_url:
-            "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-linux-x64.AppImage",
-          name: "norea-linux-x64.AppImage",
+            "https://github.com/tinywind/norea/releases/download/v1.2.0/norea-x64.exe",
+          name: "norea-x64.exe",
           size: VALID_INTEGRITY.size,
         },
       ]),
     });
 
-    await expect(checkOfficialUpdate(LINUX_BUILD_INFO)).rejects.toThrow(
-      /No update metadata asset named norea-updates-linux-x64\.json/,
+    await expect(checkOfficialUpdate(WINDOWS_BUILD_INFO)).rejects.toThrow(
+      /No update metadata asset named norea-updates-windows-x64\.json/,
     );
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -433,18 +448,18 @@ describe("dev update provenance", () => {
   it("accepts dev metadata bound to the selected workflow run", async () => {
     mockDevUpdateRoutes();
 
-    const candidate = await checkDevUpdate(LINUX_BUILD_INFO);
+    const candidate = await checkDevUpdate(WINDOWS_BUILD_INFO);
 
     expect(candidate.devRun).toEqual({
       artifactName: null,
       headSha: "remote-head-sha",
       runAttempt: "2",
       runId: "123",
-      workflow: "linux.yml",
+      workflow: "windows.yml",
     });
     expect(candidate.integrity).toEqual(VALID_INTEGRITY);
     expect(candidate.downloadUrl).toBe(
-      "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-linux-x64.AppImage",
+      "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-x64.exe",
     );
     expect(candidate.sourceUrl).toBe(
       "https://github.com/tinywind/norea/releases/tag/dev-0.2",
@@ -458,18 +473,18 @@ describe("dev update provenance", () => {
   ])("rejects dev metadata with the wrong %s", async (_label, override, error) => {
     mockDevUpdateRoutes(override);
 
-    await expect(checkDevUpdate(LINUX_BUILD_INFO)).rejects.toThrow(error);
+    await expect(checkDevUpdate(WINDOWS_BUILD_INFO)).rejects.toThrow(error);
   });
 });
 
 describe("update installation", () => {
   it("delegates desktop installation to the native verified download path", async () => {
     const installerPath =
-      "/home/user/Downloads/Norea Updates/norea-linux-x64.AppImage";
+      "C:\\Users\\user\\Downloads\\Norea Updates\\norea-x64.exe";
     const candidate = updateCandidate();
     invokeMock.mockResolvedValue(installerPath);
 
-    await expect(installUpdate(candidate, LINUX_BUILD_INFO)).resolves.toBe(
+    await expect(installUpdate(candidate, WINDOWS_BUILD_INFO)).resolves.toBe(
       installerPath,
     );
 

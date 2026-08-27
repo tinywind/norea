@@ -1,6 +1,6 @@
 # Norea
 
-Norea is a local-first light-novel reader for Windows, Linux, and Android.
+Norea is a local-first light-novel reader for Windows and Android.
 It keeps your reading sources, library, downloads, and progress in one app.
 
 Norea is inspired by [lnreader/lnreader](https://github.com/lnreader/lnreader),
@@ -23,7 +23,7 @@ but it is a separate app with its own data, backup, and source system.
 - Browse and search installed reading sources.
 - Add novels to your library and organize them with categories.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
-- Open TXT, EPUB, and PDF files with installed desktop or Android builds,
+- Open TXT, EPUB, and PDF files with installed Windows or Android builds,
   import them into file-named local works, and continue directly in the reader.
 - Cache rendered chapter media for offline reading.
 - Create local novel homes, add chapter files later, reorder local chapters, and
@@ -42,6 +42,7 @@ Norea is usable for testing, but it is not a polished app-store release yet.
 Current limits:
 
 - macOS and iOS are not planned right now.
+- Linux builds are no longer produced or supported.
 - Some protected sources may ask you to open the in-app site browser once before
   search or downloads work.
 - Android background downloads still need more device testing.
@@ -63,8 +64,7 @@ Workflow artifacts remain available as a fallback while the prerelease is being
 refreshed:
 
 1. Open the latest successful workflow run for your platform:
-   [Windows](https://github.com/tinywind/norea/actions/workflows/windows.yml?query=branch%3Amain+is%3Asuccess),
-   [Linux](https://github.com/tinywind/norea/actions/workflows/linux.yml?query=branch%3Amain+is%3Asuccess), or
+   [Windows](https://github.com/tinywind/norea/actions/workflows/windows.yml?query=branch%3Amain+is%3Asuccess) or
    [Android](https://github.com/tinywind/norea/actions/workflows/android.yml?query=branch%3Amain+is%3Asuccess).
 2. Open the run and scroll to Artifacts.
 3. Download the matching artifact:
@@ -73,8 +73,6 @@ refreshed:
 | --- | --- |
 | Windows x64 | `norea-windows-x64-nsis` or `norea-windows-x64-msi` |
 | Windows ARM64 | `norea-windows-arm64-nsis` or `norea-windows-arm64-msi` |
-| Linux x64 | `norea-linux-x64-appimage`, `norea-linux-x64-deb`, or `norea-linux-x64-rpm` |
-| Linux ARM64 | `norea-linux-arm64-appimage`, `norea-linux-arm64-deb`, or `norea-linux-arm64-rpm` |
 | Android phone or tablet | `norea-arm64.apk` |
 | Android emulator or WSA | `norea-x86_64.apk` |
 

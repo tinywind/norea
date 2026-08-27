@@ -9,7 +9,7 @@ Use this checklist after the fixture plugin is available in a sibling
 - Compile the sibling fixture plugin so the installable source exists at
   `../norea-plugins/.js/plugins/dev/contenttypefixture.js`.
 - Use the fixture plugin install path for the target host:
-  - Desktop: install `../norea-plugins/.js/plugins/dev/contenttypefixture.js`
+  - Windows desktop: install `../norea-plugins/.js/plugins/dev/contenttypefixture.js`
     through the local plugin upload flow. The fixture content host may stay
     `http://localhost:3000`.
   - Android emulator: install from a dev-only repository manifest whose fixture

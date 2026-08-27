@@ -14,17 +14,12 @@ import {
 import { pluginMediaFetch } from "./http";
 import { getPluginBaseUrl } from "./plugins/base-url";
 import type { Plugin } from "./plugins/types";
-import {
-  isAndroidRuntime,
-  isTauriRuntime,
-  isWindowsRuntime,
-} from "./tauri-runtime";
+import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
 const NOVEL_COVER_MANIFEST_FILE = "cover.json";
 const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
 const ANDROID_LOCAL_MEDIA_SRC_PREFIX = "/__norea_android_media__/file/";
-const NOREA_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 const WINDOWS_NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
 
 type NovelCoverChangeListener = (novelId: number) => void;
@@ -222,10 +217,7 @@ function androidLocalMediaSrc(relativePath: string): string {
 }
 
 function noreaMediaSrc(relativePath: string): string {
-  const prefix = isWindowsRuntime()
-    ? WINDOWS_NOREA_MEDIA_SRC_PREFIX
-    : NOREA_MEDIA_SRC_PREFIX;
-  return `${prefix}${relativePath
+  return `${WINDOWS_NOREA_MEDIA_SRC_PREFIX}${relativePath
     .split("/")
     .map(encodeURIComponent)
     .join("/")}`;

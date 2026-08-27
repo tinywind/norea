@@ -32,7 +32,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -92,13 +92,6 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
-    },
-    "linux": {
-      "rpm": {
-        "compression": {
-          "type": "none"
-        }
-      }
     }
   },
   "plugins": {

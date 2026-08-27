@@ -18,6 +18,10 @@ This policy covers Norea-owned local data, including SQLite schema/data,
 settings, reading progress, library records, local novel records, downloaded
 chapter content, chapter media cache metadata, and Norea backup format.
 
+Retiring an operating-system target does not change these data formats. Backups
+created on a retired target remain readable on supported targets inside the same
+release-line compatibility scope.
+
 ## Schema Versioning
 
 - During pre-release schema churn, Norea does not keep one migration file for

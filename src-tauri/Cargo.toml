@@ -39,10 +39,8 @@ reqwest = { version = "0.13.3", default-features = false, features = ["rustls"] 
 jni = "0.22.4"
 rustls-platform-verifier = "0.7.0"
 
-[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2.4.1"
-
 [target.'cfg(target_os = "windows")'.dependencies]
+tauri-plugin-single-instance = "2.4.1"
 tauri-winrt-notification = "0.7.2"
 webview2-com = "0.38.2"
 windows = { version = "0.61", features = ["Foundation_Collections", "UI_Notifications", "Win32_Foundation", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
