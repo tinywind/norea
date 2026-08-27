@@ -22,9 +22,10 @@ describe("androidSiteBrowser", () => {
       "https://redirected.example:8443",
     );
 
-    await expect(androidSiteBrowser.currentOrigin()).resolves.toBe(
+    await expect(androidSiteBrowser.currentOrigin("source-a")).resolves.toBe(
       "https://redirected.example:8443",
     );
     expect(androidScraperCurrentOrigin).toHaveBeenCalledOnce();
+    expect(androidScraperCurrentOrigin).toHaveBeenCalledWith("source-a");
   });
 });

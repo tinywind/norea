@@ -606,7 +606,7 @@ export function BrowsePage({
           if (!executor) {
             throw new Error("Plugin cookie clearing requires a scraper executor");
           }
-          return clearPluginCookies(pluginUrl, executor);
+          return clearPluginCookies(plugin.id, pluginUrl, executor);
         },
       }).promise;
     },
@@ -1275,7 +1275,7 @@ interface InstalledSectionProps {
 
 /**
  * Open the plugin's base URL in the in-app browser overlay. The
- * persistent scraper WebView owns browser cache and cookies, and
+ * source-profile scraper WebView owns browser cache and cookies, and
  * plugin-owned fetches prepare this origin before requesting data.
  */
 function openSite(plugin: Plugin, title: string): void {

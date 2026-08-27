@@ -188,12 +188,22 @@ export function cancelAndroidScraperExecutor(
   return true;
 }
 
-export function androidScraperClearCookies(url: string): Promise<number> {
-  return callNative<number>("clearCookies", { url }, 10_000);
+export function androidScraperClearCookies(
+  sourceId: string,
+  url: string,
+  executor: ScraperExecutorId,
+): Promise<number> {
+  return callNative<number>(
+    "clearCookies",
+    { sourceId, url, queue: executor },
+    10_000,
+  );
 }
 
-export function androidScraperCurrentOrigin(): Promise<string | null> {
-  return callNative<string | null>("currentOrigin", {}, 5_000);
+export function androidScraperCurrentOrigin(
+  sourceId: string,
+): Promise<string | null> {
+  return callNative<string | null>("currentOrigin", { sourceId }, 5_000);
 }
 
 export function androidWebviewFetch(
@@ -201,6 +211,7 @@ export function androidWebviewFetch(
   init: AndroidFetchInitWire,
   contextUrl: string | null,
   userAgent: string | null,
+  sourceId: string | undefined,
   executor: ScraperExecutorId,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -212,6 +223,7 @@ export function androidWebviewFetch(
       init,
       contextUrl,
       userAgent,
+      ...(sourceId ? { sourceId } : {}),
       queue: executor,
       timeoutMs,
     },
@@ -225,6 +237,7 @@ export function androidWebviewExtract(
   beforeScript: string | null,
   timeoutMs: number,
   userAgent: string | null,
+  sourceId: string | undefined,
   executor: ScraperExecutorId,
   signal?: AbortSignal,
 ): Promise<string> {
@@ -235,6 +248,7 @@ export function androidWebviewExtract(
       beforeScript,
       timeoutMs,
       userAgent,
+      ...(sourceId ? { sourceId } : {}),
       queue: executor,
     },
     timeoutMs + 5_000,
@@ -243,6 +257,7 @@ export function androidWebviewExtract(
 }
 
 export function androidScraperSetBounds(
+  sourceId: string,
   bounds: {
     x: number;
     y: number;
@@ -257,6 +272,7 @@ export function androidScraperSetBounds(
       ...bounds,
       viewportWidth: viewport?.width ?? window.innerWidth,
       viewportHeight: viewport?.height ?? window.innerHeight,
+      sourceId,
       userAgent,
     }),
   );
@@ -267,6 +283,7 @@ export function androidScraperHide(): void {
 }
 
 export function androidScraperNavigate(
+  sourceId: string,
   url: string,
   userAgent: string | null,
   options: {
@@ -280,6 +297,7 @@ export function androidScraperNavigate(
     "navigate",
     {
       url,
+      sourceId,
       userAgent,
       resetHistory: options.resetHistory ?? false,
       timeoutMs,

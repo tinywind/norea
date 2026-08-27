@@ -4,6 +4,7 @@ export interface DesktopNavigationArgs {
   url: string;
   userAgent: string | null;
   resetHistory: boolean;
+  sourceId: string;
   timeoutMs: number | null;
 }
 

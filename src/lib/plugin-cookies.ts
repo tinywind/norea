@@ -5,6 +5,7 @@ import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 
 export async function clearPluginCookies(
+  sourceId: string,
   url: string,
   executor: ScraperExecutorId,
 ): Promise<number> {
@@ -12,10 +13,11 @@ export async function clearPluginCookies(
     throw new Error("Plugin cookie clearing is only available in the app");
   }
   if (isAndroidRuntime()) {
-    return androidScraperClearCookies(url);
+    return androidScraperClearCookies(sourceId, url, executor);
   }
   return invoke<number>("scraper_clear_cookies", {
     queue: executor,
+    sourceId,
     url,
     userAgent: getScraperUserAgent(),
   });

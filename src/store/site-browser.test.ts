@@ -7,6 +7,7 @@ describe("site browser store", () => {
       completion: null,
       context: null,
       currentUrl: null,
+      sourceId: null,
       openSequence: 0,
       phase: "closed",
       taskId: null,
@@ -17,12 +18,13 @@ describe("site browser store", () => {
   it("blocks while queued and starts navigation only for the owning task", () => {
     const store = useSiteBrowserStore.getState();
 
-    store.queueAt("https://source.test/novel", "task-1");
+    store.queueAt("source-a", "https://source.test/novel", "task-1");
 
     expect(useSiteBrowserStore.getState()).toMatchObject({
       completion: null,
       context: { mode: "browse" },
       currentUrl: "https://source.test/novel",
+      sourceId: "source-a",
       openSequence: 0,
       phase: "queued",
       taskId: "task-1",
@@ -31,12 +33,12 @@ describe("site browser store", () => {
 
     useSiteBrowserStore
       .getState()
-      .startLoading("https://source.test/novel", "stale-task");
+      .startLoading("source-a", "https://source.test/novel", "stale-task");
     expect(useSiteBrowserStore.getState().phase).toBe("queued");
 
     useSiteBrowserStore
       .getState()
-      .startLoading("https://source.test/novel", "task-1");
+      .startLoading("source-a", "https://source.test/novel", "task-1");
     expect(useSiteBrowserStore.getState()).toMatchObject({
       openSequence: 1,
       phase: "loading",
@@ -49,7 +51,7 @@ describe("site browser store", () => {
   it("clears task ownership when hidden", () => {
     useSiteBrowserStore
       .getState()
-      .queueAt("https://source.test/novel", "task-1");
+      .queueAt("source-a", "https://source.test/novel", "task-1");
 
     useSiteBrowserStore.getState().hide();
 
@@ -57,6 +59,7 @@ describe("site browser store", () => {
       completion: null,
       context: null,
       phase: "closed",
+      sourceId: null,
       taskId: null,
       visible: false,
     });
@@ -75,7 +78,7 @@ describe("site browser store", () => {
     };
     useSiteBrowserStore
       .getState()
-      .queueAt("https://source.test/chapter/1", "task-1", context);
+      .queueAt("source-a", "https://source.test/chapter/1", "task-1", context);
 
     expect(
       useSiteBrowserStore.getState().complete("stale-task", 3, "verify"),
@@ -108,6 +111,7 @@ describe("site browser store", () => {
 
   it("records an explicit verification outcome", () => {
     useSiteBrowserStore.getState().queueAt(
+      "source-a",
       "https://source.test/chapter/1",
       "task-2",
       {
@@ -123,7 +127,7 @@ describe("site browser store", () => {
     );
     useSiteBrowserStore
       .getState()
-      .startLoading("https://source.test/chapter/1", "task-2");
+      .startLoading("source-a", "https://source.test/chapter/1", "task-2");
     useSiteBrowserStore.getState().markReady("task-2");
 
     useSiteBrowserStore.getState().complete("task-2", 4, "verify");

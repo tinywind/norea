@@ -280,6 +280,7 @@ async function takeCapturedMediaResponse(
       {
         url,
         queue: scraperExecutor,
+        ...(init.sourceId ? { sourceId: init.sourceId } : {}),
       },
     );
     if (result) {
@@ -315,6 +316,7 @@ export async function takeCapturedMediaHandle(
       {
         url,
         queue: scraperExecutor,
+        ...(init.sourceId ? { sourceId: init.sourceId } : {}),
       },
     );
     if (result) {
@@ -447,6 +449,7 @@ async function desktopWebviewFetch(
   init: FetchInitWire,
   contextUrl: string | null,
   userAgent: string | null,
+  sourceId: string | undefined,
   scraperExecutor: ScraperExecutorId,
   timeoutMs: number,
   signal: AbortSignal | undefined,
@@ -461,6 +464,7 @@ async function desktopWebviewFetch(
     contextUrl,
     userAgent,
     queue: scraperExecutor,
+    ...(sourceId ? { sourceId } : {}),
     timeoutMs,
   });
   if (!signal) return request;
@@ -630,12 +634,12 @@ export async function appFetchText(
 /**
  * Plugin-scraper-facing HTTP fetch.
  *
- * Every request is routed through the persistent in-app WebView
+ * Every request is routed through the source-profile in-app WebView
  * (see `src-tauri/src/scraper.rs`). That gives us a real browser's
  * TLS fingerprint, Sec-Fetch-* headers, User-Agent and cookie jar.
  * Cloudflare, JA3-fingerprinting CDNs and login-walled sites accept
  * it the same way they accept any browser tab. There is no host-side
- * cookie store: the WebView owns the jar.
+ * cookie store: each source's WebView profile owns its jar.
  *
  * The response is reconstituted into a standard `Response` object so
  * callers keep the familiar fetch-style API. `Response.url` is patched
@@ -662,6 +666,7 @@ async function pluginFetchInternal(
           wireInit,
           contextUrl,
           userAgent,
+          init.sourceId,
           scraperExecutor,
           timeoutMs,
           signal,
@@ -671,6 +676,7 @@ async function pluginFetchInternal(
           wireInit,
           contextUrl,
           userAgent,
+          init.sourceId,
           scraperExecutor,
           timeoutMs,
           signal,

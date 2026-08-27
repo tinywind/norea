@@ -81,7 +81,7 @@ pub fn run() {
     let desktop_open_files = desktop_file_open::DesktopOpenFileState::from_process_args();
     let builder = tauri::Builder::default();
 
-    #[cfg(desktop)]
+    #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
         desktop_file_open::enqueue_new_instance(app, args, cwd);
         tray::show_main_window(app);

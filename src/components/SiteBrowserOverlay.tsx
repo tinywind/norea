@@ -58,6 +58,7 @@ interface SourceAccessOriginObservation {
   openSequence: number;
   origin: string;
   revision: number;
+  sourceId: string;
   taskId: string;
 }
 
@@ -65,6 +66,7 @@ function syncSiteBrowserBounds(
   platform: SiteBrowserPlatformApi,
   node: HTMLDivElement | null,
   url: string | null,
+  sourceId: string | null,
 ): Promise<void> {
   debugSiteBrowser("sync bounds requested", {
     platform: platform.name,
@@ -73,18 +75,18 @@ function syncSiteBrowserBounds(
   });
   const bounds = platform.boundsFor(node);
   if (!bounds) return Promise.resolve();
-  return platform.setBounds(bounds, url);
+  return platform.setBounds(bounds, url, sourceId);
 }
 
 /**
  * Full-screen browser host for the persistent scraper Webview. Platform-
- * specific bounds, navigation, and chrome behavior are isolated behind
+ * specific bounds and navigation behavior are isolated behind
  * the site-browser platform API.
  *
  * Explicit site opens may recreate the foreground WebView to clear
- * per-WebView navigation history. Browser profile storage survives
- * that reset so a manual login or CF clearance carries over to the
- * next plugin scrape.
+ * per-WebView navigation history. The source-owned browser profile survives
+ * that reset so a manual login or CF clearance carries over to that source's
+ * next plugin scrape without leaking into another source.
  *
  * Android uses a native WebView attached to the main Activity, but it
  * follows the same visible-overlay contract.
@@ -94,6 +96,7 @@ export function SiteBrowserOverlay() {
   const platform = getSiteBrowserPlatform();
   const visible = useSiteBrowserStore((s) => s.visible);
   const currentUrl = useSiteBrowserStore((s) => s.currentUrl);
+  const sourceId = useSiteBrowserStore((s) => s.sourceId);
   const browserTaskId = useSiteBrowserStore((s) => s.taskId);
   const phase = useSiteBrowserStore((s) => s.phase);
   const openSequence = useSiteBrowserStore((s) => s.openSequence);
@@ -108,9 +111,7 @@ export function SiteBrowserOverlay() {
     : null;
   const keepPausedLabel = t("sourceAccess.keepPaused");
   const verifyLabel = t("sourceAccess.verifyAndResume");
-  const inPageControls = platform.chromeMode === "in-page";
-  const deferDesktopBounds =
-    platform.name === "windows" || platform.name === "linux";
+  const deferWindowsBounds = platform.name === "windows";
   const [loading, setLoading] = useState(false);
   const [originObservation, setOriginObservation] =
     useState<SourceAccessOriginObservation | null>(null);
@@ -137,7 +138,12 @@ export function SiteBrowserOverlay() {
         const node = placeholderRef.current;
         const state = useSiteBrowserStore.getState();
         if (!state.visible) return;
-        void syncSiteBrowserBounds(platform, node, state.currentUrl).catch(
+        void syncSiteBrowserBounds(
+          platform,
+          node,
+          state.currentUrl,
+          state.sourceId,
+        ).catch(
           (error) => reportScraperError("set bounds", error),
         );
       }, delay);
@@ -182,10 +188,13 @@ export function SiteBrowserOverlay() {
       expectedRevision: number,
       expectedOpenSequence: number,
       expectedScopeKey: string,
+      expectedSourceId: string,
     ): Promise<boolean> => {
       let origin: string | null = null;
       try {
-        origin = sourceAccessOrigin(await platform.currentOrigin());
+        origin = sourceAccessOrigin(
+          await platform.currentOrigin(expectedSourceId),
+        );
       } catch (error) {
         reportScraperError("read current origin", error);
       }
@@ -195,6 +204,7 @@ export function SiteBrowserOverlay() {
         !expectedTaskId ||
         state.phase !== "ready" ||
         state.taskId !== expectedTaskId ||
+        state.sourceId !== expectedSourceId ||
         state.openSequence !== expectedOpenSequence ||
         state.context?.mode !== "source-access" ||
         state.context.scopeKey !== expectedScopeKey ||
@@ -210,6 +220,7 @@ export function SiteBrowserOverlay() {
         openSequence: expectedOpenSequence,
         origin,
         revision: expectedRevision,
+        sourceId: expectedSourceId,
         taskId: expectedTaskId,
       });
       const currentBlock = taskScheduler
@@ -283,10 +294,9 @@ export function SiteBrowserOverlay() {
     }
     nativeHiddenRef.current = false;
     if (phase !== "loading") return;
-    if (currentUrl && openSequence !== lastOpenSequence.current) {
+    if (sourceId && currentUrl && openSequence !== lastOpenSequence.current) {
       debugSiteBrowser("open requested", {
         platform: platform.name,
-        chromeMode: platform.chromeMode,
         currentUrl: redactUrlForLog(currentUrl),
         openSequence,
         hasPlaceholder: placeholderRef.current !== null,
@@ -298,7 +308,7 @@ export function SiteBrowserOverlay() {
       setLoading(true);
       void (async () => {
         try {
-          await platform.navigate(currentUrl, {
+          await platform.navigate(sourceId, currentUrl, {
             resetHistory: true,
             signal: controller.signal,
           });
@@ -306,6 +316,7 @@ export function SiteBrowserOverlay() {
           const state = useSiteBrowserStore.getState();
           if (
             !state.visible ||
+            state.sourceId !== sourceId ||
             state.currentUrl !== currentUrl ||
             state.openSequence !== openSequence ||
             state.phase !== "loading" ||
@@ -320,10 +331,15 @@ export function SiteBrowserOverlay() {
             openSequence,
             hasPlaceholder: nextNode !== null,
           });
-          if (!deferDesktopBounds && (inPageControls || nextNode)) {
-            await syncSiteBrowserBounds(platform, nextNode, currentUrl);
+          if (!deferWindowsBounds && nextNode) {
+            await syncSiteBrowserBounds(
+              platform,
+              nextNode,
+              currentUrl,
+              sourceId,
+            );
           }
-          if (!deferDesktopBounds) queueBoundsResync();
+          if (!deferWindowsBounds) queueBoundsResync();
           if (browserTaskId) markReady(browserTaskId);
           if (navigationController.current === controller) {
             navigationController.current = null;
@@ -357,12 +373,12 @@ export function SiteBrowserOverlay() {
   }, [
     browserTaskId,
     currentUrl,
-    deferDesktopBounds,
-    inPageControls,
+    deferWindowsBounds,
     markReady,
     openSequence,
     phase,
     platform,
+    sourceId,
     visible,
   ]);
 
@@ -394,6 +410,7 @@ export function SiteBrowserOverlay() {
       !visible ||
       phase !== "ready" ||
       !browserTaskId ||
+      !sourceId ||
       !sourceAccessContext
     ) {
       return;
@@ -402,7 +419,7 @@ export function SiteBrowserOverlay() {
     let disposed = false;
     const poll = () => {
       void platform
-        .currentOrigin()
+        .currentOrigin(sourceId)
         .then((origin) => {
           const state = useSiteBrowserStore.getState();
           if (
@@ -410,6 +427,7 @@ export function SiteBrowserOverlay() {
             !state.visible ||
             state.phase !== "ready" ||
             state.taskId !== browserTaskId ||
+            state.sourceId !== sourceId ||
             state.openSequence !== openSequence ||
             state.context?.mode !== "source-access" ||
             state.context.scopeKey !== sourceAccessContext.scopeKey ||
@@ -424,6 +442,7 @@ export function SiteBrowserOverlay() {
                   openSequence,
                   origin: normalizedOrigin,
                   revision: sourceAccessContext.revision,
+                  sourceId,
                   taskId: browserTaskId,
                 }
               : null,
@@ -445,39 +464,25 @@ export function SiteBrowserOverlay() {
     openSequence,
     phase,
     platform,
+    sourceId,
     sourceAccessContext,
     visible,
   ]);
 
   useEffect(() => {
     if (!visible) return;
-    if (deferDesktopBounds && (phase !== "ready" || loading)) return;
-    if (inPageControls) {
-      const sendBounds = () => {
-        void syncSiteBrowserBounds(platform, null, currentUrl).catch((error) =>
-          reportScraperError("set bounds", error),
-        );
-        queueBoundsResync();
-      };
-      sendBounds();
-      window.addEventListener("resize", sendBounds);
-      window.visualViewport?.addEventListener("resize", sendBounds);
-      return () => {
-        window.removeEventListener("resize", sendBounds);
-        window.visualViewport?.removeEventListener("resize", sendBounds);
-      };
-    }
+    if (deferWindowsBounds && (phase !== "ready" || loading)) return;
     const node = placeholderRef.current;
     if (!node) return;
 
     const sendBounds = () => {
-      void syncSiteBrowserBounds(platform, node, currentUrl).catch((error) =>
-        reportScraperError("set bounds", error),
+      void syncSiteBrowserBounds(platform, node, currentUrl, sourceId).catch(
+        (error) => reportScraperError("set bounds", error),
       );
     };
 
     sendBounds();
-    if (deferDesktopBounds) queueBoundsResync();
+    if (deferWindowsBounds) queueBoundsResync();
     const observer = new ResizeObserver(sendBounds);
     observer.observe(node);
     window.addEventListener("resize", sendBounds);
@@ -491,11 +496,11 @@ export function SiteBrowserOverlay() {
     };
   }, [
     currentUrl,
-    deferDesktopBounds,
-    inPageControls,
+    deferWindowsBounds,
     loading,
     phase,
     platform,
+    sourceId,
     visible,
   ]);
 
@@ -504,6 +509,7 @@ export function SiteBrowserOverlay() {
   const displayedOrigin =
     originObservation &&
     originObservation.taskId === browserTaskId &&
+    originObservation.sourceId === sourceId &&
     originObservation.openSequence === openSequence &&
     originObservation.revision === sourceAccessContext?.revision
       ? originObservation.origin
@@ -516,49 +522,10 @@ export function SiteBrowserOverlay() {
     : (displayedOrigin ?? t("sourceAccess.originUnavailable"));
   const canVerifySourceAccess =
     !browserLoading &&
+    sourceId !== null &&
     displayedOrigin !== null &&
     sourceAccessContext !== null &&
     sourceAccessScopeKey(displayedOrigin) === sourceAccessContext.scopeKey;
-  if (inPageControls) {
-    debugSiteBrowser("react overlay skipped for in-page chrome", {
-      platform: platform.name,
-      currentUrl: currentUrl ? redactUrlForLog(currentUrl) : null,
-      openSequence,
-    });
-    if (!browserLoading) return null;
-    return (
-      <Box
-        aria-busy="true"
-        aria-labelledby="norea-site-browser-loading-title"
-        aria-modal="true"
-        role="dialog"
-        style={{
-          position: "fixed",
-          inset: 0,
-          zIndex: 1000,
-          backgroundColor: "var(--mantine-color-body)",
-          display: "grid",
-          placeItems: "center",
-        }}
-      >
-        <Group gap="sm">
-          <Loader size="sm" />
-          <Text id="norea-site-browser-loading-title">
-            {sourceAccessTitle ?? t("common.loading")}
-          </Text>
-          <IconButton
-            label={
-              sourceAccessContext ? keepPausedLabel : t("siteBrowser.close")
-            }
-            size="lg"
-            onClick={closeBrowser}
-          >
-            <CloseGlyph />
-          </IconButton>
-        </Group>
-      </Box>
-    );
-  }
 
   return (
     <Box
@@ -681,14 +648,16 @@ export function SiteBrowserOverlay() {
               </Button>
               <Button
                 disabled={!canVerifySourceAccess}
-                onClick={() =>
+                onClick={() => {
+                  if (!sourceId) return;
                   void verifySourceAccess(
                     browserTaskId,
                     sourceAccessContext.revision,
                     openSequence,
                     sourceAccessContext.scopeKey,
-                  )
-                }
+                    sourceId,
+                  );
+                }}
               >
                 {verifyLabel}
               </Button>

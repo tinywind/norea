@@ -282,6 +282,7 @@ async function webViewFetchInternal(
       options.beforeContentScript ?? null,
       timeoutMs,
       userAgent,
+      options.sourceId,
       scraperExecutor,
       signal,
     );
@@ -292,6 +293,7 @@ async function webViewFetchInternal(
     options.beforeContentScript ?? null,
     timeoutMs,
     userAgent,
+    options.sourceId,
     scraperExecutor,
     signal,
     captureResources,
@@ -309,6 +311,7 @@ async function desktopWebViewExtract(
   beforeScript: string | null,
   timeoutMs: number,
   userAgent: string | null,
+  sourceId: string | undefined,
   scraperExecutor: ScraperExecutorId,
   signal: AbortSignal | undefined,
   captureResources: boolean,
@@ -323,6 +326,7 @@ async function desktopWebViewExtract(
     timeoutMs,
     userAgent,
     queue: scraperExecutor,
+    ...(sourceId ? { sourceId } : {}),
     ...(captureResources ? { captureResources: true } : {}),
   });
   if (!signal) return request;

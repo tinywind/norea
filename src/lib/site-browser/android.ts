@@ -20,14 +20,14 @@ function rectBounds(node: HTMLDivElement | null): SiteBrowserBounds | null {
 
 export const androidSiteBrowser: SiteBrowserPlatformApi = {
   name: "android",
-  chromeMode: "react",
   boundsFor: (node) => rectBounds(node),
-  currentOrigin: androidScraperCurrentOrigin,
-  setBounds: async (bounds) => {
-    androidScraperSetBounds(bounds, getScraperUserAgent());
+  currentOrigin: async (sourceId) => androidScraperCurrentOrigin(sourceId),
+  setBounds: async (bounds, _url, sourceId) => {
+    if (!sourceId) return;
+    androidScraperSetBounds(sourceId, bounds, getScraperUserAgent());
   },
-  navigate: async (url, options) => {
-    await androidScraperNavigate(url, getScraperUserAgent(), {
+  navigate: async (sourceId, url, options) => {
+    await androidScraperNavigate(sourceId, url, getScraperUserAgent(), {
       resetHistory: options?.resetHistory ?? false,
       signal: options?.signal,
       timeoutMs: options?.timeoutMs,

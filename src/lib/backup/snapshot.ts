@@ -132,7 +132,11 @@ const BACKUP_SETTING_KEYS = new Set([
   "reader-settings",
 ]);
 
-const BACKUP_SETTING_PREFIXES = ["plugin:", "source-filters:"];
+const BACKUP_SETTING_PREFIXES = [
+  "plugin-v2:",
+  "plugin:",
+  "source-filters:",
+];
 const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
   /^norea-media:\/\/reader-asset\/([A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*)$/;
 

@@ -17,8 +17,8 @@
  *   UI-responsive work such as opening a site or manual challenge clearing.
  * - `pool:0..N-1` own hidden worker WebViews. N is the user-configured
  *   concurrent source work setting.
- * - All executor WebViews must use the same browser profile so cookies,
- *   storage, and authenticated sessions are shared without copying cookies.
+ * - WebViews assigned to the same source id use one browser profile across
+ *   executors. Different source ids use isolated cookies, storage, and cache.
  *
  * Dispatcher loop:
  * 1. Drain main app work.

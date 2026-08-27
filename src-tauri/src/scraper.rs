@@ -1,17 +1,17 @@
 //! Desktop scraper WebViews: persistent Tauri child WebViews embedded
-//! in the main window. Each scraper queue owns one WebView while all
-//! WebViews use the same browser profile and cookie/session storage.
+//! in the main window. Each scraper queue owns one WebView bound to the
+//! active source's isolated browser profile.
 //!
 //! Architecture:
 //!
 //! - Each scraper webview starts at `scraper.html` (a stable
 //!   tauri://localhost origin) and is created lazily per scraper queue.
 //!   It exists for two reasons:
-//!     1. It participates in the shared real-browser cookie jar.
+//!     1. It participates in the source-owned real-browser cookie jar.
 //!        When the user opens
 //!        the in-app site browser overlay and navigates to a plugin
 //!        site, every cookie the site sets (CF clearance, login
-//!        sessions) lands in that jar and persists across requests.
+//!        sessions) lands in that source's jar and persists across requests.
 //!     2. It is the surface React's `SiteBrowserOverlay` paints
 //!        into when the user wants to interact with a site.
 //!
@@ -48,6 +48,8 @@ use std::path::PathBuf;
 #[cfg(desktop)]
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+#[cfg(desktop)]
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Url};
 #[cfg(desktop)]
 use tauri::{Manager, WebviewUrl};
@@ -92,7 +94,7 @@ static FETCH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 /// - `ReactNativeWebView.postMessage(payload)` polyfill: stores the
 ///   payload in page state and also mirrors it to `location.hash` as a
 ///   fallback marker for older WebView hosts.
-#[cfg(all(desktop, target_os = "windows"))]
+#[cfg(desktop)]
 const SCRAPER_INIT_SCRIPT: &str = r##"
 (function () {
   window.ReactNativeWebView = window.ReactNativeWebView || {};
@@ -146,64 +148,6 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
       }
     }
   } catch (e) {}
-})();
-"##;
-
-#[cfg(all(desktop, not(target_os = "windows")))]
-const SCRAPER_INIT_SCRIPT: &str = r##"
-(function () {
-  window.ReactNativeWebView = window.ReactNativeWebView || {};
-  window.ReactNativeWebView.postMessage = function (payload) {
-    try {
-      window.__lnrExtractResult = String(payload);
-      var encoded = encodeURIComponent(String(payload));
-      var marker = "#__lnr_result__=" + encoded;
-      try {
-        history.replaceState(null, "", location.pathname + location.search + marker);
-      } catch (e) {
-        location.hash = marker;
-      }
-      try {
-        var rid = window.__lnrExtractRequestId;
-        if (rid) {
-          location.href = "https://norea.localhost/__norea_scraper_result__/" +
-            encodeURIComponent(rid);
-        }
-      } catch (e) {}
-    } catch (e) {}
-  };
-  try {
-    var hash = location.hash || "";
-    var name = window.name || "";
-    var prefix = "__lnr_script__=";
-    var hashPrefix = "#" + prefix;
-    var idx = hash.indexOf(hashPrefix);
-    var encoded = "";
-    var fromHash = false;
-    if (idx !== -1) {
-      encoded = hash.substring(idx + hashPrefix.length);
-      fromHash = true;
-    } else if (name.indexOf(prefix) === 0) {
-      encoded = name.substring(prefix.length);
-    }
-    if (encoded) {
-      var script = decodeURIComponent(encoded);
-      if (fromHash) {
-        try {
-          history.replaceState(null, "", location.pathname + location.search);
-        } catch (e) {}
-      }
-      try {
-        (0, eval)(script);
-      } catch (e) {
-        var msg = (e && e.message) || String(e);
-        try {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ ok: false, error: "before-script error: " + msg }));
-        } catch (e2) {}
-      }
-    }
-  } catch (e) {}
-
 })();
 "##;
 
@@ -214,6 +158,7 @@ type ScraperWebview = Webview<tauri::Wry>;
 #[derive(Clone, Debug)]
 struct ScraperEntry {
     label: String,
+    source_id: String,
     user_agent: Option<String>,
 }
 
@@ -480,6 +425,36 @@ fn normalize_user_agent(user_agent: Option<String>) -> Option<String> {
 }
 
 #[cfg(desktop)]
+fn normalize_source_id(source_id: Option<&str>) -> Result<String, String> {
+    let source_id = source_id.unwrap_or_default();
+    if source_id.trim().is_empty() {
+        return Err("scraper: source id is required for browser profile isolation".to_string());
+    }
+    if source_id.len() > 512 {
+        return Err("scraper: source id exceeds the 512-byte limit".to_string());
+    }
+    Ok(source_id.to_string())
+}
+
+#[cfg(desktop)]
+fn source_profile_key(source_id: &str) -> String {
+    format!("{:x}", Sha256::digest(source_id.as_bytes()))
+}
+
+#[cfg(desktop)]
+fn source_profile_data_directory(
+    app: &AppHandle,
+    source_id: &str,
+) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("scraper: resolve app data directory: {err}"))?
+        .join("scraper-profiles")
+        .join(source_profile_key(source_id)))
+}
+
+#[cfg(desktop)]
 fn normalize_scraper_executor(queue: Option<&str>) -> Result<String, String> {
     let executor = queue.unwrap_or(IMMEDIATE_EXECUTOR);
     if executor == "mainForeground" {
@@ -602,6 +577,7 @@ fn scraper_handle_for_key(
     app: &AppHandle,
     state: &ScraperState,
     key: &str,
+    source_id: &str,
     user_agent: Option<&str>,
 ) -> Result<ScraperWebview, String> {
     let existing_entry = state
@@ -611,30 +587,34 @@ fn scraper_handle_for_key(
         .get(key)
         .cloned();
     if let Some(existing_entry) = existing_entry {
-        if existing_entry.user_agent.as_deref() != user_agent {
-            log::warn!(
-                "[scraper] queue {key} already has a WebView user agent; keeping the existing queue WebView"
-            );
+        if existing_entry.source_id != source_id {
+            close_scraper_webview_for_key(app, state, key, "source profile switch")?;
+        } else {
+            if existing_entry.user_agent.as_deref() != user_agent {
+                log::warn!(
+                    "[scraper] queue {key} already has a WebView user agent; keeping the existing queue WebView"
+                );
+            }
+            if let Some(webview) = app.get_webview(&existing_entry.label) {
+                log_windows_scraper_event("handle_for_key registered webview found");
+                return Ok(webview);
+            }
+            log_windows_scraper_event("handle_for_key registered webview missing");
+            state
+                .webviews
+                .lock()
+                .expect("scraper webviews mutex")
+                .remove(key);
+            #[cfg(target_os = "windows")]
+            state
+                .resource_capture_handlers
+                .lock()
+                .expect("scraper resource capture handlers mutex")
+                .remove(key);
         }
-        if let Some(webview) = app.get_webview(&existing_entry.label) {
-            log_windows_scraper_event("handle_for_key registered webview found");
-            return Ok(webview);
-        }
-        log_windows_scraper_event("handle_for_key registered webview missing");
-        state
-            .webviews
-            .lock()
-            .expect("scraper webviews mutex")
-            .remove(key);
-        #[cfg(target_os = "windows")]
-        state
-            .resource_capture_handlers
-            .lock()
-            .expect("scraper resource capture handlers mutex")
-            .remove(key);
     }
 
-    let label = scraper_label_from_key(key);
+    let label = scraper_label_from_key(&format!("{key}:{}", source_profile_key(source_id)));
     log::trace!("[scraper] handle_for_key computed key={key} label={label}");
     if let Some(webview) = app.get_webview(&label) {
         log_windows_scraper_event("handle_for_key unregistered webview found");
@@ -646,6 +626,7 @@ fn scraper_handle_for_key(
                 key.to_string(),
                 ScraperEntry {
                     label,
+                    source_id: source_id.to_string(),
                     user_agent: user_agent.map(str::to_string),
                 },
             );
@@ -661,6 +642,7 @@ fn scraper_handle_for_key(
     let app_for_page_load = app.clone();
     let key_for_page_load = key.to_string();
     let initialization_script = scraper_initialization_script();
+    let data_directory = source_profile_data_directory(app, source_id)?;
     let mut builder = WebviewBuilder::new(
         label.clone(),
         WebviewUrl::App(PathBuf::from(SCRAPER_HOMEPAGE_PATH)),
@@ -682,7 +664,8 @@ fn scraper_handle_for_key(
             payload.url(),
         );
     })
-    .initialization_script(initialization_script);
+    .initialization_script(initialization_script)
+    .data_directory(data_directory);
     if let Some(user_agent) = user_agent {
         builder = builder.user_agent(user_agent);
     }
@@ -706,6 +689,7 @@ fn scraper_handle_for_key(
                         key.to_string(),
                         ScraperEntry {
                             label,
+                            source_id: source_id.to_string(),
                             user_agent: user_agent.map(str::to_string),
                         },
                     );
@@ -727,11 +711,22 @@ fn scraper_handle_for_key(
             key.to_string(),
             ScraperEntry {
                 label,
+                source_id: source_id.to_string(),
                 user_agent: user_agent.map(str::to_string),
             },
         );
     log_windows_scraper_event("handle_for_key registered new webview");
     Ok(webview)
+}
+
+#[cfg(desktop)]
+fn executor_uses_source(state: &ScraperState, executor: &str, source_id: &str) -> bool {
+    state
+        .webviews
+        .lock()
+        .expect("scraper webviews mutex")
+        .get(executor)
+        .is_some_and(|entry| entry.source_id == source_id)
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
@@ -941,8 +936,7 @@ pub fn scraper_open_devtools(_app: AppHandle) -> Result<(), String> {
     Err("devtools only available in debug builds".to_string())
 }
 
-/// Reposition + resize the scraper child Webview. Desktop controls
-/// live inside the scraper WebView so they remain in the main window.
+/// Reposition and resize the scraper child WebView inside the React overlay.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn scraper_set_bounds(
@@ -953,9 +947,11 @@ pub async fn scraper_set_bounds(
     y: f64,
     width: f64,
     height: f64,
+    source_id: Option<String>,
     user_agent: Option<String>,
 ) -> Result<(), String> {
     let user_agent = normalize_user_agent(user_agent);
+    let source_id = normalize_source_id(source_id.as_deref())?;
     if cfg!(target_os = "windows") {
         let url_for_log = scraper_url_for_log(&url);
         log::trace!(
@@ -969,6 +965,7 @@ pub async fn scraper_set_bounds(
         &app,
         &state,
         IMMEDIATE_EXECUTOR,
+        &source_id,
         user_agent.as_deref(),
     )?;
     let previous_key = state
@@ -1014,6 +1011,7 @@ pub async fn scraper_set_bounds(
     _y: f64,
     _width: f64,
     _height: f64,
+    _source_id: Option<String>,
     _user_agent: Option<String>,
 ) -> Result<(), String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
@@ -1133,7 +1131,11 @@ fn redact_urls_for_log(value: &str) -> String {
 /// Return the visible native WebView's current HTTP(S) origin.
 #[cfg(desktop)]
 #[tauri::command]
-pub fn scraper_current_origin(app: AppHandle) -> Result<Option<String>, String> {
+pub fn scraper_current_origin(
+    app: AppHandle,
+    source_id: Option<String>,
+) -> Result<Option<String>, String> {
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let state = app.state::<ScraperState>();
     let visible_key = state
         .visible_key
@@ -1143,14 +1145,19 @@ pub fn scraper_current_origin(app: AppHandle) -> Result<Option<String>, String> 
     let Some(visible_key) = visible_key else {
         return Ok(None);
     };
-    let Some(scraper) = state
+    let Some(entry) = state
         .webviews
         .lock()
         .expect("scraper webviews mutex")
         .get(&visible_key)
         .cloned()
-        .and_then(|entry| app.get_webview(&entry.label))
     else {
+        return Ok(None);
+    };
+    if entry.source_id != source_id {
+        return Ok(None);
+    }
+    let Some(scraper) = app.get_webview(&entry.label) else {
         return Ok(None);
     };
     let url = scraper
@@ -1161,11 +1168,14 @@ pub fn scraper_current_origin(app: AppHandle) -> Result<Option<String>, String> 
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub fn scraper_current_origin(_app: AppHandle) -> Result<Option<String>, String> {
+pub fn scraper_current_origin(
+    _app: AppHandle,
+    _source_id: Option<String>,
+) -> Result<Option<String>, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
 
-/// Delete cookies available to one plugin URL from the shared scraper cookie jar.
+/// Delete cookies available to one plugin URL from its isolated scraper profile.
 #[cfg(all(desktop, any(target_os = "windows", test)))]
 async fn await_cookie_clear_completion(
     receiver: oneshot::Receiver<Result<usize, String>>,
@@ -1175,35 +1185,6 @@ async fn await_cookie_clear_completion(
         .await
         .map_err(|_| "scraper_clear_cookies: WebView2 cookie callback timed out".to_string())?
         .map_err(|_| "scraper_clear_cookies: WebView2 cookie callback dropped".to_string())?
-}
-
-#[cfg(all(desktop, target_os = "windows"))]
-fn existing_cookie_store_webview(
-    app: &AppHandle,
-    state: &ScraperState,
-    queue: &str,
-) -> Result<ScraperWebview, String> {
-    let labels = {
-        let entries = state.webviews.lock().expect("scraper webviews mutex");
-        let mut labels = Vec::with_capacity(entries.len());
-        if let Some(entry) = entries.get(queue) {
-            labels.push(entry.label.clone());
-        }
-        labels.extend(
-            entries
-                .iter()
-                .filter(|(key, _)| key.as_str() != queue)
-                .map(|(_, entry)| entry.label.clone()),
-        );
-        labels
-    };
-    for label in labels {
-        if let Some(webview) = app.get_webview(&label) {
-            return Ok(webview);
-        }
-    }
-    app.get_webview("main")
-        .ok_or_else(|| "scraper_clear_cookies: no WebView cookie store is available".to_string())
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
@@ -1295,6 +1276,7 @@ pub async fn scraper_clear_cookies(
     app: AppHandle,
     state: tauri::State<'_, ScraperState>,
     url: String,
+    source_id: Option<String>,
     user_agent: Option<String>,
     queue: Option<String>,
 ) -> Result<usize, String> {
@@ -1308,28 +1290,29 @@ pub async fn scraper_clear_cookies(
         ));
     }
 
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let queue = normalize_scraper_executor(queue.as_deref())?;
     let executor_lock = scraper_executor_lock(&state, &queue);
     let _executor_guard = timeout(SCRAPER_COOKIE_CLEAR_TIMEOUT, executor_lock.lock())
         .await
         .map_err(|_| "scraper_clear_cookies: scraper executor lock timed out".to_string())?;
 
+    let user_agent = normalize_user_agent(user_agent);
+    let scraper = scraper_handle_for_key(
+        &app,
+        &state,
+        &queue,
+        &source_id,
+        user_agent.as_deref(),
+    )?;
+
     #[cfg(target_os = "windows")]
     {
-        let _ = user_agent;
-        let webview = existing_cookie_store_webview(&app, &state, &queue)?;
-        clear_windows_cookies_for_url(&webview, &parsed).await
+        clear_windows_cookies_for_url(&scraper, &parsed).await
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let user_agent = normalize_user_agent(user_agent);
-        let scraper = scraper_handle_for_key(
-            &app,
-            &state,
-            &queue,
-            user_agent.as_deref(),
-        )?;
         let cookies = scraper
             .cookies_for_url(parsed)
             .map_err(|err| {
@@ -1353,6 +1336,7 @@ pub async fn scraper_clear_cookies(
     _app: AppHandle,
     _state: tauri::State<'_, ScraperState>,
     _url: String,
+    _source_id: Option<String>,
     _user_agent: Option<String>,
     _queue: Option<String>,
 ) -> Result<usize, String> {
@@ -1368,11 +1352,13 @@ pub async fn scraper_navigate(
     app: AppHandle,
     state: tauri::State<'_, ScraperState>,
     url: String,
+    source_id: Option<String>,
     user_agent: Option<String>,
     reset_history: Option<bool>,
     timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     let user_agent = normalize_user_agent(user_agent);
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let reset_history = reset_history.unwrap_or(false);
     let request_timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
     let request_started = Instant::now();
@@ -1415,6 +1401,7 @@ pub async fn scraper_navigate(
         &app,
         &state,
         IMMEDIATE_EXECUTOR,
+        &source_id,
         user_agent.as_deref(),
     )?;
     let parsed: Url = url
@@ -1504,9 +1491,6 @@ pub async fn scraper_navigate(
         .lock()
         .expect("scraper last_navigated mutex") = Some(final_url);
     log_windows_scraper_event("scraper_navigate complete");
-    if cfg!(target_os = "linux") {
-        log::trace!("[scraper:linux] scraper_navigate complete");
-    }
     Ok(())
 }
 
@@ -1516,6 +1500,7 @@ pub async fn scraper_navigate(
     _app: AppHandle,
     _state: tauri::State<'_, ScraperState>,
     url: String,
+    _source_id: Option<String>,
     _user_agent: Option<String>,
     _reset_history: Option<bool>,
     _timeout_ms: Option<u64>,
@@ -1530,6 +1515,7 @@ pub async fn scraper_navigate(
     _app: AppHandle,
     _state: tauri::State<'_, ScraperState>,
     _url: String,
+    _source_id: Option<String>,
     _user_agent: Option<String>,
     _reset_history: Option<bool>,
     _timeout_ms: Option<u64>,
@@ -1605,26 +1591,6 @@ fn scraper_current_url_for_log(scraper: &ScraperWebview) -> String {
         .unwrap_or_else(|err| format!("<unavailable: {err}>"))
 }
 
-#[cfg(all(desktop, not(target_os = "windows")))]
-fn cookie_details_for_log(cookies: &[tauri::webview::Cookie<'static>]) -> Vec<String> {
-    cookies
-        .iter()
-        .map(|cookie| {
-            format!(
-                "name={}; value_len={}; domain={:?}; path={:?}; secure={:?}; http_only={:?}; same_site={:?}; expires={:?}",
-                cookie.name(),
-                cookie.value().len(),
-                cookie.domain(),
-                cookie.path(),
-                cookie.secure(),
-                cookie.http_only(),
-                cookie.same_site(),
-                cookie.expires(),
-            )
-        })
-        .collect()
-}
-
 fn fetch_init_for_log(init: &Option<FetchInit>) -> String {
     let Some(init) = init else {
         return "none".to_string();
@@ -1691,47 +1657,13 @@ fn skip_native_media_header(name: &str) -> bool {
     )
 }
 
-#[cfg(all(desktop, target_os = "windows"))]
+#[cfg(desktop)]
 fn log_scraper_cookies(
     _scraper: &ScraperWebview,
     _queue: &str,
     _context: &str,
     _urls: Vec<(&'static str, String)>,
 ) {
-}
-
-#[cfg(all(desktop, not(target_os = "windows")))]
-fn log_scraper_cookies(
-    scraper: &ScraperWebview,
-    queue: &str,
-    context: &str,
-    urls: Vec<(&'static str, String)>,
-) {
-    let mut targets = Vec::new();
-    for (label, url) in urls {
-        let url_for_log = scraper_url_for_log(&url);
-        match url.parse::<Url>() {
-            Ok(parsed) => match scraper.cookies_for_url(parsed) {
-                Ok(cookies) => targets.push(format!(
-                    "{label} url={url_for_log} count={} cookies={:?}",
-                    cookies.len(),
-                    cookie_details_for_log(&cookies)
-                )),
-                Err(err) => targets.push(format!(
-                    "{label} url={url_for_log} error={}",
-                    redact_urls_for_log(&err.to_string())
-                )),
-            },
-            Err(err) => targets.push(format!(
-                "{label} url={url_for_log} parse_error={}",
-                redact_urls_for_log(&err.to_string())
-            )),
-        }
-    }
-    log::trace!(
-        "[scraper:cookies] context={context} queue={queue} current_url={} targets={targets:?}",
-        scraper_current_url_for_log(scraper)
-    );
 }
 
 #[cfg(desktop)]
@@ -2499,11 +2431,13 @@ pub async fn webview_fetch(
     url: String,
     init: Option<FetchInit>,
     context_url: Option<String>,
+    source_id: Option<String>,
     user_agent: Option<String>,
     queue: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<FetchResult, String> {
     let user_agent = normalize_user_agent(user_agent);
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let queue = normalize_scraper_executor(queue.as_deref())?;
     let generation = scraper_executor_cancel_generation(&state, &queue);
     let expected_generation = generation.load(Ordering::Acquire);
@@ -2527,6 +2461,7 @@ pub async fn webview_fetch(
         &app,
         &state,
         &queue,
+        &source_id,
         user_agent.as_deref(),
     )?;
     log_scraper_cookies(
@@ -2607,6 +2542,7 @@ pub async fn webview_fetch(
     _url: String,
     _init: Option<FetchInit>,
     _context_url: Option<String>,
+    _source_id: Option<String>,
     _user_agent: Option<String>,
     _queue: Option<String>,
     _timeout_ms: Option<u64>,
@@ -2713,9 +2649,14 @@ pub async fn scraper_media_fetch(
 pub fn scraper_take_captured_resource(
     state: tauri::State<'_, ScraperState>,
     url: String,
+    source_id: Option<String>,
     queue: Option<String>,
 ) -> Result<Option<FetchResult>, String> {
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let queue = normalize_scraper_executor(queue.as_deref())?;
+    if !executor_uses_source(&state, &queue, &source_id) {
+        return Ok(None);
+    }
     Ok(state
         .captured_resources
         .take(&queue, &url)
@@ -2779,9 +2720,14 @@ pub async fn scraper_take_captured_resource_handle(
     app: AppHandle,
     state: tauri::State<'_, ScraperState>,
     url: String,
+    source_id: Option<String>,
     queue: Option<String>,
 ) -> Result<Option<CapturedResourceHandleResult>, String> {
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let queue = normalize_scraper_executor(queue.as_deref())?;
+    if !executor_uses_source(&state, &queue, &source_id) {
+        return Ok(None);
+    }
     let Some(resource) = state.captured_resources.take(&queue, &url) else {
         return Ok(None);
     };
@@ -2821,6 +2767,7 @@ pub async fn scraper_take_captured_resource_handle(
     _app: AppHandle,
     _state: tauri::State<'_, ScraperState>,
     _url: String,
+    _source_id: Option<String>,
     _queue: Option<String>,
 ) -> Result<Option<CapturedResourceHandleResult>, String> {
     Ok(None)
@@ -2831,6 +2778,7 @@ pub async fn scraper_take_captured_resource_handle(
 pub fn scraper_take_captured_resource(
     _state: tauri::State<'_, ScraperState>,
     _url: String,
+    _source_id: Option<String>,
     _queue: Option<String>,
 ) -> Result<Option<FetchResult>, String> {
     Ok(None)
@@ -2936,12 +2884,14 @@ pub async fn webview_extract(
     url: String,
     before_script: Option<String>,
     timeout_ms: Option<u64>,
+    source_id: Option<String>,
     user_agent: Option<String>,
     queue: Option<String>,
     capture_resources: Option<bool>,
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
     let url_for_log = scraper_url_for_log(&url);
+    let source_id = normalize_source_id(source_id.as_deref())?;
     let queue = normalize_scraper_executor(queue.as_deref())?;
     let generation = scraper_executor_cancel_generation(&state, &queue);
     let expected_generation = generation.load(Ordering::Acquire);
@@ -2952,6 +2902,7 @@ pub async fn webview_extract(
         &app,
         &state,
         &queue,
+        &source_id,
         user_agent.as_deref(),
     )?;
     let capture_resources = capture_resources.unwrap_or(false) && cfg!(target_os = "windows");
@@ -3248,6 +3199,7 @@ pub async fn webview_extract(
     _url: String,
     _before_script: Option<String>,
     _timeout_ms: Option<u64>,
+    _source_id: Option<String>,
     _user_agent: Option<String>,
     _queue: Option<String>,
     _capture_resources: Option<bool>,
@@ -3259,6 +3211,30 @@ pub async fn webview_extract(
 mod tests {
     use super::*;
     use tokio::sync::oneshot::error::TryRecvError;
+
+    #[test]
+    fn source_profile_keys_are_stable_and_isolated() {
+        assert_eq!(
+            source_profile_key("source-a"),
+            source_profile_key("source-a")
+        );
+        assert_ne!(
+            source_profile_key("source-a"),
+            source_profile_key("source-b")
+        );
+    }
+
+    #[test]
+    fn source_profile_requires_a_bounded_source_id() {
+        let oversized = "a".repeat(513);
+        assert!(normalize_source_id(None).is_err());
+        assert!(normalize_source_id(Some("   ")).is_err());
+        assert_eq!(
+            normalize_source_id(Some(" source-a ")).unwrap(),
+            " source-a "
+        );
+        assert!(normalize_source_id(Some(&oversized)).is_err());
+    }
 
     #[test]
     fn parses_result_sentinel_request_id() {
@@ -3277,7 +3253,6 @@ mod tests {
         for raw in [
             "http://norea.localhost/__norea_scraper_result__/fetch-7",
             "https://example.com/__norea_scraper_result__/fetch-7",
-            "https://norea.localhost/__norea_scraper_control__/close",
             "https://norea.localhost/other/fetch-7",
         ] {
             let url = Url::parse(raw).unwrap();
@@ -3481,7 +3456,6 @@ mod tests {
             "https://source.test/chapter/1?token=quoted%22value"
         );
     }
-
     #[tokio::test]
     async fn cookie_clear_completion_returns_deleted_count() {
         let (sender, receiver) = oneshot::channel();

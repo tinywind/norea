@@ -87,6 +87,7 @@ function enqueueSiteBrowserTask(
         const queuedBrowser = useSiteBrowserStore.getState();
         if (
           !queuedBrowser.visible ||
+          queuedBrowser.sourceId !== plugin.id ||
           queuedBrowser.currentUrl !== url ||
           queuedBrowser.taskId !== taskId
         ) {
@@ -103,6 +104,7 @@ function enqueueSiteBrowserTask(
           const siteBrowser = useSiteBrowserStore.getState();
           if (
             siteBrowser.visible &&
+            siteBrowser.sourceId === plugin.id &&
             siteBrowser.currentUrl === url &&
             siteBrowser.taskId === taskId
           ) {
@@ -123,6 +125,7 @@ function enqueueSiteBrowserTask(
         const unsubscribe = useSiteBrowserStore.subscribe((state) => {
           if (
             !state.visible ||
+            state.sourceId !== plugin.id ||
             state.currentUrl !== url ||
             state.taskId !== taskId
           ) {
@@ -146,11 +149,13 @@ function enqueueSiteBrowserTask(
           taskId,
           url: redactUrlForLog(url),
         });
-        useSiteBrowserStore.getState().startLoading(url, taskId);
+        useSiteBrowserStore.getState().startLoading(plugin.id, url, taskId);
         if (signal.aborted) handleAbort();
       }),
   });
-  useSiteBrowserStore.getState().queueAt(url, handle.id, context);
+  useSiteBrowserStore
+    .getState()
+    .queueAt(plugin.id, url, handle.id, context);
   return handle;
 }
 

@@ -35,10 +35,11 @@ describe("clearPluginCookies", () => {
     mockedInvoke.mockResolvedValue(2);
 
     await expect(
-      clearPluginCookies("https://example.com/", "pool:1"),
+      clearPluginCookies("source-a", "https://example.com/", "pool:1"),
     ).resolves.toBe(2);
     expect(mockedInvoke).toHaveBeenCalledWith("scraper_clear_cookies", {
       queue: "pool:1",
+      sourceId: "source-a",
       url: "https://example.com/",
       userAgent: "Norea/Test",
     });
@@ -49,10 +50,12 @@ describe("clearPluginCookies", () => {
     mockedAndroidClearCookies.mockResolvedValue(3);
 
     await expect(
-      clearPluginCookies("https://example.com/", "pool:0"),
+      clearPluginCookies("source-a", "https://example.com/", "pool:0"),
     ).resolves.toBe(3);
     expect(mockedAndroidClearCookies).toHaveBeenCalledWith(
+      "source-a",
       "https://example.com/",
+      "pool:0",
     );
     expect(mockedInvoke).not.toHaveBeenCalled();
   });

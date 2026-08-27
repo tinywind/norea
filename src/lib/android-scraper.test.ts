@@ -16,6 +16,7 @@ const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
 interface NavigatePayload {
   id: string;
   resetHistory: boolean;
+  sourceId: string;
   timeoutMs: number;
   url: string;
   userAgent: string | null;
@@ -58,6 +59,7 @@ describe("Android scraper navigation", () => {
     const navigate = vi.mocked(window.__NoreaAndroidScraper!.navigate);
     let settled = false;
     const navigation = androidScraperNavigate(
+      "source-a",
       "https://example.com/chapter",
       "Norea/Test",
       { resetHistory: true, timeoutMs: 12_000 },
@@ -73,6 +75,7 @@ describe("Android scraper navigation", () => {
     const payload = navigatePayload(navigate);
     expect(payload).toMatchObject({
       resetHistory: true,
+      sourceId: "source-a",
       timeoutMs: 12_000,
       url: "https://example.com/chapter",
       userAgent: "Norea/Test",
@@ -92,6 +95,7 @@ describe("Android scraper navigation", () => {
     const cancel = vi.mocked(bridge.cancel!);
     const controller = new AbortController();
     const navigation = androidScraperNavigate(
+      "source-a",
       "https://example.com/chapter",
       null,
       { signal: controller.signal },
@@ -124,10 +128,12 @@ describe("Android scraper browser state", () => {
     const currentOrigin = vi.mocked(
       window.__NoreaAndroidScraper!.currentOrigin,
     );
-    const reading = androidScraperCurrentOrigin();
+    const reading = androidScraperCurrentOrigin("source-a");
     const payload = JSON.parse(currentOrigin.mock.calls[0][0] as string) as {
       id: string;
+      sourceId: string;
     };
+    expect(payload.sourceId).toBe("source-a");
 
     window.__lnrAndroidScraperResolve?.(
       payload.id,
@@ -154,12 +160,20 @@ describe("Android scraper cookie clearing", () => {
     const clearCookies = vi.mocked(
       window.__NoreaAndroidScraper!.clearCookies,
     );
-    const clearing = androidScraperClearCookies("https://example.com/");
+    const clearing = androidScraperClearCookies(
+      "source-a",
+      "https://example.com/",
+      "pool:0",
+    );
     const payload = JSON.parse(
       clearCookies.mock.calls[0][0] as string,
-    ) as { id: string; url: string };
+    ) as { id: string; queue: string; sourceId: string; url: string };
 
-    expect(payload.url).toBe("https://example.com/");
+    expect(payload).toMatchObject({
+      queue: "pool:0",
+      sourceId: "source-a",
+      url: "https://example.com/",
+    });
     window.__lnrAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({ ok: true, result: 3 }),

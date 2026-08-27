@@ -142,7 +142,7 @@ describe("enqueueSourceAccessBrowserTask", () => {
     });
     useSiteBrowserStore
       .getState()
-      .startLoading(block.challenge.url, handle.id);
+      .startLoading("source-a", block.challenge.url, handle.id);
     useSiteBrowserStore.getState().markReady(handle.id);
     useSiteBrowserStore.getState().complete(handle.id, block.revision, "verify");
     resolveScheduledTask(undefined);

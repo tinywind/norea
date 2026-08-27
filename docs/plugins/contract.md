@@ -198,7 +198,8 @@ non-empty and their media type must match their chapter type.
 For a page plan, the chapter task and its page capture use the task's assigned
 scraper executor. The capture therefore shares the browser cookie jar,
 challenge state, cache, cancellation signal, and foreground/background
-scheduling rules with plugin browsing.
+scheduling rules with plugin browsing for that source id. Different source ids
+use isolated browser profiles, even when they point to the same site origin.
 
 Before asking a plugin for an acquisition plan or starting network traffic, the
 host checks the resolved chapter directory for a final `content.*` file. An
@@ -248,8 +249,16 @@ task reuses the completed files recorded in the manifest.
 
 Source browsing, search, novel parsing, update checks, and explicit resource
 acquisition must use the sanctioned plugin fetch shims. Browser session state
-belongs to the scraper WebView. Plugins must not copy cookies into a separate
-client or replace protected source traffic with bare application HTTP.
+belongs to the source-owned scraper WebView profile. A source id shares that
+profile across foreground and worker executors, while different source ids do
+not share cookies, DOM storage, or browser cache. Plugins must not copy cookies
+into a separate client or replace protected source traffic with bare
+application HTTP.
+
+Browser sessions created by versions that used one shared scraper profile are
+not copied into source-owned profiles because the host cannot infer which
+source owns shared cookies or DOM storage. Users may need to sign in once per
+source after upgrading.
 
 Ordinary page chapters must use a page plan even if a static HTTP parser would
 appear simpler. This keeps challenge handling, logged-in sessions, rendered

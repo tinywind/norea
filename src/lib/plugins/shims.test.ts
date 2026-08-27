@@ -91,6 +91,7 @@ describe("captureChapterWebView", () => {
     await expect(
       captureChapterWebView("https://source.test/chapter/1", {
         scraperExecutor: "pool:1",
+        sourceId: "source-a",
       }),
     ).resolves.toBe("captured");
 
@@ -98,6 +99,7 @@ describe("captureChapterWebView", () => {
       url: "https://source.test/chapter/1",
       beforeScript: null,
       captureResources: true,
+      sourceId: "source-a",
       timeoutMs: 30_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "pool:1",
@@ -279,6 +281,7 @@ describe("createShimResolver", () => {
     expect(invokeMock).toHaveBeenCalledWith("webview_extract", {
       url: "https://source.test/page",
       beforeScript: null,
+      sourceId: "test-plugin",
       timeoutMs: 45_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "immediate",
@@ -316,6 +319,7 @@ describe("createShimResolver", () => {
     expect(invokeMock).toHaveBeenCalledWith("webview_extract", {
       url: "https://source.test/page",
       beforeScript: expect.stringContaining("document.documentElement.outerHTML"),
+      sourceId: "test-plugin",
       timeoutMs: 30_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "immediate",
@@ -389,6 +393,7 @@ describe("createShimResolver", () => {
     expect(invokeMock).toHaveBeenCalledWith("webview_extract", {
       url: "https://source.test/target",
       beforeScript: expect.stringContaining("if (false)"),
+      sourceId: "test-plugin",
       timeoutMs: 30_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "pool:2",
@@ -397,7 +402,7 @@ describe("createShimResolver", () => {
 
   it("@libs/pluginInputs reads app-managed plugin input values", () => {
     const values = new Map<string, string>([
-      ["plugin:test-plugin:url", "https://komga.test/"],
+      ["plugin-v2:test-plugin:url", "https://komga.test/"],
     ]);
     const storage = {
       get length() {

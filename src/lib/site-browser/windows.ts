@@ -2,10 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getScraperUserAgent } from "../../store/user-agent";
 import { redactUrlForLog, redactUrlsForLog } from "../url-log";
 import { invokeDesktopNavigation } from "./desktop-navigation";
-import type {
-  SiteBrowserBounds,
-  SiteBrowserPlatformApi,
-} from "./types";
+import type { SiteBrowserBounds, SiteBrowserPlatformApi } from "./types";
 
 function debugWindowsSiteBrowser(message: string, data?: unknown): void {
   console.debug(`[site-browser:windows] ${message}`, data);
@@ -22,13 +19,14 @@ function rectBounds(node: HTMLDivElement | null): SiteBrowserBounds | null {
   };
 }
 
-function invokeArgs(bounds: SiteBrowserBounds, url: string): {
+function invokeArgs(bounds: SiteBrowserBounds, url: string, sourceId: string): {
   url: string;
   x: number;
   y: number;
   width: number;
   height: number;
   userAgent: string | null;
+  sourceId: string;
 } {
   return {
     url,
@@ -37,31 +35,34 @@ function invokeArgs(bounds: SiteBrowserBounds, url: string): {
     width: bounds.width,
     height: bounds.height,
     userAgent: getScraperUserAgent(),
+    sourceId,
   };
 }
 
 export const windowsSiteBrowser: SiteBrowserPlatformApi = {
   name: "windows",
-  chromeMode: "react",
   boundsFor: rectBounds,
-  currentOrigin: async () =>
-    await invoke<string | null>("scraper_current_origin"),
-  setBounds: async (bounds, url) => {
-    if (!url) {
-      debugWindowsSiteBrowser("setBounds skipped: url is empty", { bounds });
+  currentOrigin: async (sourceId) =>
+    await invoke<string | null>("scraper_current_origin", { sourceId }),
+  setBounds: async (bounds, url, sourceId) => {
+    if (!url || !sourceId) {
+      debugWindowsSiteBrowser("setBounds skipped: source or url is empty", {
+        bounds,
+      });
       return;
     }
-    const args = invokeArgs(bounds, url);
+    const args = invokeArgs(bounds, url, sourceId);
     const logArgs = { ...args, url: redactUrlForLog(url) };
     debugWindowsSiteBrowser("setBounds invoke", logArgs);
     await invoke("scraper_set_bounds", args);
     debugWindowsSiteBrowser("setBounds complete", logArgs);
   },
-  navigate: async (url, options) => {
+  navigate: async (sourceId, url, options) => {
     const args = {
       url,
       userAgent: getScraperUserAgent(),
       resetHistory: options?.resetHistory ?? false,
+      sourceId,
       timeoutMs: options?.timeoutMs ?? null,
     };
     const logArgs = { ...args, url: redactUrlForLog(url) };

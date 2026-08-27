@@ -285,7 +285,7 @@ describe("gatherBackupSnapshot", () => {
   it("includes app and plugin settings from localStorage", async () => {
     installLocalStorage({
       "app-appearance-settings": "{\"state\":{\"themeMode\":\"dark\"}}",
-      "plugin:demo:token": "secret",
+      "plugin-v2:demo:token": "secret",
       "source-filters:demo": "{\"filters\":{}}",
       unrelated: "skip",
     });
@@ -298,7 +298,7 @@ describe("gatherBackupSnapshot", () => {
         key: "app-appearance-settings",
         value: "{\"state\":{\"themeMode\":\"dark\"}}",
       },
-      { key: "plugin:demo:token", value: "secret" },
+      { key: "plugin-v2:demo:token", value: "secret" },
       { key: "source-filters:demo", value: "{\"filters\":{}}" },
     ]);
   });

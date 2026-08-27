@@ -17,6 +17,7 @@ import android.widget.FrameLayout
 import androidx.webkit.CookieManagerCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
@@ -44,6 +45,7 @@ class AndroidScraperBridge(
 
   private data class QueuedAction(
     val id: String,
+    val sourceId: String,
     val priority: Int,
     val browserAction: Boolean,
     val run: (QueueState) -> Unit,
@@ -61,6 +63,7 @@ class AndroidScraperBridge(
     var currentUrl: String? = null
     var documentStartScriptEnabled = false
     var nextSequence = 0L
+    var sourceId: String? = null
     var userAgent: String? = null
     var webView: WebView? = null
   }
@@ -75,9 +78,10 @@ class AndroidScraperBridge(
   private var browserVisible = false
   private var bounds = CssBounds(0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
 
-  private fun cookieSummary(url: String?): String {
+  private fun cookieSummary(state: QueueState, url: String?): String {
     if (url.isNullOrBlank()) return "<none>"
-    val header = CookieManager.getInstance().getCookie(url) ?: return "<empty>"
+    val cookieManager = state.webView?.let(::profileCookieManager) ?: return "<unavailable>"
+    val header = cookieManager.getCookie(url) ?: return "<empty>"
     val names = header.split(";")
       .mapNotNull { cookie -> cookie.substringBefore("=").trim().takeIf { it.isNotEmpty() } }
     return "count=${names.size} names=${names.joinToString(",")}"
@@ -150,8 +154,8 @@ class AndroidScraperBridge(
         "browserVisible=$browserVisible currentUrl=${urlForLog(state.currentUrl)} " +
         "knownQueues=${queues.keys.joinToString(",")} " +
         "webViews=${queues.values.count { it.webView != null }} " +
-        "targetUrl=${urlForLog(url)} currentCookies=${cookieSummary(state.currentUrl)} " +
-        "targetCookies=${cookieSummary(url)}",
+        "targetUrl=${urlForLog(url)} currentCookies=${cookieSummary(state, state.currentUrl)} " +
+        "targetCookies=${cookieSummary(state, url)}",
     )
   }
 
@@ -206,6 +210,7 @@ class AndroidScraperBridge(
     parseCommand(payload, BridgeCapabilities.SCRAPER_CLEAR_COOKIES) { json ->
       val id = json.getString("id")
       val url = json.getString("url")
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
       val parsed = Uri.parse(url)
       if (
         parsed.scheme !in setOf("http", "https") ||
@@ -214,49 +219,17 @@ class AndroidScraperBridge(
         sendError(id, "scraper: expected an HTTP(S) plugin url")
         return@parseCommand
       }
-      if (!WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO)) {
-        sendError(
-          id,
-          "scraper: per-site cookie clearing requires an updated Android System WebView",
-        )
-        return@parseCommand
-      }
-
-      val cookieManager = CookieManager.getInstance()
-      val expiredHeaders = runCatching {
-        CookieManagerCompat.getCookieInfo(cookieManager, url)
-          .mapNotNull(::expiredCookieHeader)
-      }.getOrElse { error ->
-        sendError(id, "scraper: read cookies: ${error.message ?: error.toString()}")
-        return@parseCommand
-      }
-      if (expiredHeaders.isEmpty()) {
-        sendResult(id, JSONObject().put("ok", true).put("result", 0))
-        return@parseCommand
-      }
-
-      var remaining = expiredHeaders.size
-      var deleted = 0
-      var rejected = false
-      expiredHeaders.forEach { header ->
-        cookieManager.setCookie(url, header) { accepted ->
-          if (closed) return@setCookie
-          if (accepted) {
-            deleted += 1
-          } else {
-            rejected = true
-          }
-          remaining -= 1
-          if (remaining == 0) {
-            cookieManager.flush()
-            if (rejected) {
-              sendError(id, "scraper: one or more cookies could not be deleted")
-            } else {
-              sendResult(id, JSONObject().put("ok", true).put("result", deleted))
-            }
-          }
-        }
-      }
+      val state = queueState(executorFromPayload(json))
+      enqueue(
+        state,
+        QueuedAction(
+          id = id,
+          sourceId = sourceId,
+          priority = PRIORITY_USER,
+          browserAction = false,
+          run = { runClearCookies(it, json) },
+        ),
+      )
     }
   }
 
@@ -264,8 +237,12 @@ class AndroidScraperBridge(
   fun currentOrigin(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_CURRENT_ORIGIN) { json ->
       val id = json.getString("id")
-      val origin = queueState(IMMEDIATE_EXECUTOR).webView
-        ?.takeIf { webView -> browserVisible && isForegroundBrowser(webView) }
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
+      val state = queueState(IMMEDIATE_EXECUTOR)
+      val origin = state.webView
+        ?.takeIf { webView ->
+          browserVisible && state.sourceId == sourceId && isForegroundBrowser(webView)
+        }
         ?.url
         ?.let { url -> runCatching { originUrl(Uri.parse(url)) }.getOrNull() }
       sendResult(
@@ -280,11 +257,14 @@ class AndroidScraperBridge(
   @JavascriptInterface
   fun fetch(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_FETCH) { json ->
+      val id = json.getString("id")
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
       val state = queueState(executorFromPayload(json))
       enqueue(
         state,
         QueuedAction(
-          id = json.getString("id"),
+          id = id,
+          sourceId = sourceId,
           priority = payloadPriority(json),
           browserAction = false,
           run = { runFetch(it, json) },
@@ -296,11 +276,14 @@ class AndroidScraperBridge(
   @JavascriptInterface
   fun extract(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_EXTRACT) { json ->
+      val id = json.getString("id")
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
       val state = queueState(executorFromPayload(json))
       enqueue(
         state,
         QueuedAction(
-          id = json.getString("id"),
+          id = id,
+          sourceId = sourceId,
           priority = payloadPriority(json),
           browserAction = false,
           run = { runExtract(it, json) },
@@ -312,11 +295,14 @@ class AndroidScraperBridge(
   @JavascriptInterface
   fun navigate(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_NAVIGATE) { json ->
+      val id = json.getString("id")
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
       val state = queueState(IMMEDIATE_EXECUTOR)
       enqueue(
         state,
         QueuedAction(
-          id = json.getString("id"),
+          id = id,
+          sourceId = sourceId,
           priority = PRIORITY_INTERACTIVE,
           browserAction = true,
           run = { runNavigate(it, json) },
@@ -336,8 +322,11 @@ class AndroidScraperBridge(
         viewportWidth = json.optDouble("viewportWidth", 1.0).coerceAtLeast(1.0),
         viewportHeight = json.optDouble("viewportHeight", 1.0).coerceAtLeast(1.0),
       )
-      queueState(IMMEDIATE_EXECUTOR).userAgent = payloadUserAgent(json)
-      if (browserVisible) showScraper()
+      val id = json.optString("id")
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
+      val state = queueState(IMMEDIATE_EXECUTOR)
+      state.userAgent = payloadUserAgent(json)
+      if (browserVisible && state.sourceId == sourceId) showScraper()
     }
   }
 
@@ -359,6 +348,7 @@ class AndroidScraperBridge(
           webView.destroy()
         }
         state.webView = null
+        state.sourceId = null
         state.queue.clear()
         state.activeAction = null
         state.activeExtractId = null
@@ -493,6 +483,22 @@ class AndroidScraperBridge(
     return IMMEDIATE_EXECUTOR
   }
 
+  private fun sourceIdFromPayload(payload: JSONObject, requestId: String): String? {
+    val sourceId = payload.optString("sourceId")
+    val error = when {
+      sourceId.trim().isEmpty() ->
+        "scraper: source id is required for browser profile isolation"
+      sourceId.toByteArray(Charsets.UTF_8).size > 512 ->
+        "scraper: source id exceeds the 512-byte limit"
+      else -> null
+    }
+    if (error != null) {
+      if (requestId.isNotEmpty()) sendError(requestId, error)
+      return null
+    }
+    return sourceId
+  }
+
   private fun queueState(key: String): QueueState {
     requireMainThread()
     return queues.getOrPut(key) { QueueState(key) }
@@ -527,6 +533,7 @@ class AndroidScraperBridge(
       "runNext id=${action.id} priority=${action.priority} browserAction=${action.browserAction}",
     )
     try {
+      activateSource(state, action.sourceId)
       action.run(state)
     } catch (error: Throwable) {
       state.activeFetchId = null
@@ -537,6 +544,22 @@ class AndroidScraperBridge(
       sendError(action.id, "scraper: ${error.message ?: error.toString()}")
       runNext(state)
     }
+  }
+
+  private fun activateSource(state: QueueState, sourceId: String) {
+    requireMainThread()
+    if (state.sourceId == sourceId) return
+    state.webView?.let { existing ->
+      logState(state, "switch source profile sourceId=$sourceId")
+      existing.stopLoading()
+      existing.webViewClient = WebViewClient()
+      scraperContainer().removeView(existing)
+      existing.destroy()
+    }
+    state.webView = null
+    state.currentUrl = null
+    state.documentStartScriptEnabled = false
+    state.sourceId = sourceId
   }
 
   private fun takeNextActionIndex(state: QueueState): Int? {
@@ -578,6 +601,27 @@ class AndroidScraperBridge(
     }
   }
 
+  private fun sourceProfileName(sourceId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+      .digest(sourceId.toByteArray(Charsets.UTF_8))
+    val hex = buildString(digest.size * 2) {
+      for (byte in digest) {
+        append(HEX_DIGITS[(byte.toInt() ushr 4) and 0x0f])
+        append(HEX_DIGITS[byte.toInt() and 0x0f])
+      }
+    }
+    return "norea-source-$hex"
+  }
+
+  private fun profileCookieManager(webView: WebView): CookieManager {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+      throw UnsupportedOperationException(
+        "Source profile isolation requires an updated Android System WebView",
+      )
+    }
+    return WebViewCompat.getProfile(webView).cookieManager
+  }
+
   private fun scraper(state: QueueState, userAgent: String?): WebView {
     val existing = state.webView
     if (existing != null) {
@@ -615,7 +659,15 @@ class AndroidScraperBridge(
     state: QueueState,
     userAgent: String?,
   ): WebView {
+    val sourceId = state.sourceId
+      ?: throw IllegalStateException("Source profile was not assigned before WebView creation")
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+      throw UnsupportedOperationException(
+        "Source profile isolation requires an updated Android System WebView",
+      )
+    }
     val webView = WebView(mainWebView.context)
+    WebViewCompat.setProfile(webView, sourceProfileName(sourceId))
     webView.settings.apply {
       if (!userAgent.isNullOrBlank()) {
         userAgentString = userAgent
@@ -631,8 +683,10 @@ class AndroidScraperBridge(
       displayZoomControls = false
       textZoom = 100
     }
-    CookieManager.getInstance().setAcceptCookie(true)
-    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+    profileCookieManager(webView).apply {
+      setAcceptCookie(true)
+      setAcceptThirdPartyCookies(webView, true)
+    }
 
     webView.addJavascriptInterface(ResultBridge(this, state), "AndroidScraper")
     state.documentStartScriptEnabled =
@@ -729,7 +783,7 @@ class AndroidScraperBridge(
       state.webView?.stopLoading()
     }
     hideScraperSurface(state)
-    CookieManager.getInstance().flush()
+    state.webView?.let { profileCookieManager(it).flush() }
     if (emitHiddenEvent) emitSiteBrowserHidden()
     logState(state, "hideScraper after")
     runNext(state)
@@ -772,9 +826,59 @@ class AndroidScraperBridge(
 
       override fun onPageFinished(view: WebView, url: String) {
         state.currentUrl = url
-        CookieManager.getInstance().flush()
+        profileCookieManager(view).flush()
         logState(state, "pageFinished url=$url", url)
         onFinished?.invoke(url)
+      }
+    }
+  }
+
+  private fun runClearCookies(state: QueueState, payload: JSONObject) {
+    val id = payload.getString("id")
+    val url = payload.getString("url")
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO)) {
+      finishError(
+        state,
+        id,
+        "scraper: per-site cookie clearing requires an updated Android System WebView",
+      )
+      return
+    }
+
+    val cookieManager = profileCookieManager(scraper(state, payloadUserAgent(payload)))
+    val expiredHeaders = runCatching {
+      CookieManagerCompat.getCookieInfo(cookieManager, url)
+        .mapNotNull(::expiredCookieHeader)
+    }.getOrElse { error ->
+      finishError(state, id, "scraper: read cookies: ${error.message ?: error.toString()}")
+      return
+    }
+    if (expiredHeaders.isEmpty()) {
+      finishSuccess(state, id, 0)
+      return
+    }
+
+    setTimeout(state, id, 10_000L, "scraper: cookie clearing timed out")
+    var remaining = expiredHeaders.size
+    var deleted = 0
+    var rejected = false
+    expiredHeaders.forEach { header ->
+      cookieManager.setCookie(url, header) { accepted ->
+        if (closed || state.activeAction?.id != id) return@setCookie
+        if (accepted) {
+          deleted += 1
+        } else {
+          rejected = true
+        }
+        remaining -= 1
+        if (remaining == 0) {
+          cookieManager.flush()
+          if (rejected) {
+            finishError(state, id, "scraper: one or more cookies could not be deleted")
+          } else {
+            finishSuccess(state, id, deleted)
+          }
+        }
       }
     }
   }
@@ -1214,7 +1318,7 @@ class AndroidScraperBridge(
   ) {
     if (state.activeFetchId != id) return
     if (!isExpectedResultNonce(state, id, nonce)) return
-    CookieManager.getInstance().flush()
+    state.webView?.let { profileCookieManager(it).flush() }
     logState(state, "onFetchResult id=$id $logSummary")
     if (!result.optBoolean("success", false)) {
       finishError(state, id, result.optString("error", "unknown browser fetch error"))
@@ -1228,7 +1332,7 @@ class AndroidScraperBridge(
     val activeId = state.activeExtractId ?: return
     if (id != null && id != activeId) return
     if (!isExpectedResultNonce(state, activeId, nonce.orEmpty())) return
-    CookieManager.getInstance().flush()
+    state.webView?.let { profileCookieManager(it).flush() }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")
     state.webView?.loadUrl("about:blank")
     finishSuccess(state, activeId, payload)
@@ -1340,6 +1444,7 @@ class AndroidScraperBridge(
 
   companion object {
     private const val TAG = "NoreaScraper"
+    private const val HEX_DIGITS = "0123456789abcdef"
     private const val IMMEDIATE_EXECUTOR = "immediate"
     private const val PRIORITY_INTERACTIVE = 0
     private const val PRIORITY_USER = 1

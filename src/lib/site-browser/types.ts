@@ -5,8 +5,6 @@ export interface SiteBrowserBounds {
   height: number;
 }
 
-export type SiteBrowserChromeMode = "react" | "in-page";
-
 export interface SiteBrowserNavigateOptions {
   resetHistory?: boolean;
   signal?: AbortSignal;
@@ -14,11 +12,18 @@ export interface SiteBrowserNavigateOptions {
 }
 
 export interface SiteBrowserPlatformApi {
-  name: string;
-  chromeMode: SiteBrowserChromeMode;
+  name: "android" | "web" | "windows";
   boundsFor(node: HTMLDivElement | null): SiteBrowserBounds | null;
-  currentOrigin(): Promise<string | null>;
-  setBounds(bounds: SiteBrowserBounds, url: string | null): Promise<void>;
-  navigate(url: string, options?: SiteBrowserNavigateOptions): Promise<void>;
+  currentOrigin(sourceId: string): Promise<string | null>;
+  setBounds(
+    bounds: SiteBrowserBounds,
+    url: string | null,
+    sourceId: string | null,
+  ): Promise<void>;
+  navigate(
+    sourceId: string,
+    url: string,
+    options?: SiteBrowserNavigateOptions,
+  ): Promise<void>;
   hide(): Promise<void>;
 }

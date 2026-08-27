@@ -246,7 +246,7 @@ describe("PluginManager.installPluginFromSource", () => {
     expect(manager.size()).toBe(1);
     expect(manager.getPlugin("demo")).toBe(plugin);
     expect(mockedCreateFetchShim.mock.calls).toEqual([
-      [undefined, undefined, "immediate"],
+      [undefined, "local:demo.js", "immediate"],
       [expect.any(Function), VALID_ITEM.id, "immediate"],
     ]);
   });
@@ -405,7 +405,7 @@ describe("PluginManager.loadInstalledFromDb", () => {
 describe("PluginManager.uninstallPlugin", () => {
   it("removes a previously installed plugin and reports false on a miss", async () => {
     const values = new Map<string, string>([
-      ["plugin:demo:url", "https://komga.test/"],
+      ["plugin-v2:demo:url", "https://komga.test/"],
     ]);
     const original = globalThis.localStorage;
     Object.defineProperty(globalThis, "localStorage", {
@@ -436,7 +436,7 @@ describe("PluginManager.uninstallPlugin", () => {
       await expect(manager.uninstallPlugin("demo")).resolves.toBe(true);
       expect(manager.has("demo")).toBe(false);
       expect(manager.size()).toBe(0);
-      expect(values.has("plugin:demo:url")).toBe(false);
+      expect(values.has("plugin-v2:demo:url")).toBe(false);
       await expect(manager.uninstallPlugin("demo")).resolves.toBe(false);
     } finally {
       Object.defineProperty(globalThis, "localStorage", {

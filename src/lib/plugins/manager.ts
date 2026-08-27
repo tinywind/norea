@@ -9,7 +9,11 @@ import {
 } from "../http";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import { getPluginBaseUrl } from "./base-url";
-import { clearPluginInputValues, setPluginInputValue } from "./inputs";
+import {
+  clearPluginInputValues,
+  migrateLegacyPluginStorageValues,
+  setPluginInputValue,
+} from "./inputs";
 import {
   createLazyPluginProxy,
   createPluginRuntimeHandle,
@@ -312,7 +316,7 @@ export class PluginManager {
         ),
         fetch: createPluginFetchShim(
           undefined,
-          undefined,
+          sourceUrl,
           "immediate",
         ),
       }),
@@ -414,6 +418,7 @@ export class PluginManager {
 
   private async loadInstalledFromDbOnce(): Promise<void> {
     const rows = await listInstalledPlugins();
+    migrateLegacyPluginStorageValues(rows.map((row) => row.id));
     for (const row of rows) {
       try {
         const item: PluginItem = {
