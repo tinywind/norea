@@ -6,6 +6,63 @@ use std::time::{Duration, Instant};
 const MAX_CAPTURED_RESOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CAPTURED_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 
+#[cfg(any(test, target_os = "windows"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseCapturePolicy {
+    TrustedMedia,
+    RequireWebpSignature,
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn response_capture_policy(
+    url: &str,
+    headers: &HashMap<String, String>,
+    request_destination: Option<&str>,
+) -> Option<ResponseCapturePolicy> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return None;
+    }
+    let content_type = headers
+        .get("content-type")
+        .map(|value| value.split(';').next().unwrap_or("").trim())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(content_type.as_str(), "text/html" | "application/xhtml+xml")
+        && (content_type.starts_with("image/")
+            || content_type.starts_with("audio/")
+            || content_type.starts_with("video/")
+            || matches!(
+                content_type.as_str(),
+                "application/octet-stream" | "application/pdf"
+            ))
+    {
+        return Some(ResponseCapturePolicy::TrustedMedia);
+    }
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    if !matches!(content_type.as_str(), "text/html" | "application/xhtml+xml")
+        && [
+            ".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp", ".aac", ".flac",
+            ".m4a", ".mp3", ".ogg", ".wav", ".m4v", ".mp4", ".webm", ".pdf",
+        ]
+        .iter()
+        .any(|extension| path.ends_with(extension))
+    {
+        return Some(ResponseCapturePolicy::TrustedMedia);
+    }
+    request_destination
+        .filter(|destination| destination.eq_ignore_ascii_case("image"))
+        .map(|_| ResponseCapturePolicy::RequireWebpSignature)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn has_webp_signature(body: &[u8]) -> bool {
+    body.len() >= 12 && body.starts_with(b"RIFF") && &body[8..12] == b"WEBP"
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedResource {
     pub status: u16,
@@ -216,14 +273,17 @@ impl Drop for CaptureGuard {
 
 #[cfg(target_os = "windows")]
 mod windows_capture {
-    use super::{CapturedResource, CapturedResourceStore, MAX_CAPTURED_RESOURCE_BYTES};
+    use super::{
+        has_webp_signature, response_capture_policy, CapturedResource, CapturedResourceStore,
+        ResponseCapturePolicy, MAX_CAPTURED_RESOURCE_BYTES,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
     use tauri::{Webview, Wry};
     use tokio::sync::oneshot;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2WebResourceResponseReceivedEventArgs,
+        ICoreWebView2WebResourceRequest, ICoreWebView2WebResourceResponseReceivedEventArgs,
         ICoreWebView2WebResourceResponseReceivedEventHandler, ICoreWebView2_2,
     };
     use webview2_com::{
@@ -290,11 +350,12 @@ mod windows_capture {
         executor: &str,
         store: &Arc<CapturedResourceStore>,
     ) -> Result<(), String> {
-        let (url, response, status, status_text, headers) = unsafe {
+        let (url, response, status, status_text, headers, request_destination) = unsafe {
             let request = args.Request().map_err(|error| error.to_string())?;
             let mut uri = PWSTR::null();
             request.Uri(&mut uri).map_err(|error| error.to_string())?;
             let url = take_pwstr(uri);
+            let request_destination = request_destination(&request);
             let response = args.Response().map_err(|error| error.to_string())?;
             let mut status = 0;
             response
@@ -305,9 +366,21 @@ mod windows_capture {
                 .ReasonPhrase(&mut reason)
                 .map_err(|error| error.to_string())?;
             let headers = response_headers(&response)?;
-            (url, response, status, take_pwstr(reason), headers)
+            (
+                url,
+                response,
+                status,
+                take_pwstr(reason),
+                headers,
+                request_destination,
+            )
         };
-        if status != 200 || !is_media_response(&url, &headers) {
+        let Some(capture_policy) =
+            response_capture_policy(&url, &headers, request_destination.as_deref())
+        else {
+            return Ok(());
+        };
+        if status != 200 {
             return Ok(());
         }
         let Some(capture_id) = store.claim(executor) else {
@@ -339,8 +412,8 @@ mod windows_capture {
                 let worker_status_text = status_text.clone();
                 let worker_headers = headers.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    let body = match read_stream(stream) {
-                        Ok(body) => Some(body),
+                    let body = match read_stream(stream, capture_policy) {
+                        Ok(body) => body,
                         Err(error) => {
                             log::debug!(
                                 "[scraper:resource_capture] stream read failed executor={worker_executor}: {error}"
@@ -365,6 +438,15 @@ mod windows_capture {
             return Err(error.to_string());
         }
         Ok(())
+    }
+
+    unsafe fn request_destination(request: &ICoreWebView2WebResourceRequest) -> Option<String> {
+        let headers = request.Headers().ok()?;
+        let mut value = PWSTR::null();
+        headers
+            .GetHeader(windows::core::w!("Sec-Fetch-Dest"), &mut value)
+            .ok()?;
+        Some(take_pwstr(value))
     }
 
     unsafe fn response_headers(
@@ -410,105 +492,68 @@ mod windows_capture {
         Ok(headers)
     }
 
-    fn is_media_response(url: &str, headers: &HashMap<String, String>) -> bool {
-        if !url.starts_with("https://") && !url.starts_with("http://") {
-            return false;
-        }
-        let content_type = headers
-            .get("content-type")
-            .map(|value| value.split(';').next().unwrap_or("").trim())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if matches!(content_type.as_str(), "text/html" | "application/xhtml+xml") {
-            return false;
-        }
-        if content_type.starts_with("image/")
-            || content_type.starts_with("audio/")
-            || content_type.starts_with("video/")
-            || matches!(
-                content_type.as_str(),
-                "application/octet-stream" | "application/pdf"
-            )
-        {
-            return true;
-        }
-        let path = url
-            .split(['?', '#'])
-            .next()
-            .unwrap_or(url)
-            .to_ascii_lowercase();
-        [
-            ".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp", ".aac", ".flac",
-            ".m4a", ".mp3", ".ogg", ".wav", ".m4v", ".mp4", ".webm", ".pdf",
-        ]
-        .iter()
-        .any(|extension| path.ends_with(extension))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::is_media_response;
-        use std::collections::HashMap;
-
-        #[test]
-        fn rejects_html_even_when_the_url_has_a_media_extension() {
-            let headers = HashMap::from([(
-                "content-type".to_string(),
-                "text/html; charset=utf-8".to_string(),
-            )]);
-
-            assert!(!is_media_response("https://cdn.test/page.png", &headers));
-        }
-
-        #[test]
-        fn retains_media_content_types_and_extension_fallbacks() {
-            assert!(is_media_response(
-                "https://cdn.test/resource",
-                &HashMap::from([("content-type".to_string(), "image/png".to_string())]),
-            ));
-            assert!(is_media_response(
-                "https://cdn.test/page.png",
-                &HashMap::new(),
-            ));
-        }
-    }
-
-    fn read_stream(stream: AgileReference<IStream>) -> Result<Vec<u8>, String> {
+    fn read_stream(
+        stream: AgileReference<IStream>,
+        policy: ResponseCapturePolicy,
+    ) -> Result<Option<Vec<u8>>, String> {
         let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let result = stream
             .resolve()
             .map_err(|error| error.to_string())
-            .and_then(|stream| read_stream_body(&stream));
+            .and_then(|stream| read_stream_body(&stream, policy));
         if initialized.is_ok() {
             unsafe { CoUninitialize() };
         }
         result
     }
 
-    fn read_stream_body(stream: &IStream) -> Result<Vec<u8>, String> {
+    fn read_stream_body(
+        stream: &IStream,
+        policy: ResponseCapturePolicy,
+    ) -> Result<Option<Vec<u8>>, String> {
         let mut body = Vec::new();
+        if policy == ResponseCapturePolicy::RequireWebpSignature {
+            let mut signature = [0_u8; 12];
+            let mut offset = 0;
+            while offset < signature.len() {
+                let read = read_stream_chunk(stream, &mut signature[offset..])?;
+                if read == 0 {
+                    return Ok(None);
+                }
+                offset += read;
+            }
+            if !has_webp_signature(&signature) {
+                return Ok(None);
+            }
+            body.extend_from_slice(&signature);
+        }
         let mut buffer = [0_u8; 64 * 1024];
         loop {
-            let mut read = 0_u32;
-            unsafe {
-                stream
-                    .Read(
-                        buffer.as_mut_ptr().cast(),
-                        buffer.len() as u32,
-                        Some(&mut read),
-                    )
-                    .ok()
-                    .map_err(|error| error.to_string())?;
-            }
+            let read = read_stream_chunk(stream, &mut buffer)?;
             if read == 0 {
                 break;
             }
-            if body.len().saturating_add(read as usize) > MAX_CAPTURED_RESOURCE_BYTES {
+            if body.len().saturating_add(read) > MAX_CAPTURED_RESOURCE_BYTES {
                 return Err("captured response exceeded the per-resource limit".to_string());
             }
-            body.extend_from_slice(&buffer[..read as usize]);
+            body.extend_from_slice(&buffer[..read]);
         }
-        Ok(body)
+        Ok(Some(body))
+    }
+
+    fn read_stream_chunk(stream: &IStream, buffer: &mut [u8]) -> Result<usize, String> {
+        let mut read = 0_u32;
+        unsafe {
+            stream
+                .Read(
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    Some(&mut read),
+                )
+                .ok()
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(read as usize)
     }
 }
 
@@ -526,6 +571,86 @@ mod tests {
             headers: HashMap::from([("content-type".to_string(), "image/png".to_string())]),
             final_url: url.to_string(),
             body: body.to_vec(),
+        }
+    }
+
+    #[test]
+    fn uses_trusted_policy_for_declared_media() {
+        assert_eq!(
+            response_capture_policy(
+                "https://cdn.test/resource",
+                &HashMap::from([("content-type".to_string(), "image/webp".to_string())]),
+                None,
+            ),
+            Some(ResponseCapturePolicy::TrustedMedia),
+        );
+        assert_eq!(
+            response_capture_policy("https://cdn.test/page.webp", &HashMap::new(), None),
+            Some(ResponseCapturePolicy::TrustedMedia),
+        );
+    }
+
+    #[test]
+    fn requires_webp_signature_for_disguised_image_requests() {
+        for content_type in [
+            "text/css",
+            "application/javascript",
+            "application/json",
+            "font/woff",
+            "font/woff2",
+        ] {
+            assert_eq!(
+                response_capture_policy(
+                    "https://cdn.test/disguised.css",
+                    &HashMap::from([("content-type".to_string(), content_type.to_string(),)]),
+                    Some("image"),
+                ),
+                Some(ResponseCapturePolicy::RequireWebpSignature),
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_regular_stylesheet_script_json_and_font_requests() {
+        for (content_type, destination) in [
+            ("text/css", "style"),
+            ("application/javascript", "script"),
+            ("application/json", "empty"),
+            ("font/woff", "font"),
+            ("font/woff2", "font"),
+        ] {
+            assert_eq!(
+                response_capture_policy(
+                    "https://cdn.test/resource.css",
+                    &HashMap::from([("content-type".to_string(), content_type.to_string(),)]),
+                    Some(destination),
+                ),
+                None,
+            );
+        }
+        assert_eq!(
+            response_capture_policy(
+                "data:image/webp;base64,UklGRg==",
+                &HashMap::new(),
+                Some("image"),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn recognizes_only_a_webp_riff_signature() {
+        assert!(has_webp_signature(b"RIFF\x04\x00\x00\x00WEBPpayload"));
+        for body in [
+            b"body { color: red; }".as_slice(),
+            b"console.log('x')".as_slice(),
+            b"{\"page\":1}".as_slice(),
+            b"wOFFfont-data".as_slice(),
+            b"wOF2font-data".as_slice(),
+            b"RIFFshort".as_slice(),
+            b"RIFF\x04\x00\x00\x00WAVEpayload".as_slice(),
+        ] {
+            assert!(!has_webp_signature(body));
         }
     }
 

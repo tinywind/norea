@@ -775,25 +775,29 @@ export async function pluginMediaFetch(
 
   let browserError: unknown;
   try {
-    return await pluginFetchInternal(url, init, { logFailures: false });
+    const browserResponse = await pluginFetchInternal(url, init, {
+      logFailures: false,
+    });
+    if (browserResponse.ok) return browserResponse;
+    browserError = `HTTP ${browserResponse.status} ${browserResponse.statusText}`;
   } catch (error) {
     if (isSourceAccessRequiredError(error)) throw error;
     if (isRequestAbortError(error)) {
       throw error;
     }
     browserError = error;
-    const host = mediaFallbackHost(url);
-    const fallbackKey = host || url;
-    if (!nativeMediaFallbackHosts.has(fallbackKey)) {
-      nativeMediaFallbackHosts.add(fallbackKey);
-      console.debug(
-        "[plugin-media-fetch] browser fetch failed; using native media fetch",
-        {
-          ...mediaFallbackLogContext(url, init, scraperExecutor),
-          error: fetchErrorMessage(error),
-        },
-      );
-    }
+  }
+  const host = mediaFallbackHost(url);
+  const fallbackKey = host || url;
+  if (!nativeMediaFallbackHosts.has(fallbackKey)) {
+    nativeMediaFallbackHosts.add(fallbackKey);
+    console.debug(
+      "[plugin-media-fetch] browser fetch failed; using native media fetch",
+      {
+        ...mediaFallbackLogContext(url, init, scraperExecutor),
+        error: fetchErrorMessage(browserError),
+      },
+    );
   }
 
   const wireInit = toWireInit(init);

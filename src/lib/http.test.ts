@@ -697,6 +697,105 @@ describe("pluginMediaFetch", () => {
     expect(await response.text()).toBe("image");
   });
 
+  it("falls back to native media after a Windows cache fetch is rejected", async () => {
+    invokeMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        wireOk("blocked", {
+          status: 403,
+          statusText: "Forbidden",
+          finalUrl: "https://newtoki-cdn.test/page.css",
+        }),
+      )
+      .mockResolvedValueOnce(
+        wireOk("image", {
+          finalUrl: "https://newtoki-cdn.test/page.css",
+          headers: { "content-type": "image/webp" },
+        }),
+      );
+
+    const response = await pluginMediaFetch(
+      "https://newtoki-cdn.test/page.css",
+      {
+        contextUrl: "https://source.test/webtoon/1",
+        headers: { Referer: "https://source.test/" },
+        preferBrowserCache: true,
+        scraperExecutor: "pool:1",
+        sourceId: "newtoki-webtoon",
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledTimes(3);
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "scraper_media_fetch", {
+      url: "https://newtoki-cdn.test/page.css",
+      init: {
+        headers: { Referer: "https://source.test/" },
+        method: undefined,
+        body: undefined,
+        preferBrowserCache: true,
+      },
+      timeoutMs: 30_000,
+      userAgent: globalThis.navigator?.userAgent ?? null,
+    });
+    expect(await response.text()).toBe("image");
+  });
+
+  it("falls back to native media after a Linux WebView fetch is rejected", async () => {
+    isWindowsRuntimeMock.mockReturnValue(false);
+    invokeMock
+      .mockResolvedValueOnce(
+        wireOk("blocked", {
+          status: 403,
+          statusText: "Forbidden",
+          finalUrl: "https://newtoki-cdn.test/page.woff2",
+        }),
+      )
+      .mockResolvedValueOnce(
+        wireOk("image", {
+          finalUrl: "https://newtoki-cdn.test/page.woff2",
+          headers: { "content-type": "image/webp" },
+        }),
+      );
+
+    const response = await pluginMediaFetch(
+      "https://newtoki-cdn.test/page.woff2",
+      {
+        contextUrl: "https://source.test/webtoon/1",
+        headers: { Referer: "https://source.test/" },
+        preferBrowserCache: true,
+        scraperExecutor: "pool:1",
+        sourceId: "newtoki-webtoon",
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "webview_fetch", {
+      url: "https://newtoki-cdn.test/page.woff2",
+      init: {
+        headers: { Referer: "https://source.test/" },
+        method: undefined,
+        body: undefined,
+        preferBrowserCache: true,
+      },
+      contextUrl: "https://source.test/webtoon/1",
+      queue: "pool:1",
+      timeoutMs: 30_000,
+      userAgent: globalThis.navigator?.userAgent ?? null,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "scraper_media_fetch", {
+      url: "https://newtoki-cdn.test/page.woff2",
+      init: {
+        headers: { Referer: "https://source.test/" },
+        method: undefined,
+        body: undefined,
+        preferBrowserCache: true,
+      },
+      timeoutMs: 30_000,
+      userAgent: globalThis.navigator?.userAgent ?? null,
+    });
+    expect(await response.text()).toBe("image");
+  });
+
   it("uses the response body captured during chapter navigation", async () => {
     const debugSpy = vi
       .spyOn(console, "debug")
