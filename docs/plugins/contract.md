@@ -267,7 +267,8 @@ content, and browser cache behavior consistent.
 ### App-local plugin VPN
 
 Windows and Android can route plugin-owned traffic through one app-local VPN
-session. The user imports one OpenVPN profile, and the resulting local proxy is
+session. The user supplies one OpenVPN profile by importing an external `.ovpn`
+file or selecting a public VPN Gate server, and the resulting local proxy is
 shared by all source plugins. It is not configured per source. Norea does not
 install a system VPN adapter or change operating-system routes, so ordinary
 traffic from other applications is not automatically routed through it.
@@ -299,6 +300,23 @@ configuration must be inline. Includes, external configuration files, host
 scripts or plugins, upstream proxy directives, TAP mode, external PKI, and
 dynamic challenges are rejected. Connection credentials are supplied
 separately from the stored profile.
+
+The VPN Gate finder retrieves its catalog only from the fixed official
+`https://www.vpngate.net/api/iphone/` endpoint. This is a direct app-owned
+control request, not plugin-owned traffic, and it does not use the plugin VPN.
+The catalog is cached in memory only. Proxy mirrors, batch downloads, profile
+export, and persistent catalog storage are not supported. Public relay
+availability and metadata can change between refresh and connection attempts.
+
+The one-click apply-and-connect action is available only while the VPN is fully
+disabled. The selected inline profile replaces the current profile through the
+same validation and atomic storage path as an externally imported `.ovpn`, then
+starts the connection. Within that shared validation boundary, the finder
+prioritizes compatibility with VPN Gate profiles and does not add stricter
+finder-only server identity requirements. VPN Gate servers are public relays
+operated by volunteers, so Norea makes no privacy, anonymity, or security
+guarantee. The only finder-specific UI warning is a short successful-connection
+toast noting that the relay may log traffic metadata.
 
 App-owned and repository-owned requests, including update checks, remain on
 their existing direct HTTP paths and do not use the plugin VPN. Because the

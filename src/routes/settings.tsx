@@ -24,6 +24,7 @@ import { PageFrame } from "../components/AppFrame";
 import { BrowseSettingsPanel } from "../components/BrowseSettingsPanel";
 import { ConsoleChip } from "../components/ConsolePrimitives";
 import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
+import { PluginVpnFinder } from "../components/PluginVpnFinder";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import {
   SettingsFieldRow,
@@ -48,6 +49,7 @@ import {
 import { restartChapterContentStorageMirrorSweep } from "../lib/chapter-content-storage";
 import { pluginManager } from "../lib/plugins/manager";
 import {
+  applyAndConnectPluginVpnFinderProfile,
   canStartPluginVpnConnection,
   connectPluginVpn,
   disconnectPluginVpn,
@@ -347,8 +349,9 @@ const PLUGIN_VPN_PHASE_KEYS: Record<PluginVpnPhase, TranslationKey> = {
 function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const [finderOpen, setFinderOpen] = useState(false);
   const [vpnBusy, setVpnBusy] = useState<
-    "connect" | "disconnect" | "import" | "remove" | null
+    "connect" | "disconnect" | "finder" | "import" | "remove" | null
   >(null);
   const [credentials, setCredentials] = useState<PluginVpnCredentials>(
     emptyPluginVpnCredentials,
@@ -367,7 +370,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   });
   const status = vpnQuery.data;
   const displayPhase =
-    vpnBusy === "connect"
+    vpnBusy === "connect" || vpnBusy === "finder"
       ? "connecting"
       : vpnBusy === "disconnect"
         ? "disconnecting"
@@ -432,6 +435,33 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
         t("settings.data.pluginVpn.title"),
         describeError(error),
       );
+    } finally {
+      await vpnQuery.refetch();
+      setVpnBusy(null);
+    }
+  }
+
+  async function applyAndConnectFinderServer(
+    candidateId: string,
+  ): Promise<boolean> {
+    if (operationDisabled || !disconnected) return false;
+    setCredentials(emptyPluginVpnCredentials());
+    setVpnBusy("finder");
+    try {
+      updateStatus(await applyAndConnectPluginVpnFinderProfile(candidateId));
+      showSettingsToast(
+        "green",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.finder.toast.connected"),
+      );
+      return true;
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        t("settings.data.pluginVpn.title"),
+        describeError(error),
+      );
+      return false;
     } finally {
       await vpnQuery.refetch();
       setVpnBusy(null);
@@ -544,6 +574,13 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                       ? t("settings.data.pluginVpn.profile.replace")
                       : t("settings.data.pluginVpn.profile.import")}
                   </TextButton>
+                  <TextButton
+                    disabled={operationDisabled || !disconnected}
+                    onClick={() => setFinderOpen(true)}
+                    variant="default"
+                  >
+                    {t("settings.data.pluginVpn.finder.open")}
+                  </TextButton>
                   {status?.profile ? (
                     <TextButton
                       disabled={operationDisabled || !disconnected}
@@ -649,6 +686,12 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               </TextButton>
             )}
           </SettingsFieldRow>
+          <PluginVpnFinder
+            disabled={operationDisabled || !disconnected}
+            onApplyAndConnect={applyAndConnectFinderServer}
+            onClose={() => setFinderOpen(false)}
+            opened={finderOpen}
+          />
         </>
       )}
     </SettingsSection>

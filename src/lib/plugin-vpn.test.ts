@@ -25,10 +25,13 @@ import {
 } from "./android-storage";
 import { isAndroidRuntime } from "./tauri-runtime";
 import {
+  applyAndConnectPluginVpnFinderProfile,
+  applyPluginVpnFinderProfile,
   canStartPluginVpnConnection,
   configureAndroidPluginVpnProxy,
   connectPluginVpn,
   ensureAndroidPluginVpnProxy,
+  loadPluginVpnFinderServers,
   importPluginVpnProfile,
   isPluginVpnControlStatusReady,
   type PluginVpnCredentials,
@@ -133,6 +136,65 @@ describe("plugin VPN", () => {
     expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_connect", {
       credentials,
     });
+  });
+
+  it("requests the native VPN Gate catalog with an explicit refresh policy", async () => {
+    const servers = [
+      {
+        activeSessions: 4,
+        candidateId: "candidate-1",
+        countryCode: "JP",
+        countryName: "Japan",
+        hostName: "public-vpn-1",
+        ip: "203.0.113.10",
+        logType: "2weeks",
+        pingMs: 18,
+        protocol: "tcp" as const,
+        score: 125_000,
+        speedBps: 12_500_000,
+        totalUsers: 9_000,
+        uptimeMs: 3_600_000,
+      },
+    ];
+    invokeMock.mockResolvedValueOnce(servers);
+
+    await expect(loadPluginVpnFinderServers(true)).resolves.toEqual(servers);
+
+    expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_load_finder_servers", {
+      forceRefresh: true,
+    });
+  });
+
+  it("applies a cached Finder profile by opaque candidate id", async () => {
+    await expect(
+      applyPluginVpnFinderProfile("candidate-1"),
+    ).resolves.toEqual(STATUS);
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "plugin_vpn_apply_finder_profile",
+      { candidateId: "candidate-1" },
+    );
+  });
+
+  it("applies and connects a Finder profile in one user action", async () => {
+    await expect(
+      applyAndConnectPluginVpnFinderProfile("candidate-1"),
+    ).resolves.toEqual(STATUS);
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_apply_finder_profile", { candidateId: "candidate-1" }],
+      [
+        "plugin_vpn_connect",
+        {
+          credentials: {
+            challengeResponse: "",
+            password: "",
+            privateKeyPassword: "",
+            username: "",
+          },
+        },
+      ],
+    ]);
   });
 
   it("requires username and password before starting a credentialed profile", () => {

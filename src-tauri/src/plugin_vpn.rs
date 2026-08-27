@@ -1,5 +1,6 @@
 #[cfg(any(target_os = "android", target_os = "windows"))]
 mod engine;
+mod finder;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod netstack;
 #[cfg(any(target_os = "android", target_os = "windows", test))]

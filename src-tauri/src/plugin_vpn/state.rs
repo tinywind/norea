@@ -10,6 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+use super::finder::{VpnGateFinder, VpnGateServer};
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 use super::proxy::LocalProxy;
 use super::{validate_profile, ValidatedProfile, MAX_PROFILE_BYTES};
@@ -29,6 +30,7 @@ pub(crate) struct PluginVpnState {
 struct PluginVpnShared {
     #[cfg(any(target_os = "android", target_os = "windows", test))]
     proxy: LocalProxy,
+    finder: VpnGateFinder,
     profile_path: OnceLock<PathBuf>,
     operation: tokio::sync::Mutex<()>,
     state: Mutex<PluginVpnRuntime>,
@@ -94,6 +96,7 @@ impl PluginVpnState {
             shared: Arc::new(PluginVpnShared {
                 #[cfg(any(target_os = "android", target_os = "windows", test))]
                 proxy,
+                finder: VpnGateFinder::new()?,
                 profile_path: OnceLock::new(),
                 operation: tokio::sync::Mutex::new(()),
                 state: Mutex::new(PluginVpnRuntime {
@@ -237,6 +240,27 @@ pub(crate) fn plugin_vpn_status(state: State<'_, PluginVpnState>) -> PluginVpnSt
 }
 
 #[tauri::command]
+pub(crate) async fn plugin_vpn_load_finder_servers(
+    force_refresh: bool,
+    state: State<'_, PluginVpnState>,
+) -> Result<Vec<VpnGateServer>, String> {
+    ensure_supported()?;
+    state.shared.finder.load_servers(force_refresh).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_apply_finder_profile(
+    candidate_id: String,
+    state: State<'_, PluginVpnState>,
+) -> Result<PluginVpnStatus, String> {
+    ensure_supported()?;
+    state.require_disabled("apply a Finder profile")?;
+    let bytes = state.shared.finder.profile_bytes(&candidate_id)?;
+    let _operation = state.shared.operation.lock().await;
+    import_profile_bytes(state.inner(), bytes, "apply a Finder profile").await
+}
+
+#[tauri::command]
 pub(crate) async fn plugin_vpn_import_profile(
     path: String,
     state: State<'_, PluginVpnState>,
@@ -248,17 +272,7 @@ pub(crate) async fn plugin_vpn_import_profile(
     let bytes = tauri::async_runtime::spawn_blocking(move || read_profile_source(Path::new(&path)))
         .await
         .map_err(|error| format!("could not read the OpenVPN profile: {error}"))??;
-    let profile = PluginVpnProfile::from(validate_profile(&bytes)?);
-    let profile_path = state.profile_path()?;
-    tauri::async_runtime::spawn_blocking(move || store_profile(&profile_path, &bytes))
-        .await
-        .map_err(|error| format!("could not save the OpenVPN profile: {error}"))??;
-
-    let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
-    runtime.profile = Some(profile);
-    runtime.error = None;
-    drop(runtime);
-    Ok(state.status())
+    import_profile_bytes(state.inner(), bytes, "import a profile").await
 }
 
 #[tauri::command]
@@ -487,6 +501,25 @@ fn ensure_supported() -> Result<(), String> {
     } else {
         Err("plugin VPN is supported only on Windows and Android".to_string())
     }
+}
+
+async fn import_profile_bytes(
+    state: &PluginVpnState,
+    bytes: Vec<u8>,
+    action: &str,
+) -> Result<PluginVpnStatus, String> {
+    state.require_disabled(action)?;
+    let profile = PluginVpnProfile::from(validate_profile(&bytes)?);
+    let profile_path = state.profile_path()?;
+    tauri::async_runtime::spawn_blocking(move || store_profile(&profile_path, &bytes))
+        .await
+        .map_err(|error| format!("could not save the OpenVPN profile: {error}"))??;
+
+    let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+    runtime.profile = Some(profile);
+    runtime.error = None;
+    drop(runtime);
+    Ok(state.status())
 }
 
 impl From<ValidatedProfile> for PluginVpnProfile {

@@ -38,6 +38,24 @@ export interface PluginVpnCredentials {
   username: string;
 }
 
+export type PluginVpnServerProtocol = "tcp" | "udp";
+
+export interface PluginVpnFinderServer {
+  activeSessions: number;
+  candidateId: string;
+  countryCode: string;
+  countryName: string;
+  hostName: string;
+  ip: string;
+  logType: string;
+  pingMs: number | null;
+  protocol: PluginVpnServerProtocol;
+  score: number;
+  speedBps: number;
+  totalUsers: number;
+  uptimeMs: number;
+}
+
 export function canStartPluginVpnConnection(
   status: PluginVpnStatus | undefined,
   credentials: PluginVpnCredentials,
@@ -82,6 +100,34 @@ let androidProxyConfiguration: Promise<void> | null = null;
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
   return invoke<PluginVpnStatus>("plugin_vpn_status");
+}
+
+export function loadPluginVpnFinderServers(
+  forceRefresh = false,
+): Promise<PluginVpnFinderServer[]> {
+  return invoke<PluginVpnFinderServer[]>("plugin_vpn_load_finder_servers", {
+    forceRefresh,
+  });
+}
+
+export function applyPluginVpnFinderProfile(
+  candidateId: string,
+): Promise<PluginVpnStatus> {
+  return invoke<PluginVpnStatus>("plugin_vpn_apply_finder_profile", {
+    candidateId,
+  });
+}
+
+export async function applyAndConnectPluginVpnFinderProfile(
+  candidateId: string,
+): Promise<PluginVpnStatus> {
+  await applyPluginVpnFinderProfile(candidateId);
+  return connectPluginVpn({
+    challengeResponse: "",
+    password: "",
+    privateKeyPassword: "",
+    username: "",
+  });
 }
 
 export async function configureAndroidPluginVpnProxy(
