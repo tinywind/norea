@@ -1,6 +1,7 @@
 # Norea
 
-Norea is a local-first light-novel reader for Windows and Android.
+Norea is a local-first reader for light novels, webtoons, and manga on Windows
+and Android.
 It keeps your reading sources, library, downloads, and progress in one app.
 
 Norea is inspired by [lnreader/lnreader](https://github.com/lnreader/lnreader),
@@ -18,6 +19,16 @@ but it is a separate app with its own data, backup, and source system.
   <img src="docs/screenshots/reader-settings-xs.png" alt="Reader settings panel over the reading view" width="25%">
 </p>
 
+### Webtoon and Manga Reading
+
+Norea supports image-based chapters as well as text. Scroll through long-strip
+webtoons or read manga and comics page by page.
+
+<p align="center">
+  <img src="docs/screenshots/reader-webtoon-xl.png" alt="A long-strip webtoon chapter in Norea's scrolling reader" width="48%">
+  <img src="docs/screenshots/reader-manga-xl.png" alt="A page-based manga chapter in Norea's reader" width="48%">
+</p>
+
 ## What You Can Do
 
 - Browse and search installed reading sources.
@@ -26,9 +37,12 @@ but it is a separate app with its own data, backup, and source system.
 - Open TXT, EPUB, and PDF files with installed Windows or Android builds,
   import them into file-named local works, and continue directly in the reader.
 - Cache rendered chapter media for offline reading.
+- Route source-plugin requests through an app-local OpenVPN tunnel on Windows
+  and Android, using an imported `.ovpn` profile or the built-in VPN Gate server
+  finder.
 - Create local novel homes, add chapter files later, reorder local chapters, and
   manage local metadata with locally uploaded cover images.
-- Read in paged or scrolling mode.
+- Read text, webtoon, and manga chapters in paged or scrolling mode.
 - Change themes, font size, text color, tap zones, and keyboard navigation.
 - Track reading progress, history, unread chapters, and downloaded chapters.
 - Download chapters for later reading.
@@ -101,7 +115,7 @@ To add the sample source list:
 3. Paste this URL:
 
    ```text
-   https://raw.githubusercontent.com/tinywind/norea-plugins/main-dist/plugins/v0.2.0/.dist/plugins.min.json
+   https://raw.githubusercontent.com/tinywind/norea-plugins/dist/v0.2/.dist/plugins.json
    ```
 
 4. Save it.
