@@ -10,9 +10,14 @@ use sha2::{Digest, Sha256};
 
 use super::{
     directive_tokens, inline_closing_tag, inline_opening_tag, validate_profile, MAX_PROFILE_BYTES,
+    VPN_GATE_PROFILE_MARKER,
 };
 
+#[cfg(target_os = "windows")]
+mod winhttp;
+
 const VPN_GATE_API_URL: &str = "https://www.vpngate.net/api/iphone/";
+const VPN_GATE_AUTH_DIRECTIVE: &[u8] = b"auth-user-pass\n";
 const VPN_GATE_MARKER: &str = "*vpn_servers";
 const VPN_GATE_HEADER: &str = "#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64";
 const VPN_GATE_FOOTER: &str = "*";
@@ -61,6 +66,7 @@ struct CachedServers {
 }
 
 pub(super) struct VpnGateFinder {
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     client: reqwest::Client,
     refresh: tokio::sync::Mutex<()>,
     cache: Mutex<Option<CachedServers>>,
@@ -68,6 +74,7 @@ pub(super) struct VpnGateFinder {
 
 impl VpnGateFinder {
     pub(super) fn new() -> Result<Self, String> {
+        #[cfg(not(any(target_os = "android", target_os = "windows")))]
         let client = reqwest::Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
@@ -76,6 +83,7 @@ impl VpnGateFinder {
             .build()
             .map_err(|error| format!("could not create the VPN Gate client: {error}"))?;
         Ok(Self {
+            #[cfg(not(any(target_os = "android", target_os = "windows")))]
             client,
             refresh: tokio::sync::Mutex::new(()),
             cache: Mutex::new(None),
@@ -163,6 +171,31 @@ impl VpnGateFinder {
         }))
     }
 
+    #[cfg(target_os = "android")]
+    async fn fetch_response(&self) -> Result<Vec<u8>, String> {
+        tauri::async_runtime::spawn_blocking(|| {
+            crate::android_tls::https_get(
+                VPN_GATE_API_URL,
+                CONNECT_TIMEOUT.as_millis() as i32,
+                REQUEST_TIMEOUT.as_millis() as i32,
+                MAX_RESPONSE_BYTES as i32,
+            )
+        })
+        .await
+        .map_err(|error| format!("VPN Gate Android HTTPS task failed: {error}"))?
+        .map_err(|error| format!("could not load the VPN Gate server list: {error}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn fetch_response(&self) -> Result<Vec<u8>, String> {
+        tauri::async_runtime::spawn_blocking(|| {
+            winhttp::fetch_vpn_gate_response(CONNECT_TIMEOUT, REQUEST_TIMEOUT, MAX_RESPONSE_BYTES)
+        })
+        .await
+        .map_err(|error| format!("VPN Gate Windows HTTP task failed: {error}"))?
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     async fn fetch_response(&self) -> Result<Vec<u8>, String> {
         let mut response = self
             .client
@@ -322,6 +355,11 @@ fn parse_candidate(line: &str) -> Result<VpnGateCandidate, String> {
         );
     }
     let protocol = inspect_profile_transport(&profile, ip)?;
+    let profile = add_vpn_gate_authentication(profile)?;
+    let normalized = validate_profile(&profile)?;
+    if !normalized.requires_username_password || normalized.remote_host != validated.remote_host {
+        return Err("VPN Gate OpenVPN profile authentication normalization failed".to_string());
+    }
     let candidate_id = candidate_id(&profile);
 
     Ok(VpnGateCandidate {
@@ -342,6 +380,34 @@ fn parse_candidate(line: &str) -> Result<VpnGateCandidate, String> {
         },
         profile,
     })
+}
+
+fn add_vpn_gate_authentication(mut profile: Vec<u8>) -> Result<Vec<u8>, String> {
+    let needs_line_break = !profile.ends_with(b"\n");
+    let added_bytes = VPN_GATE_PROFILE_MARKER
+        .len()
+        .checked_add(1)
+        .and_then(|value| value.checked_add(VPN_GATE_AUTH_DIRECTIVE.len()))
+        .and_then(|value| value.checked_add(usize::from(needs_line_break)))
+        .ok_or_else(|| "VPN Gate OpenVPN profile size overflowed".to_string())?;
+    let normalized_bytes = profile
+        .len()
+        .checked_add(added_bytes)
+        .ok_or_else(|| "VPN Gate OpenVPN profile size overflowed".to_string())?;
+    if normalized_bytes > MAX_PROFILE_BYTES {
+        return Err(format!(
+            "VPN Gate OpenVPN profile exceeds the {MAX_PROFILE_BYTES}-byte limit"
+        ));
+    }
+
+    profile.reserve(added_bytes);
+    if needs_line_break {
+        profile.push(b'\n');
+    }
+    profile.extend_from_slice(VPN_GATE_PROFILE_MARKER.as_bytes());
+    profile.push(b'\n');
+    profile.extend_from_slice(VPN_GATE_AUTH_DIRECTIVE);
+    Ok(profile)
 }
 
 fn candidate_id(profile: &[u8]) -> String {
@@ -678,7 +744,8 @@ mod tests {
     fn parses_valid_metadata_without_exposing_profile_bytes() {
         let candidates =
             parse_usable_api_candidates(&api_response(&valid_row())).expect("server list");
-        let server = &candidates[0].server;
+        let candidate = &candidates[0];
+        let server = &candidate.server;
 
         assert_eq!(server.host_name, "public-vpn-1");
         assert_eq!(server.ip, "93.184.216.34");
@@ -689,6 +756,11 @@ mod tests {
         assert_eq!(serialized["speedBps"], 987654321);
         assert_eq!(serialized["protocol"], "tcp");
         assert!(serialized.get("profile").is_none());
+        assert!(
+            validate_profile(&candidate.profile)
+                .expect("normalized profile")
+                .requires_username_password
+        );
     }
 
     #[test]
@@ -731,10 +803,17 @@ mod tests {
         let invalid_number = valid_row().replace(",123456,12,", ",-1,12,");
         assert!(parse_candidate(&invalid_number).is_err());
 
-        let credentials_profile = b"client\ndev tun\nremote 93.184.216.34 443\nauth-user-pass\n";
-        let credentials_base64 = encode_base64(credentials_profile);
-        let credentials_row = valid_row().replace(PROFILE_BASE64, &credentials_base64);
-        assert!(parse_candidate(&credentials_row).is_err());
+        for credentials_profile in [
+            b"client\ndev tun\nremote 93.184.216.34 443\nauth-user-pass\n".as_slice(),
+            b"client\ndev tun\nremote 93.184.216.34 443\nauth-user-pass credentials.txt\n"
+                .as_slice(),
+            b"client\ndev tun\nremote 93.184.216.34 443\n<auth-user-pass>\nvpn\nvpn\n</auth-user-pass>\n"
+                .as_slice(),
+        ] {
+            let credentials_base64 = encode_base64(credentials_profile);
+            let credentials_row = valid_row().replace(PROFILE_BASE64, &credentials_base64);
+            assert!(parse_candidate(&credentials_row).is_err());
+        }
 
         assert!(parse_candidate(&format!("{},extra", valid_row())).is_err());
     }
@@ -765,6 +844,15 @@ mod tests {
     }
 
     #[test]
+    fn appends_authentication_after_profiles_without_a_final_line_break() {
+        assert_eq!(
+            add_vpn_gate_authentication(b"client".to_vec()).expect("normalized profile"),
+            b"client\n# norea:vpn-gate-finder\nauth-user-pass\n"
+        );
+        assert!(add_vpn_gate_authentication(vec![b'a'; MAX_PROFILE_BYTES]).is_err());
+    }
+
+    #[test]
     fn serves_profile_bytes_only_from_a_fresh_cache() {
         let finder = VpnGateFinder::new().expect("finder");
         let candidate = parse_candidate(&valid_row()).expect("candidate");
@@ -774,9 +862,11 @@ mod tests {
             candidates: vec![candidate],
         });
 
+        let mut expected_profile = decode_base64(PROFILE_BASE64).expect("profile");
+        expected_profile.extend_from_slice(b"# norea:vpn-gate-finder\nauth-user-pass\n");
         assert_eq!(
             finder.profile_bytes(&candidate_id).expect("cached profile"),
-            decode_base64(PROFILE_BASE64).expect("profile")
+            expected_profile
         );
         assert!(finder.profile_bytes(&"0".repeat(64)).is_err());
 

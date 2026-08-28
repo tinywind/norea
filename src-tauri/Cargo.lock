@@ -3512,8 +3512,6 @@ dependencies = [
 [[package]]
 name = "openvpn-connect-sys"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afb994928db44142b720af903d1387db28211af579f1ef07dba1c6b807f2d3e8"
 dependencies = [
  "aes",
  "aes-gcm",

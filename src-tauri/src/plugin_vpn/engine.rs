@@ -147,7 +147,17 @@ pub(super) async fn connect(
         .build()
         .map_err(|error| format!("could not initialize OpenVPN: {error}"))?;
 
+    let use_vpn_gate_android_peer_compatibility =
+        super::needs_vpn_gate_android_peer_compatibility(&profile, std::env::consts::OS);
     let mut config = Config::new(profile);
+    if use_vpn_gate_android_peer_compatibility {
+        config
+            .content_list
+            .push(("push-peer-info".to_string(), String::new()));
+        config
+            .peer_info
+            .push(("IV_PLAT".to_string(), "linux".to_string()));
+    }
     config.gui_version = format!("Norea {}", env!("CARGO_PKG_VERSION"));
     config.platform_version = std::env::consts::OS.to_string();
     config.allow_unused_addr_families = "no".to_string();

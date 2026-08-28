@@ -13,7 +13,9 @@ use tauri::{AppHandle, Manager, State};
 use super::finder::{VpnGateFinder, VpnGateServer};
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 use super::proxy::LocalProxy;
-use super::{validate_profile, ValidatedProfile, MAX_PROFILE_BYTES};
+use super::{
+    reject_reserved_vpn_gate_profile_marker, validate_profile, ValidatedProfile, MAX_PROFILE_BYTES,
+};
 
 const PROFILE_DIRECTORY: &str = "plugin-vpn";
 const PROFILE_FILE: &str = "profile.ovpn";
@@ -272,6 +274,7 @@ pub(crate) async fn plugin_vpn_import_profile(
     let bytes = tauri::async_runtime::spawn_blocking(move || read_profile_source(Path::new(&path)))
         .await
         .map_err(|error| format!("could not read the OpenVPN profile: {error}"))??;
+    reject_reserved_vpn_gate_profile_marker(&bytes)?;
     import_profile_bytes(state.inner(), bytes, "import a profile").await
 }
 

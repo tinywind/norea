@@ -12,6 +12,29 @@ mod tunnel_config;
 pub(crate) use state::PluginVpnState;
 
 const MAX_PROFILE_BYTES: usize = 1024 * 1024;
+const VPN_GATE_PROFILE_MARKER: &str = "# norea:vpn-gate-finder";
+
+fn is_vpn_gate_finder_profile(profile: &str) -> bool {
+    let mut trailing_lines = profile
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    trailing_lines.next() == Some("auth-user-pass")
+        && trailing_lines.next() == Some(VPN_GATE_PROFILE_MARKER)
+}
+
+fn needs_vpn_gate_android_peer_compatibility(profile: &str, platform: &str) -> bool {
+    platform == "android" && is_vpn_gate_finder_profile(profile)
+}
+
+fn reject_reserved_vpn_gate_profile_marker(bytes: &[u8]) -> Result<(), String> {
+    if std::str::from_utf8(bytes).is_ok_and(is_vpn_gate_finder_profile) {
+        Err("OpenVPN profile contains a reserved Norea VPN Gate Finder marker".to_string())
+    } else {
+        Ok(())
+    }
+}
 
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn windows_webview_browser_args(
@@ -392,6 +415,32 @@ private-key
         let validated = validate_profile(profile.as_bytes()).expect("valid profile");
 
         assert!(validated.requires_username_password);
+    }
+
+    #[test]
+    fn scopes_vpn_gate_peer_compatibility_to_marked_android_profiles() {
+        let marked = format!("{INLINE_PROFILE}\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n");
+        let marker_inside_inline_data = format!(
+            "{}\n<extra-certs>\n{VPN_GATE_PROFILE_MARKER}\n</extra-certs>\nauth-user-pass\n",
+            INLINE_PROFILE
+        );
+
+        assert!(needs_vpn_gate_android_peer_compatibility(
+            &marked, "android"
+        ));
+        assert!(!needs_vpn_gate_android_peer_compatibility(
+            INLINE_PROFILE,
+            "android"
+        ));
+        assert!(!needs_vpn_gate_android_peer_compatibility(
+            &marked, "windows"
+        ));
+        assert!(!needs_vpn_gate_android_peer_compatibility(
+            &marker_inside_inline_data,
+            "android"
+        ));
+        assert!(reject_reserved_vpn_gate_profile_marker(marked.as_bytes()).is_err());
+        assert!(reject_reserved_vpn_gate_profile_marker(INLINE_PROFILE.as_bytes()).is_ok());
     }
 
     #[test]

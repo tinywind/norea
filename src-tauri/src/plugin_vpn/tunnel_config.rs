@@ -5,6 +5,8 @@ use std::{
 
 use super::directive_tokens;
 
+const DEFAULT_TUNNEL_MTU: usize = 1500;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct TunnelConfiguration {
     pub(super) ipv4: Option<Ipv4Addr>,
@@ -26,10 +28,14 @@ pub(super) fn parse_tunnel_configuration(
     options: &str,
     mtu: i32,
 ) -> Result<TunnelConfiguration, String> {
-    let mtu = usize::try_from(mtu)
-        .ok()
-        .filter(|value| (576..=65_535).contains(value))
-        .ok_or_else(|| "OpenVPN supplied an invalid tunnel MTU".to_string())?;
+    let mtu = if mtu == 0 {
+        DEFAULT_TUNNEL_MTU
+    } else {
+        usize::try_from(mtu)
+            .ok()
+            .filter(|value| (576..=65_535).contains(value))
+            .ok_or_else(|| "OpenVPN supplied an invalid tunnel MTU".to_string())?
+    };
     let mut ipv4 = None;
     let mut gateway_ipv4 = None;
     let mut ipv6 = None;
@@ -280,6 +286,18 @@ mod tests {
             configuration.dns_servers,
             vec![IpAddr::V4(Ipv4Addr::new(10, 9, 0, 53))]
         );
+    }
+
+    #[test]
+    fn defaults_an_unspecified_mtu_to_openvpn_default() {
+        let configuration = parse_tunnel_configuration(
+            "ifconfig 10.8.0.2 10.8.0.1\n\
+             dhcp-option DNS 10.8.0.53\n",
+            0,
+        )
+        .expect("tunnel configuration");
+
+        assert_eq!(configuration.mtu, 1500);
     }
 
     #[test]
