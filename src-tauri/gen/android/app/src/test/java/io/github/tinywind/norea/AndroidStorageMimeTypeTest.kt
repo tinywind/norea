@@ -25,6 +25,10 @@ class AndroidStorageMimeTypeTest {
       "application/octet-stream",
       inferAndroidStorageMimeType("contents/chapter/.chapter-content.partial", mimeTypes::get),
     )
+    assertEquals(
+      "application/octet-stream",
+      inferAndroidStorageMimeType("contents/chapter/manifest.json.tmp", mimeTypes::get),
+    )
   }
 
   @Test

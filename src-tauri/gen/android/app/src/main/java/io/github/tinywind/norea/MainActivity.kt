@@ -2607,7 +2607,7 @@ class MainActivity : TauriActivity() {
         val tempManifest = ensureStorageFile(
           rootUri,
           tempRelativePath,
-          "application/json",
+          "application/octet-stream",
         )
         contentResolver.openOutputStream(tempManifest.uri, "wt")?.use { output ->
           output.write(body)
