@@ -165,18 +165,13 @@ export function PluginVpnFinder({
   const [sort, setSort] = useState<PluginVpnFinderSort>("score");
   const serversQuery = useQuery({
     enabled: opened && !catalogStopped,
-    queryFn: ({ signal }) => {
-      queryClient.setQueryData<PluginVpnFinderServer[]>(
-        PLUGIN_VPN_FINDER_QUERY_KEY,
-        [],
-      );
-      return loadPluginVpnFinderServers(true, signal);
-    },
+    queryFn: ({ signal }) => loadPluginVpnFinderServers(true, signal),
     queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
     refetchInterval:
       opened && !catalogStopped
         ? PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS
         : false,
+    retry: false,
     staleTime: PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS,
   });
   const catalogRefreshing = serversQuery.isFetching && !catalogStopped;

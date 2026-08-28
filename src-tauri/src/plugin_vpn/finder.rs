@@ -1,5 +1,6 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
     net::Ipv4Addr,
     sync::Mutex,
     time::{Duration, Instant},
@@ -23,6 +24,10 @@ const VPN_GATE_HEADER: &str = "#HostName,IP,Score,Ping,Speed,CountryLong,Country
 const VPN_GATE_FOOTER: &str = "*";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const FINDER_QUERY_TIMEOUT: Duration = Duration::from_secs(35);
+const FINDER_QUERY_CANCELLED_ERROR: &str = "VPN Gate server query was cancelled";
+const FINDER_QUERY_TIMEOUT_ERROR: &str = "VPN Gate server query timed out";
+const MAX_PENDING_QUERY_CANCELLATIONS: usize = 64;
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SERVER_ROWS: usize = 512;
@@ -65,11 +70,31 @@ struct CachedServers {
     candidates: Vec<VpnGateCandidate>,
 }
 
+#[derive(Default)]
+struct FinderQueryState {
+    active: HashMap<String, tokio::sync::watch::Sender<bool>>,
+    pending_cancellations: VecDeque<String>,
+}
+
 pub(super) struct VpnGateFinder {
     #[cfg(not(any(target_os = "android", target_os = "windows")))]
     client: reqwest::Client,
     refresh: tokio::sync::Mutex<()>,
     cache: Mutex<Option<CachedServers>>,
+    queries: Mutex<FinderQueryState>,
+}
+
+struct FinderQueryGuard<'a> {
+    finder: &'a VpnGateFinder,
+    query_id: String,
+}
+
+impl Drop for FinderQueryGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut queries) = self.finder.queries.lock() {
+            queries.active.remove(&self.query_id);
+        }
+    }
 }
 
 impl VpnGateFinder {
@@ -87,24 +112,92 @@ impl VpnGateFinder {
             client,
             refresh: tokio::sync::Mutex::new(()),
             cache: Mutex::new(None),
+            queries: Mutex::new(FinderQueryState::default()),
         })
     }
 
     pub(super) async fn load_servers(
         &self,
         force_refresh: bool,
+        query_id: &str,
     ) -> Result<Vec<VpnGateServer>, String> {
+        let (cancellation, _query_guard) = self.begin_query(query_id)?;
+        await_finder_query(
+            self.load_servers_inner(force_refresh),
+            cancellation,
+            FINDER_QUERY_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(super) fn cancel_query(&self, query_id: &str) -> Result<(), String> {
+        validate_query_id(query_id)?;
+        let mut queries = self
+            .queries
+            .lock()
+            .map_err(|_| "VPN Gate active query state is unavailable".to_string())?;
+        if let Some(cancellation) = queries.active.get(query_id) {
+            let _ = cancellation.send(true);
+        } else if !queries
+            .pending_cancellations
+            .iter()
+            .any(|pending| pending == query_id)
+        {
+            if queries.pending_cancellations.len() == MAX_PENDING_QUERY_CANCELLATIONS {
+                queries.pending_cancellations.pop_front();
+            }
+            queries.pending_cancellations.push_back(query_id.to_string());
+        }
+        Ok(())
+    }
+
+    fn begin_query(
+        &self,
+        query_id: &str,
+    ) -> Result<(tokio::sync::watch::Receiver<bool>, FinderQueryGuard<'_>), String> {
+        validate_query_id(query_id)?;
+        let mut queries = self
+            .queries
+            .lock()
+            .map_err(|_| "VPN Gate active query state is unavailable".to_string())?;
+        if let Some(index) = queries
+            .pending_cancellations
+            .iter()
+            .position(|pending| pending == query_id)
+        {
+            let _ = queries.pending_cancellations.remove(index);
+            return Err(FINDER_QUERY_CANCELLED_ERROR.to_string());
+        }
+        if queries.active.contains_key(query_id) {
+            return Err("VPN Gate query ID is already active".to_string());
+        }
+        let (cancellation, receiver) = tokio::sync::watch::channel(false);
+        queries.active.insert(query_id.to_string(), cancellation);
+        Ok((
+            receiver,
+            FinderQueryGuard {
+                finder: self,
+                query_id: query_id.to_string(),
+            },
+        ))
+    }
+
+    async fn load_servers_inner(
+        &self,
+        force_refresh: bool,
+    ) -> Result<Vec<VpnGateServer>, String> {
+        let refresh_requested_at = Instant::now();
         if !force_refresh {
-            if let Some(servers) = self.cached_servers()? {
+            if let Some(servers) = self.cached_servers(None)? {
                 return Ok(servers);
             }
         }
 
         let _refresh = self.refresh.lock().await;
-        if !force_refresh {
-            if let Some(servers) = self.cached_servers()? {
-                return Ok(servers);
-            }
+        if let Some(servers) = self.cached_servers(
+            force_refresh.then_some(refresh_requested_at),
+        )? {
+            return Ok(servers);
         }
 
         let response = self.fetch_response().await?;
@@ -155,13 +248,20 @@ impl VpnGateFinder {
             })
     }
 
-    fn cached_servers(&self) -> Result<Option<Vec<VpnGateServer>>, String> {
+    fn cached_servers(
+        &self,
+        fetched_since: Option<Instant>,
+    ) -> Result<Option<Vec<VpnGateServer>>, String> {
         let cache = self
             .cache
             .lock()
             .map_err(|_| "VPN Gate server cache is unavailable".to_string())?;
         Ok(cache.as_ref().and_then(|cached| {
-            cache_is_fresh(cached.fetched_at).then(|| {
+            (cache_is_fresh(cached.fetched_at)
+                && fetched_since.is_none_or(|requested_at| {
+                    cached.fetched_at >= requested_at
+                }))
+            .then(|| {
                 cached
                     .candidates
                     .iter()
@@ -237,6 +337,31 @@ impl VpnGateFinder {
         }
         Ok(bytes)
     }
+}
+
+async fn await_finder_query<T>(
+    query: impl Future<Output = Result<T, String>>,
+    mut cancellation: tokio::sync::watch::Receiver<bool>,
+    timeout: Duration,
+) -> Result<T, String> {
+    tokio::select! {
+        biased;
+        _ = cancellation.changed() => Err(FINDER_QUERY_CANCELLED_ERROR.to_string()),
+        result = query => result,
+        _ = tokio::time::sleep(timeout) => Err(FINDER_QUERY_TIMEOUT_ERROR.to_string()),
+    }
+}
+
+fn validate_query_id(query_id: &str) -> Result<(), String> {
+    if query_id.is_empty()
+        || query_id.len() > 64
+        || !query_id
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || value == b'-')
+    {
+        return Err("VPN Gate query ID is invalid".to_string());
+    }
+    Ok(())
 }
 
 fn cache_is_fresh(fetched_at: Instant) -> bool {
@@ -738,6 +863,50 @@ mod tests {
         format!(
             "public-vpn-1,93.184.216.34,123456,12,987654321,United States,US,4,60000,20,1000,2weeks,ignored,,{PROFILE_BASE64}"
         )
+    }
+
+    #[test]
+    fn cancellation_before_query_registration_is_preserved() {
+        let finder = VpnGateFinder::new().expect("finder");
+        finder.cancel_query("query-1").expect("cancel query");
+
+        let error = match finder.begin_query("query-1") {
+            Ok(_) => panic!("cancelled query started"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, FINDER_QUERY_CANCELLED_ERROR);
+    }
+
+    #[tokio::test]
+    async fn cancelled_query_finishes_pending_work() {
+        let finder = VpnGateFinder::new().expect("finder");
+        let (receiver, _query_guard) = finder.begin_query("query-1").expect("begin query");
+        finder.cancel_query("query-1").expect("cancel pending query");
+
+        let result = await_finder_query(
+            std::future::pending::<Result<(), String>>(),
+            receiver,
+            Duration::from_secs(60),
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), FINDER_QUERY_CANCELLED_ERROR);
+    }
+
+    #[tokio::test]
+    async fn query_deadline_finishes_pending_work() {
+        let (cancellation, receiver) = tokio::sync::watch::channel(false);
+
+        let result = await_finder_query(
+            std::future::pending::<Result<(), String>>(),
+            receiver,
+            Duration::from_millis(1),
+        )
+        .await;
+        drop(cancellation);
+
+        assert_eq!(result.unwrap_err(), FINDER_QUERY_TIMEOUT_ERROR);
     }
 
     #[test]

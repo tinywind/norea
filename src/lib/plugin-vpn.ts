@@ -102,6 +102,7 @@ declare global {
 }
 
 let androidProxyConfiguration: Promise<void> | null = null;
+let finderQuerySequence = 0;
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
   return invoke<PluginVpnStatus>("plugin_vpn_status");
@@ -117,13 +118,25 @@ export function loadPluginVpnFinderServers(
     );
   }
 
+  finderQuerySequence += 1;
+  const queryId = `${Date.now().toString(36)}-${finderQuerySequence.toString(36)}`;
   const request = invoke<PluginVpnFinderServer[]>("plugin_vpn_load_finder_servers", {
     forceRefresh,
+    queryId,
   });
   if (!signal) return request;
 
   return new Promise((resolve, reject) => {
+    let cancellationRequested = false;
     const cancel = () => {
+      if (!cancellationRequested) {
+        cancellationRequested = true;
+        void invoke("plugin_vpn_cancel_finder_query", { queryId }).catch(
+          (error: unknown) => {
+            console.warn("[plugin-vpn] failed to cancel Finder query", error);
+          },
+        );
+      }
       reject(
         new DOMException("VPN Gate server query was cancelled.", "AbortError"),
       );

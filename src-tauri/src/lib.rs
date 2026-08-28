@@ -199,6 +199,7 @@ pub fn run() {
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
             plugin_vpn::state::plugin_vpn_apply_finder_profile,
+            plugin_vpn::state::plugin_vpn_cancel_finder_query,
             plugin_vpn::state::plugin_vpn_connect,
             plugin_vpn::state::plugin_vpn_disconnect,
             plugin_vpn::state::plugin_vpn_load_finder_servers,

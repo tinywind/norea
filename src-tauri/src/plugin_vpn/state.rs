@@ -251,12 +251,26 @@ pub(crate) fn plugin_vpn_status(state: State<'_, PluginVpnState>) -> PluginVpnSt
 }
 
 #[tauri::command]
+pub(crate) fn plugin_vpn_cancel_finder_query(
+    query_id: String,
+    state: State<'_, PluginVpnState>,
+) -> Result<(), String> {
+    ensure_supported()?;
+    state.shared.finder.cancel_query(&query_id)
+}
+
+#[tauri::command]
 pub(crate) async fn plugin_vpn_load_finder_servers(
     force_refresh: bool,
+    query_id: String,
     state: State<'_, PluginVpnState>,
 ) -> Result<Vec<VpnGateServer>, String> {
     ensure_supported()?;
-    state.shared.finder.load_servers(force_refresh).await
+    state
+        .shared
+        .finder
+        .load_servers(force_refresh, &query_id)
+        .await
 }
 
 #[tauri::command]

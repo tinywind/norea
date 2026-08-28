@@ -310,8 +310,9 @@ The catalog is cached in memory only. Proxy mirrors, batch downloads, profile
 export, and persistent catalog storage are not supported. Public relay
 availability and metadata can change between refresh and connection attempts.
 Starting a catalog query clears the displayed server list. The user can stop
-waiting for the query or close the finder, and a result that arrives after
-cancellation is ignored.
+the app-side native query or close the finder, and a result that arrives from a
+detached platform HTTP worker after cancellation is ignored. A catalog query
+has a fixed wall-clock deadline and is not retried automatically.
 
 The one-click apply-and-connect action first cancels an active connection
 attempt or disconnects an established VPN, then applies the selected server and

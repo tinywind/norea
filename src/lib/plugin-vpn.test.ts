@@ -172,10 +172,11 @@ describe("plugin VPN", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_load_finder_servers", {
       forceRefresh: true,
+      queryId: expect.any(String),
     });
   });
 
-  it("stops waiting for a cancelled VPN Gate catalog query", async () => {
+  it("cancels the native VPN Gate query when the catalog query stops", async () => {
     let resolveRequest!: (servers: PluginVpnFinderServer[]) => void;
     invokeMock.mockReturnValueOnce(
       new Promise<PluginVpnFinderServer[]>((resolve) => {
@@ -188,6 +189,13 @@ describe("plugin VPN", () => {
     controller.abort();
 
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    const loadArguments = invokeMock.mock.calls[0]?.[1] as {
+      queryId: string;
+    };
+    expect(invokeMock.mock.calls[1]).toEqual([
+      "plugin_vpn_cancel_finder_query",
+      { queryId: loadArguments.queryId },
+    ]);
     resolveRequest([]);
     await Promise.resolve();
   });
