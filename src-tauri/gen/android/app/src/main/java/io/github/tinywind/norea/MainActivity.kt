@@ -3,6 +3,7 @@ package io.github.tinywind.norea
 import android.Manifest
 import android.app.Activity
 import android.content.ClipData
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
@@ -33,6 +34,7 @@ import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.File
 import java.io.InputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
@@ -65,6 +67,15 @@ internal fun inferAndroidStorageMimeType(
   return extension
     ?.let(mimeTypeForExtension)
     ?: "application/octet-stream"
+}
+
+internal fun createRawAndroidStorageFile(parent: File, name: String): File? {
+  val child = File(parent, name)
+  return try {
+    if (child.createNewFile()) child else null
+  } catch (_: IOException) {
+    null
+  }
 }
 
 private fun validateAndroidContentStorageRelativeDir(
@@ -2395,9 +2406,27 @@ class MainActivity : TauriActivity() {
       ByteArrayInputStream(message.toByteArray(Charsets.UTF_8)),
     )
 
-  private fun storageRoot(rootUri: String): DocumentFile =
-    DocumentFile.fromTreeUri(this, Uri.parse(rootUri))
+  private fun storageRoot(rootUri: String): DocumentFile {
+    val root = Uri.parse(rootUri)
+    val treeId = runCatching { DocumentsContract.getTreeDocumentId(root) }.getOrNull()
+    val hasPersistedAccess = contentResolver.persistedUriPermissions.any { permission ->
+      permission.uri == root && permission.isReadPermission && permission.isWritePermission
+    }
+    if (
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+      Environment.isExternalStorageManager() &&
+      hasPersistedAccess &&
+      root.authority == "com.android.externalstorage.documents" &&
+      treeId?.substringBefore(':') == "primary"
+    ) {
+      externalStorageFile(rootUri, "")
+        ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }
+        ?.let { return DocumentFile.fromFile(it) }
+    }
+
+    return DocumentFile.fromTreeUri(this, root)
       ?: throw IllegalArgumentException("Android storage folder is unavailable.")
+  }
 
   private fun ensureContentsNoMedia(rootUri: String): Boolean {
     val relativePath = "$CONTENTS_ROOT_DIR/${MediaStore.MEDIA_IGNORE_FILENAME}"
@@ -3275,7 +3304,8 @@ class MainActivity : TauriActivity() {
             require(sourceChild.canRead()) {
               "Android chapter storage transfer file is not readable: $childPath"
             }
-            val targetChild = targetDirectory.createFile(
+            val targetChild = createStorageFile(
+              targetDirectory,
               sourceChild.type ?: mimeTypeForPath(childPath, "application/octet-stream"),
               name,
             )?.let { created ->
@@ -3403,7 +3433,7 @@ class MainActivity : TauriActivity() {
       require(stage.findFile(markerName) == null) {
         "Android chapter storage transfer marker already exists in copied source."
       }
-      stage.createFile("application/octet-stream", markerName)
+      createStorageFile(stage, "application/octet-stream", markerName)
         ?.let { marker ->
           requireExactCreatedStorageName(
             marker,
@@ -3802,6 +3832,7 @@ class MainActivity : TauriActivity() {
     val storagePath = listOf(treePath, relativePath)
       .filter { it.isNotBlank() }
       .joinToString("/")
+    if (storagePath.isBlank()) return base
     var file = base
     for (segment in safeStorageSegments(storagePath)) {
       file = File(file, segment)
@@ -3831,6 +3862,19 @@ class MainActivity : TauriActivity() {
     )
   }
 
+  private fun createStorageFile(
+    parent: DocumentFile,
+    mimeType: String,
+    name: String,
+  ): DocumentFile? {
+    if (parent.uri.scheme != ContentResolver.SCHEME_FILE) {
+      return parent.createFile(mimeType, name)
+    }
+    val parentPath = parent.uri.path ?: return null
+    val created = createRawAndroidStorageFile(File(parentPath), name) ?: return null
+    return DocumentFile.fromFile(created)
+  }
+
   private fun ensureStorageFile(
     rootUri: String,
     relativePath: String,
@@ -3847,7 +3891,7 @@ class MainActivity : TauriActivity() {
       require(existing.isFile) { "Android storage path is not a file: $relativePath" }
       return existing
     }
-    val created = current.createFile(mimeType, fileName)
+    val created = createStorageFile(current, mimeType, fileName)
     if (created != null) {
       return requireExactCreatedStorageName(
         created,
