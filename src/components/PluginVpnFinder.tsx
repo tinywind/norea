@@ -104,7 +104,8 @@ function formatSpeedValue(speedBps: number, locale: string): string {
   });
 }
 
-function errorMessage(error: unknown): string | null {
+export function pluginVpnFinderErrorMessage(error: unknown): string | null {
+  if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message.trim()) return error.message;
   return null;
 }
@@ -168,7 +169,7 @@ export function PluginVpnFinder({
     if (!applying) onClose();
   }
 
-  const loadErrorMessage = errorMessage(serversQuery.error);
+  const loadErrorMessage = pluginVpnFinderErrorMessage(serversQuery.error);
 
   function pingText(pingMs: number | null): string {
     const value = formatPingValue(pingMs, locale);

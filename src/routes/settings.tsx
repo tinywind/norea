@@ -612,12 +612,13 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                     value={credentials.username}
                     disabled={!disconnected || operationDisabled}
                     required={status.profile.requiresUsernamePassword}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const username = event.currentTarget.value;
                       setCredentials((current) => ({
                         ...current,
-                        username: event.currentTarget.value,
-                      }))
-                    }
+                        username,
+                      }));
+                    }}
                   />
                   <PasswordInput
                     autoComplete="new-password"
@@ -625,36 +626,39 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                     value={credentials.password}
                     disabled={!disconnected || operationDisabled}
                     required={status.profile.requiresUsernamePassword}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const password = event.currentTarget.value;
                       setCredentials((current) => ({
                         ...current,
-                        password: event.currentTarget.value,
-                      }))
-                    }
+                        password,
+                      }));
+                    }}
                   />
                   <PasswordInput
                     autoComplete="new-password"
                     label={t("settings.data.pluginVpn.credentials.privateKeyPassword")}
                     value={credentials.privateKeyPassword}
                     disabled={!disconnected || operationDisabled}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const privateKeyPassword = event.currentTarget.value;
                       setCredentials((current) => ({
                         ...current,
-                        privateKeyPassword: event.currentTarget.value,
-                      }))
-                    }
+                        privateKeyPassword,
+                      }));
+                    }}
                   />
                   <PasswordInput
                     autoComplete="new-password"
                     label={t("settings.data.pluginVpn.credentials.challengeResponse")}
                     value={credentials.challengeResponse}
                     disabled={!disconnected || operationDisabled}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const challengeResponse = event.currentTarget.value;
                       setCredentials((current) => ({
                         ...current,
-                        challengeResponse: event.currentTarget.value,
-                      }))
-                    }
+                        challengeResponse,
+                      }));
+                    }}
                   />
                 </Stack>
               </SettingsWideField>

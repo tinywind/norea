@@ -9,6 +9,7 @@ import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
+const VPN_GATE_PUBLIC_CREDENTIAL = "vpn";
 const VPN_PROXY_CONFIGURE_CAPABILITY = "vpn.proxy.configure";
 
 export type PluginVpnPhase =
@@ -124,9 +125,9 @@ export async function applyAndConnectPluginVpnFinderProfile(
   await applyPluginVpnFinderProfile(candidateId);
   return connectPluginVpn({
     challengeResponse: "",
-    password: "",
+    password: VPN_GATE_PUBLIC_CREDENTIAL,
     privateKeyPassword: "",
-    username: "",
+    username: VPN_GATE_PUBLIC_CREDENTIAL,
   });
 }
 

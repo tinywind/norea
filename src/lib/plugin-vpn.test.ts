@@ -176,7 +176,7 @@ describe("plugin VPN", () => {
     );
   });
 
-  it("applies and connects a Finder profile in one user action", async () => {
+  it("connects a Finder profile with the VPN Gate public credentials", async () => {
     await expect(
       applyAndConnectPluginVpnFinderProfile("candidate-1"),
     ).resolves.toEqual(STATUS);
@@ -188,9 +188,9 @@ describe("plugin VPN", () => {
         {
           credentials: {
             challengeResponse: "",
-            password: "",
+            password: "vpn",
             privateKeyPassword: "",
-            username: "",
+            username: "vpn",
           },
         },
       ],

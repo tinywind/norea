@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { translate } from "../i18n";
 import type { PluginVpnFinderServer } from "../lib/plugin-vpn";
-import { filterAndSortPluginVpnServers } from "./PluginVpnFinder";
+import {
+  filterAndSortPluginVpnServers,
+  pluginVpnFinderErrorMessage,
+} from "./PluginVpnFinder";
 
 const SERVERS: PluginVpnFinderServer[] = [
   {
@@ -94,5 +97,12 @@ describe("PluginVpnFinder", () => {
         value: "125.4",
       }),
     ).toBe("125.4Mbps");
+  });
+
+  it("preserves string errors rejected by Tauri commands", () => {
+    expect(pluginVpnFinderErrorMessage("native Finder failure")).toBe(
+      "native Finder failure",
+    );
+    expect(pluginVpnFinderErrorMessage("   ")).toBeNull();
   });
 });
