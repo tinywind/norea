@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Badge,
   Group,
@@ -12,11 +12,12 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import {
   loadPluginVpnFinderServers,
   type PluginVpnFinderServer,
+  type PluginVpnPhase,
   type PluginVpnServerProtocol,
 } from "../lib/plugin-vpn";
 import { TextButton } from "./TextButton";
@@ -35,10 +36,40 @@ interface PluginVpnFinderFilters {
 }
 
 interface PluginVpnFinderProps {
+  connectionError: string | null;
+  connectionPhase: PluginVpnPhase | undefined;
+  connectionTarget: string | null;
   disabled: boolean;
-  onApplyAndConnect: (candidateId: string) => Promise<boolean>;
+  disabledReason: string | null;
+  onApplyAndConnect: (candidateId: string) => Promise<void>;
+  onCancelConnection: () => Promise<void>;
   onClose: () => void;
   opened: boolean;
+  pendingCandidateId: string | null;
+}
+
+export type PluginVpnFinderServerAction = "cancel" | "connect" | "switch";
+
+export function pluginVpnFinderServerAction(
+  candidateId: string,
+  pendingCandidateId: string | null,
+  phase: PluginVpnPhase | undefined,
+): PluginVpnFinderServerAction {
+  if (pendingCandidateId === candidateId) return "cancel";
+  return pendingCandidateId !== null ||
+    phase === "connecting" ||
+    phase === "connected" ||
+    phase === "disconnecting" ||
+    phase === "error"
+    ? "switch"
+    : "connect";
+}
+
+export function pluginVpnFinderServersForDisplay(
+  servers: PluginVpnFinderServer[],
+  queryActive: boolean,
+): PluginVpnFinderServer[] {
+  return queryActive ? [] : servers;
 }
 
 function comparePing(
@@ -111,27 +142,48 @@ export function pluginVpnFinderErrorMessage(error: unknown): string | null {
 }
 
 export function PluginVpnFinder({
+  connectionError,
+  connectionPhase,
+  connectionTarget,
   disabled,
+  disabledReason,
   onApplyAndConnect,
+  onCancelConnection,
   onClose,
   opened,
+  pendingCandidateId,
 }: PluginVpnFinderProps) {
   const { locale, t } = useTranslation();
-  const [applyingCandidateId, setApplyingCandidateId] = useState<string | null>(
-    null,
-  );
+  const queryClient = useQueryClient();
   const [countryCode, setCountryCode] = useState("");
+  const [catalogStopped, setCatalogStopped] = useState(false);
+  const [selectedConnectionTarget, setSelectedConnectionTarget] = useState<
+    string | null
+  >(null);
   const [protocol, setProtocol] = useState<"" | PluginVpnServerProtocol>("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<PluginVpnFinderSort>("score");
   const serversQuery = useQuery({
-    enabled: opened,
-    queryFn: () => loadPluginVpnFinderServers(true),
+    enabled: opened && !catalogStopped,
+    queryFn: ({ signal }) => {
+      queryClient.setQueryData<PluginVpnFinderServer[]>(
+        PLUGIN_VPN_FINDER_QUERY_KEY,
+        [],
+      );
+      return loadPluginVpnFinderServers(true, signal);
+    },
     queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
-    refetchInterval: opened ? PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS : false,
+    refetchInterval:
+      opened && !catalogStopped
+        ? PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS
+        : false,
     staleTime: PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS,
   });
-  const servers = serversQuery.data ?? [];
+  const catalogRefreshing = serversQuery.isFetching && !catalogStopped;
+  const servers = pluginVpnFinderServersForDisplay(
+    serversQuery.data ?? [],
+    catalogRefreshing || catalogStopped,
+  );
   const countries = useMemo(
     () =>
       [...new Map(servers.map((server) => [server.countryCode, server.countryName]))]
@@ -152,21 +204,89 @@ export function PluginVpnFinder({
       }),
     [countryCode, protocol, search, servers, sort],
   );
-  const applying = applyingCandidateId !== null;
-  const catalogRefreshing = serversQuery.isFetching;
+  const connectionServer =
+    (pendingCandidateId === null ? connectionTarget : selectedConnectionTarget) ??
+    t("settings.data.pluginVpn.finder.status.selectedServer");
 
-  async function applyAndConnect(candidateId: string): Promise<void> {
-    if (disabled || applying || catalogRefreshing) return;
-    setApplyingCandidateId(candidateId);
-    try {
-      if (await onApplyAndConnect(candidateId)) onClose();
-    } finally {
-      setApplyingCandidateId(null);
+  useEffect(() => {
+    if (!opened) return;
+    setCatalogStopped(false);
+    queryClient.setQueryData<PluginVpnFinderServer[]>(
+      PLUGIN_VPN_FINDER_QUERY_KEY,
+      [],
+    );
+    if (
+      queryClient.isFetching({
+        exact: true,
+        queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
+      }) === 0
+    ) {
+      void queryClient.invalidateQueries({
+        exact: true,
+        queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
+        refetchType: "active",
+      });
+    }
+  }, [opened, queryClient]);
+
+  async function applyAndConnect(
+    candidateId: string,
+    target: string,
+  ): Promise<void> {
+    const action = pluginVpnFinderServerAction(
+      candidateId,
+      pendingCandidateId,
+      connectionPhase,
+    );
+    if (action === "cancel") {
+      await onCancelConnection();
+      return;
+    }
+    if (!disabled) {
+      setSelectedConnectionTarget(target);
+      await onApplyAndConnect(candidateId);
     }
   }
 
-  function close(): void {
-    if (!applying) onClose();
+  function cancelCatalogQuery(): void {
+    setCatalogStopped(true);
+    queryClient.setQueryData<PluginVpnFinderServer[]>(
+      PLUGIN_VPN_FINDER_QUERY_KEY,
+      [],
+    );
+    void queryClient.cancelQueries({
+      exact: true,
+      queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
+    });
+  }
+
+  function refreshCatalog(): void {
+    queryClient.setQueryData<PluginVpnFinderServer[]>(
+      PLUGIN_VPN_FINDER_QUERY_KEY,
+      [],
+    );
+    setCatalogStopped(false);
+    void serversQuery.refetch({ cancelRefetch: true });
+  }
+
+  function closeFinder(): void {
+    queryClient.setQueryData<PluginVpnFinderServer[]>(
+      PLUGIN_VPN_FINDER_QUERY_KEY,
+      [],
+    );
+    void queryClient
+      .cancelQueries({
+        exact: true,
+        queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
+      })
+      .then(() =>
+        queryClient.invalidateQueries({
+          exact: true,
+          queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
+          refetchType: "none",
+        }),
+      );
+    onClose();
   }
 
   const loadErrorMessage = pluginVpnFinderErrorMessage(serversQuery.error);
@@ -184,23 +304,94 @@ export function PluginVpnFinder({
     });
   }
 
+  function actionText(action: PluginVpnFinderServerAction): string {
+    if (action === "cancel") {
+      return t("settings.data.pluginVpn.connection.cancel");
+    }
+    return action === "switch"
+      ? t("settings.data.pluginVpn.finder.switchAndConnect")
+      : t("settings.data.pluginVpn.finder.applyAndConnect");
+  }
+
+  function serverAction(candidateId: string): PluginVpnFinderServerAction {
+    return pluginVpnFinderServerAction(
+      candidateId,
+      pendingCandidateId,
+      connectionPhase,
+    );
+  }
+
   return (
     <Modal
       centered
       closeButtonProps={{
         "aria-label": t("settings.data.pluginVpn.finder.close"),
       }}
-      closeOnClickOutside={!applying}
-      onClose={close}
+      onClose={closeFinder}
       opened={opened}
       size="68rem"
       title={t("settings.data.pluginVpn.finder.title")}
-      withCloseButton={!applying}
     >
       <Stack gap="sm">
         <Text size="sm">
           {t("settings.data.pluginVpn.finder.description")}
         </Text>
+        {pendingCandidateId !== null || connectionPhase === "connecting" ? (
+          <Stack className="lnr-plugin-vpn-finder-state" gap="xs">
+            <Group aria-live="polite" gap="xs" role="status">
+              <Loader size="sm" />
+              <Text size="sm">
+                {connectionPhase === "disconnecting"
+                  ? t("settings.data.pluginVpn.finder.status.switching", {
+                      server: connectionServer,
+                    })
+                  : t("settings.data.pluginVpn.finder.status.connecting", {
+                      server: connectionServer,
+                    })}
+              </Text>
+            </Group>
+            <TextButton
+              onClick={() => void onCancelConnection()}
+              size="sm"
+              variant="default"
+            >
+              {t("settings.data.pluginVpn.connection.cancel")}
+            </TextButton>
+          </Stack>
+        ) : connectionPhase === "connected" ? (
+          <Text
+            aria-live="polite"
+            className="lnr-plugin-vpn-finder-state"
+            role="status"
+            size="sm"
+          >
+            {t("settings.data.pluginVpn.finder.status.connected")}
+          </Text>
+        ) : connectionPhase === "disconnecting" ? (
+          <Group
+            aria-live="polite"
+            className="lnr-plugin-vpn-finder-state"
+            role="status"
+          >
+            <Loader size="sm" />
+            <Text size="sm">
+              {t("settings.data.pluginVpn.status.disconnecting")}
+            </Text>
+          </Group>
+        ) : connectionPhase === "error" ? (
+          <Text className="lnr-plugin-vpn-finder-state" role="alert" size="sm">
+            {connectionError ?? t("settings.data.pluginVpn.status.error")}
+          </Text>
+        ) : connectionError ? (
+          <Text className="lnr-plugin-vpn-finder-state" role="alert" size="sm">
+            {connectionError}
+          </Text>
+        ) : null}
+        {disabled && disabledReason ? (
+          <Text className="lnr-plugin-vpn-finder-state" role="status" size="sm">
+            {disabledReason}
+          </Text>
+        ) : null}
         <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }} spacing="xs">
           <TextInput
             label={t("settings.data.pluginVpn.finder.search.label")}
@@ -265,17 +456,31 @@ export function PluginVpnFinder({
             {t("settings.data.pluginVpn.finder.sourceAttribution")}
           </Text>
           <TextButton
-            disabled={applying || catalogRefreshing}
-            loading={catalogRefreshing}
-            onClick={() => void serversQuery.refetch()}
+            active={catalogRefreshing}
+            onClick={catalogRefreshing ? cancelCatalogQuery : refreshCatalog}
             size="sm"
             variant="default"
           >
-            {t("settings.data.pluginVpn.finder.refresh")}
+            {catalogRefreshing
+              ? t("settings.data.pluginVpn.finder.cancelSearch")
+              : t("settings.data.pluginVpn.finder.refresh")}
           </TextButton>
         </Group>
 
-        {serversQuery.isPending ? (
+        {catalogStopped ? (
+          <Stack className="lnr-plugin-vpn-finder-state" gap="xs">
+            <Text role="status" size="sm">
+              {t("settings.data.pluginVpn.finder.stopped")}
+            </Text>
+            <TextButton
+              onClick={refreshCatalog}
+              size="sm"
+              variant="default"
+            >
+              {t("settings.data.pluginVpn.finder.retry")}
+            </TextButton>
+          </Stack>
+        ) : catalogRefreshing || serversQuery.isPending ? (
           <Group className="lnr-plugin-vpn-finder-state" justify="center">
             <Loader size="sm" />
             <Text size="sm">
@@ -293,9 +498,7 @@ export function PluginVpnFinder({
               </Text>
             ) : null}
             <TextButton
-              disabled={applying || catalogRefreshing}
-              loading={catalogRefreshing}
-              onClick={() => void serversQuery.refetch()}
+              onClick={refreshCatalog}
               size="sm"
               variant="default"
             >
@@ -344,12 +547,22 @@ export function PluginVpnFinder({
                       </Table.Td>
                       <Table.Td>
                         <TextButton
-                          disabled={disabled || applying || catalogRefreshing}
-                          loading={applyingCandidateId === server.candidateId}
-                          onClick={() => void applyAndConnect(server.candidateId)}
+                          active={serverAction(server.candidateId) === "cancel"}
+                          disabled={
+                            serverAction(server.candidateId) !== "cancel" &&
+                            disabled
+                          }
+                          onClick={() =>
+                            void applyAndConnect(server.candidateId, server.ip)
+                          }
                           size="sm"
+                          variant={
+                            serverAction(server.candidateId) === "cancel"
+                              ? "default"
+                              : "filled"
+                          }
                         >
-                          {t("settings.data.pluginVpn.finder.applyAndConnect")}
+                          {actionText(serverAction(server.candidateId))}
                         </TextButton>
                       </Table.Td>
                     </Table.Tr>
@@ -400,12 +613,21 @@ export function PluginVpnFinder({
                     </div>
                   </dl>
                   <TextButton
-                    disabled={disabled || applying || catalogRefreshing}
+                    active={serverAction(server.candidateId) === "cancel"}
+                    disabled={
+                      serverAction(server.candidateId) !== "cancel" && disabled
+                    }
                     fullWidth
-                    loading={applyingCandidateId === server.candidateId}
-                    onClick={() => void applyAndConnect(server.candidateId)}
+                    onClick={() =>
+                      void applyAndConnect(server.candidateId, server.ip)
+                    }
+                    variant={
+                      serverAction(server.candidateId) === "cancel"
+                        ? "default"
+                        : "filled"
+                    }
                   >
-                    {t("settings.data.pluginVpn.finder.applyAndConnect")}
+                    {actionText(serverAction(server.candidateId))}
                   </TextButton>
                 </section>
               ))}

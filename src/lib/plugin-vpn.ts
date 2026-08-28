@@ -39,6 +39,13 @@ export interface PluginVpnCredentials {
   username: string;
 }
 
+export class PluginVpnConnectionNotEstablishedError extends Error {
+  constructor() {
+    super("Plugin VPN connection did not reach the connected state.");
+    this.name = "PluginVpnConnectionNotEstablishedError";
+  }
+}
+
 export type PluginVpnServerProtocol = "tcp" | "udp";
 
 export interface PluginVpnFinderServer {
@@ -57,6 +64,11 @@ export interface PluginVpnFinderServer {
   uptimeMs: number;
 }
 
+export interface PluginVpnFinderSwitchLifecycle {
+  isCurrent: () => boolean;
+  onConnecting: () => void;
+}
+
 export function canStartPluginVpnConnection(
   status: PluginVpnStatus | undefined,
   credentials: PluginVpnCredentials,
@@ -72,14 +84,6 @@ export function canStartPluginVpnConnection(
     !status.profile.requiresUsernamePassword ||
     (credentials.username.trim() !== "" && credentials.password !== "")
   );
-}
-
-export function isPluginVpnControlStatusReady(
-  status: PluginVpnStatus | undefined,
-  queryPending: boolean,
-  queryError: boolean,
-): status is PluginVpnStatus {
-  return status !== undefined && !queryPending && !queryError;
 }
 
 interface AndroidVpnProxyBridge {
@@ -105,9 +109,40 @@ export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
 
 export function loadPluginVpnFinderServers(
   forceRefresh = false,
+  signal?: AbortSignal,
 ): Promise<PluginVpnFinderServer[]> {
-  return invoke<PluginVpnFinderServer[]>("plugin_vpn_load_finder_servers", {
+  if (signal?.aborted) {
+    return Promise.reject(
+      new DOMException("VPN Gate server query was cancelled.", "AbortError"),
+    );
+  }
+
+  const request = invoke<PluginVpnFinderServer[]>("plugin_vpn_load_finder_servers", {
     forceRefresh,
+  });
+  if (!signal) return request;
+
+  return new Promise((resolve, reject) => {
+    const cancel = () => {
+      reject(
+        new DOMException("VPN Gate server query was cancelled.", "AbortError"),
+      );
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    void request.then(
+      (servers) => {
+        signal.removeEventListener("abort", cancel);
+        if (signal.aborted) {
+          cancel();
+        } else {
+          resolve(servers);
+        }
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", cancel);
+        reject(error);
+      },
+    );
   });
 }
 
@@ -119,16 +154,30 @@ export function applyPluginVpnFinderProfile(
   });
 }
 
-export async function applyAndConnectPluginVpnFinderProfile(
+export async function switchPluginVpnFinderServer(
   candidateId: string,
-): Promise<PluginVpnStatus> {
-  await applyPluginVpnFinderProfile(candidateId);
-  return connectPluginVpn({
-    challengeResponse: "",
-    password: VPN_GATE_PUBLIC_CREDENTIAL,
-    privateKeyPassword: "",
-    username: VPN_GATE_PUBLIC_CREDENTIAL,
-  });
+  lifecycle: PluginVpnFinderSwitchLifecycle,
+): Promise<PluginVpnStatus | null> {
+  await disconnectPluginVpn(true);
+  if (!lifecycle.isCurrent()) return null;
+  try {
+    await applyPluginVpnFinderProfile(candidateId);
+  } catch (error) {
+    if (lifecycle.isCurrent()) await cancelFailedPluginVpnConnection();
+    throw error;
+  }
+  if (!lifecycle.isCurrent()) return null;
+  lifecycle.onConnecting();
+  const status = await connectPluginVpn(
+    {
+      challengeResponse: "",
+      password: VPN_GATE_PUBLIC_CREDENTIAL,
+      privateKeyPassword: "",
+      username: VPN_GATE_PUBLIC_CREDENTIAL,
+    },
+    lifecycle.isCurrent,
+  );
+  return lifecycle.isCurrent() ? status : null;
 }
 
 export async function configureAndroidPluginVpnProxy(
@@ -216,15 +265,50 @@ export async function importPluginVpnProfile(): Promise<PluginVpnStatus | null> 
   }
 }
 
+export function connectPluginVpn(
+  credentials: PluginVpnCredentials,
+): Promise<PluginVpnStatus>;
+export function connectPluginVpn(
+  credentials: PluginVpnCredentials,
+  isCurrent: () => boolean,
+): Promise<PluginVpnStatus | null>;
 export async function connectPluginVpn(
   credentials: PluginVpnCredentials,
-): Promise<PluginVpnStatus> {
+  isCurrent: () => boolean = () => true,
+): Promise<PluginVpnStatus | null> {
   await ensureAndroidPluginVpnProxy();
-  return invoke<PluginVpnStatus>("plugin_vpn_connect", { credentials });
+  if (!isCurrent()) return null;
+
+  let status: PluginVpnStatus;
+  try {
+    status = await invoke<PluginVpnStatus>("plugin_vpn_connect", {
+      credentials,
+    });
+  } catch (error) {
+    if (isCurrent()) await cancelFailedPluginVpnConnection();
+    throw error;
+  }
+  if (!isCurrent()) return null;
+  if (status.phase !== "connected") {
+    await cancelFailedPluginVpnConnection();
+    if (status.error) throw new Error(status.error);
+    throw new PluginVpnConnectionNotEstablishedError();
+  }
+  return status;
 }
 
-export function disconnectPluginVpn(): Promise<PluginVpnStatus> {
-  return invoke<PluginVpnStatus>("plugin_vpn_disconnect");
+async function cancelFailedPluginVpnConnection(): Promise<void> {
+  try {
+    await disconnectPluginVpn();
+  } catch (error) {
+    console.warn("[plugin-vpn] failed connection cleanup failed", error);
+  }
+}
+
+export function disconnectPluginVpn(
+  preserveBlock = false,
+): Promise<PluginVpnStatus> {
+  return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock });
 }
 
 export function removePluginVpnProfile(): Promise<PluginVpnStatus> {

@@ -25,16 +25,17 @@ import {
 } from "./android-storage";
 import { isAndroidRuntime } from "./tauri-runtime";
 import {
-  applyAndConnectPluginVpnFinderProfile,
   applyPluginVpnFinderProfile,
   canStartPluginVpnConnection,
   configureAndroidPluginVpnProxy,
   connectPluginVpn,
   ensureAndroidPluginVpnProxy,
-  loadPluginVpnFinderServers,
   importPluginVpnProfile,
-  isPluginVpnControlStatusReady,
+  loadPluginVpnFinderServers,
+  PluginVpnConnectionNotEstablishedError,
+  switchPluginVpnFinderServer,
   type PluginVpnCredentials,
+  type PluginVpnFinderServer,
   type PluginVpnStatus,
 } from "./plugin-vpn";
 
@@ -57,6 +58,11 @@ const STATUS: PluginVpnStatus = {
   },
   proxyPort: 43127,
   supported: true,
+};
+
+const CONNECTED_STATUS: PluginVpnStatus = {
+  ...STATUS,
+  phase: "connected",
 };
 
 describe("plugin VPN", () => {
@@ -131,7 +137,11 @@ describe("plugin VPN", () => {
       username: "reader",
     };
 
-    await expect(connectPluginVpn(credentials)).resolves.toEqual(STATUS);
+    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+
+    await expect(connectPluginVpn(credentials)).resolves.toEqual(
+      CONNECTED_STATUS,
+    );
 
     expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_connect", {
       credentials,
@@ -165,6 +175,33 @@ describe("plugin VPN", () => {
     });
   });
 
+  it("stops waiting for a cancelled VPN Gate catalog query", async () => {
+    let resolveRequest!: (servers: PluginVpnFinderServer[]) => void;
+    invokeMock.mockReturnValueOnce(
+      new Promise<PluginVpnFinderServer[]>((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    const controller = new AbortController();
+
+    const request = loadPluginVpnFinderServers(true, controller.signal);
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    resolveRequest([]);
+    await Promise.resolve();
+  });
+
+  it("does not start an already cancelled VPN Gate catalog query", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      loadPluginVpnFinderServers(true, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   it("applies a cached Finder profile by opaque candidate id", async () => {
     await expect(
       applyPluginVpnFinderProfile("candidate-1"),
@@ -176,12 +213,22 @@ describe("plugin VPN", () => {
     );
   });
 
-  it("connects a Finder profile with the VPN Gate public credentials", async () => {
+  it("disconnects before replacing and connecting a Finder server", async () => {
+    invokeMock
+      .mockResolvedValueOnce(STATUS)
+      .mockResolvedValueOnce(STATUS)
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+    const onConnecting = vi.fn();
+
     await expect(
-      applyAndConnectPluginVpnFinderProfile("candidate-1"),
-    ).resolves.toEqual(STATUS);
+      switchPluginVpnFinderServer("candidate-1", {
+        isCurrent: () => true,
+        onConnecting,
+      }),
+    ).resolves.toEqual(CONNECTED_STATUS);
 
     expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
       ["plugin_vpn_apply_finder_profile", { candidateId: "candidate-1" }],
       [
         "plugin_vpn_connect",
@@ -195,6 +242,150 @@ describe("plugin VPN", () => {
         },
       ],
     ]);
+    expect(onConnecting).toHaveBeenCalledOnce();
+  });
+
+  it("stops a superseded Finder switch before replacing the profile", async () => {
+    let current = true;
+    invokeMock.mockImplementationOnce(async () => {
+      current = false;
+      return STATUS;
+    });
+    const onConnecting = vi.fn();
+
+    await expect(
+      switchPluginVpnFinderServer("candidate-1", {
+        isCurrent: () => current,
+        onConnecting,
+      }),
+    ).resolves.toBeNull();
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_disconnect", {
+      preserveBlock: true,
+    });
+    expect(onConnecting).not.toHaveBeenCalled();
+  });
+
+  it("stops a superseded Finder switch before connecting", async () => {
+    let current = true;
+    invokeMock
+      .mockResolvedValueOnce(STATUS)
+      .mockImplementationOnce(async () => {
+        current = false;
+        return STATUS;
+      });
+    const onConnecting = vi.fn();
+
+    await expect(
+      switchPluginVpnFinderServer("candidate-1", {
+        isCurrent: () => current,
+        onConnecting,
+      }),
+    ).resolves.toBeNull();
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
+      ["plugin_vpn_apply_finder_profile", { candidateId: "candidate-1" }],
+    ]);
+    expect(onConnecting).not.toHaveBeenCalled();
+  });
+
+  it("restores direct routing when applying a Finder profile fails", async () => {
+    invokeMock
+      .mockResolvedValueOnce(STATUS)
+      .mockRejectedValueOnce("invalid Finder profile");
+
+    await expect(
+      switchPluginVpnFinderServer("candidate-1", {
+        isCurrent: () => true,
+        onConnecting: vi.fn(),
+      }),
+    ).rejects.toBe("invalid Finder profile");
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
+      ["plugin_vpn_apply_finder_profile", { candidateId: "candidate-1" }],
+      ["plugin_vpn_disconnect", { preserveBlock: false }],
+    ]);
+  });
+
+  it("rejects a native connect result that is not connected", async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...STATUS,
+      error: "The OpenVPN username is required",
+      phase: "disabled",
+    });
+
+    await expect(
+      connectPluginVpn({
+        challengeResponse: "",
+        password: "",
+        privateKeyPassword: "",
+        username: "",
+      }),
+    ).rejects.toThrow("The OpenVPN username is required");
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "plugin_vpn_connect",
+        {
+          credentials: {
+            challengeResponse: "",
+            password: "",
+            privateKeyPassword: "",
+            username: "",
+          },
+        },
+      ],
+      ["plugin_vpn_disconnect", { preserveBlock: false }],
+    ]);
+  });
+
+  it("uses a typed error when a failed native result has no reason", async () => {
+    invokeMock.mockResolvedValueOnce(STATUS);
+
+    await expect(
+      connectPluginVpn({
+        challengeResponse: "",
+        password: "password",
+        privateKeyPassword: "",
+        username: "reader",
+      }),
+    ).rejects.toBeInstanceOf(PluginVpnConnectionNotEstablishedError);
+  });
+
+  it("cancels a rejected native connection while preserving its error", async () => {
+    invokeMock.mockRejectedValueOnce("native connection failed");
+
+    await expect(
+      connectPluginVpn({
+        challengeResponse: "",
+        password: "password",
+        privateKeyPassword: "",
+        username: "reader",
+      }),
+    ).rejects.toBe("native connection failed");
+
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "plugin_vpn_connect",
+      "plugin_vpn_disconnect",
+    ]);
+  });
+
+  it("does not start a superseded connection after proxy preparation", async () => {
+    await expect(
+      connectPluginVpn(
+        {
+          challengeResponse: "",
+          password: "password",
+          privateKeyPassword: "",
+          username: "reader",
+        },
+        () => false,
+      ),
+    ).resolves.toBeNull();
+
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("requires username and password before starting a credentialed profile", () => {
@@ -252,13 +443,6 @@ describe("plugin VPN", () => {
     ).toBe(false);
   });
 
-  it("keeps controls closed while status is loading or failed", () => {
-    expect(isPluginVpnControlStatusReady(undefined, true, false)).toBe(false);
-    expect(isPluginVpnControlStatusReady(STATUS, true, false)).toBe(false);
-    expect(isPluginVpnControlStatusReady(STATUS, false, true)).toBe(false);
-    expect(isPluginVpnControlStatusReady(STATUS, false, false)).toBe(true);
-  });
-
   it("fails closed until the Android proxy is configured and retries failures", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
     const configure = vi
@@ -293,7 +477,12 @@ describe("plugin VPN", () => {
       privateKeyPassword: "",
       username: "reader",
     };
-    await expect(connectPluginVpn(credentials)).resolves.toEqual(STATUS);
+    invokeMock
+      .mockResolvedValueOnce(STATUS)
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+    await expect(connectPluginVpn(credentials)).resolves.toEqual(
+      CONNECTED_STATUS,
+    );
 
     expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
       "plugin_vpn_status",

@@ -285,7 +285,9 @@ When the VPN is disabled, sanctioned plugin traffic connects directly. While a
 connection is starting or stopping, or after an unexpected VPN failure, plugin
 traffic fails closed instead of falling back to a direct connection. A user
 disconnect restores direct access only after teardown completes. When connected,
-plugin traffic is forwarded through the OpenVPN tunnel.
+plugin traffic is forwarded through the OpenVPN tunnel. A connection attempt
+that fails before a tunnel is established returns to the disabled direct state
+and retains the failure reason for the UI.
 
 Proxied plugin destination hostnames are resolved inside the userspace VPN
 network using a plain DNS server supplied by the tunnel. The OpenVPN profile's
@@ -307,16 +309,22 @@ control request, not plugin-owned traffic, and it does not use the plugin VPN.
 The catalog is cached in memory only. Proxy mirrors, batch downloads, profile
 export, and persistent catalog storage are not supported. Public relay
 availability and metadata can change between refresh and connection attempts.
+Starting a catalog query clears the displayed server list. The user can stop
+waiting for the query or close the finder, and a result that arrives after
+cancellation is ignored.
 
-The one-click apply-and-connect action is available only while the VPN is fully
-disabled. The selected inline profile replaces the current profile through the
-same validation and atomic storage path as an externally imported `.ovpn`, then
-starts the connection. Within that shared validation boundary, the finder
-prioritizes compatibility with VPN Gate profiles and does not add stricter
-finder-only server identity requirements. VPN Gate servers are public relays
-operated by volunteers, so Norea makes no privacy, anonymity, or security
-guarantee. The only finder-specific UI warning is a short successful-connection
-toast noting that the relay may log traffic metadata.
+The one-click apply-and-connect action first cancels an active connection
+attempt or disconnects an established VPN, then applies the selected server and
+connects. Plugin traffic remains fail-closed throughout this handoff; cancelling
+the handoff or failing before a tunnel is established restores direct access.
+Selecting another server supersedes the prior selection. The selected inline
+profile replaces the current profile through the same validation and atomic
+storage path as an externally imported `.ovpn`. Within that shared validation
+boundary, the finder prioritizes compatibility with VPN Gate profiles and does
+not add stricter finder-only server identity requirements. VPN Gate servers are
+public relays operated by volunteers, so Norea makes no privacy, anonymity, or
+security guarantee. The only finder-specific UI warning is a short
+successful-connection toast noting that the relay may log traffic metadata.
 
 App-owned and repository-owned requests, including update checks, remain on
 their existing direct HTTP paths and do not use the plugin VPN. Because the

@@ -218,16 +218,25 @@ impl PluginVpnState {
             return;
         }
         #[cfg(any(target_os = "android", target_os = "windows", test))]
-        self.shared
-            .proxy
-            .block("The plugin VPN connection is unavailable");
-        state.phase = PluginVpnPhase::Error;
+        self.shared.proxy.direct();
+        state.phase = PluginVpnPhase::Disabled;
         state.error = Some(error);
         state.connecting_cancellation = None;
         #[cfg(any(target_os = "android", target_os = "windows"))]
         {
             state.control = None;
             state.session_completion = None;
+        }
+    }
+
+    #[cfg(any(target_os = "android", target_os = "windows"))]
+    fn set_disconnected_proxy(&self, preserve_block: bool) {
+        if preserve_block {
+            self.shared
+                .proxy
+                .block("The plugin VPN connection is switching");
+        } else {
+            self.shared.proxy.direct();
         }
     }
 }
@@ -406,9 +415,12 @@ pub(crate) async fn plugin_vpn_connect(
 
 #[tauri::command]
 pub(crate) async fn plugin_vpn_disconnect(
+    preserve_block: bool,
     state: State<'_, PluginVpnState>,
 ) -> Result<PluginVpnStatus, String> {
     ensure_supported()?;
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
+    let _ = preserve_block;
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
     let cancellation = {
@@ -416,7 +428,7 @@ pub(crate) async fn plugin_vpn_disconnect(
         runtime.generation = runtime.generation.wrapping_add(1);
         if runtime.phase == PluginVpnPhase::Disabled {
             runtime.connecting_cancellation = None;
-            state.shared.proxy.direct();
+            state.set_disconnected_proxy(preserve_block);
             drop(runtime);
             return Ok(state.status());
         }
@@ -442,7 +454,7 @@ pub(crate) async fn plugin_vpn_disconnect(
     let (control, completion) = {
         let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
         if runtime.phase == PluginVpnPhase::Disabled {
-            state.shared.proxy.direct();
+            state.set_disconnected_proxy(preserve_block);
             drop(runtime);
             return Ok(state.status());
         }
@@ -492,7 +504,7 @@ pub(crate) async fn plugin_vpn_disconnect(
     {
         runtime.control = None;
         runtime.session_completion = None;
-        state.shared.proxy.direct();
+        state.set_disconnected_proxy(preserve_block);
     }
     drop(runtime);
     Ok(state.status())
@@ -697,6 +709,55 @@ mod tests {
     use super::*;
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
+
+    #[test]
+    fn failed_connection_returns_to_disabled_state() {
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.profile = Some(PluginVpnProfile {
+                remote_host: "vpn.example.test".to_string(),
+                requires_username_password: false,
+            });
+        }
+        let (generation, _cancellation) = state.begin_connection(0).expect("begin connection");
+
+        state.set_connection_error(generation, "missing credentials".to_string());
+
+        let status = state.status();
+        assert_eq!(status.phase, PluginVpnPhase::Disabled);
+        assert_eq!(status.error.as_deref(), Some("missing credentials"));
+        assert_eq!(
+            status.profile.as_ref().map(|profile| profile.remote_host.as_str()),
+            Some("vpn.example.test")
+        );
+        let runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        assert!(runtime.connecting_cancellation.is_none());
+    }
+
+    #[test]
+    fn stale_connection_failure_does_not_override_newer_state() {
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.profile = Some(PluginVpnProfile {
+                remote_host: "vpn.example.test".to_string(),
+                requires_username_password: false,
+            });
+        }
+        let (generation, _cancellation) = state.begin_connection(0).expect("begin connection");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.generation = runtime.generation.wrapping_add(1);
+            runtime.error = None;
+        }
+
+        state.set_connection_error(generation, "stale failure".to_string());
+
+        let status = state.status();
+        assert_eq!(status.phase, PluginVpnPhase::Connecting);
+        assert_eq!(status.error, None);
+    }
 
     #[test]
     fn stores_replaces_and_removes_a_profile() {

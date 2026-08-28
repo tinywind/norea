@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Anchor,
   Box,
@@ -49,14 +49,14 @@ import {
 import { restartChapterContentStorageMirrorSweep } from "../lib/chapter-content-storage";
 import { pluginManager } from "../lib/plugins/manager";
 import {
-  applyAndConnectPluginVpnFinderProfile,
   canStartPluginVpnConnection,
   connectPluginVpn,
   disconnectPluginVpn,
   getPluginVpnStatus,
   importPluginVpnProfile,
-  isPluginVpnControlStatusReady,
   removePluginVpnProfile,
+  switchPluginVpnFinderServer,
+  PluginVpnConnectionNotEstablishedError,
   type PluginVpnCredentials,
   type PluginVpnPhase,
   type PluginVpnStatus,
@@ -347,22 +347,39 @@ const PLUGIN_VPN_PHASE_KEYS: Record<PluginVpnPhase, TranslationKey> = {
   error: "settings.data.pluginVpn.status.error",
 };
 
+type PluginVpnOperation =
+  | { kind: "connect" }
+  | { kind: "disconnect" }
+  | {
+      candidateId: string;
+      kind: "finder";
+      phase: "connecting" | "disconnecting";
+    }
+  | { kind: "import" }
+  | { kind: "remove" };
+
 function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [finderOpen, setFinderOpen] = useState(false);
-  const [vpnBusy, setVpnBusy] = useState<
-    "connect" | "disconnect" | "finder" | "import" | "remove" | null
-  >(null);
+  const [vpnOperation, setVpnOperation] = useState<PluginVpnOperation | null>(
+    null,
+  );
   const [credentials, setCredentials] = useState<PluginVpnCredentials>(
     emptyPluginVpnCredentials,
   );
+  const connectionRequest = useRef(0);
   const vpnQuery = useQuery({
     queryKey: PLUGIN_VPN_QUERY_KEY,
     queryFn: getPluginVpnStatus,
     refetchInterval: (query) => {
       const phase = (query.state.data as PluginVpnStatus | undefined)?.phase;
-      return phase === "connecting" ||
+      const localConnectionActive =
+        vpnOperation?.kind === "connect" ||
+        vpnOperation?.kind === "disconnect" ||
+        vpnOperation?.kind === "finder";
+      return localConnectionActive ||
+        phase === "connecting" ||
         phase === "connected" ||
         phase === "disconnecting"
         ? 2_000
@@ -370,30 +387,60 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
     },
   });
   const status = vpnQuery.data;
-  const displayPhase =
-    vpnBusy === "connect" || vpnBusy === "finder"
+  const localPhase: PluginVpnPhase | undefined =
+    vpnOperation?.kind === "connect"
       ? "connecting"
-      : vpnBusy === "disconnect"
+      : vpnOperation?.kind === "disconnect"
         ? "disconnecting"
-        : status?.phase;
-  const controlStatusReady = isPluginVpnControlStatusReady(
-    status,
-    vpnQuery.isPending,
-    vpnQuery.isError,
-  );
-  const operationDisabled =
-    isBusy || vpnBusy !== null || !controlStatusReady;
+        : vpnOperation?.kind === "finder"
+          ? vpnOperation.phase
+          : undefined;
+  const displayPhase = localPhase ?? status?.phase;
+  const statusAvailable = status !== undefined;
   const disconnected = status?.phase === "disabled";
+  const profileOperationActive =
+    vpnOperation?.kind === "import" || vpnOperation?.kind === "remove";
+  const profileControlsDisabled =
+    isBusy || vpnOperation !== null || !statusAvailable || !disconnected;
+  const finderDisabled = isBusy || profileOperationActive || !statusAvailable;
+  const finderDisabledReason = !statusAvailable
+    ? vpnQuery.isError
+      ? t("common.loadFailed")
+      : t("settings.data.pluginVpn.status.loading")
+    : isBusy || profileOperationActive
+      ? t("settings.data.pluginVpn.finder.status.controlsUnavailable")
+      : null;
   const canConnect =
-    !operationDisabled && canStartPluginVpnConnection(status, credentials);
-  const showDisconnect = status !== undefined && status.phase !== "disabled";
+    !isBusy &&
+    vpnOperation === null &&
+    canStartPluginVpnConnection(status, credentials);
+  const connectionRequestActive =
+    vpnOperation?.kind === "connect" || vpnOperation?.kind === "finder";
+  const showConnectionStop =
+    connectionRequestActive ||
+    vpnOperation?.kind === "disconnect" ||
+    (status !== undefined && status.phase !== "disabled");
+  const cancelConnection =
+    connectionRequestActive || status?.phase === "connecting";
+  const visibleStatusError =
+    vpnOperation === null ? status?.error ?? null : null;
 
   function updateStatus(nextStatus: PluginVpnStatus): void {
     queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, nextStatus);
   }
 
+  function isCurrentConnectionRequest(request: number): boolean {
+    return connectionRequest.current === request;
+  }
+
+  function describeConnectionError(error: unknown): string {
+    return error instanceof PluginVpnConnectionNotEstablishedError
+      ? t("settings.data.pluginVpn.connection.notEstablished")
+      : describeError(error);
+  }
+
   async function importProfile(): Promise<void> {
-    setVpnBusy("import");
+    setVpnOperation({ kind: "import" });
     try {
       const nextStatus = await importPluginVpnProfile();
       if (nextStatus) {
@@ -413,7 +460,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       );
     } finally {
       await vpnQuery.refetch();
-      setVpnBusy(null);
+      setVpnOperation(null);
     }
   }
 
@@ -421,7 +468,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
     if (!window.confirm(t("settings.data.pluginVpn.profile.removeConfirm"))) {
       return;
     }
-    setVpnBusy("remove");
+    setVpnOperation({ kind: "remove" });
     try {
       updateStatus(await removePluginVpnProfile());
       setCredentials(emptyPluginVpnCredentials());
@@ -438,79 +485,107 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       );
     } finally {
       await vpnQuery.refetch();
-      setVpnBusy(null);
+      setVpnOperation(null);
     }
   }
 
   async function applyAndConnectFinderServer(
     candidateId: string,
-  ): Promise<boolean> {
-    if (operationDisabled || !disconnected) return false;
+  ): Promise<void> {
+    if (finderDisabled) return;
+    const request = ++connectionRequest.current;
     setCredentials(emptyPluginVpnCredentials());
-    setVpnBusy("finder");
+    setVpnOperation({ candidateId, kind: "finder", phase: "disconnecting" });
     try {
-      updateStatus(await applyAndConnectPluginVpnFinderProfile(candidateId));
+      const nextStatus = await switchPluginVpnFinderServer(candidateId, {
+        isCurrent: () => isCurrentConnectionRequest(request),
+        onConnecting: () => {
+          if (isCurrentConnectionRequest(request)) {
+            setVpnOperation({ candidateId, kind: "finder", phase: "connecting" });
+          }
+        },
+      });
+      if (!nextStatus || !isCurrentConnectionRequest(request)) return;
+      updateStatus(nextStatus);
       showSettingsToast(
         "green",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.finder.toast.connected"),
       );
-      return true;
     } catch (error) {
-      showSettingsToast(
-        "red",
-        t("settings.data.pluginVpn.title"),
-        describeError(error),
-      );
-      return false;
+      if (isCurrentConnectionRequest(request)) {
+        showSettingsToast(
+          "red",
+          t("settings.data.pluginVpn.title"),
+          describeConnectionError(error),
+        );
+      }
     } finally {
-      await vpnQuery.refetch();
-      setVpnBusy(null);
+      if (isCurrentConnectionRequest(request)) {
+        await vpnQuery.refetch();
+        if (isCurrentConnectionRequest(request)) setVpnOperation(null);
+      }
     }
   }
 
   async function connect(): Promise<void> {
     if (!canConnect) return;
-    const submitted = credentials;
-    setCredentials(emptyPluginVpnCredentials());
-    setVpnBusy("connect");
+    const request = ++connectionRequest.current;
+    const submitted = { ...credentials };
+    setVpnOperation({ kind: "connect" });
     try {
-      updateStatus(await connectPluginVpn(submitted));
+      const nextStatus = await connectPluginVpn(submitted, () =>
+        isCurrentConnectionRequest(request),
+      );
+      if (!nextStatus || !isCurrentConnectionRequest(request)) return;
+      updateStatus(nextStatus);
+      setCredentials(emptyPluginVpnCredentials());
       showSettingsToast(
         "green",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.toast.connected"),
       );
     } catch (error) {
-      showSettingsToast(
-        "red",
-        t("settings.data.pluginVpn.title"),
-        describeError(error),
-      );
+      if (isCurrentConnectionRequest(request)) {
+        showSettingsToast(
+          "red",
+          t("settings.data.pluginVpn.title"),
+          describeConnectionError(error),
+        );
+      }
     } finally {
-      await vpnQuery.refetch();
-      setVpnBusy(null);
+      if (isCurrentConnectionRequest(request)) {
+        await vpnQuery.refetch();
+        if (isCurrentConnectionRequest(request)) setVpnOperation(null);
+      }
     }
   }
 
   async function disconnect(): Promise<void> {
-    setVpnBusy("disconnect");
+    const request = ++connectionRequest.current;
+    setVpnOperation({ kind: "disconnect" });
     try {
-      updateStatus(await disconnectPluginVpn());
+      const nextStatus = await disconnectPluginVpn();
+      if (!isCurrentConnectionRequest(request)) return;
+      updateStatus(nextStatus);
       showSettingsToast(
         "green",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.toast.disconnected"),
       );
     } catch (error) {
-      showSettingsToast(
-        "red",
-        t("settings.data.pluginVpn.title"),
-        describeError(error),
-      );
+      if (isCurrentConnectionRequest(request)) {
+        showSettingsToast(
+          "red",
+          t("settings.data.pluginVpn.title"),
+          describeError(error),
+        );
+      }
     } finally {
-      await vpnQuery.refetch();
-      setVpnBusy(null);
+      if (isCurrentConnectionRequest(request)) {
+        await vpnQuery.refetch();
+        if (isCurrentConnectionRequest(request)) setVpnOperation(null);
+      }
     }
   }
 
@@ -547,9 +622,9 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                 {t("common.retry")}
               </TextButton>
             </Stack>
-          ) : status?.error ? (
+          ) : visibleStatusError ? (
             <Text className="lnr-storage-setup-error" role="alert">
-              {status.error}
+              {visibleStatusError}
             </Text>
           ) : null}
           <SettingsFieldRow
@@ -565,8 +640,8 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                 </Text>
                 <SettingsInlineControls>
                   <TextButton
-                    disabled={operationDisabled || !disconnected}
-                    loading={vpnBusy === "import"}
+                    disabled={profileControlsDisabled}
+                    loading={vpnOperation?.kind === "import"}
                     onClick={() => {
                       void importProfile();
                     }}
@@ -576,7 +651,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                       : t("settings.data.pluginVpn.profile.import")}
                   </TextButton>
                   <TextButton
-                    disabled={operationDisabled || !disconnected}
+                    disabled={finderDisabled}
                     onClick={() => setFinderOpen(true)}
                     variant="default"
                   >
@@ -584,8 +659,8 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                   </TextButton>
                   {status?.profile ? (
                     <TextButton
-                      disabled={operationDisabled || !disconnected}
-                      loading={vpnBusy === "remove"}
+                      disabled={profileControlsDisabled}
+                      loading={vpnOperation?.kind === "remove"}
                       variant="default"
                       onClick={() => {
                         void removeProfile();
@@ -610,7 +685,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                     autoComplete="off"
                     label={t("settings.data.pluginVpn.credentials.username")}
                     value={credentials.username}
-                    disabled={!disconnected || operationDisabled}
+                    disabled={profileControlsDisabled}
                     required={status.profile.requiresUsernamePassword}
                     onChange={(event) => {
                       const username = event.currentTarget.value;
@@ -624,7 +699,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                     autoComplete="new-password"
                     label={t("settings.data.pluginVpn.credentials.password")}
                     value={credentials.password}
-                    disabled={!disconnected || operationDisabled}
+                    disabled={profileControlsDisabled}
                     required={status.profile.requiresUsernamePassword}
                     onChange={(event) => {
                       const password = event.currentTarget.value;
@@ -638,7 +713,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                     autoComplete="new-password"
                     label={t("settings.data.pluginVpn.credentials.privateKeyPassword")}
                     value={credentials.privateKeyPassword}
-                    disabled={!disconnected || operationDisabled}
+                    disabled={profileControlsDisabled}
                     onChange={(event) => {
                       const privateKeyPassword = event.currentTarget.value;
                       setCredentials((current) => ({
@@ -651,7 +726,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                     autoComplete="new-password"
                     label={t("settings.data.pluginVpn.credentials.challengeResponse")}
                     value={credentials.challengeResponse}
-                    disabled={!disconnected || operationDisabled}
+                    disabled={profileControlsDisabled}
                     onChange={(event) => {
                       const challengeResponse = event.currentTarget.value;
                       setCredentials((current) => ({
@@ -668,10 +743,9 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
             label={t("settings.data.pluginVpn.connection.label")}
             description={t("settings.data.pluginVpn.connection.description")}
           >
-            {!showDisconnect ? (
+            {!showConnectionStop ? (
               <TextButton
                 disabled={!canConnect}
-                loading={vpnBusy === "connect"}
                 onClick={() => {
                   void connect();
                 }}
@@ -680,22 +754,38 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               </TextButton>
             ) : (
               <TextButton
-                disabled={operationDisabled}
-                loading={vpnBusy === "disconnect"}
+                disabled={
+                  profileOperationActive ||
+                  vpnOperation?.kind === "disconnect" ||
+                  (!connectionRequestActive && !statusAvailable)
+                }
+                loading={vpnOperation?.kind === "disconnect"}
                 variant="default"
                 onClick={() => {
                   void disconnect();
                 }}
               >
-                {t("settings.data.pluginVpn.connection.disconnect")}
+                {cancelConnection
+                  ? t("settings.data.pluginVpn.connection.cancel")
+                  : t("settings.data.pluginVpn.connection.disconnect")}
               </TextButton>
             )}
           </SettingsFieldRow>
           <PluginVpnFinder
-            disabled={operationDisabled || !disconnected}
+            connectionError={visibleStatusError}
+            connectionPhase={displayPhase}
+            connectionTarget={status?.profile?.remoteHost ?? null}
+            disabled={finderDisabled}
+            disabledReason={finderDisabledReason}
             onApplyAndConnect={applyAndConnectFinderServer}
+            onCancelConnection={disconnect}
             onClose={() => setFinderOpen(false)}
             opened={finderOpen}
+            pendingCandidateId={
+              vpnOperation?.kind === "finder"
+                ? vpnOperation.candidateId
+                : null
+            }
           />
         </>
       )}

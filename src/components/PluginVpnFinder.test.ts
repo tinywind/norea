@@ -4,6 +4,8 @@ import type { PluginVpnFinderServer } from "../lib/plugin-vpn";
 import {
   filterAndSortPluginVpnServers,
   pluginVpnFinderErrorMessage,
+  pluginVpnFinderServerAction,
+  pluginVpnFinderServersForDisplay,
 } from "./PluginVpnFinder";
 
 const SERVERS: PluginVpnFinderServer[] = [
@@ -104,5 +106,40 @@ describe("PluginVpnFinder", () => {
       "native Finder failure",
     );
     expect(pluginVpnFinderErrorMessage("   ")).toBeNull();
+  });
+
+  it("keeps cancellation and server switching available during VPN work", () => {
+    expect(
+      pluginVpnFinderServerAction("jp-fast", "jp-fast", "connecting"),
+    ).toBe("cancel");
+    expect(
+      pluginVpnFinderServerAction("kr-low-ping", "jp-fast", "connecting"),
+    ).toBe("switch");
+    expect(
+      pluginVpnFinderServerAction("kr-low-ping", null, "connected"),
+    ).toBe("switch");
+    expect(
+      pluginVpnFinderServerAction("kr-low-ping", null, "disconnecting"),
+    ).toBe("switch");
+    expect(
+      pluginVpnFinderServerAction("kr-low-ping", null, "error"),
+    ).toBe("switch");
+    expect(
+      pluginVpnFinderServerAction("kr-low-ping", null, "disabled"),
+    ).toBe("connect");
+  });
+
+  it("clears the displayed server list while a catalog query is active", () => {
+    expect(pluginVpnFinderServersForDisplay(SERVERS, true)).toEqual([]);
+    expect(pluginVpnFinderServersForDisplay(SERVERS, false)).toBe(SERVERS);
+  });
+
+  it("localizes catalog cancellation and the fallback connection target", () => {
+    expect(
+      translate("en", "settings.data.pluginVpn.finder.cancelSearch"),
+    ).toBe("Stop search");
+    expect(
+      translate("en", "settings.data.pluginVpn.finder.status.selectedServer"),
+    ).toBe("the selected server");
   });
 });
