@@ -14,13 +14,15 @@ use super::finder::{VpnGateFinder, VpnGateServer};
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 use super::proxy::LocalProxy;
 use super::{
-    reject_reserved_vpn_gate_profile_marker, validate_profile, ValidatedProfile, MAX_PROFILE_BYTES,
+    MAX_PROFILE_BYTES, ValidatedProfile, is_vpn_gate_finder_profile,
+    reject_reserved_vpn_gate_profile_marker, validate_profile,
 };
 
 const PROFILE_DIRECTORY: &str = "plugin-vpn";
 const PROFILE_FILE: &str = "profile.ovpn";
 const PROFILE_PART_FILE: &str = "profile.ovpn.part";
 const PROFILE_BACKUP_FILE: &str = "profile.ovpn.backup";
+const VPN_GATE_PUBLIC_CREDENTIAL: &str = "vpn";
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -63,6 +65,7 @@ pub(crate) enum PluginVpnPhase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PluginVpnProfile {
+    is_vpn_gate_finder: bool,
     remote_host: String,
     requires_username_password: bool,
 }
@@ -88,6 +91,16 @@ pub(crate) struct PluginVpnCredentials {
     private_key_password: String,
     #[serde(default)]
     challenge_response: String,
+}
+
+impl PluginVpnCredentials {
+    fn resolve_for_profile(mut self, profile: &str) -> Self {
+        if is_vpn_gate_finder_profile(profile) {
+            self.username = VPN_GATE_PUBLIC_CREDENTIAL.to_string();
+            self.password = VPN_GATE_PUBLIC_CREDENTIAL.to_string();
+        }
+        self
+    }
 }
 
 impl PluginVpnState {
@@ -346,6 +359,7 @@ pub(crate) async fn plugin_vpn_connect(
             return Err(error);
         }
     };
+    let credentials = credentials.resolve_for_profile(&profile);
     {
         let runtime = state.shared.state.lock().expect("plugin VPN state lock");
         if runtime.generation != generation || runtime.phase != PluginVpnPhase::Connecting {
@@ -554,6 +568,7 @@ async fn import_profile_bytes(
 impl From<ValidatedProfile> for PluginVpnProfile {
     fn from(profile: ValidatedProfile) -> Self {
         Self {
+            is_vpn_gate_finder: profile.is_vpn_gate_finder,
             remote_host: profile.remote_host,
             requires_username_password: profile.requires_username_password,
         }
@@ -720,6 +735,7 @@ fn sync_directory(_: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::VPN_GATE_PROFILE_MARKER;
     use super::*;
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
@@ -730,6 +746,7 @@ mod tests {
         {
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
             runtime.profile = Some(PluginVpnProfile {
+                is_vpn_gate_finder: false,
                 remote_host: "vpn.example.test".to_string(),
                 requires_username_password: false,
             });
@@ -755,6 +772,7 @@ mod tests {
         {
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
             runtime.profile = Some(PluginVpnProfile {
+                is_vpn_gate_finder: false,
                 remote_host: "vpn.example.test".to_string(),
                 requires_username_password: false,
             });
@@ -805,5 +823,48 @@ mod tests {
 
         assert_eq!(loaded.remote_host, "vpn.example.test");
         assert_eq!(fs::read(path).expect("read recovered profile"), PROFILE);
+    }
+
+    #[test]
+    fn restores_vpn_gate_finder_profile_classification() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let path = directory.path().join(PROFILE_FILE);
+        let profile = format!(
+            "client\ndev tun\nremote 203.0.113.10 443\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n"
+        );
+        fs::write(&path, profile).expect("write Finder profile");
+
+        let loaded = load_stored_profile(&path)
+            .expect("load Finder profile")
+            .expect("stored Finder profile");
+
+        assert!(loaded.is_vpn_gate_finder);
+        assert!(loaded.requires_username_password);
+    }
+
+    #[test]
+    fn resolves_public_credentials_only_for_vpn_gate_finder_profiles() {
+        let finder_profile = format!(
+            "client\ndev tun\nremote 203.0.113.10 443\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n"
+        );
+        let external_profile = "client\ndev tun\nremote vpn.example.test 1194\nauth-user-pass\n";
+        let credentials = || PluginVpnCredentials {
+            challenge_response: "challenge".to_string(),
+            password: "password".to_string(),
+            private_key_password: "key-password".to_string(),
+            username: "reader".to_string(),
+        };
+
+        let finder = credentials().resolve_for_profile(&finder_profile);
+        assert_eq!(finder.username, "vpn");
+        assert_eq!(finder.password, "vpn");
+        assert_eq!(finder.private_key_password, "key-password");
+        assert_eq!(finder.challenge_response, "challenge");
+
+        let external = credentials().resolve_for_profile(external_profile);
+        assert_eq!(external.username, "reader");
+        assert_eq!(external.password, "password");
+        assert_eq!(external.private_key_password, "key-password");
+        assert_eq!(external.challenge_response, "challenge");
     }
 }

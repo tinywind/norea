@@ -53,6 +53,7 @@ const STATUS: PluginVpnStatus = {
   error: null,
   phase: "disabled",
   profile: {
+    isVpnGateFinder: false,
     remoteHost: "vpn.example.test",
     requiresUsernamePassword: true,
   },
@@ -243,9 +244,9 @@ describe("plugin VPN", () => {
         {
           credentials: {
             challengeResponse: "",
-            password: "vpn",
+            password: "",
             privateKeyPassword: "",
-            username: "vpn",
+            username: "",
           },
         },
       ],
@@ -419,6 +420,24 @@ describe("plugin VPN", () => {
         username: "reader",
       }),
     ).toBe(true);
+  });
+
+  it("allows a restored Finder profile without stored credentials", () => {
+    const credentials: PluginVpnCredentials = {
+      challengeResponse: "",
+      password: "",
+      privateKeyPassword: "",
+      username: "",
+    };
+    const restoredFinder = {
+      ...STATUS,
+      profile: {
+        ...STATUS.profile!,
+        isVpnGateFinder: true,
+      },
+    };
+
+    expect(canStartPluginVpnConnection(restoredFinder, credentials)).toBe(true);
   });
 
   it("allows credential-free profiles only while they are ready to connect", () => {

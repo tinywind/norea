@@ -301,7 +301,10 @@ must contain a remote endpoint. Certificates, private keys, and other referenced
 configuration must be inline. Includes, external configuration files, host
 scripts or plugins, upstream proxy directives, TAP mode, external PKI, and
 dynamic challenges are rejected. Connection credentials are supplied
-separately from the stored profile.
+separately from the stored profile. For a profile selected through the VPN Gate
+finder, the native host recognizes Norea's reserved profile marker and supplies
+VPN Gate's fixed public credential at connection time, including after an app
+restart. That credential is not persisted separately.
 
 The VPN Gate finder retrieves its catalog only from the fixed official
 `https://www.vpngate.net/api/iphone/` endpoint. This is a direct app-owned

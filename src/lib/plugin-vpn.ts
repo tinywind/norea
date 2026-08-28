@@ -9,7 +9,6 @@ import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
-const VPN_GATE_PUBLIC_CREDENTIAL = "vpn";
 const VPN_PROXY_CONFIGURE_CAPABILITY = "vpn.proxy.configure";
 
 export type PluginVpnPhase =
@@ -20,6 +19,7 @@ export type PluginVpnPhase =
   | "error";
 
 export interface PluginVpnProfile {
+  isVpnGateFinder: boolean;
   remoteHost: string;
   requiresUsernamePassword: boolean;
 }
@@ -81,6 +81,7 @@ export function canStartPluginVpnConnection(
     return false;
   }
   return (
+    status.profile.isVpnGateFinder ||
     !status.profile.requiresUsernamePassword ||
     (credentials.username.trim() !== "" && credentials.password !== "")
   );
@@ -184,9 +185,9 @@ export async function switchPluginVpnFinderServer(
   const status = await connectPluginVpn(
     {
       challengeResponse: "",
-      password: VPN_GATE_PUBLIC_CREDENTIAL,
+      password: "",
       privateKeyPassword: "",
-      username: VPN_GATE_PUBLIC_CREDENTIAL,
+      username: "",
     },
     lifecycle.isCurrent,
   );

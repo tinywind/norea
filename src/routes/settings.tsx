@@ -673,7 +673,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               </Stack>
             </SettingsWideField>
           </SettingsFieldRow>
-          {status?.profile ? (
+          {status?.profile && !status.profile.isVpnGateFinder ? (
             <SettingsFieldRow
               label={t("settings.data.pluginVpn.credentials.label")}
               description={t("settings.data.pluginVpn.credentials.description")}

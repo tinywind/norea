@@ -154,6 +154,7 @@ const INLINE_DATA_DIRECTIVES: &[&str] = &[
 
 #[derive(Debug, PartialEq, Eq)]
 struct ValidatedProfile {
+    is_vpn_gate_finder: bool,
     remote_host: String,
     requires_username_password: bool,
 }
@@ -300,6 +301,7 @@ fn validate_profile(bytes: &[u8]) -> Result<ValidatedProfile, String> {
     }
 
     Ok(ValidatedProfile {
+        is_vpn_gate_finder: is_vpn_gate_finder_profile(profile),
         remote_host: remote_host
             .ok_or_else(|| "OpenVPN profile has no remote server".to_string())?,
         requires_username_password,
@@ -405,6 +407,7 @@ private-key
         let validated = validate_profile(INLINE_PROFILE.as_bytes()).expect("valid profile");
 
         assert_eq!(validated.remote_host, "vpn.example.test");
+        assert!(!validated.is_vpn_gate_finder);
         assert!(!validated.requires_username_password);
     }
 
@@ -414,6 +417,7 @@ private-key
 
         let validated = validate_profile(profile.as_bytes()).expect("valid profile");
 
+        assert!(!validated.is_vpn_gate_finder);
         assert!(validated.requires_username_password);
     }
 
@@ -424,7 +428,9 @@ private-key
             "{}\n<extra-certs>\n{VPN_GATE_PROFILE_MARKER}\n</extra-certs>\nauth-user-pass\n",
             INLINE_PROFILE
         );
+        let validated = validate_profile(marked.as_bytes()).expect("valid Finder profile");
 
+        assert!(validated.is_vpn_gate_finder);
         assert!(needs_vpn_gate_android_peer_compatibility(
             &marked, "android"
         ));
