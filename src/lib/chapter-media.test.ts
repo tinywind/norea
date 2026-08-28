@@ -10,6 +10,7 @@ vi.mock("./http", () => ({
 }));
 const androidStorageMocks = vi.hoisted(() => ({
   androidStoragePathSize: vi.fn(),
+  androidStorageZipEntrySizes: vi.fn(),
   androidStorageZipEntryExists: vi.fn(),
   archiveAndroidStorageDirectory: vi.fn(),
   clearAndroidStorageRoot: vi.fn(),
@@ -2208,6 +2209,90 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).toContain("0001-page-1.png");
     expect(result.html).toContain("0002-page-2.png");
     expect(result.mediaBytes).toBe(14);
+  });
+
+  it("reuses matching Android archive entries and fetches only missing repair assets", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Android" });
+    const manifest = {
+      media: {
+        files: [
+          {
+            bytes: 3,
+            fileName: "0001-page-1.png",
+            path: "media/0001-page-1.png",
+            sourceUrl: "https://source.test/page-1.png",
+            status: "stored",
+            updatedAt: 1,
+          },
+          {
+            bytes: 4,
+            fileName: "0002-page-2.png",
+            path: "media/0002-page-2.png",
+            sourceUrl: "https://source.test/page-2.png",
+            status: "stored",
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+      version: 1,
+    };
+    const preferredArchive =
+      "contents/source-a/Novel-novel-path/1-Chapter/media.zip";
+
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3, 4]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+      }),
+    );
+    androidStorageMocks.readAndroidStorageText.mockImplementation(
+      async (path: string) =>
+        path === "chapter-media/42/manifest.json"
+          ? JSON.stringify(manifest)
+          : null,
+    );
+    androidStorageMocks.androidStoragePathSize.mockImplementation(
+      async (path: string) => (path === preferredArchive ? 14 : 0),
+    );
+    androidStorageMocks.androidStorageZipEntrySizes.mockImplementation(
+      async (archivePath: string) =>
+        archivePath === preferredArchive
+          ? new Map([["0001-page-1.png", 3]])
+          : new Map(),
+    );
+    androidStorageMocks.archiveAndroidStorageDirectory.mockResolvedValue(14);
+    androidStorageMocks.writeAndroidStorageBytes.mockResolvedValue(undefined);
+    androidStorageMocks.writeAndroidStorageText.mockResolvedValue(undefined);
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1",
+      chapterId: 42,
+      chapterName: "Chapter",
+      chapterNumber: "1",
+      chapterPosition: 1,
+      html: [
+        `<img src="https://source.test/page-1.png">`,
+        `<img src="https://source.test/page-2.png">`,
+      ].join(""),
+      novelId: 7,
+      novelName: "Novel",
+      novelPath: "novel/path",
+      repair: true,
+      sourceId: "source-a",
+    });
+
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
+      "https://source.test/page-2.png",
+      expect.anything(),
+    );
+    expect(androidStorageMocks.androidStorageZipEntrySizes).toHaveBeenCalledWith(
+      preferredArchive,
+      ["0001-page-1.png", "0002-page-2.png"],
+    );
+    expect(result.html).toContain("0001-page-1.png");
+    expect(result.html).toContain("0002-page-2.png");
   });
 
   it("stores Android media directly at the final path", async () => {

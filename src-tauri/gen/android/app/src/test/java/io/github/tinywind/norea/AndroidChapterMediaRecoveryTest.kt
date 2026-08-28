@@ -99,6 +99,28 @@ class AndroidChapterMediaRecoveryTest {
   }
 
   @Test
+  fun readsRequestedArchiveEntrySizesAndOmitsMissingEntries() {
+    val archive = ByteArrayOutputStream().also { output ->
+      ZipOutputStream(output).use { zip ->
+        zip.putNextEntry(ZipEntry("page-1.webp"))
+        zip.write(byteArrayOf(1, 2, 3))
+        zip.closeEntry()
+        zip.putNextEntry(ZipEntry("page-2.webp"))
+        zip.write(byteArrayOf(4, 5, 6, 7))
+        zip.closeEntry()
+      }
+    }
+
+    assertEquals(
+      mapOf("page-1.webp" to 3L),
+      readAndroidChapterMediaArchiveEntrySizes(
+        ByteArrayInputStream(archive.toByteArray()),
+        setOf("page-1.webp", "missing.webp"),
+      ),
+    )
+  }
+
+  @Test
   fun preservesRecoverySourceWhenSelectingArchivePublicationStagingFile() {
     assertEquals(
       "media.zip.bak",

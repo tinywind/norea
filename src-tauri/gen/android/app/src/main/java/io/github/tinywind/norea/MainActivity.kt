@@ -775,6 +775,53 @@ internal fun validateAndroidChapterMediaArchive(
   }
 }
 
+internal fun readAndroidChapterMediaArchiveEntrySizes(
+  input: InputStream,
+  requestedFileNames: Set<String>,
+): Map<String, Long> {
+  require(requestedFileNames.size <= ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) {
+    "Chapter media archive size request has too many files."
+  }
+  requestedFileNames.forEach { fileName ->
+    require(isSafeAndroidChapterMediaFileName(fileName)) {
+      "Chapter media archive size request contains an unsafe file name."
+    }
+  }
+
+  val sizes = linkedMapOf<String, Long>()
+  val seenNames = mutableSetOf<String>()
+  var totalBytes = 0L
+  ZipInputStream(input.buffered()).use { zip ->
+    var entry = zip.nextEntry
+    while (entry != null) {
+      require(!entry.isDirectory) {
+        "Chapter media archive contains a directory entry."
+      }
+      val entryName = entry.name
+      require(isSafeAndroidChapterMediaFileName(entryName)) {
+        "Chapter media archive contains an unsafe entry name."
+      }
+      require(seenNames.add(entryName)) {
+        "Chapter media archive contains a duplicate entry."
+      }
+      val copied = consumeAndroidChapterMediaArchiveEntry(
+        zip,
+        entry,
+        expectedBytes = null,
+        output = null,
+      )
+      totalBytes = Math.addExact(totalBytes, copied)
+      require(totalBytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+        "Chapter media archive exceeds the total byte limit."
+      }
+      if (entryName in requestedFileNames) sizes[entryName] = copied
+      zip.closeEntry()
+      entry = zip.nextEntry
+    }
+  }
+  return sizes
+}
+
 class MainActivity : TauriActivity() {
   private data class ContentUriMetadata(
     val fileName: String?,
@@ -1739,6 +1786,28 @@ class MainActivity : TauriActivity() {
       JSONObject()
         .put("ok", true)
         .put("entries", entries)
+    }
+
+    @JavascriptInterface
+    fun zipEntrySizes(
+      rootUri: String,
+      archiveRelativePath: String,
+      entryNamesJson: String,
+    ): String = storageResponse {
+      val requested = JSONArray(entryNamesJson)
+      val requestedNames = linkedSetOf<String>()
+      for (index in 0 until requested.length()) {
+        val entryName = safeZipEntryName(requested.optString(index))
+        if (entryName != null) requestedNames.add(entryName)
+      }
+      val sizes = JSONObject()
+      openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
+        readAndroidChapterMediaArchiveEntrySizes(input, requestedNames)
+          .forEach { (entryName, bytes) -> sizes.put(entryName, bytes) }
+      }
+      JSONObject()
+        .put("ok", true)
+        .put("sizes", sizes)
     }
 
     @JavascriptInterface

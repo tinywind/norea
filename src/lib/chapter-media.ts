@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import {
+  androidStorageZipEntrySizes,
   androidStorageZipEntryExists,
   archiveAndroidStorageDirectory,
   androidStoragePathSize,
@@ -1794,6 +1795,7 @@ async function filterExistingReusableMediaSources(
   reusableSources: Map<string, string>,
   context: ChapterMediaStorageContext,
   manifest: ChapterMediaManifest,
+  storedFileBytes: ReadonlyMap<string, number> | null,
 ): Promise<Map<string, string>> {
   const filesBySourceUrl = new Map(
     manifest.media.files.map((file) => [file.sourceUrl, file]),
@@ -1805,7 +1807,9 @@ async function filterExistingReusableMediaSources(
       file?.status === "stored" &&
       file.bytes > 0 &&
       file.fileName === fileNameFromLocalMediaSrc(src, context.chapterId) &&
-      (await getStoredChapterMediaBytes(src, context)) === file.bytes
+      (storedFileBytes !== null
+        ? storedFileBytes.get(file.fileName) === file.bytes
+        : (await getStoredChapterMediaBytes(src, context)) === file.bytes)
     ) {
       existing.set(url, src);
     }
@@ -1816,10 +1820,12 @@ async function filterExistingReusableMediaSources(
 async function collectStoredManifestMediaSources({
   context,
   manifest,
+  storedFileBytes,
   urls,
 }: {
   context: ChapterMediaStorageContext;
   manifest: ChapterMediaManifest;
+  storedFileBytes: ReadonlyMap<string, number> | null;
   urls: string[];
 }): Promise<Map<string, string>> {
   const requestedUrls = new Set(urls);
@@ -1834,11 +1840,60 @@ async function collectStoredManifestMediaSources({
       continue;
     }
     const src = localChapterMediaSrc(file.fileName);
-    if ((await getStoredChapterMediaBytes(src, context)) === file.bytes) {
+    if (
+      storedFileBytes !== null
+        ? storedFileBytes.get(file.fileName) === file.bytes
+        : (await getStoredChapterMediaBytes(src, context)) === file.bytes
+    ) {
       existing.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
     }
   }
   return existing;
+}
+
+async function androidStoredManifestFileBytes(
+  context: ChapterMediaStorageContext,
+  manifest: ChapterMediaManifest,
+): Promise<Map<string, number> | null> {
+  if (!isAndroidRuntime()) return null;
+  const fileNames = new Set(
+    manifest.media.files
+      .filter((file) => file.status === "stored" && file.bytes > 0)
+      .map((file) => file.fileName),
+  );
+  const storedBytes = new Map<string, number>();
+  const archiveCandidates = new Set(fileNames);
+
+  for (const fileName of fileNames) {
+    for (const path of await androidRelativePathsFromLocalMediaSrc(
+      localChapterMediaSrc(fileName),
+      context,
+    )) {
+      const bytes = await androidStoragePathSize(path);
+      if (bytes <= 0) continue;
+      storedBytes.set(fileName, bytes);
+      archiveCandidates.delete(fileName);
+      break;
+    }
+  }
+
+  for (const archivePath of androidChapterMediaArchiveRelativePathCandidates(
+    context,
+  )) {
+    if (archiveCandidates.size === 0) break;
+    const sizes = await androidStorageZipEntrySizes(
+      archivePath,
+      [...archiveCandidates],
+    );
+    if (sizes == null) return null;
+    for (const fileName of archiveCandidates) {
+      const bytes = sizes.get(fileName);
+      if (bytes === undefined) continue;
+      storedBytes.set(fileName, bytes);
+      archiveCandidates.delete(fileName);
+    }
+  }
+  return storedBytes;
 }
 
 function isFetchableMediaUrl(url: string): boolean {
@@ -2225,16 +2280,22 @@ export async function cacheHtmlChapterMedia({
   if (resetChangedMedia) {
     previousManifest = emptyChapterMediaManifest();
   }
+  const storedFileBytes = await androidStoredManifestFileBytes(
+    storageContext,
+    previousManifest,
+  );
   const reusableSources = repair
     ? await filterExistingReusableMediaSources(
         reusableCandidates,
         storageContext,
         previousManifest,
+        storedFileBytes,
       )
     : new Map<string, string>();
   const manifestSources = await collectStoredManifestMediaSources({
     context: storageContext,
     manifest: previousManifest,
+    storedFileBytes,
     urls,
   });
   const missingManifestSources = repair

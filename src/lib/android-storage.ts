@@ -73,6 +73,11 @@ interface AndroidStorageBridge {
     archiveRelativePath: string,
     entryNamesJson: string,
   ) => string;
+  zipEntrySizes?: (
+    rootUri: string,
+    archiveRelativePath: string,
+    entryNamesJson: string,
+  ) => string;
   extractZip: (
     rootUri: string,
     archiveRelativePath: string,
@@ -148,6 +153,10 @@ interface AndroidStorageBase64Response extends AndroidStorageResponse {
 
 interface AndroidStorageZipEntriesResponse extends AndroidStorageResponse {
   entries?: Record<string, { base64?: string; mimeType?: string } | undefined>;
+}
+
+interface AndroidStorageZipEntrySizesResponse extends AndroidStorageResponse {
+  sizes?: Record<string, number | undefined>;
 }
 
 interface AndroidStorageSizeResponse extends AndroidStorageResponse {
@@ -733,6 +742,34 @@ export async function androidStorageZipEntryExists(
     androidStorageBridge().zipEntryExists(root, archiveRelativePath, entryName),
   );
   return response.exists ?? false;
+}
+
+export async function androidStorageZipEntrySizes(
+  archiveRelativePath: string,
+  entryNames: readonly string[],
+): Promise<Map<string, number> | null> {
+  const bridge = androidStorageBridge();
+  if (!bridge.zipEntrySizes) return null;
+  const uniqueEntryNames = [...new Set(entryNames)].filter(
+    (entryName) => entryName.trim() !== "",
+  );
+  if (uniqueEntryNames.length === 0) return new Map();
+
+  const root = await androidStorageRoot();
+  const response = parseStorageResponse<AndroidStorageZipEntrySizesResponse>(
+    bridge.zipEntrySizes(
+      root,
+      archiveRelativePath,
+      JSON.stringify(uniqueEntryNames),
+    ),
+  );
+  const sizes = new Map<string, number>();
+  for (const [entryName, bytes] of Object.entries(response.sizes ?? {})) {
+    if (typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0) {
+      sizes.set(entryName, bytes);
+    }
+  }
+  return sizes;
 }
 
 export async function deleteAndroidStoragePath(
