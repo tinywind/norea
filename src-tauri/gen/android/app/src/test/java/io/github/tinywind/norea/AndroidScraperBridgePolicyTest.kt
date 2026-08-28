@@ -7,6 +7,134 @@ import org.junit.Test
 
 class AndroidScraperBridgePolicyTest {
   @Test
+  fun revalidatesTheTopLevelDocumentAfterAChapterPageCacheMiss() {
+    assertEquals(
+      mapOf(
+        "Cache-Control" to "no-cache",
+        "Pragma" to "no-cache",
+      ),
+      chapterPageNetworkHeaders(),
+    )
+  }
+
+  @Test
+  fun reappliesDocumentRevalidationHeadersToServerRedirects() {
+    assertTrue(
+      shouldRevalidateChapterPageRedirect(
+        isForMainFrame = true,
+        method = "GET",
+        isRedirect = true,
+        navigationInProgress = true,
+        documentRevalidationInProgress = true,
+        url = "https://cdn.example.com/chapter/7",
+      ),
+    )
+    assertFalse(
+      shouldRevalidateChapterPageRedirect(
+        isForMainFrame = true,
+        method = "GET",
+        isRedirect = false,
+        navigationInProgress = true,
+        documentRevalidationInProgress = true,
+        url = "https://cdn.example.com/chapter/7",
+      ),
+    )
+    assertFalse(
+      shouldRevalidateChapterPageRedirect(
+        isForMainFrame = true,
+        method = "GET",
+        isRedirect = true,
+        navigationInProgress = true,
+        documentRevalidationInProgress = false,
+        url = "https://cdn.example.com/chapter/7",
+      ),
+    )
+  }
+
+  @Test
+  fun usesTheFinalRedirectUrlWithoutDroppingTheExtractionFragment() {
+    assertEquals(
+      "https://cdn.example.com/releases/chapter-7#__lnr_script__=encoded",
+      cachedPageBaseUrl(
+        targetUrl = "https://example.com/chapter/latest#__lnr_script__=encoded",
+        documentUrl = "https://cdn.example.com/releases/chapter-7",
+      ),
+    )
+    assertEquals(
+      "https://cdn.example.com/releases/chapter-7",
+      cachedPageBaseUrl(
+        targetUrl = "https://example.com/chapter/latest",
+        documentUrl = "https://cdn.example.com/releases/chapter-7",
+      ),
+    )
+  }
+
+  @Test
+  fun blocksRequestedAndRedirectAliasHitsWhileReloadInvalidationIsPending() {
+    val requested = ChapterPageCacheKey(
+      "source-a",
+      "https://example.com/chapter/latest",
+    )
+    val final = ChapterPageCacheKey(
+      "source-a",
+      "https://cdn.example.com/chapter/7",
+    )
+    val entry = ChapterPageCacheEntry(
+      url = final.url,
+      html = "<html>stale</html>",
+      isChapterPage = true,
+      aliasUrls = linkedSetOf(requested.url, final.url),
+    )
+
+    assertEquals(
+      requested,
+      pendingChapterPageCacheInvalidationKey(
+        key = final,
+        entry = entry,
+        pendingKeys = setOf(requested),
+        pendingSourceIds = emptySet(),
+      ),
+    )
+    assertEquals(
+      final,
+      pendingChapterPageCacheInvalidationKey(
+        key = final,
+        entry = null,
+        pendingKeys = setOf(final),
+        pendingSourceIds = emptySet(),
+      ),
+    )
+    assertEquals(
+      final,
+      pendingChapterPageCacheInvalidationKey(
+        key = final,
+        entry = entry,
+        pendingKeys = emptySet(),
+        pendingSourceIds = setOf("source-a"),
+      ),
+    )
+    assertEquals(
+      final,
+      pendingChapterPageCacheInvalidationKey(
+        key = final,
+        entry = entry,
+        pendingKeys = emptySet(),
+        pendingSourceIds = emptySet(),
+        fullClearPending = true,
+      ),
+    )
+    assertEquals(
+      null,
+      pendingChapterPageCacheInvalidationKey(
+        key = final,
+        entry = entry,
+        pendingKeys = emptySet(),
+        pendingSourceIds = emptySet(),
+      ),
+    )
+  }
+
+  @Test
   fun blanksBeforeStartingQueuedWorkWhenNoActionIsActive() {
     assertEquals(
       ForegroundBlankTiming.BEFORE_NEXT_ACTION,

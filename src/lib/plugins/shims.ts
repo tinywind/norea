@@ -17,6 +17,7 @@ import {
 } from "../http";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { getScraperUserAgent } from "../../store/user-agent";
+import type { ChapterPageCachePolicy } from "../webview-cache";
 import {
   activeScraperExecutor,
   activeScraperExecutorSignal,
@@ -41,6 +42,7 @@ export interface WebViewFetchOptions {
   timeoutMs?: number;
   scraperExecutor?: ScraperExecutorId;
   sourceId?: string;
+  pageCachePolicy?: ChapterPageCachePolicy;
   /** Aborts the in-flight WebView navigation when the owning task is paused. */
   signal?: AbortSignal;
 }
@@ -262,7 +264,14 @@ export async function captureChapterWebView(
   url: string,
   options: WebViewFetchOptions = {},
 ): Promise<string> {
-  return webViewFetchInternal(url, options, true);
+  return webViewFetchInternal(
+    url,
+    {
+      ...options,
+      pageCachePolicy: options.pageCachePolicy ?? "prefer-cache",
+    },
+    true,
+  );
 }
 
 async function webViewFetchInternal(
@@ -283,6 +292,7 @@ async function webViewFetchInternal(
       userAgent,
       options.sourceId,
       scraperExecutor,
+      options.pageCachePolicy,
       signal,
     );
   }
@@ -296,6 +306,7 @@ async function webViewFetchInternal(
     scraperExecutor,
     signal,
     captureResources,
+    options.pageCachePolicy,
   );
 }
 
@@ -314,6 +325,7 @@ async function desktopWebViewExtract(
   scraperExecutor: ScraperExecutorId,
   signal: AbortSignal | undefined,
   captureResources: boolean,
+  pageCachePolicy: ChapterPageCachePolicy | undefined,
 ): Promise<string> {
   if (signal?.aborted) {
     void cancelScraperExecutor(scraperExecutor);
@@ -327,6 +339,7 @@ async function desktopWebViewExtract(
     queue: scraperExecutor,
     ...(sourceId ? { sourceId } : {}),
     ...(captureResources ? { captureResources: true } : {}),
+    ...(pageCachePolicy ? { pageCachePolicy } : {}),
   });
   if (!signal) return request;
 

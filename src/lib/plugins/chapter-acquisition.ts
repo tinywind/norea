@@ -1,5 +1,6 @@
 import type { ChapterContentType } from "../chapter-content";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
+import type { ChapterPageCachePolicy } from "../webview-cache";
 import { captureChapterWebView } from "./shims";
 import { sourceAccessErrorFromEnvelope } from "./source-access";
 import type {
@@ -22,6 +23,7 @@ export interface CapturedChapterPage {
 export interface CaptureChapterPageOptions {
   contentType: TextChapterContentType;
   executor: ScraperExecutorId;
+  pageCachePolicy?: ChapterPageCachePolicy;
   signal?: AbortSignal;
   sourceId: string;
 }
@@ -364,6 +366,9 @@ export async function captureChapterPage(
 ): Promise<CapturedChapterPage> {
   const raw = await captureChapterWebView(navigationUrl(plan), {
     beforeContentScript: chapterCaptureScript(plan, options.contentType),
+    pageCachePolicy: plan.cacheBust
+      ? "reload"
+      : (options.pageCachePolicy ?? "prefer-cache"),
     scraperExecutor: options.executor,
     signal: options.signal,
     sourceId: options.sourceId,

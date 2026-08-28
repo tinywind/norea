@@ -216,6 +216,13 @@ pub struct CapturedResourceHandleResult {
     pub final_url: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterPageCacheInvalidationEntry {
+    source_id: String,
+    url: Option<String>,
+}
+
 /// Lazily-created scraper WebViews keyed by scraper executor id.
 #[cfg(desktop)]
 #[derive(Default)]
@@ -239,6 +246,7 @@ pub struct ScraperState {
     /// cancellation advanced it while queued or in flight.
     cancel_generations: Mutex<HashMap<String, Arc<AtomicU64>>>,
     captured_resources: Arc<crate::webview_resource_capture::CapturedResourceStore>,
+    chapter_page_cache: Arc<crate::webview_resource_capture::ChapterPageCache>,
     #[cfg(target_os = "windows")]
     resource_capture_handlers: Mutex<HashSet<String>>,
 }
@@ -439,6 +447,10 @@ struct NavigationGuard<'a> {
 #[cfg(desktop)]
 impl Drop for NavigationGuard<'_> {
     fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        self.state
+            .chapter_page_cache
+            .abandon_navigation(&self.executor);
         let mut pending = self
             .state
             .pending_navigations
@@ -450,6 +462,19 @@ impl Drop for NavigationGuard<'_> {
         {
             pending.remove(&self.executor);
         }
+    }
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+struct ChapterPageNavigationGuard<'a> {
+    cache: &'a crate::webview_resource_capture::ChapterPageCache,
+    executor: &'a str,
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+impl Drop for ChapterPageNavigationGuard<'_> {
+    fn drop(&mut self) {
+        self.cache.abandon_navigation(self.executor);
     }
 }
 
@@ -862,9 +887,11 @@ fn begin_navigation_resource_capture(
 
 #[cfg(all(desktop, target_os = "windows"))]
 async fn ensure_resource_capture_handler(
+    app: &AppHandle,
     scraper: &ScraperWebview,
     state: &ScraperState,
     executor: &str,
+    source_id: &str,
 ) -> Result<(), String> {
     if state
         .resource_capture_handlers
@@ -877,7 +904,10 @@ async fn ensure_resource_capture_handler(
     crate::webview_resource_capture::install_windows_capture(
         scraper,
         executor.to_string(),
+        source_id.to_string(),
+        source_profile_data_directory(app, source_id)?,
         Arc::clone(&state.captured_resources),
+        Arc::clone(&state.chapter_page_cache),
     )
     .await?;
     state
@@ -917,6 +947,8 @@ fn close_scraper_webview_for_key(
     reason: &str,
     preserve_captured_resources: bool,
 ) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    state.chapter_page_cache.abandon_navigation(key);
     {
         let mut visible_key = state.visible_key.lock().expect("scraper visible_key mutex");
         if visible_key.as_deref() == Some(key) {
@@ -1104,7 +1136,17 @@ pub async fn scraper_set_bounds(
     )?;
     #[cfg(target_os = "windows")]
     {
-        ensure_resource_capture_handler(&scraper, &state, IMMEDIATE_EXECUTOR).await?;
+        ensure_resource_capture_handler(
+            &app,
+            &scraper,
+            &state,
+            IMMEDIATE_EXECUTOR,
+            &source_id,
+        )
+        .await?;
+        state
+            .chapter_page_cache
+            .enable_foreground(IMMEDIATE_EXECUTOR);
         state
             .captured_resources
             .begin_or_resume(IMMEDIATE_EXECUTOR);
@@ -1192,6 +1234,10 @@ pub async fn scraper_hide(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     state.captured_resources.stop(&visible_key);
+    #[cfg(target_os = "windows")]
+    state
+        .chapter_page_cache
+        .abandon_navigation(&visible_key);
     let webview = state
         .webviews
         .lock()
@@ -1541,9 +1587,10 @@ pub async fn scraper_clear_cache(
     let profile_root = source_profiles_data_directory(&app)?;
     let profiles = source_profile_directories(&profile_root)?;
     let mut live_webviews = live_source_profile_webviews(&app, &state, &profile_root);
-    for profile in profiles {
-        clear_windows_source_profile_cache(&app, &profile, live_webviews.remove(&profile)).await?;
+    for profile in &profiles {
+        clear_windows_source_profile_cache(&app, profile, live_webviews.remove(profile)).await?;
     }
+    state.chapter_page_cache.clear_profiles(&profiles)?;
     state.captured_resources.clear_all();
     Ok(())
 }
@@ -1555,6 +1602,54 @@ pub async fn scraper_clear_cache(
     _state: tauri::State<'_, ScraperState>,
 ) -> Result<(), String> {
     Err("scraper_clear_cache is only available on Windows".to_string())
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+#[tauri::command]
+pub fn scraper_invalidate_chapter_page_cache(
+    app: AppHandle,
+    state: tauri::State<'_, ScraperState>,
+    entries: Vec<ChapterPageCacheInvalidationEntry>,
+) -> Result<(), String> {
+    let mut targets = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let source_id = normalize_source_id(Some(&entry.source_id))?;
+        if let Some(url) = entry.url.as_deref() {
+            let parsed = Url::parse(url)
+                .map_err(|_| "chapter page cache: invalid URL".to_string())?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err("chapter page cache: URL must use HTTP or HTTPS".to_string());
+            }
+        }
+        targets.push((
+            source_profile_data_directory(&app, &source_id)?,
+            source_id,
+            entry.url,
+        ));
+    }
+
+    for (profile_directory, source_id, url) in targets {
+        if let Some(url) = url {
+            state
+                .chapter_page_cache
+                .invalidate(&source_id, &profile_directory, &url)?;
+        } else {
+            state
+                .chapter_page_cache
+                .clear_source(&source_id, &profile_directory)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(all(desktop, target_os = "windows")))]
+#[tauri::command]
+pub fn scraper_invalidate_chapter_page_cache(
+    _app: AppHandle,
+    _state: tauri::State<'_, ScraperState>,
+    _entries: Vec<ChapterPageCacheInvalidationEntry>,
+) -> Result<(), String> {
+    Err("scraper_invalidate_chapter_page_cache is only available on Windows".to_string())
 }
 
 /// Delete cookies available to one plugin URL from its isolated scraper profile.
@@ -1801,7 +1896,14 @@ pub async fn scraper_navigate(
     )?;
     #[cfg(target_os = "windows")]
     {
-        ensure_resource_capture_handler(&scraper, &state, IMMEDIATE_EXECUTOR).await?;
+        ensure_resource_capture_handler(
+            &app,
+            &scraper,
+            &state,
+            IMMEDIATE_EXECUTOR,
+            &source_id,
+        )
+        .await?;
         begin_navigation_resource_capture(
             &state,
             IMMEDIATE_EXECUTOR,
@@ -1847,6 +1949,14 @@ pub async fn scraper_navigate(
         executor: IMMEDIATE_EXECUTOR.to_string(),
         request_id,
     };
+    #[cfg(target_os = "windows")]
+    state.chapter_page_cache.prepare_navigation(
+        IMMEDIATE_EXECUTOR,
+        &source_id,
+        &source_profile_data_directory(&app, &source_id)?,
+        parsed.as_str(),
+        Some(crate::webview_resource_capture::PageCachePolicy::PreferCache),
+    )?;
     if let Err(err) = scraper.navigate(parsed) {
         return Err(format!(
             "scraper_navigate: {}",
@@ -2215,6 +2325,20 @@ fn looks_like_browser_challenge_extract_result(value: &str) -> bool {
         || lower.contains("\"kind\": \"cf\"")
         || lower.contains("\"kind\":\"cloudflare\"")
         || lower.contains("\"kind\": \"cloudflare\"")
+}
+
+#[cfg(desktop)]
+fn extract_result_requires_manual_action(value: &str) -> bool {
+    #[derive(Deserialize)]
+    struct ExtractResultEnvelope {
+        ok: bool,
+        code: String,
+    }
+
+    let Ok(envelope) = serde_json::from_str::<ExtractResultEnvelope>(value) else {
+        return false;
+    };
+    !envelope.ok && envelope.code == "manual-action-required"
 }
 
 #[cfg(desktop)]
@@ -3116,44 +3240,7 @@ fn captured_resource_is_cloudflare_challenge(
     headers: &HashMap<String, String>,
     body: &[u8],
 ) -> bool {
-    let header_value = |name: &str| {
-        headers
-            .iter()
-            .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
-    };
-    if header_value("cf-mitigated")
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("challenge"))
-    {
-        return true;
-    }
-
-    let prefix = &body[..body.len().min(512 * 1024)];
-    let body_text = String::from_utf8_lossy(prefix).to_ascii_lowercase();
-    let trimmed = body_text.trim_start_matches(|character: char| {
-        character.is_ascii_whitespace() || character == '\u{feff}'
-    });
-    let content_type = header_value("content-type")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let looks_like_html = content_type.contains("text/html")
-        || content_type.contains("application/xhtml+xml")
-        || ["<!doctype html", "<html", "<head", "<body"]
-            .iter()
-            .any(|prefix| trimmed.starts_with(prefix));
-    if !looks_like_html {
-        return false;
-    }
-
-    body_text.contains("/cdn-cgi/challenge-platform/")
-        || body_text.contains("cf-chl-")
-        || body_text.contains("__cf_chl_")
-        || ["form", "running", "stage"].iter().any(|suffix| {
-            body_text.contains(&format!("id=\"challenge-{suffix}\""))
-                || body_text.contains(&format!("id='challenge-{suffix}'"))
-        })
-        || (body_text.contains("cloudflare ray id")
-            && (body_text.contains("attention required")
-                || body_text.contains("sorry, you have been blocked")))
+    crate::webview_resource_capture::response_is_cloudflare_challenge(headers, body)
 }
 
 #[cfg(target_os = "windows")]
@@ -3243,6 +3330,8 @@ pub async fn scraper_cancel_executor(
 ) -> Result<bool, String> {
     let queue = normalize_scraper_executor(queue.as_deref())?;
     state.captured_resources.clear(&queue);
+    #[cfg(target_os = "windows")]
+    state.chapter_page_cache.abandon_navigation(&queue);
     let generation = scraper_executor_cancel_generation(&state, &queue);
     let next_generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
     log::debug!(
@@ -3337,6 +3426,7 @@ pub async fn webview_extract(
     user_agent: Option<String>,
     queue: Option<String>,
     capture_resources: Option<bool>,
+    page_cache_policy: Option<crate::webview_resource_capture::PageCachePolicy>,
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
     let url_for_log = scraper_url_for_log(&url);
@@ -3356,9 +3446,14 @@ pub async fn webview_extract(
     )?;
     let capture_resources = capture_resources.unwrap_or(false) && cfg!(target_os = "windows");
     #[cfg(target_os = "windows")]
-    if capture_resources {
-        ensure_resource_capture_handler(&scraper, &state, &queue).await?;
-    }
+    ensure_resource_capture_handler(&app, &scraper, &state, &queue, &source_id).await?;
+    #[cfg(target_os = "windows")]
+    let page_cache_profile_directory = source_profile_data_directory(&app, &source_id)?;
+    #[cfg(target_os = "windows")]
+    let _chapter_page_navigation_guard = ChapterPageNavigationGuard {
+        cache: state.chapter_page_cache.as_ref(),
+        executor: &queue,
+    };
     let _capture_guard = crate::webview_resource_capture::CaptureGuard::new(
         Arc::clone(&state.captured_resources),
         &queue,
@@ -3446,6 +3541,14 @@ pub async fn webview_extract(
             "[scraper:extract] navigate queue={queue} url={url_for_log} target_url={target_url_for_log} attempt={attempt}"
         );
 
+        #[cfg(target_os = "windows")]
+        state.chapter_page_cache.prepare_navigation(
+            &queue,
+            &source_id,
+            &page_cache_profile_directory,
+            parsed.as_str(),
+            page_cache_policy,
+        )?;
         scraper
             .navigate(parsed.clone())
             .map_err(|err| {
@@ -3500,6 +3603,14 @@ pub async fn webview_extract(
                     "extract",
                     &queue,
                 )?;
+                #[cfg(target_os = "windows")]
+                if page_cache_policy.is_some() && extract_result_requires_manual_action(&decoded) {
+                    state.chapter_page_cache.invalidate(
+                        &source_id,
+                        &page_cache_profile_directory,
+                        parsed.as_str(),
+                    )?;
+                }
                 if !retried_after_browser_challenge
                     && looks_like_browser_challenge_extract_result(&decoded)
                 {
@@ -3556,6 +3667,14 @@ pub async fn webview_extract(
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url_for_log}"
                         );
+                        #[cfg(target_os = "windows")]
+                        state.chapter_page_cache.prepare_navigation(
+                            &queue,
+                            &source_id,
+                            &page_cache_profile_directory,
+                            parsed.as_str(),
+                            page_cache_policy,
+                        )?;
                         scraper.navigate(parsed.clone()).map_err(|err| {
                             format!(
                                 "webview_extract: retry after browser challenge: {}",
@@ -3652,6 +3771,7 @@ pub async fn webview_extract(
     _user_agent: Option<String>,
     _queue: Option<String>,
     _capture_resources: Option<bool>,
+    _page_cache_policy: Option<crate::webview_resource_capture::PageCachePolicy>,
 ) -> Result<String, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
@@ -3661,6 +3781,25 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use tokio::sync::oneshot::error::TryRecvError;
+
+    #[test]
+    fn chapter_page_cache_invalidation_entries_accept_exact_and_source_targets() {
+        let entries: Vec<ChapterPageCacheInvalidationEntry> = serde_json::from_value(
+            serde_json::json!([
+                { "sourceId": "source-a", "url": "https://source.test/chapter/1" },
+                { "sourceId": "source-b" }
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(entries[0].source_id, "source-a");
+        assert_eq!(
+            entries[0].url.as_deref(),
+            Some("https://source.test/chapter/1"),
+        );
+        assert_eq!(entries[1].source_id, "source-b");
+        assert!(entries[1].url.is_none());
+    }
 
     fn register_test_executor(
         state: &ScraperState,
@@ -4306,6 +4445,58 @@ mod tests {
             "https://source.test/chapter/1?token=quoted%22value"
         );
     }
+
+    #[test]
+    fn manual_action_extract_result_detection_is_structural() {
+        for value in [
+            serde_json::json!({
+                "ok": false,
+                "code": "manual-action-required",
+                "error": "Sign in to continue."
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "manual-action-required",
+                "error": "Complete the CAPTCHA.",
+                "challenge": {
+                    "kind": "captcha",
+                    "url": "https://source.test/chapter/1"
+                }
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "manual-action-required",
+                "error": "Complete the browser challenge.",
+                "challenge": {
+                    "kind": "cloudflare",
+                    "url": "https://source.test/chapter/1"
+                }
+            }),
+        ] {
+            assert!(extract_result_requires_manual_action(&value.to_string()));
+        }
+
+        for value in [
+            serde_json::json!({ "ok": true, "content": "manual-action-required" }).to_string(),
+            serde_json::json!({
+                "ok": false,
+                "code": "selector-not-found",
+                "error": "manual-action-required"
+            })
+            .to_string(),
+            serde_json::json!({
+                "result": {
+                    "ok": false,
+                    "code": "manual-action-required"
+                }
+            })
+            .to_string(),
+            "not json: manual-action-required".to_string(),
+        ] {
+            assert!(!extract_result_requires_manual_action(&value));
+        }
+    }
+
     #[tokio::test]
     async fn cookie_clear_completion_returns_deleted_count() {
         let (sender, receiver) = oneshot::channel();

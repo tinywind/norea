@@ -235,11 +235,11 @@ closing Norea and deleting the chapter's entire directory under `contents/`.
 Deleting only `media.zip` or `manifest.json` does not request a fresh download
 while final content remains.
 
-An explicit media repair is not a download resume. For a page plan, the host
-evaluates the plan again and captures the chapter page before extracting media.
-The stored HTML and manifest are used only to reuse files that are already
-available. Resource plans have no page to revisit, so their rendered stored
-content is repaired in place.
+An explicit media repair is not a download resume. For non-binary page and
+resource plans, the host evaluates the plan again and reacquires the chapter
+body before extracting media. Stored HTML and the manifest are used only to
+reuse validated complete files; missing or incomplete files are downloaded.
+Rendered binary PDF and EPUB content is repaired in place from its stored HTML.
 
 If a background task is paused during one asset, the active request is allowed
 to settle or is cancelled through the executor signal. A resumed foreground

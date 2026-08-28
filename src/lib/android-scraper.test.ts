@@ -8,7 +8,9 @@ import {
   androidScraperClearCache,
   androidScraperClearCookies,
   androidScraperCurrentOrigin,
+  androidScraperInvalidateChapterPageCache,
   androidScraperNavigate,
+  androidWebviewExtract,
 } from "./android-scraper";
 
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
@@ -35,6 +37,7 @@ function installScraperBridge() {
       extract: vi.fn(),
       fetch: vi.fn(),
       hide: vi.fn(),
+      invalidateChapterPageCache: vi.fn(),
       navigate,
       setBounds: vi.fn(),
     },
@@ -207,5 +210,103 @@ describe("Android scraper cache clearing", () => {
     );
 
     await expect(clearing).resolves.toBeUndefined();
+  });
+
+  it("invalidates only the requested chapter page cache entries", async () => {
+    const invalidateChapterPageCache = vi.mocked(
+      window.__NoreaAndroidScraper!.invalidateChapterPageCache,
+    );
+    const invalidation = androidScraperInvalidateChapterPageCache([
+      {
+        sourceId: "source-a",
+        url: "https://example.com/chapter/1",
+      },
+      {
+        sourceId: "source-a",
+        url: "https://example.com/chapter/2",
+      },
+    ]);
+    const payload = JSON.parse(
+      invalidateChapterPageCache.mock.calls[0][0] as string,
+    ) as {
+      entries: Array<{ sourceId: string; url: string }>;
+      id: string;
+    };
+
+    expect(payload.entries).toEqual([
+      {
+        sourceId: "source-a",
+        url: "https://example.com/chapter/1",
+      },
+      {
+        sourceId: "source-a",
+        url: "https://example.com/chapter/2",
+      },
+    ]);
+    window.__lnrAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({ ok: true, result: null }),
+    );
+
+    await expect(invalidation).resolves.toBeUndefined();
+  });
+});
+
+describe("Android scraper extraction", () => {
+  beforeEach(() => {
+    installScraperBridge();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("forwards the chapter page cache policy", async () => {
+    const extract = vi.mocked(window.__NoreaAndroidScraper!.extract);
+    const extraction = androidWebviewExtract(
+      "https://example.com/chapter/1",
+      "window.prepareChapter();",
+      12_000,
+      "Norea/Test",
+      "source-a",
+      "pool:1",
+      "reload",
+    );
+    const payload = JSON.parse(extract.mock.calls[0][0] as string) as {
+      id: string;
+      pageCachePolicy: string;
+    };
+
+    expect(payload.pageCachePolicy).toBe("reload");
+    window.__lnrAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({ ok: true, result: "captured" }),
+    );
+
+    await expect(extraction).resolves.toBe("captured");
+  });
+
+  it("leaves generic extraction outside the chapter page cache", async () => {
+    const extract = vi.mocked(window.__NoreaAndroidScraper!.extract);
+    const extraction = androidWebviewExtract(
+      "https://example.com/rendered-page",
+      null,
+      12_000,
+      "Norea/Test",
+      "source-a",
+      "pool:1",
+    );
+    const payload = JSON.parse(extract.mock.calls[0][0] as string) as {
+      id: string;
+      pageCachePolicy?: string;
+    };
+
+    expect(payload).not.toHaveProperty("pageCachePolicy");
+    window.__lnrAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({ ok: true, result: "rendered" }),
+    );
+
+    await expect(extraction).resolves.toBe("rendered");
   });
 });

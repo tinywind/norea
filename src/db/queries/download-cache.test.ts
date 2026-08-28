@@ -13,6 +13,7 @@ import {
   listDownloadCacheChapters,
   listDownloadCacheMediaBackfillCandidates,
   listDownloadCacheNovels,
+  listNonLocalDownloadCacheDeleteChapters,
   updateDownloadCacheChapterMediaBytes,
 } from "./download-cache";
 
@@ -62,6 +63,43 @@ describe("listDownloadCacheChapters", () => {
     expect(sql).not.toContain("length(CAST");
     expect(sql).not.toMatch(/\bc\.content\b/);
     expect(params).toEqual([7]);
+  });
+});
+
+describe("listNonLocalDownloadCacheDeleteChapters", () => {
+  it("loads chapter cache identity in one query", async () => {
+    mockSelect.mockResolvedValueOnce([
+      {
+        contentBytes: 512,
+        id: 7,
+        isDownloaded: 1,
+        path: "/chapter/7",
+        pluginId: "source-a",
+        sourceContentType: "html",
+      },
+    ]);
+
+    const chapters = await listNonLocalDownloadCacheDeleteChapters({
+      chapterIds: [7],
+    });
+
+    const [sql, params] = mockSelect.mock.calls[0]!;
+    expect(sql).toContain("c.is_downloaded AS isDownloaded");
+    expect(sql).toContain("c.content_bytes AS contentBytes");
+    expect(sql).toContain("c.content_type AS sourceContentType");
+    expect(sql).toContain("n.plugin_id AS pluginId");
+    expect(sql).toContain("c.id IN ($1)");
+    expect(params).toEqual([7]);
+    expect(chapters).toEqual([
+      {
+        contentBytes: 512,
+        id: 7,
+        isDownloaded: true,
+        path: "/chapter/7",
+        pluginId: "source-a",
+        sourceContentType: "html",
+      },
+    ]);
   });
 });
 

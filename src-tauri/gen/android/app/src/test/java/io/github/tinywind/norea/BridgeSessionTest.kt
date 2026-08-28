@@ -10,6 +10,11 @@ class BridgeSessionTest {
   @Test
   fun exposesWebViewCacheClearingCapability() {
     assertTrue(BridgeCapabilities.ALL.contains(BridgeCapabilities.SCRAPER_CLEAR_CACHE))
+    assertTrue(
+      BridgeCapabilities.ALL.contains(
+        BridgeCapabilities.SCRAPER_INVALIDATE_CHAPTER_PAGE_CACHE,
+      ),
+    )
   }
 
   @Test

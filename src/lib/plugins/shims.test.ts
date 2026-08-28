@@ -99,11 +99,27 @@ describe("captureChapterWebView", () => {
       url: "https://source.test/chapter/1",
       beforeScript: null,
       captureResources: true,
+      pageCachePolicy: "prefer-cache",
       sourceId: "source-a",
       timeoutMs: 30_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "pool:1",
     });
+  });
+
+  it("forwards an explicit chapter page reload policy", async () => {
+    invokeMock.mockResolvedValueOnce("captured");
+
+    await captureChapterWebView("https://source.test/chapter/1", {
+      pageCachePolicy: "reload",
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "webview_extract",
+      expect.objectContaining({ pageCachePolicy: "reload" }),
+    );
   });
 });
 

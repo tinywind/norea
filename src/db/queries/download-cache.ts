@@ -1,5 +1,9 @@
 import { getDb } from "../client";
 import {
+  normalizeChapterContentType,
+  type ChapterContentType,
+} from "../../lib/chapter-content";
+import {
   MAX_BACKFILL_PER_RUN,
   clampBackfillLimit,
 } from "../../lib/performance-budgets";
@@ -48,6 +52,24 @@ export type DownloadCacheDeleteChapterIdFilter =
   | { chapterIds: readonly number[]; novelIds?: never }
   | { chapterIds?: never; novelIds: readonly number[] }
   | { chapterIds?: undefined; novelIds?: undefined };
+
+export interface DownloadCacheDeleteChapterCandidate {
+  contentBytes: number;
+  id: number;
+  isDownloaded: boolean;
+  path: string;
+  pluginId: string;
+  sourceContentType: ChapterContentType;
+}
+
+interface RawDownloadCacheDeleteChapterCandidate
+  extends Omit<
+    DownloadCacheDeleteChapterCandidate,
+    "isDownloaded" | "sourceContentType"
+  > {
+  isDownloaded: unknown;
+  sourceContentType: string | null;
+}
 
 interface RawDownloadCacheChapter
   extends Omit<DownloadCacheChapter, "unread" | "mediaRepairNeeded"> {
@@ -149,9 +171,9 @@ export async function listDownloadCacheChapters(
   }));
 }
 
-export async function listNonLocalDownloadCacheDeleteChapterIds(
+export async function listNonLocalDownloadCacheDeleteChapters(
   filter: DownloadCacheDeleteChapterIdFilter = {},
-): Promise<number[]> {
+): Promise<DownloadCacheDeleteChapterCandidate[]> {
   const db = await getDb();
   const requestedIds = filter.chapterIds ?? filter.novelIds;
   if (requestedIds?.length === 0) return [];
@@ -175,8 +197,14 @@ export async function listNonLocalDownloadCacheDeleteChapterIds(
         .map((_, index) => `$${index + 1}`)
         .join(", ")})`
     : "";
-  const rows = await db.select<Array<{ id: number }>>(
-    `SELECT c.id
+  const rows = await db.select<RawDownloadCacheDeleteChapterCandidate[]>(
+    `SELECT
+       c.content_bytes AS contentBytes,
+       c.id,
+       c.is_downloaded AS isDownloaded,
+       c.path,
+       c.content_type AS sourceContentType,
+       n.plugin_id AS pluginId
      FROM chapter c
      JOIN novel n ON n.id = c.novel_id
      WHERE n.is_local = 0
@@ -184,7 +212,11 @@ export async function listNonLocalDownloadCacheDeleteChapterIds(
      ORDER BY c.novel_id, c.position, c.id`,
     targetIds,
   );
-  return rows.map((row) => row.id);
+  return rows.map((row) => ({
+    ...row,
+    isDownloaded: sqliteBoolean(row.isDownloaded),
+    sourceContentType: normalizeChapterContentType(row.sourceContentType),
+  }));
 }
 
 export async function deleteDownloadCacheChapter(

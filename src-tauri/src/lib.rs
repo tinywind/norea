@@ -216,6 +216,7 @@ pub fn run() {
             scraper::scraper_hide,
             scraper::scraper_current_origin,
             scraper::scraper_clear_cache,
+            scraper::scraper_invalidate_chapter_page_cache,
             scraper::scraper_clear_cookies,
             scraper::scraper_open_devtools,
             set_runtime_log_level,

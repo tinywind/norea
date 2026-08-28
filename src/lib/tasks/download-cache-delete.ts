@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getChapterById } from "../../db/queries/chapter";
-import { listNonLocalDownloadCacheDeleteChapterIds } from "../../db/queries/download-cache";
+import {
+  listNonLocalDownloadCacheDeleteChapters,
+  type DownloadCacheDeleteChapterCandidate,
+} from "../../db/queries/download-cache";
 import { getNovelById } from "../../db/queries/novel";
 import {
   deleteAndroidStoragePath,
@@ -13,8 +16,14 @@ import {
   novelStorageIdentitySuffix,
   sourceStorageRelativeDir,
 } from "../chapter-storage-path";
+import { pluginManager } from "../plugins/manager";
+import { validateChapterAcquisitionPlan } from "../plugins/chapter-acquisition";
 import { forgetResolvedChapterStorageDir } from "../chapter-storage-resolution";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
+import {
+  invalidateChapterPageCache,
+  type ChapterPageCacheEntry,
+} from "../webview-cache";
 import { waitForChapterDownloadQueueMutations } from "./chapter-download";
 import {
   taskScheduler,
@@ -27,6 +36,7 @@ import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation
 const DOWNLOAD_CACHE_DELETE_PROGRESS_EVENT =
   "download-cache-delete-progress";
 const ANDROID_DELETE_YIELD_INTERVAL = 10;
+const PAGE_CACHE_RESOLUTION_YIELD_INTERVAL = 25;
 
 export type DownloadCacheDeleteScope = "chapter" | "novel" | "all";
 
@@ -133,9 +143,10 @@ async function removeBackendQueuedDownloads(chapterIds: number[]): Promise<void>
 async function cancelConflictingDownloads(
   scope: DownloadCacheDeleteScope,
   targetIds: readonly number[],
-): Promise<void> {
+): Promise<DownloadCacheDeleteChapterCandidate[]> {
   const targetIdSet = new Set(targetIds);
-  const chapterIds = await chapterIdsForDownloadCacheScope(scope, targetIds);
+  const chapters = await chaptersForDownloadCacheScope(scope, targetIds);
+  const chapterIds = chapters.map((chapter) => chapter.id);
   const chapterIdSet = new Set(chapterIds);
   const cancelledChapterIds = new Set<number>(chapterIds);
   await waitForChapterDownloadQueueMutations();
@@ -155,6 +166,7 @@ async function cancelConflictingDownloads(
   );
   await waitForChapterDownloadQueueMutations();
   await removeBackendQueuedDownloads([...cancelledChapterIds]);
+  return chaptersForDownloadCacheScope(scope, targetIds);
 }
 
 export async function cancelNovelChapterDownloadWork(
@@ -163,6 +175,72 @@ export async function cancelNovelChapterDownloadWork(
   const targetIds = normalizeTargetIds("novel", novelIds);
   if (targetIds.length === 0) return;
   await cancelConflictingDownloads("novel", targetIds);
+}
+
+async function chapterPageCacheEntriesForDelete(
+  chapters: readonly DownloadCacheDeleteChapterCandidate[],
+  signal: AbortSignal,
+): Promise<ChapterPageCacheEntry[]> {
+  if (chapters.length === 0) return [];
+  let pluginRefreshFailed = false;
+  if (isTauriRuntime()) {
+    try {
+      await pluginManager.loadInstalledFromDb();
+    } catch (error) {
+      pluginRefreshFailed = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[download-cache-delete] failed to refresh installed plugins before page cache invalidation:",
+        error,
+      );
+    }
+  }
+  const entries = new Map<string, ChapterPageCacheEntry>();
+  const sourceFallbacks = new Set(
+    pluginRefreshFailed
+      ? chapters
+          .filter(
+            (chapter) => chapter.isDownloaded || chapter.contentBytes > 0,
+          )
+          .map((chapter) => chapter.pluginId)
+      : [],
+  );
+  for (let index = 0; index < chapters.length; index += 1) {
+    throwIfDownloadCacheDeleteAborted(signal);
+    if (index > 0 && index % PAGE_CACHE_RESOLUTION_YIELD_INTERVAL === 0) {
+      await yieldDownloadCacheDelete();
+      throwIfDownloadCacheDeleteAborted(signal);
+    }
+    const chapter = chapters[index]!;
+    if (!chapter.isDownloaded && chapter.contentBytes <= 0) continue;
+    if (sourceFallbacks.has(chapter.pluginId)) continue;
+    const plugin = pluginManager.getPlugin(chapter.pluginId);
+    if (!plugin) {
+      sourceFallbacks.add(chapter.pluginId);
+      continue;
+    }
+    let plan;
+    try {
+      plan = validateChapterAcquisitionPlan(
+        plugin.getChapterAcquisitionPlan(
+          chapter.path,
+          chapter.sourceContentType,
+        ),
+      );
+    } catch {
+      sourceFallbacks.add(chapter.pluginId);
+      continue;
+    }
+    if (plan.type !== "page") continue;
+    const entry = { sourceId: chapter.pluginId, url: plan.url };
+    entries.set(`${entry.sourceId}\n${entry.url}`, entry);
+  }
+  return [
+    ...[...sourceFallbacks].map((sourceId) => ({ sourceId })),
+    ...[...entries.values()].filter(
+      (entry) => !sourceFallbacks.has(entry.sourceId),
+    ),
+  ];
 }
 
 async function enqueueNativeWork(
@@ -228,6 +306,10 @@ async function yieldAndroidDeletion(): Promise<void> {
   await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
 
+async function yieldDownloadCacheDelete(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 function throwIfDownloadCacheDeleteAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
   throw (
@@ -236,19 +318,19 @@ function throwIfDownloadCacheDeleteAborted(signal: AbortSignal): void {
   );
 }
 
-async function chapterIdsForDownloadCacheScope(
+async function chaptersForDownloadCacheScope(
   scope: DownloadCacheDeleteScope,
   targetIds: readonly number[],
-): Promise<number[]> {
+): Promise<DownloadCacheDeleteChapterCandidate[]> {
   if (scope === "chapter") {
-    return listNonLocalDownloadCacheDeleteChapterIds({
+    return listNonLocalDownloadCacheDeleteChapters({
       chapterIds: targetIds,
     });
   }
   if (scope === "novel") {
-    return listNonLocalDownloadCacheDeleteChapterIds({ novelIds: targetIds });
+    return listNonLocalDownloadCacheDeleteChapters({ novelIds: targetIds });
   }
-  return listNonLocalDownloadCacheDeleteChapterIds();
+  return listNonLocalDownloadCacheDeleteChapters();
 }
 
 async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
@@ -284,7 +366,8 @@ async function clearAndroidDownloadArtifacts(
   context: TaskRunContext,
   progressLabel?: (completed: number, total: number) => string,
 ): Promise<void> {
-  const chapterIds = await chapterIdsForDownloadCacheScope(scope, targetIds);
+  const chapters = await chaptersForDownloadCacheScope(scope, targetIds);
+  const chapterIds = chapters.map((chapter) => chapter.id);
   context.setProgress({ current: 0, total: chapterIds.length });
   for (let index = 0; index < chapterIds.length; index += 1) {
     if (context.signal.aborted) {
@@ -388,9 +471,24 @@ export function enqueueDownloadCacheDelete({
           context.signal,
           async () => {
             enteredStorageOperation = true;
-            await cancelConflictingDownloads(resolvedScope, targetIds);
+            const chapters = await cancelConflictingDownloads(
+              resolvedScope,
+              targetIds,
+            );
+            const chapterPageCacheEntries =
+              await chapterPageCacheEntriesForDelete(
+                chapters,
+                context.signal,
+              );
             if (context.signal.aborted && existingWork) {
               await cancelNativeWork(existingWork.id);
+            }
+            throwIfDownloadCacheDeleteAborted(context.signal);
+            if (chapterPageCacheEntries.length > 0) {
+              await invalidateChapterPageCache(
+                chapterPageCacheEntries,
+                context.signal,
+              );
             }
             throwIfDownloadCacheDeleteAborted(context.signal);
             const work =
@@ -401,7 +499,39 @@ export function enqueueDownloadCacheDelete({
                 targetIds,
                 resolvedTitle,
               ));
-            return runDownloadCacheDelete(work, context, progressLabel);
+            let deletionFailure: { error: unknown } | undefined;
+            try {
+              return await runDownloadCacheDelete(
+                work,
+                context,
+                progressLabel,
+              );
+            } catch (error) {
+              deletionFailure = { error };
+              throw error;
+            } finally {
+              if (chapterPageCacheEntries.length > 0) {
+                try {
+                  await invalidateChapterPageCache(chapterPageCacheEntries);
+                } catch (invalidationError) {
+                  if (deletionFailure) {
+                    const deletionErrorMessage =
+                      deletionFailure.error instanceof Error
+                        ? deletionFailure.error.message
+                        : String(deletionFailure.error);
+                    const invalidationErrorMessage =
+                      invalidationError instanceof Error
+                        ? invalidationError.message
+                        : String(invalidationError);
+                    throw new AggregateError(
+                      [deletionFailure.error, invalidationError],
+                      `Download cache deletion failed: ${deletionErrorMessage}. Chapter page cache cleanup also failed: ${invalidationErrorMessage}.`,
+                    );
+                  }
+                  throw invalidationError;
+                }
+              }
+            }
           },
         );
       } catch (error) {

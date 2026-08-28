@@ -1,5 +1,9 @@
 import { isAndroidRuntime } from "./tauri-runtime";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
+import type {
+  ChapterPageCacheEntry,
+  ChapterPageCachePolicy,
+} from "./webview-cache";
 
 interface AndroidScraperBridge {
   cancel?(payload: string): void;
@@ -10,6 +14,7 @@ interface AndroidScraperBridge {
   fetch(payload: string): void;
   extract(payload: string): void;
   hide(): void;
+  invalidateChapterPageCache(payload: string): void;
   navigate(payload: string): void;
   setBounds(payload: string): void;
 }
@@ -103,6 +108,7 @@ function callNative<T>(
     | "currentOrigin"
     | "extract"
     | "fetch"
+    | "invalidateChapterPageCache"
     | "navigate",
   payload: Record<string, unknown>,
   timeoutMs: number,
@@ -206,6 +212,12 @@ export async function androidScraperClearCache(): Promise<void> {
   await callNative<unknown>("clearCache", {}, 30_000);
 }
 
+export async function androidScraperInvalidateChapterPageCache(
+  entries: readonly ChapterPageCacheEntry[],
+): Promise<void> {
+  await callNative<unknown>("invalidateChapterPageCache", { entries }, 30_000);
+}
+
 export function androidScraperCurrentOrigin(
   sourceId: string,
 ): Promise<string | null> {
@@ -245,6 +257,7 @@ export function androidWebviewExtract(
   userAgent: string | null,
   sourceId: string | undefined,
   executor: ScraperExecutorId,
+  pageCachePolicy?: ChapterPageCachePolicy,
   signal?: AbortSignal,
 ): Promise<string> {
   return callNative<string>(
@@ -256,6 +269,7 @@ export function androidWebviewExtract(
       userAgent,
       ...(sourceId ? { sourceId } : {}),
       queue: executor,
+      ...(pageCachePolicy ? { pageCachePolicy } : {}),
     },
     timeoutMs + 5_000,
     signal,
