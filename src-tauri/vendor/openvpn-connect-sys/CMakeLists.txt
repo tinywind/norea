@@ -114,6 +114,8 @@ if(WIN32)
         ASIO_DISABLE_LOCAL_SOCKETS
     )
     if(MSVC)
+        set_property(TARGET openvpn3_core PROPERTY
+            MSVC_RUNTIME_LIBRARY "MultiThreaded")
         target_compile_options(openvpn3_core PRIVATE /bigobj)
     endif()
 else()
