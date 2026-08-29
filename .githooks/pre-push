@@ -6,17 +6,24 @@ echo "Running pre-push checks..."
 HOOK_DIR=$(dirname "$0")
 "$HOOK_DIR/pre-commit"
 
-if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
-  # shellcheck disable=SC1091
-  . "$HOME/.cargo/env"
-fi
+case "$(uname -s)" in
+  CYGWIN*|MINGW*|MSYS*)
+    if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
+      # shellcheck disable=SC1091
+      . "$HOME/.cargo/env"
+    fi
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo is required for pre-push checks."
-  exit 1
-fi
+    if ! command -v cargo >/dev/null 2>&1; then
+      echo "cargo is required for Windows pre-push checks."
+      exit 1
+    fi
 
-cargo check --manifest-path src-tauri/Cargo.toml
+    cargo check --manifest-path src-tauri/Cargo.toml
+    ;;
+  *)
+    echo "Skipping desktop Rust check outside Windows."
+    ;;
+esac
 
 if [ "${LNR_ANDROID_PRE_PUSH:-0}" = "1" ]; then
   if ! command -v rustup >/dev/null 2>&1; then
