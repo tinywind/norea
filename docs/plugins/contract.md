@@ -282,12 +282,18 @@ unchanged. Android requires an installed System WebView that reports the
 `MULTI_PROFILE`. Startup remains blocked when the proxy override is unavailable.
 
 When the VPN is disabled, sanctioned plugin traffic connects directly. While a
-connection is starting or stopping, or after an unexpected VPN failure, plugin
-traffic fails closed instead of falling back to a direct connection. A user
-disconnect restores direct access only after teardown completes. When connected,
-plugin traffic is forwarded through the OpenVPN tunnel. A connection attempt
-that fails before a tunnel is established returns to the disabled direct state
-and retains the failure reason for the UI.
+connection is starting, reconnecting, or stopping, or after an unexpected VPN
+failure, plugin traffic fails closed instead of falling back to a direct
+connection. Recoverable transport and userspace tunnel interruptions remain in
+the active OpenVPN session while its core reconnects. Norea reports that state
+as reconnecting, restores tunneled routing only after the replacement tunnel is
+ready, and emits a short in-app toast after recovery. A user disconnect restores
+direct access only after teardown completes and prevents stale recovery events
+from reviving that session. When connected, plugin traffic is forwarded through
+the OpenVPN tunnel. A connection attempt that fails before a tunnel is
+established returns to the disabled direct state and retains the failure reason
+for the UI. Terminal authentication, profile, or session failures remain errors
+instead of being retried as recoverable interruptions.
 
 Proxied plugin destination hostnames are resolved inside the userspace VPN
 network using a plain DNS server supplied by the tunnel. The OpenVPN profile's

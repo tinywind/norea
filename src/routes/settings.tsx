@@ -54,6 +54,7 @@ import {
   disconnectPluginVpn,
   getPluginVpnStatus,
   importPluginVpnProfile,
+  PLUGIN_VPN_QUERY_KEY,
   removePluginVpnProfile,
   switchPluginVpnFinderServer,
   PluginVpnConnectionNotEstablishedError,
@@ -328,8 +329,6 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
   );
 }
 
-const PLUGIN_VPN_QUERY_KEY = ["plugin-vpn"] as const;
-
 function emptyPluginVpnCredentials(): PluginVpnCredentials {
   return {
     challengeResponse: "",
@@ -345,6 +344,7 @@ const PLUGIN_VPN_PHASE_KEYS: Record<PluginVpnPhase, TranslationKey> = {
   disabled: "settings.data.pluginVpn.status.disabled",
   disconnecting: "settings.data.pluginVpn.status.disconnecting",
   error: "settings.data.pluginVpn.status.error",
+  reconnecting: "settings.data.pluginVpn.status.reconnecting",
 };
 
 type PluginVpnOperation =
@@ -381,6 +381,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       return localConnectionActive ||
         phase === "connecting" ||
         phase === "connected" ||
+        phase === "reconnecting" ||
         phase === "disconnecting"
         ? 2_000
         : false;
@@ -421,7 +422,9 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
     vpnOperation?.kind === "disconnect" ||
     (status !== undefined && status.phase !== "disabled");
   const cancelConnection =
-    connectionRequestActive || status?.phase === "connecting";
+    connectionRequestActive ||
+    status?.phase === "connecting" ||
+    status?.phase === "reconnecting";
   const visibleStatusError =
     vpnOperation === null ? status?.error ?? null : null;
 

@@ -119,6 +119,12 @@ describe("PluginVpnFinder", () => {
       pluginVpnFinderServerAction("kr-low-ping", null, "connected"),
     ).toBe("switch");
     expect(
+      pluginVpnFinderServerAction("kr-low-ping", null, "reconnecting"),
+    ).toBe("switch");
+    expect(
+      pluginVpnFinderServerAction("kr-low-ping", "kr-low-ping", "reconnecting"),
+    ).toBe("cancel");
+    expect(
       pluginVpnFinderServerAction("kr-low-ping", null, "disconnecting"),
     ).toBe("switch");
     expect(

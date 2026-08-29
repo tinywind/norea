@@ -30,7 +30,13 @@ pub(super) struct EngineCredentials {
 pub(super) struct EngineConnection {
     pub(super) connector: Arc<dyn ProxyConnector>,
     pub(super) control: EngineControl,
+    pub(super) lifecycle: mpsc::UnboundedReceiver<EngineLifecycle>,
     pub(super) completion: Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
+}
+
+pub(super) enum EngineLifecycle {
+    Reconnected,
+    Reconnecting(Option<String>),
 }
 
 #[derive(Clone)]
@@ -121,9 +127,52 @@ impl ProxyConnector for SwitchingConnector {
 
 enum EngineEvent {
     CoreConnected,
+    Reconnecting,
     TunnelReady(u64),
-    TunnelFailure(u64, String),
+    TunnelInterrupted(String),
+    TunnelFailure(String),
     Failure(String),
+}
+
+#[derive(Default)]
+struct EngineRecovery {
+    active: bool,
+    core_connected: bool,
+    tunnel_ready: bool,
+}
+
+impl EngineRecovery {
+    fn restart(&mut self) -> bool {
+        let was_inactive = !self.active;
+        self.active = true;
+        self.core_connected = false;
+        self.tunnel_ready = false;
+        was_inactive
+    }
+
+    fn mark_core_connected(&mut self) -> bool {
+        if !self.active {
+            return false;
+        }
+        self.core_connected = true;
+        self.finish_if_ready()
+    }
+
+    fn mark_tunnel_ready(&mut self) -> bool {
+        if !self.active {
+            return false;
+        }
+        self.tunnel_ready = true;
+        self.finish_if_ready()
+    }
+
+    fn finish_if_ready(&mut self) -> bool {
+        if !self.core_connected || !self.tunnel_ready {
+            return false;
+        }
+        self.active = false;
+        true
+    }
 }
 
 pub(super) async fn connect(
@@ -227,21 +276,23 @@ pub(super) async fn connect(
         let _ = session.await;
         return Err("OpenVPN connection was cancelled".to_string());
     }
-    let mut tunnel_ready = false;
-    let mut core_connected = false;
-    while !tunnel_ready || !core_connected {
+    let mut readiness = EngineRecovery::default();
+    let _ = readiness.restart();
+    loop {
         tokio::select! {
             event = event_receiver.recv() => match event {
-                Some(EngineEvent::CoreConnected) => core_connected = true,
+                Some(EngineEvent::CoreConnected) if readiness.mark_core_connected() => break,
+                Some(EngineEvent::Reconnecting) => {
+                    let _ = readiness.restart();
+                }
                 Some(EngineEvent::TunnelReady(generation))
-                    if connector.is_current(generation) => tunnel_ready = true,
-                Some(EngineEvent::TunnelFailure(generation, error))
-                    if connector.is_current(generation) => {
-                        control.cancel();
-                        let _ = session.await;
-                        return Err(error);
-                    }
-                Some(EngineEvent::TunnelReady(_) | EngineEvent::TunnelFailure(_, _)) => {}
+                    if connector.is_current(generation) && readiness.mark_tunnel_ready() => break,
+                Some(EngineEvent::TunnelFailure(error) | EngineEvent::TunnelInterrupted(error)) => {
+                    control.cancel();
+                    let _ = session.await;
+                    return Err(error);
+                }
+                Some(EngineEvent::CoreConnected | EngineEvent::TunnelReady(_)) => {}
                 Some(EngineEvent::Failure(error)) => {
                     control.cancel();
                     let _ = session.await;
@@ -271,7 +322,9 @@ pub(super) async fn connect(
 
     let completion_control = control.clone();
     let completion_connector = connector.clone();
+    let (lifecycle_sender, lifecycle) = mpsc::unbounded_channel();
     let completion = Box::pin(async move {
+        let mut recovery = EngineRecovery::default();
         loop {
             tokio::select! {
                 result = &mut session => break Err(session_result(result)),
@@ -281,17 +334,30 @@ pub(super) async fn connect(
                         let _ = session.await;
                         break Err(error);
                     }
-                    Some(EngineEvent::TunnelFailure(generation, error))
-                        if completion_connector.is_current(generation) => {
-                            completion_control.cancel();
-                            let _ = session.await;
-                            break Err(error);
+                    Some(EngineEvent::TunnelFailure(error)) => {
+                        completion_control.cancel();
+                        let _ = session.await;
+                        break Err(error);
+                    }
+                    Some(EngineEvent::TunnelInterrupted(error)) => {
+                        let _ = recovery.restart();
+                        let _ = lifecycle_sender
+                            .send(EngineLifecycle::Reconnecting(Some(error)));
+                    }
+                    Some(EngineEvent::Reconnecting) => {
+                        if recovery.restart() {
+                            let _ = lifecycle_sender.send(EngineLifecycle::Reconnecting(None));
                         }
-                    Some(
-                        EngineEvent::CoreConnected
-                        | EngineEvent::TunnelReady(_)
-                        | EngineEvent::TunnelFailure(_, _),
-                    ) => {}
+                    }
+                    Some(EngineEvent::CoreConnected) if recovery.mark_core_connected() => {
+                        let _ = lifecycle_sender.send(EngineLifecycle::Reconnected);
+                    }
+                    Some(EngineEvent::TunnelReady(generation))
+                        if completion_connector.is_current(generation)
+                            && recovery.mark_tunnel_ready() => {
+                        let _ = lifecycle_sender.send(EngineLifecycle::Reconnected);
+                    }
+                    Some(EngineEvent::CoreConnected | EngineEvent::TunnelReady(_)) => {}
                     None => {
                         completion_control.cancel();
                         let _ = session.await;
@@ -305,6 +371,7 @@ pub(super) async fn connect(
     Ok(EngineConnection {
         connector,
         control,
+        lifecycle,
         completion,
     })
 }
@@ -342,6 +409,9 @@ impl EventHandler for NoreaEventHandler {
         match event.name.as_str() {
             "CONNECTED" => {
                 let _ = self.events.send(EngineEvent::CoreConnected);
+            }
+            "RECONNECTING" => {
+                let _ = self.events.send(EngineEvent::Reconnecting);
             }
             "DYNAMIC_CHALLENGE" => {
                 let _ = self.events.send(EngineEvent::Failure(
@@ -404,11 +474,11 @@ impl NoreaExternalTun {
     }
 
     fn fail(&self, generation: u64, io: &ExternalTunIo, message: String) {
-        let _ = io.error(&message);
         if self.connector.clear_if_current(generation) {
             let _ = self
                 .events
-                .send(EngineEvent::TunnelFailure(generation, message));
+                .send(EngineEvent::TunnelFailure(message.clone()));
+            let _ = io.error(&message);
         }
     }
 
@@ -423,6 +493,7 @@ impl NoreaExternalTun {
         };
         if let Some(network) = network {
             network.stop();
+            let _ = self.events.send(EngineEvent::Reconnecting);
         }
         generation
     }
@@ -480,9 +551,9 @@ impl ExternalTun for NoreaExternalTun {
             configuration,
             sink,
             Arc::new(move |error| {
-                let _ = failure_io.error(&error);
                 if failure_connector.clear_if_current(generation) {
-                    let _ = failure_events.send(EngineEvent::TunnelFailure(generation, error));
+                    let _ = failure_events.send(EngineEvent::TunnelInterrupted(error.clone()));
+                    let _ = failure_io.error(&error);
                 }
             }),
         ) {
@@ -625,6 +696,26 @@ mod tests {
                 Ok(Box::new(reader) as ProxyStream)
             })
         }
+    }
+
+    #[test]
+    fn recovery_requires_both_core_and_tunnel_readiness() {
+        let mut recovery = EngineRecovery::default();
+
+        assert!(recovery.restart());
+        assert!(!recovery.mark_tunnel_ready());
+        assert!(recovery.mark_core_connected());
+    }
+
+    #[test]
+    fn a_new_reconnect_attempt_clears_partial_readiness() {
+        let mut recovery = EngineRecovery::default();
+
+        assert!(recovery.restart());
+        assert!(!recovery.mark_core_connected());
+        assert!(!recovery.restart());
+        assert!(!recovery.mark_tunnel_ready());
+        assert!(recovery.mark_core_connected());
     }
 
     #[test]

@@ -59,6 +59,7 @@ export function pluginVpnFinderServerAction(
   return pendingCandidateId !== null ||
     phase === "connecting" ||
     phase === "connected" ||
+    phase === "reconnecting" ||
     phase === "disconnecting" ||
     phase === "error"
     ? "switch"
@@ -331,7 +332,9 @@ export function PluginVpnFinder({
         <Text size="sm">
           {t("settings.data.pluginVpn.finder.description")}
         </Text>
-        {pendingCandidateId !== null || connectionPhase === "connecting" ? (
+        {pendingCandidateId !== null ||
+        connectionPhase === "connecting" ||
+        connectionPhase === "reconnecting" ? (
           <Stack className="lnr-plugin-vpn-finder-state" gap="xs">
             <Group aria-live="polite" gap="xs" role="status">
               <Loader size="sm" />
@@ -340,9 +343,11 @@ export function PluginVpnFinder({
                   ? t("settings.data.pluginVpn.finder.status.switching", {
                       server: connectionServer,
                     })
-                  : t("settings.data.pluginVpn.finder.status.connecting", {
-                      server: connectionServer,
-                    })}
+                  : connectionPhase === "reconnecting"
+                    ? t("settings.data.pluginVpn.status.reconnecting")
+                    : t("settings.data.pluginVpn.finder.status.connecting", {
+                        server: connectionServer,
+                      })}
               </Text>
             </Group>
             <TextButton

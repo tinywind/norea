@@ -8,11 +8,13 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "android", target_os = "windows"))]
+use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 
 use super::finder::{VpnGateFinder, VpnGateServer};
 #[cfg(any(target_os = "android", target_os = "windows", test))]
-use super::proxy::LocalProxy;
+use super::proxy::{LocalProxy, ProxyConnector};
 use super::{
     MAX_PROFILE_BYTES, ValidatedProfile, is_vpn_gate_finder_profile,
     reject_reserved_vpn_gate_profile_marker, validate_profile,
@@ -22,6 +24,8 @@ const PROFILE_DIRECTORY: &str = "plugin-vpn";
 const PROFILE_FILE: &str = "profile.ovpn";
 const PROFILE_PART_FILE: &str = "profile.ovpn.part";
 const PROFILE_BACKUP_FILE: &str = "profile.ovpn.backup";
+#[cfg(any(target_os = "android", target_os = "windows"))]
+const PLUGIN_VPN_STATUS_EVENT: &str = "plugin-vpn-status";
 const VPN_GATE_PUBLIC_CREDENTIAL: &str = "vpn";
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,6 +62,7 @@ pub(crate) enum PluginVpnPhase {
     Disabled,
     Connecting,
     Connected,
+    Reconnecting,
     Disconnecting,
     Error,
 }
@@ -78,6 +83,23 @@ pub(crate) struct PluginVpnStatus {
     phase: PluginVpnPhase,
     profile: Option<PluginVpnProfile>,
     error: Option<String>,
+}
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum PluginVpnStatusEventKind {
+    Error,
+    Reconnected,
+    Reconnecting,
+}
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginVpnStatusEvent {
+    kind: PluginVpnStatusEventKind,
+    status: PluginVpnStatus,
 }
 
 #[derive(Default, Deserialize)]
@@ -179,6 +201,10 @@ impl PluginVpnState {
 
     fn status(&self) -> PluginVpnStatus {
         let state = self.shared.state.lock().expect("plugin VPN state lock");
+        self.status_from_runtime(&state)
+    }
+
+    fn status_from_runtime(&self, state: &PluginVpnRuntime) -> PluginVpnStatus {
         PluginVpnStatus {
             supported: plugin_vpn_supported(),
             proxy_port: self.proxy_port(),
@@ -242,6 +268,49 @@ impl PluginVpnState {
         }
     }
 
+    #[cfg(any(target_os = "android", target_os = "windows", test))]
+    fn set_tunnel_reconnecting(
+        &self,
+        generation: u64,
+        error: Option<String>,
+    ) -> Option<PluginVpnStatus> {
+        let mut state = self.shared.state.lock().expect("plugin VPN state lock");
+        if state.generation != generation
+            || !matches!(
+                state.phase,
+                PluginVpnPhase::Connected | PluginVpnPhase::Reconnecting
+            )
+        {
+            return None;
+        }
+        self.shared
+            .proxy
+            .block("The plugin VPN connection is reconnecting");
+        if let Some(error) = error {
+            state.error = Some(error);
+        } else if state.phase == PluginVpnPhase::Connected {
+            state.error = None;
+        }
+        state.phase = PluginVpnPhase::Reconnecting;
+        Some(self.status_from_runtime(&state))
+    }
+
+    #[cfg(any(target_os = "android", target_os = "windows", test))]
+    fn set_tunnel_reconnected(
+        &self,
+        generation: u64,
+        connector: Arc<dyn ProxyConnector>,
+    ) -> Option<PluginVpnStatus> {
+        let mut state = self.shared.state.lock().expect("plugin VPN state lock");
+        if state.generation != generation || state.phase != PluginVpnPhase::Reconnecting {
+            return None;
+        }
+        self.shared.proxy.tunnel(connector);
+        state.phase = PluginVpnPhase::Connected;
+        state.error = None;
+        Some(self.status_from_runtime(&state))
+    }
+
     #[cfg(any(target_os = "android", target_os = "windows"))]
     fn set_disconnected_proxy(&self, preserve_block: bool) {
         if preserve_block {
@@ -256,6 +325,19 @@ impl PluginVpnState {
 
 fn plugin_vpn_supported() -> bool {
     cfg!(any(target_os = "android", target_os = "windows"))
+}
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+fn emit_status_event(app: &AppHandle, status: PluginVpnStatus, kind: PluginVpnStatusEventKind) {
+    if let Err(error) = app.emit(
+        PLUGIN_VPN_STATUS_EVENT,
+        PluginVpnStatusEvent {
+            kind,
+            status,
+        },
+    ) {
+        log::warn!("could not emit plugin VPN status event: {error}");
+    }
 }
 
 #[tauri::command]
@@ -336,6 +418,7 @@ pub(crate) async fn plugin_vpn_remove_profile(
 #[tauri::command]
 pub(crate) async fn plugin_vpn_connect(
     credentials: PluginVpnCredentials,
+    app: AppHandle,
     state: State<'_, PluginVpnState>,
 ) -> Result<PluginVpnStatus, String> {
     ensure_supported()?;
@@ -388,13 +471,14 @@ pub(crate) async fn plugin_vpn_connect(
     };
 
     #[cfg(not(any(target_os = "android", target_os = "windows")))]
-    let _ = (credentials, profile, cancellation);
+    let _ = (app, credentials, profile, cancellation);
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
     {
         let super::engine::EngineConnection {
             connector,
             control,
+            lifecycle,
             completion,
         } = connection;
         let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
@@ -408,7 +492,7 @@ pub(crate) async fn plugin_vpn_connect(
                 runtime.session_completion = Some(completion_receiver);
                 runtime.phase = PluginVpnPhase::Connected;
                 runtime.error = None;
-                state.shared.proxy.tunnel(connector);
+                state.shared.proxy.tunnel(connector.clone());
                 true
             }
         };
@@ -418,22 +502,66 @@ pub(crate) async fn plugin_vpn_connect(
             return Err("plugin VPN connection was superseded".to_string());
         }
 
-        let shared = state.shared.clone();
+        let monitor_state = state.inner().clone();
         tauri::async_runtime::spawn(async move {
-            let error = match completion.await {
+            let mut completion = completion;
+            let mut lifecycle = lifecycle;
+            let result = loop {
+                tokio::select! {
+                    result = &mut completion => break result,
+                    event = lifecycle.recv() => match event {
+                        Some(super::engine::EngineLifecycle::Reconnecting(error)) => {
+                            if let Some(status) =
+                                monitor_state.set_tunnel_reconnecting(generation, error)
+                            {
+                                emit_status_event(
+                                    &app,
+                                    status,
+                                    PluginVpnStatusEventKind::Reconnecting,
+                                );
+                            }
+                        }
+                        Some(super::engine::EngineLifecycle::Reconnected) => {
+                            if let Some(status) = monitor_state
+                                .set_tunnel_reconnected(generation, connector.clone())
+                            {
+                                emit_status_event(
+                                    &app,
+                                    status,
+                                    PluginVpnStatusEventKind::Reconnected,
+                                );
+                            }
+                        }
+                        None => break completion.await,
+                    }
+                }
+            };
+            let error = match result {
                 Ok(()) => "OpenVPN disconnected unexpectedly".to_string(),
                 Err(error) => error,
             };
             let _ = completion_sender.send(());
-            let mut runtime = shared.state.lock().expect("plugin VPN state lock");
-            if runtime.generation == generation {
-                shared
+            let mut runtime = monitor_state
+                .shared
+                .state
+                .lock()
+                .expect("plugin VPN state lock");
+            let status = if runtime.generation == generation {
+                monitor_state
+                    .shared
                     .proxy
                     .block("The plugin VPN connection is unavailable");
                 runtime.phase = PluginVpnPhase::Error;
                 runtime.error = Some(error);
                 runtime.connecting_cancellation = None;
                 runtime.control = None;
+                Some(monitor_state.status_from_runtime(&runtime))
+            } else {
+                None
+            };
+            drop(runtime);
+            if let Some(status) = status {
+                emit_status_event(&app, status, PluginVpnStatusEventKind::Error);
             }
         });
     }
@@ -737,8 +865,17 @@ fn sync_directory(_: &Path) -> Result<(), String> {
 mod tests {
     use super::super::VPN_GATE_PROFILE_MARKER;
     use super::*;
+    use crate::plugin_vpn::proxy::{ConnectFuture, ProxyConnector, ProxyTarget};
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
+
+    struct RejectingConnector;
+
+    impl ProxyConnector for RejectingConnector {
+        fn connect<'a>(&'a self, _: &'a ProxyTarget) -> ConnectFuture<'a> {
+            Box::pin(async { Err("not used by this test".to_string()) })
+        }
+    }
 
     #[test]
     fn failed_connection_returns_to_disabled_state() {
@@ -789,6 +926,70 @@ mod tests {
         let status = state.status();
         assert_eq!(status.phase, PluginVpnPhase::Connecting);
         assert_eq!(status.error, None);
+    }
+
+    #[test]
+    fn recoverable_tunnel_loss_transitions_through_reconnecting() {
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.generation = 7;
+            runtime.phase = PluginVpnPhase::Connected;
+        }
+
+        let reconnecting = state
+            .set_tunnel_reconnecting(
+                7,
+                Some("OpenVPN transport is reconnecting".to_string()),
+            )
+            .expect("reconnecting status");
+        assert_eq!(reconnecting.phase, PluginVpnPhase::Reconnecting);
+        assert_eq!(
+            reconnecting.error.as_deref(),
+            Some("OpenVPN transport is reconnecting")
+        );
+
+        let reconnected = state
+            .set_tunnel_reconnected(7, Arc::new(RejectingConnector))
+            .expect("reconnected status");
+        assert_eq!(reconnected.phase, PluginVpnPhase::Connected);
+        assert_eq!(reconnected.error, None);
+    }
+
+    #[test]
+    fn stale_tunnel_generation_does_not_reconnect() {
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.generation = 8;
+            runtime.phase = PluginVpnPhase::Reconnecting;
+        }
+
+        assert!(state.set_tunnel_reconnecting(7, None).is_none());
+        assert!(
+            state
+                .set_tunnel_reconnected(7, Arc::new(RejectingConnector))
+                .is_none()
+        );
+        assert_eq!(state.status().phase, PluginVpnPhase::Reconnecting);
+    }
+
+    #[test]
+    fn disconnecting_tunnel_does_not_reconnect() {
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.generation = 7;
+            runtime.phase = PluginVpnPhase::Disconnecting;
+        }
+
+        assert!(state.set_tunnel_reconnecting(7, None).is_none());
+        assert!(
+            state
+                .set_tunnel_reconnected(7, Arc::new(RejectingConnector))
+                .is_none()
+        );
+        assert_eq!(state.status().phase, PluginVpnPhase::Disconnecting);
     }
 
     #[test]

@@ -4,6 +4,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(),
+}));
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
@@ -18,6 +22,7 @@ vi.mock("./tauri-runtime", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   copyAndroidContentUriToTempFile,
@@ -33,6 +38,8 @@ import {
   importPluginVpnProfile,
   loadPluginVpnFinderServers,
   PluginVpnConnectionNotEstablishedError,
+  shouldShowPluginVpnReconnectedToast,
+  startPluginVpnStatusListener,
   switchPluginVpnFinderServer,
   type PluginVpnCredentials,
   type PluginVpnFinderServer,
@@ -40,6 +47,7 @@ import {
 } from "./plugin-vpn";
 
 const invokeMock = vi.mocked(invoke);
+const listenMock = vi.mocked(listen);
 const openMock = vi.mocked(open);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const copyAndroidContentUriToTempFileMock = vi.mocked(
@@ -64,6 +72,18 @@ const STATUS: PluginVpnStatus = {
 const CONNECTED_STATUS: PluginVpnStatus = {
   ...STATUS,
   phase: "connected",
+};
+
+const RECONNECTING_STATUS: PluginVpnStatus = {
+  ...STATUS,
+  error: "OpenVPN transport is reconnecting",
+  phase: "reconnecting",
+};
+
+const ERROR_STATUS: PluginVpnStatus = {
+  ...STATUS,
+  error: "OpenVPN session failed",
+  phase: "error",
 };
 
 describe("plugin VPN", () => {
@@ -147,6 +167,64 @@ describe("plugin VPN", () => {
     expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_connect", {
       credentials,
     });
+  });
+
+  it("forwards native VPN lifecycle status events", async () => {
+    const onEvent = vi.fn();
+    const unlisten = vi.fn();
+    listenMock.mockImplementationOnce(async (_event, handler) => {
+      handler({
+        event: "plugin-vpn-status",
+        id: 1,
+        payload: { kind: "reconnecting", status: RECONNECTING_STATUS },
+      } as never);
+      handler({
+        event: "plugin-vpn-status",
+        id: 1,
+        payload: { kind: "reconnected", status: CONNECTED_STATUS },
+      } as never);
+      handler({
+        event: "plugin-vpn-status",
+        id: 1,
+        payload: { kind: "error", status: ERROR_STATUS },
+      } as never);
+      return unlisten;
+    });
+
+    const cleanup = await startPluginVpnStatusListener(onEvent);
+
+    expect(listenMock).toHaveBeenCalledWith(
+      "plugin-vpn-status",
+      expect.any(Function),
+    );
+    expect(onEvent.mock.calls.map(([event]) => event)).toEqual([
+      { kind: "reconnecting", status: RECONNECTING_STATUS },
+      { kind: "reconnected", status: CONNECTED_STATUS },
+      { kind: "error", status: ERROR_STATUS },
+    ]);
+    cleanup();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("shows a recovery toast only for a confirmed connected status", () => {
+    expect(
+      shouldShowPluginVpnReconnectedToast({
+        kind: "reconnected",
+        status: CONNECTED_STATUS,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowPluginVpnReconnectedToast({
+        kind: "reconnected",
+        status: RECONNECTING_STATUS,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPluginVpnReconnectedToast({
+        kind: "error",
+        status: ERROR_STATUS,
+      }),
+    ).toBe(false);
   });
 
   it("requests the native VPN Gate catalog with an explicit refresh policy", async () => {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   copyAndroidContentUriToTempFile,
@@ -9,12 +10,16 @@ import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
+const PLUGIN_VPN_STATUS_EVENT = "plugin-vpn-status";
 const VPN_PROXY_CONFIGURE_CAPABILITY = "vpn.proxy.configure";
+
+export const PLUGIN_VPN_QUERY_KEY = ["plugin-vpn"] as const;
 
 export type PluginVpnPhase =
   | "disabled"
   | "connecting"
   | "connected"
+  | "reconnecting"
   | "disconnecting"
   | "error";
 
@@ -30,6 +35,17 @@ export interface PluginVpnStatus {
   profile: PluginVpnProfile | null;
   proxyPort: number;
   supported: boolean;
+}
+
+export interface PluginVpnStatusEvent {
+  kind: "error" | "reconnected" | "reconnecting";
+  status: PluginVpnStatus;
+}
+
+export function shouldShowPluginVpnReconnectedToast(
+  event: PluginVpnStatusEvent,
+): boolean {
+  return event.kind === "reconnected" && event.status.phase === "connected";
 }
 
 export interface PluginVpnCredentials {
@@ -107,6 +123,14 @@ let finderQuerySequence = 0;
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
   return invoke<PluginVpnStatus>("plugin_vpn_status");
+}
+
+export function startPluginVpnStatusListener(
+  onEvent: (event: PluginVpnStatusEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PluginVpnStatusEvent>(PLUGIN_VPN_STATUS_EVENT, ({ payload }) => {
+    onEvent(payload);
+  });
 }
 
 export function loadPluginVpnFinderServers(

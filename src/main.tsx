@@ -25,12 +25,18 @@ import {
   QueryCache,
   QueryClient,
   QueryClientProvider,
+  useQueryClient,
 } from "@tanstack/react-query";
 import {
   installRuntimeLogLevelFilter,
   setRuntimeLogLevel,
 } from "./lib/logging";
-import { ensureAndroidPluginVpnProxy } from "./lib/plugin-vpn";
+import {
+  ensureAndroidPluginVpnProxy,
+  PLUGIN_VPN_QUERY_KEY,
+  shouldShowPluginVpnReconnectedToast,
+  startPluginVpnStatusListener,
+} from "./lib/plugin-vpn";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -489,6 +495,7 @@ interface RuntimeGateProps {
 
 function PluginVpnProxyGate({ children }: RuntimeGateProps) {
   const appLocale = useAppearanceStore((state) => state.appLocale);
+  const queryClient = useQueryClient();
   const android = isAndroidRuntime();
   const [attempt, setAttempt] = useState(0);
   const [checking, setChecking] = useState(android);
@@ -516,6 +523,44 @@ function PluginVpnProxyGate({ children }: RuntimeGateProps) {
       cancelled = true;
     };
   }, [android, attempt]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    void startPluginVpnStatusListener((event) => {
+      if (!active) return;
+      queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, event.status);
+      if (shouldShowPluginVpnReconnectedToast(event)) {
+        const eventLocale = useAppearanceStore.getState().appLocale;
+        notifications.show({
+          autoClose: 3_000,
+          color: "green",
+          message: translate(
+            eventLocale,
+            "settings.data.pluginVpn.toast.reconnected",
+          ),
+          title: translate(eventLocale, "settings.data.pluginVpn.title"),
+        });
+      }
+    })
+      .then((cleanup) => {
+        if (active) {
+          unlisten = cleanup;
+        } else {
+          cleanup();
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn("[plugin-vpn] failed to listen for status events", error);
+      });
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [queryClient]);
 
   if (!android || ready) return children;
   return (
