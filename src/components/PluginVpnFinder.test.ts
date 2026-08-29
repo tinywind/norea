@@ -5,6 +5,7 @@ import {
   filterAndSortPluginVpnServers,
   pluginVpnFinderErrorMessage,
   pluginVpnFinderServerAction,
+  pluginVpnFinderServerVerdict,
   pluginVpnFinderServersForDisplay,
 } from "./PluginVpnFinder";
 
@@ -138,6 +139,21 @@ describe("PluginVpnFinder", () => {
   it("clears the displayed server list while a catalog query is active", () => {
     expect(pluginVpnFinderServersForDisplay(SERVERS, true)).toEqual([]);
     expect(pluginVpnFinderServersForDisplay(SERVERS, false)).toBe(SERVERS);
+  });
+
+  it("shares one recorded verdict across candidates with the same IP", () => {
+    const verdicts = new Map([[SERVERS[0]!.ip, "works" as const]]);
+    const sameIpCandidate = {
+      ...SERVERS[0]!,
+      candidateId: "jp-fast-udp",
+      protocol: "udp" as const,
+    };
+
+    expect(pluginVpnFinderServerVerdict(SERVERS[0]!, verdicts)).toBe("works");
+    expect(pluginVpnFinderServerVerdict(sameIpCandidate, verdicts)).toBe(
+      "works",
+    );
+    expect(pluginVpnFinderServerVerdict(SERVERS[1]!, verdicts)).toBeNull();
   });
 
   it("localizes catalog cancellation and the fallback connection target", () => {

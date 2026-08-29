@@ -33,11 +33,18 @@ import {
   SettingsWideField,
 } from "../components/SettingsPrimitives";
 import { TextButton } from "../components/TextButton";
+import { VpnGateServerVerdictControl } from "../components/VpnGateServerVerdictControl";
 import {
   clearLibraryMembership,
   clearReadingProgress,
   clearUpdatesTab,
 } from "../db/queries/maintenance";
+import {
+  listVpnGateServerVerdicts,
+  setVpnGateServerVerdict,
+  type VpnGateServerVerdict,
+  type VpnGateServerVerdictValue,
+} from "../db/queries/vpn-gate-server-verdict";
 import {
   exportBackupToFile,
   importBackupFromFile,
@@ -55,6 +62,7 @@ import {
   getPluginVpnStatus,
   importPluginVpnProfile,
   PLUGIN_VPN_QUERY_KEY,
+  pluginVpnFinderProfileIp,
   removePluginVpnProfile,
   switchPluginVpnFinderServer,
   PluginVpnConnectionNotEstablishedError,
@@ -346,6 +354,9 @@ const PLUGIN_VPN_PHASE_KEYS: Record<PluginVpnPhase, TranslationKey> = {
   error: "settings.data.pluginVpn.status.error",
   reconnecting: "settings.data.pluginVpn.status.reconnecting",
 };
+const VPN_GATE_SERVER_VERDICTS_QUERY_KEY = [
+  "vpn-gate-server-verdicts",
+] as const;
 
 type PluginVpnOperation =
   | { kind: "connect" }
@@ -368,7 +379,15 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const [credentials, setCredentials] = useState<PluginVpnCredentials>(
     emptyPluginVpnCredentials,
   );
+  const [verdictSavingIps, setVerdictSavingIps] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const connectionRequest = useRef(0);
+  const verdictSavingIpsRef = useRef(new Set<string>());
+  const verdictQuery = useQuery({
+    queryFn: listVpnGateServerVerdicts,
+    queryKey: VPN_GATE_SERVER_VERDICTS_QUERY_KEY,
+  });
   const vpnQuery = useQuery({
     queryKey: PLUGIN_VPN_QUERY_KEY,
     queryFn: getPluginVpnStatus,
@@ -388,6 +407,10 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
     },
   });
   const status = vpnQuery.data;
+  const currentFinderIp = pluginVpnFinderProfileIp(status?.profile);
+  const verdicts = new Map(
+    (verdictQuery.data ?? []).map((row) => [row.ip, row.verdict]),
+  );
   const localPhase: PluginVpnPhase | undefined =
     vpnOperation?.kind === "connect"
       ? "connecting"
@@ -411,6 +434,15 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
     : isBusy || profileOperationActive
       ? t("settings.data.pluginVpn.finder.status.controlsUnavailable")
       : null;
+  const verdictControlsDisabled =
+    isBusy || verdictQuery.isPending || verdictQuery.isError;
+  const verdictDisabledReason = isBusy
+    ? t("settings.data.pluginVpn.finder.status.controlsUnavailable")
+    : verdictQuery.isPending
+      ? t("settings.data.pluginVpn.status.loading")
+      : verdictQuery.isError
+        ? t("common.loadFailed")
+        : null;
   const canConnect =
     !isBusy &&
     vpnOperation === null &&
@@ -430,6 +462,56 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
 
   function updateStatus(nextStatus: PluginVpnStatus): void {
     queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, nextStatus);
+  }
+
+  function updateVerdictSavingState(ip: string, saving: boolean): void {
+    if (saving) {
+      verdictSavingIpsRef.current.add(ip);
+    } else {
+      verdictSavingIpsRef.current.delete(ip);
+    }
+    setVerdictSavingIps(new Set(verdictSavingIpsRef.current));
+  }
+
+  async function updateServerVerdict(
+    ip: string,
+    verdict: VpnGateServerVerdictValue | null,
+  ): Promise<void> {
+    if (
+      verdictControlsDisabled ||
+      verdictSavingIpsRef.current.has(ip)
+    ) {
+      return;
+    }
+
+    updateVerdictSavingState(ip, true);
+    try {
+      await setVpnGateServerVerdict(ip, verdict);
+      queryClient.setQueryData<VpnGateServerVerdict[]>(
+        VPN_GATE_SERVER_VERDICTS_QUERY_KEY,
+        (current = []) => {
+          const next = current.filter((row) => row.ip !== ip);
+          if (verdict !== null) {
+            next.push({
+              ip,
+              updatedAt: Math.floor(Date.now() / 1000),
+              verdict,
+            });
+          }
+          return next.sort((left, right) => left.ip.localeCompare(right.ip));
+        },
+      );
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.finder.verdict.saveFailed", {
+          error: describeError(error),
+        }),
+      );
+    } finally {
+      updateVerdictSavingState(ip, false);
+    }
   }
 
   function isCurrentConnectionRequest(request: number): boolean {
@@ -676,6 +758,34 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               </Stack>
             </SettingsWideField>
           </SettingsFieldRow>
+          {currentFinderIp ? (
+            <SettingsFieldRow
+              label={t("settings.data.pluginVpn.finder.verdict.label")}
+              description={t(
+                "settings.data.pluginVpn.finder.verdict.description",
+              )}
+            >
+              <Group gap="sm" wrap="nowrap">
+                <Text size="sm">{currentFinderIp}</Text>
+                <VpnGateServerVerdictControl
+                  disabled={
+                    verdictControlsDisabled ||
+                    verdictSavingIps.has(currentFinderIp)
+                  }
+                  disabledReason={
+                    verdictSavingIps.has(currentFinderIp)
+                      ? t("settings.data.pluginVpn.finder.verdict.saving")
+                      : verdictDisabledReason
+                  }
+                  ip={currentFinderIp}
+                  onChange={(verdict) =>
+                    updateServerVerdict(currentFinderIp, verdict)
+                  }
+                  verdict={verdicts.get(currentFinderIp) ?? null}
+                />
+              </Group>
+            </SettingsFieldRow>
+          ) : null}
           {status?.profile && !status.profile.isVpnGateFinder ? (
             <SettingsFieldRow
               label={t("settings.data.pluginVpn.credentials.label")}
@@ -783,12 +893,17 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
             onApplyAndConnect={applyAndConnectFinderServer}
             onCancelConnection={disconnect}
             onClose={() => setFinderOpen(false)}
+            onVerdictChange={updateServerVerdict}
             opened={finderOpen}
             pendingCandidateId={
               vpnOperation?.kind === "finder"
                 ? vpnOperation.candidateId
                 : null
             }
+            verdictControlsDisabled={verdictControlsDisabled}
+            verdictDisabledReason={verdictDisabledReason}
+            verdictSavingIps={verdictSavingIps}
+            verdicts={verdicts}
           />
         </>
       )}

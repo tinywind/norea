@@ -13,6 +13,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { useTranslation } from "../i18n";
 import {
   loadPluginVpnFinderServers,
@@ -21,6 +22,7 @@ import {
   type PluginVpnServerProtocol,
 } from "../lib/plugin-vpn";
 import { TextButton } from "./TextButton";
+import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
 
 const PLUGIN_VPN_FINDER_QUERY_KEY = ["plugin-vpn", "finder"] as const;
@@ -44,8 +46,16 @@ interface PluginVpnFinderProps {
   onApplyAndConnect: (candidateId: string) => Promise<void>;
   onCancelConnection: () => Promise<void>;
   onClose: () => void;
+  onVerdictChange: (
+    ip: string,
+    verdict: VpnGateServerVerdictValue | null,
+  ) => Promise<void>;
   opened: boolean;
   pendingCandidateId: string | null;
+  verdictControlsDisabled: boolean;
+  verdictDisabledReason: string | null;
+  verdictSavingIps: ReadonlySet<string>;
+  verdicts: ReadonlyMap<string, VpnGateServerVerdictValue>;
 }
 
 export type PluginVpnFinderServerAction = "cancel" | "connect" | "switch";
@@ -71,6 +81,13 @@ export function pluginVpnFinderServersForDisplay(
   queryActive: boolean,
 ): PluginVpnFinderServer[] {
   return queryActive ? [] : servers;
+}
+
+export function pluginVpnFinderServerVerdict(
+  server: Pick<PluginVpnFinderServer, "ip">,
+  verdicts: ReadonlyMap<string, VpnGateServerVerdictValue>,
+): VpnGateServerVerdictValue | null {
+  return verdicts.get(server.ip) ?? null;
 }
 
 function comparePing(
@@ -151,8 +168,13 @@ export function PluginVpnFinder({
   onApplyAndConnect,
   onCancelConnection,
   onClose,
+  onVerdictChange,
   opened,
   pendingCandidateId,
+  verdictControlsDisabled,
+  verdictDisabledReason,
+  verdictSavingIps,
+  verdicts,
 }: PluginVpnFinderProps) {
   const { locale, t } = useTranslation();
   const queryClient = useQueryClient();
@@ -523,6 +545,7 @@ export function PluginVpnFinder({
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.sessions")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.logPolicy")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.protocol.label")}</Table.Th>
+                    <Table.Th>{t("settings.data.pluginVpn.finder.verdict.label")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.action")}</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
@@ -544,6 +567,24 @@ export function PluginVpnFinder({
                         {server.protocol === "tcp"
                           ? t("settings.data.pluginVpn.finder.protocol.tcp")
                           : t("settings.data.pluginVpn.finder.protocol.udp")}
+                      </Table.Td>
+                      <Table.Td>
+                        <VpnGateServerVerdictControl
+                          disabled={
+                            verdictControlsDisabled ||
+                            verdictSavingIps.has(server.ip)
+                          }
+                          disabledReason={
+                            verdictSavingIps.has(server.ip)
+                              ? t("settings.data.pluginVpn.finder.verdict.saving")
+                              : verdictDisabledReason
+                          }
+                          ip={server.ip}
+                          onChange={(verdict) =>
+                            onVerdictChange(server.ip, verdict)
+                          }
+                          verdict={pluginVpnFinderServerVerdict(server, verdicts)}
+                        />
                       </Table.Td>
                       <Table.Td>
                         <TextButton
@@ -610,6 +651,27 @@ export function PluginVpnFinder({
                     <div>
                       <dt>{t("settings.data.pluginVpn.finder.metadata.logPolicy")}</dt>
                       <dd>{server.logType}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("settings.data.pluginVpn.finder.verdict.label")}</dt>
+                      <dd>
+                        <VpnGateServerVerdictControl
+                          disabled={
+                            verdictControlsDisabled ||
+                            verdictSavingIps.has(server.ip)
+                          }
+                          disabledReason={
+                            verdictSavingIps.has(server.ip)
+                              ? t("settings.data.pluginVpn.finder.verdict.saving")
+                              : verdictDisabledReason
+                          }
+                          ip={server.ip}
+                          onChange={(verdict) =>
+                            onVerdictChange(server.ip, verdict)
+                          }
+                          verdict={pluginVpnFinderServerVerdict(server, verdicts)}
+                        />
+                      </dd>
                     </div>
                   </dl>
                   <TextButton

@@ -77,6 +77,12 @@ pub fn run() {
             sql: include_str!("schema_chapter_stored_content_type.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "create VPN Gate server verdicts",
+            sql: include_str!("schema_vpn_gate_server_verdict.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let plugin_vpn = plugin_vpn::PluginVpnState::bind()

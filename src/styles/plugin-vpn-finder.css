@@ -8,7 +8,7 @@
 }
 
 .lnr-plugin-vpn-finder-table {
-  min-width: 50rem;
+  min-width: 54rem;
 }
 
 .lnr-plugin-vpn-finder-table :where(th) {
@@ -25,6 +25,41 @@
   font-family: var(--lnr-font-ui);
   font-size: 0.75rem;
   white-space: nowrap;
+}
+
+.lnr-vpn-gate-verdict-control {
+  align-items: center;
+  background: var(--lnr-design-surface);
+  border: 1px solid var(--lnr-design-rule-strong);
+  border-radius: 0.25rem;
+  color: var(--lnr-design-ink-muted);
+  display: inline-flex;
+  font-family: var(--lnr-font-meta);
+  font-size: 0.75rem;
+  font-weight: 800;
+  height: 1.75rem;
+  justify-content: center;
+  line-height: 1;
+  min-width: 1.75rem;
+}
+
+.lnr-vpn-gate-verdict-control:not(:disabled):hover {
+  background: var(--lnr-design-accent-soft);
+}
+
+.lnr-vpn-gate-verdict-control[data-verdict="works"] {
+  border-color: var(--lnr-design-ok);
+  color: var(--lnr-design-ok);
+}
+
+.lnr-vpn-gate-verdict-control[data-verdict="fails"] {
+  border-color: var(--lnr-design-error);
+  color: var(--lnr-design-error);
+}
+
+.lnr-vpn-gate-verdict-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .lnr-plugin-vpn-finder-cards {

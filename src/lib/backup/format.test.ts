@@ -82,6 +82,18 @@ const VALID_MANIFEST: BackupManifest = {
       value: JSON.stringify({ state: { general: {} }, version: 0 }),
     },
   ],
+  vpnGateServerVerdicts: [
+    {
+      ip: "198.51.100.10",
+      verdict: "works",
+      updatedAt: 1_700_000_000,
+    },
+    {
+      ip: "203.0.113.20",
+      verdict: "fails",
+      updatedAt: 1_700_000_001,
+    },
+  ],
 };
 
 describe("encodeBackupManifest + parseBackupManifest", () => {
@@ -154,6 +166,7 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     delete novels[0]!.libraryAddedAt;
     delete legacy.installedPlugins;
     delete legacy.settings;
+    delete legacy.vpnGateServerVerdicts;
     delete chapters[0]!.createdAt;
     delete chapters[0]!.contentType;
     delete chapters[0]!.sourceContentType;
@@ -172,6 +185,7 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     );
     expect(parsed.installedPlugins).toBeUndefined();
     expect(parsed.settings).toBeUndefined();
+    expect(parsed.vpnGateServerVerdicts).toBeUndefined();
   });
 });
 
@@ -222,6 +236,40 @@ describe("parseBackupManifest error cases", () => {
     };
     expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
       /chapters contains a malformed entry/,
+    );
+  });
+
+  it("throws on a malformed VPN Gate server verdict row", () => {
+    const broken = {
+      ...VALID_MANIFEST,
+      vpnGateServerVerdicts: [
+        {
+          ip: "198.51.100.10",
+          verdict: "unknown",
+          updatedAt: 1_700_000_000,
+        },
+      ],
+    };
+
+    expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
+      /vpnGateServerVerdicts contains a malformed entry/,
+    );
+  });
+
+  it("throws on a VPN Gate server verdict with a non-canonical IPv4 address", () => {
+    const broken = {
+      ...VALID_MANIFEST,
+      vpnGateServerVerdicts: [
+        {
+          ip: "198.051.100.10",
+          verdict: "works",
+          updatedAt: 1_700_000_000,
+        },
+      ],
+    };
+
+    expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
+      /vpnGateServerVerdicts contains a malformed entry/,
     );
   });
 });

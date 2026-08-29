@@ -37,6 +37,12 @@ export interface PluginVpnStatus {
   supported: boolean;
 }
 
+export function pluginVpnFinderProfileIp(
+  profile: PluginVpnProfile | null | undefined,
+): string | null {
+  return profile?.isVpnGateFinder ? profile.remoteHost : null;
+}
+
 export interface PluginVpnStatusEvent {
   kind: "error" | "reconnected" | "reconnecting";
   status: PluginVpnStatus;
