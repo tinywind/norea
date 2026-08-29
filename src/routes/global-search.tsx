@@ -12,7 +12,6 @@ import { useNavigate } from "@tanstack/react-router";
 import { BlockingLoadingOverlay } from "../components/AppFrame";
 import {
   ConsoleChip,
-  ConsoleCover,
   ConsoleSectionHeader,
   ConsoleStatusDot,
   ConsoleStatusStrip,
@@ -30,6 +29,7 @@ import {
 import { IconButton } from "../components/IconButton";
 import { SearchBar } from "../components/SearchBar";
 import { SegmentedToggle } from "../components/SegmentedToggle";
+import { SourceNovelCover } from "../components/SourceNovelCover";
 import { TextButton } from "../components/TextButton";
 import { useTranslation } from "../i18n";
 import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
@@ -658,11 +658,11 @@ function SearchResultSection({
                 data-selected={openingKey === key}
                 onClick={() => onOpen(result, novel)}
               >
-                <ConsoleCover
-                  alt={novel.name}
-                  src={novel.cover ?? null}
-                  width={74}
+                <SourceNovelCover
                   height={108}
+                  item={novel}
+                  plugin={plugin}
+                  width={74}
                 />
                 <span className="lnr-search-preview-title" title={novel.name}>
                   {novel.name}

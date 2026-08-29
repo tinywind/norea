@@ -50,6 +50,13 @@ pub struct ChapterContentInspection {
     media_bytes: u64,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NovelCoverReadResult {
+    manifest: String,
+    relative_path: String,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterStorageTransferEntry {
@@ -474,7 +481,8 @@ fn content_novel_dir_at(
     novel_path: Option<&str>,
     novel_name: Option<&str>,
 ) -> Result<PathBuf, String> {
-    if novel_id <= 0 {
+    let has_novel_path = novel_path.is_some_and(|path| !path.trim().is_empty());
+    if novel_id < 0 || (novel_id == 0 && !has_novel_path) {
         return Err("chapter media: invalid novel id".to_string());
     }
     let source_id = safe_segment(source_id, "source");
@@ -3063,7 +3071,7 @@ pub fn novel_cover_read_manifest(
     source_id: String,
     novel_name: String,
     novel_path: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<NovelCoverReadResult>, String> {
     let media_root = media_root(&app)?;
     let novel_dir = content_novel_dir_at(
         &media_root,
@@ -3072,7 +3080,17 @@ pub fn novel_cover_read_manifest(
         Some(novel_path.as_str()),
         Some(novel_name.as_str()),
     )?;
-    read_existing_novel_cover_manifest(&novel_dir)
+    let Some(manifest) = read_existing_novel_cover_manifest(&novel_dir)? else {
+        return Ok(None);
+    };
+    let file_name = novel_cover_file_name_from_manifest(&manifest)
+        .map(|file_name| safe_segment(&file_name, "cover"))
+        .ok_or_else(|| "chapter media: invalid novel cover manifest".to_string())?;
+    let relative_path = relative_storage_path(&media_root, &novel_dir.join(file_name))?;
+    Ok(Some(NovelCoverReadResult {
+        manifest,
+        relative_path,
+    }))
 }
 
 #[tauri::command]
@@ -4668,6 +4686,51 @@ mod tests {
             .join("1-Opening")
             .join(MEDIA_DOWNLOAD_DIR)
             .join(file_name)
+    }
+
+    #[test]
+    fn content_novel_dir_accepts_a_path_without_a_persisted_novel_id() {
+        let dir = content_novel_dir_at(
+            Path::new("root"),
+            "demo",
+            0,
+            Some("/foo//bar"),
+            Some("Novel"),
+        )
+        .expect("resolve source search novel directory");
+
+        assert_eq!(
+            dir,
+            Path::new("root")
+                .join(CONTENTS_ROOT_DIR)
+                .join("demo")
+                .join("Novel-foo--bar")
+        );
+        assert_eq!(
+            relative_storage_path(Path::new("root"), &dir.join("cover.jpg"))
+                .expect("resolve native cover path"),
+            "contents/demo/Novel-foo--bar/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn content_novel_dir_rejects_a_missing_id_and_path() {
+        let error = content_novel_dir_at(Path::new("root"), "demo", 0, None, Some("Novel"))
+            .expect_err("reject an unidentified novel directory");
+
+        assert_eq!(error, "chapter media: invalid novel id");
+    }
+
+    #[test]
+    fn content_novel_dir_rejects_a_negative_id_even_with_a_path() {
+        assert!(content_novel_dir_at(
+            Path::new("root"),
+            "demo",
+            -1,
+            Some("novel/path"),
+            Some("Novel"),
+        )
+        .is_err());
     }
 
     #[test]

@@ -27,7 +27,6 @@ import { SegmentedToggle } from "../components/SegmentedToggle";
 import { TextButton } from "../components/TextButton";
 import {
   ConsoleChip,
-  ConsoleCover,
   ConsolePanel,
   ConsoleSectionHeader,
   ConsoleStatusDot,
@@ -41,6 +40,7 @@ import { IconButton } from "../components/IconButton";
 import { PluginSettingsEditor } from "../components/PluginSettingsEditor";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import { SearchBar } from "../components/SearchBar";
+import { SourceNovelCover } from "../components/SourceNovelCover";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { getPluginBaseUrl } from "../lib/plugins/base-url";
 import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
@@ -192,12 +192,14 @@ interface SourceNovelButtonProps {
   disabled: boolean;
   item: NovelItem;
   onOpen: (item: NovelItem) => void;
+  plugin: Plugin;
 }
 
 function SourceNovelButton({
   disabled,
   item,
   onOpen,
+  plugin,
 }: SourceNovelButtonProps) {
   return (
     <button
@@ -206,12 +208,7 @@ function SourceNovelButton({
       disabled={disabled}
       onClick={() => onOpen(item)}
     >
-      <ConsoleCover
-        alt={item.name}
-        src={item.cover ?? null}
-        width={104}
-        height={152}
-      />
+      <SourceNovelCover height={152} item={item} plugin={plugin} width={104} />
       <span className="lnr-source-card-title" title={item.name}>
         {item.name}
       </span>
@@ -791,6 +788,7 @@ export function SourcePage() {
                     key={key}
                     item={item}
                     disabled={open.isPending}
+                    plugin={plugin}
                     onOpen={(novel) => {
                       if (!open.isPending) open.mutate(novel);
                     }}

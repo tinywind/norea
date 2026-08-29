@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   Group,
@@ -15,6 +21,7 @@ import { PageFrame, PageSection, StateView } from "../components/AppFrame";
 import { BackIconButton } from "../components/BackIconButton";
 import { ConsoleCover } from "../components/ConsolePrimitives";
 import { SearchBar } from "../components/SearchBar";
+import { SourceNovelCover } from "../components/SourceNovelCover";
 import { TextButton } from "../components/TextButton";
 import {
   listChaptersByNovel,
@@ -23,6 +30,10 @@ import {
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
+import {
+  useNovelCoverSource,
+  type NovelCoverSourceInput,
+} from "../lib/use-novel-cover-source";
 import {
   globalSearch,
   type GlobalSearchResult,
@@ -174,7 +185,7 @@ interface SelectedMergeTarget extends MergeTargetCandidate {
 
 interface NovelSummaryCardProps {
   chapterCount: number;
-  cover: string | null;
+  cover: ReactNode;
   label: string;
   name: string;
   sourceName: string;
@@ -191,7 +202,7 @@ function NovelSummaryCard({
 
   return (
     <article className="lnr-novel-merge-summary-card">
-      <ConsoleCover alt={name} height={108} src={cover} width={74} />
+      {cover}
       <div className="lnr-novel-merge-summary-copy">
         <Text className="lnr-novel-merge-summary-label">{label}</Text>
         <Title className="lnr-novel-merge-summary-title" order={3}>
@@ -206,6 +217,11 @@ function NovelSummaryCard({
       </div>
     </article>
   );
+}
+
+function StoredNovelCover({ novel }: { novel: NovelCoverSourceInput }) {
+  const source = useNovelCoverSource(novel);
+  return <ConsoleCover alt={novel.name} height={108} src={source} width={74} />;
 }
 
 function sourceChapterLabel(chapter: ChapterListRow): string {
@@ -897,7 +913,7 @@ export function NovelMergePage() {
           <PageSection className="lnr-novel-merge-overview">
             <NovelSummaryCard
               chapterCount={sourceChapters.length}
-              cover={sourceNovel.cover}
+              cover={<StoredNovelCover novel={sourceNovel} />}
               label={t("novelMerge.sourceNovel")}
               name={sourceNovel.name}
               sourceName={sourceName}
@@ -907,7 +923,18 @@ export function NovelMergePage() {
             </div>
             <NovelSummaryCard
               chapterCount={selectedTarget.novel.chapters.length}
-              cover={selectedTarget.novel.cover ?? selectedTarget.item.cover ?? null}
+              cover={
+                <SourceNovelCover
+                  height={108}
+                  item={{
+                    ...selectedTarget.item,
+                    cover:
+                      selectedTarget.novel.cover ?? selectedTarget.item.cover,
+                  }}
+                  plugin={pluginManager.getPlugin(selectedTarget.pluginId)}
+                  width={74}
+                />
+              }
               label={t("novelMerge.targetNovel")}
               name={selectedTarget.novel.name}
               sourceName={selectedTarget.pluginName}
@@ -987,7 +1014,7 @@ export function NovelMergePage() {
           <PageSection className="lnr-novel-merge-source-summary">
             <NovelSummaryCard
               chapterCount={sourceChapters.length}
-              cover={sourceNovel.cover}
+              cover={<StoredNovelCover novel={sourceNovel} />}
               label={t("novelMerge.sourceNovel")}
               name={sourceNovel.name}
               sourceName={sourceName}
@@ -1076,10 +1103,10 @@ export function NovelMergePage() {
                             }
                             type="button"
                           >
-                            <ConsoleCover
-                              alt={item.name}
+                            <SourceNovelCover
                               height={108}
-                              src={item.cover ?? null}
+                              item={item}
+                              plugin={pluginManager.getPlugin(result.pluginId)}
                               width={74}
                             />
                             <span className="lnr-novel-merge-result-name">
