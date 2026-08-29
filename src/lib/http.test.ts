@@ -378,6 +378,106 @@ describe("pluginFetch", () => {
 });
 
 describe("pluginMediaFetch", () => {
+  it("does not reuse captured GET media for non-GET requests", async () => {
+    invokeMock.mockResolvedValueOnce(
+      wireOk("posted", {
+        finalUrl: "https://cdn.test/page.png",
+        headers: { "content-type": "image/png" },
+      }),
+    );
+
+    const response = await pluginMediaFetch("https://cdn.test/page.png", {
+      body: "payload",
+      contextUrl: "https://cdn.test/chapter/1",
+      method: "POST",
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+    });
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "webview_fetch",
+      expect.objectContaining({
+        cacheMediaResponse: true,
+        init: expect.objectContaining({ method: "POST" }),
+      }),
+    );
+    expect(await response.text()).toBe("posted");
+
+    await expect(
+      takeCapturedMediaHandle("https://cdn.test/page.png", {
+        method: "POST",
+        sourceId: "source-a",
+      }),
+    ).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["range", { Range: "bytes=0-99" }],
+    ["conditional", { "If-None-Match": '"page"' }],
+    ["cache bypass", { "Cache-Control": "no-cache" }],
+  ])(
+    "does not reuse captured media for %s requests",
+    async (_name, headers) => {
+      invokeMock.mockResolvedValueOnce(
+        wireOk("fresh", {
+          finalUrl: "https://cdn.test/page.png",
+          headers: { "content-type": "image/png" },
+        }),
+      );
+
+      const response = await pluginMediaFetch("https://cdn.test/page.png", {
+        contextUrl: "https://cdn.test/chapter/1",
+        headers,
+        scraperExecutor: "pool:1",
+        sourceId: "source-a",
+      });
+
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).toHaveBeenCalledWith(
+        "webview_fetch",
+        expect.objectContaining({
+          init: expect.objectContaining({ headers }),
+        }),
+      );
+      expect(await response.text()).toBe("fresh");
+
+      await expect(
+        takeCapturedMediaHandle("https://cdn.test/page.png", {
+          headers,
+          sourceId: "source-a",
+        }),
+      ).resolves.toBeNull();
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("cancels a captured-media wait when its scraper executor aborts", async () => {
+    const controller = new AbortController();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "scraper_take_captured_resource") {
+        return await new Promise<never>(() => undefined);
+      }
+      if (command === "scraper_cancel_executor") return true;
+      throw new Error(`Unexpected command: ${String(command)}`);
+    });
+
+    const request = pluginMediaFetch("https://cdn.test/page.png", {
+      contextUrl: "https://cdn.test/chapter/1",
+      scraperExecutor: "pool:1",
+      signal: controller.signal,
+      sourceId: "source-a",
+    });
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(invokeMock).toHaveBeenCalledWith("scraper_cancel_executor", {
+      message: "Request cancelled",
+      queue: "pool:1",
+    });
+  });
+
   it("propagates a Cloudflare challenge from captured media without falling back", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("Just a moment...", {
@@ -418,17 +518,19 @@ describe("pluginMediaFetch", () => {
   });
 
   it("propagates a Cloudflare challenge from native-first media without falling back", async () => {
-    invokeMock.mockResolvedValueOnce(
-      wireOk("Just a moment...", {
-        status: 403,
-        statusText: "Forbidden",
-        headers: {
-          "cf-mitigated": "challenge",
-          "content-type": "text/html",
-        },
-        finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
-      }),
-    );
+    invokeMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        wireOk("Just a moment...", {
+          status: 403,
+          statusText: "Forbidden",
+          headers: {
+            "cf-mitigated": "challenge",
+            "content-type": "text/html",
+          },
+          finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+        }),
+      );
 
     const request = pluginMediaFetch("https://cdn.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
@@ -437,25 +539,28 @@ describe("pluginMediaFetch", () => {
     });
 
     await expect(request).rejects.toSatisfy(isSourceAccessRequiredError);
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith(
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      2,
       "scraper_media_fetch",
       expect.objectContaining({ url: "https://cdn.test/page.png" }),
     );
   });
 
   it("propagates a Cloudflare challenge from browser-first media without falling back", async () => {
-    invokeMock.mockResolvedValueOnce(
-      wireOk("Just a moment...", {
-        status: 403,
-        statusText: "Forbidden",
-        headers: {
-          "cf-mitigated": "challenge",
-          "content-type": "text/html",
-        },
-        finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
-      }),
-    );
+    invokeMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        wireOk("Just a moment...", {
+          status: 403,
+          statusText: "Forbidden",
+          headers: {
+            "cf-mitigated": "challenge",
+            "content-type": "text/html",
+          },
+          finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+        }),
+      );
 
     const request = pluginMediaFetch("https://cdn.test/page.png", {
       contextUrl: "https://cdn.test/assets/",
@@ -469,8 +574,9 @@ describe("pluginMediaFetch", () => {
         isSourceAccessRequiredError(error) &&
         error.challenge.url === "https://source.test/chapter/1",
     );
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith(
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      2,
       "webview_fetch",
       expect.objectContaining({
         contextUrl: "https://cdn.test/assets/",
@@ -481,6 +587,7 @@ describe("pluginMediaFetch", () => {
 
   it("propagates a Cloudflare challenge from the native media fallback", async () => {
     invokeMock
+      .mockResolvedValueOnce(null)
       .mockRejectedValueOnce(new Error("Failed to fetch"))
       .mockResolvedValueOnce(
         wireOk("Just a moment...", {
@@ -501,9 +608,9 @@ describe("pluginMediaFetch", () => {
     });
 
     await expect(request).rejects.toSatisfy(isSourceAccessRequiredError);
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledTimes(3);
     expect(invokeMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       "scraper_media_fetch",
       expect.objectContaining({ url: "https://source.test/page.png" }),
     );
@@ -692,6 +799,7 @@ describe("pluginMediaFetch", () => {
       },
     );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "webview_fetch", {
+      cacheMediaResponse: true,
       url: "https://cdn.test/page.png?accessKey=signed",
       init: {
         headers: undefined,
@@ -745,6 +853,7 @@ describe("pluginMediaFetch", () => {
         body: undefined,
         preferBrowserCache: true,
       },
+      sourceId: "newtoki-webtoon",
       timeoutMs: 30_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
     });
@@ -805,6 +914,7 @@ describe("pluginMediaFetch", () => {
       .spyOn(console, "warn")
       .mockImplementation(() => undefined);
     invokeMock
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
         wireOk("blocked", {
           status: 403,
@@ -832,7 +942,7 @@ describe("pluginMediaFetch", () => {
         },
       );
 
-      expect(invokeMock).toHaveBeenNthCalledWith(1, "scraper_media_fetch", {
+      expect(invokeMock).toHaveBeenNthCalledWith(2, "scraper_media_fetch", {
         url: "https://image-comic.pstatic.net/page.jpg",
         init: {
           headers: {
@@ -841,10 +951,12 @@ describe("pluginMediaFetch", () => {
           method: undefined,
           body: undefined,
         },
+        sourceId: "naverwebtoon",
         timeoutMs: 30_000,
         userAgent: globalThis.navigator?.userAgent ?? null,
       });
-      expect(invokeMock).toHaveBeenNthCalledWith(2, "webview_fetch", {
+      expect(invokeMock).toHaveBeenNthCalledWith(3, "webview_fetch", {
+        cacheMediaResponse: true,
         url: "https://image-comic.pstatic.net/page.jpg",
         init: {
           headers: {
@@ -903,6 +1015,7 @@ describe("pluginMediaFetch", () => {
       });
 
       expect(invokeMock).toHaveBeenNthCalledWith(1, "webview_fetch", {
+        cacheMediaResponse: true,
         url: "https://cdn.test/page.png",
         init: {
           headers: {
@@ -970,6 +1083,7 @@ describe("pluginMediaFetch", () => {
       .mockImplementation(() => undefined);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     invokeMock
+      .mockResolvedValueOnce(null)
       .mockRejectedValueOnce(new Error("browser failed"))
       .mockRejectedValueOnce(new Error("native failed"));
 

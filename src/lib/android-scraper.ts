@@ -23,6 +23,7 @@ interface AndroidFetchInitWire {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  preferBrowserCache?: boolean;
 }
 
 export interface AndroidFetchResultWire {

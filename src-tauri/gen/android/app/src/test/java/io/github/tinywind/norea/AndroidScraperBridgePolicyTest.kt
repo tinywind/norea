@@ -7,6 +7,12 @@ import org.junit.Test
 
 class AndroidScraperBridgePolicyTest {
   @Test
+  fun prefersCachedMediaWhenRequestedByTheChapterPipeline() {
+    assertEquals("force-cache", browserFetchCacheMode(preferBrowserCache = true))
+    assertEquals("default", browserFetchCacheMode(preferBrowserCache = false))
+  }
+
+  @Test
   fun revalidatesTheTopLevelDocumentAfterAChapterPageCacheMiss() {
     assertEquals(
       mapOf(

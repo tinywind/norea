@@ -89,7 +89,7 @@ impl NativeStreamRegistry {
         &mut self,
         root: &Path,
         domain: String,
-        body: Vec<u8>,
+        body: &[u8],
     ) -> Result<NativeStreamInfo, String> {
         let max_bytes = u64::try_from(body.len())
             .map_err(|_| "native stream: body size overflow".to_string())?
@@ -157,9 +157,10 @@ impl NativeStreamRegistry {
         &mut self,
         root: &Path,
         handle: &str,
-        chunk: Vec<u8>,
+        chunk: impl AsRef<[u8]>,
         offset: Option<u64>,
     ) -> Result<NativeStreamInfo, String> {
+        let chunk = chunk.as_ref();
         let root = prepare_stream_root(root)?;
         let entry = self.live_entry_mut(&root, handle)?;
         if entry.finished {
@@ -202,7 +203,7 @@ impl NativeStreamRegistry {
             .append(true)
             .open(&file_path)
             .map_err(|err| format!("native stream: open temp file for write: {err}"))?;
-        file.write_all(&chunk)
+        file.write_all(chunk)
             .map_err(|err| format!("native stream: write chunk: {err}"))?;
         file.flush()
             .map_err(|err| format!("native stream: flush chunk: {err}"))?;
@@ -575,7 +576,7 @@ pub(crate) fn register_finished_bytes(
     app: &AppHandle,
     state: &NativeStreamState,
     domain: &str,
-    body: Vec<u8>,
+    body: &[u8],
 ) -> Result<(String, u64), String> {
     let root = stream_root(app)?;
     let mut registry = state
@@ -802,11 +803,7 @@ mod tests {
         let mut registry = NativeStreamRegistry::default();
 
         let stream = registry
-            .create_finished_bytes(
-                &root,
-                CHAPTER_MEDIA_STREAM_DOMAIN.to_string(),
-                vec![1, 2, 3],
-            )
+            .create_finished_bytes(&root, CHAPTER_MEDIA_STREAM_DOMAIN.to_string(), &[1, 2, 3])
             .expect("create finished bytes");
 
         assert!(stream.finished);

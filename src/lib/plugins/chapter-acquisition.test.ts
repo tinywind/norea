@@ -277,6 +277,36 @@ describe("captureChapterPage", () => {
     });
   });
 
+  it("honors explicit cache reuse for a cache-busted page plan", async () => {
+    mockedCaptureChapterWebView.mockResolvedValueOnce(
+      JSON.stringify({
+        ok: true,
+        result: {
+          content: "<p>Cached chapter</p>",
+          url: "https://source.test/chapter/1",
+        },
+      }),
+    );
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      cacheBust: true,
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    await captureChapterPage(plan, {
+      contentType: "html",
+      executor: "immediate",
+      pageCachePolicy: "prefer-cache",
+      sourceId: "source-a",
+    });
+
+    expect(mockedCaptureChapterWebView.mock.calls[0]?.[1]).toMatchObject({
+      pageCachePolicy: "prefer-cache",
+    });
+  });
+
   it("surfaces stable capture error codes", async () => {
     mockedCaptureChapterWebView.mockResolvedValueOnce(
       JSON.stringify({

@@ -64,6 +64,9 @@ internal fun chapterPageNetworkHeaders(): Map<String, String> = mapOf(
   "Pragma" to "no-cache",
 )
 
+internal fun browserFetchCacheMode(preferBrowserCache: Boolean): String =
+  if (preferBrowserCache) "force-cache" else "default"
+
 internal fun shouldRevalidateChapterPageRedirect(
   isForMainFrame: Boolean,
   method: String,
@@ -2382,6 +2385,9 @@ class AndroidScraperBridge(
   }
 
   private fun buildFetchScript(id: String, nonce: String, request: JSONObject): String {
+    val cacheMode = browserFetchCacheMode(
+      request.optJSONObject("init")?.optBoolean("preferBrowserCache", false) == true,
+    )
     return """
       (function () {
         const request = ${request};
@@ -2409,6 +2415,7 @@ class AndroidScraperBridge(
             const fetchInit = {
               method: init.method || "GET",
               headers,
+              cache: ${JSONObject.quote(cacheMode)},
               credentials: "include",
               redirect: "follow",
               signal: controller.signal

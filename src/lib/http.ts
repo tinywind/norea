@@ -267,22 +267,95 @@ function sourceAccessFallbackUrl(url: string, init: HttpInit): string {
   return init.sourceAccessUrl ?? init.contextUrl ?? url;
 }
 
+function sourceMediaCacheRequestIsShareable(init: HttpInit): boolean {
+  if (init.method !== undefined && init.method.toUpperCase() !== "GET") {
+    return false;
+  }
+  for (const [name, value] of Object.entries(init.headers ?? {})) {
+    const normalizedName = name.toLowerCase();
+    if (
+      [
+        "range",
+        "if-match",
+        "if-modified-since",
+        "if-none-match",
+        "if-range",
+        "if-unmodified-since",
+      ].includes(normalizedName)
+    ) {
+      return false;
+    }
+    if (
+      normalizedName === "cache-control" &&
+      value
+        .split(",")
+        .some((directive) =>
+          ["no-cache", "no-store"].includes(directive.trim().toLowerCase()),
+        )
+    ) {
+      return false;
+    }
+    if (
+      normalizedName === "pragma" &&
+      value
+        .toLowerCase()
+        .split(",")
+        .some((directive) => directive.trim() === "no-cache")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function awaitScraperInvoke<T>(
+  request: Promise<T>,
+  signal: AbortSignal | undefined,
+  scraperExecutor: ScraperExecutorId,
+): Promise<T> {
+  if (!signal) return request;
+  if (signal.aborted) throw requestAbortedError();
+  let abortListener: (() => void) | undefined;
+  const abort = new Promise<never>((_resolve, reject) => {
+    abortListener = () => {
+      void cancelScraperExecutor(scraperExecutor);
+      reject(requestAbortedError());
+    };
+    signal.addEventListener("abort", abortListener, { once: true });
+    if (signal.aborted) abortListener();
+  });
+  try {
+    return await Promise.race([request, abort]);
+  } finally {
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+    request.catch(() => undefined);
+  }
+}
+
 async function takeCapturedMediaResponse(
   url: string,
   init: HttpInit,
   scraperExecutor: ScraperExecutorId,
 ): Promise<Response | null> {
-  if (!init.preferBrowserCache || !isWindowsRuntime()) return null;
-  if (init.signal?.aborted) throw requestAbortedError();
+  if (
+    !init.sourceId ||
+    !isWindowsRuntime() ||
+    !sourceMediaCacheRequestIsShareable(init)
+  ) {
+    return null;
+  }
+  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
+  if (signal?.aborted) throw requestAbortedError();
   try {
-    const result = await invoke<FetchResultWire | null>(
-      "scraper_take_captured_resource",
-      {
+    const result = await awaitScraperInvoke(
+      invoke<FetchResultWire | null>("scraper_take_captured_resource", {
         url,
         queue: scraperExecutor,
         userAgent: scraperUserAgent(init.headers),
         ...(init.sourceId ? { sourceId: init.sourceId } : {}),
-      },
+      }),
+      signal,
+      scraperExecutor,
     );
     if (result) {
       console.debug("[plugin-media-fetch] captured response used", {
@@ -293,7 +366,7 @@ async function takeCapturedMediaResponse(
       ? checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init))
       : null;
   } catch (error) {
-    if (init.signal?.aborted) throw requestAbortedError();
+    if (signal?.aborted) throw requestAbortedError();
     if (isSourceAccessRequiredError(error)) throw error;
     console.debug("[plugin-media-fetch] captured response unavailable", {
       error: fetchErrorMessage(error),
@@ -307,19 +380,30 @@ export async function takeCapturedMediaHandle(
   url: string,
   init: HttpInit = {},
 ): Promise<CapturedMediaHandle | null> {
-  if (!init.preferBrowserCache || !isWindowsRuntime()) return null;
-  if (init.signal?.aborted) throw requestAbortedError();
+  if (
+    !init.sourceId ||
+    !isWindowsRuntime() ||
+    !sourceMediaCacheRequestIsShareable(init)
+  ) {
+    return null;
+  }
   const scraperExecutor =
     init.scraperExecutor ?? activeScraperExecutor(init.sourceId);
+  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
+  if (signal?.aborted) throw requestAbortedError();
   try {
-    const result = await invoke<CapturedMediaHandle | null>(
-      "scraper_take_captured_resource_handle",
-      {
-        url,
-        queue: scraperExecutor,
-        userAgent: scraperUserAgent(init.headers),
-        ...(init.sourceId ? { sourceId: init.sourceId } : {}),
-      },
+    const result = await awaitScraperInvoke(
+      invoke<CapturedMediaHandle | null>(
+        "scraper_take_captured_resource_handle",
+        {
+          url,
+          queue: scraperExecutor,
+          userAgent: scraperUserAgent(init.headers),
+          ...(init.sourceId ? { sourceId: init.sourceId } : {}),
+        },
+      ),
+      signal,
+      scraperExecutor,
     );
     if (result) {
       const accessError = cloudflareAccessError(
@@ -337,7 +421,7 @@ export async function takeCapturedMediaHandle(
     }
     return result;
   } catch (error) {
-    if (init.signal?.aborted) throw requestAbortedError();
+    if (signal?.aborted) throw requestAbortedError();
     if (isSourceAccessRequiredError(error)) throw error;
     console.debug("[plugin-media-fetch] captured response handle unavailable", {
       error: fetchErrorMessage(error),
@@ -410,6 +494,7 @@ async function nativeMediaResponse(
   const wireInit = toWireInit(init);
   const userAgent = scraperUserAgent(wireInit.headers);
   const timeoutMs = requestTimeoutMs(init.timeoutMs);
+  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   console.debug("[plugin-media-fetch] native fetch started", {
     ...mediaFallbackLogContext(url, init, scraperExecutor),
   });
@@ -418,7 +503,8 @@ async function nativeMediaResponse(
     wireInit,
     userAgent,
     timeoutMs,
-    init.signal,
+    signal,
+    init.sourceId,
   );
   console.debug("[plugin-media-fetch] native fetch finished", {
     ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
@@ -453,6 +539,7 @@ async function desktopWebviewFetch(
   userAgent: string | null,
   sourceId: string | undefined,
   scraperExecutor: ScraperExecutorId,
+  cacheMediaResponse: boolean,
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ): Promise<FetchResultWire> {
@@ -467,6 +554,7 @@ async function desktopWebviewFetch(
     userAgent,
     queue: scraperExecutor,
     ...(sourceId ? { sourceId } : {}),
+    ...(cacheMediaResponse ? { cacheMediaResponse: true } : {}),
     timeoutMs,
   });
   if (!signal) return request;
@@ -498,6 +586,7 @@ async function nativeMediaFetch(
   userAgent: string | null,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  sourceId: string | undefined,
 ): Promise<FetchResultWire> {
   if (signal?.aborted) {
     throw requestAbortedError();
@@ -508,6 +597,7 @@ async function nativeMediaFetch(
     init,
     userAgent,
     timeoutMs,
+    ...(sourceId ? { sourceId } : {}),
   });
   if (!signal) return request;
 
@@ -650,7 +740,7 @@ export async function appFetchText(
 async function pluginFetchInternal(
   url: string,
   init: HttpInit = {},
-  options: { logFailures?: boolean } = {},
+  options: { cacheMediaResponse?: boolean; logFailures?: boolean } = {},
 ): Promise<Response> {
   const logFailures = options.logFailures ?? true;
   const wireInit = toWireInit(init);
@@ -680,6 +770,7 @@ async function pluginFetchInternal(
           userAgent,
           init.sourceId,
           scraperExecutor,
+          options.cacheMediaResponse ?? false,
           timeoutMs,
           signal,
         );
@@ -707,7 +798,7 @@ export async function pluginFetch(
 
 /**
  * Fetch chapter-local media. A response captured during page navigation is
- * consumed first, followed by a browser-cache fetch in the same WebView. Some
+ * reused first, followed by a browser-cache fetch in the same WebView. Some
  * image CDNs allow `<img>` loads but block JS `fetch()` reads; those static
  * media requests fall back to the scraper-owned native media fetch with
  * plugin-declared headers.
@@ -761,7 +852,10 @@ export async function pluginMediaFetch(
     }
 
     try {
-      return await pluginFetchInternal(url, init, { logFailures: false });
+      return await pluginFetchInternal(url, init, {
+        cacheMediaResponse: true,
+        logFailures: false,
+      });
     } catch (browserError) {
       if (isSourceAccessRequiredError(browserError)) throw browserError;
       if (isRequestAbortError(browserError)) {
@@ -784,6 +878,7 @@ export async function pluginMediaFetch(
   let browserError: unknown;
   try {
     const browserResponse = await pluginFetchInternal(url, init, {
+      cacheMediaResponse: true,
       logFailures: false,
     });
     if (browserResponse.ok) return browserResponse;
@@ -811,6 +906,7 @@ export async function pluginMediaFetch(
   const wireInit = toWireInit(init);
   const userAgent = scraperUserAgent(wireInit.headers);
   const timeoutMs = requestTimeoutMs(init.timeoutMs);
+  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   console.debug("[plugin-media-fetch] native fallback started", {
     ...mediaFallbackLogContext(url, init, scraperExecutor),
   });
@@ -820,7 +916,8 @@ export async function pluginMediaFetch(
       wireInit,
       userAgent,
       timeoutMs,
-      init.signal,
+      signal,
+      init.sourceId,
     );
     console.debug("[plugin-media-fetch] native fallback finished", {
       ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),

@@ -366,9 +366,8 @@ export async function captureChapterPage(
 ): Promise<CapturedChapterPage> {
   const raw = await captureChapterWebView(navigationUrl(plan), {
     beforeContentScript: chapterCaptureScript(plan, options.contentType),
-    pageCachePolicy: plan.cacheBust
-      ? "reload"
-      : (options.pageCachePolicy ?? "prefer-cache"),
+    pageCachePolicy:
+      options.pageCachePolicy ?? (plan.cacheBust ? "reload" : "prefer-cache"),
     scraperExecutor: options.executor,
     signal: options.signal,
     sourceId: options.sourceId,
