@@ -30,7 +30,7 @@ Use the same major versions as CI when possible.
 | Kotlin Gradle Plugin | 2.0.21 | Kotlin build plugin compatible with current Tauri Android scripts |
 | Android SDK platform | `android-36` | Android APK builds |
 | Android build tools | `36.0.0` | APK signing and build tools |
-| Android NDK | `27.1.12297006` | Rust Android targets |
+| Android NDK | `29.0.14206865` | Rust Android targets |
 | Android Rust targets | `aarch64-linux-android`, `x86_64-linux-android` | Device APK and emulator/WSA APK |
 | Windows Rust targets | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` | Windows x64 and ARM64 release bundles |
 
@@ -104,7 +104,7 @@ sdk use java 17.0.19-tem
 export JAVA_HOME="$HOME/.sdkman/candidates/java/current"
 export ANDROID_HOME="$HOME/Android/Sdk"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
-export NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006"
+export NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
 export ANDROID_NDK_HOME="$NDK_HOME"
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
@@ -113,7 +113,7 @@ sdkmanager --install \
   "platform-tools" \
   "platforms;android-36" \
   "build-tools;36.0.0" \
-  "ndk;27.1.12297006"
+  "ndk;29.0.14206865"
 rustup target add aarch64-linux-android x86_64-linux-android
 ```
 
