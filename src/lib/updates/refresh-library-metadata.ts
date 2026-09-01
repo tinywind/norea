@@ -1,5 +1,6 @@
 import {
   listLibraryNovelRefreshTargets,
+  type LibraryNovelRefreshFilter,
   type LibraryNovelRefreshTarget,
 } from "../../db/queries/novel";
 import { pluginManager } from "../plugins/manager";
@@ -26,7 +27,7 @@ export interface MetadataRefreshResult {
 
 export interface RefreshLibraryMetadataOptions {
   aggregateTaskTitle?: string;
-  categoryId?: number | null;
+  filter?: LibraryNovelRefreshFilter;
   onProgress?: (progress: {
     current: number;
     detail?: string;
@@ -39,13 +40,23 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function metadataRefreshScopeKey(
+  filter: LibraryNovelRefreshFilter = {},
+): string {
+  return JSON.stringify({
+    categoryId: filter.categoryId ?? null,
+    downloadedOnly: filter.downloadedOnly === true,
+    search: filter.search?.trim() ?? "",
+    sourceId: filter.sourceId?.trim() ?? "",
+    unreadOnly: filter.unreadOnly === true,
+  });
+}
+
 async function runLibraryMetadataRefresh(
   options: RefreshLibraryMetadataOptions = {},
   context?: TaskRunContext,
 ): Promise<MetadataRefreshResult> {
-  const novels = await listLibraryNovelRefreshTargets({
-    categoryId: options.categoryId,
-  });
+  const novels = await listLibraryNovelRefreshTargets(options.filter);
   const failures: MetadataRefreshFailure[] = [];
   let checkedNovels = 0;
   let changedNovels = 0;
@@ -168,8 +179,8 @@ export async function refreshLibraryMetadata(
     kind: "library.refreshMetadata",
     priority: "deferred",
     title: options.aggregateTaskTitle ?? "Refresh library metadata",
-    subject: { categoryId: options.categoryId },
-    dedupeKey: `library.refreshMetadata:${options.categoryId ?? "all"}`,
+    subject: { categoryId: options.filter?.categoryId },
+    dedupeKey: `library.refreshMetadata:${metadataRefreshScopeKey(options.filter)}`,
     run: (context) => runLibraryMetadataRefresh(options, context),
   }).promise;
 }

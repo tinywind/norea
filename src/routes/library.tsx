@@ -67,6 +67,7 @@ import {
   setNovelInLibrary,
   upsertLocalNovelMetadata,
   type LibraryNovelCursor,
+  type LibraryNovelRefreshFilter,
   type LibrarySourceFilter,
   type LibraryNovelSummary,
   type LibraryNovel,
@@ -309,32 +310,54 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   );
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const libraryFilter = useMemo<LibraryNovelRefreshFilter>(
+    () => ({
+      search: debouncedSearch,
+      categoryId: selectedCategoryId,
+      downloadedOnly: downloadedOnlyMode,
+      sourceId: selectedSourceId,
+      unreadOnly: unreadOnlyMode,
+    }),
+    [
+      debouncedSearch,
+      downloadedOnlyMode,
+      selectedCategoryId,
+      selectedSourceId,
+      unreadOnlyMode,
+    ],
+  );
+  const librarySourceFilter = useMemo(
+    () => ({
+      search: debouncedSearch,
+      categoryId: selectedCategoryId,
+      downloadedOnly: downloadedOnlyMode,
+      unreadOnly: unreadOnlyMode,
+    }),
+    [
+      debouncedSearch,
+      downloadedOnlyMode,
+      selectedCategoryId,
+      unreadOnlyMode,
+    ],
+  );
 
   const novels = useInfiniteQuery({
     queryKey: [
       "novel",
       "library",
       {
-        search: debouncedSearch,
-        categoryId: selectedCategoryId,
-        downloadedOnly: downloadedOnlyMode,
+        ...libraryFilter,
         limit: LIBRARY_PAGE_SIZE,
-        sourceId: selectedSourceId,
         sortOrder,
-        unreadOnly: unreadOnlyMode,
       },
     ] as const,
     initialPageParam: null as LibraryNovelCursor | null,
     queryFn: ({ pageParam }) =>
       listLibraryNovelPage({
-        search: debouncedSearch,
-        categoryId: selectedCategoryId,
+        ...libraryFilter,
         cursor: pageParam,
-        downloadedOnly: downloadedOnlyMode,
         limit: LIBRARY_PAGE_SIZE,
-        sourceId: selectedSourceId,
         sortOrder,
-        unreadOnly: unreadOnlyMode,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
   });
@@ -344,22 +367,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       "novel",
       "library",
       "summary",
-      {
-        search: debouncedSearch,
-        categoryId: selectedCategoryId,
-        downloadedOnly: downloadedOnlyMode,
-        sourceId: selectedSourceId,
-        unreadOnly: unreadOnlyMode,
-      },
+      libraryFilter,
     ] as const,
-    queryFn: () =>
-      getLibraryNovelSummary({
-        search: debouncedSearch,
-        categoryId: selectedCategoryId,
-        downloadedOnly: downloadedOnlyMode,
-        sourceId: selectedSourceId,
-        unreadOnly: unreadOnlyMode,
-      }),
+    queryFn: () => getLibraryNovelSummary(libraryFilter),
   });
 
   const sourceFilters = useQuery({
@@ -367,20 +377,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       "novel",
       "library",
       "sources",
-      {
-        search: debouncedSearch,
-        categoryId: selectedCategoryId,
-        downloadedOnly: downloadedOnlyMode,
-        unreadOnly: unreadOnlyMode,
-      },
+      librarySourceFilter,
     ] as const,
-    queryFn: () =>
-      listLibrarySourceFilters({
-        search: debouncedSearch,
-        categoryId: selectedCategoryId,
-        downloadedOnly: downloadedOnlyMode,
-        unreadOnly: unreadOnlyMode,
-      }),
+    queryFn: () => listLibrarySourceFilters(librarySourceFilter),
   });
 
   const categories = useQuery({
@@ -587,7 +586,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     mutationFn: () =>
       refreshLibraryMetadata({
         aggregateTaskTitle: t("tasks.task.refreshLibraryMetadata"),
-        categoryId: selectedCategoryId,
+        filter: libraryFilter,
         taskTitle: (novel) =>
           t("tasks.task.refreshNovelMetadata", { name: novel.name }),
       }),
@@ -767,13 +766,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const activeSourceLabel = activeSource
     ? getLibrarySourceLabel(activeSource, t)
     : t("library.sources.all");
-  const activeCategoryCount =
-    selectedCategoryId == null
-      ? allCategoryCount
-      : selectedCategoryId === UNCATEGORIZED_CATEGORY_ID
-        ? uncategorizedCategoryCount
-        : (manualCategories.find((category) => category.id === selectedCategoryId)
-            ?.novelCount ?? 0);
   const metadataRefreshStatus = metadataRefreshMutation.isPending
     ? t("library.refreshMetadataRunning")
     : metadataRefreshMutation.error
@@ -1106,7 +1098,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 <IconButton
                   className="lnr-library-icon-button lnr-library-refresh-button"
                   disabled={
-                    activeCategoryCount === 0 ||
+                    summary.totalNovels === 0 ||
                     metadataRefreshMutation.isPending
                   }
                   label={t("library.refreshMetadata")}

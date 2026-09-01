@@ -132,6 +132,15 @@ export interface LibraryNovelRefreshTarget {
   isLocal: boolean;
 }
 
+export type LibraryNovelRefreshFilter = Pick<
+  LibraryFilter,
+  | "search"
+  | "categoryId"
+  | "downloadedOnly"
+  | "sourceId"
+  | "unreadOnly"
+>;
+
 interface RawLibraryNovelRefreshTarget
   extends Omit<LibraryNovelRefreshTarget, "isLocal"> {
   isLocal: unknown;
@@ -533,22 +542,11 @@ export async function listLibrarySourceFilters(
 }
 
 export async function listLibraryNovelRefreshTargets(
-  filter: Pick<LibraryFilter, "categoryId"> = {},
+  filter: LibraryNovelRefreshFilter = {},
 ): Promise<LibraryNovelRefreshTarget[]> {
   const db = await getDb();
-  const conditions: string[] = ["n.in_library = 1"];
   const params: unknown[] = [];
-
-  if (filter.categoryId === UNCATEGORIZED_CATEGORY_ID) {
-    conditions.push(
-      "NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)",
-    );
-  } else if (filter.categoryId != null) {
-    params.push(filter.categoryId);
-    conditions.push(
-      `EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $${params.length})`,
-    );
-  }
+  const conditions = buildLibraryFilterConditions(filter, params);
 
   const rows = await db.select<RawLibraryNovelRefreshTarget[]>(
     `SELECT
@@ -559,6 +557,7 @@ export async function listLibraryNovelRefreshTargets(
        n.cover,
        n.is_local AS isLocal
      FROM novel n
+     LEFT JOIN novel_stats s ON s.novel_id = n.id
      WHERE ${conditions.join(" AND ")}
      ORDER BY n.name COLLATE NOCASE ASC`,
     params,

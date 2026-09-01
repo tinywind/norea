@@ -493,6 +493,33 @@ describe("listLibraryNovelRefreshTargets", () => {
     expect(params).toEqual([9]);
   });
 
+  it("applies every active library filter to refresh targets", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([]);
+
+    await listLibraryNovelRefreshTargets({
+      search: "  Hero ",
+      categoryId: 9,
+      downloadedOnly: true,
+      sourceId: " source-a ",
+      unreadOnly: true,
+    });
+
+    const [sql, params] = db.select.mock.calls[0]!;
+    expect(sql).toContain("LEFT JOIN novel_stats s ON s.novel_id = n.id");
+    expect(sql).toContain("n.name LIKE '%' || $1 || '%' COLLATE NOCASE");
+    expect(sql).toContain(
+      "EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $2)",
+    );
+    expect(sql).toContain(
+      "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+    );
+    expect(sql).toContain("n.plugin_id = $3");
+    expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
+    expect(sql).not.toContain("LIMIT");
+    expect(params).toEqual(["Hero", 9, "source-a"]);
+  });
+
   it("can scope refresh targets to uncategorized novels", async () => {
     const db = stubDb();
     db.select.mockResolvedValueOnce([]);
