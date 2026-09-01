@@ -10,9 +10,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -21,13 +18,12 @@ import androidx.webkit.CookieManagerCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 import org.json.JSONObject
-import org.json.JSONTokener
 
 private const val BLANK_PAGE_URL = "about:blank"
 
@@ -59,54 +55,9 @@ internal fun shouldCompleteBlankNavigation(
     isCurrentWebView &&
     (timeoutElapsed || finishedUrl == BLANK_PAGE_URL)
 
-internal fun chapterPageNetworkHeaders(): Map<String, String> = mapOf(
-  "Cache-Control" to "no-cache",
-  "Pragma" to "no-cache",
-)
-
-internal fun browserFetchCacheMode(preferBrowserCache: Boolean): String =
-  if (preferBrowserCache) "force-cache" else "default"
-
-internal fun shouldRevalidateChapterPageRedirect(
-  isForMainFrame: Boolean,
-  method: String,
-  isRedirect: Boolean,
-  navigationInProgress: Boolean,
-  documentRevalidationInProgress: Boolean,
-  url: String,
-): Boolean =
-  isForMainFrame &&
-    method == "GET" &&
-    isRedirect &&
-    navigationInProgress &&
-    documentRevalidationInProgress &&
-    fragmentlessChapterPageUrl(url) != null
-
-internal fun pendingChapterPageCacheInvalidationKey(
-  key: ChapterPageCacheKey,
-  entry: ChapterPageCacheEntry?,
-  pendingKeys: Set<ChapterPageCacheKey>,
-  pendingSourceIds: Set<String>,
-  fullClearPending: Boolean = false,
-): ChapterPageCacheKey? {
-  val normalizedKey = normalizedChapterPageCacheKey(key) ?: return null
-  if (fullClearPending) return normalizedKey
-  if (normalizedKey.sourceId in pendingSourceIds) return normalizedKey
-  val candidates = linkedSetOf(normalizedKey)
-  entry?.aliasUrls?.forEach { aliasUrl ->
-    normalizedChapterPageCacheKey(
-      ChapterPageCacheKey(normalizedKey.sourceId, aliasUrl),
-    )?.let(candidates::add)
-  }
-  return candidates.firstOrNull { candidate -> candidate in pendingKeys }
-}
-
-internal fun cachedPageBaseUrl(targetUrl: String, documentUrl: String): String {
-  val fragmentStart = targetUrl.indexOf('#')
-  return if (fragmentStart == -1) {
-    documentUrl.substringBefore('#')
-  } else {
-    documentUrl.substringBefore('#') + targetUrl.substring(fragmentStart)
+internal fun deleteLegacyChapterPageCache(directory: File) {
+  if (directory.exists() && !directory.deleteRecursively()) {
+    throw IOException("Could not delete legacy chapter page cache: ${directory.absolutePath}")
   }
 }
 
@@ -130,13 +81,6 @@ class AndroidScraperBridge(
     val height: Int,
   )
 
-  private data class PageSnapshot(
-    val url: String,
-    val contentType: String,
-    val html: String,
-    val challenge: Boolean,
-  )
-
   private data class QueuedAction(
     val id: String,
     val sourceId: String,
@@ -156,20 +100,8 @@ class AndroidScraperBridge(
     var blankBeforeNextAction = false
     var blankNavigationInProgress = false
     var busy = false
-    var currentPageCacheEnabled = false
-    var currentPageIsChapterPage = false
     var currentUrl: String? = null
-    var documentRevalidationInProgress = false
-    var documentRevalidationRedirects = 0
     var documentStartScriptEnabled = false
-    var mainFrameFailed = false
-    var mainFrameStatus: Int? = null
-    var navigationCacheKey: ChapterPageCacheKey? = null
-    var navigationCacheWriteToken: ChapterPageCacheWriteToken? = null
-    var navigationDocumentCacheKey: ChapterPageCacheKey? = null
-    var navigationDocumentCacheWriteToken: ChapterPageCacheWriteToken? = null
-    var navigationInProgress = false
-    var pageCacheFlight: ChapterPageCacheFlightLease? = null
     var nextSequence = 0L
     var sourceId: String? = null
     var userAgent: String? = null
@@ -180,25 +112,29 @@ class AndroidScraperBridge(
   private val parserExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
     Thread(runnable, "NoreaScraperBridgeParser").apply { isDaemon = true }
   }
-  private val pageCache = AndroidChapterPageCache(
-    File(mainWebView.context.cacheDir, CHAPTER_PAGE_CACHE_DIRECTORY),
-  )
-  private val pageCacheExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-    Thread(runnable, "NoreaScraperBridgePageCache").apply { isDaemon = true }
+  private val cacheCleanupExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "NoreaScraperBridgeCacheCleanup").apply { isDaemon = true }
   }
-  private val pageCacheFlights = ChapterPageCacheFlights()
-  private val pendingPageCacheInvalidationCounts = mutableMapOf<ChapterPageCacheKey, Int>()
-  private val pendingPageCacheReloads = mutableMapOf<
-    ChapterPageCacheKey,
-    ChapterPageCacheFlightLease,
-  >()
-  private var pendingPageCacheClearCount = 0
-  private val pendingPageCacheSourceInvalidationCounts = mutableMapOf<String, Int>()
+  private val legacyChapterPageCache =
+    File(mainWebView.context.cacheDir, LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY)
   private val queues = mutableMapOf(IMMEDIATE_EXECUTOR to QueueState(IMMEDIATE_EXECUTOR))
   @Volatile
   private var closed = false
   private var browserVisible = false
   private var bounds = CssBounds(0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+
+  init {
+    runCatching {
+      cacheCleanupExecutor.execute {
+        runCatching { deleteLegacyChapterPageCache(legacyChapterPageCache) }
+          .onFailure { error ->
+            Log.w(TAG, "Could not remove legacy chapter page cache", error)
+          }
+      }
+    }.onFailure { error ->
+      Log.w(TAG, "Could not schedule legacy chapter page cache cleanup", error)
+    }
+  }
 
   private fun cookieSummary(state: QueueState, url: String?): String {
     if (url.isNullOrBlank()) return "<none>"
@@ -331,80 +267,27 @@ class AndroidScraperBridge(
   fun clearCache(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_CLEAR_CACHE) { json ->
       val id = json.getString("id")
-      pendingPageCacheClearCount += 1
-      pageCache.advanceGeneration()
-      pageCacheFlights.clear()
-      runPageCacheTask(
-        operation = pageCache::clear,
-        onSuccess = {
-          pendingPageCacheClearCount -= 1
-          mainWebView.clearCache(true)
-          sendSuccess(id, true)
-        },
-        onFailure = { error ->
-          pendingPageCacheClearCount -= 1
-          sendError(id, "scraper: chapter page cache operation failed: ${error.message}")
-        },
-      )
-    }
-  }
-
-  @JavascriptInterface
-  fun invalidateChapterPageCache(payload: String) {
-    parseCommand(
-      payload,
-      BridgeCapabilities.SCRAPER_INVALIDATE_CHAPTER_PAGE_CACHE,
-    ) { json ->
-      val id = json.getString("id")
-      val entries = json.optJSONArray("entries")
-      if (entries == null || entries.length() > MAX_PAGE_CACHE_INVALIDATION_ENTRIES) {
-        sendError(id, "scraper: invalid chapter page cache invalidation entries")
-        return@parseCommand
+      runCatching {
+        cacheCleanupExecutor.execute {
+          val cleanup = runCatching {
+            deleteLegacyChapterPageCache(legacyChapterPageCache)
+          }
+          mainHandler.post {
+            if (closed) return@post
+            cleanup.fold(
+              onSuccess = {
+                mainWebView.clearCache(true)
+                sendSuccess(id, true)
+              },
+              onFailure = { error ->
+                sendError(id, "scraper: cache clear failed: ${error.message}")
+              },
+            )
+          }
+        }
+      }.onFailure { error ->
+        sendError(id, "scraper: cache clear failed: ${error.message}")
       }
-      val keys = mutableSetOf<ChapterPageCacheKey>()
-      val sourceIds = mutableSetOf<String>()
-      for (index in 0 until entries.length()) {
-        val entry = entries.optJSONObject(index)
-        val sourceId = entry?.optString("sourceId").orEmpty()
-        if (
-          sourceId.trim().isEmpty() ||
-          sourceId.toByteArray(Charsets.UTF_8).size > MAX_SOURCE_ID_BYTES
-        ) {
-          sendError(id, "scraper: invalid chapter page cache invalidation entry")
-          return@parseCommand
-        }
-        if (entry?.has("url") != true || entry.isNull("url")) {
-          sourceIds += sourceId
-          continue
-        }
-        val url = entry.optString("url")
-        val normalizedUrl = fragmentlessChapterPageUrl(url)
-        if (normalizedUrl == null) {
-          sendError(id, "scraper: invalid chapter page cache invalidation entry")
-          return@parseCommand
-        }
-        keys += ChapterPageCacheKey(sourceId, normalizedUrl)
-      }
-      markPageCacheInvalidations(keys)
-      markPageCacheSourceInvalidations(sourceIds)
-      pageCache.advanceKeyGenerations(keys)
-      pageCache.advanceSourceGenerations(sourceIds)
-      runPageCacheTask(
-        operation = {
-          pageCache.invalidate(keys)
-          pageCache.invalidateSources(sourceIds)
-        },
-        onSuccess = {
-          unmarkPageCacheInvalidations(keys)
-          unmarkPageCacheSourceInvalidations(sourceIds)
-          sendSuccess(id, true)
-        },
-        onFailure = { error ->
-          unmarkPageCacheInvalidations(keys)
-          unmarkPageCacheSourceInvalidations(sourceIds)
-          sendError(id, "scraper: chapter page cache operation failed: ${error.message}")
-        },
-      )
     }
   }
 
@@ -541,22 +424,13 @@ class AndroidScraperBridge(
   fun destroy() {
     closed = true
     parserExecutor.shutdownNow()
-    pageCacheExecutor.shutdownNow()
-    pageCacheFlights.clear()
+    cacheCleanupExecutor.shutdownNow()
     val cleanup = Runnable {
-      pendingPageCacheInvalidationCounts.clear()
-      pendingPageCacheReloads.clear()
-      pendingPageCacheClearCount = 0
-      pendingPageCacheSourceInvalidationCounts.clear()
       queues.values.forEach { state ->
         clearTimeout(state)
         state.webView?.let { webView ->
-          webView.stopLoading()
-          webView.webViewClient = WebViewClient()
-          scraperContainer().removeView(webView)
-          webView.destroy()
+          destroyScraperWebView(state, webView, "bridge shutdown")
         }
-        state.webView = null
         state.sourceId = null
         state.queue.clear()
         state.activeAction = null
@@ -566,18 +440,6 @@ class AndroidScraperBridge(
         state.blankBeforeNextAction = false
         state.blankNavigationInProgress = false
         state.busy = false
-        state.currentPageCacheEnabled = false
-        state.currentPageIsChapterPage = false
-        state.documentRevalidationInProgress = false
-        state.documentRevalidationRedirects = 0
-        state.mainFrameFailed = false
-        state.mainFrameStatus = null
-        state.navigationCacheKey = null
-        state.navigationCacheWriteToken = null
-        state.navigationDocumentCacheKey = null
-        state.navigationDocumentCacheWriteToken = null
-        state.navigationInProgress = false
-        state.pageCacheFlight = null
       }
     }
     if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -642,65 +504,6 @@ class AndroidScraperBridge(
     runCatching {
       JSONObject(payload).optString("id").trim().takeIf { it.isNotEmpty() }
     }.getOrNull()
-
-  private fun runPageCacheTask(
-    operation: () -> Unit,
-    onSuccess: () -> Unit,
-    onFailure: (Throwable) -> Unit,
-  ) {
-    runCatching {
-      pageCacheExecutor.execute {
-        val result = runCatching(operation)
-        mainHandler.post {
-          if (closed) return@post
-          result.fold(
-            onSuccess = { onSuccess() },
-            onFailure = onFailure,
-          )
-        }
-      }
-    }.onFailure { error ->
-      mainHandler.post {
-        if (!closed) onFailure(error)
-      }
-    }
-  }
-
-  private fun markPageCacheInvalidations(keys: Collection<ChapterPageCacheKey>) {
-    keys.forEach { key ->
-      pendingPageCacheInvalidationCounts[key] =
-        (pendingPageCacheInvalidationCounts[key] ?: 0) + 1
-    }
-  }
-
-  private fun unmarkPageCacheInvalidations(keys: Collection<ChapterPageCacheKey>) {
-    keys.forEach { key ->
-      val remaining = (pendingPageCacheInvalidationCounts[key] ?: return@forEach) - 1
-      if (remaining == 0) {
-        pendingPageCacheInvalidationCounts.remove(key)
-      } else {
-        pendingPageCacheInvalidationCounts[key] = remaining
-      }
-    }
-  }
-
-  private fun markPageCacheSourceInvalidations(sourceIds: Collection<String>) {
-    sourceIds.forEach { sourceId ->
-      pendingPageCacheSourceInvalidationCounts[sourceId] =
-        (pendingPageCacheSourceInvalidationCounts[sourceId] ?: 0) + 1
-    }
-  }
-
-  private fun unmarkPageCacheSourceInvalidations(sourceIds: Collection<String>) {
-    sourceIds.forEach { sourceId ->
-      val remaining = (pendingPageCacheSourceInvalidationCounts[sourceId] ?: return@forEach) - 1
-      if (remaining == 0) {
-        pendingPageCacheSourceInvalidationCounts.remove(sourceId)
-      } else {
-        pendingPageCacheSourceInvalidationCounts[sourceId] = remaining
-      }
-    }
-  }
 
   private fun bridgeAuthorityFields(payload: JSONObject): BridgeAuthorityFields {
     val wrapper = payload.optJSONObject("_bridge") ?: payload.optJSONObject("bridge")
@@ -849,28 +652,10 @@ class AndroidScraperBridge(
   private fun activateSource(state: QueueState, sourceId: String) {
     requireMainThread()
     if (state.sourceId == sourceId) return
-    completePageCacheFlight(state, null)
     state.webView?.let { existing ->
       logState(state, "switch source profile sourceId=$sourceId")
-      existing.stopLoading()
-      existing.webViewClient = WebViewClient()
-      scraperContainer().removeView(existing)
-      existing.destroy()
+      destroyScraperWebView(state, existing, "source profile switch")
     }
-    state.webView = null
-    state.currentUrl = null
-    state.currentPageCacheEnabled = false
-    state.currentPageIsChapterPage = false
-    state.documentRevalidationInProgress = false
-    state.documentRevalidationRedirects = 0
-    state.documentStartScriptEnabled = false
-    state.mainFrameFailed = false
-    state.mainFrameStatus = null
-    state.navigationCacheKey = null
-    state.navigationCacheWriteToken = null
-    state.navigationDocumentCacheKey = null
-    state.navigationDocumentCacheWriteToken = null
-    state.navigationInProgress = false
     state.sourceId = sourceId
   }
 
@@ -934,6 +719,26 @@ class AndroidScraperBridge(
     return WebViewCompat.getProfile(webView).cookieManager
   }
 
+  private fun destroyScraperWebView(
+    state: QueueState,
+    webView: WebView,
+    reason: String,
+  ) {
+    webView.webViewClient = WebViewClient()
+    webView.stopLoading()
+    runCatching { profileCookieManager(webView).flush() }
+      .onFailure { error ->
+        Log.w(TAG, "[${state.key}] could not flush source profile before $reason", error)
+      }
+    scraperContainer().removeView(webView)
+    webView.destroy()
+    if (state.webView === webView) {
+      state.webView = null
+      state.currentUrl = null
+      state.documentStartScriptEnabled = false
+    }
+  }
+
   private fun scraper(state: QueueState, userAgent: String?): WebView {
     val existing = state.webView
     if (existing != null) {
@@ -950,32 +755,6 @@ class AndroidScraperBridge(
     state.userAgent = userAgent
     logState(state, "created scraper webview userAgent=$userAgent")
     return webView
-  }
-
-  private fun resetScraperWebView(state: QueueState, userAgent: String?): WebView {
-    completePageCacheFlight(state, null)
-    state.webView?.let { existing ->
-      logState(state, "reset scraper webview")
-      existing.stopLoading()
-      existing.webViewClient = WebViewClient()
-      scraperContainer().removeView(existing)
-      existing.destroy()
-    }
-    state.webView = null
-    state.currentUrl = null
-    state.currentPageCacheEnabled = false
-    state.currentPageIsChapterPage = false
-    state.documentRevalidationInProgress = false
-    state.documentRevalidationRedirects = 0
-    state.documentStartScriptEnabled = false
-    state.mainFrameFailed = false
-    state.mainFrameStatus = null
-    state.navigationCacheKey = null
-    state.navigationCacheWriteToken = null
-    state.navigationDocumentCacheKey = null
-    state.navigationDocumentCacheWriteToken = null
-    state.navigationInProgress = false
-    return scraper(state, userAgent)
   }
 
   @SuppressLint("SetJavaScriptEnabled")
@@ -1145,45 +924,34 @@ class AndroidScraperBridge(
     }
 
     state.blankNavigationInProgress = true
-    capturePageSnapshot(state, webView, state.currentUrl ?: webView.url) {
-      if (closed || state.webView !== webView || !state.blankNavigationInProgress) {
-        return@capturePageSnapshot
+    webView.stopLoading()
+    webView.webViewClient = makeClient(state) { finishedUrl ->
+      if (!shouldCompleteBlankNavigation(
+          blankNavigationInProgress = state.blankNavigationInProgress,
+          isCurrentWebView = state.webView === webView,
+          finishedUrl = finishedUrl,
+          timeoutElapsed = false,
+        )) {
+        return@makeClient
       }
-      webView.stopLoading()
-      webView.webViewClient = makeClient(state) { finishedUrl ->
-        if (!shouldCompleteBlankNavigation(
-            blankNavigationInProgress = state.blankNavigationInProgress,
-            isCurrentWebView = state.webView === webView,
-            finishedUrl = finishedUrl,
-            timeoutElapsed = false,
-          )) {
-          return@makeClient
-        }
-        finishBlankNavigation(state, webView, recreateWebView = false)
-      }
-      clearTimeout(state)
-      val timeout = Runnable {
-        if (!shouldCompleteBlankNavigation(
-            blankNavigationInProgress = state.blankNavigationInProgress,
-            isCurrentWebView = state.webView === webView,
-            finishedUrl = null,
-            timeoutElapsed = true,
-          )) {
-          return@Runnable
-        }
-        Log.w(TAG, "[${state.key}] blank navigation timed out; recreating scraper WebView")
-        finishBlankNavigation(state, webView, recreateWebView = true)
-      }
-      state.activeTimeout = timeout
-      mainHandler.postDelayed(timeout, BLANK_NAVIGATION_TIMEOUT_MS)
-      preparePageNavigation(
-        state,
-        BLANK_PAGE_URL,
-        pageCacheEnabled = false,
-        isChapterPage = false,
-      )
-      webView.loadUrl(BLANK_PAGE_URL)
+      finishBlankNavigation(state, webView, recreateWebView = false)
     }
+    clearTimeout(state)
+    val timeout = Runnable {
+      if (!shouldCompleteBlankNavigation(
+          blankNavigationInProgress = state.blankNavigationInProgress,
+          isCurrentWebView = state.webView === webView,
+          finishedUrl = null,
+          timeoutElapsed = true,
+        )) {
+        return@Runnable
+      }
+      Log.w(TAG, "[${state.key}] blank navigation timed out; recreating scraper WebView")
+      finishBlankNavigation(state, webView, recreateWebView = true)
+    }
+    state.activeTimeout = timeout
+    mainHandler.postDelayed(timeout, BLANK_NAVIGATION_TIMEOUT_MS)
+    webView.loadUrl(BLANK_PAGE_URL)
   }
 
   private fun finishBlankNavigation(
@@ -1194,376 +962,12 @@ class AndroidScraperBridge(
     clearTimeout(state)
     webView.webViewClient = makeClient(state, null)
     if (recreateWebView) {
-      completePageCacheFlight(state, null)
-      webView.stopLoading()
-      scraperContainer().removeView(webView)
-      webView.destroy()
-      state.webView = null
-      state.currentUrl = null
-      state.currentPageCacheEnabled = false
-      state.currentPageIsChapterPage = false
-      state.documentRevalidationInProgress = false
-      state.documentRevalidationRedirects = 0
-      state.documentStartScriptEnabled = false
-      state.mainFrameFailed = false
-      state.mainFrameStatus = null
-      state.navigationCacheKey = null
-      state.navigationCacheWriteToken = null
-      state.navigationDocumentCacheKey = null
-      state.navigationDocumentCacheWriteToken = null
-      state.navigationInProgress = false
+      destroyScraperWebView(state, webView, "blank navigation timeout")
     }
     state.blankNavigationInProgress = false
     state.blankBeforeNextAction = false
     runNext(state)
   }
-
-  private fun preparePageNavigation(
-    state: QueueState,
-    url: String,
-    pageCacheEnabled: Boolean,
-    isChapterPage: Boolean,
-    cacheKey: ChapterPageCacheKey? = null,
-    revalidateDocument: Boolean = false,
-  ) {
-    val sourceId = state.sourceId
-    val normalizedCacheKey = if (pageCacheEnabled && sourceId != null) {
-      normalizedChapterPageCacheKey(cacheKey ?: ChapterPageCacheKey(sourceId, url))
-    } else {
-      null
-    }
-    if (state.pageCacheFlight?.key != normalizedCacheKey) {
-      completePageCacheFlight(state, null)
-    }
-    state.currentPageCacheEnabled = normalizedCacheKey != null
-    state.currentPageIsChapterPage = isChapterPage
-    state.documentRevalidationInProgress = revalidateDocument && normalizedCacheKey != null
-    state.documentRevalidationRedirects = 0
-    state.mainFrameFailed = false
-    state.mainFrameStatus = null
-    state.navigationCacheKey = normalizedCacheKey
-    state.navigationCacheWriteToken = normalizedCacheKey?.let(pageCache::writeToken)
-    state.navigationDocumentCacheKey = normalizedCacheKey
-    state.navigationDocumentCacheWriteToken = state.navigationCacheWriteToken
-    state.navigationInProgress = true
-  }
-
-  private fun recordNavigationDocumentAlias(state: QueueState, url: String) {
-    val sourceId = state.sourceId ?: return
-    if (!state.currentPageCacheEnabled) return
-    val documentKey = normalizedChapterPageCacheKey(ChapterPageCacheKey(sourceId, url)) ?: return
-    if (documentKey == state.navigationDocumentCacheKey) return
-    state.navigationDocumentCacheKey = documentKey
-    state.navigationDocumentCacheWriteToken = pageCache.writeToken(documentKey)
-    state.pageCacheFlight?.let { flight ->
-      pageCacheFlights.addAlias(flight, documentKey)
-    }
-  }
-
-  private fun loadNetworkPage(
-    state: QueueState,
-    webView: WebView,
-    url: String,
-    pageCacheEnabled: Boolean,
-    isChapterPage: Boolean,
-    cacheKey: ChapterPageCacheKey? = null,
-  ) {
-    preparePageNavigation(
-      state,
-      url,
-      pageCacheEnabled,
-      isChapterPage,
-      cacheKey,
-      revalidateDocument = pageCacheEnabled,
-    )
-    if (pageCacheEnabled) {
-      webView.loadUrl(url, chapterPageNetworkHeaders())
-    } else {
-      webView.loadUrl(url)
-    }
-  }
-
-  private fun loadCachedPage(
-    state: QueueState,
-    webView: WebView,
-    targetUrl: String,
-    entry: ChapterPageCacheEntry,
-    isChapterPage: Boolean,
-  ) {
-    val sourceId = state.sourceId
-    val canonicalUrl = entry.aliasUrls.firstOrNull() ?: targetUrl
-    preparePageNavigation(
-      state,
-      targetUrl,
-      pageCacheEnabled = true,
-      isChapterPage = isChapterPage,
-      cacheKey = sourceId?.let { ChapterPageCacheKey(it, canonicalUrl) },
-    )
-    recordNavigationDocumentAlias(state, entry.url)
-    webView.loadDataWithBaseURL(
-      cachedPageBaseUrl(targetUrl, entry.url),
-      entry.html,
-      "text/html",
-      "UTF-8",
-      targetUrl,
-    )
-  }
-
-  private fun completePageCacheFlight(
-    state: QueueState,
-    entry: ChapterPageCacheEntry?,
-  ) {
-    val flight = state.pageCacheFlight ?: return
-    state.pageCacheFlight = null
-    pageCacheFlights.complete(flight, entry)
-  }
-
-  private fun followOrLoadNetworkPage(
-    state: QueueState,
-    webView: WebView,
-    key: ChapterPageCacheKey,
-    targetUrl: String,
-    isChapterPage: Boolean,
-    requireChapterPage: Boolean,
-    isRequestActive: () -> Boolean,
-  ) {
-    if (closed || !isRequestActive()) return
-    val lease = pageCacheFlights.beginOrFollow(key) { entry ->
-      if (closed || !isRequestActive()) return@beginOrFollow
-      if (entry != null && (!requireChapterPage || entry.isChapterPage)) {
-        loadCachedPage(state, webView, targetUrl, entry, isChapterPage)
-      } else {
-        followOrLoadNetworkPage(
-          state,
-          webView,
-          key,
-          targetUrl,
-          isChapterPage,
-          requireChapterPage,
-          isRequestActive,
-        )
-      }
-    } ?: return
-    state.pageCacheFlight = lease
-    loadNetworkPage(
-      state,
-      webView,
-      targetUrl,
-      pageCacheEnabled = true,
-      isChapterPage = isChapterPage,
-      cacheKey = key,
-    )
-  }
-
-  private fun loadPreferCachedPage(
-    state: QueueState,
-    webView: WebView,
-    key: ChapterPageCacheKey,
-    targetUrl: String,
-    isChapterPage: Boolean,
-    requireChapterPage: Boolean,
-    isRequestActive: () -> Boolean,
-  ) {
-    readCachedPage(key, requireChapterPage, isRequestActive) { entry ->
-      if (entry != null) {
-        loadCachedPage(state, webView, targetUrl, entry, isChapterPage)
-      } else {
-        followOrLoadNetworkPage(
-          state,
-          webView,
-          key,
-          targetUrl,
-          isChapterPage,
-          requireChapterPage,
-          isRequestActive,
-        )
-      }
-    }
-  }
-
-  private fun readCachedPage(
-    key: ChapterPageCacheKey,
-    requireChapterPage: Boolean,
-    isRequestActive: () -> Boolean,
-    onResult: (ChapterPageCacheEntry?) -> Unit,
-  ) {
-    val expectedWriteToken = pageCache.writeToken(key)
-    runCatching {
-      pageCacheExecutor.execute {
-        val entry = pageCache.read(key)?.takeIf { !requireChapterPage || it.isChapterPage }
-        mainHandler.post {
-          if (closed || !isRequestActive()) return@post
-          val pendingInvalidation = pendingChapterPageCacheInvalidationKey(
-            key = key,
-            entry = entry,
-            pendingKeys = pendingPageCacheInvalidationCounts.keys,
-            pendingSourceIds = pendingPageCacheSourceInvalidationCounts.keys,
-            fullClearPending = pendingPageCacheClearCount > 0,
-          )
-          if (pendingInvalidation != null) {
-            val reloadFlight = buildList {
-              add(key)
-              entry?.aliasUrls?.forEach { aliasUrl ->
-                add(ChapterPageCacheKey(key.sourceId, aliasUrl))
-              }
-            }.mapNotNull(::normalizedChapterPageCacheKey)
-              .firstNotNullOfOrNull(pendingPageCacheReloads::get)
-            if (reloadFlight != null) {
-              pageCacheFlights.addAlias(reloadFlight, key)
-              entry?.aliasUrls?.forEach { aliasUrl ->
-                pageCacheFlights.addAlias(
-                  reloadFlight,
-                  ChapterPageCacheKey(key.sourceId, aliasUrl),
-                )
-              }
-            }
-            onResult(null)
-          } else if (pageCache.writeToken(key) != expectedWriteToken) {
-            onResult(null)
-          } else {
-            onResult(entry)
-          }
-        }
-      }
-    }.onFailure {
-      mainHandler.post {
-        if (!closed && isRequestActive()) onResult(null)
-      }
-    }
-  }
-
-  private fun capturePageSnapshot(
-    state: QueueState,
-    webView: WebView,
-    expectedUrl: String?,
-    allowInProgress: Boolean = false,
-    onCaptured: () -> Unit = {},
-  ) {
-    val sourceId = state.sourceId
-    val normalizedExpectedUrl = expectedUrl?.let(::fragmentlessChapterPageUrl)
-    val cacheKey = state.navigationCacheKey
-    val writeToken = state.navigationCacheWriteToken
-    val documentCacheKey = state.navigationDocumentCacheKey
-    val documentWriteToken = state.navigationDocumentCacheWriteToken
-    val flight = state.pageCacheFlight
-    val mainFrameFailed = state.mainFrameFailed
-    val mainFrameStatus = state.mainFrameStatus
-    val isChapterPage = state.currentPageIsChapterPage
-    if (
-      !state.currentPageCacheEnabled ||
-      (state.navigationInProgress && !allowInProgress) ||
-      sourceId == null ||
-      cacheKey == null ||
-      documentCacheKey == null ||
-      normalizedExpectedUrl == null ||
-      mainFrameFailed ||
-      (mainFrameStatus != null && mainFrameStatus !in 200..299)
-    ) {
-      completePageCacheFlight(state, null)
-      onCaptured()
-      return
-    }
-
-    var finished = false
-    lateinit var timeout: Runnable
-    fun finishCapture(entry: ChapterPageCacheEntry? = null) {
-      if (finished) return
-      finished = true
-      mainHandler.removeCallbacks(timeout)
-      if (flight != null) {
-        if (state.pageCacheFlight == flight) state.pageCacheFlight = null
-        pageCacheFlights.complete(flight, entry)
-      }
-      onCaptured()
-    }
-    timeout = Runnable(::finishCapture)
-    mainHandler.postDelayed(timeout, PAGE_SNAPSHOT_TIMEOUT_MS)
-    runCatching {
-      webView.evaluateJavascript(PAGE_SNAPSHOT_SCRIPT) { raw ->
-        if (finished || closed || state.webView !== webView) {
-          finishCapture()
-          return@evaluateJavascript
-        }
-        val snapshot = parsePageSnapshot(raw)
-        val normalizedSnapshotUrl = snapshot?.url?.let(::fragmentlessChapterPageUrl)
-        if (
-          snapshot == null ||
-          normalizedSnapshotUrl != normalizedExpectedUrl ||
-          normalizedSnapshotUrl != documentCacheKey.url
-        ) {
-          finishCapture()
-          return@evaluateJavascript
-        }
-        val htmlBytes = snapshot.html.toByteArray(Charsets.UTF_8)
-        val metadata = ChapterPageSnapshotMetadata(
-          url = normalizedSnapshotUrl,
-          contentType = snapshot.contentType,
-          byteSize = htmlBytes.size,
-          mainFrameFailed = mainFrameFailed,
-          mainFrameStatus = mainFrameStatus,
-          challenge = snapshot.challenge,
-        )
-        if (!isCacheableChapterPageSnapshot(metadata, MAX_PAGE_SNAPSHOT_BYTES)) {
-          finishCapture()
-          return@evaluateJavascript
-        }
-        mainHandler.removeCallbacks(timeout)
-        runCatching {
-          pageCacheExecutor.execute {
-            val wrote = pageCache.write(
-              cacheKey,
-              snapshot.html,
-              isChapterPage,
-              writeToken,
-              documentUrl = normalizedSnapshotUrl,
-              documentWriteToken = documentWriteToken,
-            )
-            val entry = if (wrote) pageCache.read(cacheKey) else null
-            mainHandler.post {
-              if (!closed) {
-                val currentEntry = entry?.takeIf {
-                  pageCache.isCurrentWriteToken(cacheKey, writeToken) &&
-                    pageCache.isCurrentWriteToken(documentCacheKey, documentWriteToken) &&
-                    pendingChapterPageCacheInvalidationKey(
-                      key = cacheKey,
-                      entry = it,
-                      pendingKeys = pendingPageCacheInvalidationCounts.keys,
-                      pendingSourceIds = pendingPageCacheSourceInvalidationCounts.keys,
-                      fullClearPending = pendingPageCacheClearCount > 0,
-                    ) == null
-                }
-                finishCapture(currentEntry)
-              }
-            }
-          }
-        }.onFailure {
-          finishCapture()
-        }
-      }
-    }.onFailure {
-      finishCapture()
-    }
-  }
-
-  private fun parsePageSnapshot(raw: String): PageSnapshot? =
-    runCatching {
-      val decoded = JSONTokener(raw).nextValue()
-      val value = when (decoded) {
-        is JSONObject -> decoded
-        is String -> JSONObject(decoded)
-        else -> return null
-      }
-      val url = value.optString("url")
-      val contentType = value.optString("contentType")
-      val html = value.optString("html")
-      if (url.isBlank() || contentType.isBlank() || html.isBlank()) return null
-      PageSnapshot(
-        url = url,
-        contentType = contentType,
-        html = html,
-        challenge = value.optBoolean("challenge", false),
-      )
-    }.getOrNull()
 
   private fun emitSiteBrowserHidden() {
     mainWebView.evaluateJavascript(
@@ -1577,94 +981,7 @@ class AndroidScraperBridge(
     onFinished: ((String) -> Unit)?,
   ): WebViewClient {
     return object : WebViewClient() {
-      override fun shouldOverrideUrlLoading(
-        view: WebView,
-        request: WebResourceRequest,
-      ): Boolean {
-        val requestUrl = request.url.toString()
-        if (shouldRevalidateChapterPageRedirect(
-            isForMainFrame = request.isForMainFrame,
-            method = request.method,
-            isRedirect = request.isRedirect,
-            navigationInProgress = state.navigationInProgress,
-            documentRevalidationInProgress = state.documentRevalidationInProgress,
-            url = requestUrl,
-          )) {
-          if (state.documentRevalidationRedirects >= MAX_DOCUMENT_REVALIDATION_REDIRECTS) {
-            state.mainFrameFailed = true
-            view.stopLoading()
-            return true
-          }
-          state.documentRevalidationRedirects += 1
-          recordNavigationDocumentAlias(state, requestUrl)
-          view.loadUrl(requestUrl, chapterPageNetworkHeaders())
-          return true
-        }
-        if (
-          !request.isForMainFrame ||
-          request.method != "GET" ||
-          state.navigationInProgress ||
-          state.key != IMMEDIATE_EXECUTOR ||
-          !browserVisible
-        ) {
-          return false
-        }
-        val sourceId = state.sourceId ?: return false
-        val url = requestUrl
-        val keyUrl = fragmentlessChapterPageUrl(url) ?: return false
-        loadPreferCachedPage(
-          state = state,
-          webView = view,
-          key = ChapterPageCacheKey(sourceId, keyUrl),
-          targetUrl = url,
-          isChapterPage = false,
-          requireChapterPage = false,
-          isRequestActive = {
-            state.webView === view && state.key == IMMEDIATE_EXECUTOR && browserVisible
-          },
-        )
-        return true
-      }
-
       override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-        if (!state.navigationInProgress) {
-          preparePageNavigation(
-            state,
-            url,
-            pageCacheEnabled = state.key == IMMEDIATE_EXECUTOR && browserVisible,
-            isChapterPage = false,
-          )
-          val key = state.navigationCacheKey
-          if (key != null) {
-            val lease = pageCacheFlights.beginOrFollow(key) { entry ->
-              if (closed || state.webView !== view || !browserVisible) {
-                return@beginOrFollow
-              }
-              if (entry != null) {
-                loadCachedPage(state, view, url, entry, isChapterPage = false)
-              } else {
-                followOrLoadNetworkPage(
-                  state = state,
-                  webView = view,
-                  key = key,
-                  targetUrl = url,
-                  isChapterPage = false,
-                  requireChapterPage = false,
-                  isRequestActive = {
-                    state.webView === view && browserVisible
-                  },
-                )
-              }
-            }
-            if (lease == null) {
-              view.stopLoading()
-              state.navigationInProgress = false
-            } else {
-              state.pageCacheFlight = lease
-            }
-          }
-        }
-        recordNavigationDocumentAlias(state, url)
         state.currentUrl = url
         logState(state, "pageStarted url=$url", url)
         if (!state.documentStartScriptEnabled) {
@@ -1673,32 +990,10 @@ class AndroidScraperBridge(
       }
 
       override fun onPageFinished(view: WebView, url: String) {
-        recordNavigationDocumentAlias(state, url)
         state.currentUrl = url
-        state.navigationInProgress = false
-        state.documentRevalidationInProgress = false
-        state.documentRevalidationRedirects = 0
         profileCookieManager(view).flush()
         logState(state, "pageFinished url=$url", url)
-        capturePageSnapshot(state, view, url) {
-          onFinished?.invoke(url)
-        }
-      }
-
-      override fun onReceivedError(
-        view: WebView,
-        request: WebResourceRequest,
-        error: WebResourceError,
-      ) {
-        if (request.isForMainFrame) state.mainFrameFailed = true
-      }
-
-      override fun onReceivedHttpError(
-        view: WebView,
-        request: WebResourceRequest,
-        errorResponse: WebResourceResponse,
-      ) {
-        if (request.isForMainFrame) state.mainFrameStatus = errorResponse.statusCode
+        onFinished?.invoke(url)
       }
     }
   }
@@ -1794,13 +1089,6 @@ class AndroidScraperBridge(
   private fun runExtract(state: QueueState, payload: JSONObject) {
     val id = payload.getString("id")
     val url = payload.getString("url")
-    val rawPageCachePolicy = payload.optString("pageCachePolicy")
-      .takeIf { payload.has("pageCachePolicy") }
-    val pageCachePolicy = chapterPageCachePolicy(rawPageCachePolicy)
-    if (rawPageCachePolicy != null && pageCachePolicy == null) {
-      finishError(state, id, "webview_extract: invalid page cache policy")
-      return
-    }
     val beforeScript = payload.optString("beforeScript").takeIf { it.isNotEmpty() }
     val timeoutMs = payload.optLong("timeoutMs", 30_000L)
     val resultNonce = beforeScript?.let { bridgeSession.newNonce() }
@@ -1822,106 +1110,25 @@ class AndroidScraperBridge(
     )
     setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms")
     val webView = scraper(state, payloadUserAgent(payload))
-    if (pageCachePolicy == null) {
-      loadNetworkPage(
-        state,
-        webView,
-        targetUrl,
-        pageCacheEnabled = false,
-        isChapterPage = false,
-      )
-      return
-    }
-    val sourceId = state.sourceId
-      ?: run {
-        finishError(state, id, "webview_extract: source profile is unavailable")
-        return
-      }
-    val keyUrl = fragmentlessChapterPageUrl(url)
-      ?: run {
-        finishError(state, id, "webview_extract: page cache requires an HTTP(S) url")
-        return
-    }
-    val key = ChapterPageCacheKey(sourceId, keyUrl)
-    if (pageCachePolicy == ChapterPageCachePolicy.RELOAD) {
-      markPageCacheInvalidations(listOf(key))
-      pageCache.advanceKeyGenerations(listOf(key))
-      val reloadFlight = pageCacheFlights.replaceLeader(key)
-      state.pageCacheFlight = reloadFlight
-      if (reloadFlight != null) pendingPageCacheReloads[key] = reloadFlight
-      val invalidatedKeys = AtomicReference<Set<ChapterPageCacheKey>>(setOf(key))
-      runPageCacheTask(
-        operation = { invalidatedKeys.set(pageCache.invalidate(listOf(key))) },
-        onSuccess = {
-          reloadFlight?.let { flight ->
-            invalidatedKeys.get().forEach { alias ->
-              pageCacheFlights.addAlias(flight, alias)
-            }
-          }
-          val isCurrentReload = pendingPageCacheReloads[key] == reloadFlight
-          if (isCurrentReload) {
-            pendingPageCacheReloads.remove(key)
-          }
-          unmarkPageCacheInvalidations(listOf(key))
-          if (state.activeExtractId == id && isCurrentReload) {
-            loadNetworkPage(
-              state,
-              webView,
-              targetUrl,
-              pageCacheEnabled = true,
-              isChapterPage = true,
-              cacheKey = key,
-            )
-          } else if (reloadFlight != null) {
-            pageCacheFlights.complete(reloadFlight, null)
-          }
-        },
-        onFailure = { error ->
-          if (pendingPageCacheReloads[key] == reloadFlight) {
-            pendingPageCacheReloads.remove(key)
-          }
-          unmarkPageCacheInvalidations(listOf(key))
-          if (state.activeExtractId == id) {
-            completePageCacheFlight(state, null)
-            finishError(state, id, "webview_extract: page cache reload failed: ${error.message}")
-          } else if (reloadFlight != null) {
-            pageCacheFlights.complete(reloadFlight, null)
-          }
-        },
-      )
-      return
-    }
-    loadPreferCachedPage(
-      state = state,
-      webView = webView,
-      key = key,
-      targetUrl = targetUrl,
-      isChapterPage = true,
-      requireChapterPage = false,
-      isRequestActive = { state.activeExtractId == id },
-    )
+    webView.loadUrl(targetUrl)
   }
 
   private fun runNavigate(state: QueueState, payload: JSONObject) {
     val id = payload.getString("id")
     val url = payload.getString("url")
-    val resetHistory = payload.optBoolean("resetHistory", false)
     val timeoutMs = payload.optLong("timeoutMs", 30_000L).coerceAtLeast(1L)
     val userAgent = payloadUserAgent(payload)
-    val webView = if (resetHistory) {
-      resetScraperWebView(state, userAgent)
-    } else {
-      scraper(state, userAgent)
-    }
+    val webView = scraper(state, userAgent)
     logState(
       state,
-      "runNavigate start id=$id url=$url resetHistory=$resetHistory timeoutMs=$timeoutMs",
+      "runNavigate start id=$id url=$url timeoutMs=$timeoutMs",
       url,
     )
     hideScraperSurface(state)
     webView.stopLoading()
     webView.webViewClient = makeClient(state) {
       if (state.activeAction?.id != id) return@makeClient
+      webView.clearHistory()
       webView.webViewClient = makeClient(state, null)
       browserVisible = true
       finishSuccess(state, id, true)
@@ -1932,27 +1139,7 @@ class AndroidScraperBridge(
       timeoutMs,
       "scraper: browser navigation to $url timed out after ${timeoutMs}ms",
     )
-    val sourceId = state.sourceId
-    val keyUrl = fragmentlessChapterPageUrl(url)
-    if (sourceId == null || keyUrl == null) {
-      loadNetworkPage(
-        state,
-        webView,
-        url,
-        pageCacheEnabled = false,
-        isChapterPage = false,
-      )
-      return
-    }
-    loadPreferCachedPage(
-      state = state,
-      webView = webView,
-      key = ChapterPageCacheKey(sourceId, keyUrl),
-      targetUrl = url,
-      isChapterPage = false,
-      requireChapterPage = false,
-      isRequestActive = { state.activeAction?.id == id },
-    )
+    webView.loadUrl(url)
   }
 
   private fun prepareContext(
@@ -1999,12 +1186,6 @@ class AndroidScraperBridge(
             "prepareContext fallback id=$id contextUrl=$contextUrl finishedUrl=$finishedUrl fallbackUrl=$fallbackUrl",
             fallbackUrl,
           )
-          preparePageNavigation(
-            state,
-            fallbackUrl,
-            pageCacheEnabled = false,
-            isChapterPage = false,
-          )
           webView.loadUrl(fallbackUrl)
           return@makeClient
         }
@@ -2033,12 +1214,6 @@ class AndroidScraperBridge(
       logState(state, "prepareContext ready id=$id contextUrl=$contextUrl", contextUrl)
       ready(null)
     }
-    preparePageNavigation(
-      state,
-      contextUrl,
-      pageCacheEnabled = false,
-      isChapterPage = false,
-    )
     webView.loadUrl(contextUrl)
   }
 
@@ -2255,7 +1430,6 @@ class AndroidScraperBridge(
 
   private fun finish(state: QueueState, id: String, envelope: JSONObject) {
     clearTimeout(state)
-    completePageCacheFlight(state, null)
     logState(state, "finish id=$id envelope=${envelopeForLog(envelope)}")
     state.activeFetchId = null
     state.activeExtractId = null
@@ -2334,22 +1508,8 @@ class AndroidScraperBridge(
     state.webView?.let { profileCookieManager(it).flush() }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")
     clearTimeout(state)
-    val webView = state.webView
-    if (webView == null) {
-      state.blankBeforeNextAction = true
-      finishSuccess(state, activeId, payload)
-      return
-    }
-    capturePageSnapshot(
-      state,
-      webView,
-      state.currentUrl ?: webView.url,
-      allowInProgress = true,
-    ) {
-      if (state.activeExtractId != activeId) return@capturePageSnapshot
-      state.blankBeforeNextAction = true
-      finishSuccess(state, activeId, payload)
-    }
+    state.blankBeforeNextAction = true
+    finishSuccess(state, activeId, payload)
   }
 
   private fun isExpectedResultNonce(state: QueueState, id: String, nonce: String): Boolean {
@@ -2385,9 +1545,6 @@ class AndroidScraperBridge(
   }
 
   private fun buildFetchScript(id: String, nonce: String, request: JSONObject): String {
-    val cacheMode = browserFetchCacheMode(
-      request.optJSONObject("init")?.optBoolean("preferBrowserCache", false) == true,
-    )
     return """
       (function () {
         const request = ${request};
@@ -2415,7 +1572,6 @@ class AndroidScraperBridge(
             const fetchInit = {
               method: init.method || "GET",
               headers,
-              cache: ${JSONObject.quote(cacheMode)},
               credentials: "include",
               redirect: "follow",
               signal: controller.signal
@@ -2463,15 +1619,10 @@ class AndroidScraperBridge(
   companion object {
     private const val TAG = "NoreaScraper"
     private const val BLANK_NAVIGATION_TIMEOUT_MS = 5_000L
-    private const val CHAPTER_PAGE_CACHE_DIRECTORY = "scraper-chapter-pages"
     private const val HEX_DIGITS = "0123456789abcdef"
     private const val IMMEDIATE_EXECUTOR = "immediate"
-    private const val MAX_DOCUMENT_REVALIDATION_REDIRECTS = 20
-    private const val MAX_PAGE_CACHE_INVALIDATION_ENTRIES = 10_000
-    private const val MAX_PAGE_SNAPSHOT_BYTES =
-      AndroidChapterPageCache.DEFAULT_MAX_ENTRY_BYTES
+    private const val LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY = "scraper-chapter-pages"
     private const val MAX_SOURCE_ID_BYTES = 512
-    private const val PAGE_SNAPSHOT_TIMEOUT_MS = 1_000L
     private const val PRIORITY_INTERACTIVE = 0
     private const val PRIORITY_USER = 1
     private const val PRIORITY_NORMAL = 2
@@ -2479,38 +1630,6 @@ class AndroidScraperBridge(
     private const val PRIORITY_BACKGROUND = 4
     private val HTTP_URL_IN_LOG_MESSAGE = Regex("""(?i)\bhttps?://[^\s"'<>]+""")
     private val MALFORMED_URL_USER_INFO = Regex("""(?i)^([a-z][a-z\d+.-]*://)[^/@\s]+@""")
-
-    private val PAGE_SNAPSHOT_SCRIPT = """
-      (function () {
-        try {
-          var root = document.documentElement;
-          if (!root) return null;
-          var doctype = document.doctype
-            ? new XMLSerializer().serializeToString(document.doctype)
-            : "";
-          var html = doctype + root.outerHTML;
-          var byteSize = new Blob([html]).size;
-          if (!byteSize || byteSize > $MAX_PAGE_SNAPSHOT_BYTES) return null;
-          var challenge = !!document.querySelector(
-            "[data-norea-manual-action]," +
-            "#challenge-running,.cf-challenge-running," +
-            "iframe[src*='challenges.cloudflare.com'],.g-recaptcha"
-          );
-          if (!challenge) {
-            challenge = /^(just a moment|attention required|checking your browser)/i
-              .test((document.title || "").trim());
-          }
-          return JSON.stringify({
-            url: String(location.href),
-            contentType: String(document.contentType || ""),
-            html: html,
-            challenge: challenge
-          });
-        } catch (error) {
-          return null;
-        }
-      })();
-    """.trimIndent()
 
     private val INIT_SCRIPT = """
       (function () {

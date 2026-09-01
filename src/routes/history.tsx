@@ -37,6 +37,8 @@ import {
   type AppLocale,
   type TranslationKey,
 } from "../i18n";
+import { pluginManager } from "../lib/plugins/manager";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 
 const HISTORY_LIMIT = 100;
 const FINISHED_PROGRESS = 100;
@@ -165,6 +167,24 @@ function HistoryCover({
   entry: RecentlyReadEntry;
   size?: "resume" | "row" | "dense";
 }) {
+  const plugin =
+    entry.novelIsLocal || entry.novelInLibrary
+      ? null
+      : pluginManager.getPlugin(entry.pluginId);
+  const coverSource = useNovelCoverSource(
+    {
+      cover: entry.novelCover,
+      id: entry.novelId,
+      isLocal: entry.novelIsLocal,
+      name: entry.novelName,
+      path: entry.novelPath,
+      pluginId: entry.pluginId,
+    },
+    {
+      allowSourceFallback: Boolean(plugin),
+      plugin,
+    },
+  );
   const dimensions =
     size === "resume"
       ? { w: 88, h: 130 }
@@ -176,7 +196,7 @@ function HistoryCover({
     <ConsoleCover
       alt={entry.novelName}
       height={dimensions.h}
-      src={entry.novelCover}
+      src={coverSource}
       width={dimensions.w}
     />
   );

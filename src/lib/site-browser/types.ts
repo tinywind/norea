@@ -6,7 +6,6 @@ export interface SiteBrowserBounds {
 }
 
 export interface SiteBrowserNavigateOptions {
-  resetHistory?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

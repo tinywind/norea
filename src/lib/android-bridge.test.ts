@@ -21,10 +21,10 @@ describe("androidBridgeAuthority", () => {
   });
 
   it("returns authority only when the string capability list includes the request", () => {
-    installBridgeSession(["update.openApk", "vpn.proxy.configure"]);
+    installBridgeSession(["scraper.fetch", "update.openApk"]);
 
-    expect(androidBridgeAuthority("vpn.proxy.configure")).toEqual({
-      capability: "vpn.proxy.configure",
+    expect(androidBridgeAuthority("update.openApk")).toEqual({
+      capability: "update.openApk",
       nonce: "nonce-123",
       sessionToken: "session-token",
     });
@@ -32,13 +32,13 @@ describe("androidBridgeAuthority", () => {
 
   it.each([
     ["missing", undefined],
-    ["not an array", "vpn.proxy.configure"],
-    ["not a string array", ["vpn.proxy.configure", 1]],
-    ["without the requested capability", ["update.openApk"]],
+    ["not an array", "update.openApk"],
+    ["not a string array", ["update.openApk", 1]],
+    ["without the requested capability", ["scraper.fetch"]],
   ])("rejects a capability list that is %s", (_label, capabilities) => {
     installBridgeSession(capabilities);
 
-    expect(() => androidBridgeAuthority("vpn.proxy.configure")).toThrow(
+    expect(() => androidBridgeAuthority("update.openApk")).toThrow(
       "Android bridge capability is unavailable.",
     );
   });

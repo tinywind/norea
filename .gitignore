@@ -8,8 +8,6 @@ npm-debug.log*
 dist/
 dist-ssr/
 build/
-!/src-tauri/vendor/openvpn-connect-sys/build/
-!/src-tauri/vendor/openvpn-connect-sys/build/**
 *.tsbuildinfo
 
 # Tauri

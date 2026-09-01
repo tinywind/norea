@@ -14,7 +14,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -210,7 +209,6 @@ struct BackupRestoreManifest {
     novel_categories: Vec<BackupRestoreNovelCategory>,
     repositories: Vec<BackupRestoreRepository>,
     installed_plugins: Option<Vec<BackupRestoreInstalledPlugin>>,
-    vpn_gate_server_verdicts: Option<Vec<BackupRestoreVpnGateServerVerdict>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,30 +294,6 @@ struct BackupRestoreInstalledPlugin {
     source_url: String,
     source_code: String,
     installed_at: i64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum BackupRestoreVpnGateServerVerdictValue {
-    Works,
-    Fails,
-}
-
-impl BackupRestoreVpnGateServerVerdictValue {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Works => "works",
-            Self::Fails => "fails",
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BackupRestoreVpnGateServerVerdict {
-    ip: String,
-    verdict: BackupRestoreVpnGateServerVerdictValue,
-    updated_at: i64,
 }
 
 fn bool_to_int(value: bool) -> i64 {
@@ -421,50 +395,6 @@ fn select_backup_repository(
     })
 }
 
-async fn restore_vpn_gate_server_verdicts(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-    verdicts: Option<&[BackupRestoreVpnGateServerVerdict]>,
-) -> Result<(), String> {
-    let Some(verdicts) = verdicts else {
-        return Ok(());
-    };
-
-    for verdict in verdicts {
-        let Ok(address) = verdict.ip.parse::<Ipv4Addr>() else {
-            return Err(format!(
-                "backup_restore_snapshot: VPN Gate server verdict IP '{}' must be a canonical IPv4 address",
-                verdict.ip
-            ));
-        };
-        if address.to_string() != verdict.ip {
-            return Err(format!(
-                "backup_restore_snapshot: VPN Gate server verdict IP '{}' must be a canonical IPv4 address",
-                verdict.ip
-            ));
-        }
-    }
-
-    sqlx::query("DELETE FROM vpn_gate_server_verdict")
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| format!("backup_restore_snapshot: delete vpn_gate_server_verdict: {err}"))?;
-
-    for verdict in verdicts {
-        sqlx::query(
-            "INSERT INTO vpn_gate_server_verdict (ip, verdict, updated_at)
-             VALUES ($1, $2, $3)",
-        )
-        .bind(verdict.ip.as_str())
-        .bind(verdict.verdict.as_str())
-        .bind(verdict.updated_at)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| format!("backup_restore_snapshot: insert vpn_gate_server_verdict: {err}"))?;
-    }
-
-    Ok(())
-}
-
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
@@ -504,7 +434,6 @@ async fn execute_restore_snapshot(
             .await
             .map_err(|err| format!("backup_restore_snapshot: delete installed_plugin: {err}"))?;
     }
-    restore_vpn_gate_server_verdicts(tx, manifest.vpn_gate_server_verdicts.as_deref()).await?;
 
     for category in &manifest.categories {
         sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES ($1, $2, $3, $4)")
@@ -1658,131 +1587,7 @@ pub async fn backup_restore_staged_media(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
     use tempfile::tempdir;
-
-    async fn vpn_gate_verdict_pool() -> sqlx::SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("connect");
-        sqlx::query(
-            "CREATE TABLE vpn_gate_server_verdict (
-                ip TEXT PRIMARY KEY NOT NULL,
-                verdict TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .expect("create verdict table");
-        pool
-    }
-
-    #[test]
-    fn restore_manifest_rejects_an_unknown_vpn_gate_verdict() {
-        let json = r#"{
-            "novels": [],
-            "chapters": [],
-            "categories": [],
-            "novelCategories": [],
-            "repositories": [],
-            "vpnGateServerVerdicts": [
-                {"ip":"198.51.100.10","verdict":"unknown","updatedAt":1700000000}
-            ]
-        }"#;
-
-        assert!(serde_json::from_str::<BackupRestoreManifest>(json).is_err());
-    }
-
-    #[tokio::test]
-    async fn restore_vpn_gate_verdicts_preserves_rows_when_omitted() {
-        let pool = vpn_gate_verdict_pool().await;
-        sqlx::query(
-            "INSERT INTO vpn_gate_server_verdict (ip, verdict, updated_at)
-             VALUES ('198.51.100.10', 'works', 1700000000)",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed verdict");
-        let mut tx = pool.begin().await.expect("begin");
-
-        restore_vpn_gate_server_verdicts(&mut tx, None)
-            .await
-            .expect("preserve verdicts");
-        tx.commit().await.expect("commit");
-
-        let rows = sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT ip, verdict, updated_at FROM vpn_gate_server_verdict",
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("select verdicts");
-        assert_eq!(
-            rows,
-            vec![(
-                "198.51.100.10".to_string(),
-                "works".to_string(),
-                1_700_000_000,
-            )]
-        );
-    }
-
-    #[tokio::test]
-    async fn restore_vpn_gate_verdicts_replaces_rows_when_present() {
-        let pool = vpn_gate_verdict_pool().await;
-        sqlx::query(
-            "INSERT INTO vpn_gate_server_verdict (ip, verdict, updated_at)
-             VALUES ('198.51.100.10', 'works', 1700000000)",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed verdict");
-        let restored = vec![BackupRestoreVpnGateServerVerdict {
-            ip: "203.0.113.20".to_string(),
-            verdict: BackupRestoreVpnGateServerVerdictValue::Fails,
-            updated_at: 1_700_000_001,
-        }];
-        let mut tx = pool.begin().await.expect("begin");
-
-        restore_vpn_gate_server_verdicts(&mut tx, Some(&restored))
-            .await
-            .expect("replace verdicts");
-        tx.commit().await.expect("commit");
-
-        let rows = sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT ip, verdict, updated_at FROM vpn_gate_server_verdict",
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("select verdicts");
-        assert_eq!(
-            rows,
-            vec![(
-                "203.0.113.20".to_string(),
-                "fails".to_string(),
-                1_700_000_001,
-            )]
-        );
-    }
-
-    #[tokio::test]
-    async fn restore_vpn_gate_verdicts_rejects_non_canonical_ipv4() {
-        let pool = vpn_gate_verdict_pool().await;
-        let restored = vec![BackupRestoreVpnGateServerVerdict {
-            ip: "198.051.100.10".to_string(),
-            verdict: BackupRestoreVpnGateServerVerdictValue::Works,
-            updated_at: 1_700_000_000,
-        }];
-        let mut tx = pool.begin().await.expect("begin");
-
-        let error = restore_vpn_gate_server_verdicts(&mut tx, Some(&restored))
-            .await
-            .expect_err("reject non-canonical IPv4 address");
-
-        assert!(error.contains("canonical IPv4 address"));
-    }
 
     fn test_limits() -> BackupArchiveLimits {
         BackupArchiveLimits {

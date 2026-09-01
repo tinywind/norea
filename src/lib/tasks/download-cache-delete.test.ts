@@ -14,16 +14,6 @@ const queryMocks = vi.hoisted(() => ({
   listNonLocalDownloadCacheDeleteChapters: vi.fn(),
 }));
 
-const pluginMocks = vi.hoisted(() => ({
-  getChapterAcquisitionPlan: vi.fn(),
-  getPlugin: vi.fn(),
-  loadInstalledFromDb: vi.fn(),
-}));
-
-const webviewCacheMocks = vi.hoisted(() => ({
-  invalidateChapterPageCache: vi.fn(),
-}));
-
 const schedulerMocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   enqueueMain: vi.fn(),
@@ -50,15 +40,6 @@ vi.mock("../../db/queries/novel", () => ({
 vi.mock("../android-storage", () => ({
   deleteAndroidStoragePath: vi.fn(),
   listAndroidChapterStorageDirs: vi.fn(),
-}));
-vi.mock("../plugins/manager", () => ({
-  pluginManager: {
-    getPlugin: pluginMocks.getPlugin,
-    loadInstalledFromDb: pluginMocks.loadInstalledFromDb,
-  },
-}));
-vi.mock("../webview-cache", () => ({
-  invalidateChapterPageCache: webviewCacheMocks.invalidateChapterPageCache,
 }));
 vi.mock("../tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(() => false),
@@ -129,12 +110,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   capturedSpec = null;
   queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([]);
-  pluginMocks.getChapterAcquisitionPlan.mockReturnValue({ type: "resource" });
-  pluginMocks.getPlugin.mockReturnValue({
-    getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan,
-  });
-  pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
-  webviewCacheMocks.invalidateChapterPageCache.mockResolvedValue(undefined);
   vi.mocked(getChapterById).mockResolvedValue(null);
   vi.mocked(getNovelById).mockResolvedValue(null);
   downloadQueueMocks.waitForChapterDownloadQueueMutations.mockResolvedValue(
@@ -173,7 +148,7 @@ beforeEach(() => {
 });
 
 describe("enqueueDownloadCacheDelete", () => {
-  it("invalidates a partially downloaded chapter page without clearing other cached pages", async () => {
+  it("deletes local chapter artifacts without mutating WebView cache state", async () => {
     const events: string[] = [];
     const chapterCandidate = {
       id: 7,
@@ -194,11 +169,6 @@ describe("enqueueDownloadCacheDelete", () => {
         sourceContentType: "html",
       },
     ]);
-    pluginMocks.getChapterAcquisitionPlan.mockReturnValue({
-      type: "page",
-      url: "https://source.test/chapter/7#reader",
-      contentSelector: "article.chapter",
-    });
     tauriMocks.invoke.mockImplementation((command: string) => {
       if (command === "chapter_download_queue_remove") {
         return Promise.resolve(undefined);
@@ -224,12 +194,6 @@ describe("enqueueDownloadCacheDelete", () => {
       }
       return Promise.reject(new Error(`Unexpected invoke command: ${command}`));
     });
-    webviewCacheMocks.invalidateChapterPageCache.mockImplementation(
-      async () => {
-        events.push("invalidate");
-      },
-    );
-
     enqueueDownloadCacheDelete({
       scope: "novel",
       targetIds: [3],
@@ -240,40 +204,10 @@ describe("enqueueDownloadCacheDelete", () => {
 
     await capturedSpec.run(createContext(new AbortController()));
 
-    expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledOnce();
-    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
-      "/chapter/7",
-      "html",
-    );
-    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledOnce();
-    expect(webviewCacheMocks.invalidateChapterPageCache).toHaveBeenNthCalledWith(
-      1,
-      [
-        {
-          sourceId: "source-a",
-          url: "https://source.test/chapter/7#reader",
-        },
-      ],
-      expect.any(AbortSignal),
-    );
-    expect(webviewCacheMocks.invalidateChapterPageCache).toHaveBeenNthCalledWith(
-      2,
-      [
-        {
-          sourceId: "source-a",
-          url: "https://source.test/chapter/7#reader",
-        },
-      ],
-    );
-    expect(events).toEqual([
-      "invalidate",
-      "enqueue",
-      "run",
-      "invalidate",
-    ]);
+    expect(events).toEqual(["enqueue", "run"]);
   });
 
-  it("continues deletion when the source plugin is no longer installed", async () => {
+  it("continues deletion when source metadata is unavailable", async () => {
     queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([
       {
         contentBytes: 0,
@@ -284,8 +218,6 @@ describe("enqueueDownloadCacheDelete", () => {
         sourceContentType: "html",
       },
     ]);
-    pluginMocks.getPlugin.mockReturnValue(undefined);
-
     enqueueDownloadCacheDelete({
       scope: "chapter",
       targetIds: [7],
@@ -297,24 +229,14 @@ describe("enqueueDownloadCacheDelete", () => {
     await expect(
       capturedSpec.run(createContext(new AbortController())),
     ).resolves.toMatchObject({ cancelled: false });
-    expect(webviewCacheMocks.invalidateChapterPageCache).toHaveBeenNthCalledWith(
-      1,
-      [{ sourceId: "missing-source" }],
-      expect.any(AbortSignal),
-    );
-    expect(webviewCacheMocks.invalidateChapterPageCache).toHaveBeenNthCalledWith(
-      2,
-      [{ sourceId: "missing-source" }],
-    );
     expect(tauriMocks.invoke).toHaveBeenCalledWith(
       "download_cache_delete_work_run",
       expect.objectContaining({ workId: "work-1" }),
     );
   });
 
-  it("preserves deletion and final cache invalidation failures", async () => {
+  it("preserves native deletion failures", async () => {
     const deletionError = new Error("native deletion failed");
-    const invalidationError = new Error("cache invalidation failed");
     queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([
       {
         contentBytes: 0,
@@ -325,14 +247,6 @@ describe("enqueueDownloadCacheDelete", () => {
         sourceContentType: "html",
       },
     ]);
-    pluginMocks.getChapterAcquisitionPlan.mockReturnValue({
-      type: "page",
-      url: "https://source.test/chapter/7",
-      contentSelector: "article.chapter",
-    });
-    webviewCacheMocks.invalidateChapterPageCache
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(invalidationError);
     tauriMocks.invoke.mockImplementation((command: string) => {
       if (command === "chapter_download_queue_remove") {
         return Promise.resolve(undefined);
@@ -355,11 +269,7 @@ describe("enqueueDownloadCacheDelete", () => {
     if (!capturedSpec) throw new Error("Task spec was not captured.");
 
     const result = capturedSpec.run(createContext(new AbortController()));
-    await expect(result).rejects.toMatchObject({
-      errors: [deletionError, invalidationError],
-      message:
-        "Download cache deletion failed: native deletion failed. Chapter page cache cleanup also failed: cache invalidation failed.",
-    });
+    await expect(result).rejects.toBe(deletionError);
   });
 
   it("cancels restored native work while waiting for the storage gate", async () => {

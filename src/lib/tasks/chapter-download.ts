@@ -1043,7 +1043,6 @@ function enqueueChapterDownloadForExecutor(
           ? restoreProtectedRemoteChapterMediaSources(previousHtml, baseUrl)
           : null;
         const usesStoredHtmlSource = storedHtmlSource !== null;
-        const preferBrowserCache = acquisitionPlan.type === "page";
         let html: string;
         if (storedHtmlSource) {
           html = storedHtmlSource;
@@ -1054,7 +1053,6 @@ function enqueueChapterDownloadForExecutor(
             const captured = await captureChapterPage(acquisitionPlan, {
               contentType,
               executor: executor ?? "immediate",
-              pageCachePolicy: "prefer-cache",
               signal,
               sourceId: job.pluginId,
             });
@@ -1141,7 +1139,6 @@ function enqueueChapterDownloadForExecutor(
                 progressTotal = total + 1;
                 reportProgress({ current, total: progressTotal });
               },
-              preferBrowserCache,
               previousHtml,
               requestInit: plugin.imageRequestInit,
               repair: usesStoredHtmlSource,
@@ -1307,13 +1304,11 @@ export function enqueueChapterMediaRepair(
         );
       }
       let repairHtml = content;
-      const preferBrowserCache = acquisitionPlan.type === "page";
       if (!isBinaryChapterContentType(sourceContentType)) {
         if (acquisitionPlan.type === "page") {
           const captured = await captureChapterPage(acquisitionPlan, {
             contentType: sourceContentType,
             executor: executor ?? "immediate",
-            pageCachePolicy: "reload",
             signal,
             sourceId: job.pluginId,
           });
@@ -1451,7 +1446,6 @@ export function enqueueChapterMediaRepair(
           progressTotal = total + 1;
           reportProgress({ current, total: progressTotal });
         },
-        preferBrowserCache,
         previousHtml: content,
         requestInit: plugin.imageRequestInit,
         repair: true,

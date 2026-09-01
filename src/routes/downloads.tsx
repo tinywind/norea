@@ -32,6 +32,8 @@ import {
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
 import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
+import { pluginManager } from "../lib/plugins/manager";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import {
   formatRelativeTimeForLocale,
   useTranslation,
@@ -375,6 +377,23 @@ function DownloadCacheNovelCard({
   const { locale, t } = useTranslation();
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const plugin = novel.inLibrary
+    ? null
+    : pluginManager.getPlugin(novel.pluginId);
+  const coverSource = useNovelCoverSource(
+    {
+      cover: novel.novelCover,
+      id: novel.novelId,
+      isLocal: false,
+      name: novel.novelName,
+      path: novel.novelPath,
+      pluginId: novel.pluginId,
+    },
+    {
+      allowSourceFallback: Boolean(plugin),
+      plugin,
+    },
+  );
   const progressLabel = (current: number, total: number) =>
     t("tasks.progress.deleteDownloadCache", { current, total });
   const deleteNovel = useMutation({
@@ -428,7 +447,7 @@ function DownloadCacheNovelCard({
         <ConsoleCover
           alt={novel.novelName}
           height={84}
-          src={novel.novelCover}
+          src={coverSource}
           width={56}
         />
         <Box className="lnr-downloads-novel-main">

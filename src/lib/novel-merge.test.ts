@@ -39,6 +39,10 @@ vi.mock("./plugins/sync-novel", () => ({
   syncNovelFromSource: vi.fn(),
 }));
 
+vi.mock("./novel-cover-storage", () => ({
+  saveNovelCoverFromSource: vi.fn(),
+}));
+
 vi.mock("./tasks/download-cache-delete", () => ({
   cancelNovelChapterDownloadWork: vi.fn(),
 }));
@@ -72,7 +76,9 @@ import {
   rollbackChapterStorageTransfer,
 } from "./chapter-storage-transfer";
 import { pluginManager } from "./plugins/manager";
+import { isSourceAccessRequiredError } from "./plugins/source-access";
 import { syncNovelFromSource } from "./plugins/sync-novel";
+import { saveNovelCoverFromSource } from "./novel-cover-storage";
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
 import { cancelNovelChapterDownloadWork } from "./tasks/download-cache-delete";
 import { executeNovelMerge } from "./novel-merge";
@@ -96,6 +102,7 @@ const mockedRemoveChapterStorageDirectory = vi.mocked(
   removeChapterStorageDirectory,
 );
 const mockedSyncNovelFromSource = vi.mocked(syncNovelFromSource);
+const mockedSaveNovelCoverFromSource = vi.mocked(saveNovelCoverFromSource);
 const mockedCancelNovelChapterDownloadWork = vi.mocked(
   cancelNovelChapterDownloadWork,
 );
@@ -127,6 +134,7 @@ const targetNovel = {
   pluginName: "Source B",
   path: "/b-novel",
   name: "Novel B",
+  cover: "https://source-b.test/cover.jpg",
   inLibrary: false,
 };
 
@@ -176,6 +184,7 @@ beforeEach(() => {
   vi.mocked(pluginManager.getPlugin).mockReturnValue(plugin as never);
   vi.mocked(pluginManager.getPluginForExecutor).mockReturnValue(plugin as never);
   mockedCancelNovelChapterDownloadWork.mockResolvedValue(undefined);
+  mockedSaveNovelCoverFromSource.mockResolvedValue(undefined);
   mockedGetNovelById.mockImplementation(async (id) =>
     id === 1 ? sourceNovel : id === 2 ? targetNovel : null,
   );
@@ -271,11 +280,83 @@ describe("executeNovelMerge", () => {
         ],
       }),
     );
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
+      plugin,
+      {
+        id: 2,
+        name: "Novel B",
+        path: "/b-novel",
+        pluginId: "source-b",
+      },
+      "https://source-b.test/cover.jpg",
+    );
+    expect(
+      mockedSaveNovelCoverFromSource.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockedApplyNovelMergeInDb.mock.invocationCallOrder[0] ?? Infinity);
     expect(mockedFinalizeChapterStorageTransfer).toHaveBeenCalled();
     expect(mockedRemoveChapterStorageDirectory).toHaveBeenCalledWith(
       "contents/source-a/Novel-A-a-novel",
     );
     expect(result).toMatchObject({ targetNovelId: 2, chapterIdMap: { 11: 21 } });
+  });
+
+  it("continues the merge when the target library cover cannot be stored", async () => {
+    mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
+      new Error("cover unavailable"),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        executeNovelMerge({
+          sourceNovelId: 1,
+          target: {
+            pluginId: "source-b",
+            item: { name: "Novel B", path: "/b-novel" },
+          },
+          decisions: [
+            { sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" },
+          ],
+          artifactSourceChapterIdByTargetPath: { "/b/1": 11 },
+        }),
+      ).resolves.toMatchObject({ targetNovelId: 2 });
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(mockedApplyNovelMergeInDb).toHaveBeenCalled();
+    expect(mockedPrepareChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedRemoveChapterStorageDirectory).toHaveBeenCalledWith(
+      "contents/source-a/Novel-A-a-novel",
+    );
+  });
+
+  it("propagates a source access challenge from target cover storage", async () => {
+    mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
+      Object.assign(new Error("Complete the Cloudflare check."), {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source-b.test/cdn-cgi/challenge-platform/",
+        },
+        code: "manual-action-required",
+      }),
+    );
+
+    await expect(
+      executeNovelMerge({
+        sourceNovelId: 1,
+        target: {
+          pluginId: "source-b",
+          item: { name: "Novel B", path: "/b-novel" },
+        },
+        decisions: [
+          { sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" },
+        ],
+        artifactSourceChapterIdByTargetPath: { "/b/1": 11 },
+      }),
+    ).rejects.toSatisfy(isSourceAccessRequiredError);
+    expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
+    expect(mockedPrepareChapterStorageTransfer).not.toHaveBeenCalled();
   });
 
   it("does not overwrite a valid B download", async () => {

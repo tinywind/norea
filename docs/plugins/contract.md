@@ -42,7 +42,6 @@ type ChapterAcquisitionPlan =
       excludeSelectors?: string[];
       documentStartScript?: string;
       loadStrategy?: "selector" | "network-idle" | "scroll-to-end";
-      cacheBust?: boolean;
       timeoutMs?: number;
     }
   | {
@@ -77,9 +76,9 @@ The host navigates its scraper WebView to `url`, injects
 clones `contentSelector`, removes `excludeSelectors`, and normalizes lazy image
 sources. `readySelector` defaults to `contentSelector`.
 
-`cacheBust: true` asks the host to append its own `_norea_capture` query value.
-It never replaces existing query parameters. Use it for short-lived page
-tokens; do not add time-dependent values inside the plan method.
+The host does not add cache-busting query parameters or override the browser's
+HTTP cache mode. Source responses follow the cache and revalidation directives
+sent by the site. Required source query parameters belong in `url`.
 
 `documentStartScript` is intended for rendered content that is otherwise not
 present in the light DOM. It may observe source API responses or open shadow
@@ -220,8 +219,8 @@ The host then:
    exist for the captured content;
 5. on Windows, consumes matching media response bodies captured by WebView2
    during the chapter navigation after the response stream settles;
-6. when no captured body is available, tries the page-owning WebView cache
-   before native media fallback;
+6. when no captured body is available, performs a normal fetch in the
+   page-owning source-profile WebView without falling back to app or host HTTP;
 7. downloads missing assets through the assigned scraper WebView executor
    without an app-configurable resource slot limit;
 8. updates the manifest after each completed asset and creates `media.zip`;
@@ -255,6 +254,12 @@ not share cookies, DOM storage, or browser cache. Plugins must not copy cookies
 into a separate client or replace protected source traffic with bare
 application HTTP.
 
+Closing the foreground site browser hides its WebView instead of resetting its
+source profile. Reopening the same source and worker requests for that source
+reuse the same browser-owned user data. Android WebViews that must be destroyed
+flush their profile cookies first. A later WebView for the same source reopens
+the same persistent profile.
+
 Browser sessions created by versions that used one shared scraper profile are
 not copied into source-owned profiles because the host cannot infer which
 source owns shared cookies or DOM storage. Users may need to sign in once per
@@ -263,99 +268,6 @@ source after upgrading.
 Ordinary page chapters must use a page plan even if a static HTTP parser would
 appear simpler. This keeps challenge handling, logged-in sessions, rendered
 content, and browser cache behavior consistent.
-
-### App-local plugin VPN
-
-Windows and Android can route plugin-owned traffic through one app-local VPN
-session. The user supplies one OpenVPN profile by importing an external `.ovpn`
-file or selecting a public VPN Gate server, and the resulting local proxy is
-shared by all source plugins. It is not configured per source. Norea does not
-install a system VPN adapter or change operating-system routes, so ordinary
-traffic from other applications is not automatically routed through it.
-
-On Windows, the proxy is applied to both the main and scraper WebViews. On
-Android, the process-scoped WebView proxy applies to every WebView owned by
-Norea. Native media acquisition uses the same local proxy. Source-owned browser
-profiles and their cookie, DOM storage, and browser cache isolation remain
-unchanged. Android requires an installed System WebView that reports the
-`PROXY_OVERRIDE` feature; source-owned profile isolation also requires
-`MULTI_PROFILE`. Startup remains blocked when the proxy override is unavailable.
-
-When the VPN is disabled, sanctioned plugin traffic connects directly. While a
-connection is starting, reconnecting, or stopping, or after an unexpected VPN
-failure, plugin traffic fails closed instead of falling back to a direct
-connection. Recoverable transport and userspace tunnel interruptions remain in
-the active OpenVPN session while its core reconnects. Norea reports that state
-as reconnecting, restores tunneled routing only after the replacement tunnel is
-ready, and emits a short in-app toast after recovery. A user disconnect restores
-direct access only after teardown completes and prevents stale recovery events
-from reviving that session. When connected, plugin traffic is forwarded through
-the OpenVPN tunnel. A connection attempt that fails before a tunnel is
-established returns to the disabled direct state and retains the failure reason
-for the UI. Terminal authentication, profile, or session failures remain errors
-instead of being retried as recoverable interruptions.
-
-Proxied plugin destination hostnames are resolved inside the userspace VPN
-network using a plain DNS server supplied by the tunnel. The OpenVPN profile's
-remote server hostname is bootstrap control traffic and is resolved by the
-device before the tunnel is available. Profiles without a usable in-tunnel DNS
-server are rejected. Profiles that require DNS over HTTPS, DNS over TLS, or
-DNSSEC validation are not supported.
-
-An imported profile must be one UTF-8 `.ovpn` file no larger than 1 MiB and
-must contain a remote endpoint. Certificates, private keys, and other referenced
-configuration must be inline. Includes, external configuration files, host
-scripts or plugins, upstream proxy directives, TAP mode, external PKI, and
-dynamic challenges are rejected. Connection credentials are supplied
-separately from the stored profile. For a profile selected through the VPN Gate
-finder, the native host recognizes Norea's reserved profile marker and supplies
-VPN Gate's fixed public credential at connection time, including after an app
-restart. That credential is not persisted separately.
-
-The VPN Gate finder retrieves its catalog only from the fixed official
-`https://www.vpngate.net/api/iphone/` endpoint. This is a direct app-owned
-control request, not plugin-owned traffic, and it does not use the plugin VPN.
-The catalog is cached in memory only. Proxy mirrors, batch downloads, profile
-export, and persistent catalog storage are not supported. Public relay
-availability and metadata can change between refresh and connection attempts.
-Starting a catalog query clears the displayed server list. The user can stop
-the app-side native query or close the finder, and a result that arrives from a
-detached platform HTTP worker after cancellation is ignored. A catalog query
-has a fixed wall-clock deadline and is not retried automatically.
-
-The one-click apply-and-connect action first cancels an active connection
-attempt or disconnects an established VPN, then applies the selected server and
-connects. Plugin traffic remains fail-closed throughout this handoff; cancelling
-the handoff or failing before a tunnel is established restores direct access.
-Selecting another server supersedes the prior selection. The selected inline
-profile replaces the current profile through the same validation and atomic
-storage path as an externally imported `.ovpn`. Within that shared validation
-boundary, the finder prioritizes compatibility with VPN Gate profiles and does
-not add stricter finder-only server identity requirements. VPN Gate servers are
-public relays operated by volunteers, so Norea makes no privacy, anonymity, or
-security guarantee. The only finder-specific UI warning is a short
-successful-connection toast noting that the relay may log traffic metadata.
-
-App-owned and repository-owned requests, including update checks, remain on
-their existing direct HTTP paths and do not use the plugin VPN. Because the
-WebView proxy is shared inside the Norea process, any external request initiated
-by a Norea WebView follows that proxy while it is active. This broader WebView
-coverage prevents renderer-side plugin requests from silently escaping the
-plugin route; it does not reclassify app or repository HTTP helpers as plugin
-traffic.
-
-Plugin source currently runs in the main renderer, which is not a strong
-security boundary. These routing guarantees assume trusted, contract-compliant
-plugins that use the host shims. A malicious renderer plugin that deliberately
-invokes internal native IPC, including app-owned HTTP IPC, can bypass the
-contract. App-local proxying must not be represented as containment for
-arbitrary hostile plugin code.
-
-The loopback proxy uses an ephemeral port but does not authenticate local peer
-processes. Another local process that discovers that port could deliberately
-connect to it. The app-local guarantee therefore covers routing and automatic
-proxy configuration, not adversarial isolation from other software running on
-the same device.
 
 ## Required plugin surface
 

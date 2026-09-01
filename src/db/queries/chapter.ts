@@ -907,12 +907,17 @@ export interface LibraryUpdateEntry {
   isDownloaded: boolean;
   novelName: string;
   novelCover: string | null;
+  novelIsLocal: boolean;
 }
 
 interface RawLibraryUpdate
-  extends Omit<LibraryUpdateEntry, "contentType" | "isDownloaded"> {
+  extends Omit<
+    LibraryUpdateEntry,
+    "contentType" | "isDownloaded" | "novelIsLocal"
+  > {
   contentType: string;
   isDownloaded: number;
+  novelIsLocal: unknown;
 }
 
 const DEFAULT_UPDATES_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
@@ -976,7 +981,8 @@ export async function listLibraryUpdates(
        c.found_at        AS foundAt,
        c.is_downloaded   AS isDownloaded,
        n.name            AS novelName,
-       n.cover           AS novelCover
+       n.cover           AS novelCover,
+       n.is_local        AS novelIsLocal
      FROM chapter c
      JOIN novel n ON n.id = c.novel_id
      LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
@@ -992,6 +998,7 @@ export async function listLibraryUpdates(
     ...row,
     contentType: normalizeChapterContentType(row.contentType),
     isDownloaded: !!row.isDownloaded,
+    novelIsLocal: sqliteBoolean(row.novelIsLocal),
   }));
 }
 
@@ -1021,8 +1028,18 @@ export interface RecentlyReadEntry {
   position: number;
   readAt: number;
   progress: number;
+  pluginId: string;
   novelName: string;
   novelCover: string | null;
+  novelInLibrary: boolean;
+  novelIsLocal: boolean;
+  novelPath: string;
+}
+
+interface RawRecentlyReadEntry
+  extends Omit<RecentlyReadEntry, "novelInLibrary" | "novelIsLocal"> {
+  novelInLibrary: unknown;
+  novelIsLocal: unknown;
 }
 
 const DEFAULT_HISTORY_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
@@ -1036,7 +1053,7 @@ export async function listRecentlyRead(
 ): Promise<RecentlyReadEntry[]> {
   const db = await getDb();
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_HISTORY_LIMIT);
-  return db.select<RecentlyReadEntry[]>(
+  const rows = await db.select<RawRecentlyReadEntry[]>(
     `SELECT
        c.id              AS chapterId,
        c.novel_id        AS novelId,
@@ -1044,8 +1061,12 @@ export async function listRecentlyRead(
        c.position,
        c.read_at         AS readAt,
        c.progress,
+       n.plugin_id       AS pluginId,
        n.name            AS novelName,
-       n.cover           AS novelCover
+       n.cover           AS novelCover,
+       n.in_library      AS novelInLibrary,
+       n.is_local        AS novelIsLocal,
+       n.path            AS novelPath
      FROM chapter c
      JOIN novel n ON n.id = c.novel_id
      WHERE c.id = (
@@ -1059,6 +1080,11 @@ export async function listRecentlyRead(
      LIMIT $1`,
     [normalizedLimit],
   );
+  return rows.map((row) => ({
+    ...row,
+    novelInLibrary: sqliteBoolean(row.novelInLibrary),
+    novelIsLocal: sqliteBoolean(row.novelIsLocal),
+  }));
 }
 
 export async function getAdjacentChapter(

@@ -460,7 +460,6 @@ describe("cacheHtmlChapterMedia", () => {
       html: `<img src="/page.png">`,
       novelId: 9,
       novelPath: "/novel/sample",
-      preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "demo",
     });
@@ -534,7 +533,6 @@ describe("cacheHtmlChapterMedia", () => {
       ).join(""),
       novelId: 9,
       novelPath: "/novel/sample",
-      preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "demo",
     });
@@ -604,7 +602,6 @@ describe("cacheHtmlChapterMedia", () => {
       onProgress: () => {
         throw progressError;
       },
-      preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "demo",
     });

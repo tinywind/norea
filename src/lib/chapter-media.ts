@@ -146,7 +146,6 @@ interface CacheChapterMediaOptions {
   onMediaPatch?: (patches: ChapterMediaElementPatch[]) => Promise<void> | void;
   onProgress?: (progress: { current: number; total: number }) => void;
   previousHtml?: string | null;
-  preferBrowserCache?: boolean;
   requestInit?: ChapterMediaRequestInit;
   repair?: boolean;
   scraperExecutor?: ScraperExecutorId;
@@ -2208,7 +2207,6 @@ export async function cacheHtmlChapterMedia({
   onHtmlUpdate,
   onMediaPatch,
   onProgress,
-  preferBrowserCache,
   previousHtml,
   requestInit,
   repair = false,
@@ -2487,7 +2485,6 @@ export async function cacheHtmlChapterMedia({
           ...(requestInit?.headers ?? {}),
         },
         ...(mediaContextUrl ? { contextUrl: mediaContextUrl } : {}),
-        preferBrowserCache,
         ...(scraperExecutor ? { scraperExecutor } : {}),
         signal,
         ...(sourceId ? { sourceId } : {}),

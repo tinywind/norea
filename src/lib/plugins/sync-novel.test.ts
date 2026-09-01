@@ -75,7 +75,7 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
 beforeEach(() => {
   vi.clearAllMocks();
   mockExecute = vi.fn().mockResolvedValue({ rowsAffected: 0 });
-  mockSelect = vi.fn().mockResolvedValue([{ id: 7 }]);
+  mockSelect = vi.fn().mockResolvedValue([{ id: 7, inLibrary: 0 }]);
   mockedGetDb.mockResolvedValue({
     execute: mockExecute,
     select: mockSelect,
@@ -317,7 +317,8 @@ describe("syncNovelFromSource", () => {
     );
   });
 
-  it("stores the resolved novel cover after syncing metadata", async () => {
+  it("stores the resolved novel cover when the synced novel is in the library", async () => {
+    mockSelect.mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
     const plugin = makePlugin({
       parseNovel: vi.fn(() =>
         Promise.resolve({
@@ -344,9 +345,69 @@ describe("syncNovelFromSource", () => {
       },
       "https://source.test/cover.jpg",
     );
+    expect(mockSelect.mock.calls[0]?.[0]).toContain(
+      "in_library AS inLibrary",
+    );
+  });
+
+  it("stores the preserved database cover when an update omits cover metadata", async () => {
+    mockSelect.mockResolvedValueOnce([
+      {
+        cover: "https://source.test/preserved-cover.jpg",
+        id: 7,
+        inLibrary: 1,
+      },
+    ]);
+
+    const plugin = makePlugin({
+      parseNovelSince: vi.fn((_path, since) =>
+        Promise.resolve(makeDetail([since, since + 1])),
+      ),
+    });
+    await syncNovelFromSource(
+      plugin,
+      { name: "Novel", path: "/novel" },
+      {
+        chapterRefreshMode: "since",
+        novelId: 7,
+        preserveMissingMetadata: true,
+      },
+    );
+
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
+      plugin,
+      {
+        id: 7,
+        name: "Novel",
+        path: "/novel",
+        pluginId: "demo",
+      },
+      "https://source.test/preserved-cover.jpg",
+    );
+    expect(mockSelect.mock.calls[0]?.[0]).toContain("SELECT id, cover");
+  });
+
+  it("does not persist a cover when opening a novel outside the library", async () => {
+    await syncNovelFromSource(
+      makePlugin({
+        parseNovel: vi.fn(() =>
+          Promise.resolve({
+            ...makeDetail([1]),
+            cover: "https://source.test/cover.jpg",
+          }),
+        ),
+      }),
+      {
+        name: "Novel",
+        path: "/novel",
+      },
+    );
+
+    expect(mockedSaveNovelCoverFromSource).not.toHaveBeenCalled();
   });
 
   it("propagates a source access challenge from cover storage", async () => {
+    mockSelect.mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
     mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
       Object.assign(new Error("Complete the Cloudflare check."), {
         challenge: {

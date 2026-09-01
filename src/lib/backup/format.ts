@@ -102,12 +102,6 @@ export interface BackupSetting {
   value: string;
 }
 
-export interface BackupVpnGateServerVerdict {
-  ip: string;
-  verdict: "works" | "fails";
-  updatedAt: number;
-}
-
 export interface BackupManifest {
   version: typeof BACKUP_FORMAT_VERSION;
   /** Unix-epoch seconds when the backup was created. */
@@ -120,7 +114,6 @@ export interface BackupManifest {
   repositories: BackupRepository[];
   installedPlugins?: BackupInstalledPlugin[];
   settings?: BackupSetting[];
-  vpnGateServerVerdicts?: BackupVpnGateServerVerdict[];
 }
 
 export class BackupFormatError extends Error {
@@ -280,29 +273,6 @@ function isSetting(value: unknown): value is BackupSetting {
   return typeof value.key === "string" && typeof value.value === "string";
 }
 
-function isCanonicalIpv4(value: string): boolean {
-  const octets = value.split(".");
-  return (
-    octets.length === 4 &&
-    octets.every(
-      (octet) =>
-        /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255,
-    )
-  );
-}
-
-function isVpnGateServerVerdict(
-  value: unknown,
-): value is BackupVpnGateServerVerdict {
-  if (!isObject(value)) return false;
-  return (
-    typeof value.ip === "string" &&
-    isCanonicalIpv4(value.ip) &&
-    (value.verdict === "works" || value.verdict === "fails") &&
-    typeof value.updatedAt === "number"
-  );
-}
-
 export function encodeBackupManifest(manifest: BackupManifest): string {
   return JSON.stringify(manifest);
 }
@@ -356,10 +326,5 @@ export function parseBackupManifest(json: string): BackupManifest {
       isInstalledPlugin,
     ),
     settings: asOptionalArray(parsed.settings, "settings", isSetting),
-    vpnGateServerVerdicts: asOptionalArray(
-      parsed.vpnGateServerVerdicts,
-      "vpnGateServerVerdicts",
-      isVpnGateServerVerdict,
-    ),
   };
 }

@@ -11,6 +11,7 @@ import {
   deleteAndroidContentUriTempFile,
   describeAndroidContentUri,
   inspectAndroidChapterArtifacts,
+  inspectAndroidNovelCover,
   finalizeAndroidChapterStorageTransfer,
   prepareAndroidChapterStorageTransfer,
   prepareAndroidReaderMediaCache,
@@ -28,6 +29,7 @@ type TestBridge = {
   describeContentUri?: ReturnType<typeof vi.fn>;
   ensureNoMedia?: ReturnType<typeof vi.fn>;
   inspectChapterArtifacts?: ReturnType<typeof vi.fn>;
+  inspectNovelCover?: ReturnType<typeof vi.fn>;
   finalizeChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
   prepareChapterStorageTransfer?: ReturnType<typeof vi.fn>;
@@ -301,6 +303,87 @@ describe("android storage bridge facade", () => {
       mediaBytes: 3,
       status: "present",
     });
+  });
+
+  it("returns the stored novel cover path selected by the Android bridge", async () => {
+    const root = "content://tree/primary%3ANoreaCover";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const inspectNovelCover = vi.fn(() =>
+      JSON.stringify({
+        manifest: JSON.stringify({ fileName: "cover.jpg", version: 1 }),
+        ok: true,
+        relativePath: "contents/demo/Old-title-novel-1/cover.jpg",
+        status: "present",
+      }),
+    );
+    invokeMock.mockResolvedValue(root);
+    installBridge({ ensureNoMedia, inspectNovelCover });
+
+    await expect(
+      inspectAndroidNovelCover({
+        expectedSourceUrl: "https://source.test/cover.jpg",
+        novelPath: "/novel/1",
+        novelIdentitySuffix: "-novel-1",
+        preferredNovelDir: "contents/demo/New-title-novel-1",
+        sourceId: "demo",
+        sourceDir: "contents/demo",
+      }),
+    ).resolves.toEqual({
+      manifest: JSON.stringify({ fileName: "cover.jpg", version: 1 }),
+      relativePath: "contents/demo/Old-title-novel-1/cover.jpg",
+    });
+    expect(inspectNovelCover).toHaveBeenCalledWith(
+      root,
+      "contents/demo/New-title-novel-1",
+      "contents/demo",
+      "-novel-1",
+      "demo",
+      "/novel/1",
+      "https://source.test/cover.jpg",
+    );
+  });
+
+  it("returns null when the Android bridge finds no stored novel cover", async () => {
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const inspectNovelCover = vi.fn(() =>
+      JSON.stringify({ ok: true, status: "missing" }),
+    );
+    invokeMock.mockResolvedValue("content://tree/primary%3ANoreaCover");
+    installBridge({ ensureNoMedia, inspectNovelCover });
+
+    await expect(
+      inspectAndroidNovelCover({
+        expectedSourceUrl: null,
+        novelPath: "/novel/1",
+        novelIdentitySuffix: "-novel-1",
+        preferredNovelDir: "contents/demo/New-title-novel-1",
+        sourceId: "demo",
+        sourceDir: "contents/demo",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("propagates Android novel cover inspection failures", async () => {
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const inspectNovelCover = vi.fn(() =>
+      JSON.stringify({
+        error: "Multiple stored novel cover folders match -novel-1",
+        ok: false,
+      }),
+    );
+    invokeMock.mockResolvedValue("content://tree/primary%3ANoreaCover");
+    installBridge({ ensureNoMedia, inspectNovelCover });
+
+    await expect(
+      inspectAndroidNovelCover({
+        expectedSourceUrl: "https://source.test/cover.jpg",
+        novelPath: "/novel/1",
+        novelIdentitySuffix: "-novel-1",
+        preferredNovelDir: "contents/demo/New-title-novel-1",
+        sourceId: "demo",
+        sourceDir: "contents/demo",
+      }),
+    ).rejects.toThrow("Multiple stored novel cover folders match -novel-1");
   });
 
   it("runs chapter storage transfers through asynchronous bridge callbacks", async () => {

@@ -1094,7 +1094,6 @@ describe("enqueueChapterDownload", () => {
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
         html: storedHtml,
-        preferBrowserCache: true,
         previousHtml: storedHtml,
         repair: true,
         requestInit: { headers: { Referer: "https://source.test/" } },
@@ -1194,7 +1193,6 @@ describe("enqueueChapterDownload", () => {
       expect.objectContaining({
         contentType: "html",
         executor: "pool:2",
-        pageCachePolicy: "prefer-cache",
         sourceId: "source-a",
       }),
     );
@@ -1219,7 +1217,6 @@ describe("enqueueChapterDownload", () => {
       expect.objectContaining({
         baseUrl: "https://source.test/chapter/7",
         contextUrl: "https://source.test/chapter/7",
-        preferBrowserCache: true,
         scraperExecutor: "pool:2",
         sourceAccessUrl: "https://source.test/chapter/7",
       }),
@@ -1889,7 +1886,6 @@ describe("enqueueChapterMediaRepair", () => {
     expect(acquisitionMocks.captureChapterPage).toHaveBeenCalledWith(pagePlan, {
       contentType: "html",
       executor: "pool:1",
-      pageCachePolicy: "reload",
       signal,
       sourceId: "source-a",
     });
@@ -1909,7 +1905,6 @@ describe("enqueueChapterMediaRepair", () => {
         baseUrl: "https://source.test/chapter/7?accessKey=fresh",
         contextUrl: "https://source.test/chapter/7?accessKey=fresh",
         html: capturedHtml,
-        preferBrowserCache: true,
         previousHtml: storedHtml,
         repair: true,
         requestInit: { headers: { Referer: "https://source.test/" } },
@@ -1984,7 +1979,6 @@ describe("enqueueChapterMediaRepair", () => {
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
         html: storedHtml,
-        preferBrowserCache: false,
         previousHtml: storedHtml,
         repair: true,
       }),

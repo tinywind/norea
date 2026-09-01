@@ -42,8 +42,6 @@ export interface HttpInit {
   timeoutMs?: number;
   /** Cancels the plugin-owned WebView request when the owning task is aborted. */
   signal?: AbortSignal;
-  /** Prefer media captured by the page WebView before native transport. */
-  preferBrowserCache?: boolean;
 }
 
 export type ContextUrlProvider = string | (() => string);
@@ -52,7 +50,6 @@ interface FetchInitWire {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
-  preferBrowserCache?: boolean;
 }
 
 interface FetchResultWire {
@@ -85,7 +82,6 @@ interface AppFetchSendResult {
 
 const EMPTY_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 const REQUEST_CANCELLED_ERROR = "Request cancelled";
-const nativeMediaFallbackHosts = new Set<string>();
 
 function resolveContextUrl(
   contextUrl: ContextUrlProvider | undefined,
@@ -145,7 +141,6 @@ function toWireInit(init: HttpInit): FetchInitWire {
     method: init.method,
     headers: init.headers ? { ...init.headers } : undefined,
     body: serializeBody(init.body),
-    ...(init.preferBrowserCache ? { preferBrowserCache: true } : {}),
   };
 }
 
@@ -267,7 +262,7 @@ function sourceAccessFallbackUrl(url: string, init: HttpInit): string {
   return init.sourceAccessUrl ?? init.contextUrl ?? url;
 }
 
-function sourceMediaCacheRequestIsShareable(init: HttpInit): boolean {
+function capturedMediaRequestIsEligible(init: HttpInit): boolean {
   if (init.method !== undefined && init.method.toUpperCase() !== "GET") {
     return false;
   }
@@ -340,7 +335,7 @@ async function takeCapturedMediaResponse(
   if (
     !init.sourceId ||
     !isWindowsRuntime() ||
-    !sourceMediaCacheRequestIsShareable(init)
+    !capturedMediaRequestIsEligible(init)
   ) {
     return null;
   }
@@ -359,7 +354,7 @@ async function takeCapturedMediaResponse(
     );
     if (result) {
       console.debug("[plugin-media-fetch] captured response used", {
-        ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
+        ...mediaRequestLogContext(url, init, scraperExecutor, result.status),
       });
     }
     return result
@@ -370,7 +365,7 @@ async function takeCapturedMediaResponse(
     if (isSourceAccessRequiredError(error)) throw error;
     console.debug("[plugin-media-fetch] captured response unavailable", {
       error: fetchErrorMessage(error),
-      ...mediaFallbackLogContext(url, init, scraperExecutor),
+      ...mediaRequestLogContext(url, init, scraperExecutor),
     });
     return null;
   }
@@ -383,7 +378,7 @@ export async function takeCapturedMediaHandle(
   if (
     !init.sourceId ||
     !isWindowsRuntime() ||
-    !sourceMediaCacheRequestIsShareable(init)
+    !capturedMediaRequestIsEligible(init)
   ) {
     return null;
   }
@@ -415,7 +410,7 @@ export async function takeCapturedMediaHandle(
         throw accessError;
       }
       console.debug("[plugin-media-fetch] captured response handle used", {
-        ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
+        ...mediaRequestLogContext(url, init, scraperExecutor, result.status),
         bodyBytes: result.bodyBytes,
       });
     }
@@ -425,13 +420,13 @@ export async function takeCapturedMediaHandle(
     if (isSourceAccessRequiredError(error)) throw error;
     console.debug("[plugin-media-fetch] captured response handle unavailable", {
       error: fetchErrorMessage(error),
-      ...mediaFallbackLogContext(url, init, scraperExecutor),
+      ...mediaRequestLogContext(url, init, scraperExecutor),
     });
     return null;
   }
 }
 
-function mediaFallbackHost(url: string): string {
+function mediaRequestHost(url: string): string {
   try {
     return new URL(url).host;
   } catch {
@@ -439,7 +434,7 @@ function mediaFallbackHost(url: string): string {
   }
 }
 
-function mediaFallbackContextHost(contextUrl: string | undefined): string {
+function mediaRequestContextHost(contextUrl: string | undefined): string {
   if (!contextUrl) return "";
   try {
     return new URL(contextUrl).host;
@@ -448,68 +443,26 @@ function mediaFallbackContextHost(contextUrl: string | undefined): string {
   }
 }
 
-function shouldPreferNativeMediaFetch(url: string, init: HttpInit): boolean {
-  if (init.preferBrowserCache) return false;
-  const host = mediaFallbackHost(url);
-  const contextHost = mediaFallbackContextHost(init.contextUrl);
-  return host !== "" && contextHost !== "" && host !== contextHost;
-}
-
-function shouldRetryNativeMediaWithBrowser(response: Response): boolean {
-  return (
-    response.status === 401 ||
-    response.status === 403 ||
-    response.status === 429 ||
-    response.status >= 500
-  );
-}
-
 function fetchErrorMessage(error: unknown): string {
   return redactUrlsForLog(
     error instanceof Error ? error.message : String(error),
   );
 }
 
-function mediaFallbackLogContext(
+function mediaRequestLogContext(
   url: string,
   init: HttpInit,
   scraperExecutor: ScraperExecutorId,
   status?: number,
 ): Record<string, number | string | undefined> {
   return {
-    contextHost: mediaFallbackContextHost(init.contextUrl),
-    host: mediaFallbackHost(url),
+    contextHost: mediaRequestContextHost(init.contextUrl),
+    host: mediaRequestHost(url),
     sanitizedUrl: redactUrlForLog(url),
     scraperExecutor,
     sourceId: init.sourceId,
     status,
   };
-}
-
-async function nativeMediaResponse(
-  url: string,
-  init: HttpInit,
-  scraperExecutor: ScraperExecutorId,
-): Promise<Response> {
-  const wireInit = toWireInit(init);
-  const userAgent = scraperUserAgent(wireInit.headers);
-  const timeoutMs = requestTimeoutMs(init.timeoutMs);
-  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
-  console.debug("[plugin-media-fetch] native fetch started", {
-    ...mediaFallbackLogContext(url, init, scraperExecutor),
-  });
-  const result = await nativeMediaFetch(
-    url,
-    wireInit,
-    userAgent,
-    timeoutMs,
-    signal,
-    init.sourceId,
-  );
-  console.debug("[plugin-media-fetch] native fetch finished", {
-    ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
-  });
-  return checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init));
 }
 
 export async function cancelScraperExecutor(
@@ -539,7 +492,6 @@ async function desktopWebviewFetch(
   userAgent: string | null,
   sourceId: string | undefined,
   scraperExecutor: ScraperExecutorId,
-  cacheMediaResponse: boolean,
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ): Promise<FetchResultWire> {
@@ -554,7 +506,6 @@ async function desktopWebviewFetch(
     userAgent,
     queue: scraperExecutor,
     ...(sourceId ? { sourceId } : {}),
-    ...(cacheMediaResponse ? { cacheMediaResponse: true } : {}),
     timeoutMs,
   });
   if (!signal) return request;
@@ -565,45 +516,6 @@ async function desktopWebviewFetch(
       void cancelScraperExecutor(scraperExecutor);
       reject(requestAbortedError());
     };
-    signal.addEventListener("abort", abortListener, { once: true });
-    if (signal.aborted) abortListener();
-  });
-
-  try {
-    return await Promise.race([request, abort]);
-  } catch (error) {
-    if (signal.aborted) throw requestAbortedError();
-    throw error;
-  } finally {
-    if (abortListener) signal.removeEventListener("abort", abortListener);
-    request.catch(() => undefined);
-  }
-}
-
-async function nativeMediaFetch(
-  url: string,
-  init: FetchInitWire,
-  userAgent: string | null,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  sourceId: string | undefined,
-): Promise<FetchResultWire> {
-  if (signal?.aborted) {
-    throw requestAbortedError();
-  }
-
-  const request = invoke<FetchResultWire>("scraper_media_fetch", {
-    url,
-    init,
-    userAgent,
-    timeoutMs,
-    ...(sourceId ? { sourceId } : {}),
-  });
-  if (!signal) return request;
-
-  let abortListener: (() => void) | undefined;
-  const abort = new Promise<never>((_resolve, reject) => {
-    abortListener = () => reject(requestAbortedError());
     signal.addEventListener("abort", abortListener, { once: true });
     if (signal.aborted) abortListener();
   });
@@ -740,9 +652,7 @@ export async function appFetchText(
 async function pluginFetchInternal(
   url: string,
   init: HttpInit = {},
-  options: { cacheMediaResponse?: boolean; logFailures?: boolean } = {},
 ): Promise<Response> {
-  const logFailures = options.logFailures ?? true;
   const wireInit = toWireInit(init);
   const contextUrl = init.contextUrl ?? null;
   const userAgent = scraperUserAgent(wireInit.headers);
@@ -770,12 +680,11 @@ async function pluginFetchInternal(
           userAgent,
           init.sourceId,
           scraperExecutor,
-          options.cacheMediaResponse ?? false,
           timeoutMs,
           signal,
         );
   } catch (error) {
-    if (logFailures && !isRequestAbortError(error)) {
+    if (!isRequestAbortError(error)) {
       console.error("[plugin-fetch] failed", {
         contextUrl: contextUrl ? redactUrlForLog(contextUrl) : null,
         error: fetchErrorMessage(error),
@@ -798,10 +707,7 @@ export async function pluginFetch(
 
 /**
  * Fetch chapter-local media. A response captured during page navigation is
- * reused first, followed by a browser-cache fetch in the same WebView. Some
- * image CDNs allow `<img>` loads but block JS `fetch()` reads; those static
- * media requests fall back to the scraper-owned native media fetch with
- * plugin-declared headers.
+ * reused first, followed by a normal fetch in the same source-profile WebView.
  */
 export async function pluginMediaFetch(
   url: string,
@@ -815,131 +721,7 @@ export async function pluginMediaFetch(
     scraperExecutor,
   );
   if (capturedResponse) return capturedResponse;
-  if (shouldPreferNativeMediaFetch(url, init)) {
-    let nativeError: unknown;
-    try {
-      const nativeResponse = await nativeMediaResponse(
-        url,
-        init,
-        scraperExecutor,
-      );
-      if (!shouldRetryNativeMediaWithBrowser(nativeResponse)) {
-        return nativeResponse;
-      }
-      nativeError = `HTTP ${nativeResponse.status} ${nativeResponse.statusText}`;
-      console.warn(
-        "[plugin-media-fetch] native fetch returned retryable status; trying WebView",
-        {
-          ...mediaFallbackLogContext(
-            url,
-            init,
-            scraperExecutor,
-            nativeResponse.status,
-          ),
-          nativeError,
-        },
-      );
-    } catch (error) {
-      if (isSourceAccessRequiredError(error)) throw error;
-      if (isRequestAbortError(error)) {
-        throw error;
-      }
-      nativeError = error;
-      console.warn("[plugin-media-fetch] native fetch failed; trying WebView", {
-        ...mediaFallbackLogContext(url, init, scraperExecutor),
-        nativeError: fetchErrorMessage(error),
-      });
-    }
-
-    try {
-      return await pluginFetchInternal(url, init, {
-        cacheMediaResponse: true,
-        logFailures: false,
-      });
-    } catch (browserError) {
-      if (isSourceAccessRequiredError(browserError)) throw browserError;
-      if (isRequestAbortError(browserError)) {
-        throw browserError;
-      }
-      console.warn("[plugin-media-fetch] WebView fallback failed", {
-        ...mediaFallbackLogContext(url, init, scraperExecutor),
-        browserError: fetchErrorMessage(browserError),
-        nativeError: fetchErrorMessage(nativeError),
-      });
-      throw new Error(
-        `Media fetch failed for ${redactUrlForLog(url)}; native: ${fetchErrorMessage(
-          nativeError,
-        )}; browser: ${fetchErrorMessage(browserError)}`,
-        { cause: browserError },
-      );
-    }
-  }
-
-  let browserError: unknown;
-  try {
-    const browserResponse = await pluginFetchInternal(url, init, {
-      cacheMediaResponse: true,
-      logFailures: false,
-    });
-    if (browserResponse.ok) return browserResponse;
-    browserError = `HTTP ${browserResponse.status} ${browserResponse.statusText}`;
-  } catch (error) {
-    if (isSourceAccessRequiredError(error)) throw error;
-    if (isRequestAbortError(error)) {
-      throw error;
-    }
-    browserError = error;
-  }
-  const host = mediaFallbackHost(url);
-  const fallbackKey = host || url;
-  if (!nativeMediaFallbackHosts.has(fallbackKey)) {
-    nativeMediaFallbackHosts.add(fallbackKey);
-    console.debug(
-      "[plugin-media-fetch] browser fetch failed; using native media fetch",
-      {
-        ...mediaFallbackLogContext(url, init, scraperExecutor),
-        error: fetchErrorMessage(browserError),
-      },
-    );
-  }
-
-  const wireInit = toWireInit(init);
-  const userAgent = scraperUserAgent(wireInit.headers);
-  const timeoutMs = requestTimeoutMs(init.timeoutMs);
-  const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
-  console.debug("[plugin-media-fetch] native fallback started", {
-    ...mediaFallbackLogContext(url, init, scraperExecutor),
-  });
-  try {
-    const result = await nativeMediaFetch(
-      url,
-      wireInit,
-      userAgent,
-      timeoutMs,
-      signal,
-      init.sourceId,
-    );
-    console.debug("[plugin-media-fetch] native fallback finished", {
-      ...mediaFallbackLogContext(url, init, scraperExecutor, result.status),
-    });
-    return checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init));
-  } catch (nativeError) {
-    if (isSourceAccessRequiredError(nativeError)) throw nativeError;
-    if (isRequestAbortError(nativeError)) {
-      throw nativeError;
-    }
-    console.warn("[plugin-media-fetch] native fallback failed", {
-      ...mediaFallbackLogContext(url, init, scraperExecutor),
-      browserError: fetchErrorMessage(browserError),
-      nativeError: fetchErrorMessage(nativeError),
-    });
-    throw new Error(
-      `Media fetch failed for ${redactUrlForLog(url)}; browser: ${fetchErrorMessage(
-        browserError,
-      )}; native: ${fetchErrorMessage(nativeError)}`,
-      { cause: nativeError },
-    );
-  }
+  return pluginFetchInternal(url, init);
 }
 
 /**

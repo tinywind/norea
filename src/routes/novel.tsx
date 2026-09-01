@@ -1421,7 +1421,14 @@ function NovelWorkspace({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { titleRef, titleStyle } = useAutoFitNovelTitle(novel.name);
-  const coverSource = useNovelCoverSource(novel);
+  const coverPlugin =
+    novel.isLocal || novel.inLibrary
+      ? null
+      : pluginManager.getPlugin(novel.pluginId);
+  const coverSource = useNovelCoverSource(novel, {
+    allowSourceFallback: Boolean(coverPlugin),
+    plugin: coverPlugin,
+  });
   const genres = useMemo(() => splitGenres(novel.genres), [novel.genres]);
   const firstChapter = useMemo(() => findFirstChapter(chapters), [chapters]);
   const lastReadChapter = useMemo(
@@ -1735,7 +1742,7 @@ export function NovelDetailPage() {
 
   useEffect(() => {
     const novel = novelQuery.data;
-    if (!novel || novel.isLocal || !novel.cover) return;
+    if (!novel || novel.isLocal || !novel.inLibrary || !novel.cover) return;
     const plugin = pluginManager.getPlugin(novel.pluginId);
     if (!plugin) return;
 
@@ -1769,6 +1776,7 @@ export function NovelDetailPage() {
   }, [
     novelQuery.data?.cover,
     novelQuery.data?.id,
+    novelQuery.data?.inLibrary,
     novelQuery.data?.isLocal,
     novelQuery.data?.name,
     novelQuery.data?.path,

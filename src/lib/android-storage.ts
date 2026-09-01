@@ -35,6 +35,15 @@ interface AndroidStorageBridge {
     chapterIdentityPrefix: string,
     preferredContentFileName: string,
   ) => void;
+  inspectNovelCover: (
+    rootUri: string,
+    preferredNovelDir: string,
+    sourceDir: string,
+    novelIdentitySuffix: string,
+    sourceId: string,
+    novelPath: string,
+    expectedSourceUrl: string,
+  ) => string;
   finalizeChapterStorageTransfer: (
     requestId: string,
     rootUri: string,
@@ -193,6 +202,12 @@ interface AndroidChapterStorageTransferResponse extends AndroidStorageResponse {
   preparation?: ChapterStorageTransferPreparation;
 }
 
+interface AndroidNovelCoverResponse extends AndroidStorageResponse {
+  status?: "missing" | "present";
+  manifest?: string;
+  relativePath?: string;
+}
+
 export interface AndroidChapterArtifacts {
   status: "missing" | "present";
   contentFile: string | null;
@@ -205,6 +220,20 @@ export interface AndroidChapterStorageLookupInput {
   sourceDir: string;
   novelIdentitySuffix: string;
   chapterIdentityPrefix: string;
+}
+
+export interface AndroidNovelCoverInspection {
+  manifest: string;
+  relativePath: string;
+}
+
+export interface AndroidNovelCoverLookupInput {
+  expectedSourceUrl: string | null;
+  novelPath: string;
+  preferredNovelDir: string;
+  sourceId: string;
+  sourceDir: string;
+  novelIdentitySuffix: string;
 }
 
 export interface AndroidContentUriDescriptor {
@@ -549,6 +578,34 @@ export async function readAndroidStorageText(
     if (error instanceof Error && /not found/i.test(error.message)) return null;
     throw error;
   }
+}
+
+export async function inspectAndroidNovelCover(
+  input: AndroidNovelCoverLookupInput,
+): Promise<AndroidNovelCoverInspection | null> {
+  const root = await androidStorageRoot();
+  const response = parseStorageResponse<AndroidNovelCoverResponse>(
+    androidStorageBridge().inspectNovelCover(
+      root,
+      input.preferredNovelDir,
+      input.sourceDir,
+      input.novelIdentitySuffix,
+      input.sourceId,
+      input.novelPath,
+      input.expectedSourceUrl ?? "",
+    ),
+  );
+  if (
+    response.status !== "present" ||
+    !response.manifest?.trim() ||
+    !response.relativePath?.trim()
+  ) {
+    return null;
+  }
+  return {
+    manifest: response.manifest,
+    relativePath: response.relativePath.trim(),
+  };
 }
 
 export async function inspectAndroidChapterArtifacts(input: AndroidChapterStorageLookupInput & {

@@ -40,6 +40,7 @@ describe("listDownloadCacheNovels", () => {
     const [sql] = mockSelect.mock.calls[0]!;
     expect(sql).toContain("SUM(c.content_bytes + c.media_bytes)");
     expect(sql).toContain("media_repair_needed = 1");
+    expect(sql).toContain("n.path           AS novelPath");
     expect(sql).toContain("n.is_local = 0");
     expect(sql).not.toContain("length(CAST");
     expect(sql).not.toContain("COALESCE(c.content");

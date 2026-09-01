@@ -16,6 +16,7 @@ export interface DownloadCacheNovel {
   novelId: number;
   novelName: string;
   novelCover: string | null;
+  novelPath: string;
   pluginId: string;
   pluginName?: string | null;
   inLibrary: boolean;
@@ -105,6 +106,7 @@ export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
        n.id             AS novelId,
        n.name           AS novelName,
        n.cover          AS novelCover,
+       n.path           AS novelPath,
        n.plugin_id      AS pluginId,
        ip.name          AS pluginName,
        n.in_library     AS inLibrary,

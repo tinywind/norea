@@ -187,7 +187,6 @@ pub struct FetchInit {
     pub method: Option<String>,
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<String>,
-    pub prefer_browser_cache: Option<bool>,
 }
 
 /// Successful fetch payload returned to JS. Mirrors the subset of
@@ -214,13 +213,6 @@ pub struct CapturedResourceHandleResult {
     pub final_url: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChapterPageCacheInvalidationEntry {
-    source_id: String,
-    url: Option<String>,
-}
-
 /// Lazily-created scraper WebViews keyed by scraper executor id.
 #[cfg(desktop)]
 #[derive(Default)]
@@ -244,7 +236,6 @@ pub struct ScraperState {
     /// cancellation advanced it while queued or in flight.
     cancel_generations: Mutex<HashMap<String, Arc<AtomicU64>>>,
     captured_resources: Arc<crate::webview_resource_capture::CapturedResourceStore>,
-    chapter_page_cache: Arc<crate::webview_resource_capture::ChapterPageCache>,
     #[cfg(target_os = "windows")]
     resource_capture_handlers: Mutex<HashSet<String>>,
 }
@@ -271,10 +262,8 @@ const IMMEDIATE_EXECUTOR: &str = "immediate";
 const RESOURCE_CAPTURE_QUIET_PERIOD: Duration = Duration::from_millis(750);
 #[cfg(desktop)]
 const SCRAPER_COOKIE_CLEAR_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(desktop)]
+#[cfg(all(desktop, target_os = "windows"))]
 const SCRAPER_CACHE_CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(desktop)]
-const SOURCE_RESOURCE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(desktop)]
 const SOURCE_PROFILE_DIRECTORY_NAME_LENGTH: usize = 64;
 
@@ -447,10 +436,6 @@ struct NavigationGuard<'a> {
 #[cfg(desktop)]
 impl Drop for NavigationGuard<'_> {
     fn drop(&mut self) {
-        #[cfg(target_os = "windows")]
-        self.state
-            .chapter_page_cache
-            .abandon_navigation(&self.executor);
         let mut pending = self
             .state
             .pending_navigations
@@ -462,19 +447,6 @@ impl Drop for NavigationGuard<'_> {
         {
             pending.remove(&self.executor);
         }
-    }
-}
-
-#[cfg(all(desktop, target_os = "windows"))]
-struct ChapterPageNavigationGuard<'a> {
-    cache: &'a crate::webview_resource_capture::ChapterPageCache,
-    executor: &'a str,
-}
-
-#[cfg(all(desktop, target_os = "windows"))]
-impl Drop for ChapterPageNavigationGuard<'_> {
-    fn drop(&mut self) {
-        self.cache.abandon_navigation(self.executor);
     }
 }
 
@@ -760,10 +732,20 @@ fn scraper_handle_for_key(
         .ok_or_else(|| "scraper: main window missing".to_string())?;
     log_windows_scraper_event("handle_for_key build child webview");
     let app_for_navigation = app.clone();
+    #[cfg(target_os = "windows")]
+    let key_for_navigation = key.to_string();
+    #[cfg(target_os = "windows")]
+    let source_id_for_navigation = source_id.to_string();
     let app_for_page_load = app.clone();
     let key_for_page_load = key.to_string();
     let initialization_script = scraper_initialization_script();
     let data_directory = source_profile_data_directory(app, source_id)?;
+    #[cfg(target_os = "windows")]
+    if let Err(error) =
+        crate::webview_resource_capture::remove_legacy_chapter_page_cache(&data_directory)
+    {
+        log::warn!("[scraper] legacy chapter page cache cleanup skipped: {error}");
+    }
     let mut builder = WebviewBuilder::new(
         label.clone(),
         WebviewUrl::App(PathBuf::from(SCRAPER_HOMEPAGE_PATH)),
@@ -774,6 +756,15 @@ fn scraper_handle_for_key(
             fire_completion(&state, &request_id);
             return false;
         }
+        #[cfg(target_os = "windows")]
+        {
+            let state = app_for_navigation.state::<ScraperState>();
+            begin_visible_user_navigation_resource_capture(
+                &state,
+                &key_for_navigation,
+                &source_id_for_navigation,
+            );
+        }
         true
     })
     .on_page_load(move |_webview, payload| {
@@ -782,12 +773,6 @@ fn scraper_handle_for_key(
     })
     .initialization_script(initialization_script)
     .data_directory(data_directory);
-    #[cfg(target_os = "windows")]
-    {
-        let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
-        let browser_args = crate::plugin_vpn::windows_webview_browser_args(None, vpn.proxy_port())?;
-        builder = builder.additional_browser_args(&browser_args);
-    }
     if let Some(user_agent) = user_agent {
         builder = builder.user_agent(user_agent);
     }
@@ -841,16 +826,6 @@ fn scraper_handle_for_key(
     Ok(webview)
 }
 
-#[cfg(desktop)]
-fn executor_uses_source_profile(state: &ScraperState, executor: &str, source_id: &str) -> bool {
-    state
-        .webviews
-        .lock()
-        .expect("scraper webviews mutex")
-        .get(executor)
-        .is_some_and(|entry| entry.source_id == source_id)
-}
-
 #[cfg(all(desktop, any(target_os = "windows", test)))]
 fn begin_navigation_resource_capture(state: &ScraperState, executor: &str, source_id: &str) -> u64 {
     state
@@ -859,9 +834,34 @@ fn begin_navigation_resource_capture(state: &ScraperState, executor: &str, sourc
     state.captured_resources.begin(executor)
 }
 
+#[cfg(all(desktop, any(target_os = "windows", test)))]
+fn begin_visible_user_navigation_resource_capture(
+    state: &ScraperState,
+    executor: &str,
+    source_id: &str,
+) -> Option<u64> {
+    let is_visible = state
+        .visible_key
+        .lock()
+        .expect("scraper visible_key mutex")
+        .as_deref()
+        == Some(executor);
+    if !is_visible
+        || state
+            .pending_navigations
+            .lock()
+            .expect("scraper pending navigations mutex")
+            .contains_key(executor)
+    {
+        return None;
+    }
+    Some(begin_navigation_resource_capture(
+        state, executor, source_id,
+    ))
+}
+
 #[cfg(all(desktop, target_os = "windows"))]
 async fn ensure_resource_capture_handler(
-    app: &AppHandle,
     scraper: &ScraperWebview,
     state: &ScraperState,
     executor: &str,
@@ -882,9 +882,7 @@ async fn ensure_resource_capture_handler(
         scraper,
         executor.to_string(),
         source_id.to_string(),
-        source_profile_data_directory(app, source_id)?,
         Arc::clone(&state.captured_resources),
-        Arc::clone(&state.chapter_page_cache),
     )
     .await?;
     state
@@ -924,8 +922,6 @@ fn close_scraper_webview_for_key(
     reason: &str,
     preserve_captured_resources: bool,
 ) -> Result<bool, String> {
-    #[cfg(target_os = "windows")]
-    state.chapter_page_cache.abandon_navigation(key);
     {
         let mut visible_key = state.visible_key.lock().expect("scraper visible_key mutex");
         if visible_key.as_deref() == Some(key) {
@@ -1118,11 +1114,7 @@ pub async fn scraper_set_bounds(
     )?;
     #[cfg(target_os = "windows")]
     {
-        ensure_resource_capture_handler(&app, &scraper, &state, IMMEDIATE_EXECUTOR, &source_id)
-            .await?;
-        state
-            .chapter_page_cache
-            .enable_foreground(IMMEDIATE_EXECUTOR);
+        ensure_resource_capture_handler(&scraper, &state, IMMEDIATE_EXECUTOR, &source_id).await?;
         state.captured_resources.begin_or_resume(IMMEDIATE_EXECUTOR);
     }
     let previous_key = state
@@ -1205,8 +1197,6 @@ pub async fn scraper_hide(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     state.captured_resources.stop(&visible_key);
-    #[cfg(target_os = "windows")]
-    state.chapter_page_cache.abandon_navigation(&visible_key);
     let webview = state
         .webviews
         .lock()
@@ -1471,11 +1461,8 @@ fn temporary_cache_clear_webview(
         "{SCRAPER_LABEL}-cache-clear-{}",
         FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
-    let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
-    let browser_args = crate::plugin_vpn::windows_webview_browser_args(None, vpn.proxy_port())?;
     let builder = WebviewBuilder::new(label, WebviewUrl::External(blank_url))
-        .data_directory(data_directory.to_path_buf())
-        .additional_browser_args(&browser_args);
+        .data_directory(data_directory.to_path_buf());
     let webview = main_window
         .add_child(
             builder,
@@ -1587,9 +1574,11 @@ pub async fn scraper_clear_cache(
         if let Err(error) = clear_windows_source_profile_cache(&app, profile, None).await {
             errors.push(error);
         }
-    }
-    if let Err(error) = state.chapter_page_cache.clear_profiles(&profiles) {
-        errors.push(error);
+        if let Err(error) =
+            crate::webview_resource_capture::remove_legacy_chapter_page_cache(profile)
+        {
+            errors.push(error);
+        }
     }
     state.captured_resources.clear_all();
     if errors.is_empty() {
@@ -1606,54 +1595,6 @@ pub async fn scraper_clear_cache(
     _state: tauri::State<'_, ScraperState>,
 ) -> Result<(), String> {
     Err("scraper_clear_cache is only available on Windows".to_string())
-}
-
-#[cfg(all(desktop, target_os = "windows"))]
-#[tauri::command]
-pub fn scraper_invalidate_chapter_page_cache(
-    app: AppHandle,
-    state: tauri::State<'_, ScraperState>,
-    entries: Vec<ChapterPageCacheInvalidationEntry>,
-) -> Result<(), String> {
-    let mut targets = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let source_id = normalize_source_id(Some(&entry.source_id))?;
-        if let Some(url) = entry.url.as_deref() {
-            let parsed =
-                Url::parse(url).map_err(|_| "chapter page cache: invalid URL".to_string())?;
-            if !matches!(parsed.scheme(), "http" | "https") {
-                return Err("chapter page cache: URL must use HTTP or HTTPS".to_string());
-            }
-        }
-        targets.push((
-            source_profile_data_directory(&app, &source_id)?,
-            source_id,
-            entry.url,
-        ));
-    }
-
-    for (profile_directory, source_id, url) in targets {
-        if let Some(url) = url {
-            state
-                .chapter_page_cache
-                .invalidate(&source_id, &profile_directory, &url)?;
-        } else {
-            state
-                .chapter_page_cache
-                .clear_source(&source_id, &profile_directory)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(all(desktop, target_os = "windows")))]
-#[tauri::command]
-pub fn scraper_invalidate_chapter_page_cache(
-    _app: AppHandle,
-    _state: tauri::State<'_, ScraperState>,
-    _entries: Vec<ChapterPageCacheInvalidationEntry>,
-) -> Result<(), String> {
-    Err("scraper_invalidate_chapter_page_cache is only available on Windows".to_string())
 }
 
 /// Delete cookies available to one plugin URL from its isolated scraper profile.
@@ -1825,12 +1766,10 @@ pub async fn scraper_navigate(
     url: String,
     source_id: Option<String>,
     user_agent: Option<String>,
-    reset_history: Option<bool>,
     timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     let user_agent = normalize_user_agent(user_agent);
     let source_id = normalize_source_id(source_id.as_deref())?;
-    let reset_history = reset_history.unwrap_or(false);
     let request_timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
     let request_started = Instant::now();
     let generation = scraper_executor_cancel_generation(&state, IMMEDIATE_EXECUTOR);
@@ -1838,7 +1777,7 @@ pub async fn scraper_navigate(
     let url_for_log = scraper_url_for_log(&url);
     if cfg!(target_os = "windows") {
         log::trace!(
-            "[scraper:windows] scraper_navigate start url={url_for_log} reset_history={reset_history} timeout_ms={} ",
+            "[scraper:windows] scraper_navigate start url={url_for_log} timeout_ms={} ",
             request_timeout.as_millis(),
         );
     }
@@ -1857,25 +1796,6 @@ pub async fn scraper_navigate(
         "navigate",
         IMMEDIATE_EXECUTOR,
     )?;
-    let preserve_captured_resources =
-        reset_history && executor_uses_source_profile(&state, IMMEDIATE_EXECUTOR, &source_id);
-    if reset_history
-        && close_scraper_webview_for_key(
-            &app,
-            &state,
-            IMMEDIATE_EXECUTOR,
-            "history reset",
-            preserve_captured_resources,
-        )?
-    {
-        log_windows_scraper_event("scraper_navigate reset foreground webview");
-    }
-    ensure_executor_generation(
-        &generation,
-        expected_generation,
-        "navigate",
-        IMMEDIATE_EXECUTOR,
-    )?;
     let scraper = scraper_handle_for_key(
         &app,
         &state,
@@ -1885,8 +1805,7 @@ pub async fn scraper_navigate(
     )?;
     #[cfg(target_os = "windows")]
     {
-        ensure_resource_capture_handler(&app, &scraper, &state, IMMEDIATE_EXECUTOR, &source_id)
-            .await?;
+        ensure_resource_capture_handler(&scraper, &state, IMMEDIATE_EXECUTOR, &source_id).await?;
         begin_navigation_resource_capture(&state, IMMEDIATE_EXECUTOR, &source_id);
     }
     let parsed: Url = url
@@ -1927,14 +1846,6 @@ pub async fn scraper_navigate(
         executor: IMMEDIATE_EXECUTOR.to_string(),
         request_id,
     };
-    #[cfg(target_os = "windows")]
-    state.chapter_page_cache.prepare_navigation(
-        IMMEDIATE_EXECUTOR,
-        &source_id,
-        &source_profile_data_directory(&app, &source_id)?,
-        parsed.as_str(),
-        Some(crate::webview_resource_capture::PageCachePolicy::PreferCache),
-    )?;
     if let Err(err) = scraper.navigate(parsed) {
         return Err(format!(
             "scraper_navigate: {}",
@@ -1995,7 +1906,6 @@ pub async fn scraper_navigate(
     url: String,
     _source_id: Option<String>,
     _user_agent: Option<String>,
-    _reset_history: Option<bool>,
     _timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     let _ = url;
@@ -2010,7 +1920,6 @@ pub async fn scraper_navigate(
     _url: String,
     _source_id: Option<String>,
     _user_agent: Option<String>,
-    _reset_history: Option<bool>,
     _timeout_ms: Option<u64>,
 ) -> Result<(), String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
@@ -2170,29 +2079,6 @@ fn decode_base64(value: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
-fn native_media_timeout(timeout_ms: Option<u64>) -> Duration {
-    Duration::from_millis(timeout_ms.unwrap_or(60_000).max(1))
-}
-
-fn skip_native_media_header(name: &str) -> bool {
-    matches!(
-        name.trim().to_ascii_lowercase().as_str(),
-        "accept-charset"
-            | "accept-encoding"
-            | "connection"
-            | "content-length"
-            | "cookie"
-            | "cookie2"
-            | "host"
-            | "keep-alive"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-            | "via"
-    )
-}
-
 #[cfg(desktop)]
 fn log_scraper_cookies(
     _scraper: &ScraperWebview,
@@ -2337,20 +2223,6 @@ fn looks_like_browser_challenge_extract_result(value: &str) -> bool {
         || lower.contains("\"kind\": \"cf\"")
         || lower.contains("\"kind\":\"cloudflare\"")
         || lower.contains("\"kind\": \"cloudflare\"")
-}
-
-#[cfg(desktop)]
-fn extract_result_requires_manual_action(value: &str) -> bool {
-    #[derive(Deserialize)]
-    struct ExtractResultEnvelope {
-        ok: bool,
-        code: String,
-    }
-
-    let Ok(envelope) = serde_json::from_str::<ExtractResultEnvelope>(value) else {
-        return false;
-    };
-    !envelope.ok && envelope.code == "manual-action-required"
 }
 
 #[cfg(desktop)]
@@ -2619,7 +2491,6 @@ fn build_webview_fetch_start_script(
       const fetchInit = {{
         method: init.method || "GET",
         headers,
-        cache: init.preferBrowserCache === true ? "force-cache" : "default",
         credentials: "include",
         redirect: "follow",
         signal: controller.signal
@@ -2817,173 +2688,12 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
     }
 }
 
-#[cfg(target_os = "windows")]
-enum SourceResourceFetch {
-    Hit(Arc<crate::webview_resource_capture::CapturedResource>),
-    Leader(crate::webview_resource_capture::SourceResourceFlightGuard),
-    Uncoordinated,
-}
-
-fn source_resource_request_is_shareable(init: &FetchInit) -> bool {
-    init.headers.as_ref().is_none_or(|headers| {
-        headers.iter().all(|(name, value)| {
-            let representation_header = [
-                "range",
-                "if-match",
-                "if-modified-since",
-                "if-none-match",
-                "if-range",
-                "if-unmodified-since",
-            ]
-            .iter()
-            .any(|excluded| name.eq_ignore_ascii_case(excluded));
-            let cache_bypass = name.eq_ignore_ascii_case("cache-control")
-                && value.split(',').any(|directive| {
-                    let directive = directive.trim();
-                    directive.eq_ignore_ascii_case("no-cache")
-                        || directive.eq_ignore_ascii_case("no-store")
-                });
-            let legacy_cache_bypass = name.eq_ignore_ascii_case("pragma")
-                && value
-                    .split(',')
-                    .any(|directive| directive.trim().eq_ignore_ascii_case("no-cache"));
-            !representation_header && !cache_bypass && !legacy_cache_bypass
-        })
-    })
-}
-
-#[cfg(target_os = "windows")]
-async fn acquire_source_resource_fetch(
-    store: &Arc<crate::webview_resource_capture::CapturedResourceStore>,
-    source_id: &str,
-    url: &str,
-    timeout: Duration,
-    cancellation: Option<(&AtomicU64, u64, &str)>,
-) -> Result<SourceResourceFetch, String> {
-    let started = Instant::now();
-    let cache_epoch = store.cache_epoch();
-    loop {
-        if store.cache_epoch() != cache_epoch {
-            return Ok(SourceResourceFetch::Uncoordinated);
-        }
-        let remaining = timeout.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(format!(
-                "scraper: shared media fetch to {} timed out after {}ms",
-                scraper_url_for_log(url),
-                timeout.as_millis()
-            ));
-        }
-        if let Some((generation, expected_generation, executor)) = cancellation {
-            ensure_executor_generation(
-                generation,
-                expected_generation,
-                "shared media fetch",
-                executor,
-            )?;
-        }
-        match store.acquire_for_source(source_id, url) {
-            Some(crate::webview_resource_capture::SourceResourceAcquisition::Hit(resource)) => {
-                if store.cache_epoch() != cache_epoch {
-                    return Ok(SourceResourceFetch::Uncoordinated);
-                }
-                return Ok(SourceResourceFetch::Hit(resource));
-            }
-            Some(crate::webview_resource_capture::SourceResourceAcquisition::Leader(
-                source_flight,
-            )) => {
-                if store.cache_epoch() != cache_epoch {
-                    source_flight.fail();
-                    return Ok(SourceResourceFetch::Uncoordinated);
-                }
-                source_flight.extend_timeout(remaining);
-                return Ok(SourceResourceFetch::Leader(source_flight));
-            }
-            Some(crate::webview_resource_capture::SourceResourceAcquisition::Wait(mut waiter)) => {
-                if store.cache_epoch() != cache_epoch {
-                    return Ok(SourceResourceFetch::Uncoordinated);
-                }
-                loop {
-                    let remaining = timeout.saturating_sub(started.elapsed());
-                    if remaining.is_zero() {
-                        return Err(format!(
-                            "scraper: shared media fetch to {} timed out after {}ms",
-                            scraper_url_for_log(url),
-                            timeout.as_millis()
-                        ));
-                    }
-                    tokio::select! {
-                        result = &mut waiter => {
-                            match result {
-                                Ok(Some(resource)) => {
-                                    if store.cache_epoch() != cache_epoch {
-                                        return Ok(SourceResourceFetch::Uncoordinated);
-                                    }
-                                    if let Some((generation, expected_generation, executor)) = cancellation {
-                                        ensure_executor_generation(
-                                            generation,
-                                            expected_generation,
-                                            "shared media fetch",
-                                            executor,
-                                        )?;
-                                    }
-                                    return Ok(SourceResourceFetch::Hit(resource));
-                                }
-                                Ok(None) | Err(_) => break,
-                            }
-                        }
-                        _ = tokio::time::sleep(remaining.min(Duration::from_millis(50))) => {
-                            if let Some((generation, expected_generation, executor)) = cancellation {
-                                ensure_executor_generation(
-                                    generation,
-                                    expected_generation,
-                                    "shared media fetch",
-                                    executor,
-                                )?;
-                            }
-                        }
-                    }
-                }
-            }
-            None => return Ok(SourceResourceFetch::Uncoordinated),
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn fetch_result_from_captured_resource(
-    resource: &crate::webview_resource_capture::CapturedResource,
-) -> FetchResult {
-    FetchResult {
-        status: resource.status,
-        status_text: resource.status_text.clone(),
-        body_base64: encode_base64(&resource.body),
-        headers: resource.headers.clone(),
-        final_url: resource.final_url.clone(),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn captured_resource_from_fetch_result(
-    result: &FetchResult,
-) -> Option<crate::webview_resource_capture::CapturedResource> {
-    Some(crate::webview_resource_capture::CapturedResource {
-        status: result.status,
-        status_text: result.status_text.clone(),
-        headers: result.headers.clone(),
-        final_url: result.final_url.clone(),
-        body: decode_base64(&result.body_base64)?,
-    })
-}
-
 /// Issue an HTTP request through the scraper WebView's own browser
 /// `fetch()`, preserving Cloudflare/browser-network behavior.
 #[cfg(desktop)]
 async fn webview_fetch_with_ready_scraper(
     scraper: &ScraperWebview,
     state: &ScraperState,
-    source_id: &str,
-    cache_media_response: bool,
     url: String,
     init: Option<FetchInit>,
     context_url: Option<String>,
@@ -3006,38 +2716,6 @@ async fn webview_fetch_with_ready_scraper(
     .await?;
     ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
     let configured_timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000).max(1));
-    #[cfg(target_os = "windows")]
-    let (source_flight, source_wait_elapsed) = if cache_media_response {
-        let source_wait_started = Instant::now();
-        let source_fetch = acquire_source_resource_fetch(
-            &state.captured_resources,
-            source_id,
-            &url,
-            configured_timeout,
-            Some((generation, expected_generation, executor)),
-        )
-        .await?;
-        let source_wait_elapsed = source_wait_started.elapsed();
-        match source_fetch {
-            SourceResourceFetch::Hit(resource) => {
-                log::debug!(
-                    "[scraper:capture] source response reused source_id={source_id} consumer={executor} url={url_for_log}"
-                );
-                return Ok(fetch_result_from_captured_resource(&resource));
-            }
-            SourceResourceFetch::Leader(source_flight) => {
-                (Some(source_flight), source_wait_elapsed)
-            }
-            SourceResourceFetch::Uncoordinated => (None, source_wait_elapsed),
-        }
-    } else {
-        (None, Duration::ZERO)
-    };
-    #[cfg(not(target_os = "windows"))]
-    let source_wait_elapsed = {
-        let _ = (source_id, cache_media_response);
-        Duration::ZERO
-    };
     let init = init.unwrap_or_default();
     let request_id = format!("fetch-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
     let start_script = build_webview_fetch_start_script(&request_id, &url, &init)?;
@@ -3056,7 +2734,7 @@ async fn webview_fetch_with_ready_scraper(
         .eval(start_script)
         .map_err(|err| format!("scraper: start browser fetch: {err}"))?;
 
-    let deadline = configured_timeout.saturating_sub(source_wait_elapsed);
+    let deadline = configured_timeout;
     // Event-driven on the happy path: wake on the sentinel and read the result
     // once. The backstop tick still polls periodically so a missed sentinel
     // (e.g. a site that blocks the navigation) never regresses reliability
@@ -3106,18 +2784,6 @@ async fn webview_fetch_with_ready_scraper(
             headers: result.headers.unwrap_or_default(),
             final_url: result.final_url.unwrap_or(url),
         };
-        #[cfg(target_os = "windows")]
-        if let Some(source_flight) = &source_flight {
-            let stored = source_flight.complete(
-                captured_resource_from_fetch_result(&result),
-                crate::webview_resource_capture::CapturedResourceOrigin::BrowserFetch,
-            );
-            if stored {
-                log::debug!(
-                    "[scraper:fetch] source cache seeded source_id={source_id} url={url_for_log}"
-                );
-            }
-        }
         return Ok(result);
     }
 
@@ -3142,19 +2808,9 @@ pub async fn webview_fetch(
     source_id: Option<String>,
     user_agent: Option<String>,
     queue: Option<String>,
-    cache_media_response: Option<bool>,
     timeout_ms: Option<u64>,
 ) -> Result<FetchResult, String> {
     let user_agent = normalize_user_agent(user_agent);
-    let cache_media_response = cache_media_response.unwrap_or(false)
-        && init
-            .as_ref()
-            .and_then(|init| init.method.as_deref())
-            .unwrap_or("GET")
-            .eq_ignore_ascii_case("GET")
-        && init
-            .as_ref()
-            .is_none_or(source_resource_request_is_shareable);
     let source_id = normalize_source_id(source_id.as_deref())?;
     let queue = normalize_scraper_executor(queue.as_deref())?;
     let generation = scraper_executor_cancel_generation(&state, &queue);
@@ -3185,8 +2841,6 @@ pub async fn webview_fetch(
         result = webview_fetch_with_ready_scraper(
             &scraper,
             &state,
-            &source_id,
-            cache_media_response,
             url.clone(),
             init.clone(),
             Some(fetch_context.clone()),
@@ -3255,251 +2909,27 @@ pub async fn webview_fetch(
     _source_id: Option<String>,
     _user_agent: Option<String>,
     _queue: Option<String>,
-    _cache_media_response: Option<bool>,
     _timeout_ms: Option<u64>,
 ) -> Result<FetchResult, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
 
-#[tauri::command]
-pub async fn scraper_media_fetch(
-    url: String,
-    init: Option<FetchInit>,
-    user_agent: Option<String>,
-    timeout_ms: Option<u64>,
-    source_id: Option<String>,
-    state: tauri::State<'_, ScraperState>,
-    _vpn: tauri::State<'_, crate::plugin_vpn::PluginVpnState>,
-) -> Result<FetchResult, String> {
-    let user_agent = normalize_user_agent(user_agent);
-    let init_log = fetch_init_for_log(&init);
-    let url_for_log = scraper_url_for_log(&url);
-    log::debug!(
-        "[scraper:media_fetch] request url={url_for_log} timeout_ms={timeout_ms:?} user_agent={user_agent:?} init={init_log}"
-    );
-
-    let init = init.unwrap_or_default();
-    let method = init.method.as_deref().unwrap_or("GET");
-    let method = reqwest::Method::from_bytes(method.as_bytes())
-        .map_err(|err| format!("scraper: invalid media fetch method '{method}': {err}"))?;
-    let is_get = method == reqwest::Method::GET;
-    let request_timeout = native_media_timeout(timeout_ms);
-    #[cfg(target_os = "windows")]
-    let normalized_media_source_id = (is_get && source_resource_request_is_shareable(&init))
-        .then(|| {
-            source_id
-                .as_deref()
-                .and_then(|source_id| normalize_source_id(Some(source_id)).ok())
-        })
-        .flatten();
-    #[cfg(target_os = "windows")]
-    let (source_flight, source_wait_elapsed) =
-        if let Some(source_id) = normalized_media_source_id.as_deref() {
-            let source_wait_started = Instant::now();
-            let source_fetch = acquire_source_resource_fetch(
-                &state.captured_resources,
-                source_id,
-                &url,
-                request_timeout,
-                None,
-            )
-            .await?;
-            let source_wait_elapsed = source_wait_started.elapsed();
-            match source_fetch {
-                SourceResourceFetch::Hit(resource) => {
-                    log::debug!(
-                        "[scraper:capture] source response reused source_id={source_id} consumer=native-media url={url_for_log}"
-                    );
-                    return Ok(fetch_result_from_captured_resource(&resource));
-                }
-                SourceResourceFetch::Leader(source_flight) => {
-                    (Some(source_flight), source_wait_elapsed)
-                }
-                SourceResourceFetch::Uncoordinated => (None, source_wait_elapsed),
-            }
-        } else {
-            (None, Duration::ZERO)
-        };
-    #[cfg(not(target_os = "windows"))]
-    let source_wait_elapsed = Duration::ZERO;
-    let remaining_timeout = request_timeout
-        .saturating_sub(source_wait_elapsed)
-        .max(Duration::from_millis(1));
-    let client = reqwest::Client::builder()
-        .timeout(remaining_timeout)
-        .redirect(reqwest::redirect::Policy::limited(10));
-    #[cfg(any(target_os = "android", target_os = "windows"))]
-    let client = {
-        let proxy = reqwest::Proxy::all(_vpn.proxy_url())
-            .map_err(|err| format!("scraper: media fetch proxy: {err}"))?;
-        client.proxy(proxy)
-    };
-    let client = client
-        .build()
-        .map_err(|err| format!("scraper: media fetch client: {err}"))?;
-
-    let mut request = client.request(method, &url);
-    if let Some(user_agent) = user_agent {
-        request = request.header(reqwest::header::USER_AGENT, user_agent);
-    }
-    if let Some(headers) = init.headers {
-        for (name, value) in headers {
-            if skip_native_media_header(&name) {
-                continue;
-            }
-            let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                .map_err(|err| format!("scraper: invalid media fetch header '{name}': {err}"))?;
-            let header_value = reqwest::header::HeaderValue::from_str(&value).map_err(|err| {
-                format!("scraper: invalid media fetch value for header '{name}': {err}")
-            })?;
-            request = request.header(header_name, header_value);
-        }
-    }
-    if let Some(body) = init.body {
-        request = request.body(body);
-    }
-
-    let response = request.send().await.map_err(|err| {
-        format!(
-            "scraper: native media fetch to {url_for_log} failed: {}",
-            redact_urls_for_log(&err.to_string())
-        )
-    })?;
-    let status = response.status();
-    let final_url = response.url().to_string();
-    let status_text = status.canonical_reason().unwrap_or("").to_string();
-    let headers = response
-        .headers()
-        .iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_string(),
-                value.to_str().unwrap_or("").to_string(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let header_names: Vec<&String> = headers.keys().collect();
-    let body = response.bytes().await.map_err(|err| {
-        format!(
-            "scraper: native media fetch body from {url_for_log} failed: {}",
-            redact_urls_for_log(&err.to_string())
-        )
-    })?;
-
-    let final_url_for_log = scraper_url_for_log(&final_url);
-    log::debug!(
-        "[scraper:media_fetch] response url={url_for_log} status={} final_url={final_url_for_log} header_names={header_names:?} body_len={}",
-        status.as_u16(),
-        body.len()
-    );
-
-    #[cfg(not(target_os = "windows"))]
-    let _ = (&source_id, &state, is_get);
-    let result = FetchResult {
-        status: status.as_u16(),
-        status_text,
-        body_base64: encode_base64(&body),
-        headers,
-        final_url,
-    };
-    #[cfg(target_os = "windows")]
-    if let Some(source_flight) = &source_flight {
-        let stored = source_flight.complete(
-            captured_resource_from_fetch_result(&result),
-            crate::webview_resource_capture::CapturedResourceOrigin::NativeFetch,
-        );
-        if stored {
-            if let Some(source_id) = normalized_media_source_id.as_deref() {
-                log::debug!(
-                    "[scraper:media_fetch] source cache seeded source_id={source_id} url={url_for_log}"
-                );
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-#[cfg(all(test, desktop))]
+#[cfg(desktop)]
 fn take_captured_resource_for_source(
     state: &ScraperState,
     queue: &str,
     source_id: &str,
     _user_agent: Option<&str>,
     url: &str,
-) -> Option<Arc<crate::webview_resource_capture::CapturedResource>> {
+) -> Option<crate::webview_resource_capture::CapturedResource> {
     let resource = state
         .captured_resources
-        .get_for_source(queue, source_id, url)?;
+        .take_for_source(queue, source_id, url)?;
     log::debug!(
-        "[scraper:capture] source response reused source_id={source_id} consumer={queue} url={}",
+        "[scraper:capture] navigation response consumed source_id={source_id} consumer={queue} url={}",
         scraper_url_for_log(url)
     );
     Some(resource)
-}
-
-#[cfg(desktop)]
-async fn wait_for_captured_resource_for_source(
-    state: &ScraperState,
-    queue: &str,
-    source_id: &str,
-    _user_agent: Option<&str>,
-    url: &str,
-) -> Result<Option<Arc<crate::webview_resource_capture::CapturedResource>>, String> {
-    let generation = scraper_executor_cancel_generation(state, queue);
-    let expected_generation = generation.load(Ordering::Acquire);
-    loop {
-        ensure_executor_generation(
-            &generation,
-            expected_generation,
-            "captured resource wait",
-            queue,
-        )?;
-        let resource = match state
-            .captured_resources
-            .lookup_for_source(source_id, url)
-        {
-            crate::webview_resource_capture::SourceResourceLookup::Hit(resource) => resource,
-            crate::webview_resource_capture::SourceResourceLookup::Wait(mut waiter) => {
-                let started = Instant::now();
-                let resource = loop {
-                    let remaining = SOURCE_RESOURCE_WAIT_TIMEOUT.saturating_sub(started.elapsed());
-                    if remaining.is_zero() {
-                        break None;
-                    }
-                    tokio::select! {
-                        result = &mut waiter => {
-                            break result.ok().flatten();
-                        }
-                        _ = tokio::time::sleep(remaining.min(Duration::from_millis(50))) => {
-                            ensure_executor_generation(
-                                &generation,
-                                expected_generation,
-                                "captured resource wait",
-                                queue,
-                            )?;
-                        }
-                    }
-                };
-                let Some(resource) = resource else {
-                    continue;
-                };
-                resource
-            }
-            crate::webview_resource_capture::SourceResourceLookup::Miss => return Ok(None),
-        };
-        ensure_executor_generation(
-            &generation,
-            expected_generation,
-            "captured resource wait",
-            queue,
-        )?;
-        log::debug!(
-            "[scraper:capture] source response reused source_id={source_id} consumer={queue} url={}",
-            scraper_url_for_log(url)
-        );
-        return Ok(Some(resource));
-    }
 }
 
 #[cfg(desktop)]
@@ -3514,20 +2944,27 @@ pub async fn scraper_take_captured_resource(
     let source_id = normalize_source_id(source_id.as_deref())?;
     let user_agent = normalize_user_agent(user_agent);
     let queue = normalize_scraper_executor(queue.as_deref())?;
-    let resource = wait_for_captured_resource_for_source(
+    let generation = scraper_executor_cancel_generation(&state, &queue);
+    let expected_generation = generation.load(Ordering::Acquire);
+    ensure_executor_generation(
+        &generation,
+        expected_generation,
+        "captured resource take",
+        &queue,
+    )?;
+    let resource = take_captured_resource_for_source(
         &state,
         &queue,
         &source_id,
         user_agent.as_deref(),
         &url,
-    )
-    .await?;
+    );
     Ok(resource.map(|resource| FetchResult {
         status: resource.status,
-        status_text: resource.status_text.clone(),
+        status_text: resource.status_text,
         body_base64: encode_base64(&resource.body),
-        headers: resource.headers.clone(),
-        final_url: resource.final_url.clone(),
+        headers: resource.headers,
+        final_url: resource.final_url,
     }))
 }
 
@@ -3552,29 +2989,36 @@ pub async fn scraper_take_captured_resource_handle(
     let source_id = normalize_source_id(source_id.as_deref())?;
     let user_agent = normalize_user_agent(user_agent);
     let queue = normalize_scraper_executor(queue.as_deref())?;
-    let Some(resource) = wait_for_captured_resource_for_source(
+    let generation = scraper_executor_cancel_generation(&state, &queue);
+    let expected_generation = generation.load(Ordering::Acquire);
+    ensure_executor_generation(
+        &generation,
+        expected_generation,
+        "captured resource take",
+        &queue,
+    )?;
+    let Some(resource) = take_captured_resource_for_source(
         &state,
         &queue,
         &source_id,
         user_agent.as_deref(),
         &url,
-    )
-    .await?
-    else {
+    ) else {
         return Ok(None);
     };
     let status = resource.status;
-    let status_text = resource.status_text.clone();
-    let headers = resource.headers.clone();
-    let final_url = resource.final_url.clone();
+    let status_text = resource.status_text;
+    let headers = resource.headers;
+    let final_url = resource.final_url;
     let cloudflare_challenge = captured_resource_is_cloudflare_challenge(&headers, &resource.body);
+    let body = resource.body;
     let (body_handle, body_bytes) = tauri::async_runtime::spawn_blocking(move || {
         let stream_state = app.state::<crate::native_stream::NativeStreamState>();
         crate::native_stream::register_finished_bytes(
             &app,
             stream_state.inner(),
             crate::native_stream::CHAPTER_MEDIA_STREAM_DOMAIN,
-            &resource.body,
+            &body,
         )
     })
     .await
@@ -3625,8 +3069,6 @@ pub async fn scraper_cancel_executor(
 ) -> Result<bool, String> {
     let queue = normalize_scraper_executor(queue.as_deref())?;
     state.captured_resources.interrupt(&queue);
-    #[cfg(target_os = "windows")]
-    state.chapter_page_cache.abandon_navigation(&queue);
     let generation = scraper_executor_cancel_generation(&state, &queue);
     let next_generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
     log::debug!("[scraper:cancel] executor={queue} generation={next_generation}");
@@ -3717,7 +3159,6 @@ pub async fn webview_extract(
     user_agent: Option<String>,
     queue: Option<String>,
     capture_resources: Option<bool>,
-    page_cache_policy: Option<crate::webview_resource_capture::PageCachePolicy>,
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
     let url_for_log = scraper_url_for_log(&url);
@@ -3731,14 +3172,7 @@ pub async fn webview_extract(
     let scraper = scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref())?;
     let capture_resources = capture_resources.unwrap_or(false) && cfg!(target_os = "windows");
     #[cfg(target_os = "windows")]
-    ensure_resource_capture_handler(&app, &scraper, &state, &queue, &source_id).await?;
-    #[cfg(target_os = "windows")]
-    let page_cache_profile_directory = source_profile_data_directory(&app, &source_id)?;
-    #[cfg(target_os = "windows")]
-    let _chapter_page_navigation_guard = ChapterPageNavigationGuard {
-        cache: state.chapter_page_cache.as_ref(),
-        executor: &queue,
-    };
+    ensure_resource_capture_handler(&scraper, &state, &queue, &source_id).await?;
     let _capture_guard = crate::webview_resource_capture::CaptureGuard::new(
         Arc::clone(&state.captured_resources),
         &queue,
@@ -3822,14 +3256,6 @@ pub async fn webview_extract(
             "[scraper:extract] navigate queue={queue} url={url_for_log} target_url={target_url_for_log} attempt={attempt}"
         );
 
-        #[cfg(target_os = "windows")]
-        state.chapter_page_cache.prepare_navigation(
-            &queue,
-            &source_id,
-            &page_cache_profile_directory,
-            parsed.as_str(),
-            page_cache_policy,
-        )?;
         scraper.navigate(parsed.clone()).map_err(|err| {
             format!(
                 "webview_extract: navigate: {}",
@@ -3873,14 +3299,6 @@ pub async fn webview_extract(
             }
             if let Some((decoded, current_url)) = extract_result {
                 ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-                #[cfg(target_os = "windows")]
-                if page_cache_policy.is_some() && extract_result_requires_manual_action(&decoded) {
-                    state.chapter_page_cache.invalidate(
-                        &source_id,
-                        &page_cache_profile_directory,
-                        parsed.as_str(),
-                    )?;
-                }
                 if !retried_after_browser_challenge
                     && looks_like_browser_challenge_extract_result(&decoded)
                 {
@@ -3937,14 +3355,6 @@ pub async fn webview_extract(
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url_for_log}"
                         );
-                        #[cfg(target_os = "windows")]
-                        state.chapter_page_cache.prepare_navigation(
-                            &queue,
-                            &source_id,
-                            &page_cache_profile_directory,
-                            parsed.as_str(),
-                            page_cache_policy,
-                        )?;
                         scraper.navigate(parsed.clone()).map_err(|err| {
                             format!(
                                 "webview_extract: retry after browser challenge: {}",
@@ -4041,7 +3451,6 @@ pub async fn webview_extract(
     _user_agent: Option<String>,
     _queue: Option<String>,
     _capture_resources: Option<bool>,
-    _page_cache_policy: Option<crate::webview_resource_capture::PageCachePolicy>,
 ) -> Result<String, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }
@@ -4051,94 +3460,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use tokio::sync::oneshot::error::TryRecvError;
-
-    #[test]
-    fn chapter_page_cache_invalidation_entries_accept_exact_and_source_targets() {
-        let entries: Vec<ChapterPageCacheInvalidationEntry> =
-            serde_json::from_value(serde_json::json!([
-                { "sourceId": "source-a", "url": "https://source.test/chapter/1" },
-                { "sourceId": "source-b" }
-            ]))
-            .unwrap();
-
-        assert_eq!(entries[0].source_id, "source-a");
-        assert_eq!(
-            entries[0].url.as_deref(),
-            Some("https://source.test/chapter/1"),
-        );
-        assert_eq!(entries[1].source_id, "source-b");
-        assert!(entries[1].url.is_none());
-    }
-
-    #[test]
-    fn source_resource_sharing_rejects_range_and_conditional_requests() {
-        assert!(source_resource_request_is_shareable(&FetchInit::default()));
-        for name in [
-            "Range",
-            "If-Match",
-            "If-Modified-Since",
-            "If-None-Match",
-            "If-Range",
-            "If-Unmodified-Since",
-        ] {
-            let init = FetchInit {
-                headers: Some(HashMap::from([(name.to_string(), "value".to_string())])),
-                ..FetchInit::default()
-            };
-            assert!(!source_resource_request_is_shareable(&init), "{name}");
-        }
-        for (name, value) in [
-            ("Cache-Control", "public, no-store"),
-            ("cache-control", "no-cache"),
-            ("Pragma", "no-cache"),
-        ] {
-            let init = FetchInit {
-                headers: Some(HashMap::from([(name.to_string(), value.to_string())])),
-                ..FetchInit::default()
-            };
-            assert!(!source_resource_request_is_shareable(&init), "{name}");
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    #[tokio::test]
-    async fn cache_clear_does_not_promote_an_existing_source_follower() {
-        let store = Arc::new(crate::webview_resource_capture::CapturedResourceStore::default());
-        let source_id = "source-a";
-        let url = "https://cdn.test/page.jpg";
-        let leader = match store.acquire_for_source(source_id, url).unwrap() {
-            crate::webview_resource_capture::SourceResourceAcquisition::Leader(leader) => leader,
-            _ => panic!("the first request must lead the fetch"),
-        };
-        let mut follower = Box::pin(acquire_source_resource_fetch(
-            &store,
-            source_id,
-            url,
-            Duration::from_secs(1),
-            None,
-        ));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), follower.as_mut())
-                .await
-                .is_err()
-        );
-
-        store.clear_all();
-
-        match tokio::time::timeout(Duration::from_secs(1), follower.as_mut())
-            .await
-            .expect("the cleared follower must wake")
-            .expect("the cleared follower must remain usable")
-        {
-            SourceResourceFetch::Uncoordinated => {}
-            _ => panic!("a pre-clear follower must not refill the cleared cache"),
-        }
-        assert!(matches!(
-            store.lookup_for_source(source_id, url),
-            crate::webview_resource_capture::SourceResourceLookup::Miss
-        ));
-        leader.fail();
-    }
 
     fn register_test_executor(
         state: &ScraperState,
@@ -4247,43 +3568,82 @@ mod tests {
     }
 
     #[test]
-    fn matching_profile_capture_start_preserves_foreground_resources() {
+    fn navigation_capture_replaces_previous_executor_resources() {
         let state = ScraperState::default();
         register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", Some("Shared Agent"));
         let url = "https://cdn.test/partial-page.png";
         capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"partial");
-        assert!(executor_uses_source_profile(
-            &state,
-            IMMEDIATE_EXECUTOR,
-            "source-a",
-        ));
-
         let capture_id = begin_navigation_resource_capture(&state, IMMEDIATE_EXECUTOR, "source-a");
 
         assert_eq!(
             state.captured_resources.claim(IMMEDIATE_EXECUTOR),
             Some(capture_id)
         );
-        assert_eq!(
-            state
-                .captured_resources
-                .take(IMMEDIATE_EXECUTOR, url)
-                .map(|resource| resource.body),
-            Some(b"partial".to_vec())
-        );
+        assert!(state
+            .captured_resources
+            .take(IMMEDIATE_EXECUTOR, url)
+            .is_none());
     }
 
     #[test]
-    fn navigation_capture_isolates_a_new_source_and_preserves_the_previous_cache() {
+    fn visible_user_navigation_replaces_previous_captured_resources() {
+        let state = ScraperState::default();
+        register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", None);
+        *state.visible_key.lock().expect("scraper visible_key mutex") =
+            Some(IMMEDIATE_EXECUTOR.to_string());
+        let url = "https://cdn.test/previous-page.png";
+        capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"previous");
+
+        let capture_id = begin_visible_user_navigation_resource_capture(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            "source-a",
+        )
+        .expect("begin visible user navigation capture");
+
+        assert_eq!(
+            state.captured_resources.claim(IMMEDIATE_EXECUTOR),
+            Some(capture_id)
+        );
+        assert!(state
+            .captured_resources
+            .take(IMMEDIATE_EXECUTOR, url)
+            .is_none());
+    }
+
+    #[test]
+    fn registered_navigation_keeps_its_existing_capture_session() {
+        let state = ScraperState::default();
+        register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", None);
+        *state.visible_key.lock().expect("scraper visible_key mutex") =
+            Some(IMMEDIATE_EXECUTOR.to_string());
+        let url = "https://cdn.test/current-page.png";
+        capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"current");
+        let _completion = register_navigation(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            1,
+            "https://source.test/page",
+        );
+
+        assert!(begin_visible_user_navigation_resource_capture(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            "source-a",
+        )
+        .is_none());
+        assert!(state
+            .captured_resources
+            .take(IMMEDIATE_EXECUTOR, url)
+            .is_some());
+    }
+
+    #[test]
+    fn navigation_capture_replaces_previous_source_resources() {
         let state = ScraperState::default();
         register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", Some("Shared Agent"));
         let url = "https://cdn.test/old-profile.png";
         capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"old-profile");
-        assert!(!executor_uses_source_profile(
-            &state,
-            IMMEDIATE_EXECUTOR,
-            "source-b",
-        ));
 
         let capture_id = begin_navigation_resource_capture(&state, IMMEDIATE_EXECUTOR, "source-b");
 
@@ -4297,17 +3657,10 @@ mod tests {
                 .take(IMMEDIATE_EXECUTOR, url)
                 .is_none()
         );
-        assert_eq!(
-            state
-                .captured_resources
-                .get_for_source("pool:1", "source-a", url)
-                .map(|resource| resource.body.clone()),
-            Some(b"old-profile".to_vec())
-        );
     }
 
     #[test]
-    fn navigation_capture_preserves_the_same_source_after_a_user_agent_change() {
+    fn navigation_capture_replaces_previous_same_source_resources() {
         let state = ScraperState::default();
         register_test_executor(
             &state,
@@ -4324,13 +3677,10 @@ mod tests {
             state.captured_resources.claim(IMMEDIATE_EXECUTOR),
             Some(capture_id)
         );
-        assert_eq!(
-            state
-                .captured_resources
-                .take(IMMEDIATE_EXECUTOR, url)
-                .map(|resource| resource.body),
-            Some(b"old-profile".to_vec())
-        );
+        assert!(state
+            .captured_resources
+            .take(IMMEDIATE_EXECUTOR, url)
+            .is_none());
     }
 
     #[test]
@@ -4356,23 +3706,20 @@ mod tests {
     }
 
     #[test]
-    fn captured_media_uses_matching_foreground_without_a_pool_executor() {
+    fn captured_media_stays_in_the_capturing_executor() {
         let state = ScraperState::default();
         register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", Some("Shared Agent"));
         let url = "https://cdn.test/page.png";
         capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"foreground");
 
-        assert_eq!(
-            take_captured_resource_for_source(
-                &state,
-                "pool:missing",
-                "source-a",
-                Some("Shared Agent"),
-                url,
-            )
-            .map(|resource| resource.body.clone()),
-            Some(b"foreground".to_vec())
-        );
+        assert!(take_captured_resource_for_source(
+            &state,
+            "pool:missing",
+            "source-a",
+            Some("Shared Agent"),
+            url,
+        )
+        .is_none());
         assert_eq!(
             take_captured_resource_for_source(
                 &state,
@@ -4387,7 +3734,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_same_source_capture_is_shared_across_executors() {
+    fn same_source_captures_are_isolated_across_executors() {
         let state = ScraperState::default();
         register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", None);
         register_test_executor(&state, "pool:1", "source-a", None);
@@ -4405,23 +3752,26 @@ mod tests {
                 .captured_resources
                 .take(IMMEDIATE_EXECUTOR, url)
                 .map(|resource| resource.body),
-            Some(b"pool".to_vec())
+            Some(b"foreground".to_vec())
         );
     }
 
     #[test]
-    fn captured_media_remains_available_after_cross_executor_reuse() {
+    fn captured_media_is_not_available_to_another_executor() {
         let state = ScraperState::default();
         register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", None);
         register_test_executor(&state, "pool:1", "source-a", None);
         let url = "https://cdn.test/page.png";
         capture_test_resource(&state, "pool:1", url, b"pool");
 
-        assert_eq!(
-            take_captured_resource_for_source(&state, IMMEDIATE_EXECUTOR, "source-a", None, url,)
-                .map(|resource| resource.body.clone()),
-            Some(b"pool".to_vec())
-        );
+        assert!(take_captured_resource_for_source(
+            &state,
+            IMMEDIATE_EXECUTOR,
+            "source-a",
+            None,
+            url,
+        )
+        .is_none());
         assert_eq!(
             take_captured_resource_for_source(&state, "pool:1", "source-a", None, url,)
                 .map(|resource| resource.body.clone()),
@@ -4477,7 +3827,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_media_is_shared_across_user_agent_profiles_for_the_same_source() {
+    fn user_agent_differences_do_not_cross_executor_boundaries() {
         let state = ScraperState::default();
         register_test_executor(
             &state,
@@ -4510,12 +3860,12 @@ mod tests {
                 url,
             )
             .map(|resource| resource.body.clone()),
-            Some(b"pool".to_vec())
+            Some(b"foreground".to_vec())
         );
     }
 
     #[test]
-    fn captured_media_uses_the_existing_same_source_webview_after_a_user_agent_change() {
+    fn user_agent_changes_do_not_enable_cross_executor_reuse() {
         let state = ScraperState::default();
         register_test_executor(
             &state,
@@ -4527,17 +3877,14 @@ mod tests {
         let url = "https://cdn.test/page.png";
         capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"foreground");
 
-        assert_eq!(
-            take_captured_resource_for_source(
-                &state,
-                "pool:1",
-                "source-a",
-                Some("Updated Agent"),
-                url,
-            )
-            .map(|resource| resource.body.clone()),
-            Some(b"foreground".to_vec())
-        );
+        assert!(take_captured_resource_for_source(
+            &state,
+            "pool:1",
+            "source-a",
+            Some("Updated Agent"),
+            url,
+        )
+        .is_none());
     }
 
     #[test]
@@ -4841,57 +4188,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn manual_action_extract_result_detection_is_structural() {
-        for value in [
-            serde_json::json!({
-                "ok": false,
-                "code": "manual-action-required",
-                "error": "Sign in to continue."
-            }),
-            serde_json::json!({
-                "ok": false,
-                "code": "manual-action-required",
-                "error": "Complete the CAPTCHA.",
-                "challenge": {
-                    "kind": "captcha",
-                    "url": "https://source.test/chapter/1"
-                }
-            }),
-            serde_json::json!({
-                "ok": false,
-                "code": "manual-action-required",
-                "error": "Complete the browser challenge.",
-                "challenge": {
-                    "kind": "cloudflare",
-                    "url": "https://source.test/chapter/1"
-                }
-            }),
-        ] {
-            assert!(extract_result_requires_manual_action(&value.to_string()));
-        }
-
-        for value in [
-            serde_json::json!({ "ok": true, "content": "manual-action-required" }).to_string(),
-            serde_json::json!({
-                "ok": false,
-                "code": "selector-not-found",
-                "error": "manual-action-required"
-            })
-            .to_string(),
-            serde_json::json!({
-                "result": {
-                    "ok": false,
-                    "code": "manual-action-required"
-                }
-            })
-            .to_string(),
-            "not json: manual-action-required".to_string(),
-        ] {
-            assert!(!extract_result_requires_manual_action(&value));
-        }
-    }
-
     #[tokio::test]
     async fn cookie_clear_completion_returns_deleted_count() {
         let (sender, receiver) = oneshot::channel();
@@ -4971,17 +4267,15 @@ mod tests {
     }
 
     #[test]
-    fn fetch_start_script_navigates_result_sentinel() {
-        let init = FetchInit {
-            prefer_browser_cache: Some(true),
-            ..FetchInit::default()
-        };
+    fn fetch_start_script_uses_the_browser_default_cache_policy() {
+        let init = FetchInit::default();
         let script =
             build_webview_fetch_start_script("fetch-3", "https://example.com/a", &init).unwrap();
         assert!(script.contains("__norea_scraper_result__"));
         assert!(script.contains("encodeURIComponent(requestId)"));
-        assert!(script.contains(r#""preferBrowserCache":true"#));
         assert!(script.contains(r#"credentials: "include""#));
-        assert!(script.contains(r#"? "force-cache" : "default""#));
+        assert!(!script.contains("preferBrowserCache"));
+        assert!(!script.contains("force-cache"));
+        assert!(!script.contains("cache:"));
     }
 }

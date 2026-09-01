@@ -99,7 +99,6 @@ describe("captureChapterWebView", () => {
       url: "https://source.test/chapter/1",
       beforeScript: null,
       captureResources: true,
-      pageCachePolicy: "prefer-cache",
       sourceId: "source-a",
       timeoutMs: 30_000,
       userAgent: globalThis.navigator?.userAgent ?? null,
@@ -107,20 +106,6 @@ describe("captureChapterWebView", () => {
     });
   });
 
-  it("forwards an explicit chapter page reload policy", async () => {
-    invokeMock.mockResolvedValueOnce("captured");
-
-    await captureChapterWebView("https://source.test/chapter/1", {
-      pageCachePolicy: "reload",
-      scraperExecutor: "pool:1",
-      sourceId: "source-a",
-    });
-
-    expect(invokeMock).toHaveBeenCalledWith(
-      "webview_extract",
-      expect.objectContaining({ pageCachePolicy: "reload" }),
-    );
-  });
 });
 
 describe("utf8ToBytes / bytesToUtf8", () => {
@@ -239,21 +224,11 @@ describe("createShimResolver", () => {
     expect(response.url).toBe("https://api.example.test/repos/demo/project");
   });
 
-  it("@libs/fetch fetchFile uses the native media fallback after browser fetch failures", async () => {
+  it("@libs/fetch fetchFile keeps failures inside the source-profile WebView", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
     invokeMock.mockImplementation(async (command) => {
       if (command === "webview_fetch") {
         throw new Error("scraper: eval browser fetch script timed out");
-      }
-      if (command === "scraper_media_fetch") {
-        return {
-          status: 200,
-          statusText: "OK",
-          bodyBase64: "AQID",
-          headers: {},
-          finalUrl: "https://files.test/chapter.pdf",
-        };
       }
       throw new Error(`Unexpected command ${command}`);
     });
@@ -264,23 +239,17 @@ describe("createShimResolver", () => {
     try {
       await expect(
         lib.fetchFile("https://files.test/chapter.pdf"),
-      ).resolves.toBe("AQID");
+      ).rejects.toThrow("scraper: eval browser fetch script timed out");
 
+      expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(invokeMock).toHaveBeenCalledWith(
         "webview_fetch",
         expect.objectContaining({
           url: "https://files.test/chapter.pdf",
         }),
       );
-      expect(invokeMock).toHaveBeenCalledWith(
-        "scraper_media_fetch",
-        expect.objectContaining({
-          url: "https://files.test/chapter.pdf",
-        }),
-      );
     } finally {
       errorSpy.mockRestore();
-      debugSpy.mockRestore();
     }
   });
 

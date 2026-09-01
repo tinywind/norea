@@ -28,7 +28,6 @@ export const androidSiteBrowser: SiteBrowserPlatformApi = {
   },
   navigate: async (sourceId, url, options) => {
     await androidScraperNavigate(sourceId, url, getScraperUserAgent(), {
-      resetHistory: options?.resetHistory ?? false,
       signal: options?.signal,
       timeoutMs: options?.timeoutMs,
     });

@@ -617,6 +617,7 @@ describe("listLibraryUpdates", () => {
     expect(sql).toContain("n.in_library = 1");
     expect(sql).toContain("c.unread = 1");
     expect(sql).toContain("c.path");
+    expect(sql).toContain("n.is_local        AS novelIsLocal");
     expect(sql).toContain(
       "COALESCE(c.stored_content_type, c.content_type) AS contentType",
     );
@@ -640,11 +641,13 @@ describe("listLibraryUpdates", () => {
         isDownloaded: 1,
         novelName: "Sample",
         novelCover: null,
+        novelIsLocal: 1,
       },
     ]);
 
     const rows = await listLibraryUpdates();
     expect(rows[0]?.isDownloaded).toBe(true);
+    expect(rows[0]?.novelIsLocal).toBe(true);
     expect(rows[0]?.contentType).toBe("text");
   });
 
@@ -716,12 +719,40 @@ describe("listRecentlyRead", () => {
     const [sql, params] = mockSelect.mock.calls[0]!;
     expect(sql).toContain("FROM chapter c");
     expect(sql).toContain("JOIN novel n");
+    expect(sql).toContain("n.plugin_id       AS pluginId");
+    expect(sql).toContain("n.path            AS novelPath");
+    expect(sql).toContain("n.in_library      AS novelInLibrary");
+    expect(sql).toContain("n.is_local        AS novelIsLocal");
     expect(sql).toContain("WHERE c.id = (");
     expect(sql).toContain("c2.novel_id = c.novel_id");
     expect(sql).toContain("c2.read_at IS NOT NULL");
     expect(sql).toContain("ORDER BY c.read_at DESC");
     expect(sql).toContain("LIMIT $1");
     expect(params).toEqual([100]);
+  });
+
+  it("normalizes stored novel flags for cover selection", async () => {
+    mockSelect.mockResolvedValueOnce([
+      {
+        chapterId: 1,
+        chapterName: "Chapter",
+        novelCover: null,
+        novelId: 2,
+        novelInLibrary: 0,
+        novelIsLocal: 1,
+        novelName: "Novel",
+        novelPath: "/novel",
+        pluginId: "local",
+        position: 1,
+        progress: 25,
+        readAt: 1_700_000_000,
+      },
+    ]);
+
+    const rows = await listRecentlyRead();
+
+    expect(rows[0]?.novelInLibrary).toBe(false);
+    expect(rows[0]?.novelIsLocal).toBe(true);
   });
 
   it("clamps limit to a minimum of 1 and floors fractional input", async () => {

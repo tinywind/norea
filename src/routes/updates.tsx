@@ -53,6 +53,7 @@ import {
   type AppLocale,
   type TranslationKey,
 } from "../i18n";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import { useUpdatesStore } from "../store/updates";
 import "../styles/updates.css";
 
@@ -327,6 +328,14 @@ function UpdateRow({
   onOpenNovel,
 }: UpdateRowProps) {
   const { locale, t } = useTranslation();
+  const coverSource = useNovelCoverSource({
+    cover: entry.novelCover,
+    id: entry.novelId,
+    isLocal: entry.novelIsLocal,
+    name: entry.novelName,
+    path: entry.novelPath,
+    pluginId: entry.pluginId,
+  });
   const isQueued = downloadStatus?.kind === "queued";
   const isRunning = downloadStatus?.kind === "running";
   const failedMessage =
@@ -356,7 +365,7 @@ function UpdateRow({
       <ConsoleCover
         alt={entry.novelName}
         height={72}
-        src={entry.novelCover}
+        src={coverSource}
         width={48}
       />
 

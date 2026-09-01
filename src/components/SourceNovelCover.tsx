@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { resolveOrCacheSourceNovelCover } from "../lib/novel-cover-storage";
 import type { NovelItem, Plugin } from "../lib/plugins/types";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import { ConsoleCover } from "./ConsolePrimitives";
 
 interface SourceNovelCoverProps {
@@ -18,25 +17,20 @@ export function SourceNovelCover({
   plugin,
   width,
 }: SourceNovelCoverProps) {
-  const [source, setSource] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setSource(null);
-    if (!plugin) return;
-
-    void resolveOrCacheSourceNovelCover(plugin, item)
-      .then((resolved) => {
-        if (!cancelled) setSource(resolved);
-      })
-      .catch(() => {
-        if (!cancelled) setSource(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [item.cover, item.name, item.path, plugin]);
+  const source = useNovelCoverSource(
+    {
+      cover: item.cover ?? null,
+      id: 0,
+      isLocal: false,
+      name: item.name,
+      path: item.path,
+      pluginId: plugin?.id ?? "",
+    },
+    {
+      allowSourceFallback: Boolean(plugin),
+      plugin,
+    },
+  );
 
   return (
     <ConsoleCover

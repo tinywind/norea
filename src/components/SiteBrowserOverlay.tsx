@@ -83,10 +83,9 @@ function syncSiteBrowserBounds(
  * specific bounds and navigation behavior are isolated behind
  * the site-browser platform API.
  *
- * Explicit site opens may recreate the foreground WebView to clear
- * per-WebView navigation history. The source-owned browser profile survives
- * that reset so a manual login or CF clearance carries over to that source's
- * next plugin scrape without leaking into another source.
+ * Hiding and reopening the same source reuses its foreground WebView so the
+ * browser-owned session remains available to later plugin requests without
+ * leaking into another source.
  *
  * Android uses a native WebView attached to the main Activity, but it
  * follows the same visible-overlay contract.
@@ -309,7 +308,6 @@ export function SiteBrowserOverlay() {
       void (async () => {
         try {
           await platform.navigate(sourceId, currentUrl, {
-            resetHistory: true,
             signal: controller.signal,
           });
           if (controller.signal.aborted) return;

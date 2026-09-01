@@ -1,6 +1,5 @@
 import type { ChapterContentType } from "../chapter-content";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
-import type { ChapterPageCachePolicy } from "../webview-cache";
 import { captureChapterWebView } from "./shims";
 import { sourceAccessErrorFromEnvelope } from "./source-access";
 import type {
@@ -23,7 +22,6 @@ export interface CapturedChapterPage {
 export interface CaptureChapterPageOptions {
   contentType: TextChapterContentType;
   executor: ScraperExecutorId;
-  pageCachePolicy?: ChapterPageCachePolicy;
   signal?: AbortSignal;
   sourceId: string;
 }
@@ -127,7 +125,6 @@ function validatePagePlan(
       : {}),
     ...(documentStartScript ? { documentStartScript } : {}),
     loadStrategy: captureLoadStrategy(value.loadStrategy),
-    cacheBust: value.cacheBust === true,
     timeoutMs: captureTimeoutMs(value.timeoutMs),
   };
 }
@@ -142,13 +139,6 @@ export function validateChapterAcquisitionPlan(
   if (plan.type === "resource") return { type: "resource" };
   if (plan.type === "page") return validatePagePlan(plan);
   throw new Error("Chapter acquisition plan type must be 'page' or 'resource'.");
-}
-
-function navigationUrl(plan: ChapterPageAcquisitionPlan): string {
-  if (!plan.cacheBust) return plan.url;
-  const url = new URL(plan.url);
-  url.searchParams.set("_norea_capture", Date.now().toString(36));
-  return url.href;
 }
 
 function chapterCaptureScript(
@@ -364,10 +354,8 @@ export async function captureChapterPage(
   plan: ChapterPageAcquisitionPlan,
   options: CaptureChapterPageOptions,
 ): Promise<CapturedChapterPage> {
-  const raw = await captureChapterWebView(navigationUrl(plan), {
+  const raw = await captureChapterWebView(plan.url, {
     beforeContentScript: chapterCaptureScript(plan, options.contentType),
-    pageCachePolicy:
-      options.pageCachePolicy ?? (plan.cacheBust ? "reload" : "prefer-cache"),
     scraperExecutor: options.executor,
     signal: options.signal,
     sourceId: options.sourceId,

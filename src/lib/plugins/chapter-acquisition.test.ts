@@ -157,7 +157,6 @@ describe("validateChapterAcquisitionPlan", () => {
       url: "https://source.test/chapter/1?accessKey=signed",
       contentSelector: "article.chapter",
       loadStrategy: "network-idle",
-      cacheBust: false,
       timeoutMs: 120_000,
     });
   });
@@ -204,41 +203,9 @@ describe("captureChapterPage", () => {
     expect(result.content).toBe(
       '<img data-src="https://source.test/assets/page.jpg?accessKey=asset" loading="eager" src="https://source.test/assets/page.jpg?accessKey=asset">',
     );
-    expect(mockedCaptureChapterWebView.mock.calls[0]?.[1]).toMatchObject({
-      pageCachePolicy: "prefer-cache",
-    });
   });
 
-  it("forwards an explicit chapter page reload policy", async () => {
-    mockedCaptureChapterWebView.mockResolvedValueOnce(
-      JSON.stringify({
-        ok: true,
-        result: {
-          content: "<p>Fresh chapter</p>",
-          url: "https://source.test/chapter/1",
-        },
-      }),
-    );
-    const plan = validateChapterAcquisitionPlan({
-      type: "page",
-      url: "https://source.test/chapter/1",
-      contentSelector: "article",
-    });
-    if (plan.type !== "page") throw new Error("Expected page plan.");
-
-    await captureChapterPage(plan, {
-      contentType: "html",
-      executor: "pool:1",
-      pageCachePolicy: "reload",
-      sourceId: "source-a",
-    });
-
-    expect(mockedCaptureChapterWebView.mock.calls[0]?.[1]).toMatchObject({
-      pageCachePolicy: "reload",
-    });
-  });
-
-  it("preserves signed query values when adding the host cache buster", async () => {
+  it("ignores a legacy cacheBust field and preserves the source URL", async () => {
     mockedCaptureChapterWebView.mockResolvedValueOnce(
       JSON.stringify({
         ok: true,
@@ -267,43 +234,12 @@ describe("captureChapterPage", () => {
     if (!options) throw new Error("Expected WebView fetch options.");
     const url = new URL(navigationUrl);
     expect(url.searchParams.get("accessKey")).toBe("signed");
-    expect(url.searchParams.get("_norea_capture")).toBeTruthy();
+    expect(url.searchParams.has("_norea_capture")).toBe(false);
     expect(options.beforeContentScript).toContain("window.prepareChapter();");
-    expect(options.pageCachePolicy).toBe("reload");
     expect(options.scraperExecutor).toBe("pool:1");
     expect(result).toEqual({
       baseUrl: "https://source.test/chapter/1?accessKey=signed",
       content: '<img src="https://cdn.test/page.jpg?accessKey=asset">',
-    });
-  });
-
-  it("honors explicit cache reuse for a cache-busted page plan", async () => {
-    mockedCaptureChapterWebView.mockResolvedValueOnce(
-      JSON.stringify({
-        ok: true,
-        result: {
-          content: "<p>Cached chapter</p>",
-          url: "https://source.test/chapter/1",
-        },
-      }),
-    );
-    const plan = validateChapterAcquisitionPlan({
-      type: "page",
-      url: "https://source.test/chapter/1",
-      contentSelector: "article",
-      cacheBust: true,
-    });
-    if (plan.type !== "page") throw new Error("Expected page plan.");
-
-    await captureChapterPage(plan, {
-      contentType: "html",
-      executor: "immediate",
-      pageCachePolicy: "prefer-cache",
-      sourceId: "source-a",
-    });
-
-    expect(mockedCaptureChapterWebView.mock.calls[0]?.[1]).toMatchObject({
-      pageCachePolicy: "prefer-cache",
     });
   });
 

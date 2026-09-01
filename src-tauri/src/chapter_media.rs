@@ -3035,15 +3035,28 @@ fn novel_cover_manifest_path(novel_dir: &Path) -> PathBuf {
     novel_dir.join(NOVEL_COVER_MANIFEST_FILE)
 }
 
-fn novel_cover_file_name_from_manifest(raw: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(raw)
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NovelCoverManifestMetadata {
+    file_name: String,
+    #[serde(default)]
+    novel_path: Option<String>,
+    #[serde(default)]
+    source_id: Option<String>,
+    source_url: String,
+    #[serde(default)]
+    updated_at: u64,
+    version: u64,
+}
+
+fn novel_cover_manifest_metadata(raw: &str) -> Option<NovelCoverManifestMetadata> {
+    serde_json::from_str(raw)
         .ok()
-        .and_then(|manifest| {
-            manifest
-                .get("fileName")
-                .and_then(serde_json::Value::as_str)
-                .map(|value| value.to_string())
-        })
+        .filter(|manifest: &NovelCoverManifestMetadata| manifest.version == 1)
+}
+
+fn novel_cover_file_name_from_manifest(raw: &str) -> Option<String> {
+    novel_cover_manifest_metadata(raw).map(|manifest| manifest.file_name)
 }
 
 fn read_existing_novel_cover_manifest(novel_dir: &Path) -> Result<Option<String>, String> {
@@ -3057,11 +3070,174 @@ fn read_existing_novel_cover_manifest(novel_dir: &Path) -> Result<Option<String>
         Some(file_name) => safe_segment(&file_name, "cover"),
         None => return Ok(None),
     };
-    if novel_dir.join(file_name).is_file() {
-        Ok(Some(raw))
-    } else {
-        Ok(None)
+    let cover_path = novel_dir.join(file_name);
+    match fs::metadata(&cover_path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => Ok(Some(raw)),
+        Ok(_) => Ok(None),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("chapter media: inspect novel cover file: {err}")),
     }
+}
+
+#[derive(Debug)]
+struct NovelCoverCandidate {
+    cover: NovelCoverReadResult,
+    updated_at: u64,
+}
+
+fn novel_cover_manifest_matches_identity(
+    manifest: &NovelCoverManifestMetadata,
+    source_id: &str,
+    novel_path: &str,
+    expected_source_url: Option<&str>,
+    is_preferred: bool,
+) -> bool {
+    match (
+        manifest.source_id.as_deref(),
+        manifest.novel_path.as_deref(),
+    ) {
+        (Some(stored_source_id), Some(stored_novel_path)) => {
+            stored_source_id == source_id && stored_novel_path == novel_path
+        }
+        (None, None) => {
+            is_preferred
+                || expected_source_url
+                    .is_some_and(|source_url| manifest.source_url == source_url)
+        }
+        _ => false,
+    }
+}
+
+fn read_novel_cover_candidate_at(
+    media_root: &Path,
+    novel_dir: &Path,
+    source_id: &str,
+    novel_path: &str,
+    expected_source_url: Option<&str>,
+    is_preferred: bool,
+) -> Result<Option<NovelCoverCandidate>, String> {
+    let Some(manifest) = read_existing_novel_cover_manifest(novel_dir)? else {
+        return Ok(None);
+    };
+    let Some(metadata) = novel_cover_manifest_metadata(&manifest) else {
+        return Ok(None);
+    };
+    if !novel_cover_manifest_matches_identity(
+        &metadata,
+        source_id,
+        novel_path,
+        expected_source_url,
+        is_preferred,
+    ) {
+        return Ok(None);
+    }
+    let file_name = safe_segment(&metadata.file_name, "cover");
+    let relative_path = relative_storage_path(media_root, &novel_dir.join(file_name))?;
+    Ok(Some(NovelCoverCandidate {
+        cover: NovelCoverReadResult {
+            manifest,
+            relative_path,
+        },
+        updated_at: metadata.updated_at,
+    }))
+}
+
+fn novel_cover_dirs_matching_identity(
+    media_root: &Path,
+    source_id: &str,
+    novel_id: i64,
+    novel_path: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let source_dir = media_root
+        .join(CONTENTS_ROOT_DIR)
+        .join(safe_segment(source_id, "source"));
+    match fs::metadata(&source_dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(format!(
+                "chapter media: source storage path is not a directory: {}",
+                source_dir.display()
+            ));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(format!("chapter media: inspect source storage: {err}")),
+    }
+
+    let identity_suffix = format!("-{}", safe_segment(novel_path, &novel_id.to_string()));
+    let mut matches = Vec::new();
+    for entry in
+        fs::read_dir(&source_dir).map_err(|err| format!("chapter media: read source: {err}"))?
+    {
+        let entry = entry.map_err(|err| format!("chapter media: read source entry: {err}"))?;
+        if entry
+            .file_type()
+            .map_err(|err| format!("chapter media: read source entry type: {err}"))?
+            .is_dir()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(&identity_suffix)
+        {
+            matches.push(entry.path());
+        }
+    }
+    matches.sort();
+    Ok(matches)
+}
+
+fn novel_cover_read_manifest_at(
+    media_root: &Path,
+    novel_id: i64,
+    source_id: &str,
+    novel_name: &str,
+    novel_path: &str,
+    expected_source_url: Option<&str>,
+) -> Result<Option<NovelCoverReadResult>, String> {
+    let preferred_dir = content_novel_dir_at(
+        media_root,
+        source_id,
+        novel_id,
+        Some(novel_path),
+        Some(novel_name),
+    )?;
+    if let Some(cover) = read_novel_cover_candidate_at(
+        media_root,
+        &preferred_dir,
+        source_id,
+        novel_path,
+        expected_source_url,
+        true,
+    )? {
+        return Ok(Some(cover.cover));
+    }
+
+    let mut matches = Vec::new();
+    for novel_dir in
+        novel_cover_dirs_matching_identity(media_root, source_id, novel_id, novel_path)?
+    {
+        if novel_dir == preferred_dir {
+            continue;
+        }
+        if let Some(cover) = read_novel_cover_candidate_at(
+            media_root,
+            &novel_dir,
+            source_id,
+            novel_path,
+            expected_source_url,
+            false,
+        )? {
+            matches.push(cover);
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        right.updated_at.cmp(&left.updated_at).then_with(|| {
+            left.cover
+                .relative_path
+                .cmp(&right.cover.relative_path)
+        })
+    });
+    Ok(matches.into_iter().next().map(|candidate| candidate.cover))
 }
 
 #[tauri::command]
@@ -3071,52 +3247,66 @@ pub fn novel_cover_read_manifest(
     source_id: String,
     novel_name: String,
     novel_path: String,
+    expected_source_url: Option<String>,
 ) -> Result<Option<NovelCoverReadResult>, String> {
     let media_root = media_root(&app)?;
-    let novel_dir = content_novel_dir_at(
+    novel_cover_read_manifest_at(
         &media_root,
-        &source_id,
         novel_id,
-        Some(novel_path.as_str()),
-        Some(novel_name.as_str()),
-    )?;
-    let Some(manifest) = read_existing_novel_cover_manifest(&novel_dir)? else {
-        return Ok(None);
-    };
-    let file_name = novel_cover_file_name_from_manifest(&manifest)
-        .map(|file_name| safe_segment(&file_name, "cover"))
-        .ok_or_else(|| "chapter media: invalid novel cover manifest".to_string())?;
-    let relative_path = relative_storage_path(&media_root, &novel_dir.join(file_name))?;
-    Ok(Some(NovelCoverReadResult {
-        manifest,
-        relative_path,
-    }))
+        &source_id,
+        &novel_name,
+        &novel_path,
+        expected_source_url.as_deref(),
+    )
 }
 
-#[tauri::command]
-pub fn novel_cover_store(
-    app: AppHandle,
+fn novel_cover_store_at(
+    media_root: &Path,
     novel_id: i64,
-    source_id: String,
-    novel_name: String,
-    novel_path: String,
-    file_name: String,
-    body: Vec<u8>,
-    manifest: String,
+    source_id: &str,
+    novel_name: &str,
+    novel_path: &str,
+    file_name: &str,
+    body: &[u8],
+    manifest: &str,
 ) -> Result<(), String> {
     if body.is_empty() {
         return Err("chapter media: novel cover body is empty".to_string());
     }
+    let incoming_manifest = novel_cover_manifest_metadata(manifest)
+        .ok_or_else(|| "chapter media: invalid novel cover manifest".to_string())?;
+    if incoming_manifest.source_id.as_deref() != Some(source_id)
+        || incoming_manifest.novel_path.as_deref() != Some(novel_path)
+    {
+        return Err("chapter media: novel cover manifest identity does not match".to_string());
+    }
 
-    let media_root = media_root(&app)?;
-    ensure_contents_nomedia(&media_root)?;
-    let novel_dir = content_novel_dir_at(
-        &media_root,
-        &source_id,
+    ensure_contents_nomedia(media_root)?;
+    let existing_cover = novel_cover_read_manifest_at(
+        media_root,
         novel_id,
-        Some(novel_path.as_str()),
-        Some(novel_name.as_str()),
+        source_id,
+        novel_name,
+        novel_path,
+        None,
     )?;
+    let novel_dir = match existing_cover {
+        Some(existing_cover) => {
+            let relative_cover_path = safe_relative_storage_path(&existing_cover.relative_path)?;
+            media_root
+                .join(relative_cover_path)
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "chapter media: invalid stored novel cover path".to_string())?
+        }
+        None => content_novel_dir_at(
+            media_root,
+            source_id,
+            novel_id,
+            Some(novel_path),
+            Some(novel_name),
+        )?,
+    };
     fs::create_dir_all(&novel_dir)
         .map_err(|err| format!("chapter media: create novel cover dir: {err}"))?;
 
@@ -3124,7 +3314,7 @@ pub fn novel_cover_store(
         .as_deref()
         .and_then(novel_cover_file_name_from_manifest)
         .map(|file_name| safe_segment(&file_name, "cover"));
-    let file_name = safe_segment(&file_name, "cover");
+    let file_name = safe_segment(file_name, "cover");
     let cover_path = novel_dir.join(&file_name);
     let temp_cover_path = novel_dir.join(format!("{file_name}.tmp"));
     fs::write(&temp_cover_path, body)
@@ -3148,6 +3338,30 @@ pub fn novel_cover_store(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn novel_cover_store(
+    app: AppHandle,
+    novel_id: i64,
+    source_id: String,
+    novel_name: String,
+    novel_path: String,
+    file_name: String,
+    body: Vec<u8>,
+    manifest: String,
+) -> Result<(), String> {
+    let media_root = media_root(&app)?;
+    novel_cover_store_at(
+        &media_root,
+        novel_id,
+        &source_id,
+        &novel_name,
+        &novel_path,
+        &file_name,
+        &body,
+        &manifest,
+    )
 }
 
 #[tauri::command]
@@ -4688,6 +4902,46 @@ mod tests {
             .join(file_name)
     }
 
+    fn novel_cover_manifest(
+        file_name: &str,
+        source_url: &str,
+        updated_at: u64,
+        identity: Option<(&str, &str)>,
+    ) -> String {
+        let mut manifest = serde_json::json!({
+            "contentType": "image/jpeg",
+            "fileName": file_name,
+            "sourceUrl": source_url,
+            "updatedAt": updated_at,
+            "version": 1
+        });
+        if let Some((source_id, novel_path)) = identity {
+            manifest["sourceId"] = serde_json::json!(source_id);
+            manifest["novelPath"] = serde_json::json!(novel_path);
+        }
+        manifest.to_string()
+    }
+
+    fn write_novel_cover(
+        root: &Path,
+        novel_dir_name: &str,
+        source_url: &str,
+        updated_at: u64,
+        identity: Option<(&str, &str)>,
+    ) {
+        let novel_dir = root
+            .join(CONTENTS_ROOT_DIR)
+            .join("demo")
+            .join(novel_dir_name);
+        fs::create_dir_all(&novel_dir).expect("create novel cover directory");
+        fs::write(novel_dir.join("cover.jpg"), b"cover").expect("write novel cover");
+        fs::write(
+            novel_dir.join(NOVEL_COVER_MANIFEST_FILE),
+            novel_cover_manifest("cover.jpg", source_url, updated_at, identity),
+        )
+        .expect("write novel cover manifest");
+    }
+
     #[test]
     fn content_novel_dir_accepts_a_path_without_a_persisted_novel_id() {
         let dir = content_novel_dir_at(
@@ -4731,6 +4985,429 @@ mod tests {
             Some("Novel"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn novel_cover_lookup_accepts_a_legacy_manifest_in_the_preferred_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Current-Title-novel-path",
+            "https://source.test/current.jpg",
+            1,
+            None,
+        );
+
+        let cover = novel_cover_read_manifest_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            None,
+        )
+        .expect("read preferred cover")
+        .expect("preferred cover");
+
+        assert_eq!(
+            cover.relative_path,
+            "contents/demo/Current-Title-novel-path/cover.jpg"
+        );
+        assert!(cover.manifest.contains("current.jpg"));
+    }
+
+    #[test]
+    fn novel_cover_lookup_returns_none_without_an_identity_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert!(
+            novel_cover_read_manifest_at(
+                dir.path(),
+                7,
+                "demo",
+                "Current Title",
+                "novel/path",
+                None,
+            )
+            .expect("read missing cover")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_ignores_an_empty_cover_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Old-Title-novel-path",
+            "https://source.test/old.jpg",
+            1,
+            Some(("demo", "novel/path")),
+        );
+        fs::write(
+            dir.path()
+                .join(CONTENTS_ROOT_DIR)
+                .join("demo")
+                .join("Old-Title-novel-path")
+                .join("cover.jpg"),
+            b"",
+        )
+        .expect("empty novel cover");
+
+        assert!(
+            novel_cover_read_manifest_at(
+                dir.path(),
+                7,
+                "demo",
+                "Current Title",
+                "novel/path",
+                None,
+            )
+            .expect("read empty cover")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_reuses_an_identity_manifest_from_an_older_title_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Old-Title-novel-path",
+            "https://source.test/old.jpg",
+            1,
+            Some(("demo", "novel/path")),
+        );
+
+        let cover = novel_cover_read_manifest_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            None,
+        )
+        .expect("read renamed cover")
+        .expect("renamed cover");
+
+        assert_eq!(
+            cover.relative_path,
+            "contents/demo/Old-Title-novel-path/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_rejects_a_mismatched_identity_in_the_preferred_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Current-Title-novel-path",
+            "https://source.test/other.jpg",
+            1,
+            Some(("demo", "other/path")),
+        );
+
+        assert!(
+            novel_cover_read_manifest_at(
+                dir.path(),
+                7,
+                "demo",
+                "Current Title",
+                "novel/path",
+                None,
+            )
+            .expect("read mismatched preferred cover")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_requires_an_exact_source_url_for_a_legacy_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Old-Title-novel-path",
+            "https://source.test/cover.jpg",
+            1,
+            None,
+        );
+
+        assert!(
+            novel_cover_read_manifest_at(
+                dir.path(),
+                7,
+                "demo",
+                "Current Title",
+                "novel/path",
+                None,
+            )
+            .expect("read legacy cover without a source URL")
+            .is_none()
+        );
+        assert!(
+            novel_cover_read_manifest_at(
+                dir.path(),
+                7,
+                "demo",
+                "Current Title",
+                "novel/path",
+                Some("https://source.test/other.jpg"),
+            )
+            .expect("read legacy cover with a different source URL")
+            .is_none()
+        );
+
+        let cover = novel_cover_read_manifest_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            Some("https://source.test/cover.jpg"),
+        )
+        .expect("read matching legacy cover")
+        .expect("matching legacy cover");
+
+        assert_eq!(
+            cover.relative_path,
+            "contents/demo/Old-Title-novel-path/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_excludes_a_suffix_collision_using_manifest_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Other-Title-foo-abc",
+            "https://source.test/other.jpg",
+            1,
+            Some(("demo", "foo/abc")),
+        );
+
+        assert!(
+            novel_cover_read_manifest_at(
+                dir.path(),
+                7,
+                "demo",
+                "Current Title",
+                "abc",
+                None,
+            )
+            .expect("read colliding cover")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_selects_the_latest_matching_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "First-Title-novel-path",
+            "https://source.test/first.jpg",
+            2,
+            Some(("demo", "novel/path")),
+        );
+        write_novel_cover(
+            dir.path(),
+            "Second-Title-novel-path",
+            "https://source.test/second.jpg",
+            3,
+            Some(("demo", "novel/path")),
+        );
+
+        let cover = novel_cover_read_manifest_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            None,
+        )
+        .expect("read latest cover")
+        .expect("latest cover");
+
+        assert_eq!(
+            cover.relative_path,
+            "contents/demo/Second-Title-novel-path/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_prefers_the_current_title_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Current-Title-novel-path",
+            "https://source.test/current.jpg",
+            1,
+            Some(("demo", "novel/path")),
+        );
+        write_novel_cover(
+            dir.path(),
+            "Old-Title-novel-path",
+            "https://source.test/old.jpg",
+            2,
+            Some(("demo", "novel/path")),
+        );
+
+        let cover = novel_cover_read_manifest_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            None,
+        )
+        .expect("read preferred cover")
+        .expect("preferred cover");
+
+        assert_eq!(
+            cover.relative_path,
+            "contents/demo/Current-Title-novel-path/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn novel_cover_lookup_breaks_updated_at_ties_by_relative_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Second-Title-novel-path",
+            "https://source.test/second.jpg",
+            3,
+            Some(("demo", "novel/path")),
+        );
+        write_novel_cover(
+            dir.path(),
+            "First-Title-novel-path",
+            "https://source.test/first.jpg",
+            3,
+            Some(("demo", "novel/path")),
+        );
+
+        let cover = novel_cover_read_manifest_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            None,
+        )
+        .expect("read deterministic cover")
+        .expect("deterministic cover");
+
+        assert_eq!(
+            cover.relative_path,
+            "contents/demo/First-Title-novel-path/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn novel_cover_store_reuses_a_matching_identity_title_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Old-Title-novel-path",
+            "https://source.test/cover.jpg",
+            1,
+            Some(("demo", "novel/path")),
+        );
+        let manifest = novel_cover_manifest(
+            "new-cover.webp",
+            "https://source.test/cover.jpg",
+            2,
+            Some(("demo", "novel/path")),
+        );
+
+        novel_cover_store_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            "new-cover.webp",
+            b"new cover",
+            &manifest,
+        )
+        .expect("store cover in the existing title directory");
+
+        let old_title_dir = dir
+            .path()
+            .join(CONTENTS_ROOT_DIR)
+            .join("demo")
+            .join("Old-Title-novel-path");
+        assert_eq!(
+            fs::read(old_title_dir.join("new-cover.webp")).expect("read updated cover"),
+            b"new cover"
+        );
+        assert_eq!(
+            fs::read_to_string(old_title_dir.join(NOVEL_COVER_MANIFEST_FILE))
+                .expect("read updated manifest"),
+            manifest
+        );
+        assert!(!old_title_dir.join("cover.jpg").exists());
+        assert!(!dir
+            .path()
+            .join(CONTENTS_ROOT_DIR)
+            .join("demo")
+            .join("Current-Title-novel-path")
+            .exists());
+    }
+
+    #[test]
+    fn novel_cover_store_does_not_reuse_a_legacy_title_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_novel_cover(
+            dir.path(),
+            "Old-Title-novel-path",
+            "https://source.test/cover.jpg",
+            1,
+            None,
+        );
+        let manifest = novel_cover_manifest(
+            "cover.jpg",
+            "https://source.test/cover.jpg",
+            2,
+            Some(("demo", "novel/path")),
+        );
+
+        novel_cover_store_at(
+            dir.path(),
+            7,
+            "demo",
+            "Current Title",
+            "novel/path",
+            "cover.jpg",
+            b"new cover",
+            &manifest,
+        )
+        .expect("store cover in the current title directory");
+
+        let old_title_dir = dir
+            .path()
+            .join(CONTENTS_ROOT_DIR)
+            .join("demo")
+            .join("Old-Title-novel-path");
+        let current_title_dir = dir
+            .path()
+            .join(CONTENTS_ROOT_DIR)
+            .join("demo")
+            .join("Current-Title-novel-path");
+        assert_eq!(
+            fs::read(old_title_dir.join("cover.jpg")).expect("read legacy cover"),
+            b"cover"
+        );
+        assert_eq!(
+            fs::read(current_title_dir.join("cover.jpg")).expect("read current cover"),
+            b"new cover"
+        );
+        assert_eq!(
+            fs::read_to_string(current_title_dir.join(NOVEL_COVER_MANIFEST_FILE))
+                .expect("read current manifest"),
+            manifest
+        );
     }
 
     #[test]

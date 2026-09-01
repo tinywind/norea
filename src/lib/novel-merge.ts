@@ -13,6 +13,7 @@ import {
 import { reconcileStoredChapterContent } from "./chapter-content-storage";
 import { clearResolvedChapterStorageDirs } from "./chapter-storage-resolution";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "./chapter-storage-path";
+import { saveNovelCoverFromSource } from "./novel-cover-storage";
 import {
   finalizeChapterStorageTransfer,
   prepareChapterStorageTransfer,
@@ -23,6 +24,7 @@ import {
   type ChapterStorageTransferPreparation,
 } from "./chapter-storage-transfer";
 import { pluginManager } from "./plugins/manager";
+import { normalizeSourceAccessRequiredError } from "./plugins/source-access";
 import { syncNovelFromSource } from "./plugins/sync-novel";
 import type { NovelItem, Plugin } from "./plugins/types";
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
@@ -446,7 +448,31 @@ async function executeNovelMergeWithPlugin(
       sourceIds: [sourceNovel.pluginId, targetNovel.pluginId],
     },
     signal,
-    () => mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, signal),
+    async () => {
+      if (sourceNovel.inLibrary || targetNovel.inLibrary) {
+        try {
+          await saveNovelCoverFromSource(
+            targetPlugin,
+            {
+              id: targetNovel.id,
+              name: targetNovel.name,
+              path: targetNovel.path,
+              pluginId: targetNovel.pluginId,
+            },
+            targetNovel.cover,
+          );
+        } catch (error) {
+          const sourceAccessError = normalizeSourceAccessRequiredError(error);
+          if (sourceAccessError) throw sourceAccessError;
+          console.warn("[novel-merge] failed to store target cover", {
+            error,
+            novelId: targetNovel.id,
+            pluginId: targetNovel.pluginId,
+          });
+        }
+      }
+      return mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, signal);
+    },
   );
 }
 

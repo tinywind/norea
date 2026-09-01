@@ -10,11 +10,6 @@ class BridgeSessionTest {
   @Test
   fun exposesWebViewCacheClearingCapability() {
     assertTrue(BridgeCapabilities.ALL.contains(BridgeCapabilities.SCRAPER_CLEAR_CACHE))
-    assertTrue(
-      BridgeCapabilities.ALL.contains(
-        BridgeCapabilities.SCRAPER_INVALIDATE_CHAPTER_PAGE_CACHE,
-      ),
-    )
   }
 
   @Test
@@ -96,34 +91,4 @@ class BridgeSessionTest {
     }
   }
 
-  @Test
-  fun rejectsLegacyCallsForAuthenticatedValidation() {
-    val session = BridgeSession()
-
-    assertThrows(IllegalArgumentException::class.java) {
-      session.validateAuthenticated(
-        BridgeCapabilities.VPN_PROXY_CONFIGURE,
-        BridgeAuthorityFields(),
-      )
-    }
-  }
-
-  @Test
-  fun acceptsAuthenticatedVpnProxyCapability() {
-    val session = BridgeSession()
-    val nonce = session.newNonce()
-
-    val authority = session.validateAuthenticated(
-      BridgeCapabilities.VPN_PROXY_CONFIGURE,
-      BridgeAuthorityFields(
-        token = session.sessionToken,
-        capability = BridgeCapabilities.VPN_PROXY_CONFIGURE,
-        nonce = nonce,
-      ),
-    )
-
-    assertFalse(authority.legacy)
-    assertEquals(nonce, authority.nonce)
-    assertTrue(BridgeCapabilities.ALL.contains(BridgeCapabilities.VPN_PROXY_CONFIGURE))
-  }
 }

@@ -24,12 +24,9 @@ object BridgeCapabilities {
   const val SCRAPER_CURRENT_ORIGIN = "scraper.currentOrigin"
   const val SCRAPER_FETCH = "scraper.fetch"
   const val SCRAPER_EXTRACT = "scraper.extract"
-  const val SCRAPER_INVALIDATE_CHAPTER_PAGE_CACHE =
-    "scraper.invalidateChapterPageCache"
   const val SCRAPER_NAVIGATE = "scraper.navigate"
   const val SCRAPER_BOUNDS = "scraper.bounds"
   const val UPDATE_OPEN_APK = "update.openApk"
-  const val VPN_PROXY_CONFIGURE = "vpn.proxy.configure"
 
   val ALL = listOf(
     SCRAPER_CANCEL,
@@ -38,11 +35,9 @@ object BridgeCapabilities {
     SCRAPER_CURRENT_ORIGIN,
     SCRAPER_FETCH,
     SCRAPER_EXTRACT,
-    SCRAPER_INVALIDATE_CHAPTER_PAGE_CACHE,
     SCRAPER_NAVIGATE,
     SCRAPER_BOUNDS,
     UPDATE_OPEN_APK,
-    VPN_PROXY_CONFIGURE,
   )
 }
 
@@ -89,13 +84,6 @@ class BridgeSession(
       legacy = false,
       nonce = nonce,
     )
-  }
-
-  fun validateAuthenticated(
-    requiredCapability: String,
-    fields: BridgeAuthorityFields,
-  ): BridgeAuthority = validate(requiredCapability, fields).also { authority ->
-    require(!authority.legacy) { "Android bridge authority is required." }
   }
 
   private fun trimSeenNonces() {

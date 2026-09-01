@@ -8,7 +8,6 @@ import {
   androidScraperClearCache,
   androidScraperClearCookies,
   androidScraperCurrentOrigin,
-  androidScraperInvalidateChapterPageCache,
   androidScraperNavigate,
   androidWebviewExtract,
 } from "./android-scraper";
@@ -18,7 +17,6 @@ const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
 
 interface NavigatePayload {
   id: string;
-  resetHistory: boolean;
   sourceId: string;
   timeoutMs: number;
   url: string;
@@ -37,7 +35,6 @@ function installScraperBridge() {
       extract: vi.fn(),
       fetch: vi.fn(),
       hide: vi.fn(),
-      invalidateChapterPageCache: vi.fn(),
       navigate,
       setBounds: vi.fn(),
     },
@@ -67,7 +64,7 @@ describe("Android scraper navigation", () => {
       "source-a",
       "https://example.com/chapter",
       "Norea/Test",
-      { resetHistory: true, timeoutMs: 12_000 },
+      { timeoutMs: 12_000 },
     ).then((result) => {
       settled = true;
       return result;
@@ -79,12 +76,12 @@ describe("Android scraper navigation", () => {
     expect(navigate).toHaveBeenCalledTimes(1);
     const payload = navigatePayload(navigate);
     expect(payload).toMatchObject({
-      resetHistory: true,
       sourceId: "source-a",
       timeoutMs: 12_000,
       url: "https://example.com/chapter",
       userAgent: "Norea/Test",
     });
+    expect(payload).not.toHaveProperty("resetHistory");
 
     window.__lnrAndroidScraperResolve?.(
       payload.id,
@@ -212,44 +209,6 @@ describe("Android scraper cache clearing", () => {
     await expect(clearing).resolves.toBeUndefined();
   });
 
-  it("invalidates only the requested chapter page cache entries", async () => {
-    const invalidateChapterPageCache = vi.mocked(
-      window.__NoreaAndroidScraper!.invalidateChapterPageCache,
-    );
-    const invalidation = androidScraperInvalidateChapterPageCache([
-      {
-        sourceId: "source-a",
-        url: "https://example.com/chapter/1",
-      },
-      {
-        sourceId: "source-a",
-        url: "https://example.com/chapter/2",
-      },
-    ]);
-    const payload = JSON.parse(
-      invalidateChapterPageCache.mock.calls[0][0] as string,
-    ) as {
-      entries: Array<{ sourceId: string; url: string }>;
-      id: string;
-    };
-
-    expect(payload.entries).toEqual([
-      {
-        sourceId: "source-a",
-        url: "https://example.com/chapter/1",
-      },
-      {
-        sourceId: "source-a",
-        url: "https://example.com/chapter/2",
-      },
-    ]);
-    window.__lnrAndroidScraperResolve?.(
-      payload.id,
-      JSON.stringify({ ok: true, result: null }),
-    );
-
-    await expect(invalidation).resolves.toBeUndefined();
-  });
 });
 
 describe("Android scraper extraction", () => {
@@ -261,7 +220,7 @@ describe("Android scraper extraction", () => {
     vi.unstubAllGlobals();
   });
 
-  it("forwards the chapter page cache policy", async () => {
+  it("forwards chapter extraction without a host cache policy", async () => {
     const extract = vi.mocked(window.__NoreaAndroidScraper!.extract);
     const extraction = androidWebviewExtract(
       "https://example.com/chapter/1",
@@ -270,14 +229,20 @@ describe("Android scraper extraction", () => {
       "Norea/Test",
       "source-a",
       "pool:1",
-      "reload",
     );
     const payload = JSON.parse(extract.mock.calls[0][0] as string) as {
+      beforeScript: string;
       id: string;
-      pageCachePolicy: string;
+      sourceId: string;
+      url: string;
     };
 
-    expect(payload.pageCachePolicy).toBe("reload");
+    expect(payload).toMatchObject({
+      beforeScript: "window.prepareChapter();",
+      sourceId: "source-a",
+      url: "https://example.com/chapter/1",
+    });
+    expect(payload).not.toHaveProperty("pageCachePolicy");
     window.__lnrAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({ ok: true, result: "captured" }),
@@ -286,27 +251,4 @@ describe("Android scraper extraction", () => {
     await expect(extraction).resolves.toBe("captured");
   });
 
-  it("leaves generic extraction outside the chapter page cache", async () => {
-    const extract = vi.mocked(window.__NoreaAndroidScraper!.extract);
-    const extraction = androidWebviewExtract(
-      "https://example.com/rendered-page",
-      null,
-      12_000,
-      "Norea/Test",
-      "source-a",
-      "pool:1",
-    );
-    const payload = JSON.parse(extract.mock.calls[0][0] as string) as {
-      id: string;
-      pageCachePolicy?: string;
-    };
-
-    expect(payload).not.toHaveProperty("pageCachePolicy");
-    window.__lnrAndroidScraperResolve?.(
-      payload.id,
-      JSON.stringify({ ok: true, result: "rendered" }),
-    );
-
-    await expect(extraction).resolves.toBe("rendered");
-  });
 });

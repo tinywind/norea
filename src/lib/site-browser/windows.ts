@@ -4,6 +4,8 @@ import { redactUrlForLog, redactUrlsForLog } from "../url-log";
 import { invokeDesktopNavigation } from "./desktop-navigation";
 import type { SiteBrowserBounds, SiteBrowserPlatformApi } from "./types";
 
+let pendingHideCompletion: Promise<void> = Promise.resolve();
+
 function debugWindowsSiteBrowser(message: string, data?: unknown): void {
   console.debug(`[site-browser:windows] ${message}`, data);
 }
@@ -51,6 +53,7 @@ export const windowsSiteBrowser: SiteBrowserPlatformApi = {
       });
       return;
     }
+    await pendingHideCompletion;
     const args = invokeArgs(bounds, url, sourceId);
     const logArgs = { ...args, url: redactUrlForLog(url) };
     debugWindowsSiteBrowser("setBounds invoke", logArgs);
@@ -58,10 +61,10 @@ export const windowsSiteBrowser: SiteBrowserPlatformApi = {
     debugWindowsSiteBrowser("setBounds complete", logArgs);
   },
   navigate: async (sourceId, url, options) => {
+    await pendingHideCompletion;
     const args = {
       url,
       userAgent: getScraperUserAgent(),
-      resetHistory: options?.resetHistory ?? false,
       sourceId,
       timeoutMs: options?.timeoutMs ?? null,
     };
@@ -77,7 +80,11 @@ export const windowsSiteBrowser: SiteBrowserPlatformApi = {
   },
   hide: async () => {
     debugWindowsSiteBrowser("hide invoke");
-    await invoke("scraper_hide");
+    const request = pendingHideCompletion.then(async () => {
+      await invoke("scraper_hide");
+    });
+    pendingHideCompletion = request.catch(() => undefined);
+    await request;
     debugWindowsSiteBrowser("hide complete");
   },
 };

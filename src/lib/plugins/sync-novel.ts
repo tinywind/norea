@@ -73,6 +73,10 @@ function optionalText(value: string | undefined | null): string | null {
   return value ?? null;
 }
 
+function sqliteBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === "1";
+}
+
 function pluginChapterContentType(value: unknown): ChapterContentType {
   if (value === undefined || value === null || value === "") {
     return DEFAULT_CHAPTER_CONTENT_TYPE;
@@ -297,14 +301,19 @@ export async function syncNovelFromSource(
       ],
     );
 
-    const rows = await db.select<{ id: number }[]>(
-      `SELECT id FROM novel WHERE plugin_id = $1 AND path = $2`,
+    const rows = await db.select<
+      { cover: string | null; id: number; inLibrary: unknown }[]
+    >(
+      `SELECT id, cover, in_library AS inLibrary
+       FROM novel
+       WHERE plugin_id = $1 AND path = $2`,
       [plugin.id, item.path],
     );
-    const novelId = rows[0]?.id;
-    if (!novelId) {
+    const novelRow = rows[0];
+    if (!novelRow?.id) {
       throw new Error("sync-novel: failed to resolve local novel id");
     }
+    const novelId = novelRow.id;
 
     const chapterMutation = await upsertSourceChaptersInDb(
       db,
@@ -315,7 +324,9 @@ export async function syncNovelFromSource(
     );
     return {
       changedChapters: chapterMutation.rowsAffected,
+      cover: optionalText(novelRow.cover) ?? cover,
       novelChanged: novelResult.rowsAffected > 0,
+      inLibrary: sqliteBoolean(novelRow.inLibrary),
       novelId,
     };
   });
@@ -327,25 +338,27 @@ export async function syncNovelFromSource(
     markUpdatesIndexDirty("novel-sync");
   }
 
-  try {
-    await saveNovelCoverFromSource(
-      plugin,
-      {
-        id: result.novelId,
-        name: novelName,
-        path: item.path,
+  if (result.inLibrary) {
+    try {
+      await saveNovelCoverFromSource(
+        plugin,
+        {
+          id: result.novelId,
+          name: novelName,
+          path: item.path,
+          pluginId: plugin.id,
+        },
+        result.cover,
+      );
+    } catch (error) {
+      const sourceAccessError = normalizeSourceAccessRequiredError(error);
+      if (sourceAccessError) throw sourceAccessError;
+      console.warn("[sync-novel] failed to store novel cover", {
+        error,
+        novelId: result.novelId,
         pluginId: plugin.id,
-      },
-      cover,
-    );
-  } catch (error) {
-    const sourceAccessError = normalizeSourceAccessRequiredError(error);
-    if (sourceAccessError) throw sourceAccessError;
-    console.warn("[sync-novel] failed to store novel cover", {
-      error,
-      novelId: result.novelId,
-      pluginId: plugin.id,
-    });
+      });
+    }
   }
 
   return {

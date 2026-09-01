@@ -398,7 +398,6 @@ describe("pluginMediaFetch", () => {
     expect(invokeMock).toHaveBeenCalledWith(
       "webview_fetch",
       expect.objectContaining({
-        cacheMediaResponse: true,
         init: expect.objectContaining({ method: "POST" }),
       }),
     );
@@ -494,7 +493,6 @@ describe("pluginMediaFetch", () => {
     const request = pluginMediaFetch("https://cdn.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
       headers: { "User-Agent": "Captured Response Agent" },
-      preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "source-a",
     });
@@ -517,7 +515,7 @@ describe("pluginMediaFetch", () => {
     );
   });
 
-  it("propagates a Cloudflare challenge from native-first media without falling back", async () => {
+  it("propagates a Cloudflare challenge from the WebView", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
@@ -542,7 +540,7 @@ describe("pluginMediaFetch", () => {
     expect(invokeMock).toHaveBeenCalledTimes(2);
     expect(invokeMock).toHaveBeenNthCalledWith(
       2,
-      "scraper_media_fetch",
+      "webview_fetch",
       expect.objectContaining({ url: "https://cdn.test/page.png" }),
     );
   });
@@ -585,21 +583,10 @@ describe("pluginMediaFetch", () => {
     );
   });
 
-  it("propagates a Cloudflare challenge from the native media fallback", async () => {
+  it("keeps failed media requests inside the source-profile WebView", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
-      .mockRejectedValueOnce(new Error("Failed to fetch"))
-      .mockResolvedValueOnce(
-        wireOk("Just a moment...", {
-          status: 403,
-          statusText: "Forbidden",
-          headers: {
-            "cf-mitigated": "challenge",
-            "content-type": "text/html",
-          },
-          finalUrl: "https://source.test/cdn-cgi/challenge-platform/",
-        }),
-      );
+      .mockRejectedValueOnce(new Error("Failed to fetch"));
 
     const request = pluginMediaFetch("https://source.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
@@ -607,13 +594,12 @@ describe("pluginMediaFetch", () => {
       sourceId: "source-a",
     });
 
-    await expect(request).rejects.toSatisfy(isSourceAccessRequiredError);
-    expect(invokeMock).toHaveBeenCalledTimes(3);
-    expect(invokeMock).toHaveBeenNthCalledWith(
-      3,
-      "scraper_media_fetch",
-      expect.objectContaining({ url: "https://source.test/page.png" }),
-    );
+    await expect(request).rejects.toThrow("Failed to fetch");
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "scraper_take_captured_resource",
+      "webview_fetch",
+    ]);
   });
 
   it("takes a captured Windows response as a native body handle", async () => {
@@ -630,7 +616,6 @@ describe("pluginMediaFetch", () => {
       takeCapturedMediaHandle("https://cdn.test/page.png", {
         contextUrl: "https://source.test/chapter/1",
         headers: { "user-agent": "Captured Handle Agent" },
-        preferBrowserCache: true,
         scraperExecutor: "pool:1",
         sourceId: "source-a",
       }),
@@ -667,7 +652,6 @@ describe("pluginMediaFetch", () => {
 
     const request = takeCapturedMediaHandle("https://cdn.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
-      preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "source-a",
     });
@@ -695,7 +679,6 @@ describe("pluginMediaFetch", () => {
 
     const request = takeCapturedMediaHandle("https://cdn.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
-      preferBrowserCache: true,
       scraperExecutor: "pool:1",
       sourceId: "source-a",
     });
@@ -710,10 +693,7 @@ describe("pluginMediaFetch", () => {
     });
   });
 
-  it("uses native media fetch first when media and context hosts differ", async () => {
-    const debugSpy = vi
-      .spyOn(console, "debug")
-      .mockImplementation(() => undefined);
+  it("uses the source WebView first when media and context hosts differ", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("image", {
         finalUrl: "https://novel-phinf.pstatic.net/page.png",
@@ -721,53 +701,36 @@ describe("pluginMediaFetch", () => {
       }),
     );
 
-    try {
-      const response = await pluginMediaFetch(
-        "https://novel-phinf.pstatic.net/page.png",
-        {
-          contextUrl: "https://novel.naver.com/webnovel/detail",
-          headers: {
-            Referer: "https://novel.naver.com/",
-          },
-          timeoutMs: 12_345,
-        },
-      );
-
-      expect(invokeMock).toHaveBeenCalledTimes(1);
-      expect(invokeMock).toHaveBeenCalledWith("scraper_media_fetch", {
-        url: "https://novel-phinf.pstatic.net/page.png",
-        init: {
-          headers: {
-            Referer: "https://novel.naver.com/",
-          },
-          method: undefined,
-          body: undefined,
+    const response = await pluginMediaFetch(
+      "https://novel-phinf.pstatic.net/page.png",
+      {
+        contextUrl: "https://novel.naver.com/webnovel/detail",
+        headers: {
+          Referer: "https://novel.naver.com/",
         },
         timeoutMs: 12_345,
-        userAgent: globalThis.navigator?.userAgent ?? null,
-      });
-      expect(debugSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] native fetch started",
-        expect.objectContaining({
-          contextHost: "novel.naver.com",
-          host: "novel-phinf.pstatic.net",
-          sanitizedUrl: "https://novel-phinf.pstatic.net",
-        }),
-      );
-      expect(debugSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] native fetch finished",
-        expect.objectContaining({
-          host: "novel-phinf.pstatic.net",
-          status: 200,
-        }),
-      );
-      expect(await response.text()).toBe("image");
-    } finally {
-      debugSpy.mockRestore();
-    }
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("webview_fetch", {
+      url: "https://novel-phinf.pstatic.net/page.png",
+      init: {
+        headers: {
+          Referer: "https://novel.naver.com/",
+        },
+        method: undefined,
+        body: undefined,
+      },
+      contextUrl: "https://novel.naver.com/webnovel/detail",
+      queue: "immediate",
+      timeoutMs: 12_345,
+      userAgent: globalThis.navigator?.userAgent ?? null,
+    });
+    expect(await response.text()).toBe("image");
   });
 
-  it("uses the page WebView cache first for captured cross-host media", async () => {
+  it("uses a normal page WebView fetch after captured media misses", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
@@ -781,7 +744,6 @@ describe("pluginMediaFetch", () => {
       "https://cdn.test/page.png?accessKey=signed",
       {
         contextUrl: "https://source.test/chapter/1",
-        preferBrowserCache: true,
         scraperExecutor: "pool:1",
         sourceId: "source-a",
       },
@@ -799,13 +761,11 @@ describe("pluginMediaFetch", () => {
       },
     );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "webview_fetch", {
-      cacheMediaResponse: true,
       url: "https://cdn.test/page.png?accessKey=signed",
       init: {
         headers: undefined,
         method: undefined,
         body: undefined,
-        preferBrowserCache: true,
       },
       contextUrl: "https://source.test/chapter/1",
       queue: "pool:1",
@@ -816,7 +776,7 @@ describe("pluginMediaFetch", () => {
     expect(await response.text()).toBe("image");
   });
 
-  it("falls back to native media after a Windows cache fetch is rejected", async () => {
+  it("returns a non-success response from the source-profile WebView", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
@@ -825,12 +785,6 @@ describe("pluginMediaFetch", () => {
           statusText: "Forbidden",
           finalUrl: "https://newtoki-cdn.test/page.css",
         }),
-      )
-      .mockResolvedValueOnce(
-        wireOk("image", {
-          finalUrl: "https://newtoki-cdn.test/page.css",
-          headers: { "content-type": "image/webp" },
-        }),
       );
 
     const response = await pluginMediaFetch(
@@ -838,26 +792,18 @@ describe("pluginMediaFetch", () => {
       {
         contextUrl: "https://source.test/webtoon/1",
         headers: { Referer: "https://source.test/" },
-        preferBrowserCache: true,
         scraperExecutor: "pool:1",
         sourceId: "newtoki-webtoon",
       },
     );
 
-    expect(invokeMock).toHaveBeenCalledTimes(3);
-    expect(invokeMock).toHaveBeenNthCalledWith(3, "scraper_media_fetch", {
-      url: "https://newtoki-cdn.test/page.css",
-      init: {
-        headers: { Referer: "https://source.test/" },
-        method: undefined,
-        body: undefined,
-        preferBrowserCache: true,
-      },
-      sourceId: "newtoki-webtoon",
-      timeoutMs: 30_000,
-      userAgent: globalThis.navigator?.userAgent ?? null,
-    });
-    expect(await response.text()).toBe("image");
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "scraper_take_captured_resource",
+      "webview_fetch",
+    ]);
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("blocked");
   });
 
   it("uses the response body captured during chapter navigation", async () => {
@@ -876,7 +822,6 @@ describe("pluginMediaFetch", () => {
         "https://cdn.test/page.png?accessKey=signed",
         {
           contextUrl: "https://source.test/chapter/1",
-          preferBrowserCache: true,
           scraperExecutor: "pool:1",
           sourceId: "source-a",
         },
@@ -906,116 +851,25 @@ describe("pluginMediaFetch", () => {
     }
   });
 
-  it("retries native-first media fetches in the WebView on session-sensitive HTTP errors", async () => {
-    const debugSpy = vi
-      .spyOn(console, "debug")
-      .mockImplementation(() => undefined);
-    const warnSpy = vi
-      .spyOn(console, "warn")
-      .mockImplementation(() => undefined);
-    invokeMock
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(
-        wireOk("blocked", {
-          status: 403,
-          statusText: "Forbidden",
-          finalUrl: "https://image-comic.pstatic.net/page.jpg",
-        }),
-      )
-      .mockResolvedValueOnce(
-        wireOk("image", {
-          finalUrl: "https://image-comic.pstatic.net/page.jpg",
-          headers: { "content-type": "image/jpeg" },
-        }),
-      );
-
-    try {
-      const response = await pluginMediaFetch(
-        "https://image-comic.pstatic.net/page.jpg",
-        {
-          contextUrl: "https://m.comic.naver.com/webtoon/detail",
-          headers: {
-            Referer: "https://m.comic.naver.com/",
-          },
-          scraperExecutor: "pool:0",
-          sourceId: "naverwebtoon",
-        },
-      );
-
-      expect(invokeMock).toHaveBeenNthCalledWith(2, "scraper_media_fetch", {
-        url: "https://image-comic.pstatic.net/page.jpg",
-        init: {
-          headers: {
-            Referer: "https://m.comic.naver.com/",
-          },
-          method: undefined,
-          body: undefined,
-        },
-        sourceId: "naverwebtoon",
-        timeoutMs: 30_000,
-        userAgent: globalThis.navigator?.userAgent ?? null,
-      });
-      expect(invokeMock).toHaveBeenNthCalledWith(3, "webview_fetch", {
-        cacheMediaResponse: true,
-        url: "https://image-comic.pstatic.net/page.jpg",
-        init: {
-          headers: {
-            Referer: "https://m.comic.naver.com/",
-          },
-          method: undefined,
-          body: undefined,
-        },
-        contextUrl: "https://m.comic.naver.com/webtoon/detail",
-        queue: "pool:0",
-        sourceId: "naverwebtoon",
-        timeoutMs: 30_000,
-        userAgent: globalThis.navigator?.userAgent ?? null,
-      });
-      expect(warnSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] native fetch returned retryable status; trying WebView",
-        expect.objectContaining({
-          host: "image-comic.pstatic.net",
-          nativeError: "HTTP 403 Forbidden",
-          scraperExecutor: "pool:0",
-          sourceId: "naverwebtoon",
-          status: 403,
-        }),
-      );
-      expect(await response.text()).toBe("image");
-    } finally {
-      debugSpy.mockRestore();
-      warnSpy.mockRestore();
-    }
-  });
-
-  it("falls back to native media fetch when the WebView cannot read media bytes", async () => {
-    const debugSpy = vi
-      .spyOn(console, "debug")
-      .mockImplementation(() => undefined);
+  it("propagates a WebView media failure without using host HTTP", async () => {
     const errorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    invokeMock
-      .mockRejectedValueOnce(new Error("Failed to fetch"))
-      .mockResolvedValueOnce(
-        wireOk("image", {
-          finalUrl: "https://cdn.test/page.png",
-          headers: { "content-type": "image/png" },
-        }),
-      );
+    invokeMock.mockRejectedValueOnce(new Error("Failed to fetch"));
 
     try {
-      const response = await pluginMediaFetch("https://cdn.test/page.png", {
-        contextUrl: "https://cdn.test/chapter/1",
-        headers: {
-          Referer: "https://cdn.test/chapter/1",
-          "User-Agent": "Plugin UA",
-        },
-        timeoutMs: 12_345,
-      });
+      await expect(
+        pluginMediaFetch("https://cdn.test/page.png", {
+          contextUrl: "https://cdn.test/chapter/1",
+          headers: {
+            Referer: "https://cdn.test/chapter/1",
+            "User-Agent": "Plugin UA",
+          },
+          timeoutMs: 12_345,
+        }),
+      ).rejects.toThrow("Failed to fetch");
 
       expect(invokeMock).toHaveBeenNthCalledWith(1, "webview_fetch", {
-        cacheMediaResponse: true,
         url: "https://cdn.test/page.png",
         init: {
           headers: {
@@ -1030,86 +884,17 @@ describe("pluginMediaFetch", () => {
         timeoutMs: 12_345,
         userAgent: "Plugin UA",
       });
-      expect(invokeMock).toHaveBeenNthCalledWith(2, "scraper_media_fetch", {
-        url: "https://cdn.test/page.png",
-        init: {
-          headers: {
-            Referer: "https://cdn.test/chapter/1",
-            "User-Agent": "Plugin UA",
-          },
-          method: undefined,
-          body: undefined,
-        },
-        timeoutMs: 12_345,
-        userAgent: "Plugin UA",
-      });
-      expect(debugSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] browser fetch failed; using native media fetch",
-        expect.objectContaining({
-          host: "cdn.test",
-          sanitizedUrl: "https://cdn.test",
-        }),
-      );
-      expect(debugSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] native fallback started",
-        expect.objectContaining({
-          host: "cdn.test",
-          sanitizedUrl: "https://cdn.test",
-        }),
-      );
-      expect(debugSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] native fallback finished",
-        expect.objectContaining({
-          host: "cdn.test",
-          sanitizedUrl: "https://cdn.test",
-          status: 200,
-        }),
-      );
-      expect(response.url).toBe("https://cdn.test/page.png");
-      expect(await response.text()).toBe("image");
-      expect(errorSpy).not.toHaveBeenCalledWith(
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock.mock.calls[0]?.[0]).toBe("webview_fetch");
+      expect(errorSpy).toHaveBeenCalledWith(
         "[plugin-fetch] failed",
-        expect.anything(),
-      );
-    } finally {
-      debugSpy.mockRestore();
-      errorSpy.mockRestore();
-    }
-  });
-
-  it("includes browser and native failure causes when both media paths fail", async () => {
-    const debugSpy = vi
-      .spyOn(console, "debug")
-      .mockImplementation(() => undefined);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    invokeMock
-      .mockResolvedValueOnce(null)
-      .mockRejectedValueOnce(new Error("browser failed"))
-      .mockRejectedValueOnce(new Error("native failed"));
-
-    try {
-      await expect(
-        pluginMediaFetch("https://cdn.test/page.png?token=secret", {
-          contextUrl: "https://cdn.test/chapter",
-          sourceId: "source-a",
-          scraperExecutor: "pool:1",
-        }),
-      ).rejects.toThrow(
-        "Media fetch failed for https://cdn.test; browser: browser failed; native: native failed",
-      );
-      expect(warnSpy).toHaveBeenCalledWith(
-        "[plugin-media-fetch] native fallback failed",
         expect.objectContaining({
-          browserError: "browser failed",
-          nativeError: "native failed",
-          sanitizedUrl: "https://cdn.test",
-          scraperExecutor: "pool:1",
-          sourceId: "source-a",
+          scraperExecutor: "immediate",
+          url: "https://cdn.test",
         }),
       );
     } finally {
-      debugSpy.mockRestore();
-      warnSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 });
