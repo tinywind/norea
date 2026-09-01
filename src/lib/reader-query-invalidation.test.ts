@@ -6,6 +6,7 @@ import {
   chapterListQueryKey,
   chapterUpdatesQueryKey,
   downloadCacheQueryKey,
+  invalidateChapterReadStateQueries,
   invalidateReaderContentQueries,
   invalidateReaderOpenedQueries,
   invalidateReaderProgressQueries,
@@ -62,6 +63,19 @@ afterEach(() => {
 });
 
 describe("reader query invalidation", () => {
+  it("refreshes chapter read-state caches after a manual change", () => {
+    const { invalidated, queryClient } = collectInvalidations();
+
+    invalidateChapterReadStateQueries(queryClient, { novelId: 7 });
+
+    expect(invalidated).toEqual([
+      chapterListQueryKey(7),
+      novelChaptersQueryKey(7),
+      ["chapter", "detail"],
+      novelLibraryQueryKey,
+    ]);
+  });
+
   it("scopes progress writes to reader, history, and updates keys", () => {
     const { invalidated, queryClient } = collectInvalidations();
 

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Box } from "@mantine/core";
@@ -46,6 +53,10 @@ import {
   novelDetailQueryKey,
   novelLibraryQueryKey,
 } from "../lib/reader-query-invalidation";
+import {
+  getReaderContentPhaseKey,
+  isReaderProgressPersistenceReady,
+} from "../lib/reader-progress-session";
 import { pluginManager } from "../lib/plugins/manager";
 import { LOCAL_PLUGIN_ID } from "../lib/plugins/types";
 import {
@@ -634,7 +645,6 @@ export function ReaderPage() {
     if (!chapter || !isHtmlLikeChapterContentType(chapter.contentType)) return;
     const unsubscribe = subscribeChapterPartialContentUpdates((event) => {
       if (event.chapterId !== chapter.id) return;
-      readerContentReadyRef.current = hasRenderableReaderHtml(event.html);
       logReaderMediaPipeline("partial-html", {
         chapterId: chapter.id,
         htmlLength: event.html.length,
@@ -747,6 +757,10 @@ export function ReaderPage() {
   }, [chapterId, queryClient]);
 
   const incognitoMode = useLibraryStore((state) => state.incognitoMode);
+  const incognitoModeRef = useRef(incognitoMode);
+  useLayoutEffect(() => {
+    incognitoModeRef.current = incognitoMode;
+  }, [incognitoMode]);
   const globalReaderGeneral = useReaderStore((state) => state.general);
   const globalReaderAppearance = useReaderStore((state) => state.appearance);
   const sourceReaderSettingsOverride = useReaderStore((state) =>
@@ -960,46 +974,63 @@ export function ReaderPage() {
     enabled: currentNovelId > 0,
   });
   const progressMutation = useMutation({
-    mutationFn: (progress: number) =>
+    mutationFn: ({
+      chapterId: targetChapterId,
+      progress,
+      recordHistory,
+    }: {
+      chapterId: number;
+      novelId: number;
+      progress: number;
+      recordHistory: boolean;
+    }) =>
       enqueueReaderWrite(() =>
-        updateChapterProgress(chapterId, progress, {
-          recordHistory: !incognitoMode,
+        updateChapterProgress(targetChapterId, progress, {
+          recordHistory,
         }),
       ),
-    onMutate: (progress) => {
+    onMutate: ({
+      chapterId: targetChapterId,
+      novelId: targetNovelId,
+      progress,
+      recordHistory,
+    }) => {
       const applyProgress = <T extends ChapterListRow>(chapter: T): T => ({
         ...chapter,
         progress,
         unread: progress >= FINISHED_PROGRESS ? false : chapter.unread,
         readAt:
-          incognitoMode || progress <= 0
+          !recordHistory || progress <= 0
             ? chapter.readAt
             : Math.floor(Date.now() / 1000),
       });
       queryClient.setQueryData<Awaited<ReturnType<typeof getChapterById>>>(
-        chapterDetailQueryKey(chapterId),
+        chapterDetailQueryKey(targetChapterId),
         (chapter) => (chapter ? applyProgress(chapter) : chapter),
       );
-      if (currentNovelId > 0) {
+      if (targetNovelId > 0) {
         const updateChapterList = (chapters: ChapterListRow[] | undefined) =>
           chapters?.map((chapter) =>
-            chapter.id === chapterId ? applyProgress(chapter) : chapter,
+            chapter.id === targetChapterId ? applyProgress(chapter) : chapter,
           );
         queryClient.setQueryData<ChapterListRow[]>(
-          chapterListQueryKey(currentNovelId),
+          chapterListQueryKey(targetNovelId),
           updateChapterList,
         );
         queryClient.setQueryData<ChapterListRow[]>(
-          novelChaptersQueryKey(currentNovelId),
+          novelChaptersQueryKey(targetNovelId),
           updateChapterList,
         );
       }
     },
-    onSuccess: (_result, progress) => {
+    onSuccess: (
+      _result,
+      { novelId: targetNovelId, progress, recordHistory },
+    ) => {
       void invalidateReaderProgressQueries(queryClient, {
-        novelId: currentNovelId,
+        novelId: targetNovelId,
         progress,
-        recordHistory: !incognitoMode,
+        recordHistory,
       });
       if (progress >= FINISHED_PROGRESS) {
         markUpdatesIndexDirty("read-progress");
@@ -1412,8 +1443,17 @@ export function ReaderPage() {
   const activeContentType =
     chapter?.contentType ?? activeReaderDocument?.contentType;
   const activeChapterId = chapter?.id ?? activeReaderDocument?.chapterId;
+  const readerProgressPersistenceReady = isReaderProgressPersistenceReady({
+    activeContent: activeReaderHtml,
+    chapterId: chapter?.id,
+    isDownloaded: chapter?.isDownloaded === true,
+    requestedChapterId: chapterId,
+    storedContent: chapterContentHtml,
+  });
   const readerContentKey =
-    chapterId > 0 ? chapterId : (activeChapterId ?? "sample");
+    chapterId > 0
+      ? getReaderContentPhaseKey(chapterId, readerProgressPersistenceReady)
+      : (activeChapterId ?? "sample");
   const readerLocalMediaContext = useMemo<
     ChapterMediaStorageContext | undefined
   >(
@@ -1482,9 +1522,9 @@ export function ReaderPage() {
   }, [activeReaderDocument?.chapterId, activeReaderDocument?.html]);
 
   const hasChapterContent = Boolean(activeReaderHtml);
-  useEffect(() => {
-    readerContentReadyRef.current = hasChapterContent;
-  }, [hasChapterContent]);
+  useLayoutEffect(() => {
+    readerContentReadyRef.current = readerProgressPersistenceReady;
+  }, [readerProgressPersistenceReady]);
   const readerBusy =
     chapterId > 0 &&
     !hasChapterContent &&
@@ -1640,16 +1680,31 @@ export function ReaderPage() {
 
   const handleProgressChange = useCallback(
     (nextProgress: number) => {
-      if (chapterId > 0) {
-        setInitialProgressOverride((current) =>
-          current?.chapterId === chapterId
-            ? { ...current, progress: nextProgress }
-            : current,
-        );
-        progressMutateRef.current(nextProgress);
+      const targetChapterId = chapter?.id;
+      if (
+        !readerProgressPersistenceReady ||
+        !targetChapterId ||
+        currentNovelId <= 0
+      ) {
+        return;
       }
+      setInitialProgressOverride((current) =>
+        current?.chapterId === targetChapterId
+          ? { ...current, progress: nextProgress }
+          : current,
+      );
+      progressMutateRef.current({
+        chapterId: targetChapterId,
+        novelId: currentNovelId,
+        progress: nextProgress,
+        recordHistory: !incognitoModeRef.current,
+      });
     },
-    [chapterId],
+    [
+      chapter?.id,
+      currentNovelId,
+      readerProgressPersistenceReady,
+    ],
   );
   const handlePageIndexChange = useCallback(
     (pageIndex: number) => {
@@ -1720,7 +1775,9 @@ export function ReaderPage() {
         initialProgress={readerProgress}
         localMediaContext={readerLocalMediaContext}
         onToggleChrome={handleReaderMenuTap}
-        onProgressChange={handleProgressChange}
+        onProgressChange={
+          readerProgressPersistenceReady ? handleProgressChange : undefined
+        }
         onPageIndexChange={handlePageIndexChange}
         onBoundaryPage={handleBoundaryPage}
         onSeekbarActivity={showReaderSeekbarForActivity}
@@ -1740,7 +1797,9 @@ export function ReaderPage() {
         initialProgress={readerProgress}
         localMediaContext={readerLocalMediaContext}
         onToggleChrome={handleReaderMenuTap}
-        onProgressChange={handleProgressChange}
+        onProgressChange={
+          readerProgressPersistenceReady ? handleProgressChange : undefined
+        }
         onPageIndexChange={handlePageIndexChange}
         onBoundaryPage={handleBoundaryPage}
         onMediaError={handleRemoteMediaError}

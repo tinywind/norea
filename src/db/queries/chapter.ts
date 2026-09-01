@@ -133,7 +133,7 @@ export async function listChaptersByNovel(
     `SELECT ${CHAPTER_LIST_SELECT_FIELDS}
      FROM chapter
      WHERE novel_id = $1
-     ORDER BY position`,
+     ORDER BY position, id`,
     [novelId],
   );
   return rows.map(normalizeChapterListRow);
@@ -705,6 +705,53 @@ export async function setChaptersReadState(
 
     return { rowsAffected, chunks };
   });
+}
+
+export type RelativeChapterDirection = "before" | "after";
+
+export async function setRelativeChaptersReadState(
+  anchorChapterId: number,
+  direction: RelativeChapterDirection,
+  unread: boolean,
+): Promise<ChapterMutationResult> {
+  if (!Number.isInteger(anchorChapterId) || anchorChapterId <= 0) {
+    return { rowsAffected: 0 };
+  }
+
+  const rangePredicate =
+    direction === "before"
+      ? `(candidate.position < reference.position
+          OR (candidate.position = reference.position
+              AND candidate.id < reference.id))`
+      : `(candidate.position > reference.position
+          OR (candidate.position = reference.position
+              AND candidate.id > reference.id))`;
+  const progress = unread ? 0 : FINISHED_PROGRESS;
+  const unreadFlag = unread ? 1 : 0;
+  const db = await getDb();
+  const result = await db.execute(
+    `WITH reference AS (
+       SELECT id, novel_id, position
+       FROM chapter
+       WHERE id = $1
+     )
+     UPDATE chapter
+     SET
+       progress   = $2,
+       unread     = $3,
+       updated_at = unixepoch()
+     WHERE id IN (
+       SELECT candidate.id
+       FROM chapter AS candidate
+       CROSS JOIN reference
+       WHERE candidate.novel_id = reference.novel_id
+         AND candidate.id <> reference.id
+         AND ${rangePredicate}
+     )
+       AND (progress <> $2 OR unread <> $3)`,
+    [anchorChapterId, progress, unreadFlag],
+  );
+  return { rowsAffected: result.rowsAffected };
 }
 
 export async function markChapterOpened(chapterId: number): Promise<void> {

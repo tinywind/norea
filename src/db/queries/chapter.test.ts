@@ -24,6 +24,7 @@ import {
   saveChapterContentMetadata,
   saveChapterPartialContentMetadata,
   setChapterBookmark,
+  setRelativeChaptersReadState,
   updateChapterProgress,
   upsertChapter,
   upsertDownloadedChapters,
@@ -52,14 +53,14 @@ beforeEach(() => {
 });
 
 describe("listChaptersByNovel", () => {
-  it("filters by novel_id and orders by position", async () => {
+  it("filters by novel_id and orders by canonical position and id", async () => {
     mockSelect.mockResolvedValueOnce([]);
     await listChaptersByNovel(42);
 
     const [sql, params] = mockSelect.mock.calls[0]!;
     expect(sql).toContain("FROM chapter");
     expect(sql).toContain("WHERE novel_id = $1");
-    expect(sql).toContain("ORDER BY position");
+    expect(sql).toContain("ORDER BY position, id");
     expect(sql).not.toMatch(/\bcontent\b/);
     expect(params).toEqual([42]);
   });
@@ -432,6 +433,56 @@ describe("updateChapterProgress", () => {
     expect(sql).toContain("last_read_at = unixepoch()");
     expect(sql).toContain("SELECT novel_id FROM chapter WHERE id = $1");
     expect(params).toEqual([5]);
+  });
+});
+
+describe("setRelativeChaptersReadState", () => {
+  it("marks only chapters before the anchor read in canonical order", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 3 });
+
+    await expect(
+      setRelativeChaptersReadState(17, "before", false),
+    ).resolves.toEqual({ rowsAffected: 3 });
+
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("candidate.novel_id = reference.novel_id");
+    expect(sql).toContain("candidate.position < reference.position");
+    expect(sql).toContain("candidate.id < reference.id");
+    expect(sql).toContain("candidate.id <> reference.id");
+    expect(sql).toContain("progress <> $2 OR unread <> $3");
+    expect(params).toEqual([17, 100, 0]);
+  });
+
+  it("marks only chapters after the anchor unread in canonical order", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 4 });
+
+    await expect(
+      setRelativeChaptersReadState(23, "after", true),
+    ).resolves.toEqual({ rowsAffected: 4 });
+
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("candidate.novel_id = reference.novel_id");
+    expect(sql).toContain("candidate.position > reference.position");
+    expect(sql).toContain("candidate.id > reference.id");
+    expect(sql).toContain("candidate.id <> reference.id");
+    expect(params).toEqual([23, 0, 1]);
+  });
+
+  it("returns a no-op result at a chapter-list boundary", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 0 });
+
+    await expect(
+      setRelativeChaptersReadState(1, "before", false),
+    ).resolves.toEqual({ rowsAffected: 0 });
+  });
+
+  it("ignores invalid anchor chapter ids without opening the database", async () => {
+    await expect(
+      setRelativeChaptersReadState(0, "after", true),
+    ).resolves.toEqual({ rowsAffected: 0 });
+
+    expect(mockedGetDb).not.toHaveBeenCalled();
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 });
 

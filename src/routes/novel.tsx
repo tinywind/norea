@@ -49,6 +49,7 @@ import {
   DragHandleGlyph,
   LibraryAddGlyph,
   LibraryAddedGlyph,
+  MoreGlyph,
   PlayFromStartGlyph,
   PlayGlyph,
   PlusGlyph,
@@ -74,6 +75,7 @@ import { TextButton } from "../components/TextButton";
 import {
   listChaptersByNovel,
   setChaptersReadState,
+  setRelativeChaptersReadState,
   type ChapterListRow,
 } from "../db/queries/chapter";
 import {
@@ -114,6 +116,7 @@ import {
 } from "../lib/tasks/chapter-download";
 import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
+import { invalidateChapterReadStateQueries } from "../lib/reader-query-invalidation";
 import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
@@ -1096,6 +1099,14 @@ interface NovelMetadataRefreshMenuProps {
   refreshing: boolean;
 }
 
+interface ChapterRelativeReadMenuProps {
+  afterCount: number;
+  beforeCount: number;
+  busy: boolean;
+  onMarkFollowingUnread: () => void;
+  onMarkPreviousRead: () => void;
+}
+
 function NovelActionButton({
   active = false,
   children,
@@ -1169,6 +1180,80 @@ function NovelBatchDownloadMenu({
               </span>
             </button>
           ))}
+        </div>
+      </Popover.Dropdown>
+    </Popover>
+  );
+}
+
+function ChapterRelativeReadMenu({
+  afterCount,
+  beforeCount,
+  busy,
+  onMarkFollowingUnread,
+  onMarkPreviousRead,
+}: ChapterRelativeReadMenuProps) {
+  const { t } = useTranslation();
+  const [opened, setOpened] = useState(false);
+
+  return (
+    <Popover
+      opened={opened}
+      onChange={setOpened}
+      position="bottom-end"
+      shadow="md"
+      width={280}
+    >
+      <Popover.Target>
+        <IconButton
+          className="lnr-novel-selection-icon"
+          disabled={busy || (beforeCount === 0 && afterCount === 0)}
+          label={t("novel.selection.moreActions")}
+          onClick={() => setOpened((current) => !current)}
+          size="sm"
+          title={t("novel.selection.moreActions")}
+        >
+          {busy ? <Loader size={14} /> : <MoreGlyph />}
+        </IconButton>
+      </Popover.Target>
+      <Popover.Dropdown className="lnr-novel-batch-download-menu">
+        <div className="lnr-novel-batch-download-list">
+          <button
+            className="lnr-novel-batch-download-option"
+            disabled={busy || beforeCount === 0}
+            onClick={() => {
+              onMarkPreviousRead();
+              setOpened(false);
+            }}
+            type="button"
+          >
+            <span className="lnr-novel-batch-download-label">
+              {t("novel.selection.markPreviousRead")}
+            </span>
+            <span className="lnr-novel-batch-download-description">
+              {t("novel.selection.markPreviousReadDescription", {
+                count: beforeCount,
+              })}
+            </span>
+          </button>
+          <button
+            className="lnr-novel-batch-download-option"
+            disabled={busy || afterCount === 0}
+            onClick={() => {
+              onMarkFollowingUnread();
+              setOpened(false);
+            }}
+            type="button"
+          >
+            <span className="lnr-novel-batch-download-label">
+              {t("novel.selection.markFollowingUnread")}
+            </span>
+            <span className="lnr-novel-batch-download-description">
+              {t("novel.selection.markFollowingUnreadDescription", {
+                count: afterCount,
+              })}
+            </span>
+          </button>
         </div>
       </Popover.Dropdown>
     </Popover>
@@ -1874,10 +1959,24 @@ export function NovelDetailPage() {
     }) => setChaptersReadState(chapterIds, unread),
     onSuccess: () => {
       markUpdatesIndexDirty("read-progress");
-      void queryClient.invalidateQueries({
-        queryKey: chaptersKey(id),
-      });
-      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+      void invalidateChapterReadStateQueries(queryClient, { novelId: id });
+    },
+  });
+
+  const setRelativeChapterReadState = useMutation({
+    mutationFn: ({
+      anchorChapterId,
+      direction,
+      unread,
+    }: {
+      anchorChapterId: number;
+      direction: "before" | "after";
+      unread: boolean;
+    }) =>
+      setRelativeChaptersReadState(anchorChapterId, direction, unread),
+    onSuccess: () => {
+      markUpdatesIndexDirty("read-progress");
+      void invalidateChapterReadStateQueries(queryClient, { novelId: id });
     },
   });
 
@@ -2120,10 +2219,22 @@ export function NovelDetailPage() {
     (chapter) => !chapter.unread || chapter.progress > 0,
   ).length;
   const selectedChapterCount = selectedChapters.length;
+  const selectedAnchorChapter =
+    selectedChapterCount === 1 ? selectedChapters[0] : undefined;
+  const selectedAnchorIndex = selectedAnchorChapter
+    ? rows.findIndex((chapter) => chapter.id === selectedAnchorChapter.id)
+    : -1;
+  const selectedAnchorBeforeCount = Math.max(0, selectedAnchorIndex);
+  const selectedAnchorAfterCount =
+    selectedAnchorIndex < 0
+      ? 0
+      : Math.max(0, rows.length - selectedAnchorIndex - 1);
   const allChaptersSelected =
     chapters.length > 0 && selectedChapterCount === chapters.length;
   const chapterSelectionBusy =
-    clearSelectedDownloads.isPending || setSelectedChapterReadState.isPending;
+    clearSelectedDownloads.isPending ||
+    setSelectedChapterReadState.isPending ||
+    setRelativeChapterReadState.isPending;
 
   useEffect(() => {
     const novel = novelQuery.data;
@@ -2625,6 +2736,27 @@ export function NovelDetailPage() {
                       <UnreadIcon />
                     )}
                   </IconButton>
+                  {selectedAnchorChapter ? (
+                    <ChapterRelativeReadMenu
+                      afterCount={selectedAnchorAfterCount}
+                      beforeCount={selectedAnchorBeforeCount}
+                      busy={chapterSelectionBusy}
+                      onMarkFollowingUnread={() =>
+                        setRelativeChapterReadState.mutate({
+                          anchorChapterId: selectedAnchorChapter.id,
+                          direction: "after",
+                          unread: true,
+                        })
+                      }
+                      onMarkPreviousRead={() =>
+                        setRelativeChapterReadState.mutate({
+                          anchorChapterId: selectedAnchorChapter.id,
+                          direction: "before",
+                          unread: false,
+                        })
+                      }
+                    />
+                  ) : null}
                   <IconButton
                     className="lnr-novel-selection-icon"
                     label={t("novel.selection.close")}

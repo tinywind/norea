@@ -33,6 +33,20 @@ function invalidate(
   return queryClient.invalidateQueries({ exact, queryKey });
 }
 
+export function invalidateChapterReadStateQueries(
+  queryClient: QueryInvalidator,
+  { novelId }: { novelId: number },
+): Promise<void> {
+  if (novelId <= 0) return Promise.resolve();
+
+  return Promise.all([
+    invalidate(queryClient, chapterListQueryKey(novelId), true),
+    invalidate(queryClient, novelChaptersQueryKey(novelId), true),
+    invalidate(queryClient, ["chapter", "detail"]),
+    invalidate(queryClient, novelLibraryQueryKey),
+  ]).then(() => undefined);
+}
+
 export function invalidateReaderProgressQueries(
   queryClient: QueryInvalidator,
   {
