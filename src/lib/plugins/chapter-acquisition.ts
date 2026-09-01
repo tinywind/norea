@@ -13,10 +13,16 @@ const MIN_CAPTURE_TIMEOUT_MS = 1_000;
 const MAX_CAPTURE_TIMEOUT_MS = 120_000;
 const MAX_DOCUMENT_START_SCRIPT_BYTES = 64 * 1024;
 const MAX_EXCLUDE_SELECTORS = 64;
+let captureNonceSequence = 0;
 
 export interface CapturedChapterPage {
   baseUrl: string;
   content: string;
+}
+
+interface ChapterCaptureNavigation {
+  url: string;
+  cacheBustValue?: string;
 }
 
 export interface CaptureChapterPageOptions {
@@ -108,6 +114,9 @@ function validatePagePlan(
   ) {
     throw new Error("Chapter acquisition has too many excludeSelectors.");
   }
+  if (value.cacheBust !== undefined && typeof value.cacheBust !== "boolean") {
+    throw new Error("Chapter acquisition cacheBust must be a boolean.");
+  }
 
   return {
     type: "page",
@@ -125,6 +134,7 @@ function validatePagePlan(
       : {}),
     ...(documentStartScript ? { documentStartScript } : {}),
     loadStrategy: captureLoadStrategy(value.loadStrategy),
+    ...(value.cacheBust === true ? { cacheBust: true } : {}),
     timeoutMs: captureTimeoutMs(value.timeoutMs),
   };
 }
@@ -139,6 +149,53 @@ export function validateChapterAcquisitionPlan(
   if (plan.type === "resource") return { type: "resource" };
   if (plan.type === "page") return validatePagePlan(plan);
   throw new Error("Chapter acquisition plan type must be 'page' or 'resource'.");
+}
+
+function captureNavigation(
+  plan: ChapterPageAcquisitionPlan,
+): ChapterCaptureNavigation {
+  if (!plan.cacheBust) return { url: plan.url };
+  captureNonceSequence += 1;
+  if (!Number.isSafeInteger(captureNonceSequence)) captureNonceSequence = 1;
+  const nonce = `${Date.now().toString(36)}-${captureNonceSequence.toString(36)}`;
+  const fragmentIndex = plan.url.indexOf("#");
+  const baseUrl = fragmentIndex >= 0 ? plan.url.slice(0, fragmentIndex) : plan.url;
+  const fragment = fragmentIndex >= 0 ? plan.url.slice(fragmentIndex) : "";
+  const separator = baseUrl.includes("?")
+    ? baseUrl.endsWith("?") || baseUrl.endsWith("&")
+      ? ""
+      : "&"
+    : "?";
+  return {
+    url: `${baseUrl}${separator}_norea_capture=${nonce}${fragment}`,
+    cacheBustValue: nonce,
+  };
+}
+
+function captureBaseUrl(
+  value: unknown,
+  fallbackUrl: string,
+  navigation: ChapterCaptureNavigation,
+): string {
+  const resultUrl = absoluteHttpUrl(value);
+  const cacheBustValue = navigation.cacheBustValue;
+  if (!cacheBustValue) return resultUrl;
+  if (resultUrl === navigation.url) return fallbackUrl;
+
+  const fragmentIndex = resultUrl.indexOf("#");
+  const baseUrl =
+    fragmentIndex >= 0 ? resultUrl.slice(0, fragmentIndex) : resultUrl;
+  const fragment = fragmentIndex >= 0 ? resultUrl.slice(fragmentIndex) : "";
+  const queryIndex = baseUrl.indexOf("?");
+  if (queryIndex < 0) return resultUrl;
+  const querySegments = baseUrl.slice(queryIndex + 1).split("&");
+  const cacheBustIndex = querySegments.lastIndexOf(
+    `_norea_capture=${cacheBustValue}`,
+  );
+  if (cacheBustIndex < 0) return resultUrl;
+  querySegments.splice(cacheBustIndex, 1);
+  const query = querySegments.length > 0 ? `?${querySegments.join("&")}` : "";
+  return `${baseUrl.slice(0, queryIndex)}${query}${fragment}`;
 }
 
 function chapterCaptureScript(
@@ -323,6 +380,7 @@ function chapterCaptureScript(
 function parseCaptureResult(
   raw: string,
   fallbackUrl: string,
+  navigation: ChapterCaptureNavigation,
 ): CapturedChapterPage {
   let value: unknown;
   try {
@@ -346,7 +404,7 @@ function parseCaptureResult(
   }
   return {
     content: result.content,
-    baseUrl: absoluteHttpUrl(result.url),
+    baseUrl: captureBaseUrl(result.url, fallbackUrl, navigation),
   };
 }
 
@@ -354,12 +412,13 @@ export async function captureChapterPage(
   plan: ChapterPageAcquisitionPlan,
   options: CaptureChapterPageOptions,
 ): Promise<CapturedChapterPage> {
-  const raw = await captureChapterWebView(plan.url, {
+  const navigation = captureNavigation(plan);
+  const raw = await captureChapterWebView(navigation.url, {
     beforeContentScript: chapterCaptureScript(plan, options.contentType),
     scraperExecutor: options.executor,
     signal: options.signal,
     sourceId: options.sourceId,
     timeoutMs: plan.timeoutMs,
   });
-  return parseCaptureResult(raw, plan.url);
+  return parseCaptureResult(raw, plan.url, navigation);
 }

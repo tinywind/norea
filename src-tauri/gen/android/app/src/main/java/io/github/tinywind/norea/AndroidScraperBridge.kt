@@ -61,6 +61,39 @@ internal fun deleteLegacyChapterPageCache(directory: File) {
   }
 }
 
+internal data class AndroidScraperSurfaceSize(
+  val width: Int,
+  val height: Int,
+)
+
+internal fun androidBackgroundScraperSurfaceSize(
+  mainWidth: Int,
+  mainHeight: Int,
+  displayWidth: Int,
+  displayHeight: Int,
+): AndroidScraperSurfaceSize = AndroidScraperSurfaceSize(
+  width = mainWidth.takeIf { it > 1 } ?: displayWidth.coerceAtLeast(1),
+  height = mainHeight.takeIf { it > 1 } ?: displayHeight.coerceAtLeast(1),
+)
+
+internal fun androidScraperSurfaceIsForeground(
+  browserVisible: Boolean,
+  isImmediateWebView: Boolean,
+  surfaceVisible: Boolean,
+  alpha: Float,
+  clickable: Boolean,
+): Boolean =
+  browserVisible && isImmediateWebView && surfaceVisible && alpha > 0f && clickable
+
+internal fun androidBackgroundScraperSurfaceIsReady(width: Int, height: Int): Boolean =
+  width > 1 && height > 1
+
+internal fun shouldCollapseAndroidScraperSurface(
+  activeExtractId: String?,
+  completedId: String,
+  foreground: Boolean,
+): Boolean = activeExtractId == completedId && !foreground
+
 class AndroidScraperBridge(
   private val mainWebView: WebView,
   private val bridgeSession: BridgeSession,
@@ -103,6 +136,7 @@ class AndroidScraperBridge(
     var currentUrl: String? = null
     var documentStartScriptEnabled = false
     var nextSequence = 0L
+    var pendingSurfaceLayoutListener: View.OnLayoutChangeListener? = null
     var sourceId: String? = null
     var userAgent: String? = null
     var webView: WebView? = null
@@ -555,9 +589,13 @@ class AndroidScraperBridge(
   }
 
   private fun isForegroundBrowser(webView: WebView): Boolean {
-    return webView.visibility == View.VISIBLE &&
-      webView.alpha > 0f &&
-      webView.isClickable
+    return androidScraperSurfaceIsForeground(
+      browserVisible = browserVisible,
+      isImmediateWebView = queues[IMMEDIATE_EXECUTOR]?.webView === webView,
+      surfaceVisible = webView.visibility == View.VISIBLE,
+      alpha = webView.alpha,
+      clickable = webView.isClickable,
+    )
   }
 
   private fun executorFromPayload(payload: JSONObject): String {
@@ -629,6 +667,19 @@ class AndroidScraperBridge(
       activateSource(state, action.sourceId)
       action.run(state)
     } catch (error: Throwable) {
+      clearTimeout(state)
+      clearBackgroundScraperLayoutWait(state)
+      state.webView?.let { webView ->
+        if (
+          shouldCollapseAndroidScraperSurface(
+            activeExtractId = state.activeExtractId,
+            completedId = action.id,
+            foreground = isForegroundBrowser(webView),
+          )
+        ) {
+          collapseBackgroundScraperSurface(webView)
+        }
+      }
       state.activeFetchId = null
       state.activeExtractId = null
       state.activeResultNonce = null
@@ -725,6 +776,8 @@ class AndroidScraperBridge(
     reason: String,
   ) {
     webView.webViewClient = WebViewClient()
+    state.pendingSurfaceLayoutListener?.let(webView::removeOnLayoutChangeListener)
+    state.pendingSurfaceLayoutListener = null
     webView.stopLoading()
     runCatching { profileCookieManager(webView).flush() }
       .onFailure { error ->
@@ -813,6 +866,20 @@ class AndroidScraperBridge(
 
   private fun hiddenLayoutParams(): FrameLayout.LayoutParams {
     return FrameLayout.LayoutParams(1, 1).apply {
+      leftMargin = -10000
+      topMargin = -10000
+    }
+  }
+
+  private fun backgroundLayoutParams(): FrameLayout.LayoutParams {
+    val metrics = mainWebView.resources.displayMetrics
+    val size = androidBackgroundScraperSurfaceSize(
+      mainWidth = mainWebView.width,
+      mainHeight = mainWebView.height,
+      displayWidth = metrics.widthPixels,
+      displayHeight = metrics.heightPixels,
+    )
+    return FrameLayout.LayoutParams(size.width, size.height).apply {
       leftMargin = -10000
       topMargin = -10000
     }
@@ -910,6 +977,66 @@ class AndroidScraperBridge(
     webView.isClickable = false
     webView.isFocusable = false
     webView.isFocusableInTouchMode = false
+    webView.requestLayout()
+  }
+
+  private fun clearBackgroundScraperLayoutWait(state: QueueState) {
+    val listener = state.pendingSurfaceLayoutListener ?: return
+    state.pendingSurfaceLayoutListener = null
+    state.webView?.removeOnLayoutChangeListener(listener)
+  }
+
+  private fun showBackgroundScraperSurface(
+    state: QueueState,
+    webView: WebView,
+    onReady: () -> Unit,
+  ) {
+    clearBackgroundScraperLayoutWait(state)
+    webView.layoutParams = backgroundLayoutParams()
+    webView.alpha = 1f
+    webView.translationX = 0f
+    webView.translationY = 0f
+    webView.translationZ = 0f
+    webView.elevation = 0f
+    webView.visibility = View.VISIBLE
+    webView.isClickable = false
+    webView.isFocusable = false
+    webView.isFocusableInTouchMode = false
+    webView.requestLayout()
+    webView.invalidate()
+    if (androidBackgroundScraperSurfaceIsReady(webView.width, webView.height)) {
+      onReady()
+      return
+    }
+    val listener = object : View.OnLayoutChangeListener {
+      override fun onLayoutChange(
+        view: View,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        oldLeft: Int,
+        oldTop: Int,
+        oldRight: Int,
+        oldBottom: Int,
+      ) {
+        if (!androidBackgroundScraperSurfaceIsReady(right - left, bottom - top)) return
+        view.removeOnLayoutChangeListener(this)
+        if (state.pendingSurfaceLayoutListener === this) {
+          state.pendingSurfaceLayoutListener = null
+        }
+        onReady()
+      }
+    }
+    state.pendingSurfaceLayoutListener = listener
+    webView.addOnLayoutChangeListener(listener)
+  }
+
+  private fun collapseBackgroundScraperSurface(webView: WebView) {
+    webView.layoutParams = hiddenLayoutParams()
+    webView.alpha = 0f
+    webView.translationX = -10000f
+    webView.translationY = -10000f
     webView.requestLayout()
   }
 
@@ -1110,7 +1237,23 @@ class AndroidScraperBridge(
     )
     setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms")
     val webView = scraper(state, payloadUserAgent(payload))
-    webView.loadUrl(targetUrl)
+    val loadTarget = {
+      if (state.activeExtractId == id && state.activeAction?.id == id) {
+        runCatching { webView.loadUrl(targetUrl) }
+          .onFailure { error ->
+            finishError(
+              state,
+              id,
+              "webview_extract: navigation failed: ${error.message ?: error.toString()}",
+            )
+          }
+      }
+    }
+    if (isForegroundBrowser(webView)) {
+      loadTarget()
+    } else {
+      showBackgroundScraperSurface(state, webView, loadTarget)
+    }
   }
 
   private fun runNavigate(state: QueueState, payload: JSONObject) {
@@ -1430,7 +1573,19 @@ class AndroidScraperBridge(
 
   private fun finish(state: QueueState, id: String, envelope: JSONObject) {
     clearTimeout(state)
+    clearBackgroundScraperLayoutWait(state)
     logState(state, "finish id=$id envelope=${envelopeForLog(envelope)}")
+    state.webView?.let { webView ->
+      if (
+        shouldCollapseAndroidScraperSurface(
+          activeExtractId = state.activeExtractId,
+          completedId = id,
+          foreground = isForegroundBrowser(webView),
+        )
+      ) {
+        collapseBackgroundScraperSurface(webView)
+      }
+    }
     state.activeFetchId = null
     state.activeExtractId = null
     state.activeResultNonce = null

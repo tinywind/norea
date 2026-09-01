@@ -42,6 +42,7 @@ type ChapterAcquisitionPlan =
       excludeSelectors?: string[];
       documentStartScript?: string;
       loadStrategy?: "selector" | "network-idle" | "scroll-to-end";
+      cacheBust?: boolean;
       timeoutMs?: number;
     }
   | {
@@ -76,9 +77,12 @@ The host navigates its scraper WebView to `url`, injects
 clones `contentSelector`, removes `excludeSelectors`, and normalizes lazy image
 sources. `readySelector` defaults to `contentSelector`.
 
-The host does not add cache-busting query parameters or override the browser's
-HTTP cache mode. Source responses follow the cache and revalidation directives
-sent by the site. Required source query parameters belong in `url`.
+The host does not override the browser's HTTP cache mode. Source responses
+follow the cache and revalidation directives sent by the site. When
+`cacheBust` is `true`, the host adds a unique `_norea_capture` query value for
+each acquisition while preserving every source query parameter. Use it only
+when a source embeds short-lived data in otherwise cacheable chapter HTML.
+Required source query parameters still belong in `url`.
 
 `documentStartScript` is intended for rendered content that is otherwise not
 present in the light DOM. It may observe source API responses or open shadow

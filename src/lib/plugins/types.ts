@@ -67,6 +67,8 @@ export interface ChapterPageAcquisitionPlan {
   documentStartScript?: string;
   /** Defaults to network-idle. */
   loadStrategy?: ChapterCaptureLoadStrategy;
+  /** Adds a host-owned query value while preserving source query parameters. */
+  cacheBust?: boolean;
   /** Host-clamped total navigation and capture timeout. */
   timeoutMs?: number;
 }

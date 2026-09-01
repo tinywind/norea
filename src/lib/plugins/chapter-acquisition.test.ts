@@ -1,5 +1,5 @@
 import { runInNewContext } from "node:vm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./shims", () => ({
   captureChapterWebView: vi.fn(),
@@ -134,7 +134,11 @@ function executeChapterCaptureScript(
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("validateChapterAcquisitionPlan", () => {
@@ -169,6 +173,17 @@ describe("validateChapterAcquisitionPlan", () => {
         contentSelector: "body",
       }),
     ).toThrow("HTTP or HTTPS");
+  });
+
+  it("rejects a non-boolean cacheBust value", () => {
+    expect(() =>
+      validateChapterAcquisitionPlan({
+        type: "page",
+        url: "https://source.test/chapter/1",
+        contentSelector: "body",
+        cacheBust: "true",
+      }),
+    ).toThrow("cacheBust must be a boolean");
   });
 });
 
@@ -205,21 +220,89 @@ describe("captureChapterPage", () => {
     );
   });
 
-  it("ignores a legacy cacheBust field and preserves the source URL", async () => {
-    mockedCaptureChapterWebView.mockResolvedValueOnce(
+  it("adds distinct cache busters without discarding source query values", async () => {
+    const sourceUrl =
+      "https://source.test/chapter/1?signature=a%20b~c&token=one&token=two&_norea_capture=source#reader";
+    mockedCaptureChapterWebView.mockImplementation(async navigationUrl =>
       JSON.stringify({
         ok: true,
         result: {
           content: '<img src="https://cdn.test/page.jpg?accessKey=asset">',
-          url: "https://source.test/chapter/1?accessKey=signed",
+          url: navigationUrl,
         },
       }),
     );
     const plan = validateChapterAcquisitionPlan({
       type: "page",
-      url: "https://source.test/chapter/1?accessKey=signed",
+      url: sourceUrl,
       contentSelector: "[data-norea-chapter-content]",
       documentStartScript: "window.prepareChapter();",
+      cacheBust: true,
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const firstResult = await captureChapterPage(plan, {
+      contentType: "html",
+      executor: "pool:1",
+      sourceId: "source-a",
+    });
+    const secondResult = await captureChapterPage(plan, {
+      contentType: "html",
+      executor: "pool:1",
+      sourceId: "source-a",
+    });
+    const [firstNavigationUrl, options] =
+      mockedCaptureChapterWebView.mock.calls[0]!;
+    const [secondNavigationUrl] = mockedCaptureChapterWebView.mock.calls[1]!;
+    if (!options) throw new Error("Expected WebView fetch options.");
+    const firstNonce = firstNavigationUrl.match(
+      /&_norea_capture=([^&#]+)#reader$/,
+    )?.[1];
+    const secondNonce = secondNavigationUrl.match(
+      /&_norea_capture=([^&#]+)#reader$/,
+    )?.[1];
+    expect(
+      firstNavigationUrl.replace(/&_norea_capture=[^&#]+(?=#)/, ""),
+    ).toBe(sourceUrl);
+    expect(
+      secondNavigationUrl.replace(/&_norea_capture=[^&#]+(?=#)/, ""),
+    ).toBe(sourceUrl);
+    expect(firstNavigationUrl).toContain(
+      "?signature=a%20b~c&token=one&token=two&_norea_capture=source&_norea_capture=",
+    );
+    expect(firstNonce).toMatch(/^rs-[0-9a-z]+$/);
+    expect(secondNonce).toMatch(/^rs-[0-9a-z]+$/);
+    expect(firstNonce).not.toBe(secondNonce);
+    expect(firstNavigationUrl).not.toBe(secondNavigationUrl);
+    expect(options.beforeContentScript).toContain("window.prepareChapter();");
+    expect(options.scraperExecutor).toBe("pool:1");
+    expect(options).not.toHaveProperty("pageCachePolicy");
+    expect(firstResult).toEqual({
+      baseUrl: sourceUrl,
+      content: '<img src="https://cdn.test/page.jpg?accessKey=asset">',
+    });
+    expect(secondResult.baseUrl).toBe(sourceUrl);
+  });
+
+  it("removes only the host cache buster after a redirect", async () => {
+    mockedCaptureChapterWebView.mockImplementationOnce(async navigationUrl => {
+      const hostNonce = navigationUrl.match(
+        /[?&]_norea_capture=([^&#]+)/,
+      )?.[1];
+      if (!hostNonce) throw new Error("Expected host cache buster.");
+      return JSON.stringify({
+        ok: true,
+        result: {
+          content: "<p>Redirected chapter</p>",
+          url: `https://redirect.test/final?_norea_capture=source&signature=a%20b~c&_norea_capture=${hostNonce}&token=one&token=two#reader`,
+        },
+      });
+    });
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/redirected",
+      contentSelector: "article",
       cacheBust: true,
     });
     if (plan.type !== "page") throw new Error("Expected page plan.");
@@ -230,17 +313,9 @@ describe("captureChapterPage", () => {
       sourceId: "source-a",
     });
 
-    const [navigationUrl, options] = mockedCaptureChapterWebView.mock.calls[0]!;
-    if (!options) throw new Error("Expected WebView fetch options.");
-    const url = new URL(navigationUrl);
-    expect(url.searchParams.get("accessKey")).toBe("signed");
-    expect(url.searchParams.has("_norea_capture")).toBe(false);
-    expect(options.beforeContentScript).toContain("window.prepareChapter();");
-    expect(options.scraperExecutor).toBe("pool:1");
-    expect(result).toEqual({
-      baseUrl: "https://source.test/chapter/1?accessKey=signed",
-      content: '<img src="https://cdn.test/page.jpg?accessKey=asset">',
-    });
+    expect(result.baseUrl).toBe(
+      "https://redirect.test/final?_norea_capture=source&signature=a%20b~c&token=one&token=two#reader",
+    );
   });
 
   it("surfaces stable capture error codes", async () => {

@@ -121,4 +121,102 @@ class AndroidScraperBridgePolicyTest {
       ),
     )
   }
+
+  @Test
+  fun backgroundRenderingUsesTheLaidOutMainWebViewSize() {
+    assertEquals(
+      AndroidScraperSurfaceSize(width = 1904, height = 3040),
+      androidBackgroundScraperSurfaceSize(
+        mainWidth = 1904,
+        mainHeight = 3040,
+        displayWidth = 2560,
+        displayHeight = 1600,
+      ),
+    )
+  }
+
+  @Test
+  fun backgroundRenderingFallsBackToTheDisplayBeforeUsingOnePixel() {
+    assertEquals(
+      AndroidScraperSurfaceSize(width = 2560, height = 1600),
+      androidBackgroundScraperSurfaceSize(
+        mainWidth = 0,
+        mainHeight = 1,
+        displayWidth = 2560,
+        displayHeight = 1600,
+      ),
+    )
+    assertEquals(
+      AndroidScraperSurfaceSize(width = 1, height = 1),
+      androidBackgroundScraperSurfaceSize(
+        mainWidth = 0,
+        mainHeight = 0,
+        displayWidth = 0,
+        displayHeight = 0,
+      ),
+    )
+  }
+
+  @Test
+  fun aNewOrPooledWebViewIsNotMistakenForTheForegroundBrowser() {
+    assertFalse(
+      androidScraperSurfaceIsForeground(
+        browserVisible = false,
+        isImmediateWebView = true,
+        surfaceVisible = true,
+        alpha = 1f,
+        clickable = true,
+      ),
+    )
+    assertFalse(
+      androidScraperSurfaceIsForeground(
+        browserVisible = true,
+        isImmediateWebView = false,
+        surfaceVisible = true,
+        alpha = 1f,
+        clickable = true,
+      ),
+    )
+    assertTrue(
+      androidScraperSurfaceIsForeground(
+        browserVisible = true,
+        isImmediateWebView = true,
+        surfaceVisible = true,
+        alpha = 1f,
+        clickable = true,
+      ),
+    )
+  }
+
+  @Test
+  fun backgroundNavigationWaitsForANonTrivialLayout() {
+    assertFalse(androidBackgroundScraperSurfaceIsReady(width = 1, height = 3040))
+    assertFalse(androidBackgroundScraperSurfaceIsReady(width = 1904, height = 1))
+    assertTrue(androidBackgroundScraperSurfaceIsReady(width = 1904, height = 3040))
+  }
+
+  @Test
+  fun onlyTheCompletedBackgroundExtractCollapsesItsSurface() {
+    assertTrue(
+      shouldCollapseAndroidScraperSurface(
+        activeExtractId = "extract-1",
+        completedId = "extract-1",
+        foreground = false,
+      ),
+    )
+    assertFalse(
+      shouldCollapseAndroidScraperSurface(
+        activeExtractId = "extract-1",
+        completedId = "extract-2",
+        foreground = false,
+      ),
+    )
+    assertFalse(
+      shouldCollapseAndroidScraperSurface(
+        activeExtractId = "extract-1",
+        completedId = "extract-1",
+        foreground = true,
+      ),
+    )
+  }
 }
