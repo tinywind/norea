@@ -56,6 +56,7 @@ import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
+import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
 import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
@@ -190,6 +191,7 @@ function hasPluginInputs(plugin: Plugin | null | undefined): boolean {
 
 interface SourceNovelButtonProps {
   disabled: boolean;
+  inLibrary: boolean;
   item: NovelItem;
   onOpen: (item: NovelItem) => void;
   plugin: Plugin;
@@ -197,6 +199,7 @@ interface SourceNovelButtonProps {
 
 function SourceNovelButton({
   disabled,
+  inLibrary,
   item,
   onOpen,
   plugin,
@@ -208,7 +211,13 @@ function SourceNovelButton({
       disabled={disabled}
       onClick={() => onOpen(item)}
     >
-      <SourceNovelCover height={152} item={item} plugin={plugin} width={104} />
+      <SourceNovelCover
+        height={152}
+        inLibrary={inLibrary}
+        item={item}
+        plugin={plugin}
+        width={104}
+      />
       <span className="lnr-source-card-title" title={item.name}>
         {item.name}
       </span>
@@ -236,6 +245,7 @@ export function SourcePage() {
   });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const isInLibrary = useLibraryNovelMembership();
 
   const installed = useQuery({
     queryKey: INSTALLED_QUERY_KEY,
@@ -788,6 +798,7 @@ export function SourcePage() {
                     key={key}
                     item={item}
                     disabled={open.isPending}
+                    inLibrary={isInLibrary(plugin.id, item.path)}
                     plugin={plugin}
                     onOpen={(novel) => {
                       if (!open.isPending) open.mutate(novel);

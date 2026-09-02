@@ -85,6 +85,11 @@ export interface LibrarySourceFilter {
   totalNovels: number;
 }
 
+export interface LibraryNovelIdentity {
+  pluginId: string;
+  path: string;
+}
+
 interface LibraryNovelPageFilter extends LibraryFilter {
   cursor?: LibraryNovelCursor | null;
 }
@@ -444,6 +449,20 @@ export async function listLibraryNovels(
   filter: LibraryFilter = {},
 ): Promise<LibraryNovel[]> {
   return selectLibraryNovels(filter);
+}
+
+export async function listLibraryNovelIdentities(): Promise<
+  LibraryNovelIdentity[]
+> {
+  const db = await getDb();
+  return db.select<LibraryNovelIdentity[]>(
+    `SELECT
+       plugin_id AS pluginId,
+       path
+     FROM novel
+     WHERE in_library = 1
+     ORDER BY plugin_id COLLATE NOCASE ASC, path COLLATE NOCASE ASC`,
+  );
 }
 
 function getLibraryNovelCursor(

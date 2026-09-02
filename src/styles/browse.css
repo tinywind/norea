@@ -480,6 +480,38 @@
   white-space: nowrap;
 }
 
+.lnr-source-cover-frame {
+  display: inline-flex;
+  position: relative;
+}
+
+.lnr-source-library-mark {
+  align-items: center;
+  background: var(--lnr-design-surface);
+  border: 1px solid var(--lnr-design-rule-strong);
+  border-radius: 999px;
+  color: var(--lnr-design-ok);
+  display: inline-flex;
+  height: 1.625rem;
+  justify-content: center;
+  pointer-events: none;
+  position: absolute;
+  right: 0.25rem;
+  top: 0.25rem;
+  width: 1.625rem;
+  z-index: 2;
+}
+
+.lnr-source-library-mark svg {
+  fill: none;
+  height: 1rem;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 1rem;
+}
+
 .lnr-search-empty-row {
   border-top: 1px solid var(--lnr-design-rule);
   padding-top: 0.5rem;

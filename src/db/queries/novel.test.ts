@@ -14,6 +14,7 @@ import {
   getLibraryNovelSummary,
   getNovelById,
   insertNovelIfAbsent,
+  listLibraryNovelIdentities,
   listLibraryNovelPage,
   listLibraryNovelRefreshTargets,
   listLibraryNovels,
@@ -46,6 +47,28 @@ function stubDb(): MockedDb {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("listLibraryNovelIdentities", () => {
+  it("returns library source identities in deterministic order", async () => {
+    const db = stubDb();
+    db.select.mockResolvedValueOnce([
+      { pluginId: "source-a", path: "/novel/1" },
+      { pluginId: "source-b", path: "/novel/2" },
+    ]);
+
+    const identities = await listLibraryNovelIdentities();
+
+    const [sql] = db.select.mock.calls[0]!;
+    expect(sql).toContain("WHERE in_library = 1");
+    expect(sql).toContain(
+      "ORDER BY plugin_id COLLATE NOCASE ASC, path COLLATE NOCASE ASC",
+    );
+    expect(identities).toEqual([
+      { pluginId: "source-a", path: "/novel/1" },
+      { pluginId: "source-b", path: "/novel/2" },
+    ]);
+  });
 });
 
 describe("listLibraryNovels", () => {

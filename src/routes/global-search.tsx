@@ -46,6 +46,7 @@ import {
   type TaskHandle,
 } from "../lib/tasks/scheduler";
 import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
+import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
 import { useBrowseStore } from "../store/browse";
 import "../styles/browse.css";
 
@@ -536,6 +537,7 @@ function SearchSummary({
 }
 
 interface SearchResultSectionProps {
+  isInLibrary: (pluginId: string, path: string) => boolean;
   openingKey: string | null;
   pinned: boolean;
   row: ResultViewRow;
@@ -546,6 +548,7 @@ interface SearchResultSectionProps {
 }
 
 function SearchResultSection({
+  isInLibrary,
   openingKey,
   pinned,
   row,
@@ -660,6 +663,7 @@ function SearchResultSection({
               >
                 <SourceNovelCover
                   height={108}
+                  inLibrary={isInLibrary(result.pluginId, novel.path)}
                   item={novel}
                   plugin={plugin}
                   width={74}
@@ -701,6 +705,7 @@ export function PluginSearchSection({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const isInLibrary = useLibraryNovelMembership();
   const openSite = (plugin: Plugin) => {
     const url = getPluginBaseUrl(plugin);
     void enqueueOpenSiteTask(
@@ -1232,6 +1237,7 @@ export function PluginSearchSection({
           {filteredRows.map((row) => (
             <SearchResultSection
               key={row.plugin.id}
+              isInLibrary={isInLibrary}
               row={row}
               pinned={pinnedPluginIds.includes(row.plugin.id)}
               openingKey={openingKey}
