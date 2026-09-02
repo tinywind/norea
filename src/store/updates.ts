@@ -45,12 +45,15 @@ function appendRows(
 }
 
 function markRowsDownloaded(
-  rows: readonly LibraryUpdateEntry[],
+  rows: LibraryUpdateEntry[],
   chapterId: number,
 ): LibraryUpdateEntry[] {
-  return rows.map((row) =>
-    row.chapterId === chapterId ? { ...row, isDownloaded: true } : row,
-  );
+  const index = rows.findIndex((row) => row.chapterId === chapterId);
+  if (index < 0 || rows[index]?.isDownloaded) return rows;
+
+  const updated = [...rows];
+  updated[index] = { ...updated[index]!, isDownloaded: true };
+  return updated;
 }
 
 function getNextCursor(
@@ -92,18 +95,25 @@ export const useUpdatesStore = create<UpdatesState>((set) => ({
       updates: result.updates,
     }),
   markChapterDownloaded: (chapterId) =>
-    set((state) => ({
-      lastCheckResult: state.lastCheckResult
-        ? {
-            ...state.lastCheckResult,
-            updates: markRowsDownloaded(
-              state.lastCheckResult.updates,
-              chapterId,
-            ),
-          }
-        : null,
-      updates: markRowsDownloaded(state.updates, chapterId),
-    })),
+    set((state) => {
+      const updates = markRowsDownloaded(state.updates, chapterId);
+      const lastCheckUpdates = state.lastCheckResult
+        ? markRowsDownloaded(state.lastCheckResult.updates, chapterId)
+        : null;
+      if (
+        updates === state.updates &&
+        (!state.lastCheckResult ||
+          lastCheckUpdates === state.lastCheckResult.updates)
+      ) {
+        return state;
+      }
+      return {
+        lastCheckResult: state.lastCheckResult
+          ? { ...state.lastCheckResult, updates: lastCheckUpdates! }
+          : null,
+        updates,
+      };
+    }),
   mergeFirstPage: (page) =>
     set((state) => {
       const hasMoreUpdates = page.hasMore || state.hasMoreUpdates;

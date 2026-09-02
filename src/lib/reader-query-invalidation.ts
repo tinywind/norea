@@ -1,8 +1,13 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import type { ChapterListRow } from "../db/queries/chapter";
 
 const FINISHED_PROGRESS = 100;
 
 export type QueryInvalidator = Pick<QueryClient, "invalidateQueries">;
+type ChapterDownloadQueryCache = Pick<
+  QueryClient,
+  "invalidateQueries" | "setQueryData"
+>;
 
 export function chapterDetailQueryKey(chapterId: number) {
   return ["chapter", "detail", chapterId] as const;
@@ -24,6 +29,43 @@ export const novelLibraryQueryKey = ["novel", "library"] as const;
 export const chapterHistoryQueryKey = ["chapter", "history"] as const;
 export const chapterUpdatesQueryKey = ["chapter", "updates"] as const;
 export const downloadCacheQueryKey = ["download-cache"] as const;
+
+export async function applyNovelChapterDownloadCompletion(
+  queryClient: ChapterDownloadQueryCache,
+  {
+    chapterId,
+    novelId,
+  }: {
+    chapterId: number;
+    novelId: number;
+  },
+): Promise<void> {
+  if (chapterId <= 0 || novelId <= 0) return;
+
+  queryClient.setQueryData<ChapterListRow[]>(
+    novelChaptersQueryKey(novelId),
+    (chapters) => {
+      if (!chapters) return chapters;
+      const index = chapters.findIndex((chapter) => chapter.id === chapterId);
+      if (index < 0 || chapters[index]?.isDownloaded) return chapters;
+      const updated = [...chapters];
+      updated[index] = { ...updated[index]!, isDownloaded: true };
+      return updated;
+    },
+  );
+
+  await Promise.all([
+    queryClient.invalidateQueries({
+      exact: true,
+      queryKey: novelChaptersQueryKey(novelId),
+      refetchType: "none",
+    }),
+    queryClient.invalidateQueries({
+      queryKey: novelLibraryQueryKey,
+      refetchType: "none",
+    }),
+  ]);
+}
 
 function invalidate(
   queryClient: QueryInvalidator,

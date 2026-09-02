@@ -104,8 +104,8 @@ import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
-import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import { saveNovelCoverFromSource } from "../lib/novel-cover-storage";
+import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import {
   enqueueChapterDownload,
   enqueueChapterDownloadBatch,
@@ -1817,57 +1817,15 @@ export function NovelDetailPage() {
     queryKey: novelKey(id),
     queryFn: () => getNovelById(id),
     enabled: id > 0,
+    staleTime: Infinity,
   });
 
   const chaptersQuery = useQuery({
     queryKey: chaptersKey(id),
     queryFn: () => listChaptersByNovel(id),
     enabled: id > 0,
+    staleTime: Infinity,
   });
-
-  useEffect(() => {
-    const novel = novelQuery.data;
-    if (!novel || novel.isLocal || !novel.inLibrary || !novel.cover) return;
-    const plugin = pluginManager.getPlugin(novel.pluginId);
-    if (!plugin) return;
-
-    let cancelled = false;
-    void saveNovelCoverFromSource(
-      plugin,
-      {
-        id: novel.id,
-        name: novel.name,
-        path: novel.path,
-        pluginId: novel.pluginId,
-      },
-      novel.cover,
-    )
-      .then(() => {
-        if (cancelled) return;
-        void queryClient.invalidateQueries({ queryKey: novelKey(novel.id) });
-        void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
-      })
-      .catch((error) => {
-        console.warn("[novel] failed to store novel cover", {
-          error,
-          novelId: novel.id,
-          pluginId: novel.pluginId,
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    novelQuery.data?.cover,
-    novelQuery.data?.id,
-    novelQuery.data?.inLibrary,
-    novelQuery.data?.isLocal,
-    novelQuery.data?.name,
-    novelQuery.data?.path,
-    novelQuery.data?.pluginId,
-    queryClient,
-  ]);
 
   useEffect(() => {
     setSourceDuplicateChapters(getSourceDuplicateChapterInfo(id));
@@ -1877,11 +1835,53 @@ export function NovelDetailPage() {
     mutationFn: async () => {
       const novel = novelQuery.data;
       if (!novel) return;
-      await setNovelInLibrary(novel.id, !novel.inLibrary);
+      const inLibrary = !novel.inLibrary;
+      await setNovelInLibrary(novel.id, inLibrary);
+      return { inLibrary, novel };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (!result) return;
       markUpdatesIndexDirty("library-membership");
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
+      queryClient.setQueryData<NovelDetailRecord | null>(
+        novelKey(result.novel.id),
+        (current) =>
+          current ? { ...current, inLibrary: result.inLibrary } : current,
+      );
+      void queryClient.invalidateQueries({
+        exact: true,
+        queryKey: novelKey(result.novel.id),
+        refetchType: "none",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["novel", "library"],
+        refetchType: "none",
+      });
+
+      if (
+        !result.inLibrary ||
+        result.novel.isLocal ||
+        !result.novel.cover
+      ) {
+        return;
+      }
+      const plugin = pluginManager.getPlugin(result.novel.pluginId);
+      if (!plugin) return;
+      void saveNovelCoverFromSource(
+        plugin,
+        {
+          id: result.novel.id,
+          name: result.novel.name,
+          path: result.novel.path,
+          pluginId: result.novel.pluginId,
+        },
+        result.novel.cover,
+      ).catch((error) => {
+        console.warn("[novel] failed to store novel cover", {
+          error,
+          novelId: result.novel.id,
+          pluginId: result.novel.pluginId,
+        });
+      });
     },
   });
 
@@ -2159,13 +2159,8 @@ export function NovelDetailPage() {
         }
         return next;
       });
-      if (event.status.kind === "done") {
-        void queryClient.invalidateQueries({
-          queryKey: chaptersKey(id),
-        });
-      }
     });
-  }, [id, queryClient]);
+  }, [id]);
 
   const rows = chaptersQuery.data ?? EMPTY_CHAPTERS;
   const chapters = useMemo(

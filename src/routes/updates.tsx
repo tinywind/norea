@@ -544,6 +544,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   const mergeFirstPage = useUpdatesStore((state) => state.mergeFirstPage);
   const replaceWindow = useUpdatesStore((state) => state.replaceWindow);
   const initialLocalLoadRequested = useRef(false);
+  const observedUpdatesIndexRevision = useRef(getUpdatesIndexRevision());
   const [downloadStatuses, setDownloadStatuses] = useState<
     ReadonlyMap<number, ChapterDownloadStatus>
   >(() => new Map());
@@ -562,7 +563,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
           t("tasks.task.checkUpdates", { name: novel.name }),
       });
     },
-    onSuccess: applyCheckResult,
+    onSuccess: (result) => {
+      applyCheckResult(result);
+      void queryClient.invalidateQueries({
+        queryKey: ["novel"],
+        refetchType: "active",
+      });
+    },
   });
 
   const loadMore = useMutation({
@@ -615,6 +622,8 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   }, [active, hasLoaded, refreshFirstPage]);
 
   useEffect(() => {
+    if (!active) return;
+
     let disposed = false;
     let refreshRunning = false;
     let dirtyWhileRefreshing = false;
@@ -649,6 +658,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
         if (disposed) return;
         if (getUpdatesIndexRevision() === startedAtRevision) {
           replaceWindow(page);
+          observedUpdatesIndexRevision.current = startedAtRevision;
         } else {
           dirtyWhileRefreshing = true;
         }
@@ -663,33 +673,42 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       }
     }
 
+    if (
+      hasLoaded &&
+      observedUpdatesIndexRevision.current !== getUpdatesIndexRevision()
+    ) {
+      scheduleRefresh();
+    }
+
     const unsubscribe = subscribeUpdatesIndexChanges(scheduleRefresh);
     return () => {
       disposed = true;
       clearRefreshTimer();
       unsubscribe();
     };
-  }, [replaceWindow]);
+  }, [active, hasLoaded, replaceWindow]);
 
   useEffect(() => {
     return subscribeChapterDownloads((event) => {
-      setDownloadStatuses((current) => {
-        const next = new Map(current);
-        if (event.status.kind === "cancelled") {
-          next.delete(event.job.id);
-        } else {
-          next.set(event.job.id, event.status);
-        }
-        return next;
-      });
+      if (active) {
+        setDownloadStatuses((current) => {
+          const next = new Map(current);
+          if (event.status.kind === "cancelled") {
+            next.delete(event.job.id);
+          } else {
+            next.set(event.job.id, event.status);
+          }
+          return next;
+        });
+      }
       if (event.status.kind === "done") {
         markChapterDownloaded(event.job.id);
-        void queryClient.invalidateQueries({ queryKey: ["novel"] });
       }
     });
-  }, [markChapterDownloaded, queryClient]);
+  }, [active, markChapterDownloaded]);
 
   useEffect(() => {
+    if (!active) return;
     const currentStatuses = listChapterDownloadStatuses();
 
     for (const entry of updates) {
@@ -715,7 +734,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       }
       return changed ? next : current;
     });
-  }, [markChapterDownloaded, updates]);
+  }, [active, markChapterDownloaded, updates]);
 
   useEffect(() => {
     if (!active) return;

@@ -17,11 +17,20 @@ function observationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function ensureMediaRepairNeededColumn(db: Database): Promise<void> {
+async function loadChapterColumnNames(
+  db: Database,
+): Promise<ReadonlySet<string>> {
   const columns = await db.select<Array<{ name: string }>>(
     "PRAGMA table_info(chapter)",
   );
-  if (columns.some((column) => column.name === MEDIA_REPAIR_NEEDED_COLUMN)) {
+  return new Set(columns.map((column) => column.name));
+}
+
+async function ensureMediaRepairNeededColumn(
+  db: Database,
+  chapterColumnNames: ReadonlySet<string>,
+): Promise<void> {
+  if (chapterColumnNames.has(MEDIA_REPAIR_NEEDED_COLUMN)) {
     return;
   }
 
@@ -31,13 +40,11 @@ async function ensureMediaRepairNeededColumn(db: Database): Promise<void> {
   );
 }
 
-async function ensureMediaBytesCheckedAtColumn(db: Database): Promise<void> {
-  const columns = await db.select<Array<{ name: string }>>(
-    "PRAGMA table_info(chapter)",
-  );
-  if (
-    columns.some((column) => column.name === MEDIA_BYTES_CHECKED_AT_COLUMN)
-  ) {
+async function ensureMediaBytesCheckedAtColumn(
+  db: Database,
+  chapterColumnNames: ReadonlySet<string>,
+): Promise<void> {
+  if (chapterColumnNames.has(MEDIA_BYTES_CHECKED_AT_COLUMN)) {
     return;
   }
 
@@ -52,11 +59,11 @@ async function ensureMediaBytesCheckedAtColumn(db: Database): Promise<void> {
   );
 }
 
-async function ensureStoredContentTypeColumn(db: Database): Promise<void> {
-  const columns = await db.select<Array<{ name: string }>>(
-    "PRAGMA table_info(chapter)",
-  );
-  if (columns.some((column) => column.name === STORED_CONTENT_TYPE_COLUMN)) {
+async function ensureStoredContentTypeColumn(
+  db: Database,
+  chapterColumnNames: ReadonlySet<string>,
+): Promise<void> {
+  if (chapterColumnNames.has(STORED_CONTENT_TYPE_COLUMN)) {
     return;
   }
 
@@ -76,11 +83,11 @@ async function ensureStoredContentTypeColumn(db: Database): Promise<void> {
   );
 }
 
-async function ensureNoChapterContentColumn(db: Database): Promise<void> {
-  const columns = await db.select<Array<{ name: string }>>(
-    "PRAGMA table_info(chapter)",
-  );
-  if (!columns.some((column) => column.name === CHAPTER_CONTENT_COLUMN)) {
+async function ensureNoChapterContentColumn(
+  db: Database,
+  chapterColumnNames: ReadonlySet<string>,
+): Promise<void> {
+  if (!chapterColumnNames.has(CHAPTER_CONTENT_COLUMN)) {
     return;
   }
 
@@ -131,10 +138,11 @@ async function ensureDownloadCacheWorkTable(db: Database): Promise<void> {
 
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
-  await ensureMediaRepairNeededColumn(db);
-  await ensureMediaBytesCheckedAtColumn(db);
-  await ensureStoredContentTypeColumn(db);
-  await ensureNoChapterContentColumn(db);
+  const chapterColumnNames = await loadChapterColumnNames(db);
+  await ensureMediaRepairNeededColumn(db, chapterColumnNames);
+  await ensureMediaBytesCheckedAtColumn(db, chapterColumnNames);
+  await ensureStoredContentTypeColumn(db, chapterColumnNames);
+  await ensureNoChapterContentColumn(db, chapterColumnNames);
   await ensureChapterDownloadQueueTable(db);
   await ensureDownloadCacheWorkTable(db);
   return db;

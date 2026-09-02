@@ -1531,6 +1531,32 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun inspectNovelCover(
+      requestId: String,
+      rootUri: String,
+      preferredNovelDir: String,
+      sourceDir: String,
+      novelIdentitySuffix: String,
+      sourceId: String,
+      novelPath: String,
+      expectedSourceUrl: String,
+    ) {
+      storageExecutor.execute {
+        resolveNovelCoverInspection(
+          requestId,
+          inspectNovelCoverResponse(
+            rootUri,
+            preferredNovelDir,
+            sourceDir,
+            novelIdentitySuffix,
+            sourceId,
+            novelPath,
+            expectedSourceUrl,
+          ),
+        )
+      }
+    }
+
+    private fun inspectNovelCoverResponse(
       rootUri: String,
       preferredNovelDir: String,
       sourceDir: String,
@@ -2416,6 +2442,15 @@ class MainActivity : TauriActivity() {
   private fun resolveChapterArtifactInspection(requestId: String, response: String) {
     val script =
       "window.__lnrResolveAndroidChapterArtifacts && window.__lnrResolveAndroidChapterArtifacts(" +
+        "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
+    mainWebView?.post {
+      mainWebView?.evaluateJavascript(script, null)
+    }
+  }
+
+  private fun resolveNovelCoverInspection(requestId: String, response: String) {
+    val script =
+      "window.__lnrResolveAndroidNovelCover && window.__lnrResolveAndroidNovelCover(" +
         "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)

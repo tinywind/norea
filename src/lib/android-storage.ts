@@ -36,6 +36,7 @@ interface AndroidStorageBridge {
     preferredContentFileName: string,
   ) => void;
   inspectNovelCover: (
+    requestId: string,
     rootUri: string,
     preferredNovelDir: string,
     sourceDir: string,
@@ -43,7 +44,7 @@ interface AndroidStorageBridge {
     sourceId: string,
     novelPath: string,
     expectedSourceUrl: string,
-  ) => string;
+  ) => void;
   finalizeChapterStorageTransfer: (
     requestId: string,
     rootUri: string,
@@ -258,11 +259,19 @@ const pickResolvers = new Map<
   (payload: AndroidStoragePickPayload) => void
 >();
 const chapterArtifactResolvers = new Map<string, (response: string) => void>();
+const novelCoverInspectionResolvers = new Map<
+  string,
+  (response: string) => void
+>();
 const chapterStorageTransferResolvers = new Map<
   string,
   (response: string) => void
 >();
 const nomediaRoots = new Set<string>();
+const novelCoverInspectionsByBridge = new WeakMap<
+  AndroidStorageBridge,
+  Map<string, Promise<AndroidNovelCoverInspection | null>>
+>();
 
 declare global {
   interface Window {
@@ -271,6 +280,10 @@ declare global {
       payload: AndroidStoragePickPayload,
     ) => void;
     __lnrResolveAndroidChapterArtifacts?: (
+      requestId: string,
+      response: string,
+    ) => void;
+    __lnrResolveAndroidNovelCover?: (
       requestId: string,
       response: string,
     ) => void;
@@ -376,6 +389,56 @@ function ensureChapterArtifactResolver(): void {
   };
 }
 
+function ensureNovelCoverInspectionResolver(): void {
+  window.__lnrResolveAndroidNovelCover ??= (requestId, response) => {
+    const resolve = novelCoverInspectionResolvers.get(requestId);
+    if (!resolve) return;
+    novelCoverInspectionResolvers.delete(requestId);
+    resolve(response);
+  };
+}
+
+function novelCoverInspectionCache(
+  bridge: AndroidStorageBridge,
+): Map<string, Promise<AndroidNovelCoverInspection | null>> {
+  let cache = novelCoverInspectionsByBridge.get(bridge);
+  if (!cache) {
+    cache = new Map();
+    novelCoverInspectionsByBridge.set(bridge, cache);
+  }
+  return cache;
+}
+
+function novelCoverInspectionKey(input: AndroidNovelCoverLookupInput): string {
+  return JSON.stringify([
+    input.expectedSourceUrl,
+    input.novelPath,
+    input.preferredNovelDir,
+    input.sourceId,
+    input.sourceDir,
+    input.novelIdentitySuffix,
+  ]);
+}
+
+function clearNovelCoverInspectionCache(bridge: AndroidStorageBridge): void {
+  novelCoverInspectionsByBridge.get(bridge)?.clear();
+}
+
+function isNovelCoverStoragePath(relativePath: string): boolean {
+  const segments = relativePath.split("/").filter(Boolean);
+  const fileName = segments.at(-1)?.toLowerCase() ?? "";
+  return (
+    segments.length === 4 &&
+    segments[0] === "contents" &&
+    (fileName === "cover.json" || fileName.startsWith("cover."))
+  );
+}
+
+function isNovelStorageDirectoryPath(relativePath: string): boolean {
+  const segments = relativePath.split("/").filter(Boolean);
+  return segments.length === 3 && segments[0] === "contents";
+}
+
 function ensureChapterStorageTransferResolver(): void {
   window.__lnrResolveAndroidChapterStorageTransfer ??= (
     requestId,
@@ -427,6 +490,7 @@ export async function selectAndroidStorageRoot(): Promise<string | null> {
   const root = await invoke<string>("chapter_media_set_storage_root", {
     root: payload.root,
   });
+  clearNovelCoverInspectionCache(androidStorageBridge());
   nomediaRoots.delete(root);
   await ensureAndroidStorageNomedia(root);
   return root;
@@ -438,14 +502,13 @@ export async function writeAndroidStorageBytes(
   mimeType: string,
 ): Promise<void> {
   const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
   parseStorageResponse(
-    androidStorageBridge().writeBytes(
-      root,
-      relativePath,
-      bytesToBase64(body),
-      mimeType,
-    ),
+    bridge.writeBytes(root, relativePath, bytesToBase64(body), mimeType),
   );
+  if (isNovelCoverStoragePath(relativePath)) {
+    clearNovelCoverInspectionCache(bridge);
+  }
 }
 
 export async function writeAndroidContentUriBytes(
@@ -545,9 +608,13 @@ export async function writeAndroidStorageText(
   text: string,
 ): Promise<void> {
   const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
   parseStorageResponse(
-    androidStorageBridge().writeText(root, relativePath, text),
+    bridge.writeText(root, relativePath, text),
   );
+  if (isNovelCoverStoragePath(relativePath)) {
+    clearNovelCoverInspectionCache(bridge);
+  }
 }
 
 export async function archiveAndroidStorageDirectory(
@@ -580,20 +647,50 @@ export async function readAndroidStorageText(
   }
 }
 
-export async function inspectAndroidNovelCover(
+export function inspectAndroidNovelCover(
+  input: AndroidNovelCoverLookupInput,
+): Promise<AndroidNovelCoverInspection | null> {
+  const bridge = androidStorageBridge();
+  const cache = novelCoverInspectionCache(bridge);
+  const cacheKey = novelCoverInspectionKey(input);
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const inspection = inspectAndroidNovelCoverUncached(bridge, input);
+  cache.set(cacheKey, inspection);
+  void inspection.catch(() => {
+    if (cache.get(cacheKey) === inspection) cache.delete(cacheKey);
+  });
+  return inspection;
+}
+
+async function inspectAndroidNovelCoverUncached(
+  bridge: AndroidStorageBridge,
   input: AndroidNovelCoverLookupInput,
 ): Promise<AndroidNovelCoverInspection | null> {
   const root = await androidStorageRoot();
+  ensureNovelCoverInspectionResolver();
+  const requestId = makeRequestId();
+  const rawResponse = await new Promise<string>((resolve, reject) => {
+    novelCoverInspectionResolvers.set(requestId, resolve);
+    try {
+      bridge.inspectNovelCover(
+        requestId,
+        root,
+        input.preferredNovelDir,
+        input.sourceDir,
+        input.novelIdentitySuffix,
+        input.sourceId,
+        input.novelPath,
+        input.expectedSourceUrl ?? "",
+      );
+    } catch (error) {
+      novelCoverInspectionResolvers.delete(requestId);
+      reject(error);
+    }
+  });
   const response = parseStorageResponse<AndroidNovelCoverResponse>(
-    androidStorageBridge().inspectNovelCover(
-      root,
-      input.preferredNovelDir,
-      input.sourceDir,
-      input.novelIdentitySuffix,
-      input.sourceId,
-      input.novelPath,
-      input.expectedSourceUrl ?? "",
-    ),
+    rawResponse,
   );
   if (
     response.status !== "present" ||
@@ -833,7 +930,14 @@ export async function deleteAndroidStoragePath(
   relativePath: string,
 ): Promise<void> {
   const root = await androidStorageRoot();
-  parseStorageResponse(androidStorageBridge().deletePath(root, relativePath));
+  const bridge = androidStorageBridge();
+  parseStorageResponse(bridge.deletePath(root, relativePath));
+  if (
+    isNovelCoverStoragePath(relativePath) ||
+    isNovelStorageDirectoryPath(relativePath)
+  ) {
+    clearNovelCoverInspectionCache(bridge);
+  }
 }
 
 export async function prepareAndroidChapterStorageTransfer(
@@ -899,7 +1003,9 @@ export async function beginAndroidStorageRestore(): Promise<string> {
 
 export async function commitAndroidStorageRestore(token: string): Promise<void> {
   const root = await androidStorageRoot();
-  parseStorageResponse(androidStorageBridge().commitRestore(root, token));
+  const bridge = androidStorageBridge();
+  parseStorageResponse(bridge.commitRestore(root, token));
+  clearNovelCoverInspectionCache(bridge);
 }
 
 export async function rollbackAndroidStorageRestore(
@@ -914,9 +1020,16 @@ export async function renameAndroidStoragePath(
   newName: string,
 ): Promise<void> {
   const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
   parseStorageResponse(
-    androidStorageBridge().renamePath(root, relativePath, newName),
+    bridge.renamePath(root, relativePath, newName),
   );
+  if (
+    isNovelCoverStoragePath(relativePath) ||
+    isNovelStorageDirectoryPath(relativePath)
+  ) {
+    clearNovelCoverInspectionCache(bridge);
+  }
 }
 
 export async function deleteAndroidStorageChildrenExcept(
@@ -931,7 +1044,9 @@ export async function deleteAndroidStorageChildrenExcept(
 
 export async function clearAndroidStorageRoot(): Promise<void> {
   const root = await androidStorageRoot();
-  parseStorageResponse(androidStorageBridge().deleteRootChildren(root));
+  const bridge = androidStorageBridge();
+  parseStorageResponse(bridge.deleteRootChildren(root));
+  clearNovelCoverInspectionCache(bridge);
   nomediaRoots.delete(root);
   await ensureAndroidStorageNomedia(root);
 }

@@ -123,6 +123,7 @@ import {
   enqueueChapterMediaRepair,
   getActiveChapterDownloadBatchProgress,
   startChapterDownloadQueueExecutor,
+  subscribeChapterDownloadBatchesSettled,
   type ChapterDownloadJob,
 } from "./chapter-download";
 
@@ -281,6 +282,34 @@ beforeEach(() => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
+  it("notifies listeners once after a batch settles", async () => {
+    schedulerMocks.enqueueSource.mockImplementation(() => ({
+      id: "task-1",
+      promise: Promise.resolve(),
+    }));
+    const listener = vi.fn();
+    const unsubscribe = subscribeChapterDownloadBatchesSettled(listener);
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [
+        {
+          id: 1,
+          pluginId: "source-a",
+          chapterPath: "/chapter/1",
+          title: "Chapter 1",
+        },
+      ],
+      title: "Download chapter",
+      total: 1,
+    });
+
+    await handle.promise;
+    unsubscribe();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(handle.id);
+  });
+
   it("materializes every scheduler task for large chapter batches inside a scheduler batch", async () => {
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(

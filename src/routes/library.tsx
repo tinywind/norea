@@ -342,6 +342,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   );
 
   const novels = useInfiniteQuery({
+    enabled: active,
     queryKey: [
       "novel",
       "library",
@@ -360,9 +361,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         sortOrder,
       }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
+    staleTime: Infinity,
   });
+  const libraryRowsLoaded = novels.data !== undefined;
 
   const librarySummary = useQuery({
+    enabled: active && libraryRowsLoaded,
     queryKey: [
       "novel",
       "library",
@@ -370,9 +374,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       libraryFilter,
     ] as const,
     queryFn: () => getLibraryNovelSummary(libraryFilter),
+    staleTime: Infinity,
   });
 
   const sourceFilters = useQuery({
+    enabled: active && libraryRowsLoaded,
     queryKey: [
       "novel",
       "library",
@@ -380,16 +386,21 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       librarySourceFilter,
     ] as const,
     queryFn: () => listLibrarySourceFilters(librarySourceFilter),
+    staleTime: Infinity,
   });
 
   const categories = useQuery({
+    enabled: active && libraryRowsLoaded,
     queryKey: ["category", "list"],
     queryFn: listCategories,
+    staleTime: Infinity,
   });
 
   const categoryCounts = useQuery({
+    enabled: active && libraryRowsLoaded,
     queryKey: ["category", "counts"],
     queryFn: getLibraryCategoryCounts,
+    staleTime: Infinity,
   });
 
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
@@ -536,12 +547,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         title: t("tasks.task.downloadChapterBatch", { count: total }),
         total,
       });
-      try {
-        const result = await handle.promise;
-        return result.total;
-      } finally {
-        void queryClient.invalidateQueries({ queryKey: ["novel"] });
-      }
+      const result = await handle.promise;
+      return result.total;
     },
   });
 
@@ -687,9 +694,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     () => novels.data?.pages.flatMap((page) => page.novels) ?? [],
     [novels.data?.pages],
   );
-  const summary = librarySummary.data ?? EMPTY_LIBRARY_SUMMARY;
-  const libraryError = novels.error ?? librarySummary.error;
-  const isInitialLibraryLoading = novels.isLoading || librarySummary.isLoading;
+  const summary =
+    librarySummary.data ?? {
+      ...EMPTY_LIBRARY_SUMMARY,
+      totalNovels: rows.length,
+    };
+  const libraryError = novels.error;
+  const isInitialLibraryLoading = novels.isLoading;
   const loadMoreIfNeeded = useCallback(() => {
     if (
       !active ||

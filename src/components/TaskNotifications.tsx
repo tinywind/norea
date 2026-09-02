@@ -1,11 +1,17 @@
 import { useEffect } from "react";
 import { notifications } from "@mantine/notifications";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
+import { applyNovelChapterDownloadCompletion } from "../lib/reader-query-invalidation";
 import {
   startAndroidBackgroundDownloadRecovery,
   startAndroidTaskNotifications,
 } from "../lib/tasks/android-notifications";
-import { startChapterDownloadQueueExecutor } from "../lib/tasks/chapter-download";
+import {
+  startChapterDownloadQueueExecutor,
+  subscribeChapterDownloadBatchesSettled,
+  subscribeChapterDownloads,
+} from "../lib/tasks/chapter-download";
 import { startDownloadCacheDeleteWorkExecutor } from "../lib/tasks/download-cache-delete";
 import {
   openSourceAccessBrowser,
@@ -56,13 +62,51 @@ export function completeAutoOpenSourceAccessAttempt(
 
 export function TaskNotifications() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const taskProgressMode = useNotificationStore(
     (state) => state.taskProgressMode,
   );
 
   useEffect(() => {
+    const unsubscribeChapterDownloads = subscribeChapterDownloads((event) => {
+      if (event.status.kind !== "done") return;
+      if (event.job.novelId && event.job.novelId > 0) {
+        void applyNovelChapterDownloadCompletion(queryClient, {
+          chapterId: event.job.id,
+          novelId: event.job.novelId,
+        });
+      } else {
+        void Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["novel", "detail"],
+            refetchType: "none",
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["novel", "library"],
+            refetchType: "none",
+          }),
+        ]);
+      }
+      if (!event.job.batchId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["novel"],
+          refetchType: "active",
+        });
+      }
+    });
+    const unsubscribeChapterDownloadBatches =
+      subscribeChapterDownloadBatchesSettled(() => {
+        void queryClient.invalidateQueries({
+          queryKey: ["novel"],
+          refetchType: "active",
+        });
+      });
     void startChapterDownloadQueueExecutor();
-  }, []);
+    return () => {
+      unsubscribeChapterDownloadBatches();
+      unsubscribeChapterDownloads();
+    };
+  }, [queryClient]);
 
   useEffect(() => {
     const initialSnapshot = taskScheduler.getSnapshot();

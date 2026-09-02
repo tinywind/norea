@@ -1,6 +1,7 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applyNovelChapterDownloadCompletion,
   chapterDetailQueryKey,
   chapterHistoryQueryKey,
   chapterListQueryKey,
@@ -184,5 +185,50 @@ describe("reader query invalidation", () => {
       downloadCacheQueryKey,
     ]);
     expect(invalidated).not.toContainEqual(["novel"]);
+  });
+
+  it("updates a completed download without refetching active local queries", async () => {
+    const queryClient = createQueryClient();
+    const chaptersQuery = vi.fn().mockResolvedValue([
+      { id: 11, isDownloaded: false },
+      { id: 12, isDownloaded: false },
+    ]);
+    const libraryQuery = vi.fn().mockResolvedValue([{ id: 7 }]);
+
+    await observeQuery(
+      queryClient,
+      novelChaptersQueryKey(7),
+      chaptersQuery,
+    );
+    await observeQuery(
+      queryClient,
+      ["novel", "library", { sortOrder: "nameAsc" }],
+      libraryQuery,
+    );
+
+    await applyNovelChapterDownloadCompletion(queryClient, {
+      chapterId: 11,
+      novelId: 7,
+    });
+
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
+      { id: 11, isDownloaded: true },
+      { id: 12, isDownloaded: false },
+    ]);
+    expect(chaptersQuery).toHaveBeenCalledTimes(1);
+    expect(libraryQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves cached chapter rows for an unrelated download", async () => {
+    const queryClient = createQueryClient();
+    const chapters = [{ id: 11, isDownloaded: false }];
+    queryClient.setQueryData(novelChaptersQueryKey(7), chapters);
+
+    await applyNovelChapterDownloadCompletion(queryClient, {
+      chapterId: 99,
+      novelId: 7,
+    });
+
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toBe(chapters);
   });
 });

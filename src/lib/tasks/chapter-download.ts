@@ -155,6 +155,9 @@ const chapterDownloadBatchStates = new Map<
   string,
   ChapterDownloadBatchState
 >();
+const chapterDownloadBatchSettledListeners = new Set<
+  (batchId: string) => void
+>();
 const chapterPartialContentListeners = new Set<
   (event: ChapterPartialContentEvent) => void
 >();
@@ -738,6 +741,12 @@ function emitChapterPartialContentUpdate(event: ChapterPartialContentEvent): voi
 function emitChapterMediaPatchUpdate(event: ChapterMediaPatchEvent): void {
   for (const listener of chapterMediaPatchListeners) {
     listener(event);
+  }
+}
+
+function emitChapterDownloadBatchSettled(batchId: string): void {
+  for (const listener of chapterDownloadBatchSettledListeners) {
+    listener(batchId);
   }
 }
 
@@ -1581,6 +1590,7 @@ export function enqueueChapterDownloadBatch({
     })
     .finally(() => {
       chapterDownloadBatchStates.delete(batchId);
+      emitChapterDownloadBatchSettled(batchId);
     });
 
   return { id: batchId, promise };
@@ -1625,6 +1635,15 @@ export function subscribeChapterDownloads(
     const chapterEvent = eventFromTask(event.task);
     if (chapterEvent) listener(chapterEvent);
   });
+}
+
+export function subscribeChapterDownloadBatchesSettled(
+  listener: (batchId: string) => void,
+): () => void {
+  chapterDownloadBatchSettledListeners.add(listener);
+  return () => {
+    chapterDownloadBatchSettledListeners.delete(listener);
+  };
 }
 
 export function subscribeChapterPartialContentUpdates(

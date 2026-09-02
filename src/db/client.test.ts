@@ -56,6 +56,16 @@ describe("getDb", () => {
     expect(sqlPluginMock.load).not.toHaveBeenCalled();
   });
 
+  it("loads the chapter columns once for all compatibility checks", async () => {
+    const rawDb = makeRawDb();
+    const { getDb } = await loadClient(rawDb);
+
+    await getDb();
+
+    expect(rawDb.select).toHaveBeenCalledTimes(1);
+    expect(rawDb.select).toHaveBeenCalledWith("PRAGMA table_info(chapter)");
+  });
+
   it("backfills the stored content type when the column is missing", async () => {
     const rawDb = makeRawDb();
     rawDb.select.mockResolvedValue([
