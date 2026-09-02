@@ -40,6 +40,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import {
   DetailsGlyph,
   CheckGlyph,
@@ -357,13 +358,14 @@ function buildBatchDownloadTargets(
   };
 }
 
-function useAutoFitNovelTitle(title: string) {
+function useAutoFitNovelTitle(title: string, enabled: boolean) {
   const titleRef = useRef<HTMLHeadingElement>(null);
   const [fontSize, setFontSize] = useState<NovelTitleFontSize>(
     NOVEL_TITLE_FONT_SIZES[0],
   );
 
   useEffect(() => {
+    if (!enabled) return;
     const element = titleRef.current;
     if (!element || typeof window === "undefined") return;
 
@@ -415,7 +417,7 @@ function useAutoFitNovelTitle(title: string) {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", scheduleFit);
     };
-  }, [title]);
+  }, [enabled, title]);
 
   return {
     titleRef,
@@ -1505,7 +1507,15 @@ function NovelWorkspace({
 }: NovelWorkspaceProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { titleRef, titleStyle } = useAutoFitNovelTitle(novel.name);
+  const isDesktopLayout = useMediaQuery(
+    "(min-width: 992px)",
+    undefined,
+    { getInitialValueInEffect: false },
+  );
+  const { titleRef, titleStyle } = useAutoFitNovelTitle(
+    novel.name,
+    isDesktopLayout,
+  );
   const coverPlugin =
     novel.isLocal || novel.inLibrary
       ? null
@@ -1764,19 +1774,21 @@ function NovelWorkspace({
 
   return (
     <div className="lnr-novel-workspace">
-      <div className="lnr-novel-hero-desktop">
-        {renderCoverPanel()}
-        {renderInfoPanel(true)}
-        {renderSummaryPanel()}
-      </div>
-
-      <div className="lnr-novel-hero-mobile">
-        {renderInfoPanel(false)}
-        <div className="lnr-novel-cover-summary-card">
+      {isDesktopLayout ? (
+        <div className="lnr-novel-hero-desktop">
           {renderCoverPanel()}
+          {renderInfoPanel(true)}
           {renderSummaryPanel()}
         </div>
-      </div>
+      ) : (
+        <div className="lnr-novel-hero-mobile">
+          {renderInfoPanel(false)}
+          <div className="lnr-novel-cover-summary-card">
+            {renderCoverPanel()}
+            {renderSummaryPanel()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2566,6 +2578,7 @@ export function NovelDetailPage() {
       <PageFrame className="lnr-novel-page" size="wide">
         <div className="lnr-novel-layout">
           <NovelWorkspace
+            key={novel.id}
             novel={novel}
             chapters={chapters}
             downloadStatuses={statuses}

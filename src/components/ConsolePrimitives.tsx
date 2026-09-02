@@ -61,7 +61,9 @@ export function ConsoleCover({
         <img
           alt={alt}
           className="lnr-console-cover-image"
+          decoding="async"
           draggable={false}
+          loading="lazy"
           onError={() => setFailedSrc(normalizedSrc)}
           src={normalizedSrc ?? undefined}
         />

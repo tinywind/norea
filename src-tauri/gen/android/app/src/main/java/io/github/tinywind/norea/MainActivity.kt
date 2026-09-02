@@ -2595,7 +2595,21 @@ class MainActivity : TauriActivity() {
     return androidLocalMediaResponse(
       mimeTypeForPath(relativePath, ""),
       input,
+      if (isNovelCoverRelativePath(relativePath)) {
+        IMMUTABLE_COVER_CACHE_CONTROL
+      } else {
+        "no-store"
+      },
     )
+  }
+
+  private fun isNovelCoverRelativePath(relativePath: String): Boolean {
+    val parts = relativePath.split('/').filter { it.isNotBlank() }
+    val fileName = parts.getOrNull(3) ?: return false
+    return parts.size == 4 &&
+      parts[0] == CONTENTS_ROOT_DIR &&
+      fileName != NOVEL_COVER_MANIFEST_FILE &&
+      fileName.startsWith("cover.")
   }
 
   private fun androidZipLocalMediaResponse(
@@ -2653,6 +2667,7 @@ class MainActivity : TauriActivity() {
   private fun androidLocalMediaResponse(
     mimeType: String,
     input: InputStream,
+    cacheControl: String = "no-store",
   ): WebResourceResponse =
     WebResourceResponse(
       mimeType,
@@ -2661,7 +2676,7 @@ class MainActivity : TauriActivity() {
       "OK",
       mapOf(
         "Access-Control-Allow-Origin" to "*",
-        "Cache-Control" to "no-store",
+        "Cache-Control" to cacheControl,
       ),
       input,
     )
@@ -4691,6 +4706,8 @@ class MainActivity : TauriActivity() {
     private const val ANDROID_DIRECT_MEDIA_PATH = "file"
     private const val ANDROID_LOCAL_MEDIA_PATH = "__norea_android_media__"
     private const val ANDROID_ZIP_MEDIA_PATH = "zip"
+    private const val IMMUTABLE_COVER_CACHE_CONTROL =
+      "public, max-age=31536000, immutable"
     private const val BYTES_PER_MIB = 1024L * 1024L
     private const val CHAPTER_MEDIA_DIRECTORY = "media"
     private const val CONTENTS_ROOT_DIR = "contents"

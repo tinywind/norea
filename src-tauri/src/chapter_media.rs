@@ -28,6 +28,7 @@ const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 const CHAPTER_PARTIAL_CONTENT_FILE: &str = ".chapter-content.partial";
 const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
 const MEDIA_RESTORE_BACKUP_INFIX: &str = ".restore-backup-";
+const IMMUTABLE_COVER_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ChapterMediaClearContext {
@@ -274,18 +275,37 @@ pub fn norea_media_protocol_response(
     app: &AppHandle,
     request: http::Request<Vec<u8>>,
 ) -> http::Response<Vec<u8>> {
-    match norea_media_protocol_body(app, request.uri().path()) {
-        Ok((body, content_type)) => http::Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type)
-            .body(body)
-            .unwrap_or_else(|_| http::Response::new(Vec::new())),
+    let request_path = request.uri().path();
+    match norea_media_protocol_body(app, request_path) {
+        Ok((body, content_type)) => {
+            let mut response = http::Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, content_type);
+            if is_novel_cover_media_path(request_path) {
+                response = response.header(header::CACHE_CONTROL, IMMUTABLE_COVER_CACHE_CONTROL);
+            }
+            response
+                .body(body)
+                .unwrap_or_else(|_| http::Response::new(Vec::new()))
+        }
         Err((status, message)) => http::Response::builder()
             .status(status)
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(message.into_bytes())
             .unwrap_or_else(|_| http::Response::new(Vec::new())),
     }
+}
+
+fn is_novel_cover_media_path(request_path: &str) -> bool {
+    let parts = request_path
+        .trim_matches('/')
+        .split('/')
+        .collect::<Vec<_>>();
+    let file_name = parts.get(3).copied().unwrap_or_default();
+    parts.len() == 4
+        && parts.first() == Some(&CONTENTS_ROOT_DIR)
+        && file_name != NOVEL_COVER_MANIFEST_FILE
+        && file_name.starts_with("cover.")
 }
 
 fn norea_media_protocol_body(
@@ -5431,6 +5451,19 @@ mod tests {
             );
             assert_eq!(media_mime_type(Path::new("page.css"), body), *expected);
         }
+    }
+
+    #[test]
+    fn only_novel_cover_media_paths_use_the_immutable_cache_policy() {
+        assert!(is_novel_cover_media_path(
+            "/contents/demo/Sample-Novel-novel/cover.jpg"
+        ));
+        assert!(!is_novel_cover_media_path(
+            "/contents/demo/Sample-Novel-novel/cover.json"
+        ));
+        assert!(!is_novel_cover_media_path(
+            "/contents/demo/Sample-Novel-novel/1-Opening/page.jpg"
+        ));
     }
 
     #[test]

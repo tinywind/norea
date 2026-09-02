@@ -14,6 +14,7 @@ import {
   writeStoredChapterContentMirror,
 } from "../chapter-content-storage";
 import { clearResolvedChapterStorageDirs } from "../chapter-storage-resolution";
+import { invalidateAllNovelCoverSources } from "../novel-cover-storage";
 import {
   MAX_ZIP_ENTRY_BYTES,
   MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
@@ -649,6 +650,7 @@ export async function applyBackupSnapshot(
     });
   }
   clearResolvedChapterStorageDirs();
+  invalidateAllNovelCoverSources();
 
   if (manifest.settings !== undefined) {
     writeBackupSettings(manifest.settings);

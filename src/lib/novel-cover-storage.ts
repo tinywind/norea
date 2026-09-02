@@ -27,6 +27,8 @@ type NovelCoverChangeListener = (novelId: number) => void;
 const novelCoverChangeListeners = new Set<NovelCoverChangeListener>();
 const novelCoverSnapshots = new Map<number, number>();
 const novelCoverSaveQueues = new Map<string, NovelCoverSaveQueue>();
+const novelCoverDisplayCache = new Map<string, NovelCoverDisplayCacheEntry>();
+let novelCoverStorageEpoch = 0;
 
 const IMAGE_EXTENSIONS = new Set([
   "avif",
@@ -66,6 +68,13 @@ interface NovelCoverSaveQueue {
   tail: Promise<void>;
 }
 
+interface NovelCoverDisplayCacheEntry {
+  novelId: number;
+  promise: Promise<string | null>;
+  resolved: boolean;
+  source: NovelCoverDisplaySource | null;
+}
+
 export interface NovelCoverStorageInput extends ChapterStorageNovelPathInput {
   id: number;
   name: string;
@@ -82,6 +91,11 @@ export interface NovelCoverDisplaySource {
   src: string;
 }
 
+export interface NovelCoverDisplayCacheOptions {
+  allowSourceFallback?: boolean;
+  plugin?: Plugin | null;
+}
+
 export function subscribeNovelCoverChanges(
   listener: NovelCoverChangeListener,
 ): () => void {
@@ -92,7 +106,100 @@ export function subscribeNovelCoverChanges(
 }
 
 export function getNovelCoverSnapshot(novelId: number): number {
-  return novelCoverSnapshots.get(novelId) ?? 0;
+  return novelCoverStorageEpoch + (novelCoverSnapshots.get(novelId) ?? 0);
+}
+
+export function peekCachedNovelCoverSrc(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions = {},
+): string | null | undefined {
+  const entry = novelCoverDisplayCache.get(
+    novelCoverDisplayCacheKey(novel, options),
+  );
+  return entry?.resolved ? entry.source?.src ?? null : undefined;
+}
+
+export function resolveCachedNovelCoverSrc(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions = {},
+): Promise<string | null> {
+  const cacheKey = novelCoverDisplayCacheKey(novel, options);
+  const cached = novelCoverDisplayCache.get(cacheKey);
+  if (cached) return cached.promise;
+
+  const entry: NovelCoverDisplayCacheEntry = {
+    novelId: novel.id,
+    promise: Promise.resolve(null),
+    resolved: false,
+    source: null,
+  };
+  const request = resolveNovelCoverDisplaySourceForCache(novel, options).then(
+    (source) => {
+      if (novelCoverDisplayCache.get(cacheKey) !== entry) {
+        source?.dispose();
+        return null;
+      }
+      entry.resolved = true;
+      entry.source = source;
+      return source?.src ?? null;
+    },
+    (error: unknown) => {
+      if (novelCoverDisplayCache.get(cacheKey) === entry) {
+        novelCoverDisplayCache.delete(cacheKey);
+      }
+      throw error;
+    },
+  );
+  entry.promise = request;
+  novelCoverDisplayCache.set(cacheKey, entry);
+  return request;
+}
+
+export function clearNovelCoverDisplayCache(novelId?: number): void {
+  for (const [cacheKey, entry] of novelCoverDisplayCache) {
+    if (novelId !== undefined && entry.novelId !== novelId) continue;
+    novelCoverDisplayCache.delete(cacheKey);
+    if (entry.resolved) entry.source?.dispose();
+  }
+}
+
+export function invalidateAllNovelCoverSources(): void {
+  clearNovelCoverDisplayCache();
+  novelCoverStorageEpoch += 1;
+  for (const listener of novelCoverChangeListeners) {
+    listener(0);
+  }
+}
+
+async function resolveNovelCoverDisplaySourceForCache(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions,
+): Promise<NovelCoverDisplaySource | null> {
+  const plugin = options.plugin ?? null;
+  if (options.allowSourceFallback && plugin) {
+    return resolveNovelCoverDisplaySource(plugin, novel);
+  }
+
+  const src = await resolveStoredNovelCoverSrc(novel, plugin);
+  return src ? { dispose: () => undefined, src } : null;
+}
+
+function novelCoverDisplayCacheKey(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions,
+): string {
+  const plugin = options.plugin ?? null;
+  const path = novel.path.trim();
+  return JSON.stringify([
+    options.allowSourceFallback && plugin ? "source" : "stored",
+    novel.pluginId,
+    novel.path,
+    path ? null : novel.id,
+    novel.name,
+    novel.cover?.trim() || null,
+    plugin?.version ?? null,
+    plugin?.url ?? null,
+  ]);
 }
 
 export async function resolveNovelCoverDisplaySource(
@@ -137,6 +244,14 @@ export async function resolveNovelCoverDisplaySource(
       `novel cover: failed to fetch cover image (${response.status} ${response.statusText})`,
     );
   }
+  const contentType = normalizeContentType(
+    response.headers.get("content-type"),
+  );
+  if (contentType && isCoverDocumentContentType(contentType)) {
+    throw new Error(
+      `novel cover: fetched cover has a non-image content type (${contentType})`,
+    );
+  }
   const body = await response.blob();
   if (body.size === 0) {
     throw new Error("novel cover: fetched cover image is empty");
@@ -166,7 +281,6 @@ export async function saveNovelCoverFromSource(
   if (!sourceUrl) return;
 
   await enqueueNovelCoverSave(plugin, novel, sourceUrl);
-  notifyNovelCoverChanged(novel.id);
 }
 
 async function enqueueNovelCoverSave(
@@ -192,7 +306,8 @@ async function enqueueNovelCoverSave(
   queue.pending += 1;
   const request = queue.tail.catch(() => undefined).then(async () => {
     if (queue.generations.get(requestIdentity) !== generation) return;
-    await storeNovelCoverFromSource(plugin, novel, sourceUrl);
+    const stored = await storeNovelCoverFromSource(plugin, novel, sourceUrl);
+    if (stored) notifyNovelCoverChanged(novel.id);
   });
   queue.tail = request;
   queue.latestRequests.set(requestIdentity, request);
@@ -250,14 +365,14 @@ async function storeNovelCoverFromSource(
   plugin: Plugin,
   novel: NovelCoverStorageInput,
   sourceUrl: string,
-): Promise<void> {
+): Promise<boolean> {
   const existing = await readStoredNovelCover(novel, null);
   if (
     existing?.manifest.sourceId === novel.pluginId &&
     existing.manifest.novelPath === novel.path &&
     existing.manifest.sourceUrl === sourceUrl
   ) {
-    return;
+    return false;
   }
 
   const baseUrl = safePluginBaseUrl(plugin);
@@ -272,12 +387,20 @@ async function storeNovelCoverFromSource(
     );
   }
 
+  const contentType = normalizeContentType(
+    response.headers.get("content-type"),
+  );
+  if (contentType && isCoverDocumentContentType(contentType)) {
+    throw new Error(
+      `novel cover: fetched cover has a non-image content type (${contentType})`,
+    );
+  }
+
   const body = new Uint8Array(await response.arrayBuffer());
   if (body.byteLength === 0) {
     throw new Error("novel cover: fetched cover image is empty");
   }
 
-  const contentType = normalizeContentType(response.headers.get("content-type"));
   const fileName = `${NOVEL_COVER_BASENAME}.${coverExtension(
     sourceUrl,
     contentType,
@@ -292,6 +415,7 @@ async function storeNovelCoverFromSource(
     },
     existing,
   );
+  return true;
 }
 
 export async function resolveStoredNovelCoverSrc(
@@ -312,9 +436,14 @@ export async function resolveStoredNovelCoverSrc(
 }
 
 function storedNovelCoverSrc(stored: StoredNovelCover): string {
-  return isAndroidRuntime()
+  const src = isAndroidRuntime()
     ? androidLocalMediaSrc(stored.relativePath)
     : noreaMediaSrc(stored.relativePath);
+  const updatedAt = Math.max(0, Math.trunc(stored.manifest.updatedAt));
+  const storageVersion = novelCoverStorageEpoch
+    ? `${updatedAt}-${novelCoverStorageEpoch}`
+    : String(updatedAt);
+  return `${src}?v=${storageVersion}`;
 }
 
 async function readStoredNovelCover(
@@ -422,7 +551,8 @@ function storedNovelCoverRelativeDir(
 
 function notifyNovelCoverChanged(novelId: number): void {
   if (novelId <= 0) return;
-  novelCoverSnapshots.set(novelId, getNovelCoverSnapshot(novelId) + 1);
+  clearNovelCoverDisplayCache(novelId);
+  novelCoverSnapshots.set(novelId, (novelCoverSnapshots.get(novelId) ?? 0) + 1);
   for (const listener of novelCoverChangeListeners) {
     listener(novelId);
   }
@@ -575,6 +705,14 @@ function normalizeContentType(contentType: string | null): string | null {
   return contentType?.split(";")[0]?.trim().toLowerCase() || null;
 }
 
+function isCoverDocumentContentType(contentType: string): boolean {
+  return (
+    contentType === "text/html" ||
+    contentType === "application/xhtml+xml" ||
+    contentType === "application/json"
+  );
+}
+
 function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null {
   if (!raw) return null;
   try {
@@ -595,7 +733,7 @@ function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null 
       sourceId: typeof parsed.sourceId === "string" ? parsed.sourceId : null,
       sourceUrl: parsed.sourceUrl,
       updatedAt:
-        typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+        typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
       version: 1,
     };
   } catch {

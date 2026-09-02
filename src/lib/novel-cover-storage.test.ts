@@ -29,7 +29,11 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { pluginMediaFetch } from "./http";
 import {
+  clearNovelCoverDisplayCache,
   getNovelCoverSnapshot,
+  invalidateAllNovelCoverSources,
+  peekCachedNovelCoverSrc,
+  resolveCachedNovelCoverSrc,
   resolveNovelCoverDisplaySource,
   resolveStoredNovelCoverSrc,
   saveNovelCoverFromSource,
@@ -99,6 +103,7 @@ function desktopCoverResult(
 }
 
 beforeEach(() => {
+  clearNovelCoverDisplayCache();
   vi.clearAllMocks();
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
@@ -135,9 +140,8 @@ describe("saveNovelCoverFromSource", () => {
     }
 
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith(novel.id);
-    expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot + 1);
+    expect(listener).not.toHaveBeenCalled();
+    expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
       expectedSourceUrl: null,
@@ -225,6 +229,34 @@ describe("saveNovelCoverFromSource", () => {
     expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot + 1);
   });
 
+  it("does not store a successful challenge page as a cover", async () => {
+    pluginMediaFetchMock.mockResolvedValueOnce(
+      new Response("<html>challenge</html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        status: 200,
+      }),
+    );
+    const listener = vi.fn();
+    const unsubscribe = subscribeNovelCoverChanges(listener);
+
+    try {
+      await expect(
+        saveNovelCoverFromSource(
+          makePlugin(),
+          novel,
+          "https://source.test/covers/cover.jpg",
+        ),
+      ).rejects.toThrow("non-image content type (text/html)");
+    } finally {
+      unsubscribe();
+    }
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "novel_cover_store"),
+    ).toHaveLength(0);
+  });
+
   it("serializes cover saves across title changes by stable source identity", async () => {
     let storedCover: ReturnType<typeof desktopCoverResult> | null = null;
     invokeMock.mockImplementation((command, args) => {
@@ -244,31 +276,41 @@ describe("saveNovelCoverFromSource", () => {
       resolveFetch = resolve;
     });
     pluginMediaFetchMock.mockReturnValueOnce(pendingFetch);
+    const listener = vi.fn();
+    const snapshot = getNovelCoverSnapshot(novel.id);
+    const unsubscribe = subscribeNovelCoverChanges(listener);
 
-    const first = saveNovelCoverFromSource(
-      makePlugin(),
-      { ...novel, name: "Old Title" },
-      "https://source.test/covers/cover.jpg",
-    );
-    await vi.waitFor(() => expect(pluginMediaFetchMock).toHaveBeenCalledOnce());
-    const second = saveNovelCoverFromSource(
-      makePlugin(),
-      { ...novel, name: "New Title" },
-      "https://source.test/covers/cover.jpg",
-    );
-    resolveFetch(
-      new Response(new Uint8Array([1, 2, 3]), {
-        headers: { "content-type": "image/jpeg" },
-        status: 200,
-      }),
-    );
+    try {
+      const first = saveNovelCoverFromSource(
+        makePlugin(),
+        { ...novel, name: "Old Title" },
+        "https://source.test/covers/cover.jpg",
+      );
+      await vi.waitFor(() => expect(pluginMediaFetchMock).toHaveBeenCalledOnce());
+      const second = saveNovelCoverFromSource(
+        makePlugin(),
+        { ...novel, name: "New Title" },
+        "https://source.test/covers/cover.jpg",
+      );
+      resolveFetch(
+        new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-type": "image/jpeg" },
+          status: 200,
+        }),
+      );
 
-    await Promise.all([first, second]);
+      await Promise.all([first, second]);
+    } finally {
+      unsubscribe();
+    }
 
     expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
     expect(
       invokeMock.mock.calls.filter(([command]) => command === "novel_cover_store"),
     ).toHaveLength(1);
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(novel.id);
+    expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot + 1);
   });
 
   it("writes Android cover files under the contents novel directory", async () => {
@@ -368,7 +410,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(repeatedSeparatorNovel),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-foo--bar/cover.jpg",
+      "http://norea-media.localhost/contents/demo/Sample-Novel-foo--bar/cover.jpg?v=1",
     );
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -394,7 +436,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(novel),
     ).resolves.toBe(
-      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIud2VicA",
+      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIud2VicA?v=1",
     );
   });
 
@@ -414,7 +456,7 @@ describe("saveNovelCoverFromSource", () => {
         pluginId: "naver-webtoon",
       }),
     ).resolves.toBe(
-      "/__norea_android_media__/file/Y29udGVudHMvbmF2ZXItd2VidG9vbi_qtJHrp4jtmozqt4Atd2VidG9vbi1saXN0LXRpdGxlSWQtNzc2NjAxL2NvdmVyLmpwZw",
+      "/__norea_android_media__/file/Y29udGVudHMvbmF2ZXItd2VidG9vbi_qtJHrp4jtmozqt4Atd2VidG9vbi1saXN0LXRpdGxlSWQtNzc2NjAxL2NvdmVyLmpwZw?v=1",
     );
   });
 
@@ -432,7 +474,7 @@ describe("saveNovelCoverFromSource", () => {
         name: "New Title",
       }),
     ).resolves.toBe(
-      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9PbGQtVGl0bGUtbm92ZWwvY292ZXIuanBn",
+      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9PbGQtVGl0bGUtbm92ZWwvY292ZXIuanBn?v=1",
     );
     expect(inspectAndroidNovelCoverMock).toHaveBeenCalledWith({
       expectedSourceUrl: "https://source.test/covers/cover.jpg",
@@ -453,7 +495,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(novel),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg",
+      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
     );
   });
 
@@ -468,7 +510,7 @@ describe("saveNovelCoverFromSource", () => {
         makePlugin(),
       ),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg",
+      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
     );
     expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
       expectedSourceUrl: "https://source.test/covers/cover.jpg",
@@ -496,7 +538,7 @@ describe("saveNovelCoverFromSource", () => {
         pluginId: "naver-webtoon",
       }),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/naver-webtoon/%EA%B4%91%EB%A7%88%ED%9A%8C%EA%B7%80-webtoon-list-titleId-776601/cover.jpg",
+      "http://norea-media.localhost/contents/naver-webtoon/%EA%B4%91%EB%A7%88%ED%9A%8C%EA%B7%80-webtoon-list-titleId-776601/cover.jpg?v=1",
     );
   });
 
@@ -517,7 +559,7 @@ describe("saveNovelCoverFromSource", () => {
         pluginId: "newtoki-webtoon",
       }),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/newtoki-webtoon/%EA%B0%80%EC%A0%95%EB%B6%80-%EA%B8%B8%EB%93%A4%EC%9D%B4%EA%B8%B0-webtoon-2025/cover.jpg",
+      "http://norea-media.localhost/contents/newtoki-webtoon/%EA%B0%80%EC%A0%95%EB%B6%80-%EA%B8%B8%EB%93%A4%EC%9D%B4%EA%B8%B0-webtoon-2025/cover.jpg?v=1",
     );
   });
 
@@ -525,6 +567,154 @@ describe("saveNovelCoverFromSource", () => {
     invokeMock.mockResolvedValueOnce(null);
 
     await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBeNull();
+  });
+});
+
+describe("cached novel cover display sources", () => {
+  it("reuses a resolved stored cover without another native lookup", async () => {
+    const plugin = makePlugin();
+    const displayNovel = {
+      ...novel,
+      cover: "https://source.test/covers/cover.jpg",
+    };
+    invokeMock.mockResolvedValue(
+      desktopCoverResult("https://source.test/covers/cover.jpg"),
+    );
+
+    const first = await resolveCachedNovelCoverSrc(displayNovel, { plugin });
+    const cached = peekCachedNovelCoverSrc(displayNovel, { plugin });
+    const second = await resolveCachedNovelCoverSrc(displayNovel, { plugin });
+
+    expect(first).toBe(
+      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
+    );
+    expect(cached).toBe(first);
+    expect(second).toBe(first);
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a cached cover when saving the same source is a no-op", async () => {
+    const plugin = makePlugin();
+    const displayNovel = {
+      ...novel,
+      cover: "https://source.test/covers/cover.jpg",
+    };
+    invokeMock.mockResolvedValue(
+      desktopCoverResult("https://source.test/covers/cover.jpg"),
+    );
+
+    const cached = await resolveCachedNovelCoverSrc(displayNovel, { plugin });
+    await saveNovelCoverFromSource(plugin, novel, displayNovel.cover);
+
+    expect(peekCachedNovelCoverSrc(displayNovel, { plugin })).toBe(cached);
+    await expect(
+      resolveCachedNovelCoverSrc(displayNovel, { plugin }),
+    ).resolves.toBe(cached);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates a cached cover after storing new cover bytes", async () => {
+    const plugin = makePlugin();
+    const displayNovel = {
+      ...novel,
+      cover: "https://source.test/covers/old.jpg",
+    };
+    invokeMock.mockResolvedValue(
+      desktopCoverResult("https://source.test/covers/old.jpg"),
+    );
+
+    await resolveCachedNovelCoverSrc(displayNovel, { plugin });
+    await saveNovelCoverFromSource(
+      plugin,
+      novel,
+      "https://source.test/covers/new.jpg",
+    );
+
+    expect(peekCachedNovelCoverSrc(displayNovel, { plugin })).toBeUndefined();
+  });
+
+  it("coalesces concurrent source fallback requests and owns the blob URL", async () => {
+    const plugin = makePlugin();
+    const displayNovel = {
+      ...novel,
+      cover: "https://source.test/covers/cover.jpg",
+    };
+    let resolveFetch!: (response: Response) => void;
+    const pendingFetch = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    pluginMediaFetchMock.mockReturnValueOnce(pendingFetch);
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:cached-cover");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
+
+    try {
+      const options = { allowSourceFallback: true, plugin };
+      const first = resolveCachedNovelCoverSrc(displayNovel, options);
+      const second = resolveCachedNovelCoverSrc(displayNovel, options);
+      await vi.waitFor(() => expect(pluginMediaFetchMock).toHaveBeenCalledOnce());
+      resolveFetch(
+        new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-type": "image/jpeg" },
+          status: 200,
+        }),
+      );
+
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        "blob:cached-cover",
+        "blob:cached-cover",
+      ]);
+      expect(invokeMock).toHaveBeenCalledOnce();
+      expect(createObjectUrl).toHaveBeenCalledOnce();
+      expect(revokeObjectUrl).not.toHaveBeenCalled();
+
+      clearNovelCoverDisplayCache(novel.id);
+      expect(revokeObjectUrl).toHaveBeenCalledOnce();
+      expect(revokeObjectUrl).toHaveBeenCalledWith("blob:cached-cover");
+    } finally {
+      clearNovelCoverDisplayCache(novel.id);
+      createObjectUrl.mockRestore();
+      revokeObjectUrl.mockRestore();
+    }
+  });
+
+  it("retries a cached request after a challenge response", async () => {
+    const plugin = makePlugin();
+    const displayNovel = {
+      ...novel,
+      cover: "https://source.test/covers/cover.jpg",
+    };
+    pluginMediaFetchMock
+      .mockResolvedValueOnce(
+        new Response("<html>challenge</html>", {
+          headers: { "content-type": "text/html" },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1]), {
+          headers: { "content-type": "image/jpeg" },
+          status: 200,
+        }),
+      );
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:retry-cover");
+
+    try {
+      const options = { allowSourceFallback: true, plugin };
+      await expect(
+        resolveCachedNovelCoverSrc(displayNovel, options),
+      ).rejects.toThrow("non-image content type (text/html)");
+      await expect(
+        resolveCachedNovelCoverSrc(displayNovel, options),
+      ).resolves.toBe("blob:retry-cover");
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      clearNovelCoverDisplayCache(novel.id);
+      createObjectUrl.mockRestore();
+    }
   });
 });
 
@@ -544,7 +734,7 @@ describe("resolveNovelCoverDisplaySource", () => {
     );
 
     expect(resolved?.src).toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg",
+      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
     );
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
     expect(
@@ -697,6 +887,48 @@ describe("resolveNovelCoverDisplaySource", () => {
     } finally {
       blob.mockRestore();
       createObjectUrl.mockRestore();
+    }
+  });
+});
+
+describe("invalidateAllNovelCoverSources", () => {
+  it("clears shared sources and advances every cover snapshot", async () => {
+    const plugin = makePlugin();
+    const displayNovel = {
+      ...novel,
+      cover: "https://source.test/covers/cover.jpg",
+    };
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:global-cover");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
+    const listener = vi.fn();
+    const snapshot = getNovelCoverSnapshot(novel.id);
+    const unsubscribe = subscribeNovelCoverChanges(listener);
+
+    try {
+      await resolveCachedNovelCoverSrc(displayNovel, {
+        allowSourceFallback: true,
+        plugin,
+      });
+      invalidateAllNovelCoverSources();
+
+      expect(listener).toHaveBeenCalledOnce();
+      expect(listener).toHaveBeenCalledWith(0);
+      expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot + 1);
+      expect(revokeObjectUrl).toHaveBeenCalledOnce();
+      expect(revokeObjectUrl).toHaveBeenCalledWith("blob:global-cover");
+      expect(
+        peekCachedNovelCoverSrc(displayNovel, {
+          allowSourceFallback: true,
+          plugin,
+        }),
+      ).toBeUndefined();
+    } finally {
+      unsubscribe();
+      clearNovelCoverDisplayCache();
+      createObjectUrl.mockRestore();
+      revokeObjectUrl.mockRestore();
     }
   });
 });

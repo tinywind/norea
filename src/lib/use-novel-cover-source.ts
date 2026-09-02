@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   getNovelCoverSnapshot,
+  peekCachedNovelCoverSrc,
+  resolveCachedNovelCoverSrc,
   resolveNovelCoverDisplaySource,
   resolveStoredNovelCoverSrc,
   subscribeNovelCoverChanges,
@@ -24,12 +26,15 @@ export function useNovelCoverSource(
   novel: NovelCoverSourceInput,
   options: NovelCoverSourceOptions = {},
 ): string | null {
-  const initial = novel.isLocal ? novel.cover?.trim() || null : null;
-  const [source, setSource] = useState<string | null>(initial);
+  const [source, setSource] = useState<string | null>(() =>
+    initialNovelCoverSource(novel, options),
+  );
   const subscribeToCover = useCallback(
     (onStoreChange: () => void) =>
       subscribeNovelCoverChanges((changedNovelId) => {
-        if (changedNovelId === novel.id) onStoreChange();
+        if (changedNovelId === 0 || changedNovelId === novel.id) {
+          onStoreChange();
+        }
       }),
     [novel.id],
   );
@@ -48,21 +53,47 @@ export function useNovelCoverSource(
     let displaySource: NovelCoverDisplaySource | null = null;
     const controller = new AbortController();
     const localCover = novel.isLocal ? novel.cover?.trim() || null : null;
-    setSource(localCover);
+    const loadedPlugin =
+      options.plugin ?? pluginManager.getPlugin(novel.pluginId);
+    const cachedSource =
+      novel.id > 0 && !novel.isLocal
+        ? peekCachedNovelCoverSrc(novel, {
+            allowSourceFallback: options.allowSourceFallback,
+            plugin: loadedPlugin,
+          })
+        : undefined;
+    setSource(cachedSource === undefined ? localCover : cachedSource);
 
     if (novel.isLocal || novel.pluginId.trim() === "") return;
 
-    const request = options.allowSourceFallback && options.plugin
-      ? resolveNovelCoverDisplaySource(options.plugin, novel, controller.signal)
-      : resolveStoredCover();
+    const request = resolveCover();
 
-    async function resolveStoredCover(): Promise<NovelCoverDisplaySource | null> {
-      let plugin = options.plugin ?? pluginManager.getPlugin(novel.pluginId);
+    async function resolveCover(): Promise<NovelCoverDisplaySource | null> {
+      let plugin = loadedPlugin;
       if (!plugin) {
         await pluginManager.loadInstalledFromDb().catch(() => undefined);
         plugin = pluginManager.getPlugin(novel.pluginId);
       }
       if (controller.signal.aborted) return null;
+
+      if (novel.id > 0) {
+        const cacheOptions = {
+          allowSourceFallback: options.allowSourceFallback,
+          plugin,
+        };
+        const cached = peekCachedNovelCoverSrc(novel, cacheOptions);
+        if (cached !== undefined && !cancelled) setSource(cached);
+        const src = await resolveCachedNovelCoverSrc(novel, cacheOptions);
+        return src ? { dispose: () => undefined, src } : null;
+      }
+
+      if (options.allowSourceFallback && plugin) {
+        return resolveNovelCoverDisplaySource(
+          plugin,
+          novel,
+          controller.signal,
+        );
+      }
       const src = await resolveStoredNovelCoverSrc(novel, plugin);
       return src ? { dispose: () => undefined, src } : null;
     }
@@ -97,4 +128,19 @@ export function useNovelCoverSource(
   ]);
 
   return source;
+}
+
+function initialNovelCoverSource(
+  novel: NovelCoverSourceInput,
+  options: NovelCoverSourceOptions,
+): string | null {
+  if (novel.isLocal) return novel.cover?.trim() || null;
+  if (novel.id <= 0 || novel.pluginId.trim() === "") return null;
+
+  return (
+    peekCachedNovelCoverSrc(novel, {
+      allowSourceFallback: options.allowSourceFallback,
+      plugin: options.plugin ?? pluginManager.getPlugin(novel.pluginId),
+    }) ?? null
+  );
 }
