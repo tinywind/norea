@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::fmt;
 use std::io::{Cursor, Read, Write};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
 use std::str;
@@ -13,11 +13,12 @@ use pkcs8::der::Decode;
 use pkcs8::{EncryptedPrivateKeyInfo, SecretDocument};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{
-    CryptoProvider, WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
+    verify_tls12_signature, verify_tls13_signature, verify_tls13_signature_with_raw_key,
+    CryptoProvider, WebPkiSupportedAlgorithms,
 };
 use rustls::pki_types::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName,
-    UnixTime,
+    SubjectPublicKeyInfoDer, UnixTime,
 };
 use rustls::sign::{CertifiedKey, Signer, SigningKey, SingleCertAndKey};
 use rustls::{
@@ -80,6 +81,7 @@ struct TlsConnection {
 #[derive(Debug)]
 struct OpenVpnServerVerifier {
     roots: RootCertStore,
+    root_certificates: Vec<CertificateDer<'static>>,
     crls: Vec<CertRevocationList<'static>>,
     peer_fingerprints: Vec<[u8; 32]>,
     supported: WebPkiSupportedAlgorithms,
@@ -103,6 +105,15 @@ impl ServerCertVerifier for OpenVpnServerVerifier {
                     "peer certificate fingerprint does not match".into(),
                 ));
             }
+        } else if self.verify_chain && is_x509_v1_certificate(end_entity) {
+            verify_x509_v1_server_certificate(
+                end_entity,
+                intermediates,
+                &self.root_certificates,
+                &self.crls,
+                now,
+            )
+            .map_err(RustlsError::General)?;
         } else if self.verify_chain {
             let cert = EndEntityCert::try_from(end_entity).map_err(|error| {
                 RustlsError::General(format!("invalid peer certificate: {error}"))
@@ -142,7 +153,17 @@ impl ServerCertVerifier for OpenVpnServerVerifier {
         cert: &CertificateDer<'_>,
         signature: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        verify_tls12_signature(message, cert, signature, &self.supported)
+        if is_x509_v1_certificate(cert) {
+            verify_x509_v1_tls12_signature(
+                message,
+                cert,
+                signature.scheme,
+                signature.signature(),
+                &self.supported,
+            )
+        } else {
+            verify_tls12_signature(message, cert, signature, &self.supported)
+        }
     }
 
     fn verify_tls13_signature(
@@ -151,7 +172,12 @@ impl ServerCertVerifier for OpenVpnServerVerifier {
         cert: &CertificateDer<'_>,
         signature: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        verify_tls13_signature(message, cert, signature, &self.supported)
+        if is_x509_v1_certificate(cert) {
+            let public_key = certificate_public_key(cert)?;
+            verify_tls13_signature_with_raw_key(message, &public_key, signature, &self.supported)
+        } else {
+            verify_tls13_signature(message, cert, signature, &self.supported)
+        }
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -476,10 +502,10 @@ pub(super) unsafe extern "C" fn config_new(
         policy.validate()?;
 
         let mut roots = RootCertStore::empty();
-        let root_certs = parse_certificates(ca)?;
-        for root in root_certs {
+        let root_certificates = parse_certificates(ca)?;
+        for root in &root_certificates {
             roots
-                .add(root)
+                .add(root.clone())
                 .map_err(|error| format!("invalid CA certificate: {error}"))?;
         }
         if flags & NO_VERIFY_PEER == 0 && peer_fingerprints.is_empty() && roots.is_empty() {
@@ -497,6 +523,7 @@ pub(super) unsafe extern "C" fn config_new(
 
         let verifier = Arc::new(OpenVpnServerVerifier {
             roots,
+            root_certificates,
             crls,
             peer_fingerprints,
             supported: provider.signature_verification_algorithms,
@@ -1028,6 +1055,158 @@ fn is_x509_v1_certificate(certificate: &CertificateDer<'_>) -> bool {
     })
 }
 
+fn verify_x509_v1_server_certificate(
+    certificate_der: &CertificateDer<'_>,
+    intermediates: &[CertificateDer<'_>],
+    root_certificates: &[CertificateDer<'_>],
+    crls: &[CertRevocationList<'_>],
+    now: UnixTime,
+) -> Result<(), String> {
+    if intermediates.iter().any(|intermediate| {
+        !root_certificates
+            .iter()
+            .any(|root| root.as_ref() == intermediate.as_ref())
+    }) {
+        return Err(
+            "X.509 v1 server certificates with untrusted intermediates are not supported".into(),
+        );
+    }
+    if !crls.is_empty() {
+        return Err("X.509 v1 server certificates with CRLs are not supported".into());
+    }
+
+    let (remainder, certificate) =
+        parse_x509_certificate(certificate_der.as_ref()).map_err(|error| error.to_string())?;
+    if !remainder.is_empty() {
+        return Err("server certificate contains trailing DER data".into());
+    }
+    if certificate.version() != X509Version::V1 {
+        return Err("server certificate is not X.509 v1".into());
+    }
+    if certificate.tbs_certificate.issuer_uid.is_some()
+        || certificate.tbs_certificate.subject_uid.is_some()
+        || !certificate.extensions().is_empty()
+    {
+        return Err("X.509 v1 server certificate contains fields from a later version".into());
+    }
+    if certificate.signature_algorithm != certificate.tbs_certificate.signature {
+        return Err("server certificate signature algorithms do not match".into());
+    }
+    if matches!(
+        certificate
+            .signature_algorithm
+            .algorithm
+            .to_id_string()
+            .as_str(),
+        "1.2.840.113549.1.1.5" | "1.3.14.3.2.29"
+    ) {
+        return Err("SHA-1 signed X.509 v1 server certificates are not supported".into());
+    }
+
+    let timestamp = i64::try_from(now.as_secs())
+        .map_err(|_| "server certificate verification time is out of range")?;
+    let now = x509_parser::time::ASN1Time::from_timestamp(timestamp)
+        .map_err(|error| error.to_string())?;
+    if !certificate.validity().is_valid_at(now) {
+        return Err("server certificate is not valid at the current time".into());
+    }
+
+    for root_der in root_certificates {
+        let Ok((remainder, root)) = parse_x509_certificate(root_der.as_ref()) else {
+            continue;
+        };
+        if !remainder.is_empty()
+            || root.subject() != certificate.issuer()
+            || !root.validity().is_valid_at(now)
+            || root.extensions().iter().any(|extension| {
+                matches!(
+                    extension.parsed_extension(),
+                    ParsedExtension::NameConstraints(_)
+                )
+            })
+        {
+            continue;
+        }
+        if root
+            .basic_constraints()
+            .map_err(|error| error.to_string())?
+            .is_some_and(|constraints| !constraints.value.ca)
+        {
+            continue;
+        }
+        if root
+            .key_usage()
+            .map_err(|error| error.to_string())?
+            .is_some_and(|usage| !usage.value.key_cert_sign())
+        {
+            continue;
+        }
+        if certificate
+            .verify_signature(Some(root.public_key()))
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    Err("X.509 v1 server certificate is not signed by a configured CA".into())
+}
+
+fn certificate_public_key(
+    certificate_der: &CertificateDer<'_>,
+) -> Result<SubjectPublicKeyInfoDer<'static>, RustlsError> {
+    let (remainder, certificate) = parse_x509_certificate(certificate_der.as_ref())
+        .map_err(|error| RustlsError::General(format!("invalid peer certificate: {error}")))?;
+    if !remainder.is_empty() {
+        return Err(RustlsError::General(
+            "peer certificate contains trailing DER data".into(),
+        ));
+    }
+    Ok(SubjectPublicKeyInfoDer::from(
+        certificate.public_key().raw.to_vec(),
+    ))
+}
+
+fn verify_x509_v1_tls12_signature(
+    message: &[u8],
+    certificate: &CertificateDer<'_>,
+    scheme: SignatureScheme,
+    signature: &[u8],
+    supported: &WebPkiSupportedAlgorithms,
+) -> Result<HandshakeSignatureValid, RustlsError> {
+    let public_key = certificate_public_key(certificate)?;
+    let public_key = webpki::RawPublicKeyEntity::try_from(&public_key).map_err(|error| {
+        RustlsError::General(format!("invalid peer certificate public key: {error}"))
+    })?;
+    let algorithms = supported
+        .mapping
+        .iter()
+        .find_map(|(candidate, algorithms)| (*candidate == scheme).then_some(*algorithms))
+        .ok_or_else(|| {
+            RustlsError::General(format!("unsupported TLS signature scheme {scheme:?}"))
+        })?;
+    let mut unsupported = None;
+    for algorithm in algorithms {
+        match public_key.verify_signature(*algorithm, message, signature) {
+            Ok(()) => return Ok(HandshakeSignatureValid::assertion()),
+            Err(error @ webpki::Error::UnsupportedSignatureAlgorithmForPublicKeyContext(_)) => {
+                unsupported = Some(error);
+            }
+            Err(error) => {
+                return Err(RustlsError::General(format!(
+                    "peer TLS signature verification failed: {error}"
+                )));
+            }
+        }
+    }
+    Err(RustlsError::General(format!(
+        "peer TLS signature algorithm is not compatible with its public key: {}",
+        unsupported
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "no verification algorithm is available".into())
+    )))
+}
+
 fn legacy_client_certified_key(
     chain: Vec<CertificateDer<'static>>,
     private_key: PrivateKeyDer<'static>,
@@ -1328,14 +1507,17 @@ fn ffi_length(function: impl FnOnce() -> Result<usize, String>) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use rustls::crypto::ring::default_provider;
     use rustls::sign::CertifiedKey;
-    use rustls::{CipherSuite, NamedGroup};
+    use rustls::{CipherSuite, NamedGroup, SignatureScheme};
 
     use super::{
         cipher_suite_matches, is_x509_v1_certificate, key_exchange_group_matches,
         legacy_client_certified_key, parse_certificates, parse_fingerprints, parse_key_usages,
-        parse_private_key, protocol_versions,
+        parse_private_key, protocol_versions, verify_x509_v1_server_certificate,
+        verify_x509_v1_tls12_signature,
     };
 
     const LEGACY_CLIENT_CERTIFICATE: &[u8] = include_bytes!("testdata/legacy-v1-client-cert.pem");
@@ -1393,5 +1575,67 @@ mod tests {
         let key = parse_private_key(OTHER_CLIENT_KEY, b"").unwrap();
 
         assert!(legacy_client_certified_key(chain, key, &provider).is_err());
+    }
+
+    #[test]
+    fn accepts_a_directly_trusted_x509_v1_server_certificate() {
+        let certificates = parse_certificates(LEGACY_CLIENT_CERTIFICATE).unwrap();
+        let now = rustls::pki_types::UnixTime::since_unix_epoch(Duration::from_secs(1_893_456_000));
+
+        assert!(
+            verify_x509_v1_server_certificate(&certificates[0], &[], &certificates, &[], now,)
+                .is_ok()
+        );
+        assert!(verify_x509_v1_server_certificate(
+            &certificates[0],
+            &certificates,
+            &certificates,
+            &[],
+            now,
+        )
+        .is_ok());
+        assert!(verify_x509_v1_server_certificate(&certificates[0], &[], &[], &[], now).is_err());
+    }
+
+    #[test]
+    fn rejects_untrusted_intermediates_for_an_x509_v1_server_certificate() {
+        let certificates = parse_certificates(LEGACY_CLIENT_CERTIFICATE).unwrap();
+        let now = rustls::pki_types::UnixTime::since_unix_epoch(Duration::from_secs(1_893_456_000));
+
+        assert_eq!(
+            verify_x509_v1_server_certificate(&certificates[0], &certificates, &[], &[], now,)
+                .unwrap_err(),
+            "X.509 v1 server certificates with untrusted intermediates are not supported"
+        );
+    }
+
+    #[test]
+    fn verifies_tls12_signatures_with_an_x509_v1_server_certificate() {
+        let provider = default_provider();
+        let certificates = parse_certificates(LEGACY_CLIENT_CERTIFICATE).unwrap();
+        let key = parse_private_key(LEGACY_CLIENT_KEY, b"").unwrap();
+        let signing_key = provider.key_provider.load_private_key(key).unwrap();
+        let signer = signing_key
+            .choose_scheme(&[SignatureScheme::RSA_PKCS1_SHA256])
+            .unwrap();
+        let message = b"OpenVPN TLS signature test";
+        let signature = signer.sign(message).unwrap();
+
+        assert!(verify_x509_v1_tls12_signature(
+            message,
+            &certificates[0],
+            signer.scheme(),
+            &signature,
+            &provider.signature_verification_algorithms,
+        )
+        .is_ok());
+        assert!(verify_x509_v1_tls12_signature(
+            b"tampered",
+            &certificates[0],
+            signer.scheme(),
+            &signature,
+            &provider.signature_verification_algorithms,
+        )
+        .is_err());
     }
 }

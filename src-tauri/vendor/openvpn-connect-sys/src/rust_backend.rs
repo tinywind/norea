@@ -1,11 +1,8 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::slice;
 use std::str;
-use std::sync::{Once, OnceLock, mpsc};
-
-use hickory_resolver::TokioResolver;
-use tokio::runtime::{Builder, Runtime};
+use std::sync::Once;
 
 use crate::{ovpn_rust_backend_register, ovpn_rust_backend_vtable, ovpn_rust_ip_address};
 
@@ -15,13 +12,7 @@ mod tls;
 const IPV4_FAMILY: u8 = 4;
 const IPV6_FAMILY: u8 = 6;
 
-struct ResolverRuntime {
-    runtime: Runtime,
-    resolver: TokioResolver,
-}
-
 static INSTALL: Once = Once::new();
-static RESOLVER: OnceLock<Result<ResolverRuntime, String>> = OnceLock::new();
 
 /// Installs the Rust implementation used by the native OpenVPN Core adapter.
 ///
@@ -113,41 +104,10 @@ fn resolve_host(host: &str) -> Result<Vec<IpAddr>, String> {
         return Ok(vec![address]);
     }
 
-    let state = resolver_runtime()?;
-    let resolver = state.resolver.clone();
-    let host = host.to_owned();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    state.runtime.spawn(async move {
-        let result = resolver
-            .lookup_ip(host)
-            .await
-            .map(|lookup| lookup.iter().collect())
-            .map_err(|error| error.to_string());
-        let _ = sender.send(result);
-    });
-    receiver
-        .recv()
-        .map_err(|error| format!("DNS runtime stopped before returning a result: {error}"))?
-}
-
-fn resolver_runtime() -> Result<&'static ResolverRuntime, String> {
-    RESOLVER
-        .get_or_init(|| {
-            let runtime = Builder::new_multi_thread()
-                .enable_all()
-                .thread_name("openvpn-rust-dns")
-                .build()
-                .map_err(|error| error.to_string())?;
-            let resolver = {
-                let _guard = runtime.enter();
-                TokioResolver::builder_tokio()
-                    .and_then(hickory_resolver::ResolverBuilder::build)
-                    .map_err(|error| error.to_string())?
-            };
-            Ok(ResolverRuntime { runtime, resolver })
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+    (host, 0)
+        .to_socket_addrs()
+        .map(|addresses| addresses.map(|address| address.ip()).collect())
+        .map_err(|error| format!("could not resolve OpenVPN host '{host}': {error}"))
 }
 
 fn encode_address(address: IpAddr) -> ovpn_rust_ip_address {
@@ -170,8 +130,6 @@ fn encode_address(address: IpAddr) -> ovpn_rust_ip_address {
 
 #[cfg(test)]
 mod tests {
-    use tokio::runtime::Builder;
-
     use super::{IPV4_FAMILY, IPV6_FAMILY, encode_address, resolve_host};
 
     #[test]
@@ -186,11 +144,8 @@ mod tests {
     }
 
     #[test]
-    fn hostname_lookup_is_safe_inside_another_tokio_runtime() {
-        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-        let resolved = runtime
-            .block_on(async { resolve_host("localhost") })
-            .unwrap();
+    fn resolves_hostname_with_system_resolver() {
+        let resolved = resolve_host("localhost").unwrap();
 
         assert!(resolved.iter().any(std::net::IpAddr::is_loopback));
     }

@@ -280,6 +280,7 @@ pub(super) async fn connect(
     let _ = readiness.restart();
     loop {
         tokio::select! {
+            biased;
             event = event_receiver.recv() => match event {
                 Some(EngineEvent::CoreConnected) if readiness.mark_core_connected() => break,
                 Some(EngineEvent::Reconnecting) => {
@@ -327,7 +328,7 @@ pub(super) async fn connect(
         let mut recovery = EngineRecovery::default();
         loop {
             tokio::select! {
-                result = &mut session => break Err(session_result(result)),
+                biased;
                 event = event_receiver.recv() => match event {
                     Some(EngineEvent::Failure(error)) => {
                         completion_control.cancel();
@@ -363,7 +364,8 @@ pub(super) async fn connect(
                         let _ = session.await;
                         break Err("OpenVPN event channel closed".to_string());
                     }
-                }
+                },
+                result = &mut session => break Err(session_result(result)),
             }
         }
     });
@@ -393,9 +395,33 @@ async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
 
 fn session_result(result: openvpn_connect::Result<openvpn_connect::Status>) -> String {
     match result {
-        Ok(status) if status.status.is_empty() => "OpenVPN disconnected".to_string(),
-        Ok(status) => format!("OpenVPN session ended ({})", status.status),
+        Ok(status) if status.status.is_empty() && status.message.is_empty() => {
+            "OpenVPN disconnected".to_string()
+        }
+        Ok(status) if status.status.is_empty() => {
+            format!("OpenVPN disconnected: {}", status.message)
+        }
+        Ok(status) if status.message.is_empty() => {
+            format!("OpenVPN session ended ({})", status.status)
+        }
+        Ok(status) => format!(
+            "OpenVPN session ended ({}): {}",
+            status.status, status.message
+        ),
         Err(error) => format!("OpenVPN session failed: {error}"),
+    }
+}
+
+fn core_failure_message(event: &Event) -> String {
+    let info = match event.name.as_str() {
+        "CERT_VERIFY_FAIL" => event.info.trim(),
+        name if name.starts_with("TLS_") => event.info.trim(),
+        _ => "",
+    };
+    if info.is_empty() {
+        format!("OpenVPN connection failed ({})", event.name)
+    } else {
+        format!("OpenVPN connection failed ({}): {info}", event.name)
     }
 }
 
@@ -406,6 +432,9 @@ struct NoreaEventHandler {
 
 impl EventHandler for NoreaEventHandler {
     fn event(&self, event: Event) {
+        if event.error {
+            log::warn!(target: "plugin_vpn::openvpn", "{}", core_failure_message(&event));
+        }
         match event.name.as_str() {
             "CONNECTED" => {
                 let _ = self.events.send(EngineEvent::CoreConnected);
@@ -424,10 +453,9 @@ impl EventHandler for NoreaEventHandler {
                 ));
             }
             _ if event.fatal => {
-                let _ = self.events.send(EngineEvent::Failure(format!(
-                    "OpenVPN connection failed ({})",
-                    event.name
-                )));
+                let _ = self
+                    .events
+                    .send(EngineEvent::Failure(core_failure_message(&event)));
             }
             _ => {}
         }
@@ -716,6 +744,38 @@ mod tests {
         assert!(!recovery.restart());
         assert!(!recovery.mark_tunnel_ready());
         assert!(recovery.mark_core_connected());
+    }
+
+    #[test]
+    fn core_failure_includes_available_detail() {
+        let event = Event {
+            error: true,
+            fatal: true,
+            name: "CERT_VERIFY_FAIL".to_string(),
+            info: "unsupported certificate version".to_string(),
+        };
+
+        assert_eq!(
+            core_failure_message(&event),
+            "OpenVPN connection failed (CERT_VERIFY_FAIL): unsupported certificate version"
+        );
+    }
+
+    #[test]
+    fn core_failure_excludes_authentication_state() {
+        for name in ["DYNAMIC_CHALLENGE", "AUTH_FAILED"] {
+            let event = Event {
+                error: true,
+                fatal: true,
+                name: name.to_string(),
+                info: "CRV1:R:state-token:dXNlcm5hbWU=:Challenge".to_string(),
+            };
+
+            assert_eq!(
+                core_failure_message(&event),
+                format!("OpenVPN connection failed ({name})")
+            );
+        }
     }
 
     #[test]
