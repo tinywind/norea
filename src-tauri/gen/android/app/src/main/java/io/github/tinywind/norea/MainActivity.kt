@@ -985,6 +985,7 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(TaskNotificationBridge(), "__NoreaAndroidTasks")
     webView.addJavascriptInterface(UpdateInstallBridge(), "__NoreaAndroidUpdater")
     webView.addJavascriptInterface(StorageBridge(), "__NoreaAndroidStorage")
+    webView.addJavascriptInterface(VpnProxyBridge(), "__NoreaAndroidVpn")
     webView.addJavascriptInterface(WindowMetricsBridge(webView), "__NoreaAndroidWindow")
     webView.settings.apply {
       setSupportZoom(false)
@@ -1204,6 +1205,27 @@ class MainActivity : TauriActivity() {
   private inner class SafeAreaBridge {
     @JavascriptInterface
     fun getInsets(): String = safeAreaInsetsJson
+  }
+
+  private inner class VpnProxyBridge {
+    @JavascriptInterface
+    fun configure(payload: String): String =
+      runCatching {
+        val json = JSONObject(payload)
+        bridgeSession.validateAuthenticated(
+          BridgeCapabilities.VPN_PROXY_CONFIGURE,
+          bridgeAuthorityFields(json),
+        )
+        configureAndroidVpnWebViewProxy(json.opt("port"))
+      }.fold(
+        onSuccess = { JSONObject().put("ok", true).toString() },
+        onFailure = { error ->
+          JSONObject()
+            .put("ok", false)
+            .put("error", error.message ?: error.toString())
+            .toString()
+        },
+      )
   }
 
   private inner class TaskNotificationBridge {

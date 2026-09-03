@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   sqliteTable,
@@ -282,6 +283,25 @@ export const repositoryIndexCacheTable = sqliteTable(
   },
 );
 
+// VpnGateServerVerdict: the user's latest result for a public VPN server,
+// shared by every listing that resolves to the same canonical IPv4 address.
+export const vpnGateServerVerdictTable = sqliteTable(
+  "vpn_gate_server_verdict",
+  {
+    ip: text("ip").primaryKey(),
+    verdict: text("verdict", { enum: ["works", "fails"] }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    verdictCheck: check(
+      "vpn_gate_server_verdict_verdict_check",
+      sql`${t.verdict} IN ('works', 'fails')`,
+    ),
+  }),
+);
+
 export type Novel = typeof novelTable.$inferSelect;
 export type NovelInsert = typeof novelTable.$inferInsert;
 export type Chapter = typeof chapterTable.$inferSelect;
@@ -302,3 +322,7 @@ export type InstalledPlugin = typeof installedPluginTable.$inferSelect;
 export type InstalledPluginInsert = typeof installedPluginTable.$inferInsert;
 export type RepositoryIndexCache = typeof repositoryIndexCacheTable.$inferSelect;
 export type RepositoryIndexCacheInsert = typeof repositoryIndexCacheTable.$inferInsert;
+export type VpnGateServerVerdict =
+  typeof vpnGateServerVerdictTable.$inferSelect;
+export type VpnGateServerVerdictInsert =
+  typeof vpnGateServerVerdictTable.$inferInsert;

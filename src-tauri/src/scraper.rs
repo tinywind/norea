@@ -773,6 +773,12 @@ fn scraper_handle_for_key(
     })
     .initialization_script(initialization_script)
     .data_directory(data_directory);
+    #[cfg(target_os = "windows")]
+    {
+        let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
+        let browser_args = crate::plugin_vpn::windows_webview_browser_args(None, vpn.proxy_port())?;
+        builder = builder.additional_browser_args(&browser_args);
+    }
     if let Some(user_agent) = user_agent {
         builder = builder.user_agent(user_agent);
     }
@@ -1461,8 +1467,12 @@ fn temporary_cache_clear_webview(
         "{SCRAPER_LABEL}-cache-clear-{}",
         FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
+    let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
+    let browser_args =
+        crate::plugin_vpn::windows_webview_browser_args(None, vpn.proxy_port())?;
     let builder = WebviewBuilder::new(label, WebviewUrl::External(blank_url))
-        .data_directory(data_directory.to_path_buf());
+        .data_directory(data_directory.to_path_buf())
+        .additional_browser_args(&browser_args);
     let webview = main_window
         .add_child(
             builder,
