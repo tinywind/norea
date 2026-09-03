@@ -128,15 +128,18 @@ challenge was observed. The host accepts it only when its hostname matches the
 trusted acquisition URL; otherwise the host uses the trusted URL. Credentials
 embedded in a URL are rejected.
 
-A typed CAPTCHA or Cloudflare challenge blocks the source's full task queue,
-including individual and batch chapter downloads, and keeps affected promises
-pending. The block survives an application restart. Norea opens the source in
-its session-owning browser so the user can complete the challenge, then offers
-**Keep paused** and **Verify**. Verify runs one queued task as a canary and
-unblocks the source only after that task explicitly confirms successful source
-access and completes. Chapter canaries bypass final-content and partial-resume
-fast paths so verification performs a real source acquisition. A repeated
-challenge or an unconfirmed canary leaves the queue blocked.
+A typed CAPTCHA or Cloudflare challenge blocks source access for the source's
+full task queue, including individual and batch chapter downloads, and keeps
+source-dependent promises pending. A chapter task may still reconcile
+authoritative final content locally while blocked; doing so does not verify or
+clear source access. The block survives an application restart. Norea opens the
+source in its session-owning browser so the user can complete the challenge,
+then offers **Keep paused** and **Verify**. Verify runs one queued task as a
+canary and unblocks the source only after that task explicitly confirms
+successful source access and completes. Chapter canaries bypass final-content
+and partial-resume fast paths so verification performs a real source
+acquisition. A repeated challenge or an unconfirmed canary leaves the queue
+blocked.
 
 Restart recovery persists only the challenge URL origin, because paths, query
 strings, and fragments may contain credentials or short-lived proof tokens. When

@@ -752,6 +752,13 @@ fn stored_content_path_in_dir(
     Ok(None)
 }
 
+fn stored_media_archive_bytes(chapter_dir: &Path) -> u64 {
+    fs::symlink_metadata(chapter_dir.join(MEDIA_ARCHIVE_FILE))
+        .ok()
+        .filter(|metadata| metadata.file_type().is_file())
+        .map_or(0, |metadata| metadata.len())
+}
+
 fn inspect_content_chapter_dir(
     root: &Path,
     chapter_dir: &Path,
@@ -775,15 +782,9 @@ fn inspect_content_chapter_dir(
                 "[chapter-media] stored chapter is incomplete dir={} reason={reason}",
                 chapter_dir.display()
             );
-            return Ok(None);
+            stored_media_archive_bytes(chapter_dir)
         }
-        ChapterMediaFinalization::ManifestMissing => {
-            let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
-            fs::symlink_metadata(&archive_path)
-                .ok()
-                .filter(|metadata| metadata.file_type().is_file())
-                .map_or(0, |metadata| metadata.len())
-        }
+        ChapterMediaFinalization::ManifestMissing => stored_media_archive_bytes(chapter_dir),
         ChapterMediaFinalization::Ready(media_bytes) => media_bytes,
     };
     Ok(Some(ChapterContentInspection {
@@ -5744,7 +5745,7 @@ mod tests {
     }
 
     #[test]
-    fn chapter_media_recovery_rejects_missing_stored_media_without_mutation() {
+    fn chapter_media_recovery_adopts_final_content_with_missing_stored_media() {
         let dir = tempfile::tempdir().expect("tempdir");
         let chapter_dir = recovery_chapter_dir(dir.path());
         let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
@@ -5757,9 +5758,12 @@ mod tests {
         );
 
         let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
-            .expect("inspect chapter");
+            .expect("inspect chapter")
+            .expect("adopt final content");
 
-        assert!(inspection.is_none());
+        assert_eq!(inspection.status, "present");
+        assert_eq!(inspection.content_bytes, 7);
+        assert_eq!(inspection.media_bytes, 0);
         assert!(media_dir.is_dir());
         assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
         let manifest: serde_json::Value = serde_json::from_str(
@@ -5771,7 +5775,7 @@ mod tests {
     }
 
     #[test]
-    fn chapter_media_recovery_rejects_unexpected_loose_files_without_mutation() {
+    fn chapter_media_recovery_adopts_final_content_with_unexpected_loose_files() {
         let dir = tempfile::tempdir().expect("tempdir");
         let chapter_dir = recovery_chapter_dir(dir.path());
         let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
@@ -5786,9 +5790,12 @@ mod tests {
         );
 
         let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
-            .expect("inspect chapter");
+            .expect("inspect chapter")
+            .expect("adopt final content");
 
-        assert!(inspection.is_none());
+        assert_eq!(inspection.status, "present");
+        assert_eq!(inspection.content_bytes, 7);
+        assert_eq!(inspection.media_bytes, 0);
         assert!(media_dir.join("page.png").is_file());
         assert!(media_dir.join("stale.part").is_file());
         assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
@@ -6202,7 +6209,7 @@ mod tests {
     }
 
     #[test]
-    fn chapter_media_recovery_preserves_incomplete_archive_candidates() {
+    fn chapter_media_recovery_adopts_final_content_with_incomplete_archive_candidates() {
         let dir = tempfile::tempdir().expect("tempdir");
         let chapter_dir = recovery_chapter_dir(dir.path());
         fs::create_dir_all(&chapter_dir).expect("create chapter dir");
@@ -6223,9 +6230,12 @@ mod tests {
         fs::copy(&backup_path, &temp_path).expect("copy partial archive temp");
 
         let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
-            .expect("inspect chapter");
+            .expect("inspect chapter")
+            .expect("adopt final content");
 
-        assert!(inspection.is_none());
+        assert_eq!(inspection.status, "present");
+        assert_eq!(inspection.content_bytes, 7);
+        assert_eq!(inspection.media_bytes, 0);
         assert!(!archive_path.exists());
         assert!(backup_path.is_file());
         assert!(temp_path.is_file());

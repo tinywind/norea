@@ -856,6 +856,7 @@ function enqueueChapterDownloadForExecutor(
       batchId: job.batchId,
       batchTitle: job.batchTitle,
     },
+    canCompleteWithoutSourceAccess: true,
     dedupeKey: chapterDownloadDedupeKey(job.id),
     resolveSourceAccessUrl: () =>
       resolveChapterDownloadSourceAccessUrl(job),
@@ -871,6 +872,7 @@ function enqueueChapterDownloadForExecutor(
       shouldYield,
       signal,
       sourceAccessVerification,
+      tryStartSourceAccess,
     }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       const liveReaderUpdates = shouldEmitLiveChapterDownloadUpdates(job);
@@ -896,6 +898,7 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
+        if (tryStartSourceAccess && !tryStartSourceAccess()) return;
         if (isTauriRuntime()) {
           await abortableStep(signal, pluginManager.loadInstalledFromDb());
         }

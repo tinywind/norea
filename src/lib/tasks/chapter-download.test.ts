@@ -834,14 +834,20 @@ describe("enqueueChapterDownload", () => {
     });
 
     if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const setProgress = vi.fn();
+    const tryStartSourceAccess = vi.fn(() => true);
     await capturedSpec.run({
       executor: "pool:1",
       setDetail: vi.fn(),
-      setProgress: vi.fn(),
+      setProgress,
       signal: new AbortController().signal,
       taskId: "task-1",
+      tryStartSourceAccess,
     });
 
+    expect(capturedSpec.canCompleteWithoutSourceAccess).toBe(true);
+    expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(setProgress).toHaveBeenLastCalledWith({ current: 1, total: 1 });
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(getBaseUrl).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
@@ -849,6 +855,67 @@ describe("enqueueChapterDownload", () => {
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
     expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
     expect(getChapterById).not.toHaveBeenCalled();
+  });
+
+  it("returns to the scheduler before plugin work when source access is deferred", async () => {
+    const tryStartSourceAccess = vi.fn(() => false);
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({
+      executor: "pool:1",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+      tryStartSourceAccess,
+    });
+
+    expect(reconcileStoredChapterContent).toHaveBeenCalledWith(7);
+    expect(tryStartSourceAccess).toHaveBeenCalledOnce();
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
+  });
+
+  it("does not start source work when local storage inspection fails", async () => {
+    const storageError = new Error("Android storage folder is not readable.");
+    const tryStartSourceAccess = vi.fn(() => true);
+    vi.mocked(reconcileStoredChapterContent).mockRejectedValueOnce(storageError);
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(
+      capturedSpec.run({
+        executor: "pool:1",
+        setDetail: vi.fn(),
+        setProgress: vi.fn(),
+        signal: new AbortController().signal,
+        taskId: "task-1",
+        tryStartSourceAccess,
+      }),
+    ).rejects.toBe(storageError);
+
+    expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
   });
 
   it("reacquires final content when verifying source access", async () => {

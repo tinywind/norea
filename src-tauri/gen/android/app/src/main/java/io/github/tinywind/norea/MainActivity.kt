@@ -58,6 +58,11 @@ private const val CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json"
 private const val CHAPTER_MEDIA_MANIFEST_TEMP_FILE = "manifest.json.tmp"
 private const val NOVEL_COVER_MANIFEST_FILE = "cover.json"
 
+internal fun resolvedAndroidFinalChapterMediaBytes(
+  finalizedMediaBytes: Long?,
+  existingArchiveBytes: Long?,
+): Long = (finalizedMediaBytes ?: existingArchiveBytes ?: 0L).coerceAtLeast(0L)
+
 internal data class AndroidNovelCoverInspection(
   val manifest: String,
   val relativePath: String,
@@ -1728,12 +1733,19 @@ class MainActivity : TauriActivity() {
         } ?: return null
         require(content.canRead()) { "Android storage content file is not readable: $relativeDir" }
         val contentName = content.name ?: preferredName
-        val archiveBytes = finalizeChapterMediaArtifacts(
+        val finalizedMediaBytes = finalizeChapterMediaArtifacts(
           rootUri,
           directory,
           relativeDir,
           allowLegacyWithoutManifest = true,
-        ) ?: return null
+        )
+        val existingArchiveBytes = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+          ?.takeIf { it.isFile }
+          ?.length()
+        val archiveBytes = resolvedAndroidFinalChapterMediaBytes(
+          finalizedMediaBytes,
+          existingArchiveBytes,
+        )
         return JSONObject()
           .put("ok", true)
           .put("status", "present")

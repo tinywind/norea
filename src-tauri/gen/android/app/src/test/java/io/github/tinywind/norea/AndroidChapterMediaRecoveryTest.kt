@@ -12,6 +12,13 @@ import org.junit.Test
 
 class AndroidChapterMediaRecoveryTest {
   @Test
+  fun resolvesMediaBytesWithoutInvalidatingFinalContent() {
+    assertEquals(23L, resolvedAndroidFinalChapterMediaBytes(23L, 17L))
+    assertEquals(17L, resolvedAndroidFinalChapterMediaBytes(null, 17L))
+    assertEquals(0L, resolvedAndroidFinalChapterMediaBytes(null, null))
+  }
+
+  @Test
   fun validatesOnlyStoredManifestFilesAgainstLooseMedia() {
     val stored = androidChapterMediaStoredFiles(
       listOf(

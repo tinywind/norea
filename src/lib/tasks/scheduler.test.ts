@@ -3161,6 +3161,233 @@ describe("TaskScheduler", () => {
     }
   });
 
+  it("checks local-only work before an existing source cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const scheduler = new TaskScheduler({
+        sourceForegroundConcurrency: 1,
+        sourceQueuesPaused: false,
+      });
+      const order: string[] = [];
+      const cooldownKey = "source:p";
+
+      const first = scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: "Online chapter",
+        priority: "background",
+        source: { id: "p", name: "Plugin" },
+        sourceCooldownKey: cooldownKey,
+        sourceCooldownMs: 1_000,
+        run: async () => {
+          order.push("online:start");
+        },
+      });
+      await first.promise;
+      vi.advanceTimersByTime(400);
+
+      const local = scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: "Stored chapter",
+        priority: "background",
+        source: { id: "p", name: "Plugin" },
+        canCompleteWithoutSourceAccess: true,
+        sourceCooldownKey: cooldownKey,
+        sourceCooldownMs: 1_000,
+        run: async () => {
+          order.push("local:complete");
+        },
+      });
+      await local.promise;
+
+      const remote = scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: "Missing chapter",
+        priority: "background",
+        source: { id: "p", name: "Plugin" },
+        canCompleteWithoutSourceAccess: true,
+        sourceCooldownKey: cooldownKey,
+        sourceCooldownMs: 1_000,
+        run: async (context) => {
+          order.push("remote:check");
+          if (!context.tryStartSourceAccess?.()) return;
+          order.push("remote:start");
+        },
+      });
+
+      await settle();
+      expect(order).toEqual([
+        "online:start",
+        "local:complete",
+        "remote:check",
+      ]);
+      expect(scheduler.getTask(remote.id)?.status).toBe("queued");
+
+      vi.advanceTimersByTime(599);
+      await settle();
+      expect(order).not.toContain("remote:start");
+
+      vi.advanceTimersByTime(1);
+      await remote.promise;
+      expect(order).toEqual([
+        "online:start",
+        "local:complete",
+        "remote:check",
+        "remote:check",
+        "remote:start",
+      ]);
+
+      const afterRemote = scheduler.enqueueSource({
+        kind: "source.globalSearch",
+        title: "Later online work",
+        priority: "user",
+        source: { id: "p", name: "Plugin" },
+        sourceCooldownKey: cooldownKey,
+        run: async () => {
+          order.push("later:start");
+        },
+      });
+      await settle();
+      expect(order).not.toContain("later:start");
+
+      vi.advanceTimersByTime(999);
+      await settle();
+      expect(order).not.toContain("later:start");
+
+      vi.advanceTimersByTime(1);
+      await afterRemote.promise;
+      expect(order.at(-1)).toBe("later:start");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("completes local-only work without clearing a source access block", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let localRuns = 0;
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const local = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Stored chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      canCompleteWithoutSourceAccess: true,
+      sourceAccessScopeKey: scopeKey,
+      run: async () => {
+        localRuns += 1;
+      },
+    });
+
+    await local.promise;
+
+    expect(localRuns).toBe(1);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
+      {
+        revision: 7,
+        scopeKey,
+        verificationRequested: false,
+      },
+    ]);
+  });
+
+  it("requeues source-required work behind an access block", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let runCount = 0;
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+    const remote = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Missing chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      canCompleteWithoutSourceAccess: true,
+      sourceAccessScopeKey: scopeKey,
+      run: async (context) => {
+        runCount += 1;
+        if (!context.tryStartSourceAccess?.()) return;
+        expect(context.sourceAccessVerification).toBe(true);
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+
+    await settle();
+    expect(runCount).toBe(1);
+    expect(scheduler.getTask(remote.id)?.status).toBe("queued");
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+
+    await remote.promise;
+
+    expect(runCount).toBe(2);
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+  });
+
+  it("does not abort a local check when source access becomes blocked", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "site:source.test";
+    let finishLocal!: () => void;
+    let localSignal: AbortSignal | undefined;
+
+    const local = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Stored chapter",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      canCompleteWithoutSourceAccess: true,
+      sourceAccessScopeKey: scopeKey,
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          localSignal = context.signal;
+          finishLocal = resolve;
+        }),
+    });
+    await settle();
+
+    scheduler.hydrateSourceAccessBlocks([
+      {
+        challenge: {
+          kind: "cloudflare",
+          url: "https://source.test/chapter/1",
+        },
+        detectedAt: 10,
+        revision: 7,
+        scopeKey,
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      },
+    ]);
+
+    expect(localSignal?.aborted).toBe(false);
+    finishLocal();
+    await local.promise;
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toHaveLength(1);
+  });
+
   it("does not reuse a cancelled running executor until the work settles", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,

@@ -221,6 +221,30 @@ describe("chapter content storage", () => {
     );
   });
 
+  it("adopts final content for fresh download metadata", async () => {
+    selectMock.mockResolvedValueOnce([
+      chapterRow({
+        contentBytes: 0,
+        isDownloaded: 0,
+        mediaBytes: 0,
+        storedContentType: null,
+      }),
+    ]);
+
+    await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
+      status: "present",
+      contentFile: expect.stringContaining("content.html"),
+      contentBytes: 10,
+      mediaBytes: 0,
+    });
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      10,
+      10,
+      0,
+      "html",
+    );
+  });
+
   it("marks non-local metadata missing when no final content file exists", async () => {
     invokeMock.mockResolvedValueOnce({
       status: "missing",

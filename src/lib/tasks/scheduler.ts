@@ -227,6 +227,8 @@ export interface TaskRunContext {
   taskId: string;
   setDetail: (detail: string) => void;
   setProgress: (progress: TaskProgress | undefined) => void;
+  /** Returns false when the task must return so the scheduler can requeue it behind source gates. */
+  tryStartSourceAccess?: () => boolean;
 }
 
 export interface TaskSpec<T> {
@@ -238,6 +240,7 @@ export interface TaskSpec<T> {
   subject?: TaskSubject;
   dedupeKey?: string;
   canCancel?: boolean;
+  canCompleteWithoutSourceAccess?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;
   resolveSourceAccessUrl?: () => string | Promise<string>;
@@ -280,7 +283,9 @@ interface TaskEntry {
   reject: (error: unknown) => void;
   resolve: (value: unknown) => void;
   sourceExecutorId?: ScraperExecutorId;
+  sourceAccessDeferred?: boolean;
   sourceAccessPauseRequested?: boolean;
+  sourceAccessStarted?: boolean;
   sourceAccessVerificationRevision?: number;
   spec: TaskSpec<unknown>;
 }
@@ -1367,6 +1372,10 @@ export class TaskScheduler {
         entry.record.lane !== "source" ||
         entry.record.status !== "running" ||
         entry.record.kind === "source.openSite" ||
+        (options.sourceAccess &&
+          entry.spec.canCompleteWithoutSourceAccess === true &&
+          entry.sourceAccessStarted !== true &&
+          entry.sourceAccessVerificationRevision === undefined) ||
         (sourceId && entry.record.source?.id !== sourceId) ||
         !shouldPause(entry)
       ) {
@@ -2122,14 +2131,23 @@ export class TaskScheduler {
           continue;
         }
         if (!this.canStartSourceTask(entry, options)) continue;
-        if (!options.allowPaused && this.isSourceTaskPaused(entry)) continue;
-        const cooldownDelay = this.sourceCooldownDelay(entry);
-        if (cooldownDelay > 0) {
-          this.scheduleSourceCooldownDrain(
-            entry.spec.sourceCooldownKey!,
-            cooldownDelay,
-          );
+        const canRunBeforeSourceGates = this.canRunBeforeSourceGates(entry);
+        if (
+          !options.allowPaused &&
+          (this.isSourceQueuePaused(entry) ||
+            (this.isSourceAccessBlocked(entry) && !canRunBeforeSourceGates))
+        ) {
           continue;
+        }
+        if (!canRunBeforeSourceGates) {
+          const cooldownDelay = this.sourceCooldownDelay(entry);
+          if (cooldownDelay > 0) {
+            this.scheduleSourceCooldownDrain(
+              entry.spec.sourceCooldownKey!,
+              cooldownDelay,
+            );
+            continue;
+          }
         }
         if (!predicate(entry)) continue;
         sourceCandidate = entry;
@@ -2159,14 +2177,23 @@ export class TaskScheduler {
         continue;
       }
       if (!this.canStartSourceTask(entry, options)) continue;
-      if (!options.allowPaused && this.isSourceTaskPaused(entry)) continue;
-      const cooldownDelay = this.sourceCooldownDelay(entry);
-      if (cooldownDelay > 0) {
-        this.scheduleSourceCooldownDrain(
-          entry.spec.sourceCooldownKey!,
-          cooldownDelay,
-        );
+      const canRunBeforeSourceGates = this.canRunBeforeSourceGates(entry);
+      if (
+        !options.allowPaused &&
+        (this.isSourceQueuePaused(entry) ||
+          (this.isSourceAccessBlocked(entry) && !canRunBeforeSourceGates))
+      ) {
         continue;
+      }
+      if (!canRunBeforeSourceGates) {
+        const cooldownDelay = this.sourceCooldownDelay(entry);
+        if (cooldownDelay > 0) {
+          this.scheduleSourceCooldownDrain(
+            entry.spec.sourceCooldownKey!,
+            cooldownDelay,
+          );
+          continue;
+        }
       }
       if (predicate(entry)) return entry;
     }
@@ -2174,12 +2201,18 @@ export class TaskScheduler {
     return null;
   }
 
-  private isSourceTaskPaused(entry: TaskEntry): boolean {
+  private canRunBeforeSourceGates(entry: TaskEntry): boolean {
+    return (
+      entry.spec.canCompleteWithoutSourceAccess === true &&
+      entry.sourceAccessDeferred !== true
+    );
+  }
+
+  private isSourceQueuePaused(entry: TaskEntry): boolean {
     const sourceId = entry.record.source?.id;
     return (
       this.sourceQueuesPaused ||
-      (sourceId !== undefined && this.pausedSourceIds.has(sourceId)) ||
-      this.isSourceAccessBlocked(entry)
+      (sourceId !== undefined && this.pausedSourceIds.has(sourceId))
     );
   }
 
@@ -2274,7 +2307,39 @@ export class TaskScheduler {
     this.sourceCooldownTimers.set(key, timer);
   }
 
+  private tryStartSourceAccess(entry: TaskEntry): boolean {
+    if (
+      entry.record.status !== "running" ||
+      entry.controller.signal.aborted ||
+      entry.pauseRequested
+    ) {
+      entry.sourceAccessDeferred = true;
+      return false;
+    }
+    if (entry.sourceAccessVerificationRevision !== undefined) {
+      entry.sourceAccessStarted = true;
+      return true;
+    }
+
+    const cooldownDelay = this.sourceCooldownDelay(entry);
+    if (cooldownDelay > 0) {
+      this.scheduleSourceCooldownDrain(
+        entry.spec.sourceCooldownKey!,
+        cooldownDelay,
+      );
+    }
+    if (cooldownDelay > 0 || this.isSourceAccessBlocked(entry)) {
+      entry.sourceAccessDeferred = true;
+      return false;
+    }
+
+    entry.sourceAccessStarted = true;
+    return true;
+  }
+
   private start(entry: TaskEntry): void {
+    entry.sourceAccessDeferred = false;
+    entry.sourceAccessStarted = false;
     this.setStatus(entry, "running", {
       canCancel: taskCanCancel(entry.spec.kind, entry.spec.canCancel),
       canRetry: false,
@@ -2310,6 +2375,11 @@ export class TaskScheduler {
         entry.record = { ...entry.record, progress };
         this.publishTaskEvent(entry, entry.record.status);
       },
+      ...(entry.spec.canCompleteWithoutSourceAccess === true
+        ? {
+            tryStartSourceAccess: () => this.tryStartSourceAccess(entry),
+          }
+        : {}),
     };
 
     Promise.resolve()
@@ -2332,6 +2402,10 @@ export class TaskScheduler {
             this.finishCancelledRunningAfterSettlement(entry);
             return;
           }
+        }
+        if (entry.sourceAccessDeferred) {
+          this.requeueDeferredSourceAccessAfterSettlement(entry);
+          return;
         }
         if (
           sourceAccessVerificationRevision !== undefined &&
@@ -2517,6 +2591,35 @@ export class TaskScheduler {
     this.drain();
   }
 
+  private requeueDeferredSourceAccessAfterSettlement(entry: TaskEntry): void {
+    if (entry.activeReleased) return;
+    const previousStatus = entry.record.status;
+    this.debug("source access deferred", entry);
+    this.releaseActive(entry);
+    if (entry.dedupeKey) {
+      this.activeDedupeByKey.set(entry.dedupeKey, entry.record.id);
+    }
+    entry.controller = new AbortController();
+    entry.sourceAccessPauseRequested = false;
+    entry.pauseRequested = false;
+    entry.sourceAccessStarted = false;
+
+    const nextRecord = { ...entry.record };
+    delete nextRecord.startedAt;
+    delete nextRecord.finishedAt;
+    delete nextRecord.error;
+    entry.record = {
+      ...nextRecord,
+      status: "queued",
+      canCancel: taskCanCancel(entry.spec.kind, entry.spec.canCancel),
+      canRetry: false,
+    };
+    this.entries.set(entry.record.id, entry);
+    this.requeueSourceEntry(entry);
+    this.publish(entry, previousStatus);
+    this.drain();
+  }
+
   private requeueSourceEntry(entry: TaskEntry): void {
     const sourceId = entry.record.source?.id;
     if (!sourceId) return;
@@ -2574,7 +2677,12 @@ export class TaskScheduler {
         this.sourceTaskSettlementWaiters.delete(entry.record.id);
         for (const resolve of settlementWaiters) resolve();
       }
-      this.setSourceCooldown(entry);
+      if (
+        entry.spec.canCompleteWithoutSourceAccess !== true ||
+        entry.sourceAccessStarted === true
+      ) {
+        this.setSourceCooldown(entry);
+      }
     }
 
     if (
