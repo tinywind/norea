@@ -30,6 +30,16 @@ describe("androidBridgeAuthority", () => {
     });
   });
 
+  it("returns authority for the VPN proxy capability", () => {
+    installBridgeSession(["update.openApk", "vpn.proxy.configure"]);
+
+    expect(androidBridgeAuthority("vpn.proxy.configure")).toEqual({
+      capability: "vpn.proxy.configure",
+      nonce: "nonce-123",
+      sessionToken: "session-token",
+    });
+  });
+
   it.each([
     ["missing", undefined],
     ["not an array", "update.openApk"],

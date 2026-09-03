@@ -9,6 +9,7 @@ mod download_cache;
 mod download_queue;
 mod native_stream;
 mod plugin_host;
+mod plugin_vpn;
 mod scraper;
 mod task_notifications;
 mod tray;
@@ -75,7 +76,6 @@ fn application_migrations() -> Vec<Migration> {
             sql: include_str!("schema_chapter_stored_content_type.sql"),
             kind: MigrationKind::Up,
         },
-        // Released migrations remain registered after their feature is retired.
         Migration {
             version: 5,
             description: "create VPN Gate server verdicts",
@@ -89,7 +89,30 @@ fn application_migrations() -> Vec<Migration> {
 pub fn run() {
     let migrations = application_migrations();
 
+    let plugin_vpn = plugin_vpn::PluginVpnState::bind()
+        .expect("could not start the plugin VPN proxy");
+    #[cfg(target_os = "windows")]
+    let mut context = tauri::generate_context!();
+    #[cfg(not(target_os = "windows"))]
     let context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    {
+        let main_window = context
+            .config_mut()
+            .app
+            .windows
+            .iter_mut()
+            .find(|window| window.label == "main")
+            .expect("main WebView configuration is missing");
+        main_window.additional_browser_args = Some(
+            plugin_vpn::windows_webview_browser_args(
+                main_window.additional_browser_args.as_deref(),
+                plugin_vpn.proxy_port(),
+            )
+            .expect("main WebView proxy configuration conflicts with existing browser arguments"),
+        );
+    }
+    let plugin_vpn_for_setup = plugin_vpn.clone();
     let desktop_open_files = desktop_file_open::DesktopOpenFileState::from_process_args();
     let builder = tauri::Builder::default();
 
@@ -104,6 +127,7 @@ pub fn run() {
         .manage(desktop_open_files)
         .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
+        .manage(plugin_vpn)
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
@@ -184,6 +208,14 @@ pub fn run() {
             native_stream::native_stream_write_chunk,
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
+            plugin_vpn::state::plugin_vpn_apply_finder_profile,
+            plugin_vpn::state::plugin_vpn_cancel_finder_query,
+            plugin_vpn::state::plugin_vpn_connect,
+            plugin_vpn::state::plugin_vpn_disconnect,
+            plugin_vpn::state::plugin_vpn_load_finder_servers,
+            plugin_vpn::state::plugin_vpn_import_profile,
+            plugin_vpn::state::plugin_vpn_remove_profile,
+            plugin_vpn::state::plugin_vpn_status,
             scraper::webview_fetch,
             scraper::scraper_take_captured_resource,
             scraper::scraper_take_captured_resource_handle,
@@ -211,6 +243,9 @@ pub fn run() {
                 .map_err(|err| format!("database init: {err}"))?;
             native_stream::cleanup_startup(app.handle())
                 .map_err(|err| format!("native stream init: {err}"))?;
+            plugin_vpn_for_setup
+                .initialize(app.handle())
+                .map_err(|err| format!("plugin VPN init: {err}"))?;
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;

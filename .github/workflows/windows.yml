@@ -64,6 +64,40 @@ jobs:
           workspaces: src-tauri
           key: ${{ matrix.rust-target }}
 
+      - name: Configure OpenVPN native build tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $cmake = Get-Command cmake -ErrorAction Stop
+          & $cmake.Source --version
+
+          $tapHeaderDirectory = Join-Path $env:GITHUB_WORKSPACE ".tmp\openvpn-build\include"
+          $tapHeader = Join-Path $tapHeaderDirectory "tap-windows.h"
+          $tapHeaderUrl = "https://raw.githubusercontent.com/OpenVPN/tap-windows6/b9762e7db2a2670c05c9931e948b9f21d0a3c763/src/tap-windows.h"
+          $expectedTapHeaderHash = "0b9ea5e4b4dc2c2764fde3383440af9a11a1ead3f2a4bbec674be40da384d10e"
+          New-Item -ItemType Directory -Force -Path $tapHeaderDirectory | Out-Null
+          Invoke-WebRequest -Uri $tapHeaderUrl -OutFile $tapHeader
+          $tapHeaderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tapHeader).Hash.ToLowerInvariant()
+          if ($tapHeaderHash -ne $expectedTapHeaderHash) {
+            throw "tap-windows.h checksum mismatch: expected $expectedTapHeaderHash, got $tapHeaderHash"
+          }
+
+          $libclangPath = Join-Path $env:ProgramFiles "LLVM\bin"
+          $libclang = Join-Path $libclangPath "libclang.dll"
+          if (-not (Test-Path $libclang -PathType Leaf)) {
+            throw "libclang was not found at $libclang"
+          }
+
+          $clang = Join-Path $libclangPath "clang++.exe"
+          if (-not (Test-Path $clang -PathType Leaf)) {
+            throw "Clang C++ was not found at $clang"
+          }
+          & $clang --version
+
+          "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
+          "CL=/I`"$tapHeaderDirectory`"" >> $env:GITHUB_ENV
+
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 

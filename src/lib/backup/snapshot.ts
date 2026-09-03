@@ -32,6 +32,7 @@ import {
   type BackupNovelCategory,
   type BackupRepository,
   type BackupSetting,
+  type BackupVpnGateServerVerdict,
 } from "./format";
 import {
   cleanupBackupStagedUnpack,
@@ -218,6 +219,15 @@ const SELECT_INSTALLED_PLUGINS = `
     installed_at AS installedAt
   FROM installed_plugin
   ORDER BY installed_at DESC, id ASC
+`;
+
+const SELECT_VPN_GATE_SERVER_VERDICTS = `
+  SELECT
+    ip,
+    verdict,
+    updated_at AS updatedAt
+  FROM vpn_gate_server_verdict
+  ORDER BY ip
 `;
 
 function browserLocalStorage(): Storage | null {
@@ -558,6 +568,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
     novelCategories,
     repositories,
     installedPlugins,
+    vpnGateServerVerdicts,
   ] =
     await Promise.all([
       db.select<RawNovelRow[]>(SELECT_NOVELS),
@@ -566,6 +577,9 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
       db.select<BackupNovelCategory[]>(SELECT_NOVEL_CATEGORIES),
       db.select<BackupRepository[]>(SELECT_REPOSITORIES),
       db.select<RawInstalledPluginRow[]>(SELECT_INSTALLED_PLUGINS),
+      db.select<BackupVpnGateServerVerdict[]>(
+        SELECT_VPN_GATE_SERVER_VERDICTS,
+      ),
     ]);
 
   const backupChapters: BackupChapter[] = [];
@@ -583,6 +597,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
     repositories,
     installedPlugins: installedPlugins.map(toInstalledPlugin),
     settings: readBackupSettings(),
+    vpnGateServerVerdicts,
   };
 }
 

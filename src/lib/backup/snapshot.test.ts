@@ -210,6 +210,12 @@ const INSTALLED_PLUGIN = {
   sourceCode: "module.exports.default = {};",
   installedAt: 1_700_000_000,
 };
+const VPN_GATE_SERVER_VERDICT = {
+  ip: "198.51.100.10",
+  verdict: "works",
+  updatedAt: 1_700_000_000,
+};
+
 function primeSelect(): void {
   mockSelect
     .mockResolvedValueOnce([RAW_NOVEL])
@@ -217,7 +223,8 @@ function primeSelect(): void {
     .mockResolvedValueOnce([RAW_CATEGORY])
     .mockResolvedValueOnce([NOVEL_CATEGORY])
     .mockResolvedValueOnce([REPOSITORY])
-    .mockResolvedValueOnce([INSTALLED_PLUGIN]);
+    .mockResolvedValueOnce([INSTALLED_PLUGIN])
+    .mockResolvedValueOnce([VPN_GATE_SERVER_VERDICT]);
 }
 
 describe("gatherBackupSnapshot", () => {
@@ -236,6 +243,9 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.chapters[0]?.content).toBe("<p>hi</p>");
     expect(manifest.chapters[0]?.mediaBytes).toBe(5);
     expect(manifest.categories[0]?.isSystem).toBe(true);
+    expect(manifest.vpnGateServerVerdicts).toEqual([
+      VPN_GATE_SERVER_VERDICT,
+    ]);
   });
 
   it("uses the physical final content type in the backup", async () => {
@@ -261,7 +271,7 @@ describe("gatherBackupSnapshot", () => {
 
     const sqls = mockSelect.mock.calls.map((call) => call[0] as string);
     const chapterSql = sqls.find((sql) => /FROM chapter\b/m.test(sql));
-    expect(sqls).toHaveLength(6);
+    expect(sqls).toHaveLength(7);
     expect(sqls.some((s) => /FROM novel\b\s*$/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM chapter\b/m.test(s))).toBe(true);
     expect(chapterSql).toContain("content_type   AS sourceContentType");
@@ -272,6 +282,9 @@ describe("gatherBackupSnapshot", () => {
     expect(sqls.some((s) => /FROM novel_category\b/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM repository\b/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM installed_plugin\b/m.test(s))).toBe(true);
+    expect(
+      sqls.some((s) => /FROM vpn_gate_server_verdict\b/m.test(s)),
+    ).toBe(true);
   });
 
   it("survives round-trip through encode + parse", async () => {

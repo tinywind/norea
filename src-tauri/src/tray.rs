@@ -232,7 +232,29 @@ fn recreate_main_window<R: Runtime>(app: &AppHandle<R>) -> Option<Window<R>> {
             config.label = MAIN_WINDOW_LABEL.to_string();
             WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build())
         }
-        None => WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, Default::default()).build(),
+        None => {
+            #[cfg(target_os = "windows")]
+            {
+                let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
+                let browser_args = match crate::plugin_vpn::windows_webview_browser_args(
+                    None,
+                    vpn.proxy_port(),
+                ) {
+                    Ok(browser_args) => browser_args,
+                    Err(error) => {
+                        log::warn!("recreate main window VPN proxy setup failed: {error}");
+                        return None;
+                    }
+                };
+                WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, Default::default())
+                    .additional_browser_args(&browser_args)
+                    .build()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, Default::default()).build()
+            }
+        }
     };
 
     match result {
