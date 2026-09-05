@@ -345,12 +345,13 @@ export function PluginVpnFinder({
       closeButtonProps={{
         "aria-label": t("settings.data.pluginVpn.finder.close"),
       }}
+      classNames={{ body: "lnr-plugin-vpn-finder-modal-body" }}
       onClose={closeFinder}
       opened={opened}
       size="68rem"
       title={t("settings.data.pluginVpn.finder.title")}
     >
-      <Stack gap="sm">
+      <Stack className="lnr-plugin-vpn-finder-content" gap="sm">
         <Text size="sm">
           {t("settings.data.pluginVpn.finder.description")}
         </Text>
@@ -414,7 +415,7 @@ export function PluginVpnFinder({
             {disabledReason}
           </Text>
         ) : null}
-        <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }} spacing="xs">
+        <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
           <TextInput
             label={t("settings.data.pluginVpn.finder.search.label")}
             onChange={(event) => setSearch(event.currentTarget.value)}
@@ -617,21 +618,76 @@ export function PluginVpnFinder({
                   className="lnr-plugin-vpn-finder-card"
                   key={server.candidateId}
                 >
-                  <Group justify="space-between" wrap="nowrap">
-                    <Text fw={700} size="sm">
-                      {countryFlag(server.countryCode)} {server.countryName}
-                    </Text>
-                    <Badge variant="light">
-                      {server.protocol === "tcp"
-                        ? t("settings.data.pluginVpn.finder.protocol.tcp")
-                        : t("settings.data.pluginVpn.finder.protocol.udp")}
-                    </Badge>
-                  </Group>
-                  <dl className="lnr-plugin-vpn-finder-metadata">
-                    <div>
-                      <dt>{t("settings.data.pluginVpn.finder.metadata.ip")}</dt>
-                      <dd>{server.ip}</dd>
+                  <div className="lnr-plugin-vpn-finder-card-header">
+                    <div className="lnr-plugin-vpn-finder-card-identity">
+                      <Text
+                        className="lnr-plugin-vpn-finder-card-country"
+                        component="span"
+                        fw={700}
+                        size="sm"
+                      >
+                        {countryFlag(server.countryCode)} {server.countryName}
+                      </Text>
+                      <Text
+                        c="dimmed"
+                        className="lnr-plugin-vpn-finder-card-ip"
+                        component="span"
+                        size="xs"
+                      >
+                        {server.ip}
+                      </Text>
                     </div>
+                    <Group gap="xs" wrap="nowrap">
+                      <Badge size="sm" variant="light">
+                        {server.protocol === "tcp"
+                          ? t("settings.data.pluginVpn.finder.protocol.tcp")
+                          : t("settings.data.pluginVpn.finder.protocol.udp")}
+                      </Badge>
+                      <span className="lnr-plugin-vpn-finder-card-verdict">
+                        <Text c="dimmed" component="span" size="xs">
+                          {t("settings.data.pluginVpn.finder.verdict.label")}
+                        </Text>
+                        <VpnGateServerVerdictControl
+                          disabled={
+                            verdictControlsDisabled ||
+                            verdictSavingIps.has(server.ip)
+                          }
+                          disabledReason={
+                            verdictSavingIps.has(server.ip)
+                              ? t("settings.data.pluginVpn.finder.verdict.saving")
+                              : verdictDisabledReason
+                          }
+                          ip={server.ip}
+                          onChange={(verdict) =>
+                            onVerdictChange(server.ip, verdict)
+                          }
+                          verdict={pluginVpnFinderServerVerdict(
+                            server,
+                            verdicts,
+                          )}
+                        />
+                      </span>
+                      <TextButton
+                        active={serverAction(server.candidateId) === "cancel"}
+                        disabled={
+                          serverAction(server.candidateId) !== "cancel" &&
+                          disabled
+                        }
+                        onClick={() =>
+                          void applyAndConnect(server.candidateId, server.ip)
+                        }
+                        size="sm"
+                        variant={
+                          serverAction(server.candidateId) === "cancel"
+                            ? "default"
+                            : "filled"
+                        }
+                      >
+                        {actionText(serverAction(server.candidateId))}
+                      </TextButton>
+                    </Group>
+                  </div>
+                  <dl className="lnr-plugin-vpn-finder-metadata">
                     <div>
                       <dt>{t("settings.data.pluginVpn.finder.metadata.score")}</dt>
                       <dd>{server.score.toLocaleString(locale)}</dd>
@@ -652,45 +708,7 @@ export function PluginVpnFinder({
                       <dt>{t("settings.data.pluginVpn.finder.metadata.logPolicy")}</dt>
                       <dd>{server.logType}</dd>
                     </div>
-                    <div>
-                      <dt>{t("settings.data.pluginVpn.finder.verdict.label")}</dt>
-                      <dd>
-                        <VpnGateServerVerdictControl
-                          disabled={
-                            verdictControlsDisabled ||
-                            verdictSavingIps.has(server.ip)
-                          }
-                          disabledReason={
-                            verdictSavingIps.has(server.ip)
-                              ? t("settings.data.pluginVpn.finder.verdict.saving")
-                              : verdictDisabledReason
-                          }
-                          ip={server.ip}
-                          onChange={(verdict) =>
-                            onVerdictChange(server.ip, verdict)
-                          }
-                          verdict={pluginVpnFinderServerVerdict(server, verdicts)}
-                        />
-                      </dd>
-                    </div>
                   </dl>
-                  <TextButton
-                    active={serverAction(server.candidateId) === "cancel"}
-                    disabled={
-                      serverAction(server.candidateId) !== "cancel" && disabled
-                    }
-                    fullWidth
-                    onClick={() =>
-                      void applyAndConnect(server.candidateId, server.ip)
-                    }
-                    variant={
-                      serverAction(server.candidateId) === "cancel"
-                        ? "default"
-                        : "filled"
-                    }
-                  >
-                    {actionText(serverAction(server.candidateId))}
-                  </TextButton>
                 </section>
               ))}
             </div>
