@@ -544,6 +544,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
       const handle = enqueueChapterDownloadBatch({
         jobs: chapterDownloadJobs,
+        materializeAllTasks: true,
         title: t("tasks.task.downloadChapterBatch", { count: total }),
         total,
       });

@@ -124,6 +124,7 @@ import {
   getActiveChapterDownloadBatchProgress,
   startChapterDownloadQueueExecutor,
   subscribeChapterDownloadBatchesSettled,
+  waitForChapterDownloadQueueMutations,
   type ChapterDownloadJob,
 } from "./chapter-download";
 
@@ -364,6 +365,108 @@ describe("enqueueChapterDownloadBatch", () => {
       total: 64,
     });
     expect(yielded).toBe(16);
+  });
+
+  it("registers every requested array batch task without waiting for downloads to settle", async () => {
+    const deferreds: Deferred<void>[] = [];
+    const specs: SourceTaskSpec<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        specs.push(spec);
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+    const jobs = Array.from({ length: 64 }, (_, index) => {
+      const id = index + 1;
+      return {
+        id,
+        pluginId: "source-a",
+        chapterPath: `/chapter/${id}`,
+        title: `Chapter ${id}`,
+      };
+    });
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs,
+      materializeAllTasks: true,
+      persist: false,
+      title: "Download 64 chapters",
+      total: 64,
+    });
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
+    await vi.waitFor(() => {
+      expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(64);
+    });
+    expect(new Set(specs.map((spec) => spec.subject?.batchId)).size).toBe(1);
+
+    const batchId = specs[0]?.subject?.batchId;
+    expect(batchId).toBeTruthy();
+    expect(cancelChapterDownloadBatches([batchId!])).toBe(1);
+    for (const deferred of deferreds) {
+      deferred.reject(new DOMException("Task was cancelled.", "AbortError"));
+    }
+
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 64,
+      failed: 0,
+      succeeded: 0,
+      total: 64,
+    });
+  });
+
+  it("stops paced array registration after cancellation", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
+        return {
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
+        };
+      },
+    );
+    const jobs = Array.from({ length: 64 }, (_, index) => {
+      const id = index + 1;
+      return {
+        id,
+        pluginId: "source-a",
+        chapterPath: `/chapter/${id}`,
+        title: `Chapter ${id}`,
+      };
+    });
+
+    const handle = enqueueChapterDownloadBatch({
+      jobs,
+      materializeAllTasks: true,
+      title: "Download 64 chapters",
+      total: 64,
+    });
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
+    expect(cancelChapterDownloadBatches([handle.id])).toBe(1);
+    for (const deferred of deferreds) {
+      deferred.reject(new DOMException("Task was cancelled.", "AbortError"));
+    }
+
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 64,
+      failed: 0,
+      succeeded: 0,
+      total: 64,
+    });
+    await waitForChapterDownloadQueueMutations();
+
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
+    expect([...backendQueueValues.keys()]).toEqual([]);
   });
 
   it("queues every array batch job before requested scheduler materialization", async () => {

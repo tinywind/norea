@@ -2464,6 +2464,7 @@ export function NovelDetailPage() {
 
     void enqueueChapterDownloadBatch({
       jobs: chapterDownloadJobs,
+      materializeAllTasks: true,
       title: t("tasks.task.downloadChapterBatch", {
         count: chaptersToDownload.length,
       }),

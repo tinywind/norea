@@ -126,6 +126,7 @@ export interface ChapterDownloadBatchResult {
 
 export interface ChapterDownloadBatchJob {
   jobs: Iterable<ChapterDownloadJob>;
+  materializeAllTasks?: boolean;
   persist?: boolean;
   removeBackendQueuedJobsOnCancel?: boolean;
   title: string;
@@ -1512,6 +1513,7 @@ export function enqueueChapterMediaRepair(
 
 export function enqueueChapterDownloadBatch({
   jobs,
+  materializeAllTasks = false,
   persist = true,
   removeBackendQueuedJobsOnCancel = false,
   title,
@@ -1544,6 +1546,7 @@ export function enqueueChapterDownloadBatch({
     succeeded: 0,
     total,
   });
+  const materializedTaskCompletions: Promise<void>[] = [];
 
   const promise = runBoundedTaskBatch({
     items: jobs,
@@ -1572,8 +1575,23 @@ export function enqueueChapterDownloadBatch({
             waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
           },
         );
-        await handle.promise;
-        settleChapterDownloadBatchJob(batchId, job.id, "succeeded");
+        const completion = handle.promise.then(
+          () => {
+            settleChapterDownloadBatchJob(batchId, job.id, "succeeded");
+          },
+          (error: unknown) => {
+            settleChapterDownloadBatchJob(
+              batchId,
+              job.id,
+              isAbortError(error) ? "cancelled" : "failed",
+            );
+          },
+        );
+        if (materializeAllTasks) {
+          materializedTaskCompletions.push(completion);
+        } else {
+          await completion;
+        }
       } catch (error) {
         settleChapterDownloadBatchJob(
           batchId,
@@ -1583,6 +1601,7 @@ export function enqueueChapterDownloadBatch({
       }
     },
   })
+    .then(() => Promise.all(materializedTaskCompletions))
     .then(() => {
       const state = chapterDownloadBatchStates.get(batchId);
       const result = state
