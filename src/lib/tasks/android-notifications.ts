@@ -12,6 +12,7 @@ interface AndroidTaskNotificationBridge {
 }
 
 const ANDROID_BACKGROUND_DOWNLOAD_YIELD_DELAY_MS = 15_000;
+const ANDROID_TASK_NOTIFICATION_PUBLISH_INTERVAL_MS = 250;
 
 declare global {
   interface Window {
@@ -29,6 +30,7 @@ export function startAndroidTaskNotifications(
   }
 
   let lastPayload = "";
+  let publishTimer: ReturnType<typeof setTimeout> | null = null;
 
   const publish = () => {
     const bridge = window.__NoreaAndroidTasks;
@@ -52,13 +54,22 @@ export function startAndroidTaskNotifications(
     lastPayload = serialized;
   };
 
-  const unsubscribeSnapshots = taskScheduler.subscribe(publish);
-  const unsubscribeEvents = taskScheduler.subscribeEvents(publish);
+  const schedulePublish = () => {
+    if (publishTimer !== null) return;
+    publishTimer = globalThis.setTimeout(() => {
+      publishTimer = null;
+      publish();
+    }, ANDROID_TASK_NOTIFICATION_PUBLISH_INTERVAL_MS);
+  };
+
+  const unsubscribeSnapshots = taskScheduler.subscribe(schedulePublish);
+  const unsubscribeEvents = taskScheduler.subscribeEvents(schedulePublish);
   publish();
 
   return () => {
     unsubscribeSnapshots();
     unsubscribeEvents();
+    if (publishTimer !== null) clearTimeout(publishTimer);
     if (lastPayload !== "") {
       window.__NoreaAndroidTasks?.stop();
     }

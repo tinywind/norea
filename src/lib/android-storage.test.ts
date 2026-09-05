@@ -20,6 +20,7 @@ import {
   rollbackAndroidChapterStorageTransfer,
   selectAndroidStorageRoot,
   writeAndroidContentUriFile,
+  writeAndroidStorageText,
 } from "./android-storage";
 
 type TestBridge = {
@@ -41,6 +42,7 @@ type TestBridge = {
   writeBytes?: ReturnType<typeof vi.fn>;
   writeContentUriFile?: ReturnType<typeof vi.fn>;
   writeContentUriFileCapped?: ReturnType<typeof vi.fn>;
+  writeText?: ReturnType<typeof vi.fn>;
 };
 
 const invokeMock = vi.mocked(invoke);
@@ -222,9 +224,14 @@ describe("android storage bridge facade", () => {
   it("ensures .nomedia once while reading from the selected storage root", async () => {
     const root = "content://tree/primary%3ANoreaRead";
     const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
-    const readText = vi.fn(() =>
-      JSON.stringify({ ok: true, text: "<html></html>" }),
-    );
+    const readText = vi.fn((requestId: string) => {
+      queueMicrotask(() => {
+        window.__lnrResolveAndroidStorageOperation?.(
+          requestId,
+          JSON.stringify({ ok: true, text: "<html></html>" }),
+        );
+      });
+    });
     invokeMock.mockResolvedValue(root);
     installBridge({ ensureNoMedia, readText });
 
@@ -240,9 +247,41 @@ describe("android storage bridge facade", () => {
     expect(ensureNoMedia).toHaveBeenCalledWith(root);
     expect(readText).toHaveBeenCalledTimes(2);
     expect(readText).toHaveBeenLastCalledWith(
+      expect.any(String),
       root,
       "contents/demo/chapter/content.html",
     );
+  });
+
+  it("keeps storage writes pending until the asynchronous callback arrives", async () => {
+    const root = "content://tree/primary%3ANoreaWrite";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    let requestId = "";
+    const writeText = vi.fn((candidateRequestId: string) => {
+      requestId = candidateRequestId;
+    });
+    invokeMock.mockResolvedValue(root);
+    installBridge({ ensureNoMedia, writeText });
+
+    const write = writeAndroidStorageText(
+      "contents/demo/chapter/content.html",
+      "<html></html>",
+    );
+
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
+    let settled = false;
+    void write.finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    window.__lnrResolveAndroidStorageOperation?.(
+      requestId,
+      JSON.stringify({ bytes: 13, ok: true }),
+    );
+
+    await expect(write).resolves.toBeUndefined();
   });
 
   it("resolves chapter artifact inspections through an asynchronous callback", async () => {

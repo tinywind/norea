@@ -184,28 +184,40 @@ fn media_roots_for_lookup<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<PathBuf>
 }
 
 #[tauri::command]
-pub fn chapter_media_get_storage_root(app: AppHandle) -> Result<Option<String>, String> {
-    configured_media_root(&app).map(|root| root.map(|path| path.to_string_lossy().into_owned()))
+pub async fn chapter_media_get_storage_root(app: AppHandle) -> Result<Option<String>, String> {
+    chapter_media_blocking("read storage root", move || {
+        configured_media_root(&app).map(|root| root.map(|path| path.to_string_lossy().into_owned()))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_media_set_storage_root(app: AppHandle, root: String) -> Result<String, String> {
-    let trimmed = root.trim();
-    if trimmed.is_empty() {
-        return Err("chapter media: storage root is empty".to_string());
-    }
-    if trimmed.contains('\0') {
-        return Err("chapter media: storage root contains an invalid character".to_string());
-    }
+pub async fn chapter_media_set_storage_root(
+    app: AppHandle,
+    root: String,
+) -> Result<String, String> {
+    chapter_media_blocking("set storage root", move || {
+        let trimmed = root.trim();
+        if trimmed.is_empty() {
+            return Err("chapter media: storage root is empty".to_string());
+        }
+        if trimmed.contains('\0') {
+            return Err("chapter media: storage root contains an invalid character".to_string());
+        }
 
-    let root_path = PathBuf::from(trimmed);
-    save_configured_media_root(&app, &root_path)
+        let root_path = PathBuf::from(trimmed);
+        save_configured_media_root(&app, &root_path)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_media_use_default_storage_root(app: AppHandle) -> Result<String, String> {
-    let root_path = legacy_media_root(&app)?;
-    save_configured_media_root(&app, &root_path)
+pub async fn chapter_media_use_default_storage_root(app: AppHandle) -> Result<String, String> {
+    chapter_media_blocking("use default storage root", move || {
+        let root_path = legacy_media_root(&app)?;
+        save_configured_media_root(&app, &root_path)
+    })
+    .await
 }
 
 fn safe_segment(value: &str, fallback: &str) -> String {
@@ -2047,11 +2059,11 @@ fn finalize_chapter_media_artifacts_locked(
 
 fn delete_legacy_storage_manifest(root: &Path) -> Result<(), String> {
     let manifest_path = legacy_storage_manifest_path(root);
-    if manifest_path.exists() {
-        fs::remove_file(&manifest_path)
-            .map_err(|err| format!("chapter media: remove legacy storage manifest: {err}"))?;
+    match fs::remove_file(&manifest_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("chapter media: remove legacy storage manifest: {err}")),
     }
-    Ok(())
 }
 
 fn remove_chapter_content_files_in_dir(
@@ -2849,7 +2861,7 @@ fn chapter_media_cleanup_workspace_sync(
 }
 
 #[tauri::command]
-pub fn chapter_media_write_manifest(
+pub async fn chapter_media_write_manifest(
     app: AppHandle,
     chapter_id: i64,
     complete: Option<bool>,
@@ -2862,38 +2874,41 @@ pub fn chapter_media_write_manifest(
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
 ) -> Result<(), String> {
-    let chapter_dir = required_content_chapter_dir(
-        &app,
-        chapter_id,
-        novel_id,
-        source_id.as_deref(),
-        novel_path.as_deref(),
-        novel_name.as_deref(),
-        chapter_number.as_deref(),
-        chapter_name.as_deref(),
-        chapter_position,
-    )?;
-    let files = match files {
-        serde_json::Value::Array(files) => files,
-        _ => Vec::new(),
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
-    let manifest = serde_json::json!({
-        "version": 1,
-        "complete": complete.unwrap_or(false),
-        "updatedAt": now,
-        "media": {
-            "files": files
-        }
-    });
-    write_chapter_media_manifest(&chapter_media_manifest_path(&chapter_dir), &manifest)
+    chapter_media_blocking("write manifest", move || {
+        let chapter_dir = required_content_chapter_dir(
+            &app,
+            chapter_id,
+            novel_id,
+            source_id.as_deref(),
+            novel_path.as_deref(),
+            novel_name.as_deref(),
+            chapter_number.as_deref(),
+            chapter_name.as_deref(),
+            chapter_position,
+        )?;
+        let files = match files {
+            serde_json::Value::Array(files) => files,
+            _ => Vec::new(),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let manifest = serde_json::json!({
+            "version": 1,
+            "complete": complete.unwrap_or(false),
+            "updatedAt": now,
+            "media": {
+                "files": files
+            }
+        });
+        write_chapter_media_manifest(&chapter_media_manifest_path(&chapter_dir), &manifest)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_media_read_manifest(
+pub async fn chapter_media_read_manifest(
     app: AppHandle,
     chapter_id: i64,
     novel_id: Option<i64>,
@@ -2904,152 +2919,161 @@ pub fn chapter_media_read_manifest(
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
 ) -> Result<Option<String>, String> {
-    let chapter_dir = required_content_chapter_dir(
-        &app,
-        chapter_id,
-        novel_id,
-        source_id.as_deref(),
-        novel_path.as_deref(),
-        novel_name.as_deref(),
-        chapter_number.as_deref(),
-        chapter_name.as_deref(),
-        chapter_position,
-    )?;
-    let manifest_path = chapter_media_manifest_path(&chapter_dir);
-    match fs::read_to_string(&manifest_path) {
-        Ok(raw) => Ok(Some(raw)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(format!("chapter media: read media manifest: {err}")),
-    }
+    chapter_media_blocking("read manifest", move || {
+        let chapter_dir = required_content_chapter_dir(
+            &app,
+            chapter_id,
+            novel_id,
+            source_id.as_deref(),
+            novel_path.as_deref(),
+            novel_name.as_deref(),
+            chapter_number.as_deref(),
+            chapter_name.as_deref(),
+            chapter_position,
+        )?;
+        let manifest_path = chapter_media_manifest_path(&chapter_dir);
+        match fs::read_to_string(&manifest_path) {
+            Ok(raw) => Ok(Some(raw)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(format!("chapter media: read media manifest: {err}")),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_content_mirror_store(
+pub async fn chapter_content_mirror_store(
     app: AppHandle,
     chapter_id: i64,
     content: String,
     metadata: serde_json::Value,
 ) -> Result<(), String> {
-    let media_root = media_root(&app)?;
-    ensure_contents_nomedia(&media_root)?;
-    let novel = metadata
-        .get("novel")
-        .cloned()
-        .ok_or_else(|| "chapter media: missing novel metadata".to_string())?;
-    let chapter = metadata
-        .get("chapter")
-        .cloned()
-        .ok_or_else(|| "chapter media: missing chapter metadata".to_string())?;
-    let novel_id = novel
-        .get("id")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| "chapter media: invalid novel metadata id".to_string())?;
-    let source_id = novel
-        .get("pluginId")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "chapter media: invalid novel metadata plugin id".to_string())?;
-    let novel_name = novel.get("name").and_then(serde_json::Value::as_str);
-    let novel_path = novel.get("path").and_then(serde_json::Value::as_str);
-    let chapter_number = chapter
-        .get("chapterNumber")
-        .and_then(serde_json::Value::as_str);
-    let chapter_name = chapter.get("name").and_then(serde_json::Value::as_str);
-    let position = chapter.get("position").and_then(serde_json::Value::as_i64);
-    let content_type = chapter
-        .get("contentType")
-        .and_then(serde_json::Value::as_str);
-    let extension = chapter_content_extension(content_type);
-    let content_file = chapter_content_relative_path(
-        source_id,
-        novel_id,
-        novel_path,
-        novel_name,
-        chapter_id,
-        chapter_number,
-        chapter_name,
-        position,
-        extension,
-    )?;
-    let content_path = media_root.join(&content_file);
+    chapter_media_blocking("store content mirror", move || {
+        let media_root = media_root(&app)?;
+        ensure_contents_nomedia(&media_root)?;
+        let novel = metadata
+            .get("novel")
+            .cloned()
+            .ok_or_else(|| "chapter media: missing novel metadata".to_string())?;
+        let chapter = metadata
+            .get("chapter")
+            .cloned()
+            .ok_or_else(|| "chapter media: missing chapter metadata".to_string())?;
+        let novel_id = novel
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| "chapter media: invalid novel metadata id".to_string())?;
+        let source_id = novel
+            .get("pluginId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "chapter media: invalid novel metadata plugin id".to_string())?;
+        let novel_name = novel.get("name").and_then(serde_json::Value::as_str);
+        let novel_path = novel.get("path").and_then(serde_json::Value::as_str);
+        let chapter_number = chapter
+            .get("chapterNumber")
+            .and_then(serde_json::Value::as_str);
+        let chapter_name = chapter.get("name").and_then(serde_json::Value::as_str);
+        let position = chapter.get("position").and_then(serde_json::Value::as_i64);
+        let content_type = chapter
+            .get("contentType")
+            .and_then(serde_json::Value::as_str);
+        let extension = chapter_content_extension(content_type);
+        let content_file = chapter_content_relative_path(
+            source_id,
+            novel_id,
+            novel_path,
+            novel_name,
+            chapter_id,
+            chapter_number,
+            chapter_name,
+            position,
+            extension,
+        )?;
+        let content_path = media_root.join(&content_file);
 
-    if let Some(parent) = content_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("chapter media: create content mirror dir: {err}"))?;
-    }
-    let temp_content_path = content_path.with_extension(format!("{extension}.tmp"));
-    fs::write(&temp_content_path, content)
-        .map_err(|err| format!("chapter media: write content mirror temp: {err}"))?;
-    let backup_content_path = content_path.with_extension(format!("{extension}.bak"));
-    replace_storage_file(
-        &temp_content_path,
-        &content_path,
-        &backup_content_path,
-        "chapter media: replace content mirror",
-    )?;
-    let partial_path = content_path.with_file_name(CHAPTER_PARTIAL_CONTENT_FILE);
-    if partial_path.exists() {
-        fs::remove_file(&partial_path)
-            .map_err(|err| format!("chapter media: remove partial content: {err}"))?;
-    }
-    let chapter_dir = content_path
-        .parent()
-        .ok_or_else(|| "chapter media: content mirror has no parent directory".to_string())?;
-    remove_chapter_content_files_in_dir(chapter_dir, Some(&content_path))?;
-    delete_legacy_storage_manifest(&media_root)
+        if let Some(parent) = content_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("chapter media: create content mirror dir: {err}"))?;
+        }
+        let temp_content_path = content_path.with_extension(format!("{extension}.tmp"));
+        fs::write(&temp_content_path, content)
+            .map_err(|err| format!("chapter media: write content mirror temp: {err}"))?;
+        let backup_content_path = content_path.with_extension(format!("{extension}.bak"));
+        replace_storage_file(
+            &temp_content_path,
+            &content_path,
+            &backup_content_path,
+            "chapter media: replace content mirror",
+        )?;
+        let partial_path = content_path.with_file_name(CHAPTER_PARTIAL_CONTENT_FILE);
+        if partial_path.exists() {
+            fs::remove_file(&partial_path)
+                .map_err(|err| format!("chapter media: remove partial content: {err}"))?;
+        }
+        let chapter_dir = content_path
+            .parent()
+            .ok_or_else(|| "chapter media: content mirror has no parent directory".to_string())?;
+        remove_chapter_content_files_in_dir(chapter_dir, Some(&content_path))?;
+        delete_legacy_storage_manifest(&media_root)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_content_mirror_store_partial(
+pub async fn chapter_content_mirror_store_partial(
     app: AppHandle,
     content: String,
     metadata: serde_json::Value,
 ) -> Result<(), String> {
-    let media_root = media_root(&app)?;
-    ensure_contents_nomedia(&media_root)?;
-    let novel = metadata
-        .get("novel")
-        .ok_or_else(|| "chapter media: missing novel metadata".to_string())?;
-    let chapter = metadata
-        .get("chapter")
-        .ok_or_else(|| "chapter media: missing chapter metadata".to_string())?;
-    let novel_id = novel
-        .get("id")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| "chapter media: invalid novel metadata id".to_string())?;
-    let source_id = novel
-        .get("pluginId")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "chapter media: invalid novel metadata plugin id".to_string())?;
-    let chapter_id = chapter
-        .get("id")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| "chapter media: invalid chapter metadata id".to_string())?;
-    let chapter_dir = content_chapter_dir_at(
-        &media_root,
-        source_id,
-        novel_id,
-        novel.get("path").and_then(serde_json::Value::as_str),
-        novel.get("name").and_then(serde_json::Value::as_str),
-        chapter_id,
-        chapter
-            .get("chapterNumber")
-            .and_then(serde_json::Value::as_str),
-        chapter.get("name").and_then(serde_json::Value::as_str),
-        chapter.get("position").and_then(serde_json::Value::as_i64),
-    )?;
-    fs::create_dir_all(&chapter_dir)
-        .map_err(|err| format!("chapter media: create partial content dir: {err}"))?;
-    let partial_path = chapter_dir.join(CHAPTER_PARTIAL_CONTENT_FILE);
-    let temp_path = chapter_dir.join(format!("{CHAPTER_PARTIAL_CONTENT_FILE}.tmp"));
-    let backup_path = chapter_dir.join(format!("{CHAPTER_PARTIAL_CONTENT_FILE}.bak"));
-    fs::write(&temp_path, content)
-        .map_err(|err| format!("chapter media: write partial content: {err}"))?;
-    replace_storage_file(
-        &temp_path,
-        &partial_path,
-        &backup_path,
-        "chapter media: replace partial content",
-    )
+    chapter_media_blocking("store partial content mirror", move || {
+        let media_root = media_root(&app)?;
+        ensure_contents_nomedia(&media_root)?;
+        let novel = metadata
+            .get("novel")
+            .ok_or_else(|| "chapter media: missing novel metadata".to_string())?;
+        let chapter = metadata
+            .get("chapter")
+            .ok_or_else(|| "chapter media: missing chapter metadata".to_string())?;
+        let novel_id = novel
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| "chapter media: invalid novel metadata id".to_string())?;
+        let source_id = novel
+            .get("pluginId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "chapter media: invalid novel metadata plugin id".to_string())?;
+        let chapter_id = chapter
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| "chapter media: invalid chapter metadata id".to_string())?;
+        let chapter_dir = content_chapter_dir_at(
+            &media_root,
+            source_id,
+            novel_id,
+            novel.get("path").and_then(serde_json::Value::as_str),
+            novel.get("name").and_then(serde_json::Value::as_str),
+            chapter_id,
+            chapter
+                .get("chapterNumber")
+                .and_then(serde_json::Value::as_str),
+            chapter.get("name").and_then(serde_json::Value::as_str),
+            chapter.get("position").and_then(serde_json::Value::as_i64),
+        )?;
+        fs::create_dir_all(&chapter_dir)
+            .map_err(|err| format!("chapter media: create partial content dir: {err}"))?;
+        let partial_path = chapter_dir.join(CHAPTER_PARTIAL_CONTENT_FILE);
+        let temp_path = chapter_dir.join(format!("{CHAPTER_PARTIAL_CONTENT_FILE}.tmp"));
+        let backup_path = chapter_dir.join(format!("{CHAPTER_PARTIAL_CONTENT_FILE}.bak"));
+        fs::write(&temp_path, content)
+            .map_err(|err| format!("chapter media: write partial content: {err}"))?;
+        replace_storage_file(
+            &temp_path,
+            &partial_path,
+            &backup_path,
+            "chapter media: replace partial content",
+        )
+    })
+    .await
 }
 
 fn novel_cover_manifest_path(novel_dir: &Path) -> PathBuf {
@@ -3262,7 +3286,7 @@ fn novel_cover_read_manifest_at(
 }
 
 #[tauri::command]
-pub fn novel_cover_read_manifest(
+pub async fn novel_cover_read_manifest(
     app: AppHandle,
     novel_id: i64,
     source_id: String,
@@ -3270,15 +3294,18 @@ pub fn novel_cover_read_manifest(
     novel_path: String,
     expected_source_url: Option<String>,
 ) -> Result<Option<NovelCoverReadResult>, String> {
-    let media_root = media_root(&app)?;
-    novel_cover_read_manifest_at(
-        &media_root,
-        novel_id,
-        &source_id,
-        &novel_name,
-        &novel_path,
-        expected_source_url.as_deref(),
-    )
+    chapter_media_blocking("read novel cover manifest", move || {
+        let media_root = media_root(&app)?;
+        novel_cover_read_manifest_at(
+            &media_root,
+            novel_id,
+            &source_id,
+            &novel_name,
+            &novel_path,
+            expected_source_url.as_deref(),
+        )
+    })
+    .await
 }
 
 fn novel_cover_store_at(
@@ -3362,7 +3389,7 @@ fn novel_cover_store_at(
 }
 
 #[tauri::command]
-pub fn novel_cover_store(
+pub async fn novel_cover_store(
     app: AppHandle,
     novel_id: i64,
     source_id: String,
@@ -3372,24 +3399,30 @@ pub fn novel_cover_store(
     body: Vec<u8>,
     manifest: String,
 ) -> Result<(), String> {
-    let media_root = media_root(&app)?;
-    novel_cover_store_at(
-        &media_root,
-        novel_id,
-        &source_id,
-        &novel_name,
-        &novel_path,
-        &file_name,
-        &body,
-        &manifest,
-    )
+    chapter_media_blocking("store novel cover", move || {
+        let media_root = media_root(&app)?;
+        novel_cover_store_at(
+            &media_root,
+            novel_id,
+            &source_id,
+            &novel_name,
+            &novel_path,
+            &file_name,
+            &body,
+            &manifest,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_content_mirror_clear(app: AppHandle, chapter_id: i64) -> Result<(), String> {
-    let media_root = media_root(&app)?;
-    remove_stored_chapter_content_files(&media_root, chapter_id, None)?;
-    delete_legacy_storage_manifest(&media_root)
+pub async fn chapter_content_mirror_clear(app: AppHandle, chapter_id: i64) -> Result<(), String> {
+    chapter_media_blocking("clear content mirror", move || {
+        let media_root = media_root(&app)?;
+        remove_stored_chapter_content_files(&media_root, chapter_id, None)?;
+        delete_legacy_storage_manifest(&media_root)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3415,27 +3448,33 @@ pub async fn chapter_content_mirror_inspect(
 }
 
 #[tauri::command]
-pub fn chapter_content_mirror_cleanup_legacy_manifest(app: AppHandle) -> Result<(), String> {
-    let media_root = media_root(&app)?;
-    delete_legacy_storage_manifest(&media_root)
+pub async fn chapter_content_mirror_cleanup_legacy_manifest(app: AppHandle) -> Result<(), String> {
+    chapter_media_blocking("clean up legacy content manifest", move || {
+        let media_root = media_root(&app)?;
+        delete_legacy_storage_manifest(&media_root)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn chapter_content_mirror_read_file(
+pub async fn chapter_content_mirror_read_file(
     app: AppHandle,
     content_file: String,
 ) -> Result<Option<String>, String> {
-    let media_root = media_root(&app)?;
-    let relative_path = safe_relative_storage_path(&content_file)?;
-    let content_path = media_root.join(relative_path);
-    match fs::read_to_string(&content_path) {
-        Ok(content) => Ok(Some(content)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(format!(
-            "chapter media: read mirrored chapter '{}': {err}",
-            content_path.to_string_lossy()
-        )),
-    }
+    chapter_media_blocking("read content mirror", move || {
+        let media_root = media_root(&app)?;
+        let relative_path = safe_relative_storage_path(&content_file)?;
+        let content_path = media_root.join(relative_path);
+        match fs::read_to_string(&content_path) {
+            Ok(content) => Ok(Some(content)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(format!(
+                "chapter media: read mirrored chapter '{}': {err}",
+                content_path.to_string_lossy()
+            )),
+        }
+    })
+    .await
 }
 
 fn archive_contains_file(archive_path: &Path, file_name: &str) -> Result<bool, String> {

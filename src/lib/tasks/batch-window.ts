@@ -1,4 +1,6 @@
-export const TASK_BATCH_MATERIALIZATION_WINDOW = Number.POSITIVE_INFINITY;
+export const TASK_BATCH_MATERIALIZATION_WINDOW = 16;
+const TASK_BATCH_EVENT_LOOP_YIELD_INTERVAL =
+  TASK_BATCH_MATERIALIZATION_WINDOW;
 
 interface RunBoundedTaskBatchOptions<T> {
   items: Iterable<T>;
@@ -9,9 +11,15 @@ interface RunBoundedTaskBatchOptions<T> {
 }
 
 function normalizeTaskBatchWindowSize(windowSize: number): number {
-  if (windowSize === Number.POSITIVE_INFINITY) return windowSize;
   if (!Number.isFinite(windowSize)) return TASK_BATCH_MATERIALIZATION_WINDOW;
-  return Math.max(1, Math.floor(windowSize));
+  return Math.min(
+    TASK_BATCH_MATERIALIZATION_WINDOW,
+    Math.max(1, Math.floor(windowSize)),
+  );
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 }
 
 export async function runBoundedTaskBatch<T>({
@@ -26,6 +34,7 @@ export async function runBoundedTaskBatch<T>({
   const iterator = items[Symbol.iterator]();
   let iteratorDone = false;
   let nextIndex = 0;
+  let settledSinceYield = 0;
 
   const startNext = (): void => {
     const next = iterator.next();
@@ -44,6 +53,7 @@ export async function runBoundedTaskBatch<T>({
     }
     promise = promise.finally(() => {
       active.delete(promise);
+      settledSinceYield += 1;
     });
     active.add(promise);
   };
@@ -66,5 +76,9 @@ export async function runBoundedTaskBatch<T>({
 
     if (active.size === 0) break;
     await Promise.race(active);
+    if (settledSinceYield >= TASK_BATCH_EVENT_LOOP_YIELD_INTERVAL) {
+      settledSinceYield -= TASK_BATCH_EVENT_LOOP_YIELD_INTERVAL;
+      await yieldToEventLoop();
+    }
   }
 }

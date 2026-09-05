@@ -40,31 +40,56 @@ export async function applyNovelChapterDownloadCompletion(
     novelId: number;
   },
 ): Promise<void> {
-  if (chapterId <= 0 || novelId <= 0) return;
-
-  queryClient.setQueryData<ChapterListRow[]>(
-    novelChaptersQueryKey(novelId),
-    (chapters) => {
-      if (!chapters) return chapters;
-      const index = chapters.findIndex((chapter) => chapter.id === chapterId);
-      if (index < 0 || chapters[index]?.isDownloaded) return chapters;
-      const updated = [...chapters];
-      updated[index] = { ...updated[index]!, isDownloaded: true };
-      return updated;
-    },
+  return applyNovelChapterDownloadCompletions(
+    queryClient,
+    new Map([[novelId, new Set([chapterId])]]),
   );
+}
 
-  await Promise.all([
-    queryClient.invalidateQueries({
-      exact: true,
-      queryKey: novelChaptersQueryKey(novelId),
-      refetchType: "none",
-    }),
+export async function applyNovelChapterDownloadCompletions(
+  queryClient: ChapterDownloadQueryCache,
+  completionsByNovel: ReadonlyMap<number, ReadonlySet<number>>,
+): Promise<void> {
+  const invalidations: Array<Promise<unknown>> = [];
+
+  for (const [novelId, requestedChapterIds] of completionsByNovel) {
+    if (novelId <= 0) continue;
+    const chapterIds = new Set(
+      [...requestedChapterIds].filter((chapterId) => chapterId > 0),
+    );
+    if (chapterIds.size === 0) continue;
+
+    queryClient.setQueryData<ChapterListRow[]>(
+      novelChaptersQueryKey(novelId),
+      (chapters) => {
+        if (!chapters) return chapters;
+        let updated: ChapterListRow[] | null = null;
+        for (let index = 0; index < chapters.length; index += 1) {
+          const chapter = chapters[index]!;
+          if (!chapterIds.has(chapter.id) || chapter.isDownloaded) continue;
+          updated ??= [...chapters];
+          updated[index] = { ...chapter, isDownloaded: true };
+        }
+        return updated ?? chapters;
+      },
+    );
+    invalidations.push(
+      queryClient.invalidateQueries({
+        exact: true,
+        queryKey: novelChaptersQueryKey(novelId),
+        refetchType: "none",
+      }),
+    );
+  }
+
+  if (invalidations.length === 0) return;
+  invalidations.push(
     queryClient.invalidateQueries({
       queryKey: novelLibraryQueryKey,
       refetchType: "none",
     }),
-  ]);
+  );
+  await Promise.all(invalidations);
 }
 
 function invalidate(

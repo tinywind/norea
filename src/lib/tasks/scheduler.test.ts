@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildSyntheticSourceTasks } from "../../test/fixtures/performance";
+import { subscribePerformanceObservations } from "../observability";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import {
   taskWorkQueueKey,
@@ -3512,8 +3513,18 @@ describe("TaskScheduler", () => {
   it("coalesces snapshot publishes during a scheduler batch", () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
     let snapshots = 0;
+    let events = 0;
+    let snapshotBuilds = 0;
+    const unsubscribeObservations = subscribePerformanceObservations(
+      (observation) => {
+        if (observation.name === "scheduler.snapshot") snapshotBuilds += 1;
+      },
+    );
     scheduler.subscribe(() => {
       snapshots += 1;
+    });
+    scheduler.subscribeEvents(() => {
+      events += 1;
     });
 
     scheduler.batch(() => {
@@ -3526,10 +3537,15 @@ describe("TaskScheduler", () => {
           run: async () => undefined,
         });
       }
+      expect(snapshots).toBe(0);
+      expect(events).toBe(0);
     });
 
     expect(snapshots).toBe(1);
+    expect(events).toBe(10);
+    expect(snapshotBuilds).toBe(1);
     expect(scheduler.getSnapshot().queued).toBe(10);
+    unsubscribeObservations();
   });
 
   it("coalesces multiple non-batched publishes into a single fan-out", async () => {

@@ -82,6 +82,10 @@ interface AppFetchSendResult {
 
 const EMPTY_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 const REQUEST_CANCELLED_ERROR = "Request cancelled";
+const BASE64_DECODE_CHUNK_SIZE = 0x8000;
+const BASE64_ENCODE_CHUNK_SIZE = 0x6000;
+const BASE64_EVENT_LOOP_YIELD_INTERVAL = 16;
+const CLOUDFLARE_BODY_INSPECTION_BYTES = 512 * 1024;
 
 function resolveContextUrl(
   contextUrl: ContextUrlProvider | undefined,
@@ -151,7 +155,7 @@ function requestTimeoutMs(timeoutMs: number | undefined): number {
   return Math.max(1, Math.round(numeric));
 }
 
-function decodeBase64Body(bodyBase64: string): Uint8Array<ArrayBuffer> {
+function decodeBase64Chunk(bodyBase64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(bodyBase64);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
@@ -160,27 +164,76 @@ function decodeBase64Body(bodyBase64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const chunks: string[] = [];
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    chunks.push(
-      String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)),
-    );
-  }
-  return btoa(chunks.join(""));
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 }
 
-function bodyFromWire(result: FetchResultWire): BodyInit {
+async function decodeBase64Body(
+  bodyBase64: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array<ArrayBuffer>[]> {
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  for (
+    let offset = 0;
+    offset < bodyBase64.length;
+    offset += BASE64_DECODE_CHUNK_SIZE
+  ) {
+    if (signal?.aborted) throw requestAbortedError();
+    chunks.push(
+      decodeBase64Chunk(
+        bodyBase64.slice(offset, offset + BASE64_DECODE_CHUNK_SIZE),
+      ),
+    );
+    if (
+      chunks.length % BASE64_EVENT_LOOP_YIELD_INTERVAL === 0 &&
+      offset + BASE64_DECODE_CHUNK_SIZE < bodyBase64.length
+    ) {
+      await yieldToEventLoop();
+    }
+  }
+  return chunks;
+}
+
+async function arrayBufferToBase64(buffer: ArrayBuffer): Promise<string> {
+  const bytes = new Uint8Array(buffer);
+  const chunks: string[] = [];
+  for (
+    let offset = 0;
+    offset < bytes.length;
+    offset += BASE64_ENCODE_CHUNK_SIZE
+  ) {
+    chunks.push(
+      btoa(
+        String.fromCharCode(
+          ...bytes.subarray(offset, offset + BASE64_ENCODE_CHUNK_SIZE),
+        ),
+      ),
+    );
+    if (
+      chunks.length % BASE64_EVENT_LOOP_YIELD_INTERVAL === 0 &&
+      offset + BASE64_ENCODE_CHUNK_SIZE < bytes.length
+    ) {
+      await yieldToEventLoop();
+    }
+  }
+  return chunks.join("");
+}
+
+async function bodyFromWire(
+  result: FetchResultWire,
+  signal?: AbortSignal,
+): Promise<BodyInit> {
   if (result.bodyBase64 !== undefined) {
-    return new Blob([decodeBase64Body(result.bodyBase64)]);
+    return new Blob(await decodeBase64Body(result.bodyBase64, signal));
   }
   return result.body ?? "";
 }
 
-function responseFromWire(result: FetchResultWire): Response {
-  const response = new Response(bodyFromWire(result), {
+async function responseFromWire(
+  result: FetchResultWire,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const response = new Response(await bodyFromWire(result, signal), {
     status: result.status,
     statusText: result.statusText,
     headers: result.headers,
@@ -207,7 +260,10 @@ function wireTextBody(result: FetchResultWire): string {
   if (result.body !== undefined) return result.body;
   if (result.bodyBase64 === undefined) return "";
   try {
-    return new TextDecoder().decode(decodeBase64Body(result.bodyBase64));
+    const encodedLength = Math.ceil(CLOUDFLARE_BODY_INSPECTION_BYTES / 3) * 4;
+    return new TextDecoder().decode(
+      decodeBase64Chunk(result.bodyBase64.slice(0, encodedLength)),
+    );
   } catch {
     return "";
   }
@@ -220,7 +276,10 @@ function isCloudflareChallengeResponse(result: FetchResultWire): boolean {
   }
   const contentType = wireHeader(result.headers, "content-type")?.toLowerCase();
   if (!contentType?.includes("text/html")) return false;
-  const body = wireTextBody(result).slice(0, 512 * 1024);
+  const body = wireTextBody(result).slice(
+    0,
+    CLOUDFLARE_BODY_INSPECTION_BYTES,
+  );
   return (
     /\/cdn-cgi\/challenge-platform\//i.test(body) ||
     /\b(?:cf-chl-|__cf_chl_)/i.test(body) ||
@@ -249,13 +308,14 @@ function cloudflareAccessError(
   );
 }
 
-function checkedResponseFromWire(
+async function checkedResponseFromWire(
   result: FetchResultWire,
   requestUrl: string,
-): Response {
+  signal?: AbortSignal,
+): Promise<Response> {
   const accessError = cloudflareAccessError(result, requestUrl);
   if (accessError) throw accessError;
-  return responseFromWire(result);
+  return responseFromWire(result, signal);
 }
 
 function sourceAccessFallbackUrl(url: string, init: HttpInit): string {
@@ -358,7 +418,11 @@ async function takeCapturedMediaResponse(
       });
     }
     return result
-      ? checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init))
+      ? await checkedResponseFromWire(
+          result,
+          sourceAccessFallbackUrl(url, init),
+          signal,
+        )
       : null;
   } catch (error) {
     if (signal?.aborted) throw requestAbortedError();
@@ -695,7 +759,11 @@ async function pluginFetchInternal(
     }
     throw error;
   }
-  return checkedResponseFromWire(result, sourceAccessFallbackUrl(url, init));
+  return checkedResponseFromWire(
+    result,
+    sourceAccessFallbackUrl(url, init),
+    signal,
+  );
 }
 
 export async function pluginFetch(

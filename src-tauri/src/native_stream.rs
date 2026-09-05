@@ -8,7 +8,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 pub const MAX_INLINE_IPC_BYTES: u64 = 128 * BYTES_PER_MIB;
@@ -440,121 +440,110 @@ impl Default for NativeStreamState {
     }
 }
 
-#[tauri::command]
-pub fn native_stream_create(
+async fn native_stream_blocking<T, F>(
+    context: &'static str,
     app: AppHandle,
-    state: State<'_, NativeStreamState>,
+    task: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&Path, &mut NativeStreamRegistry) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = stream_root(&app)?;
+        let state = app
+            .try_state::<NativeStreamState>()
+            .ok_or_else(|| "native stream: state is not managed".to_string())?;
+        let mut registry = state
+            .registry
+            .lock()
+            .map_err(|_| "native stream: registry lock poisoned".to_string())?;
+        task(&root, &mut registry)
+    })
+    .await
+    .map_err(|err| format!("native stream: {context} task: {err}"))?
+}
+
+#[tauri::command]
+pub async fn native_stream_create(
+    app: AppHandle,
     domain: String,
     max_bytes: Option<u64>,
     ttl_ms: Option<u64>,
 ) -> Result<NativeStreamInfo, String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.create(&root, domain, max_bytes, ttl_ms)
+    native_stream_blocking("create", app, move |root, registry| {
+        registry.create(root, domain, max_bytes, ttl_ms)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_write_chunk(
+pub async fn native_stream_write_chunk(
     app: AppHandle,
-    state: State<'_, NativeStreamState>,
     handle: String,
     chunk: Vec<u8>,
     offset: Option<u64>,
 ) -> Result<NativeStreamInfo, String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.write_chunk(&root, &handle, chunk, offset)
+    native_stream_blocking("write chunk", app, move |root, registry| {
+        registry.write_chunk(root, &handle, chunk, offset)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_finish(
+pub async fn native_stream_finish(
     app: AppHandle,
-    state: State<'_, NativeStreamState>,
     handle: String,
 ) -> Result<NativeStreamInfo, String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.finish(&root, &handle)
+    native_stream_blocking("finish", app, move |root, registry| {
+        registry.finish(root, &handle)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_info(
+pub async fn native_stream_info(
     app: AppHandle,
-    state: State<'_, NativeStreamState>,
     handle: String,
 ) -> Result<NativeStreamInfo, String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.info(&root, &handle)
+    native_stream_blocking("inspect", app, move |root, registry| {
+        registry.info(root, &handle)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_read_chunk(
+pub async fn native_stream_read_chunk(
     app: AppHandle,
-    state: State<'_, NativeStreamState>,
     handle: String,
     offset: u64,
     length: u64,
 ) -> Result<NativeStreamReadChunk, String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.read_chunk(&root, &handle, offset, length)
+    native_stream_blocking("read chunk", app, move |root, registry| {
+        registry.read_chunk(root, &handle, offset, length)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_delete(
-    app: AppHandle,
-    state: State<'_, NativeStreamState>,
-    handle: String,
-) -> Result<(), String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.delete(&root, &handle)
+pub async fn native_stream_delete(app: AppHandle, handle: String) -> Result<(), String> {
+    native_stream_blocking("delete", app, move |root, registry| {
+        registry.delete(root, &handle)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_cancel(
-    app: AppHandle,
-    state: State<'_, NativeStreamState>,
-    handle: String,
-) -> Result<(), String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.cancel(&root, &handle)
+pub async fn native_stream_cancel(app: AppHandle, handle: String) -> Result<(), String> {
+    native_stream_blocking("cancel", app, move |root, registry| {
+        registry.cancel(root, &handle)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn native_stream_cleanup(
-    app: AppHandle,
-    state: State<'_, NativeStreamState>,
-) -> Result<NativeStreamCleanupResult, String> {
-    let root = stream_root(&app)?;
-    let mut registry = state
-        .registry
-        .lock()
-        .map_err(|_| "native stream: registry lock poisoned".to_string())?;
-    registry.cleanup(&root)
+pub async fn native_stream_cleanup(app: AppHandle) -> Result<NativeStreamCleanupResult, String> {
+    native_stream_blocking("cleanup", app, |root, registry| registry.cleanup(root)).await
 }
 
 pub(crate) fn take_finished_path(

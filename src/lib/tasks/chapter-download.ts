@@ -60,7 +60,10 @@ import {
   type TaskProgress,
   type TaskRecord,
 } from "./scheduler";
-import { runBoundedTaskBatch } from "./batch-window";
+import {
+  runBoundedTaskBatch,
+  TASK_BATCH_MATERIALIZATION_WINDOW,
+} from "./batch-window";
 import {
   runExclusiveChapterStorageOperation,
   waitForChapterStorageOperation,
@@ -138,7 +141,6 @@ export interface ChapterDownloadBatchProgress {
 interface ChapterDownloadBatchState extends ChapterDownloadBatchResult {
   cancelRequested: boolean;
   cancelledUnmaterialized: number;
-  knownChapterIds: Set<number>;
   materializedChapterIds: Set<number>;
   queuedChapterIds: Set<number>;
   settledChapterIds: Set<number>;
@@ -164,9 +166,12 @@ const chapterPartialContentListeners = new Set<
 const chapterMediaPatchListeners = new Set<
   (event: ChapterMediaPatchEvent) => void
 >();
-export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW = Number.POSITIVE_INFINITY;
-export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW =
-  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
+export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW =
+  TASK_BATCH_MATERIALIZATION_WINDOW;
+export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
+  10,
+  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+);
 const CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL = 25;
 const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 const CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE = 500;
@@ -376,7 +381,10 @@ function normalizeChapterDownloadBatchWindowSize(
     return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
   }
   if (!Number.isFinite(windowSize)) return MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW;
-  return Math.max(1, Math.floor(windowSize));
+  return Math.min(
+    MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+    Math.max(1, Math.floor(windowSize)),
+  );
 }
 
 function yieldChapterDownloadRestoreInspection(): Promise<void> {
@@ -704,7 +712,7 @@ export function cancelChapterDownloadBatches(
     cancelled += 1;
     state.cancelledUnmaterialized = Math.max(
       state.cancelledUnmaterialized,
-      state.knownChapterIds.size - state.materializedChapterIds.size,
+      state.total - state.materializedChapterIds.size,
     );
 
     const queuedChapterIds = state.queuedChapterIds;
@@ -1526,7 +1534,6 @@ export function enqueueChapterDownloadBatch({
     cancelled: 0,
     cancelledUnmaterialized: 0,
     failed: 0,
-    knownChapterIds: new Set(batchJobs?.map((job) => job.id) ?? []),
     materializedChapterIds: new Set(),
     queuedChapterIds: new Set(
       persist || removeBackendQueuedJobsOnCancel

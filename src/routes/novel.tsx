@@ -2160,18 +2160,51 @@ export function NovelDetailPage() {
   >(() => new Map());
 
   useEffect(() => {
-    return subscribeChapterDownloads((event) => {
-      if (event.job.novelId !== undefined && event.job.novelId !== id) return;
+    let animationFrame: number | null = null;
+    let pendingStatuses = new Map<number, ChapterDownloadStatus | null>();
+
+    const flushStatuses = () => {
+      animationFrame = null;
+      if (pendingStatuses.size === 0) return;
+      const updates = pendingStatuses;
+      pendingStatuses = new Map();
       setStatuses((prev) => {
-        const next = new Map(prev);
-        if (event.status.kind === "cancelled") {
-          next.delete(event.job.id);
-        } else {
-          next.set(event.job.id, event.status);
+        let next: Map<number, ChapterDownloadStatus> | null = null;
+        for (const [chapterId, status] of updates) {
+          if (status === null) {
+            if (!(next ?? prev).has(chapterId)) continue;
+            next ??= new Map(prev);
+            next.delete(chapterId);
+          } else {
+            const current = (next ?? prev).get(chapterId);
+            if (
+              current?.kind === status.kind &&
+              (current.kind !== "failed" ||
+                (status.kind === "failed" && current.error === status.error))
+            ) {
+              continue;
+            }
+            next ??= new Map(prev);
+            next.set(chapterId, status);
+          }
         }
-        return next;
+        return next ?? prev;
       });
+    };
+
+    const unsubscribe = subscribeChapterDownloads((event) => {
+      if (event.job.novelId !== undefined && event.job.novelId !== id) return;
+      pendingStatuses.set(
+        event.job.id,
+        event.status.kind === "cancelled" ? null : event.status,
+      );
+      animationFrame ??= requestAnimationFrame(flushStatuses);
     });
+
+    return () => {
+      unsubscribe();
+      if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+    };
   }, [id]);
 
   const rows = chaptersQuery.data ?? EMPTY_CHAPTERS;

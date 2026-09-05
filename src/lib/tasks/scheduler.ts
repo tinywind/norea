@@ -533,6 +533,7 @@ export class TaskScheduler {
   private batchDepth = 0;
   private drainAfterBatch = false;
   private publishSnapshotAfterBatch = false;
+  private taskEventsAfterBatch: TaskEvent[] = [];
   private snapshotDirty = false;
   private snapshotFlushScheduled = false;
   private snapshotRafHandle: number | null = null;
@@ -1885,9 +1886,12 @@ export class TaskScheduler {
       if (this.batchDepth === 0) {
         const shouldPublishSnapshot = this.publishSnapshotAfterBatch;
         const shouldDrain = this.drainAfterBatch;
+        const taskEvents = this.taskEventsAfterBatch;
         this.publishSnapshotAfterBatch = false;
         this.drainAfterBatch = false;
+        this.taskEventsAfterBatch = [];
         if (shouldPublishSnapshot) this.flushSnapshot();
+        this.publishTaskEventsInChunks(taskEvents);
         if (shouldDrain) this.drain();
       }
     }
@@ -2747,8 +2751,23 @@ export class TaskScheduler {
     entry: TaskEntry,
     previousStatus: TaskStatus | null,
   ): void {
+    const event = { task: { ...entry.record }, previousStatus };
+    if (this.batchDepth > 0) {
+      this.taskEventsAfterBatch.push(event);
+      return;
+    }
     this.refreshSnapshotRecord(entry);
-    this.publishTaskEventPayload({ task: { ...entry.record }, previousStatus });
+    this.publishTaskEventPayload(event);
+  }
+
+  private publishTaskEvents(events: TaskEvent[]): void {
+    if (events.length === 0) return;
+    if (this.batchDepth > 0) {
+      this.taskEventsAfterBatch.push(...events);
+      return;
+    }
+    this.materializeSnapshotIfDirty();
+    this.publishTaskEventsInChunks(events);
   }
 
   private publishTaskEventsInChunks(events: TaskEvent[]): void {
@@ -3083,7 +3102,7 @@ export class TaskScheduler {
       this.deleteEntries(discardedEntries);
     }
     this.publishSnapshot();
-    this.publishTaskEventsInChunks(events);
+    this.publishTaskEvents(events);
     this.requestDrain();
     return cancelled;
   }

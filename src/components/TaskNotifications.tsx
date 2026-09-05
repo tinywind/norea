@@ -2,7 +2,10 @@ import { useEffect } from "react";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
-import { applyNovelChapterDownloadCompletion } from "../lib/reader-query-invalidation";
+import {
+  applyNovelChapterDownloadCompletion,
+  applyNovelChapterDownloadCompletions,
+} from "../lib/reader-query-invalidation";
 import {
   startAndroidBackgroundDownloadRecovery,
   startAndroidTaskNotifications,
@@ -68,43 +71,94 @@ export function TaskNotifications() {
   );
 
   useEffect(() => {
+    let completionFrame: number | null = null;
+    let pendingCompletions = new Map<number, Set<number>>();
+    let pendingCompletionWithoutNovel = false;
+
+    const invalidateCompletionWithoutNovel = (includeLibrary = true) => {
+      const invalidations = [
+        queryClient.invalidateQueries({
+          queryKey: ["novel", "detail"],
+          refetchType: "none",
+        }),
+      ];
+      if (includeLibrary) {
+        invalidations.push(
+          queryClient.invalidateQueries({
+            queryKey: ["novel", "library"],
+            refetchType: "none",
+          }),
+        );
+      }
+      return Promise.all(invalidations);
+    };
+
+    const flushBatchCompletions = async () => {
+      if (completionFrame !== null) {
+        cancelAnimationFrame(completionFrame);
+        completionFrame = null;
+      }
+      const completions = pendingCompletions;
+      const invalidateUnknownNovel = pendingCompletionWithoutNovel;
+      pendingCompletions = new Map();
+      pendingCompletionWithoutNovel = false;
+      await Promise.all([
+        applyNovelChapterDownloadCompletions(queryClient, completions),
+        invalidateUnknownNovel
+          ? invalidateCompletionWithoutNovel(completions.size === 0)
+          : Promise.resolve(),
+      ]);
+    };
+
     const unsubscribeChapterDownloads = subscribeChapterDownloads((event) => {
       if (event.status.kind !== "done") return;
+      if (event.job.batchId) {
+        if (event.job.novelId && event.job.novelId > 0) {
+          const chapterIds =
+            pendingCompletions.get(event.job.novelId) ?? new Set<number>();
+          chapterIds.add(event.job.id);
+          pendingCompletions.set(event.job.novelId, chapterIds);
+        } else {
+          pendingCompletionWithoutNovel = true;
+        }
+        completionFrame ??= requestAnimationFrame(() => {
+          void flushBatchCompletions().catch(() => undefined);
+        });
+        return;
+      }
       if (event.job.novelId && event.job.novelId > 0) {
         void applyNovelChapterDownloadCompletion(queryClient, {
           chapterId: event.job.id,
           novelId: event.job.novelId,
         });
       } else {
-        void Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ["novel", "detail"],
-            refetchType: "none",
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["novel", "library"],
-            refetchType: "none",
-          }),
-        ]);
+        void invalidateCompletionWithoutNovel();
       }
-      if (!event.job.batchId) {
-        void queryClient.invalidateQueries({
-          queryKey: ["novel"],
-          refetchType: "active",
-        });
-      }
+      void queryClient.invalidateQueries({
+        queryKey: ["novel"],
+        refetchType: "active",
+      });
     });
     const unsubscribeChapterDownloadBatches =
       subscribeChapterDownloadBatchesSettled(() => {
-        void queryClient.invalidateQueries({
-          queryKey: ["novel"],
-          refetchType: "active",
-        });
+        void flushBatchCompletions()
+          .finally(() =>
+            queryClient.invalidateQueries({
+              queryKey: ["novel"],
+              refetchType: "active",
+            }),
+          )
+          .catch(() => undefined);
       });
     void startChapterDownloadQueueExecutor();
     return () => {
       unsubscribeChapterDownloadBatches();
       unsubscribeChapterDownloads();
+      if (pendingCompletions.size > 0 || pendingCompletionWithoutNovel) {
+        void flushBatchCompletions().catch(() => undefined);
+      } else if (completionFrame !== null) {
+        cancelAnimationFrame(completionFrame);
+      }
     };
   }, [queryClient]);
 

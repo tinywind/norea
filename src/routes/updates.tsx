@@ -538,8 +538,8 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   const applyCheckResult = useUpdatesStore(
     (state) => state.applyCheckResult,
   );
-  const markChapterDownloaded = useUpdatesStore(
-    (state) => state.markChapterDownloaded,
+  const markChaptersDownloaded = useUpdatesStore(
+    (state) => state.markChaptersDownloaded,
   );
   const mergeFirstPage = useUpdatesStore((state) => state.mergeFirstPage);
   const replaceWindow = useUpdatesStore((state) => state.replaceWindow);
@@ -689,34 +689,81 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   }, [active, hasLoaded, replaceWindow]);
 
   useEffect(() => {
-    return subscribeChapterDownloads((event) => {
-      if (active) {
+    let animationFrame: number | null = null;
+    let pendingStatuses = new Map<number, ChapterDownloadStatus | null>();
+    let pendingDownloadedChapterIds = new Set<number>();
+
+    const flushUpdates = () => {
+      animationFrame = null;
+      const statuses = pendingStatuses;
+      const downloadedChapterIds = pendingDownloadedChapterIds;
+      pendingStatuses = new Map();
+      pendingDownloadedChapterIds = new Set();
+      if (statuses.size > 0) {
         setDownloadStatuses((current) => {
-          const next = new Map(current);
-          if (event.status.kind === "cancelled") {
-            next.delete(event.job.id);
-          } else {
-            next.set(event.job.id, event.status);
+          let next: Map<number, ChapterDownloadStatus> | null = null;
+          for (const [chapterId, status] of statuses) {
+            if (status === null) {
+              if (!(next ?? current).has(chapterId)) continue;
+              next ??= new Map(current);
+              next.delete(chapterId);
+              continue;
+            }
+            const previous = (next ?? current).get(chapterId);
+            if (
+              previous?.kind === status.kind &&
+              (previous.kind !== "failed" ||
+                (status.kind === "failed" && previous.error === status.error))
+            ) {
+              continue;
+            }
+            next ??= new Map(current);
+            next.set(chapterId, status);
           }
-          return next;
+          return next ?? current;
         });
       }
+      if (downloadedChapterIds.size > 0) {
+        markChaptersDownloaded(downloadedChapterIds);
+      }
+    };
+
+    const unsubscribe = subscribeChapterDownloads((event) => {
+      if (active) {
+        pendingStatuses.set(
+          event.job.id,
+          event.status.kind === "cancelled" ? null : event.status,
+        );
+      }
       if (event.status.kind === "done") {
-        markChapterDownloaded(event.job.id);
+        pendingDownloadedChapterIds.add(event.job.id);
+      }
+      if (pendingStatuses.size > 0 || pendingDownloadedChapterIds.size > 0) {
+        animationFrame ??= requestAnimationFrame(flushUpdates);
       }
     });
-  }, [active, markChapterDownloaded]);
+
+    return () => {
+      unsubscribe();
+      if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+      if (pendingDownloadedChapterIds.size > 0) {
+        markChaptersDownloaded(pendingDownloadedChapterIds);
+      }
+    };
+  }, [active, markChaptersDownloaded]);
 
   useEffect(() => {
     if (!active) return;
     const currentStatuses = listChapterDownloadStatuses();
 
+    const downloadedChapterIds: number[] = [];
     for (const entry of updates) {
       const status = currentStatuses.get(entry.chapterId);
       if (status?.kind === "done" && !entry.isDownloaded) {
-        markChapterDownloaded(entry.chapterId);
+        downloadedChapterIds.push(entry.chapterId);
       }
     }
+    markChaptersDownloaded(downloadedChapterIds);
 
     setDownloadStatuses((current) => {
       let changed = false;
@@ -734,7 +781,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       }
       return changed ? next : current;
     });
-  }, [active, markChapterDownloaded, updates]);
+  }, [active, markChaptersDownloaded, updates]);
 
   useEffect(() => {
     if (!active) return;

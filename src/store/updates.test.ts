@@ -37,4 +37,23 @@ describe("updates store download completion", () => {
     expect(useUpdatesStore.getState().updates[0]?.isDownloaded).toBe(true);
     unsubscribe();
   });
+
+  it("updates a batch of matching chapters with one notification", () => {
+    useUpdatesStore.setState({
+      updates: [
+        { chapterId: 11, isDownloaded: false } as LibraryUpdateEntry,
+        { chapterId: 12, isDownloaded: false } as LibraryUpdateEntry,
+      ],
+    });
+    const listener = vi.fn();
+    const unsubscribe = useUpdatesStore.subscribe(listener);
+
+    useUpdatesStore.getState().markChaptersDownloaded([11, 12]);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(
+      useUpdatesStore.getState().updates.map((entry) => entry.isDownloaded),
+    ).toEqual([true, true]);
+    unsubscribe();
+  });
 });

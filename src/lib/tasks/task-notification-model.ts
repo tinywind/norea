@@ -217,7 +217,12 @@ export function buildActiveTaskNotificationGroups(
     if (!isActiveTaskNotificationCandidate(task)) continue;
     const groupKey = taskNotificationGroupKey(task);
     if (!groupKey) continue;
-    grouped.set(groupKey, [...(grouped.get(groupKey) ?? []), task]);
+    const tasks = grouped.get(groupKey);
+    if (tasks) {
+      tasks.push(task);
+    } else {
+      grouped.set(groupKey, [task]);
+    }
   }
 
   if (!grouped.has("downloads") && getActiveChapterDownloadBatchProgress()) {

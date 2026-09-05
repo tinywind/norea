@@ -10,22 +10,32 @@ import type {
 
 interface AndroidStorageBridge {
   archiveDirectory: (
+    requestId: string,
     rootUri: string,
     sourceRelativePath: string,
     archiveRelativePath: string,
-  ) => string;
+  ) => void;
   deleteChildrenExcept: (
     rootUri: string,
     relativePath: string,
     keepName: string,
   ) => string;
-  deletePath: (rootUri: string, relativePath: string) => string;
+  deletePath: (
+    requestId: string,
+    rootUri: string,
+    relativePath: string,
+  ) => void;
   deleteRootChildren: (rootUri: string) => string;
   describeContentUri?: (uri: string) => string;
   ensureNoMedia: (rootUri: string) => string;
+  ensureNoMediaAsync?: (requestId: string, rootUri: string) => void;
   beginRestore: (rootUri: string, token: string) => string;
   commitRestore: (rootUri: string, token: string) => string;
-  pathSize: (rootUri: string, relativePath: string) => string;
+  pathSize: (
+    requestId: string,
+    rootUri: string,
+    relativePath: string,
+  ) => void;
   inspectChapterArtifacts: (
     requestId: string,
     rootUri: string,
@@ -72,7 +82,11 @@ interface AndroidStorageBridge {
   readBase64: (rootUri: string, relativePath: string) => string;
   readContentUriBase64: (uri: string) => string;
   readContentUriFile?: (uri: string, maxBytes: string) => string;
-  readText: (rootUri: string, relativePath: string) => string;
+  readText: (
+    requestId: string,
+    rootUri: string,
+    relativePath: string,
+  ) => void;
   readZipEntryBase64: (
     rootUri: string,
     archiveRelativePath: string,
@@ -84,20 +98,22 @@ interface AndroidStorageBridge {
     entryNamesJson: string,
   ) => string;
   zipEntrySizes?: (
+    requestId: string,
     rootUri: string,
     archiveRelativePath: string,
     entryNamesJson: string,
-  ) => string;
+  ) => void;
   extractZip: (
     rootUri: string,
     archiveRelativePath: string,
     targetRelativePath: string,
   ) => string;
   renamePath: (
+    requestId: string,
     rootUri: string,
     relativePath: string,
     newName: string,
-  ) => string;
+  ) => void;
   removeChapterStorageDirectory: (
     requestId: string,
     rootUri: string,
@@ -122,22 +138,29 @@ interface AndroidStorageBridge {
     maxBytes: string,
   ) => string;
   writeBytes: (
+    requestId: string,
     rootUri: string,
     relativePath: string,
     base64: string,
     mimeType: string,
-  ) => string;
+  ) => void;
   writeContentUriBytes: (
     uri: string,
     base64: string,
     mimeType: string,
   ) => string;
-  writeText: (rootUri: string, relativePath: string, text: string) => string;
+  writeText: (
+    requestId: string,
+    rootUri: string,
+    relativePath: string,
+    text: string,
+  ) => void;
   zipEntryExists: (
+    requestId: string,
     rootUri: string,
     archiveRelativePath: string,
     entryName: string,
-  ) => string;
+  ) => void;
 }
 
 interface AndroidStoragePickPayload {
@@ -250,6 +273,8 @@ export interface AndroidStorageTempFile {
 }
 
 type AndroidStorageBytes = Uint8Array | readonly number[];
+const ANDROID_STORAGE_BASE64_CHUNK_SIZE = 0x6000;
+const ANDROID_STORAGE_BASE64_YIELD_INTERVAL = 16;
 
 const ANDROID_STORAGE_NOT_SELECTED =
   "Android media storage folder has not been selected.";
@@ -267,7 +292,12 @@ const chapterStorageTransferResolvers = new Map<
   string,
   (response: string) => void
 >();
+const storageOperationResolvers = new Map<
+  string,
+  (response: string) => void
+>();
 const nomediaRoots = new Set<string>();
+const nomediaRootPromises = new Map<string, Promise<void>>();
 const novelCoverInspectionsByBridge = new WeakMap<
   AndroidStorageBridge,
   Map<string, Promise<AndroidNovelCoverInspection | null>>
@@ -288,6 +318,10 @@ declare global {
       response: string,
     ) => void;
     __lnrResolveAndroidChapterStorageTransfer?: (
+      requestId: string,
+      response: string,
+    ) => void;
+    __lnrResolveAndroidStorageOperation?: (
       requestId: string,
       response: string,
     ) => void;
@@ -321,6 +355,29 @@ function bytesToBase64(bytes: AndroidStorageBytes): string {
   return btoa(binary);
 }
 
+async function bytesToBase64Cooperatively(
+  bytes: AndroidStorageBytes,
+): Promise<string> {
+  const encodedChunks: string[] = [];
+  for (
+    let index = 0;
+    index < bytes.length;
+    index += ANDROID_STORAGE_BASE64_CHUNK_SIZE
+  ) {
+    const chunk = Array.from(
+      bytes.slice(index, index + ANDROID_STORAGE_BASE64_CHUNK_SIZE),
+    );
+    encodedChunks.push(btoa(String.fromCharCode(...chunk)));
+    if (
+      encodedChunks.length % ANDROID_STORAGE_BASE64_YIELD_INTERVAL === 0 &&
+      index + ANDROID_STORAGE_BASE64_CHUNK_SIZE < bytes.length
+    ) {
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+    }
+  }
+  return encodedChunks.join("");
+}
+
 function base64ToBytes(base64: string): number[] {
   const binary = atob(base64);
   const bytes = new Array<number>(binary.length);
@@ -350,8 +407,24 @@ function normalizeContentUriMaxBytes(maxBytes: number): number {
 
 async function ensureAndroidStorageNomedia(root: string): Promise<void> {
   if (nomediaRoots.has(root)) return;
-  parseStorageResponse(androidStorageBridge().ensureNoMedia(root));
-  nomediaRoots.add(root);
+  const pending = nomediaRootPromises.get(root);
+  if (pending) return pending;
+
+  const bridge = androidStorageBridge();
+  const ensure = bridge.ensureNoMediaAsync
+    ? runAndroidStorageOperation((requestId) =>
+        bridge.ensureNoMediaAsync!(requestId, root),
+      ).then(() => undefined)
+    : Promise.resolve().then(() => {
+        parseStorageResponse(bridge.ensureNoMedia(root));
+      });
+  nomediaRootPromises.set(root, ensure);
+  try {
+    await ensure;
+    nomediaRoots.add(root);
+  } finally {
+    nomediaRootPromises.delete(root);
+  }
 }
 
 async function androidStorageRoot(): Promise<string> {
@@ -387,6 +460,32 @@ function ensureChapterArtifactResolver(): void {
     chapterArtifactResolvers.delete(requestId);
     resolve(response);
   };
+}
+
+function ensureStorageOperationResolver(): void {
+  window.__lnrResolveAndroidStorageOperation ??= (requestId, response) => {
+    const resolve = storageOperationResolvers.get(requestId);
+    if (!resolve) return;
+    storageOperationResolvers.delete(requestId);
+    resolve(response);
+  };
+}
+
+async function runAndroidStorageOperation<T extends AndroidStorageResponse>(
+  start: (requestId: string) => void,
+): Promise<T> {
+  ensureStorageOperationResolver();
+  const requestId = makeRequestId();
+  const rawResponse = await new Promise<string>((resolve, reject) => {
+    storageOperationResolvers.set(requestId, resolve);
+    try {
+      start(requestId);
+    } catch (error) {
+      storageOperationResolvers.delete(requestId);
+      reject(error);
+    }
+  });
+  return parseStorageResponse<T>(rawResponse);
 }
 
 function ensureNovelCoverInspectionResolver(): void {
@@ -503,8 +602,9 @@ export async function writeAndroidStorageBytes(
 ): Promise<void> {
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
-  parseStorageResponse(
-    bridge.writeBytes(root, relativePath, bytesToBase64(body), mimeType),
+  const base64 = await bytesToBase64Cooperatively(body);
+  await runAndroidStorageOperation((requestId) =>
+    bridge.writeBytes(requestId, root, relativePath, base64, mimeType),
   );
   if (isNovelCoverStoragePath(relativePath)) {
     clearNovelCoverInspectionCache(bridge);
@@ -609,8 +709,8 @@ export async function writeAndroidStorageText(
 ): Promise<void> {
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
-  parseStorageResponse(
-    bridge.writeText(root, relativePath, text),
+  await runAndroidStorageOperation((requestId) =>
+    bridge.writeText(requestId, root, relativePath, text),
   );
   if (isNovelCoverStoragePath(relativePath)) {
     clearNovelCoverInspectionCache(bridge);
@@ -622,8 +722,10 @@ export async function archiveAndroidStorageDirectory(
   archiveRelativePath: string,
 ): Promise<number> {
   const root = await androidStorageRoot();
-  const response = parseStorageResponse<AndroidStorageSizeResponse>(
-    androidStorageBridge().archiveDirectory(
+  const bridge = androidStorageBridge();
+  const response = await runAndroidStorageOperation<AndroidStorageSizeResponse>(
+    (requestId) => bridge.archiveDirectory(
+      requestId,
       root,
       sourceRelativePath,
       archiveRelativePath,
@@ -636,9 +738,10 @@ export async function readAndroidStorageText(
   relativePath: string,
 ): Promise<string | null> {
   const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
   try {
-    const response = parseStorageResponse<AndroidStorageTextResponse>(
-      androidStorageBridge().readText(root, relativePath),
+    const response = await runAndroidStorageOperation<AndroidStorageTextResponse>(
+      (requestId) => bridge.readText(requestId, root, relativePath),
     );
     return response.text ?? "";
   } catch (error) {
@@ -861,8 +964,9 @@ export async function androidStoragePathSize(
   relativePath: string,
 ): Promise<number> {
   const root = await androidStorageRoot();
-  const response = parseStorageResponse<AndroidStorageSizeResponse>(
-    androidStorageBridge().pathSize(root, relativePath),
+  const bridge = androidStorageBridge();
+  const response = await runAndroidStorageOperation<AndroidStorageSizeResponse>(
+    (requestId) => bridge.pathSize(requestId, root, relativePath),
   );
   return response.bytes ?? 0;
 }
@@ -892,8 +996,15 @@ export async function androidStorageZipEntryExists(
   entryName: string,
 ): Promise<boolean> {
   const root = await androidStorageRoot();
-  const response = parseStorageResponse<AndroidStorageExistsResponse>(
-    androidStorageBridge().zipEntryExists(root, archiveRelativePath, entryName),
+  const bridge = androidStorageBridge();
+  const response = await runAndroidStorageOperation<AndroidStorageExistsResponse>(
+    (requestId) =>
+      bridge.zipEntryExists(
+        requestId,
+        root,
+        archiveRelativePath,
+        entryName,
+      ),
   );
   return response.exists ?? false;
 }
@@ -910,12 +1021,15 @@ export async function androidStorageZipEntrySizes(
   if (uniqueEntryNames.length === 0) return new Map();
 
   const root = await androidStorageRoot();
-  const response = parseStorageResponse<AndroidStorageZipEntrySizesResponse>(
-    bridge.zipEntrySizes(
-      root,
-      archiveRelativePath,
-      JSON.stringify(uniqueEntryNames),
-    ),
+  const response =
+    await runAndroidStorageOperation<AndroidStorageZipEntrySizesResponse>(
+      (requestId) =>
+        bridge.zipEntrySizes!(
+          requestId,
+          root,
+          archiveRelativePath,
+          JSON.stringify(uniqueEntryNames),
+        ),
   );
   const sizes = new Map<string, number>();
   for (const [entryName, bytes] of Object.entries(response.sizes ?? {})) {
@@ -931,7 +1045,9 @@ export async function deleteAndroidStoragePath(
 ): Promise<void> {
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
-  parseStorageResponse(bridge.deletePath(root, relativePath));
+  await runAndroidStorageOperation((requestId) =>
+    bridge.deletePath(requestId, root, relativePath),
+  );
   if (
     isNovelCoverStoragePath(relativePath) ||
     isNovelStorageDirectoryPath(relativePath)
@@ -1021,8 +1137,8 @@ export async function renameAndroidStoragePath(
 ): Promise<void> {
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
-  parseStorageResponse(
-    bridge.renamePath(root, relativePath, newName),
+  await runAndroidStorageOperation((requestId) =>
+    bridge.renamePath(requestId, root, relativePath, newName),
   );
   if (
     isNovelCoverStoragePath(relativePath) ||

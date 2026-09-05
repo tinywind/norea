@@ -1305,6 +1305,22 @@ class MainActivity : TauriActivity() {
   }
 
   private inner class StorageBridge {
+    private fun submitStorageOperation(
+      requestId: String,
+      operation: () -> JSONObject,
+    ) {
+      runCatching {
+        storageExecutor.execute {
+          resolveStorageOperation(requestId, storageResponse(operation))
+        }
+      }.onFailure { error ->
+        resolveStorageOperation(
+          requestId,
+          storageResponse { throw error },
+        )
+      }
+    }
+
     @JavascriptInterface
     fun pickMediaStorageRoot(requestId: String) {
       runOnUiThread {
@@ -1349,20 +1365,37 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
+    fun ensureNoMediaAsync(requestId: String, rootUri: String) {
+      submitStorageOperation(requestId) {
+        val created = ensureContentsNoMedia(rootUri)
+        JSONObject()
+          .put("ok", true)
+          .put("created", created)
+      }
+    }
+
+    @JavascriptInterface
     fun writeBytes(
+      requestId: String,
       rootUri: String,
       relativePath: String,
       base64: String,
       mimeType: String,
-    ): String = storageResponse {
-      val bytes = Base64.decode(base64, Base64.DEFAULT)
-      val file = ensureStorageFile(rootUri, relativePath, mimeTypeForPath(relativePath, mimeType))
-      contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
-        output.write(bytes)
-      } ?: throw IllegalStateException("Cannot open storage file for writing.")
-      JSONObject()
-        .put("ok", true)
-        .put("bytes", bytes.size)
+    ) {
+      submitStorageOperation(requestId) {
+        val bytes = Base64.decode(base64, Base64.DEFAULT)
+        val file = ensureStorageFile(
+          rootUri,
+          relativePath,
+          mimeTypeForPath(relativePath, mimeType),
+        )
+        contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
+          output.write(bytes)
+        } ?: throw IllegalStateException("Cannot open storage file for writing.")
+        JSONObject()
+          .put("ok", true)
+          .put("bytes", bytes.size)
+      }
     }
 
     @JavascriptInterface
@@ -1481,8 +1514,13 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
-    fun writeText(rootUri: String, relativePath: String, text: String): String =
-      storageResponse {
+    fun writeText(
+      requestId: String,
+      rootUri: String,
+      relativePath: String,
+      text: String,
+    ) {
+      submitStorageOperation(requestId) {
         val bytes = text.toByteArray(Charsets.UTF_8)
         val segments = safeStorageSegments(relativePath)
         if (segments.last() == CHAPTER_MEDIA_MANIFEST_FILE) {
@@ -1510,50 +1548,56 @@ class MainActivity : TauriActivity() {
           .put("ok", true)
           .put("bytes", bytes.size)
       }
-
-    @JavascriptInterface
-    fun archiveDirectory(
-      rootUri: String,
-      sourceRelativePath: String,
-      archiveRelativePath: String,
-    ): String = storageResponse {
-      val sourceSegments = safeStorageSegments(sourceRelativePath)
-      val archiveSegments = safeStorageSegments(archiveRelativePath)
-      require(
-        sourceSegments.lastOrNull() == "media" &&
-          archiveSegments.lastOrNull() == "media.zip" &&
-          sourceSegments.dropLast(1) == archiveSegments.dropLast(1),
-      ) {
-        "Android chapter media archive paths do not share a chapter directory."
-      }
-      val chapterRelativeDir = sourceSegments.dropLast(1).joinToString("/")
-      val chapterDirectory = storageDocumentAt(rootUri, chapterRelativeDir)
-        ?: throw IllegalStateException("Android chapter media directory is unavailable.")
-      require(chapterDirectory.isDirectory && chapterDirectory.canRead()) {
-        "Android chapter media path is not a readable folder."
-      }
-      val mediaBytes = finalizeChapterMediaArtifacts(
-        rootUri,
-        chapterDirectory,
-        chapterRelativeDir,
-        allowLegacyWithoutManifest = false,
-      ) ?: throw IllegalStateException(
-        "Android chapter media files do not match the manifest.",
-      )
-      JSONObject()
-        .put("ok", true)
-        .put("bytes", mediaBytes)
     }
 
     @JavascriptInterface
-    fun readText(rootUri: String, relativePath: String): String = storageResponse {
-      Log.d(TAG, "Android storage readText path=$relativePath root=$rootUri")
-      val text = openStorageInputStream(rootUri, relativePath)?.use { input ->
-        input.readBytes().toString(Charsets.UTF_8)
-      } ?: throw IllegalStateException(storageReadFailureMessage(rootUri, relativePath))
-      JSONObject()
-        .put("ok", true)
-        .put("text", text)
+    fun archiveDirectory(
+      requestId: String,
+      rootUri: String,
+      sourceRelativePath: String,
+      archiveRelativePath: String,
+    ) {
+      submitStorageOperation(requestId) {
+        val sourceSegments = safeStorageSegments(sourceRelativePath)
+        val archiveSegments = safeStorageSegments(archiveRelativePath)
+        require(
+          sourceSegments.lastOrNull() == "media" &&
+            archiveSegments.lastOrNull() == "media.zip" &&
+            sourceSegments.dropLast(1) == archiveSegments.dropLast(1),
+        ) {
+          "Android chapter media archive paths do not share a chapter directory."
+        }
+        val chapterRelativeDir = sourceSegments.dropLast(1).joinToString("/")
+        val chapterDirectory = storageDocumentAt(rootUri, chapterRelativeDir)
+          ?: throw IllegalStateException("Android chapter media directory is unavailable.")
+        require(chapterDirectory.isDirectory && chapterDirectory.canRead()) {
+          "Android chapter media path is not a readable folder."
+        }
+        val mediaBytes = finalizeChapterMediaArtifacts(
+          rootUri,
+          chapterDirectory,
+          chapterRelativeDir,
+          allowLegacyWithoutManifest = false,
+        ) ?: throw IllegalStateException(
+          "Android chapter media files do not match the manifest.",
+        )
+        JSONObject()
+          .put("ok", true)
+          .put("bytes", mediaBytes)
+      }
+    }
+
+    @JavascriptInterface
+    fun readText(requestId: String, rootUri: String, relativePath: String) {
+      submitStorageOperation(requestId) {
+        Log.d(TAG, "Android storage readText path=$relativePath root=$rootUri")
+        val text = openStorageInputStream(rootUri, relativePath)?.use { input ->
+          input.readBytes().toString(Charsets.UTF_8)
+        } ?: throw IllegalStateException(storageReadFailureMessage(rootUri, relativePath))
+        JSONObject()
+          .put("ok", true)
+          .put("text", text)
+      }
     }
 
     @JavascriptInterface
@@ -2019,29 +2063,37 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun zipEntrySizes(
+      requestId: String,
       rootUri: String,
       archiveRelativePath: String,
       entryNamesJson: String,
-    ): String = storageResponse {
-      val requested = JSONArray(entryNamesJson)
-      val requestedNames = linkedSetOf<String>()
-      for (index in 0 until requested.length()) {
-        val entryName = safeZipEntryName(requested.optString(index))
-        if (entryName != null) requestedNames.add(entryName)
+    ) {
+      submitStorageOperation(requestId) {
+        val requested = JSONArray(entryNamesJson)
+        val requestedNames = linkedSetOf<String>()
+        for (index in 0 until requested.length()) {
+          val entryName = safeZipEntryName(requested.optString(index))
+          if (entryName != null) requestedNames.add(entryName)
+        }
+        val sizes = JSONObject()
+        openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
+          readAndroidChapterMediaArchiveEntrySizes(input, requestedNames)
+            .forEach { (entryName, bytes) -> sizes.put(entryName, bytes) }
+        }
+        JSONObject()
+          .put("ok", true)
+          .put("sizes", sizes)
       }
-      val sizes = JSONObject()
-      openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
-        readAndroidChapterMediaArchiveEntrySizes(input, requestedNames)
-          .forEach { (entryName, bytes) -> sizes.put(entryName, bytes) }
-      }
-      JSONObject()
-        .put("ok", true)
-        .put("sizes", sizes)
     }
 
     @JavascriptInterface
-    fun zipEntryExists(rootUri: String, archiveRelativePath: String, entryName: String): String =
-      storageResponse {
+    fun zipEntryExists(
+      requestId: String,
+      rootUri: String,
+      archiveRelativePath: String,
+      entryName: String,
+    ) {
+      submitStorageOperation(requestId) {
         val safeEntryName = safeZipEntryName(entryName)
           ?: throw IllegalArgumentException("Android storage zip entry is invalid: $entryName")
         val exists = openStorageInputStream(rootUri, archiveRelativePath)?.use { input ->
@@ -2066,6 +2118,7 @@ class MainActivity : TauriActivity() {
           .put("ok", true)
           .put("exists", exists)
       }
+    }
 
     @JavascriptInterface
     fun extractZip(
@@ -2111,19 +2164,21 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
-    fun pathSize(rootUri: String, relativePath: String): String = storageResponse {
-      val document = storageDocumentAt(rootUri, relativePath)
-      JSONObject()
-        .put("ok", true)
-        .put(
-          "bytes",
-          document?.let { storageDocumentSize(rootUri, relativePath, it) }
-            ?: externalStorageFile(rootUri, relativePath)
-              ?.takeIf { it.isFile }
-              ?.length()
-              ?.coerceAtLeast(0L)
-            ?: 0L,
-        )
+    fun pathSize(requestId: String, rootUri: String, relativePath: String) {
+      submitStorageOperation(requestId) {
+        val document = storageDocumentAt(rootUri, relativePath)
+        JSONObject()
+          .put("ok", true)
+          .put(
+            "bytes",
+            document?.let { storageDocumentSize(rootUri, relativePath, it) }
+              ?: externalStorageFile(rootUri, relativePath)
+                ?.takeIf { it.isFile }
+                ?.length()
+                ?.coerceAtLeast(0L)
+              ?: 0L,
+          )
+      }
     }
 
     @JavascriptInterface
@@ -2185,13 +2240,15 @@ class MainActivity : TauriActivity() {
       }
 
     @JavascriptInterface
-    fun deletePath(rootUri: String, relativePath: String): String = storageResponse {
-      storageDocumentAt(rootUri, relativePath)?.let { document ->
-        if (!document.delete()) {
-          throw IllegalStateException("Cannot delete Android storage path: $relativePath")
+    fun deletePath(requestId: String, rootUri: String, relativePath: String) {
+      submitStorageOperation(requestId) {
+        storageDocumentAt(rootUri, relativePath)?.let { document ->
+          if (!document.delete()) {
+            throw IllegalStateException("Cannot delete Android storage path: $relativePath")
+          }
         }
+        JSONObject().put("ok", true)
       }
-      JSONObject().put("ok", true)
     }
 
     @JavascriptInterface
@@ -2241,8 +2298,13 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
-    fun renamePath(rootUri: String, relativePath: String, newName: String): String =
-      storageResponse {
+    fun renamePath(
+      requestId: String,
+      rootUri: String,
+      relativePath: String,
+      newName: String,
+    ) {
+      submitStorageOperation(requestId) {
         val safeNewName = safeStorageSegments(newName).singleOrNull()
           ?: throw IllegalArgumentException("Android storage target name is invalid: $newName")
         val document = storageDocumentAt(rootUri, relativePath)
@@ -2255,7 +2317,7 @@ class MainActivity : TauriActivity() {
             ?: throw IllegalStateException("Android storage parent path not found: $parentPath")
         }
         if (document.name == safeNewName) {
-          return@storageResponse JSONObject().put("ok", true)
+          return@submitStorageOperation JSONObject().put("ok", true)
         }
         val backupName = "$safeNewName.bak"
         val existing = parent.findFile(safeNewName)
@@ -2287,6 +2349,7 @@ class MainActivity : TauriActivity() {
         }
         JSONObject().put("ok", true)
       }
+    }
 
     @JavascriptInterface
     fun deleteChildrenExcept(rootUri: String, relativePath: String, keepName: String): String =
@@ -2468,6 +2531,16 @@ class MainActivity : TauriActivity() {
     val script =
       "window.__lnrResolveAndroidStoragePick && window.__lnrResolveAndroidStoragePick(" +
         "${JSONObject.quote(requestId)}, $payload);"
+    mainWebView?.post {
+      mainWebView?.evaluateJavascript(script, null)
+    }
+  }
+
+  private fun resolveStorageOperation(requestId: String, response: String) {
+    val script =
+      "window.__lnrResolveAndroidStorageOperation && " +
+        "window.__lnrResolveAndroidStorageOperation(" +
+        "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)
     }

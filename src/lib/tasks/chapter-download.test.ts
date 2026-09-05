@@ -310,7 +310,7 @@ describe("enqueueChapterDownloadBatch", () => {
     expect(listener).toHaveBeenCalledWith(handle.id);
   });
 
-  it("materializes every scheduler task for large chapter batches inside a scheduler batch", async () => {
+  it("limits generator materialization to the bounded scheduler window", async () => {
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(
       (spec: SourceTaskSpec<void>) => {
@@ -325,7 +325,7 @@ describe("enqueueChapterDownloadBatch", () => {
     );
     let yielded = 0;
     function* jobs(): Iterable<ChapterDownloadJob> {
-      for (let id = 1; id <= 10_000; id += 1) {
+      for (let id = 1; id <= 64; id += 1) {
         yielded += 1;
         yield {
           id,
@@ -338,18 +338,32 @@ describe("enqueueChapterDownloadBatch", () => {
 
     const handle = enqueueChapterDownloadBatch({
       jobs: jobs(),
-      title: "Download 10k chapters",
-      total: 10_000,
+      persist: false,
+      title: "Download 64 chapters",
+      total: 64,
     });
-    void handle.promise.catch(() => undefined);
 
-    expect(yielded).toBe(10_000);
+    expect(yielded).toBe(16);
     await flushMicrotasks();
 
     expect(schedulerMocks.batch).toHaveBeenCalled();
-    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(10_000);
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
+    expect(capturedSpec?.subject?.batchTitle).toBe("Download 64 chapters");
 
-    expect(capturedSpec?.subject?.batchTitle).toBe("Download 10k chapters");
+    expect(cancelChapterDownloadBatches([capturedSpec!.subject!.batchId!])).toBe(
+      1,
+    );
+    for (const deferred of deferreds) {
+      deferred.reject(new DOMException("Task was cancelled.", "AbortError"));
+    }
+
+    await expect(handle.promise).resolves.toEqual({
+      cancelled: 64,
+      failed: 0,
+      succeeded: 0,
+      total: 64,
+    });
+    expect(yielded).toBe(16);
   });
 
   it("queues every array batch job before requested scheduler materialization", async () => {

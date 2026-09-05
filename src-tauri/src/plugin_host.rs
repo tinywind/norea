@@ -75,8 +75,17 @@ fn requested_entry_index(
     Err("No matching ZIP file entry was found.".to_string())
 }
 
-#[tauri::command]
-pub fn plugin_zip_list(bytes: Vec<u8>) -> Result<Vec<PluginZipEntryInfo>, String> {
+async fn plugin_zip_blocking<T, F>(context: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|err| format!("Plugin ZIP {context} task failed: {err}"))?
+}
+
+fn plugin_zip_list_sync(bytes: Vec<u8>) -> Result<Vec<PluginZipEntryInfo>, String> {
     let mut archive = open_archive(bytes)?;
     let mut entries = Vec::with_capacity(archive.len());
 
@@ -95,8 +104,7 @@ pub fn plugin_zip_list(bytes: Vec<u8>) -> Result<Vec<PluginZipEntryInfo>, String
     Ok(entries)
 }
 
-#[tauri::command]
-pub fn plugin_zip_read_file(
+fn plugin_zip_read_file_sync(
     bytes: Vec<u8>,
     options: PluginZipReadOptions,
 ) -> Result<Vec<u8>, String> {
@@ -118,4 +126,17 @@ pub fn plugin_zip_read_file(
     file.read_to_end(&mut output)
         .map_err(|err| format!("Could not read ZIP entry: {err}"))?;
     Ok(output)
+}
+
+#[tauri::command]
+pub async fn plugin_zip_list(bytes: Vec<u8>) -> Result<Vec<PluginZipEntryInfo>, String> {
+    plugin_zip_blocking("list", move || plugin_zip_list_sync(bytes)).await
+}
+
+#[tauri::command]
+pub async fn plugin_zip_read_file(
+    bytes: Vec<u8>,
+    options: PluginZipReadOptions,
+) -> Result<Vec<u8>, String> {
+    plugin_zip_blocking("read", move || plugin_zip_read_file_sync(bytes, options)).await
 }

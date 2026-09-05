@@ -1741,12 +1741,17 @@ class AndroidScraperBridge(
             });
             const responseBytes = new Uint8Array(await response.arrayBuffer());
             const responseChunks = [];
-            const chunkSize = 0x8000;
+            const chunkSize = 0x6000;
             for (let offset = 0; offset < responseBytes.length; offset += chunkSize) {
               const chunk = responseBytes.subarray(offset, offset + chunkSize);
-              responseChunks.push(String.fromCharCode.apply(null, Array.from(chunk)));
+              responseChunks.push(btoa(String.fromCharCode.apply(null, Array.from(chunk))));
+              if (responseChunks.length % 16 === 0 && offset + chunkSize < responseBytes.length) {
+                await new Promise(function (resolve) {
+                  setTimeout(resolve, 0);
+                });
+              }
             }
-            const bodyBase64 = btoa(responseChunks.join(""));
+            const bodyBase64 = responseChunks.join("");
             AndroidScraper.postFetchResultWithNonce(requestId, requestNonce, JSON.stringify({
               success: true,
               status: response.status,

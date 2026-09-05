@@ -2,6 +2,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyNovelChapterDownloadCompletion,
+  applyNovelChapterDownloadCompletions,
   chapterDetailQueryKey,
   chapterHistoryQueryKey,
   chapterListQueryKey,
@@ -230,5 +231,38 @@ describe("reader query invalidation", () => {
     });
 
     expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toBe(chapters);
+  });
+
+  it("applies batched download completions once per novel and library", async () => {
+    const queryClient = createQueryClient();
+    const firstNovelChapters = [
+      { id: 11, isDownloaded: false },
+      { id: 12, isDownloaded: false },
+    ];
+    const secondNovelChapters = [{ id: 21, isDownloaded: false }];
+    queryClient.setQueryData(novelChaptersQueryKey(7), firstNovelChapters);
+    queryClient.setQueryData(novelChaptersQueryKey(8), secondNovelChapters);
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await applyNovelChapterDownloadCompletions(
+      queryClient,
+      new Map([
+        [7, new Set([11, 12])],
+        [8, new Set([21])],
+      ]),
+    );
+
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
+      { id: 11, isDownloaded: true },
+      { id: 12, isDownloaded: true },
+    ]);
+    expect(queryClient.getQueryData(novelChaptersQueryKey(8))).toEqual([
+      { id: 21, isDownloaded: true },
+    ]);
+    expect(
+      invalidateQueries.mock.calls.filter(
+        ([filters]) => filters?.queryKey === novelLibraryQueryKey,
+      ),
+    ).toHaveLength(1);
   });
 });

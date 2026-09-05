@@ -15,6 +15,7 @@ interface UpdatesState {
   appendPage: (page: LibraryUpdatesPage) => void;
   applyCheckResult: (result: UpdateCheckResult) => void;
   markChapterDownloaded: (chapterId: number) => void;
+  markChaptersDownloaded: (chapterIds: Iterable<number>) => void;
   mergeFirstPage: (page: LibraryUpdatesPage) => void;
   replaceWindow: (page: LibraryUpdatesPage) => void;
 }
@@ -46,14 +47,39 @@ function appendRows(
 
 function markRowsDownloaded(
   rows: LibraryUpdateEntry[],
-  chapterId: number,
+  chapterIds: ReadonlySet<number>,
 ): LibraryUpdateEntry[] {
-  const index = rows.findIndex((row) => row.chapterId === chapterId);
-  if (index < 0 || rows[index]?.isDownloaded) return rows;
+  let updated: LibraryUpdateEntry[] | null = null;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    if (!chapterIds.has(row.chapterId) || row.isDownloaded) continue;
+    updated ??= [...rows];
+    updated[index] = { ...row, isDownloaded: true };
+  }
+  return updated ?? rows;
+}
 
-  const updated = [...rows];
-  updated[index] = { ...updated[index]!, isDownloaded: true };
-  return updated;
+function markChaptersDownloadedState(
+  state: UpdatesState,
+  chapterIds: ReadonlySet<number>,
+) {
+  const updates = markRowsDownloaded(state.updates, chapterIds);
+  const lastCheckUpdates = state.lastCheckResult
+    ? markRowsDownloaded(state.lastCheckResult.updates, chapterIds)
+    : null;
+  if (
+    updates === state.updates &&
+    (!state.lastCheckResult ||
+      lastCheckUpdates === state.lastCheckResult.updates)
+  ) {
+    return state;
+  }
+  return {
+    lastCheckResult: state.lastCheckResult
+      ? { ...state.lastCheckResult, updates: lastCheckUpdates! }
+      : null,
+    updates,
+  };
 }
 
 function getNextCursor(
@@ -95,25 +121,11 @@ export const useUpdatesStore = create<UpdatesState>((set) => ({
       updates: result.updates,
     }),
   markChapterDownloaded: (chapterId) =>
-    set((state) => {
-      const updates = markRowsDownloaded(state.updates, chapterId);
-      const lastCheckUpdates = state.lastCheckResult
-        ? markRowsDownloaded(state.lastCheckResult.updates, chapterId)
-        : null;
-      if (
-        updates === state.updates &&
-        (!state.lastCheckResult ||
-          lastCheckUpdates === state.lastCheckResult.updates)
-      ) {
-        return state;
-      }
-      return {
-        lastCheckResult: state.lastCheckResult
-          ? { ...state.lastCheckResult, updates: lastCheckUpdates! }
-          : null,
-        updates,
-      };
-    }),
+    set((state) => markChaptersDownloadedState(state, new Set([chapterId]))),
+  markChaptersDownloaded: (chapterIds) =>
+    set((state) =>
+      markChaptersDownloadedState(state, new Set(chapterIds)),
+    ),
   mergeFirstPage: (page) =>
     set((state) => {
       const hasMoreUpdates = page.hasMore || state.hasMoreUpdates;
