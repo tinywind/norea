@@ -453,6 +453,19 @@ export function ReaderSettingsPanel({
   const automationSettings = (
     <SettingsSection title={t("readerSettings.automation.title")}>
       <SettingsFieldRow
+        label={t("readerSettings.autoDownloadNextChapter")}
+        description={t("readerSettings.autoDownloadNextChapter.description")}
+      >
+        <Switch
+          checked={general.autoDownloadNextChapter}
+          onChange={(event) =>
+            setActiveGeneral({
+              autoDownloadNextChapter: event.currentTarget.checked,
+            })
+          }
+        />
+      </SettingsFieldRow>
+      <SettingsFieldRow
         label={t("readerSettings.autoScroll")}
         description={t("readerSettings.autoScroll.description")}
       >

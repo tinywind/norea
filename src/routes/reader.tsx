@@ -15,6 +15,7 @@ import {
   type ReaderContentHandle,
 } from "../components/ReaderContent";
 import { PdfReaderContent } from "../components/PdfReaderContent";
+import { useReaderDocument } from "../components/use-reader-document";
 import { BackIconButton } from "../components/BackIconButton";
 import { IconButton } from "../components/IconButton";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
@@ -38,7 +39,10 @@ import {
   type ChapterMediaElementPatch,
 } from "../lib/chapter-media";
 import { isHtmlLikeChapterContentType } from "../lib/chapter-content";
-import { readStoredChapterContentMirror } from "../lib/chapter-content-storage";
+import {
+  getNextChapterPreparationPlan,
+  readerChapterQueryOptions,
+} from "../lib/reader-chapter";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
@@ -92,10 +96,6 @@ type ReaderDocumentState = {
   chapterId: number;
   contentType: ChapterRow["contentType"];
   html: string;
-};
-
-type ReaderChapterRow = ChapterRow & {
-  content: string | null;
 };
 
 const READER_RENDERABLE_MEDIA_SELECTOR =
@@ -610,17 +610,7 @@ export function ReaderPage() {
   const [remoteMediaError, setRemoteMediaError] = useState(false);
 
   const chapterQuery = useQuery({
-    queryKey: chapterDetailQueryKey(chapterId),
-    queryFn: async () => {
-      const chapter = await getChapterById(chapterId);
-      if (!chapter) return null;
-      const content = await readStoredChapterContentMirror(chapter.id);
-      const reconciledChapter = await getChapterById(chapterId);
-      return {
-        ...(reconciledChapter ?? chapter),
-        content,
-      } satisfies ReaderChapterRow;
-    },
+    ...readerChapterQueryOptions(chapterId),
     enabled: chapterId > 0,
   });
   const rawChapter = chapterQuery.data;
@@ -973,6 +963,16 @@ export function ReaderPage() {
     queryFn: () => listChaptersByNovel(currentNovelId),
     enabled: currentNovelId > 0,
   });
+  const chapters = chapterListQuery.data ?? [];
+  const chapterIndex = chapter
+    ? chapters.findIndex((item) => item.id === chapter.id)
+    : -1;
+  const previousChapter =
+    chapterIndex > 0 ? chapters[chapterIndex - 1] : undefined;
+  const nextChapter =
+    chapterIndex >= 0 && chapterIndex < chapters.length - 1
+      ? chapters[chapterIndex + 1]
+      : undefined;
   const progressMutation = useMutation({
     mutationFn: ({
       chapterId: targetChapterId,
@@ -1209,11 +1209,14 @@ export function ReaderPage() {
   const openAdjacent = useCallback(
     async (direction: 1 | -1) => {
       if (!chapter?.novelId || chapter.position === undefined) return;
-      const adjacent = await getAdjacentChapter(
-        chapter.novelId,
-        chapter.position,
-        direction,
-      );
+      const listedAdjacent = direction === 1 ? nextChapter : previousChapter;
+      const adjacent =
+        listedAdjacent ??
+        (await getAdjacentChapter(
+          chapter.novelId,
+          chapter.position,
+          direction,
+        ));
       if (!adjacent) return;
       if (direction === 1) {
         contentRef.current?.completeIfAtEnd();
@@ -1223,7 +1226,13 @@ export function ReaderPage() {
         direction === 1 ? { initialProgress: 0 } : undefined,
       );
     },
-    [chapter?.novelId, chapter?.position, openChapter],
+    [
+      chapter?.novelId,
+      chapter?.position,
+      nextChapter,
+      openChapter,
+      previousChapter,
+    ],
   );
 
   const handleReaderBack = useCallback((): boolean => {
@@ -1371,16 +1380,6 @@ export function ReaderPage() {
     readerSettingsOpen,
   ]);
 
-  const chapters = chapterListQuery.data ?? [];
-  const chapterIndex = chapter
-    ? chapters.findIndex((item) => item.id === chapter.id)
-    : -1;
-  const previousChapter =
-    chapterIndex > 0 ? chapters[chapterIndex - 1] : undefined;
-  const nextChapter =
-    chapterIndex >= 0 && chapterIndex < chapters.length - 1
-      ? chapters[chapterIndex + 1]
-      : undefined;
   const chapterContentHtml = chapter?.content ?? null;
 
   useEffect(() => {
@@ -1509,28 +1508,107 @@ export function ReaderPage() {
     ],
   );
 
-  useEffect(() => {
-    if (!activeReaderDocument) return;
-    const patches = pendingMediaPatchesRef.current.get(
-      activeReaderDocument.chapterId,
-    );
-    if (!patches?.length) return;
-    pendingMediaPatchesRef.current.delete(activeReaderDocument.chapterId);
-    window.requestAnimationFrame(() => {
-      contentRef.current?.patchMediaElements(patches);
-    });
-  }, [activeReaderDocument?.chapterId, activeReaderDocument?.html]);
-
   const hasChapterContent = Boolean(activeReaderHtml);
   useLayoutEffect(() => {
     readerContentReadyRef.current = readerProgressPersistenceReady;
   }, [readerProgressPersistenceReady]);
-  const readerBusy =
-    chapterId > 0 &&
-    !hasChapterContent &&
-    (chapterQuery.isLoading || Boolean(chapter && !chapter.isDownloaded));
   const content = activeReaderHtml ?? SAMPLE_CHAPTER_HTML;
   const isPdfChapter = hasChapterContent && activeContentType === "pdf";
+  const readerPreparation = useReaderDocument(
+    isPdfChapter || (chapterId > 0 && !hasChapterContent) ? null : content,
+    effectiveReaderGeneral.bionicReading,
+    readerContentKey,
+  );
+  useEffect(() => {
+    if (!activeReaderDocument || !readerPreparation.document) return;
+    const targetChapterId = activeReaderDocument.chapterId;
+    const frame = window.requestAnimationFrame(() => {
+      const patches = pendingMediaPatchesRef.current.get(targetChapterId);
+      if (!patches?.length || !contentRef.current) return;
+      pendingMediaPatchesRef.current.delete(targetChapterId);
+      contentRef.current.patchMediaElements(patches);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    activeReaderDocument?.chapterId,
+    activeReaderDocument?.html,
+    readerPreparation.document,
+  ]);
+  const nextChapterPreparationPlan = getNextChapterPreparationPlan({
+    autoDownloadNextChapter:
+      effectiveReaderGeneral.autoDownloadNextChapter,
+    currentChapterReady:
+      chapter?.isDownloaded === true &&
+      (isPdfChapter || Boolean(readerPreparation.document)),
+    nextChapter,
+  });
+  const nextChapterId = nextChapterPreparationPlan?.chapterId ?? 0;
+  const nextChapterQuery = useQuery({
+    ...readerChapterQueryOptions(nextChapterId),
+    enabled: nextChapterId > 0,
+    retry: false,
+  });
+  const nextContent = nextChapterQuery.data;
+  useReaderDocument(
+    nextContent?.id === nextChapterId &&
+      nextContent.isDownloaded &&
+      nextContent.contentType !== "pdf"
+      ? nextContent.content
+      : null,
+    effectiveReaderGeneral.bionicReading,
+    nextChapterId,
+  );
+  useEffect(() => {
+    if (nextChapterId <= 0) return;
+    return subscribeChapterDownloads((event) => {
+      if (event.job.id !== nextChapterId || event.status.kind !== "done") return;
+      void invalidateReaderContentQueries(queryClient, {
+        chapterId: nextChapterId,
+        novelId: currentNovelId,
+      });
+    });
+  }, [currentNovelId, nextChapterId, queryClient]);
+  const nextChapterDownloadRequestRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!nextChapterPreparationPlan?.download) {
+      nextChapterDownloadRequestRef.current = null;
+      return;
+    }
+    if (
+      !nextChapter ||
+      !currentNovel ||
+      nextChapterDownloadRequestRef.current === nextChapter.id
+    ) {
+      return;
+    }
+    nextChapterDownloadRequestRef.current = nextChapter.id;
+    const handle = enqueueChapterDownload({
+      id: nextChapter.id,
+      pluginId: currentNovel.pluginId,
+      pluginName: currentSourceName ?? currentNovel.pluginId,
+      chapterPath: nextChapter.path,
+      chapterName: nextChapter.name,
+      chapterNumber: nextChapter.chapterNumber ?? undefined,
+      contentType: nextChapter.contentType,
+      novelId: currentNovel.id,
+      novelName: currentNovel.name,
+      novelPath: currentNovel.path,
+      priority: "background",
+      title: t("tasks.task.downloadChapter", { name: nextChapter.name }),
+    });
+    void handle.promise.catch(() => undefined);
+  }, [
+    currentNovel,
+    currentSourceName,
+    nextChapter,
+    nextChapterPreparationPlan?.download,
+    t,
+  ]);
+  const readerBusy =
+    readerPreparation.isPending ||
+    (chapterId > 0 &&
+      !hasChapterContent &&
+      (chapterQuery.isLoading || Boolean(chapter && !chapter.isDownloaded)));
   const progress = chapter?.progress ?? 0;
   const activeInitialProgressOverride =
     initialProgressOverride &&
@@ -1540,12 +1618,14 @@ export function ReaderPage() {
   const readerProgress = activeInitialProgressOverride ?? progress;
   const chapterNovelId = chapter?.novelId;
   const readerStateVisible =
-    chapterId > 0 &&
-    !hasChapterContent &&
-    (chapterQuery.isLoading ||
-      Boolean(chapterQuery.error) ||
-      chapterQuery.data === null ||
-      Boolean(chapter));
+    readerPreparation.isPending ||
+    Boolean(readerPreparation.error) ||
+    (chapterId > 0 &&
+      !hasChapterContent &&
+      (chapterQuery.isLoading ||
+        Boolean(chapterQuery.error) ||
+        chapterQuery.data === null ||
+        Boolean(chapter)));
   const readerChromeAutoHide = fullPageReader && !readerStateVisible;
   const readerChromeVisible = !readerChromeAutoHide || fullPageChromeVisible;
   const readerSeekbarEnabled =
@@ -1720,7 +1800,16 @@ export function ReaderPage() {
   );
 
   const readerContent =
-    chapterId > 0 && !hasChapterContent && chapterQuery.isLoading ? (
+    readerPreparation.error ? (
+      <Box className="lnr-reader-state-frame">
+        <StateView
+          color="red"
+          title={t("reader.loadFailed")}
+          message={readerPreparation.error.message}
+        />
+      </Box>
+    ) : readerPreparation.isPending ||
+      (chapterId > 0 && !hasChapterContent && chapterQuery.isLoading) ? (
       <Box className="lnr-reader-state-frame">
         <StateView
           color="blue"
@@ -1794,6 +1883,7 @@ export function ReaderPage() {
         contentKey={readerContentKey}
         generalSettings={readerContentGeneral}
         html={content}
+        preparedDocument={readerPreparation.document}
         initialProgress={readerProgress}
         localMediaContext={readerLocalMediaContext}
         onToggleChrome={handleReaderMenuTap}

@@ -176,6 +176,7 @@ export interface ReaderGeneralSettings {
   autoScroll: boolean;
   autoScrollInterval: number;
   autoScrollOffset: number;
+  autoDownloadNextChapter: boolean;
   bionicReading: boolean;
   removeExtraParagraphSpacing: boolean;
   tapZonePresetId: ReaderTapPresetId;
@@ -455,6 +456,7 @@ const READER_GENERAL_OVERRIDE_KEYS: Array<keyof ReaderGeneralSettingsOverride> =
     "autoScroll",
     "autoScrollInterval",
     "autoScrollOffset",
+    "autoDownloadNextChapter",
     "bionicReading",
     "removeExtraParagraphSpacing",
     "tapZonePresetId",
@@ -582,6 +584,7 @@ export const READER_GENERAL_DEFAULTS: ReaderGeneralSettings = {
   autoScroll: false,
   autoScrollInterval: 80,
   autoScrollOffset: 1,
+  autoDownloadNextChapter: true,
   bionicReading: false,
   removeExtraParagraphSpacing: false,
   tapZonePresetId: DEFAULT_TAP_ZONE_PRESET.id,

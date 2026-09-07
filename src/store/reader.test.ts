@@ -82,6 +82,24 @@ describe("useReaderStore", () => {
     const state = useReaderStore.getState();
     expect(state.general).toEqual(READER_GENERAL_DEFAULTS);
     expect(state.appearance).toEqual(READER_APPEARANCE_DEFAULTS);
+    expect(state.general.autoDownloadNextChapter).toBe(true);
+  });
+
+  it("enables next chapter downloads when older settings are restored", async () => {
+    localStorageHarness.values.set(
+      "reader-settings",
+      JSON.stringify({
+        state: { general: { pageReader: true } },
+        version: 0,
+      }),
+    );
+
+    await useReaderStore.persist.rehydrate();
+
+    expect(useReaderStore.getState().general.pageReader).toBe(true);
+    expect(
+      useReaderStore.getState().general.autoDownloadNextChapter,
+    ).toBe(true);
   });
 
   it("setGeneral merges pageReader without dropping other fields", () => {
@@ -198,13 +216,19 @@ describe("useReaderStore", () => {
       pageReader: true,
       keepScreenOn: true,
       bionicReading: true,
+      autoDownloadNextChapter: false,
     });
     state.setNovelAppearance(novelId, { textSize: 22 });
 
     const override = useReaderStore.getState().readerSettingsByNovel[novelId];
     expect(override).toEqual({
       enabled: true,
-      general: { pageReader: true, keepScreenOn: true, bionicReading: true },
+      general: {
+        pageReader: true,
+        keepScreenOn: true,
+        bionicReading: true,
+        autoDownloadNextChapter: false,
+      },
       appearance: { textSize: 22 },
     });
 
@@ -219,6 +243,7 @@ describe("useReaderStore", () => {
     expect(effectiveGeneral.pageReader).toBe(true);
     expect(effectiveGeneral.keepScreenOn).toBe(true);
     expect(effectiveGeneral.bionicReading).toBe(true);
+    expect(effectiveGeneral.autoDownloadNextChapter).toBe(false);
     expect(effectiveAppearance.textSize).toBe(22);
     expect(effectiveAppearance.customThemes).toBe(
       READER_APPEARANCE_DEFAULTS.customThemes,

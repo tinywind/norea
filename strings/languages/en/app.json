@@ -469,6 +469,8 @@
   "readerSettings.batteryTimeFooter": "Battery and time footer",
   "readerSettings.batteryTimeFooter.description": "Show device battery and current time in the reader footer.",
   "readerSettings.automation.title": "Automation",
+  "readerSettings.autoDownloadNextChapter": "Download next chapter in advance",
+  "readerSettings.autoDownloadNextChapter.description": "Download the following chapter in the background and prepare it before you open it.",
   "readerSettings.autoScroll": "Auto-scroll",
   "readerSettings.autoScroll.description": "Scroll automatically while the reader is in scroll mode.",
   "readerSettings.autoScrollInterval": "Auto-scroll update interval",

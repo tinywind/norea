@@ -30,6 +30,23 @@ import {
 } from "../store/reader";
 import { ReaderSeekbars } from "./ReaderSeekbars";
 import {
+  prepareReaderDocument,
+  READER_MEDIA_PATCH_SELECTOR,
+  READER_MEDIA_SOURCE_URL_ATTRIBUTE,
+  READER_PENDING_MEDIA_ATTRIBUTE,
+  READER_PENDING_BACKGROUND_ATTRIBUTE,
+  READER_PENDING_DISPLAY_ATTRIBUTE,
+  READER_PENDING_HEIGHT_ATTRIBUTE,
+  READER_MEDIA_INDEX_ATTRIBUTE,
+  READER_SEGMENT_INDEX_ATTRIBUTE,
+  READER_PENDING_PLACEHOLDER_SRC,
+  READER_PENDING_PLACEHOLDER_HEIGHT,
+  READER_INERT_LOCAL_MEDIA_SRC_PREFIX,
+  READER_DOM_PREPROCESS_MAX_HTML_LENGTH,
+  type PreparedReaderDocument,
+  type ReaderVirtualSegment,
+} from "./reader-document";
+import {
   prefixSegmentHeights,
   readerHtmlHasMedia,
   shouldVirtualizeReaderScroll,
@@ -49,6 +66,7 @@ interface ReaderContentProps {
   contentKey?: number | string;
   generalSettings?: ReaderGeneralSettings;
   html: string;
+  preparedDocument?: PreparedReaderDocument;
   initialProgress?: number;
   interactionBlocked?: boolean;
   localMediaContext?: ChapterMediaStorageContext;
@@ -73,20 +91,6 @@ interface BatteryManagerLike {
 interface PageInfo {
   current: number;
   total: number;
-}
-
-interface ReaderVirtualSegment {
-  estimatedHeight: number;
-  html: string;
-  index: number;
-}
-
-interface ReaderVirtualDocument {
-  contentClassName: string;
-  contentDirection?: "ltr" | "rtl" | "auto";
-  contentLanguage?: string;
-  segments: ReaderVirtualSegment[];
-  staticHtml: string;
 }
 
 interface ReaderViewportSize {
@@ -120,42 +124,6 @@ const PAGED_TRAILING_PAGE_TOLERANCE_MAX_PX = 32;
 const PAGED_TRAILING_PAGE_TOLERANCE_FRACTION = 0.03;
 const READER_MEDIA_EVENT_SELECTOR =
   "img,picture,svg,video,audio,canvas,iframe,figure";
-const READER_MEDIA_PATCH_SELECTOR = [
-  "img[src]",
-  "video[src]",
-  "audio[src]",
-  "source[src]",
-  "embed[src]",
-  "track[src]",
-  "img[data-src]",
-  "img[data-original]",
-  "img[data-lazy-src]",
-  "img[data-orig-src]",
-  "video[data-src]",
-  "video[data-original]",
-  "video[data-lazy-src]",
-  "video[data-orig-src]",
-  "audio[data-src]",
-  "audio[data-original]",
-  "audio[data-lazy-src]",
-  "audio[data-orig-src]",
-  "source[data-src]",
-  "source[data-original]",
-  "source[data-lazy-src]",
-  "source[data-orig-src]",
-  "video[poster]",
-  "object[data]",
-  'link[href][rel~="preload"][as="image"]',
-  'link[href][rel~="preload"][as="video"]',
-  'link[href][rel~="preload"][as="audio"]',
-  "image[href]",
-  "image[xlink\\:href]",
-  "use[href]",
-  "use[xlink\\:href]",
-  "img[srcset]",
-  "source[srcset]",
-  "[style]",
-].join(",");
 const READER_MEDIA_PATCH_ATTRIBUTES = [
   "src",
   "srcset",
@@ -185,42 +153,16 @@ const READER_PROTECTED_LOCAL_MEDIA_ATTRIBUTES = {
   (typeof READER_MEDIA_PATCH_ATTRIBUTES)[number],
   string
 >;
-const READER_MEDIA_SOURCE_URL_ATTRIBUTE = "data-norea-media-source-url";
-const READER_PENDING_MEDIA_ATTRIBUTE = "data-norea-reader-media-pending";
-const READER_PENDING_BACKGROUND_ATTRIBUTE = "data-norea-reader-media-bg";
-const READER_PENDING_DISPLAY_ATTRIBUTE = "data-norea-reader-media-display";
-const READER_PENDING_HEIGHT_ATTRIBUTE = "data-norea-reader-media-height";
-const READER_MEDIA_INDEX_ATTRIBUTE = "data-norea-reader-media-index";
-const READER_SEGMENT_INDEX_ATTRIBUTE = "data-norea-reader-segment-index";
-const READER_PENDING_PLACEHOLDER_SRC =
-  "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221000%22%20height%3D%221400%22%20viewBox%3D%220%200%201000%201400%22%2F%3E";
 const READER_EMPTY_MEDIA_PLACEHOLDER_SRC =
   "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%2F%3E";
-const READER_PENDING_PLACEHOLDER_HEIGHT = "min(72vh, 56rem)";
 const READER_LOCAL_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 const READER_LOCAL_MEDIA_SCOPED_SRC_PREFIX =
   "norea-media://reader-asset/~cache/";
-const READER_INERT_LOCAL_MEDIA_SRC_PREFIX =
-  "norea-media%3A%2F%2Freader-asset%2F";
-const READER_UNSCOPED_LOCAL_MEDIA_SRC_PATTERN =
-  /norea-media:\/\/reader-asset\/(?!~cache\/)/g;
 const READER_LOCAL_MEDIA_RELATIVE_SRC_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const READER_STYLE_URL_PATTERN =
   /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")]*?))\s*\)/gi;
 const READER_SCROLL_OVERSCAN_PX = 1800;
-const READER_SEGMENT_DEFAULT_HEIGHT = 96;
-const READER_SEGMENT_MEDIA_HEIGHT = 520;
-const READER_DOM_PREPROCESS_MAX_HTML_LENGTH = 350_000;
-const READER_LARGE_SEGMENT_TARGET_LENGTH = 24_000;
-const READER_LARGE_SEGMENT_MAX_LENGTH = 80_000;
-const READER_TEXT_SEGMENT_TARGET_LENGTH = 2_000;
-const READER_TEXT_SEGMENT_MIN_SPLIT_LENGTH = 1_000;
-const READER_TEXT_CONTENT_CLASS_PATTERN = /\breader-text-content\b/;
-const READER_TEXT_BLOCK_PATTERN =
-  /<p\b[^>]*>([\s\S]*?)<\/p>|<div\b(?=[^>]*\breader-text-break\b)[^>]*\bdata-blank-lines=(?:"(\d+)"|'(\d+)'|(\d+))[^>]*>\s*<\/div>/gi;
-const READER_TEXT_LINE_PATTERN =
-  /<span\b(?=[^>]*\breader-text-line\b)[^>]*>([\s\S]*?)<\/span>/gi;
 const READER_PAGE_MEDIA_ELEMENTS = [
   "img",
   "svg",
@@ -237,12 +179,8 @@ const READER_PAGE_SINGLE_MEDIA_ELEMENTS = [
   "iframe",
 ] as const;
 const READER_PAGE_SINGLE_FLOW_ELEMENTS = ["p", "div", "figure", "a"] as const;
-const READER_PREPROCESSED_HTML_CACHE_LIMIT = 8;
 const READER_PROTECTED_HTML_CACHE_LIMIT = 12;
-const READER_VIRTUAL_DOCUMENT_CACHE_LIMIT = 8;
-const readerPreprocessedHtmlCache = new Map<string, string>();
 const readerProtectedHtmlCache = new Map<string, string>();
-const readerVirtualDocumentCache = new Map<string, ReaderVirtualDocument>();
 
 function cssSelectorList(
   prefix: string,
@@ -475,13 +413,6 @@ function hasRelativeLocalChapterMediaValue(
   return READER_LOCAL_MEDIA_RELATIVE_SRC_PATTERN.test(trimmed);
 }
 
-function inertLocalMediaHtml(html: string): string {
-  return html.replace(
-    READER_UNSCOPED_LOCAL_MEDIA_SRC_PATTERN,
-    READER_INERT_LOCAL_MEDIA_SRC_PREFIX,
-  );
-}
-
 function restoreInertLocalMediaValue(value: string): string {
   return value.replaceAll(
     READER_INERT_LOCAL_MEDIA_SRC_PREFIX,
@@ -544,12 +475,6 @@ function hasLocalChapterMediaAttributeValue(
     return hasLocalChapterMediaSrcsetValue(value, allowRelative);
   }
   return hasLocalChapterMediaValue(value, allowRelative);
-}
-
-function hasReaderMediaPatchCandidate(html: string): boolean {
-  return /<(?:img|video|audio|source|embed|track|object|link|image|use)\b|\b(?:style|srcset|poster|data-src|data-original|data-lazy-src|data-orig-src)\s*=/i.test(
-    html,
-  );
 }
 
 function protectedLocalMediaAttribute(
@@ -683,79 +608,6 @@ function stripLocalMediaFontFaces(html: string): string {
   );
 }
 
-function prepareReaderHtmlForDisplay(html: string): string {
-  if (
-    typeof document === "undefined" ||
-    !html.includes(READER_MEDIA_SOURCE_URL_ATTRIBUTE)
-  ) {
-    return html;
-  }
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  let changed = false;
-
-  let placeholderCount = 0;
-  for (const image of template.content.querySelectorAll<HTMLImageElement>(
-    `img[${READER_MEDIA_SOURCE_URL_ATTRIBUTE}]`,
-  )) {
-    if ((image.getAttribute("src") ?? "").trim() !== "") continue;
-    setReaderPendingImagePlaceholder(image);
-    placeholderCount += 1;
-    changed = true;
-  }
-
-  if (changed) {
-    logReaderMediaPipeline("placeholder-shell", {
-      htmlLength: html.length,
-      placeholderCount,
-    });
-  }
-  return changed ? template.innerHTML : html;
-}
-
-function annotateReaderMediaElements(html: string): string {
-  if (typeof document === "undefined" || !hasReaderMediaPatchCandidate(html)) {
-    return html;
-  }
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  const elements = [
-    ...template.content.querySelectorAll<HTMLElement>(
-      READER_MEDIA_PATCH_SELECTOR,
-    ),
-  ];
-  elements.forEach((element, index) => {
-    element.setAttribute(READER_MEDIA_INDEX_ATTRIBUTE, String(index));
-  });
-  return template.innerHTML;
-}
-
-function preprocessReaderHtmlShell(html: string, bionicReading: boolean): string {
-  const localMediaSafeHtml = inertLocalMediaHtml(html);
-  if (localMediaSafeHtml.length > READER_DOM_PREPROCESS_MAX_HTML_LENGTH) {
-    return localMediaSafeHtml;
-  }
-  const key = [
-    "shell:v1",
-    typeof document === "undefined" ? "no-document" : "document",
-    bionicReading ? "bionic" : "plain",
-    readerStringFingerprint(localMediaSafeHtml),
-  ].join("|");
-  const cached = readerPreprocessedHtmlCache.get(key);
-  if (cached !== undefined) return cached;
-
-  const preparedHtml = prepareReaderHtmlForDisplay(localMediaSafeHtml);
-  const displayHtml = bionicReading
-    ? applyBionicReading(preparedHtml)
-    : preparedHtml;
-  return rememberReaderCacheValue(
-    readerPreprocessedHtmlCache,
-    key,
-    annotateReaderMediaElements(displayHtml),
-    READER_PREPROCESSED_HTML_CACHE_LIMIT,
-  );
-}
-
 function protectLocalReaderMediaCached(
   html: string,
   resolvedLocalMedia?: ReadonlyMap<string, string>,
@@ -781,13 +633,6 @@ function protectLocalReaderMediaCached(
     protectLocalReaderMedia(html, resolvedLocalMedia, allowRelative),
     READER_PROTECTED_HTML_CACHE_LIMIT,
   );
-}
-
-function preprocessReaderHtmlForRender(
-  html: string,
-  bionicReading: boolean,
-): string {
-  return preprocessReaderHtmlShell(html, bionicReading);
 }
 
 function setReaderPendingImagePlaceholder(image: HTMLImageElement): void {
@@ -1098,473 +943,12 @@ function countDataUrlReaderMedia(html: string): number {
   ).length;
 }
 
-function serializeNode(node: Node): string {
-  const container = document.createElement("div");
-  container.appendChild(node.cloneNode(true));
-  return container.innerHTML;
-}
-
-function estimatedSegmentHeight(element: Element): number {
-  if (element.querySelector("img,picture,svg,video,canvas,iframe")) {
-    return READER_SEGMENT_MEDIA_HEIGHT;
-  }
-  const textLength = element.textContent?.trim().length ?? 0;
-  if (textLength <= 0) return READER_SEGMENT_DEFAULT_HEIGHT;
-  return Math.max(
-    READER_SEGMENT_DEFAULT_HEIGHT,
-    Math.min(1200, Math.ceil(textLength / 4)),
-  );
-}
-
-function nodeSegmentHtml(node: Node, index: number): string | null {
-  if (node instanceof Text) {
-    const text = node.textContent ?? "";
-    if (text.trim() === "") return null;
-    const paragraph = document.createElement("p");
-    paragraph.setAttribute(READER_SEGMENT_INDEX_ATTRIBUTE, String(index));
-    paragraph.textContent = text;
-    return paragraph.outerHTML;
-  }
-  if (!(node instanceof Element)) return null;
-  const element = node.cloneNode(true) as Element;
-  element.setAttribute(READER_SEGMENT_INDEX_ATTRIBUTE, String(index));
-  return serializeNode(element);
-}
-
 function readerVirtualSegmentHasMedia(segment: ReaderVirtualSegment): boolean {
   return readerHtmlHasMedia(segment.html);
 }
 
-function readerContentClassFromRoot(root: Element | null): string {
-  const classes = new Set(["reader-content"]);
-  for (const className of root?.classList ?? []) {
-    classes.add(className);
-  }
-  return [...classes].join(" ");
-}
-
-function htmlAttributeValue(attributes: string, name: string): string | undefined {
-  const match = new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(
-    attributes,
-  );
-  return match?.[1];
-}
-
-function stripSingleReaderContentWrapper(html: string): {
-  contentClassName: string;
-  contentDirection?: "ltr" | "rtl" | "auto";
-  contentHtml: string;
-  contentLanguage?: string;
-} {
-  const trimmed = html.trim();
-  const match = /^<([a-z][\w:-]*)([^>]*\bclass\s*=\s*["'][^"']*\breader-content\b[^"']*["'][^>]*)>([\s\S]*)<\/\1>\s*$/i.exec(
-    trimmed,
-  );
-  if (!match) {
-    return {
-      contentClassName: "reader-content",
-      contentHtml: html,
-    };
-  }
-  const attributes = match[2] ?? "";
-  const classes = new Set(["reader-content"]);
-  for (const className of (htmlAttributeValue(attributes, "class") ?? "").split(
-    /\s+/,
-  )) {
-    if (className) classes.add(className);
-  }
-  const dir = htmlAttributeValue(attributes, "dir");
-  const lang = htmlAttributeValue(attributes, "lang");
-  return {
-    contentClassName: [...classes].join(" "),
-    ...(dir === "ltr" || dir === "rtl" || dir === "auto"
-      ? { contentDirection: dir }
-      : {}),
-    contentHtml: match[3] ?? "",
-    ...(lang ? { contentLanguage: lang } : {}),
-  };
-}
-
-function estimateHtmlSegmentHeight(html: string): number {
-  if (readerHtmlHasMedia(html)) {
-    return READER_SEGMENT_MEDIA_HEIGHT;
-  }
-  const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  if (!text) return READER_SEGMENT_DEFAULT_HEIGHT;
-  return Math.max(
-    READER_SEGMENT_DEFAULT_HEIGHT,
-    Math.min(1200, Math.ceil(text.length / 4)),
-  );
-}
-
-function escapeReaderHtmlText(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function decodeReaderHtmlText(value: string): string {
-  return value.replace(
-    /&(?:amp|lt|gt|quot|#39|#x27|#(\d+)|#x([\da-f]+));/gi,
-    (entity, decimal, hex) => {
-      const normalized = entity.toLowerCase();
-      if (normalized === "&amp;") return "&";
-      if (normalized === "&lt;") return "<";
-      if (normalized === "&gt;") return ">";
-      if (normalized === "&quot;") return '"';
-      if (normalized === "&#39;" || normalized === "&#x27;") return "'";
-      const codePoint = decimal
-        ? Number.parseInt(decimal, 10)
-        : Number.parseInt(hex, 16);
-      return Number.isFinite(codePoint)
-        ? String.fromCodePoint(codePoint)
-        : entity;
-    },
-  );
-}
-
-function stripReaderTextTags(value: string): string {
-  return value.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "");
-}
-
-function readerTextParagraphText(html: string): string {
-  const lines: string[] = [];
-  let match: RegExpExecArray | null;
-  READER_TEXT_LINE_PATTERN.lastIndex = 0;
-  while ((match = READER_TEXT_LINE_PATTERN.exec(html)) !== null) {
-    lines.push(decodeReaderHtmlText(match[1] ?? ""));
-  }
-  if (lines.length > 0) return lines.join("\n");
-  return decodeReaderHtmlText(stripReaderTextTags(html));
-}
-
-function estimateTextSegmentHeight(textLength: number): number {
-  return Math.max(
-    READER_SEGMENT_DEFAULT_HEIGHT,
-    Math.min(1600, Math.ceil(textLength / 4)),
-  );
-}
-
-function splitReaderTextBlock(text: string): string[] {
-  if (text.length <= READER_TEXT_SEGMENT_TARGET_LENGTH) return [text];
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    const hardLimit = Math.min(
-      text.length,
-      start + READER_TEXT_SEGMENT_TARGET_LENGTH,
-    );
-    if (hardLimit >= text.length) {
-      chunks.push(text.slice(start));
-      break;
-    }
-    const minSplit = start + READER_TEXT_SEGMENT_MIN_SPLIT_LENGTH;
-    const newlineSplit = text.lastIndexOf("\n", hardLimit);
-    const spaceSplit = text.lastIndexOf(" ", hardLimit);
-    const splitAt =
-      newlineSplit >= minSplit
-        ? newlineSplit + 1
-        : spaceSplit >= minSplit
-          ? spaceSplit + 1
-          : hardLimit;
-    chunks.push(text.slice(start, splitAt));
-    start = splitAt;
-  }
-  return chunks;
-}
-
-function pushReaderTextSegment(
-  segments: ReaderVirtualSegment[],
-  parts: string[],
-  textLength: number,
-): void {
-  if (parts.length === 0) return;
-  const index = segments.length;
-  const html = [
-    `<section class="reader-text-section" data-section-index="${index}" ${READER_SEGMENT_INDEX_ATTRIBUTE}="${index}">`,
-    parts.join(""),
-    "</section>",
-  ].join("");
-  segments.push({
-    estimatedHeight: estimateTextSegmentHeight(textLength),
-    html,
-    index,
-  });
-}
-
-function buildReaderTextVirtualDocument(
-  html: string,
-): ReaderVirtualDocument | null {
-  if (!READER_TEXT_CONTENT_CLASS_PATTERN.test(html)) return null;
-  const segments: ReaderVirtualSegment[] = [];
-  const segmentParts: string[] = [];
-  let segmentTextLength = 0;
-  let matched = false;
-
-  const flush = () => {
-    pushReaderTextSegment(segments, segmentParts, segmentTextLength);
-    segmentParts.length = 0;
-    segmentTextLength = 0;
-  };
-  const appendPart = (part: string, textLength: number) => {
-    if (
-      segmentParts.length > 0 &&
-      segmentTextLength + textLength > READER_TEXT_SEGMENT_TARGET_LENGTH
-    ) {
-      flush();
-    }
-    segmentParts.push(part);
-    segmentTextLength += textLength;
-    if (segmentTextLength >= READER_TEXT_SEGMENT_TARGET_LENGTH) {
-      flush();
-    }
-  };
-
-  READER_TEXT_BLOCK_PATTERN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = READER_TEXT_BLOCK_PATTERN.exec(html)) !== null) {
-    matched = true;
-    const paragraphHtml = match[1];
-    if (paragraphHtml !== undefined) {
-      for (const chunk of splitReaderTextBlock(
-        readerTextParagraphText(paragraphHtml),
-      )) {
-        appendPart(
-          `<p class="reader-text-paragraph">${escapeReaderHtmlText(chunk)}</p>`,
-          chunk.length,
-        );
-      }
-      continue;
-    }
-    const blankLines = Number.parseInt(
-      match[2] ?? match[3] ?? match[4] ?? "2",
-      10,
-    );
-    const normalizedBlankLines = Number.isFinite(blankLines) ? blankLines : 2;
-    appendPart(
-      `<div class="reader-text-break" data-blank-lines="${normalizedBlankLines}" aria-hidden="true"></div>`,
-      0,
-    );
-  }
-  flush();
-  if (!matched || segments.length === 0) return null;
-
-  return {
-    contentClassName: "reader-content reader-text-content",
-    segments,
-    staticHtml: "",
-  };
-}
-
-function largeHtmlSplitIndex(html: string): number {
-  const limit = Math.min(READER_LARGE_SEGMENT_MAX_LENGTH, html.length - 1);
-  if (limit <= READER_LARGE_SEGMENT_TARGET_LENGTH) return 0;
-  const boundaryPattern =
-    /<\/(?:p|div|section|article|figure|blockquote|pre|ul|ol|li|h[1-6]|table|tr|hr)>/gi;
-  let splitIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = boundaryPattern.exec(html)) !== null) {
-    const boundaryEnd = match.index + match[0].length;
-    if (boundaryEnd > limit) break;
-    splitIndex = boundaryEnd;
-  }
-  return splitIndex >= READER_LARGE_SEGMENT_TARGET_LENGTH ? splitIndex : 0;
-}
-
-function pushLargeHtmlSegment(
-  segments: ReaderVirtualSegment[],
-  html: string,
-): void {
-  const trimmed = html.trim();
-  if (!trimmed) return;
-  if (trimmed.length > READER_LARGE_SEGMENT_MAX_LENGTH) {
-    const splitIndex = largeHtmlSplitIndex(trimmed);
-    if (splitIndex > 0) {
-      pushLargeHtmlSegment(segments, trimmed.slice(0, splitIndex));
-      pushLargeHtmlSegment(segments, trimmed.slice(splitIndex));
-      return;
-    }
-  }
-  const index = segments.length;
-  segments.push({
-    estimatedHeight: estimateHtmlSegmentHeight(trimmed),
-    html: `<div ${READER_SEGMENT_INDEX_ATTRIBUTE}="${index}">${trimmed}</div>`,
-    index,
-  });
-}
-
-function buildLargeReaderVirtualDocument(html: string): ReaderVirtualDocument {
-  const staticHtmlParts: string[] = [];
-  const withoutStyles = html.replace(
-    /<style\b[^>]*>[\s\S]*?<\/style>/gi,
-    (style) => {
-      staticHtmlParts.push(style);
-      return "";
-    },
-  );
-  const stripped = stripSingleReaderContentWrapper(withoutStyles);
-  const segments: ReaderVirtualSegment[] = [];
-  const boundaryPattern =
-    /<\/(?:p|div|section|article|figure|blockquote|pre|ul|ol|li|h[1-6]|table|tr|hr)>/gi;
-  let cursor = 0;
-  let segmentStart = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = boundaryPattern.exec(stripped.contentHtml)) !== null) {
-    const boundaryEnd = match.index + match[0].length;
-    if (boundaryEnd - segmentStart < READER_LARGE_SEGMENT_TARGET_LENGTH) {
-      cursor = boundaryEnd;
-      continue;
-    }
-    pushLargeHtmlSegment(
-      segments,
-      stripped.contentHtml.slice(segmentStart, boundaryEnd),
-    );
-    segmentStart = boundaryEnd;
-    cursor = boundaryEnd;
-  }
-
-  if (segmentStart < stripped.contentHtml.length) {
-    pushLargeHtmlSegment(segments, stripped.contentHtml.slice(segmentStart));
-  }
-  if (segments.length === 0 && cursor < stripped.contentHtml.length) {
-    for (
-      let start = 0;
-      start < stripped.contentHtml.length;
-      start += READER_LARGE_SEGMENT_MAX_LENGTH
-    ) {
-      pushLargeHtmlSegment(
-        segments,
-        stripped.contentHtml.slice(start, start + READER_LARGE_SEGMENT_MAX_LENGTH),
-      );
-    }
-  }
-
-  return {
-    contentClassName: stripped.contentClassName,
-    ...(stripped.contentDirection
-      ? { contentDirection: stripped.contentDirection }
-      : {}),
-    ...(stripped.contentLanguage
-      ? { contentLanguage: stripped.contentLanguage }
-      : {}),
-    segments,
-    staticHtml: staticHtmlParts.join(""),
-  };
-}
-
-function buildReaderVirtualDocument(html: string): ReaderVirtualDocument {
-  const textDocument = buildReaderTextVirtualDocument(html);
-  if (textDocument) return textDocument;
-
-  if (html.length > READER_DOM_PREPROCESS_MAX_HTML_LENGTH) {
-    return buildLargeReaderVirtualDocument(html);
-  }
-
-  if (typeof document === "undefined") {
-    return {
-      contentClassName: "reader-content",
-      segments: [{ estimatedHeight: 800, html, index: 0 }],
-      staticHtml: "",
-    };
-  }
-
-  const template = document.createElement("template");
-  template.innerHTML = html;
-
-  const staticNodes = [
-    ...template.content.querySelectorAll<HTMLStyleElement>("style"),
-  ];
-  const staticHtml = staticNodes.map((node) => node.outerHTML).join("");
-  staticNodes.forEach((node) => node.remove());
-
-  const elementChildren = [...template.content.children];
-  const root =
-    elementChildren.length === 1 &&
-    elementChildren[0] instanceof Element &&
-    elementChildren[0].children.length > 0
-      ? elementChildren[0]
-      : null;
-  const sourceNodes = root
-    ? [...root.childNodes]
-    : [...template.content.childNodes];
-  const segments: ReaderVirtualSegment[] = [];
-
-  for (const node of sourceNodes) {
-    const htmlSegment = nodeSegmentHtml(node, segments.length);
-    if (!htmlSegment) continue;
-    const estimatedHeight =
-      node instanceof Element
-        ? estimatedSegmentHeight(node)
-        : READER_SEGMENT_DEFAULT_HEIGHT;
-    segments.push({
-      estimatedHeight,
-      html: htmlSegment,
-      index: segments.length,
-    });
-  }
-
-  return {
-    contentClassName: readerContentClassFromRoot(root),
-    ...(root?.getAttribute("dir")
-      ? { contentDirection: root.getAttribute("dir") as "ltr" | "rtl" | "auto" }
-      : {}),
-    ...(root?.getAttribute("lang")
-      ? { contentLanguage: root.getAttribute("lang") ?? undefined }
-      : {}),
-    segments,
-    staticHtml,
-  };
-}
-
-function buildReaderVirtualDocumentCached(html: string): ReaderVirtualDocument {
-  const key = [
-    "virtual:v1",
-    typeof document === "undefined" ? "no-document" : "document",
-    readerStringFingerprint(html),
-  ].join("|");
-  const cached = readerVirtualDocumentCache.get(key);
-  if (cached) return cached;
-  return rememberReaderCacheValue(
-    readerVirtualDocumentCache,
-    key,
-    buildReaderVirtualDocument(html),
-    READER_VIRTUAL_DOCUMENT_CACHE_LIMIT,
-  );
-}
-
 function formatClock(date: Date, locale: AppLocale): string {
   return formatTimeForLocale(locale, date);
-}
-
-function emphasizeWord(word: string): string {
-  if (word.length < 4) return word;
-  const splitAt = Math.ceil(word.length * 0.42);
-  return `<strong>${word.slice(0, splitAt)}</strong>${word.slice(splitAt)}`;
-}
-
-function applyBionicReading(html: string): string {
-  const parser = new DOMParser();
-  const document = parser.parseFromString(html, "text/html");
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  const nodes: Text[] = [];
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (node instanceof Text && node.textContent?.trim()) {
-      nodes.push(node);
-    }
-  }
-
-  for (const node of nodes) {
-    const span = document.createElement("span");
-    span.innerHTML = node.textContent!.replace(/[A-Za-z0-9]{4,}/g, emphasizeWord);
-    node.replaceWith(span);
-  }
-
-  return document.body.innerHTML;
 }
 
 function getProgress(node: HTMLElement, pageReader: boolean): number {
@@ -1750,6 +1134,7 @@ function ReaderContentInner(
 ) {
   const {
     html,
+    preparedDocument,
     bottomOverlayOffset,
     contentKey,
     initialProgress = 0,
@@ -1874,20 +1259,19 @@ function ReaderContentInner(
     [localMediaContextKey],
   );
 
-  const renderedHtml = useMemo(
-    () => preprocessReaderHtmlForRender(html, general.bionicReading),
-    [general.bionicReading, html],
+  const readerDocument = useMemo(
+    () => preparedDocument ?? prepareReaderDocument(html, general.bionicReading),
+    [general.bionicReading, html, preparedDocument],
   );
-  const virtualDocument = useMemo(
-    () => buildReaderVirtualDocumentCached(renderedHtml),
-    [renderedHtml],
-  );
+  const renderedHtml = readerDocument.html;
+  const virtualDocument = readerDocument.virtualDocument;
   const displayStaticHtml = useMemo(
     () => stripLocalMediaFontFaces(virtualDocument.staticHtml),
     [virtualDocument.staticHtml],
   );
 
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     if (latestRenderedHtmlRef.current === renderedHtml) return;
     latestRenderedHtmlRef.current = renderedHtml;
     logReaderMediaPipeline("html-replace", {
@@ -2433,6 +1817,7 @@ function ReaderContentInner(
   useEffect(() => {
     segmentHeightsRef.current = [];
     pendingVirtualScrollAdjustmentRef.current = 0;
+    restoredLayoutKeyRef.current = null;
     setSegmentHeights([]);
     setVirtualRange({ start: 0, end: -1 });
   }, [virtualDocument]);
@@ -2465,7 +1850,7 @@ function ReaderContentInner(
       window.cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [contentKey, getActiveScrollNode, layoutRestoreKey]);
+  }, [contentKey, getActiveScrollNode, layoutRestoreKey, virtualDocument]);
 
   useEffect(() => {
     if (!stableLocalMediaContext) {

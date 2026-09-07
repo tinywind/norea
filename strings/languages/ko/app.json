@@ -469,6 +469,8 @@
   "readerSettings.batteryTimeFooter": "배터리와 시간 푸터",
   "readerSettings.batteryTimeFooter.description": "리더 푸터에 기기 배터리와 현재 시간을 표시합니다.",
   "readerSettings.automation.title": "자동화",
+  "readerSettings.autoDownloadNextChapter": "다음 챕터 미리 다운로드",
+  "readerSettings.autoDownloadNextChapter.description": "다음 챕터를 백그라운드에서 다운로드하고 열기 전에 미리 준비합니다.",
   "readerSettings.autoScroll": "자동 스크롤",
   "readerSettings.autoScroll.description": "리더가 스크롤 방식일 때 본문을 자동으로 내려줍니다.",
   "readerSettings.autoScrollInterval": "자동 스크롤 갱신 간격",
