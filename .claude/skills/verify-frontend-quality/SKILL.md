@@ -15,6 +15,9 @@ Use after modifying `src/**/*.{ts,tsx}`.
 2. Detect obvious frontend contract drift.
    - Fail only local exported types that clearly duplicate central app contracts in the reviewed frontend file.
    - Leave broader canonical type ownership to `verify-canonical-types`.
+   - Why: Reusing canonical string value definitions keeps equivalent code consistent across models and sessions; string literal unions are not inherently type-unsafe.
+   - When converting a union to a string enum, use PascalCase member names and preserve every existing string value exactly, including casing, spelling, whitespace, and punctuation. Apply the same value preservation when using const-backed definitions allowed by local conventions.
+   - String values follow established app, plugin, IPC, database, URL, or serialized contracts. Changing values is a separate behavioral or data-migration change; do not introduce a blanket union ban through this check.
 3. Keep null at real boundaries.
    - Report exported reusable contracts that carry `| null` without a boundary reason.
    - Allow null from DB, plugin, browser, or Tauri APIs when the boundary requires it.
