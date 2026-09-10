@@ -128,6 +128,19 @@ pub fn run() {
         .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
         .manage(plugin_vpn)
+        // Register plugins here, not in `setup`: registering a plugin after the
+        // WebView exists deadlocks the Android main thread (tauri-apps/tauri#13990).
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Trace)
+                .level_for("h2", log::LevelFilter::Warn)
+                .level_for("hyper", log::LevelFilter::Warn)
+                .level_for("hyper_util", log::LevelFilter::Warn)
+                .level_for("reqwest", log::LevelFilter::Warn)
+                .level_for("sqlx", log::LevelFilter::Info)
+                .level_for("tracing", log::LevelFilter::Warn)
+                .build(),
+        )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
@@ -249,17 +262,6 @@ pub fn run() {
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;
-            app.handle().plugin(
-                tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Trace)
-                    .level_for("h2", log::LevelFilter::Warn)
-                    .level_for("hyper", log::LevelFilter::Warn)
-                    .level_for("hyper_util", log::LevelFilter::Warn)
-                    .level_for("reqwest", log::LevelFilter::Warn)
-                    .level_for("sqlx", log::LevelFilter::Info)
-                    .level_for("tracing", log::LevelFilter::Warn)
-                    .build(),
-            )?;
             log::set_max_level(log::LevelFilter::Info);
             Ok(())
         })
