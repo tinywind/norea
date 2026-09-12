@@ -3262,6 +3262,63 @@ describe("TaskScheduler", () => {
     }
   });
 
+  it("keeps cooldown-deferred downloads in creation order", async () => {
+    vi.useFakeTimers();
+    try {
+      const scheduler = new TaskScheduler({
+        sourceForegroundConcurrency: 1,
+        sourceQueuesPaused: false,
+      });
+      const order: string[] = [];
+      const cooldownKey = "source:p";
+      const enqueueDownload = (title: string) =>
+        scheduler.enqueueSource({
+          kind: "chapter.download",
+          title,
+          priority: "background",
+          source: { id: "p", name: "Plugin" },
+          canCompleteWithoutSourceAccess: true,
+          sourceCooldownKey: cooldownKey,
+          sourceCooldownMs: 1_000,
+          run: async (context) => {
+            order.push(`${title}:check`);
+            if (!context.tryStartSourceAccess?.()) return;
+            order.push(`${title}:start`);
+          },
+        });
+
+      await enqueueDownload("warmup").promise;
+
+      const downloads = ["one", "two", "three"].map(enqueueDownload);
+      for (let round = 0; round < 6; round += 1) {
+        await settle();
+      }
+      expect(order.filter((step) => step.endsWith(":check"))).toEqual([
+        "warmup:check",
+        "one:check",
+        "two:check",
+        "three:check",
+      ]);
+      expect(order).not.toContain("one:start");
+
+      for (let step = 0; step < downloads.length; step += 1) {
+        vi.advanceTimersByTime(1_000);
+        for (let round = 0; round < 6; round += 1) {
+          await settle();
+        }
+      }
+      await Promise.all(downloads.map((download) => download.promise));
+      expect(order.filter((step) => step.endsWith(":start"))).toEqual([
+        "warmup:start",
+        "one:start",
+        "two:start",
+        "three:start",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("completes local-only work without clearing a source access block", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
     const scopeKey = "site:source.test";

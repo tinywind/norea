@@ -2629,12 +2629,34 @@ export class TaskScheduler {
     if (!sourceId) return;
     const queue = this.sourceQueues.get(sourceId) ?? [];
     if (!queue.includes(entry.record.id)) {
-      const insertIndex = isInterruptibleDownloadKind(entry.record.kind)
-        ? this.sourceQueueUiInsertIndex(queue)
-        : 0;
-      queue.splice(insertIndex, 0, entry.record.id);
+      queue.splice(
+        this.sourceQueueRequeueIndex(queue, entry),
+        0,
+        entry.record.id,
+      );
     }
     this.sourceQueues.set(sourceId, queue);
+  }
+
+  /**
+   * Paused work resumes ahead of queued siblings, but a download that only
+   * deferred its source access keeps its creation order. Inserting deferred
+   * downloads at the front made a batch drain newest-first because every
+   * fresh entry ran its local check during the source cooldown and then
+   * jumped ahead of the entries deferred before it.
+   */
+  private sourceQueueRequeueIndex(queue: string[], entry: TaskEntry): number {
+    if (!isInterruptibleDownloadKind(entry.record.kind)) return 0;
+    let index = this.sourceQueueUiInsertIndex(queue);
+    if (entry.sourceAccessDeferred !== true) return index;
+    while (index < queue.length) {
+      const candidate = this.entries.get(queue[index]!);
+      if (!candidate || candidate.record.createdAt > entry.record.createdAt) {
+        break;
+      }
+      index += 1;
+    }
+    return index;
   }
 
   private releaseActive(entry: TaskEntry): void {
