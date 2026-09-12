@@ -8,6 +8,7 @@ import {
   androidStoragePathSize,
   clearAndroidStorageRoot,
   deleteAndroidStoragePath,
+  deleteAndroidStoragePaths,
   prepareAndroidReaderMediaCache,
   readAndroidStorageText,
   writeAndroidStorageBytes,
@@ -792,31 +793,26 @@ function androidChapterMediaManifestRelativePathCandidates(
   ]);
 }
 
-async function deleteAndroidChapterMediaTransactionFiles(
-  {
-    archivePaths,
-    manifestPaths,
-  }: {
-    archivePaths: string[];
-    manifestPaths: string[];
-  },
-): Promise<void> {
-  const transactionPaths = uniqueAndroidStoragePaths(
-    [
-      ...archivePaths.flatMap((path) => [
-        path,
-        `${path}.tmp.zip`,
-        `${path}.bak`,
-        `${path}.rollback`,
-      ]),
-      ...manifestPaths.flatMap((path) => [
-        path,
-        `${path}.tmp`,
-        `${path}.bak`,
-      ]),
-    ],
-  );
-  await Promise.all(transactionPaths.map(deleteAndroidStoragePath));
+function androidChapterMediaTransactionPaths({
+  archivePaths,
+  manifestPaths,
+}: {
+  archivePaths: string[];
+  manifestPaths: string[];
+}): string[] {
+  return uniqueAndroidStoragePaths([
+    ...archivePaths.flatMap((path) => [
+      path,
+      `${path}.tmp.zip`,
+      `${path}.bak`,
+      `${path}.rollback`,
+    ]),
+    ...manifestPaths.flatMap((path) => [
+      path,
+      `${path}.tmp`,
+      `${path}.bak`,
+    ]),
+  ]);
 }
 
 function chapterMediaManifestLogContext(context: ChapterMediaStorageContext) {
@@ -1334,15 +1330,15 @@ async function prepareChapterMediaWorkspace(
 ): Promise<void> {
   if (isAndroidRuntime()) {
     if (!repair && !preserveExisting) {
-      for (const path of androidChapterMediaRelativePathCandidates(context)) {
-        await deleteAndroidStoragePath(path);
-      }
-      await deleteAndroidChapterMediaTransactionFiles({
-        archivePaths:
-          androidChapterMediaArchiveRelativePathCandidates(context),
-        manifestPaths:
-          androidChapterMediaManifestRelativePathCandidates(context),
-      });
+      await deleteAndroidStoragePaths([
+        ...androidChapterMediaRelativePathCandidates(context),
+        ...androidChapterMediaTransactionPaths({
+          archivePaths:
+            androidChapterMediaArchiveRelativePathCandidates(context),
+          manifestPaths:
+            androidChapterMediaManifestRelativePathCandidates(context),
+        }),
+      ]);
     }
     return;
   }
@@ -3264,9 +3260,8 @@ export async function clearChapterMedia(
   if (!isTauriRuntime()) return;
   const resolvedContext = context ?? (await storageContextForChapter(chapterId));
   if (isAndroidRuntime()) {
-    if (hasStorageContext(resolvedContext)) {
-      await Promise.all([
-        deleteAndroidStoragePath(
+    const contextualPaths = hasStorageContext(resolvedContext)
+      ? [
           resolvedAndroidChapterStoragePath(
             resolvedContext,
             chapterMediaDirectoryRelativePath(
@@ -3274,18 +3269,20 @@ export async function clearChapterMedia(
               storageChapterPathInput(resolvedContext),
             ),
           ),
-        ),
-        deleteAndroidChapterMediaTransactionFiles({
-          archivePaths: [
-            androidChapterMediaArchiveRelativePathForContext(resolvedContext),
-          ],
-          manifestPaths: [
-            androidChapterMediaManifestRelativePath(resolvedContext),
-          ],
-        }),
-      ]);
-    }
-    await deleteAndroidStoragePath(`chapter-media/${chapterId}`);
+          ...androidChapterMediaTransactionPaths({
+            archivePaths: [
+              androidChapterMediaArchiveRelativePathForContext(resolvedContext),
+            ],
+            manifestPaths: [
+              androidChapterMediaManifestRelativePath(resolvedContext),
+            ],
+          }),
+        ]
+      : [];
+    await deleteAndroidStoragePaths([
+      ...contextualPaths,
+      `chapter-media/${chapterId}`,
+    ]);
     return;
   }
   await invoke("chapter_media_clear", {

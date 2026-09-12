@@ -25,6 +25,11 @@ interface AndroidStorageBridge {
     rootUri: string,
     relativePath: string,
   ) => void;
+  deletePaths?: (
+    requestId: string,
+    rootUri: string,
+    relativePathsJson: string,
+  ) => void;
   deleteRootChildren: (rootUri: string) => string;
   describeContentUri?: (uri: string) => string;
   ensureNoMedia: (rootUri: string) => string;
@@ -1051,6 +1056,40 @@ export async function deleteAndroidStoragePath(
   if (
     isNovelCoverStoragePath(relativePath) ||
     isNovelStorageDirectoryPath(relativePath)
+  ) {
+    clearNovelCoverInspectionCache(bridge);
+  }
+}
+
+/**
+ * Deletes several paths with one bridge round trip. Chapter media cleanup
+ * removes up to nine transaction artifacts per chapter, and each separate
+ * bridge call resolves its path from the storage root again.
+ */
+export async function deleteAndroidStoragePaths(
+  relativePaths: readonly string[],
+): Promise<void> {
+  const uniquePaths = [...new Set(relativePaths)];
+  if (uniquePaths.length === 0) return;
+  const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
+  if (bridge.deletePaths) {
+    await runAndroidStorageOperation((requestId) =>
+      bridge.deletePaths?.(requestId, root, JSON.stringify(uniquePaths)),
+    );
+  } else {
+    for (const relativePath of uniquePaths) {
+      await runAndroidStorageOperation((requestId) =>
+        bridge.deletePath(requestId, root, relativePath),
+      );
+    }
+  }
+  if (
+    uniquePaths.some(
+      (relativePath) =>
+        isNovelCoverStoragePath(relativePath) ||
+        isNovelStorageDirectoryPath(relativePath),
+    )
   ) {
     clearNovelCoverInspectionCache(bridge);
   }

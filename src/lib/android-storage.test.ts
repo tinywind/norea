@@ -9,6 +9,7 @@ import {
   clearAndroidStorageRoot,
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
+  deleteAndroidStoragePaths,
   describeAndroidContentUri,
   inspectAndroidChapterArtifacts,
   inspectAndroidNovelCover,
@@ -26,6 +27,7 @@ import {
 type TestBridge = {
   deleteRootChildren?: ReturnType<typeof vi.fn>;
   deletePath?: ReturnType<typeof vi.fn>;
+  deletePaths?: ReturnType<typeof vi.fn>;
   deleteTempFile?: ReturnType<typeof vi.fn>;
   describeContentUri?: ReturnType<typeof vi.fn>;
   ensureNoMedia?: ReturnType<typeof vi.fn>;
@@ -251,6 +253,85 @@ describe("android storage bridge facade", () => {
       root,
       "contents/demo/chapter/content.html",
     );
+  });
+
+  it("deletes several storage paths through one deletePaths bridge call", async () => {
+    const root = "content://tree/primary%3ANoreaDelete";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const deletePath = vi.fn();
+    const deletePaths = vi.fn((requestId: string) => {
+      queueMicrotask(() => {
+        window.__lnrResolveAndroidStorageOperation?.(
+          requestId,
+          JSON.stringify({ ok: true }),
+        );
+      });
+    });
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deletePath, deletePaths, ensureNoMedia });
+
+    await expect(
+      deleteAndroidStoragePaths([
+        "contents/demo/chapter/media",
+        "contents/demo/chapter/manifest.json",
+        "contents/demo/chapter/media",
+      ]),
+    ).resolves.toBeUndefined();
+
+    expect(deletePaths).toHaveBeenCalledOnce();
+    expect(deletePaths).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      JSON.stringify([
+        "contents/demo/chapter/media",
+        "contents/demo/chapter/manifest.json",
+      ]),
+    );
+    expect(deletePath).not.toHaveBeenCalled();
+  });
+
+  it("falls back to single-path deletes when the bridge lacks deletePaths", async () => {
+    const root = "content://tree/primary%3ANoreaDeleteLegacy";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const deletePath = vi.fn((requestId: string) => {
+      queueMicrotask(() => {
+        window.__lnrResolveAndroidStorageOperation?.(
+          requestId,
+          JSON.stringify({ ok: true }),
+        );
+      });
+    });
+    invokeMock.mockResolvedValue(root);
+    installBridge({ deletePath, ensureNoMedia });
+
+    await deleteAndroidStoragePaths([
+      "contents/demo/chapter/media",
+      "contents/demo/chapter/manifest.json",
+    ]);
+
+    expect(deletePath).toHaveBeenCalledTimes(2);
+    expect(deletePath).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      root,
+      "contents/demo/chapter/media",
+    );
+    expect(deletePath).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      root,
+      "contents/demo/chapter/manifest.json",
+    );
+  });
+
+  it("skips the bridge when there is nothing to delete", async () => {
+    const deletePaths = vi.fn();
+    installBridge({ deletePaths });
+
+    await deleteAndroidStoragePaths([]);
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(deletePaths).not.toHaveBeenCalled();
   });
 
   it("keeps storage writes pending until the asynchronous callback arrives", async () => {

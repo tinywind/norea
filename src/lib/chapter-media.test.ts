@@ -15,6 +15,7 @@ const androidStorageMocks = vi.hoisted(() => ({
   archiveAndroidStorageDirectory: vi.fn(),
   clearAndroidStorageRoot: vi.fn(),
   deleteAndroidStoragePath: vi.fn(),
+  deleteAndroidStoragePaths: vi.fn(),
   extractAndroidStorageZip: vi.fn(),
   prepareAndroidReaderMediaCache: vi.fn(),
   readAndroidStorageDataUrl: vi.fn(),
@@ -1922,6 +1923,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     androidStorageMocks.writeAndroidStorageText.mockResolvedValue(undefined);
     androidStorageMocks.deleteAndroidStoragePath.mockResolvedValue(undefined);
+    androidStorageMocks.deleteAndroidStoragePaths.mockResolvedValue(undefined);
     androidStorageMocks.archiveAndroidStorageDirectory.mockResolvedValue(0);
 
     const result = await cacheHtmlChapterMedia({
@@ -1938,9 +1940,14 @@ describe("cacheHtmlChapterMedia", () => {
     });
 
     const preferredDir = "contents/source-a/Novel-novel-path/1-Chapter";
-    const deletedPaths = androidStorageMocks.deleteAndroidStoragePath.mock.calls.map(
-      ([path]) => path,
-    );
+    const deletedPaths = [
+      ...androidStorageMocks.deleteAndroidStoragePath.mock.calls.map(
+        ([path]) => path,
+      ),
+      ...androidStorageMocks.deleteAndroidStoragePaths.mock.calls.flatMap(
+        ([paths]) => paths,
+      ),
+    ];
     expect(deletedPaths).toEqual(
       expect.arrayContaining([
         `${preferredDir}/media`,
@@ -2326,6 +2333,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     expect(androidStorageMocks.renameAndroidStoragePath).not.toHaveBeenCalled();
     expect(androidStorageMocks.deleteAndroidStoragePath).not.toHaveBeenCalled();
+    expect(androidStorageMocks.deleteAndroidStoragePaths).not.toHaveBeenCalled();
     expect(androidStorageMocks.extractAndroidStorageZip).not.toHaveBeenCalled();
     expect(result.storedMediaCount).toBe(1);
     expect(result.html).toContain(
@@ -2517,6 +2525,7 @@ describe("clearChapterMedia", () => {
   it("removes Android transaction artifacts for contextual chapter media", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
     androidStorageMocks.deleteAndroidStoragePath.mockResolvedValue(undefined);
+    androidStorageMocks.deleteAndroidStoragePaths.mockResolvedValue(undefined);
 
     await clearChapterMedia(42, {
       chapterId: 42,
@@ -2530,9 +2539,14 @@ describe("clearChapterMedia", () => {
     });
 
     const preferredDir = "contents/source-a/Novel-novel-path/1-Chapter";
-    const deletedPaths = androidStorageMocks.deleteAndroidStoragePath.mock.calls.map(
-      ([path]) => path,
-    );
+    const deletedPaths = [
+      ...androidStorageMocks.deleteAndroidStoragePath.mock.calls.map(
+        ([path]) => path,
+      ),
+      ...androidStorageMocks.deleteAndroidStoragePaths.mock.calls.flatMap(
+        ([paths]) => paths,
+      ),
+    ];
     expect(deletedPaths).toEqual(
       expect.arrayContaining([
         `${preferredDir}/media`,
