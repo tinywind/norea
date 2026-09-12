@@ -56,6 +56,7 @@ private const val CHAPTER_MEDIA_ARCHIVE_TEMP_FILE = "media.zip.tmp.zip"
 private const val CHAPTER_MEDIA_MANIFEST_BACKUP_FILE = "manifest.json.bak"
 private const val CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json"
 private const val CHAPTER_MEDIA_MANIFEST_TEMP_FILE = "manifest.json.tmp"
+private const val EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY = "com.android.externalstorage.documents"
 private const val NOVEL_COVER_MANIFEST_FILE = "cover.json"
 
 internal fun resolvedAndroidFinalChapterMediaBytes(
@@ -1791,7 +1792,7 @@ class MainActivity : TauriActivity() {
         require(directory.isDirectory) { "Android storage chapter path is not a folder: $relativeDir" }
         require(directory.canRead()) { "Android storage chapter path is not readable: $relativeDir" }
         val content = contentNames.firstNotNullOfOrNull { name ->
-          directory.findFile(name)?.also { candidate ->
+          findStorageChild(directory, name)?.also { candidate ->
             require(candidate.isFile) {
               "Android storage content path is not a file: $relativeDir/$name"
             }
@@ -1805,7 +1806,7 @@ class MainActivity : TauriActivity() {
           relativeDir,
           allowLegacyWithoutManifest = true,
         )
-        val existingArchiveBytes = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+        val existingArchiveBytes = findStorageChild(directory, CHAPTER_MEDIA_ARCHIVE_FILE)
           ?.takeIf { it.isFile }
           ?.length()
         val archiveBytes = resolvedAndroidFinalChapterMediaBytes(
@@ -1829,21 +1830,25 @@ class MainActivity : TauriActivity() {
       if (source != null) {
         require(source.isDirectory) { "Android storage source path is not a folder: $sourceDir" }
         require(source.canRead()) { "Android storage source path is not readable: $sourceDir" }
-        for (novel in source.listFiles()) {
-          val novelName = novel.name ?: continue
+        for (novel in listStorageChildren(source)) {
+          val novelName = novel.name
           if (!novelName.endsWith(novelIdentitySuffix)) continue
           require(novel.isDirectory) { "Android storage novel path is not a folder: $novelName" }
-          require(novel.canRead()) { "Android storage novel path is not readable: $novelName" }
-          for (chapter in novel.listFiles()) {
-            val chapterName = chapter.name ?: continue
+          val novelDirectory = storageChildDocumentFile(novel) ?: continue
+          require(novelDirectory.canRead()) {
+            "Android storage novel path is not readable: $novelName"
+          }
+          for (chapter in listStorageChildren(novelDirectory)) {
+            val chapterName = chapter.name
             if (!chapterName.startsWith(chapterIdentityPrefix)) continue
             require(chapter.isDirectory) {
               "Android storage chapter path is not a folder: $chapterName"
             }
-            require(chapter.canRead()) {
+            val chapterDirectory = storageChildDocumentFile(chapter) ?: continue
+            require(chapterDirectory.canRead()) {
               "Android storage chapter path is not readable: $chapterName"
             }
-            inspectDirectory(chapter, "$sourceDir/$novelName/$chapterName")
+            inspectDirectory(chapterDirectory, "$sourceDir/$novelName/$chapterName")
               ?.let(matches::add)
           }
         }
@@ -2252,6 +2257,22 @@ class MainActivity : TauriActivity() {
     }
 
     @JavascriptInterface
+    fun deletePaths(requestId: String, rootUri: String, relativePathsJson: String) {
+      submitStorageOperation(requestId) {
+        val relativePaths = JSONArray(relativePathsJson)
+        for (index in 0 until relativePaths.length()) {
+          val relativePath = relativePaths.getString(index)
+          storageDocumentAt(rootUri, relativePath)?.let { document ->
+            if (!document.delete()) {
+              throw IllegalStateException("Cannot delete Android storage path: $relativePath")
+            }
+          }
+        }
+        JSONObject().put("ok", true)
+      }
+    }
+
+    @JavascriptInterface
     fun beginRestore(rootUri: String, token: String): String = storageResponse {
       val root = storageRoot(rootUri)
       val backupName = restoreBackupDirectoryName(token)
@@ -2320,8 +2341,8 @@ class MainActivity : TauriActivity() {
           return@submitStorageOperation JSONObject().put("ok", true)
         }
         val backupName = "$safeNewName.bak"
-        val existing = parent.findFile(safeNewName)
-        var backup = parent.findFile(backupName)
+        val existing = findStorageChild(parent, safeNewName)
+        var backup = findStorageChild(parent, backupName)
         if (existing != null) {
           if (backup != null && !backup.delete()) {
             throw IllegalStateException("Cannot remove Android storage backup: $backupName")
@@ -2342,7 +2363,7 @@ class MainActivity : TauriActivity() {
           }
           throw IllegalStateException("Cannot rename Android storage path: $relativePath")
         }
-        parent.findFile(backupName)?.let { publishedBackup ->
+        findStorageChild(parent, backupName)?.let { publishedBackup ->
           if (!publishedBackup.delete()) {
             throw IllegalStateException("Cannot remove Android storage backup: $backupName")
           }
@@ -2862,10 +2883,101 @@ class MainActivity : TauriActivity() {
     return segments
   }
 
+  private data class StorageChildDocument(
+    val name: String,
+    val uri: Uri,
+    val mimeType: String?,
+  ) {
+    val isDirectory: Boolean
+      get() = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+  }
+
+  private fun isExternalStorageTreeDocument(uri: Uri): Boolean =
+    uri.scheme == ContentResolver.SCHEME_CONTENT &&
+      uri.authority == EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY
+
+  private fun treeChildDocument(parent: DocumentFile, childDocumentId: String): DocumentFile? =
+    DocumentFile.fromTreeUri(
+      this,
+      DocumentsContract.buildDocumentUriUsingTree(parent.uri, childDocumentId),
+    )
+
+  private fun storageChildDocumentFile(child: StorageChildDocument): DocumentFile? =
+    if (child.uri.scheme == ContentResolver.SCHEME_FILE) {
+      child.uri.path?.let { DocumentFile.fromFile(File(it)) }
+    } else {
+      DocumentFile.fromTreeUri(this, child.uri)
+    }
+
+  /**
+   * Lists a directory with one provider query. DocumentFile.listFiles() only
+   * returns ids, so reading names through it costs one extra query per child,
+   * which is what makes DocumentFile.findFile() scale with the folder size.
+   */
+  private fun listStorageChildren(parent: DocumentFile): List<StorageChildDocument> {
+    if (parent.uri.scheme == ContentResolver.SCHEME_FILE) {
+      return parent.listFiles().mapNotNull { child ->
+        val name = child.name ?: return@mapNotNull null
+        StorageChildDocument(
+          name,
+          child.uri,
+          if (child.isDirectory) DocumentsContract.Document.MIME_TYPE_DIR else child.type,
+        )
+      }
+    }
+    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+      parent.uri,
+      DocumentsContract.getDocumentId(parent.uri),
+    )
+    val projection = arrayOf(
+      DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+      DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+      DocumentsContract.Document.COLUMN_MIME_TYPE,
+    )
+    val children = mutableListOf<StorageChildDocument>()
+    contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+      while (cursor.moveToNext()) {
+        val documentId = cursor.getString(0) ?: continue
+        val name = cursor.getString(1) ?: continue
+        children.add(
+          StorageChildDocument(
+            name,
+            DocumentsContract.buildDocumentUriUsingTree(parent.uri, documentId),
+            cursor.getString(2),
+          ),
+        )
+      }
+    }
+    return children
+  }
+
+  /**
+   * Resolves one child without walking the parent. The platform external
+   * storage provider uses path-shaped document ids, so its children resolve
+   * with a single existence query; other providers fall back to one listing.
+   */
+  private fun findStorageChild(parent: DocumentFile, name: String): DocumentFile? {
+    if (parent.uri.scheme == ContentResolver.SCHEME_FILE) return parent.findFile(name)
+    if (isExternalStorageTreeDocument(parent.uri)) {
+      return treeChildDocument(parent, "${DocumentsContract.getDocumentId(parent.uri)}/$name")
+        ?.takeIf { it.exists() }
+    }
+    val child = listStorageChildren(parent).firstOrNull { it.name == name } ?: return null
+    return storageChildDocumentFile(child)
+  }
+
   private fun storageDocumentAt(rootUri: String, relativePath: String): DocumentFile? {
-    var current = storageRoot(rootUri)
-    for (segment in safeStorageSegments(relativePath)) {
-      current = current.findFile(segment) ?: return null
+    val root = storageRoot(rootUri)
+    val segments = safeStorageSegments(relativePath)
+    if (isExternalStorageTreeDocument(root.uri)) {
+      return treeChildDocument(
+        root,
+        "${DocumentsContract.getDocumentId(root.uri)}/${segments.joinToString("/")}",
+      )?.takeIf { it.exists() }
+    }
+    var current = root
+    for (segment in segments) {
+      current = findStorageChild(current, segment) ?: return null
     }
     return current
   }
@@ -4242,7 +4354,7 @@ class MainActivity : TauriActivity() {
   }
 
   private fun ensureStorageDirectory(parent: DocumentFile, name: String): DocumentFile {
-    val existing = parent.findFile(name)
+    val existing = findStorageChild(parent, name)
     if (existing != null) {
       require(existing.isDirectory) { "Android storage path segment is not a folder: $name" }
       return existing
@@ -4281,7 +4393,7 @@ class MainActivity : TauriActivity() {
       current = ensureStorageDirectory(current, segment)
     }
     val fileName = segments.last()
-    val existing = current.findFile(fileName)
+    val existing = findStorageChild(current, fileName)
     if (existing != null) {
       require(existing.isFile) { "Android storage path is not a file: $relativePath" }
       return existing
@@ -4295,7 +4407,7 @@ class MainActivity : TauriActivity() {
         "Android storage file already exists but is not accessible: $relativePath",
       )
     }
-    val raced = current.findFile(fileName)
+    val raced = findStorageChild(current, fileName)
     if (raced != null) {
       require(raced.isFile) { "Android storage path is not a file: $relativePath" }
       return raced
