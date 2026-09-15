@@ -972,6 +972,12 @@ class MainActivity : TauriActivity() {
   override fun onResume() {
     super.onResume()
     resumeTaskWebViewsForBackgroundWork()
+    mainWebView?.post {
+      mainWebView?.evaluateJavascript(
+        "window.dispatchEvent(new Event('norea-app-resumed'));",
+        null,
+      )
+    }
   }
 
   override fun onWebViewCreate(webView: WebView) {
