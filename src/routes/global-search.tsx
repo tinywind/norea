@@ -772,7 +772,10 @@ export function PluginSearchSection({
   }, [installedPlugins, pinnedPluginIds, scopeMode, selectedPluginIds]);
   const lastUsedPlugin =
     installedPlugins.find((plugin) => plugin.id === lastUsedPluginId) ?? null;
-  const searchKey = trimmedQuery;
+  const searchKey = JSON.stringify([
+    trimmedQuery,
+    scopedPlugins.map((plugin) => plugin.id).sort(),
+  ]);
   const isCurrentSearch =
     trimmedQuery !== "" && globalSearchState.searchKey === searchKey;
   const results = isCurrentSearch ? globalSearchState.results : [];
@@ -1000,12 +1003,13 @@ export function PluginSearchSection({
           searchKey,
           controller,
         );
+        if (controller.signal.aborted) return;
         setActivePluginIds((current) =>
           hasSameStringItems(current, remainingPluginIds)
             ? current
             : remainingPluginIds,
         );
-        if (!controller.signal.aborted && remainingPluginIds.length === 0) {
+        if (remainingPluginIds.length === 0) {
           finishGlobalSearch(searchKey);
         }
       });

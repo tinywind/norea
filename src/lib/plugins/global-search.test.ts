@@ -96,6 +96,65 @@ describe("globalSearch", () => {
     expect(ok.error).toBeUndefined();
   });
 
+  it("searches only the supplied source scope", async () => {
+    const excludedSearch = vi.fn(async () => []);
+    const selected = makePlugin("selected", async () => []);
+    const manager = makeManager([
+      makePlugin("excluded", excludedSearch),
+      selected,
+    ]);
+
+    const results = await globalSearch(manager, "scoped", {
+      plugins: [selected],
+    });
+
+    expect(results.map((result) => result.pluginId)).toEqual(["selected"]);
+    expect(excludedSearch).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to all sources when the scope is empty", async () => {
+    const search = vi.fn(async () => []);
+    const manager = makeManager([makePlugin("excluded", search)]);
+
+    expect(await globalSearch(manager, "empty", { plugins: [] })).toEqual([]);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("replaces queued searches without running sources outside the new scope", async () => {
+    const excludedSearch = vi.fn(async () => []);
+    const selectedSearch = vi.fn(async () => []);
+    const selected = makePlugin("selected", selectedSearch);
+    const manager = makeManager([
+      makePlugin("excluded", excludedSearch),
+      selected,
+    ]);
+    const previousController = new AbortController();
+    const previousResult = vi.fn();
+
+    taskScheduler.pauseSourceQueue();
+    try {
+      const previousSearch = globalSearch(manager, "same query", {
+        signal: previousController.signal,
+        onResult: previousResult,
+      });
+      previousController.abort();
+      const scopedSearch = globalSearch(manager, "same query", {
+        plugins: [selected],
+      });
+      taskScheduler.resumeSourceQueue();
+
+      expect(await previousSearch).toEqual([]);
+      expect((await scopedSearch).map((result) => result.pluginId)).toEqual([
+        "selected",
+      ]);
+      expect(previousResult).not.toHaveBeenCalled();
+      expect(excludedSearch).not.toHaveBeenCalled();
+      expect(selectedSearch).toHaveBeenCalledOnce();
+    } finally {
+      taskScheduler.resumeSourceQueue();
+    }
+  });
+
   it("captures plugin timeouts into the per-row error field", async () => {
     const manager = makeManager([
       makePlugin("slow", async () => {
