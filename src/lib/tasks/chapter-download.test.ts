@@ -746,8 +746,9 @@ describe("enqueueChapterDownloadBatch", () => {
 });
 
 describe("startChapterDownloadQueueExecutor", () => {
-  it("does not restore queue entries removed by a storage operation", async () => {
+  it("restores every pending job after waiting for storage operations", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferreds: Deferred<void>[] = [];
     const storageOperationStarted = createDeferred<void>();
     const releaseStorageOperation = createDeferred<void>();
     const storageOperation = runExclusiveChapterStorageOperation(
@@ -762,13 +763,15 @@ describe("startChapterDownloadQueueExecutor", () => {
     schedulerMocks.enqueueSource.mockImplementation(
       (spec: SourceTaskSpec<void>) => {
         capturedSpec = spec;
+        const deferred = createDeferred<void>();
+        deferreds.push(deferred);
         return {
-          id: `task-${schedulerMocks.enqueueSource.mock.calls.length}`,
-          promise: Promise.reject(new Error("executor failed")),
+          id: `task-${deferreds.length}`,
+          promise: deferred.promise,
         };
       },
     );
-    const restoredJobCount = 15;
+    const restoredJobCount = 35;
     const jobs = Array.from({ length: restoredJobCount }, (_, index) => {
       const id = index + 1;
       return {
@@ -799,18 +802,35 @@ describe("startChapterDownloadQueueExecutor", () => {
     backendQueueValues.delete(1);
     releaseStorageOperation.resolve();
     await storageOperation;
-    await flushMicrotasks(50);
 
-    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
-    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
-    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
-      restoredJobCount - 2,
-    );
-    expect([...backendQueueValues.keys()]).toEqual(
-      jobs.slice(2).map((job) => job.id),
-    );
-    expect(capturedSpec?.kind).toBe("chapter.download");
-    expect(capturedSpec?.subject?.batchTitle).toBe("Queued chapter downloads");
+    try {
+      await vi.waitFor(() => {
+        expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
+          restoredJobCount - 2,
+        );
+      });
+      expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+      expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
+      const restoredSpecs = schedulerMocks.enqueueSource.mock.calls.map(
+        ([spec]) => spec as SourceTaskSpec<void>,
+      );
+      expect(restoredSpecs.map((spec) => spec.subject?.chapterId)).toEqual(
+        jobs.slice(2).map((job) => job.id),
+      );
+      expect(restoredSpecs.every((spec) => spec.priority === "background")).toBe(
+        true,
+      );
+      expect([...backendQueueValues.keys()]).toEqual(
+        jobs.slice(2).map((job) => job.id),
+      );
+      expect(capturedSpec?.kind).toBe("chapter.download");
+      expect(capturedSpec?.subject?.batchTitle).toBe("Queued chapter downloads");
+    } finally {
+      for (const deferred of deferreds) {
+        deferred.reject(new Error("executor failed"));
+      }
+      await flushMicrotasks(100);
+    }
   });
 });
 

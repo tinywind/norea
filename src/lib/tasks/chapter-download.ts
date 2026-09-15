@@ -1752,6 +1752,7 @@ async function runBackendChapterDownloadExecutor(): Promise<void> {
                 ...job,
                 priority: "background",
               })),
+              materializeAllTasks: true,
               persist: false,
               removeBackendQueuedJobsOnCancel: true,
               title: "Queued chapter downloads",
