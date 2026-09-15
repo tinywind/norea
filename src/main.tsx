@@ -36,7 +36,9 @@ import {
   PLUGIN_VPN_QUERY_KEY,
   shouldShowPluginVpnReconnectedToast,
   startPluginVpnStatusListener,
+  type PluginVpnStatusEvent,
 } from "./lib/plugin-vpn";
+import { startPluginVpnLifecycle } from "./lib/plugin-vpn-lifecycle";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -528,7 +530,7 @@ function PluginVpnProxyGate({ children }: RuntimeGateProps) {
     let active = true;
     let unlisten: (() => void) | undefined;
 
-    void startPluginVpnStatusListener((event) => {
+    const onStatusEvent = (event: PluginVpnStatusEvent) => {
       if (!active) return;
       queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, event.status);
       if (shouldShowPluginVpnReconnectedToast(event)) {
@@ -543,7 +545,22 @@ function PluginVpnProxyGate({ children }: RuntimeGateProps) {
           title: translate(eventLocale, "settings.data.pluginVpn.title"),
         });
       }
-    })
+    };
+    const stopRecovery = startPluginVpnLifecycle({
+      onRestored: (status) => onStatusEvent({ kind: "reconnected", status }),
+      onError: (error) => {
+        console.warn("[plugin-vpn] automatic reconnection failed", error);
+        void queryClient.invalidateQueries({ queryKey: PLUGIN_VPN_QUERY_KEY });
+        showErrorToast(
+          translate(
+            useAppearanceStore.getState().appLocale,
+            "settings.data.pluginVpn.title",
+          ),
+          error,
+        );
+      },
+    });
+    void startPluginVpnStatusListener(onStatusEvent)
       .then((cleanup) => {
         if (active) {
           unlisten = cleanup;
@@ -557,6 +574,7 @@ function PluginVpnProxyGate({ children }: RuntimeGateProps) {
 
     return () => {
       active = false;
+      stopRecovery();
       unlisten?.();
     };
   }, [queryClient]);

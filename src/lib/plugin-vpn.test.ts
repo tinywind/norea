@@ -29,15 +29,19 @@ import {
   deleteAndroidContentUriTempFile,
 } from "./android-storage";
 import { isAndroidRuntime } from "./tauri-runtime";
+import { usePluginVpnStore } from "../store/plugin-vpn";
 import {
   applyPluginVpnFinderProfile,
   canStartPluginVpnConnection,
   configureAndroidPluginVpnProxy,
   connectPluginVpn,
+  disconnectPluginVpn,
   ensureAndroidPluginVpnProxy,
   importPluginVpnProfile,
   loadPluginVpnFinderServers,
   pluginVpnFinderProfileIp,
+  removePluginVpnProfile,
+  restorePluginVpnConnection,
   PluginVpnConnectionNotEstablishedError,
   shouldShowPluginVpnReconnectedToast,
   startPluginVpnStatusListener,
@@ -87,12 +91,213 @@ const ERROR_STATUS: PluginVpnStatus = {
   phase: "error",
 };
 
+const EMPTY_CREDENTIALS: PluginVpnCredentials = {
+  challengeResponse: "",
+  password: "",
+  privateKeyPassword: "",
+  username: "",
+};
+
+const SESSION_CREDENTIALS: PluginVpnCredentials = {
+  challengeResponse: "",
+  password: "test-password",
+  privateKeyPassword: "test-key",
+  username: "reader",
+};
+
 describe("plugin VPN", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    invokeMock.mockResolvedValue(STATUS);
+    await disconnectPluginVpn();
     vi.clearAllMocks();
     isAndroidRuntimeMock.mockReturnValue(false);
     invokeMock.mockResolvedValue(STATUS);
     vi.unstubAllGlobals();
+  });
+
+  it("restores a saved On setting using the stored profile", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock
+      .mockResolvedValueOnce({ ...STATUS, profile: { ...STATUS.profile!, isVpnGateFinder: true } })
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+
+    await expect(restorePluginVpnConnection()).resolves.toEqual(CONNECTED_STATUS);
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_status"],
+      ["plugin_vpn_connect", { credentials: EMPTY_CREDENTIALS }],
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+  });
+
+  it("never restores a manually disabled VPN", async () => {
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["connecting", "connected", "reconnecting", "disconnecting"] as const)(
+    "does not replace an existing %s connection",
+    async (phase) => {
+      usePluginVpnStore.getState().setEnabled(true);
+      invokeMock.mockResolvedValueOnce({ ...STATUS, phase });
+      await expect(restorePluginVpnConnection()).resolves.toBeNull();
+      expect(invokeMock.mock.calls).toEqual([["plugin_vpn_status"]]);
+    },
+  );
+
+  it("coalesces simultaneous startup and foreground recovery", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(CONNECTED_STATUS);
+    await Promise.all([restorePluginVpnConnection(), restorePluginVpnConnection()]);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "plugin_vpn_status", "plugin_vpn_connect",
+    ]);
+  });
+
+  it("ignores a late status result after manual Off", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    let resolveStatus!: (status: PluginVpnStatus) => void;
+    invokeMock.mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }));
+    const recovery = restorePluginVpnConnection();
+    await disconnectPluginVpn();
+    resolveStatus(STATUS);
+    await expect(recovery).resolves.toBeNull();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "plugin_vpn_status", "plugin_vpn_disconnect",
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
+  });
+
+  it("keeps On after a failed recovery and retries on the next resume", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockResolvedValueOnce(STATUS).mockRejectedValueOnce("network unavailable");
+    await expect(restorePluginVpnConnection()).rejects.toBe("network unavailable");
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+    invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(CONNECTED_STATUS);
+    await expect(restorePluginVpnConnection()).resolves.toEqual(CONNECTED_STATUS);
+  });
+
+  it("reuses session credentials and cleans up a failed native tunnel before recovery", async () => {
+    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+    await connectPluginVpn(SESSION_CREDENTIALS);
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValueOnce(ERROR_STATUS).mockResolvedValueOnce(STATUS)
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+    await expect(restorePluginVpnConnection()).resolves.toEqual(CONNECTED_STATUS);
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_status"],
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
+      ["plugin_vpn_connect", { credentials: SESSION_CREDENTIALS }],
+    ]);
+  });
+
+  it("does not restore over a pending manual connection", async () => {
+    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+    const connection = connectPluginVpn(SESSION_CREDENTIALS);
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    await expect(connection).resolves.toEqual(CONNECTED_STATUS);
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_connect", { credentials: SESSION_CREDENTIALS }],
+    ]);
+  });
+
+  it("lets a manual connection supersede a pending recovery status check", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    let resolveStatus!: (status: PluginVpnStatus) => void;
+    invokeMock
+      .mockReturnValueOnce(new Promise((resolve) => { resolveStatus = resolve; }))
+      .mockResolvedValueOnce(STATUS)
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+    const recovery = restorePluginVpnConnection();
+    await expect(connectPluginVpn(SESSION_CREDENTIALS)).resolves.toEqual(CONNECTED_STATUS);
+    resolveStatus(STATUS);
+    await expect(recovery).resolves.toBeNull();
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_status"],
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
+      ["plugin_vpn_connect", { credentials: SESSION_CREDENTIALS }],
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+  });
+
+  it.each(["connected", "failed"] as const)(
+    "ignores a late %s recovery result after manual Off",
+    async (result) => {
+      usePluginVpnStore.getState().setEnabled(true);
+      let finish!: () => void;
+      let started!: () => void;
+      const connecting = new Promise<void>((resolve) => { started = resolve; });
+      invokeMock.mockResolvedValueOnce(STATUS).mockImplementationOnce(() => {
+        started();
+        return new Promise((resolve, reject) => {
+          finish = () => result === "connected"
+            ? resolve(CONNECTED_STATUS)
+            : reject(new Error("connection cancelled"));
+        });
+      });
+      const recovery = restorePluginVpnConnection();
+      await connecting;
+      await disconnectPluginVpn();
+      finish();
+      await expect(recovery).resolves.toBeNull();
+      expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+        "plugin_vpn_status", "plugin_vpn_connect", "plugin_vpn_disconnect",
+      ]);
+      expect(usePluginVpnStore.getState().enabled).toBe(false);
+    },
+  );
+
+  it("honors manual Off before connection preparation finishes", async () => {
+    const connection = connectPluginVpn(SESSION_CREDENTIALS);
+    await disconnectPluginVpn();
+    await expect(connection).resolves.toBeNull();
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: false }],
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
+  });
+
+  it("forgets session credentials when the user disconnects", async () => {
+    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+    await connectPluginVpn(SESSION_CREDENTIALS);
+    await disconnectPluginVpn();
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(CONNECTED_STATUS);
+    await restorePluginVpnConnection();
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_status"],
+      ["plugin_vpn_connect", { credentials: EMPTY_CREDENTIALS }],
+    ]);
+  });
+
+  it("cancels recovery when replacing or removing a profile", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    let resolveStatus!: (status: PluginVpnStatus) => void;
+    invokeMock.mockReturnValueOnce(new Promise((resolve) => { resolveStatus = resolve; }));
+    const recovery = restorePluginVpnConnection();
+    await applyPluginVpnFinderProfile("candidate-2");
+    resolveStatus(STATUS);
+    await expect(recovery).resolves.toBeNull();
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_status"],
+      ["plugin_vpn_disconnect", { preserveBlock: false }],
+      ["plugin_vpn_apply_finder_profile", { candidateId: "candidate-2" }],
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
+
+    usePluginVpnStore.getState().setEnabled(true);
+    await removePluginVpnProfile();
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
+    expect(invokeMock).toHaveBeenLastCalledWith("plugin_vpn_remove_profile");
+  });
+
+  it("does not restore without a profile or platform support", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockResolvedValueOnce({ ...STATUS, profile: null });
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    invokeMock.mockResolvedValueOnce({ ...STATUS, supported: false });
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock.mock.calls).toEqual([["plugin_vpn_status"], ["plugin_vpn_status"]]);
   });
 
   it("configures the authenticated Android WebView proxy", async () => {
@@ -458,6 +663,7 @@ describe("plugin VPN", () => {
       "plugin_vpn_connect",
       "plugin_vpn_disconnect",
     ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
   });
 
   it("does not start a superseded connection after proxy preparation", async () => {

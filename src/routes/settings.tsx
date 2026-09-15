@@ -105,6 +105,7 @@ import {
 import { useBrowseStore } from "../store/browse";
 import { useLibraryStore } from "../store/library";
 import { LOG_LEVELS, type LogLevel, useLoggingStore } from "../store/logging";
+import { usePluginVpnStore } from "../store/plugin-vpn";
 import { useReaderStore } from "../store/reader";
 import { useUserAgentStore } from "../store/user-agent";
 import {
@@ -372,6 +373,7 @@ type PluginVpnOperation =
 function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const vpnEnabled = usePluginVpnStore((state) => state.enabled);
   const [finderOpen, setFinderOpen] = useState(false);
   const [vpnOperation, setVpnOperation] = useState<PluginVpnOperation | null>(
     null,
@@ -397,7 +399,8 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
         vpnOperation?.kind === "connect" ||
         vpnOperation?.kind === "disconnect" ||
         vpnOperation?.kind === "finder";
-      return localConnectionActive ||
+      return vpnEnabled ||
+        localConnectionActive ||
         phase === "connecting" ||
         phase === "connected" ||
         phase === "reconnecting" ||
@@ -450,6 +453,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const connectionRequestActive =
     vpnOperation?.kind === "connect" || vpnOperation?.kind === "finder";
   const showConnectionStop =
+    vpnEnabled ||
     connectionRequestActive ||
     vpnOperation?.kind === "disconnect" ||
     (status !== undefined && status.phase !== "disabled");
@@ -856,33 +860,36 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
             label={t("settings.data.pluginVpn.connection.label")}
             description={t("settings.data.pluginVpn.connection.description")}
           >
-            {!showConnectionStop ? (
-              <TextButton
-                disabled={!canConnect}
-                onClick={() => {
-                  void connect();
-                }}
-              >
-                {t("settings.data.pluginVpn.connection.connect")}
-              </TextButton>
-            ) : (
-              <TextButton
-                disabled={
-                  profileOperationActive ||
-                  vpnOperation?.kind === "disconnect" ||
-                  (!connectionRequestActive && !statusAvailable)
-                }
-                loading={vpnOperation?.kind === "disconnect"}
-                variant="default"
-                onClick={() => {
-                  void disconnect();
-                }}
-              >
-                {cancelConnection
-                  ? t("settings.data.pluginVpn.connection.cancel")
-                  : t("settings.data.pluginVpn.connection.disconnect")}
-              </TextButton>
-            )}
+            <SettingsInlineControls>
+              {!showConnectionStop || (disconnected && vpnOperation === null) ? (
+                <TextButton
+                  disabled={!canConnect}
+                  onClick={() => {
+                    void connect();
+                  }}
+                >
+                  {t("settings.data.pluginVpn.connection.connect")}
+                </TextButton>
+              ) : null}
+              {showConnectionStop ? (
+                <TextButton
+                  disabled={
+                    profileOperationActive ||
+                    vpnOperation?.kind === "disconnect" ||
+                    (!vpnEnabled && !connectionRequestActive && !statusAvailable)
+                  }
+                  loading={vpnOperation?.kind === "disconnect"}
+                  variant="default"
+                  onClick={() => {
+                    void disconnect();
+                  }}
+                >
+                  {cancelConnection
+                    ? t("settings.data.pluginVpn.connection.cancel")
+                    : t("settings.data.pluginVpn.connection.disconnect")}
+                </TextButton>
+              ) : null}
+            </SettingsInlineControls>
           </SettingsFieldRow>
           <PluginVpnFinder
             connectionError={visibleStatusError}

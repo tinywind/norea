@@ -8,6 +8,7 @@ import {
 } from "./android-storage";
 import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
+import { usePluginVpnStore } from "../store/plugin-vpn";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
 const PLUGIN_VPN_STATUS_EVENT = "plugin-vpn-status";
@@ -126,6 +127,35 @@ declare global {
 
 let androidProxyConfiguration: Promise<void> | null = null;
 let finderQuerySequence = 0;
+let connectionGeneration = 0;
+let connectionAttempt: Promise<PluginVpnStatus | null> | null = null;
+let recoveryAttempt: Promise<PluginVpnStatus | null> | null = null;
+let sessionCredentials: PluginVpnCredentials | null = null;
+
+function clearPluginVpnIntent(): void {
+  connectionGeneration += 1;
+  sessionCredentials = null;
+  usePluginVpnStore.getState().setEnabled(false);
+}
+
+function trackPluginVpnConnection(
+  attempt: Promise<PluginVpnStatus | null>,
+): Promise<PluginVpnStatus | null> {
+  connectionAttempt = attempt;
+  const settled = () => {
+    if (connectionAttempt === attempt) connectionAttempt = null;
+    if (recoveryAttempt === attempt) recoveryAttempt = null;
+  };
+  void attempt.then(settled, settled);
+  return attempt;
+}
+
+async function preparePluginVpnProfileChange(): Promise<void> {
+  clearPluginVpnIntent();
+  if (connectionAttempt) {
+    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
+  }
+}
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
   return invoke<PluginVpnStatus>("plugin_vpn_status");
@@ -190,9 +220,10 @@ export function loadPluginVpnFinderServers(
   });
 }
 
-export function applyPluginVpnFinderProfile(
+export async function applyPluginVpnFinderProfile(
   candidateId: string,
 ): Promise<PluginVpnStatus> {
+  await preparePluginVpnProfileChange();
   return invoke<PluginVpnStatus>("plugin_vpn_apply_finder_profile", {
     candidateId,
   });
@@ -297,6 +328,7 @@ export async function importPluginVpnProfile(): Promise<PluginVpnStatus | null> 
   }
 
   try {
+    await preparePluginVpnProfileChange();
     return await invoke<PluginVpnStatus>("plugin_vpn_import_profile", { path });
   } finally {
     if (tempFile) {
@@ -311,14 +343,36 @@ export async function importPluginVpnProfile(): Promise<PluginVpnStatus | null> 
 
 export function connectPluginVpn(
   credentials: PluginVpnCredentials,
-): Promise<PluginVpnStatus>;
-export function connectPluginVpn(
+  isCurrent: () => boolean = () => true,
+): Promise<PluginVpnStatus | null> {
+  if (!isCurrent()) return Promise.resolve(null);
+  const previous = connectionAttempt;
+  const generation = ++connectionGeneration;
+  const current = () => generation === connectionGeneration && isCurrent();
+  sessionCredentials = { ...credentials };
+  usePluginVpnStore.getState().setEnabled(true);
+  return trackPluginVpnConnection(
+    (async () => {
+      try {
+        if (previous) {
+          await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
+        }
+        if (!current()) return null;
+        return await establishPluginVpnConnection(credentials, current);
+      } catch (error) {
+        if (!current()) return null;
+        clearPluginVpnIntent();
+        throw error;
+      } finally {
+        if (generation === connectionGeneration && !isCurrent()) clearPluginVpnIntent();
+      }
+    })(),
+  );
+}
+
+async function establishPluginVpnConnection(
   credentials: PluginVpnCredentials,
   isCurrent: () => boolean,
-): Promise<PluginVpnStatus | null>;
-export async function connectPluginVpn(
-  credentials: PluginVpnCredentials,
-  isCurrent: () => boolean = () => true,
 ): Promise<PluginVpnStatus | null> {
   await ensureAndroidPluginVpnProxy();
   if (!isCurrent()) return null;
@@ -343,7 +397,7 @@ export async function connectPluginVpn(
 
 async function cancelFailedPluginVpnConnection(): Promise<void> {
   try {
-    await disconnectPluginVpn();
+    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
   } catch (error) {
     console.warn("[plugin-vpn] failed connection cleanup failed", error);
   }
@@ -352,9 +406,49 @@ async function cancelFailedPluginVpnConnection(): Promise<void> {
 export function disconnectPluginVpn(
   preserveBlock = false,
 ): Promise<PluginVpnStatus> {
+  clearPluginVpnIntent();
   return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock });
 }
 
-export function removePluginVpnProfile(): Promise<PluginVpnStatus> {
+export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {
+  await preparePluginVpnProfileChange();
   return invoke<PluginVpnStatus>("plugin_vpn_remove_profile");
+}
+
+export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
+  if (!usePluginVpnStore.getState().enabled) return Promise.resolve(null);
+  if (recoveryAttempt) return recoveryAttempt;
+  if (connectionAttempt) return Promise.resolve(null);
+  const generation = connectionGeneration;
+  const current = () =>
+    generation === connectionGeneration && usePluginVpnStore.getState().enabled;
+  const attempt = (async () => {
+    const status = await getPluginVpnStatus();
+    if (
+      !current() ||
+      !status.supported ||
+      !status.profile ||
+      (status.phase !== "disabled" && status.phase !== "error")
+    ) {
+      return null;
+    }
+    if (status.phase === "error") {
+      await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
+      if (!current()) return null;
+    }
+    return establishPluginVpnConnection(
+      sessionCredentials ?? {
+        challengeResponse: "",
+        password: "",
+        privateKeyPassword: "",
+        username: "",
+      },
+      current,
+    );
+  })().catch((error: unknown) => {
+    if (!current()) return null;
+    throw error;
+  });
+  recoveryAttempt = attempt;
+  return trackPluginVpnConnection(attempt);
 }
