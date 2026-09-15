@@ -1133,6 +1133,7 @@
   "sourceAccess.verificationFailed": "Verification did not succeed. Complete the check and try again.",
   "sourceAccess.notificationTitle": "Source verification required",
   "sourceAccess.notificationMessage": "{source} is paused until its access check is completed.",
+  "sourceAccess.dismissNotification": "Dismiss authentication notice",
   "updates.title": "Updates",
   "updates.description": "Refresh installed sources and process newly indexed unread chapters.",
   "updates.check": "Check for updates",

@@ -1133,6 +1133,7 @@
   "sourceAccess.verificationFailed": "인증에 성공하지 못했습니다. 인증을 완료한 뒤 다시 시도하세요.",
   "sourceAccess.notificationTitle": "소스 인증 필요",
   "sourceAccess.notificationMessage": "접근 인증을 완료할 때까지 {source} 대기열을 일시 중지합니다.",
+  "sourceAccess.dismissNotification": "인증 알림 닫기",
   "updates.title": "업데이트",
   "updates.description": "설치된 소스를 새로고침하고 새로 인덱싱된 안 읽은 챕터를 처리합니다.",
   "updates.check": "업데이트 확인",

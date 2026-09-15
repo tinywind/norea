@@ -169,6 +169,7 @@ export function TaskNotifications() {
     );
     const pendingAutoOpenScopes = new Set<string>();
     const autoOpenInFlightScopes = new Set<string>();
+    const dismissedRevisions = new Map<string, number>();
     let notificationVisible = false;
 
     const syncSourceAccess = () => {
@@ -182,32 +183,44 @@ export function TaskNotifications() {
           taskScheduler.canBeginSourceAccessVerification(scopeKey),
       );
 
-      const firstBlock = snapshot.sourceAccessBlocks[0];
+      for (const scopeKey of dismissedRevisions.keys()) {
+        if (!knownScopes.has(scopeKey)) dismissedRevisions.delete(scopeKey);
+      }
+      const firstBlock = snapshot.sourceAccessBlocks.find(
+        (block) => dismissedRevisions.get(block.scopeKey) !== block.revision,
+      );
       if (!firstBlock) {
         if (notificationVisible) {
-          notifications.hide(SOURCE_ACCESS_NOTIFICATION_ID);
           notificationVisible = false;
+          notifications.hide(SOURCE_ACCESS_NOTIFICATION_ID);
         }
-        return;
-      }
-
-      const sourceNames = sourceAccessBlockSourceNames(firstBlock, snapshot);
-      const sourceName = sourceNames.join(", ") || firstBlock.scopeKey;
-      const notification = {
-        id: SOURCE_ACCESS_NOTIFICATION_ID,
-        autoClose: false as const,
-        color: "orange",
-        message: t("sourceAccess.notificationMessage", {
-          source: sourceName,
-        }),
-        title: t("sourceAccess.notificationTitle"),
-        withCloseButton: false,
-      };
-      if (notificationVisible) {
-        notifications.update(notification);
       } else {
-        notifications.show(notification);
-        notificationVisible = true;
+        const sourceNames = sourceAccessBlockSourceNames(firstBlock, snapshot);
+        const sourceName = sourceNames.join(", ") || firstBlock.scopeKey;
+        const notification = {
+          id: SOURCE_ACCESS_NOTIFICATION_ID,
+          autoClose: false as const,
+          color: "orange",
+          message: t("sourceAccess.notificationMessage", {
+            source: sourceName,
+          }),
+          title: t("sourceAccess.notificationTitle"),
+          withCloseButton: true,
+          closeButtonProps: {
+            "aria-label": t("sourceAccess.dismissNotification"),
+          },
+          onClose: () => {
+            if (!notificationVisible) return;
+            dismissedRevisions.set(firstBlock.scopeKey, firstBlock.revision);
+            notificationVisible = false;
+          },
+        };
+        if (notificationVisible) {
+          notifications.update(notification);
+        } else {
+          notifications.show(notification);
+          notificationVisible = true;
+        }
       }
 
       if (
@@ -251,6 +264,7 @@ export function TaskNotifications() {
     syncSourceAccess();
     return () => {
       unsubscribe();
+      notificationVisible = false;
       notifications.hide(SOURCE_ACCESS_NOTIFICATION_ID);
     };
   }, [t]);
