@@ -145,6 +145,41 @@ describe("useReaderStore", () => {
     expect(general.tapZones.middleCenter).toBe("menu");
   });
 
+  it("uses only the top center for previous in the top-center-previous preset", () => {
+    useReaderStore.getState().applyTapZonePreset("top-center-previous");
+    const general = useReaderStore.getState().general;
+
+    expect(general.tapZonePresetId).toBe("top-center-previous");
+    expect(general.tapZones).toEqual({
+      topLeft: "next",
+      topCenter: "previous",
+      topRight: "next",
+      middleLeft: "next",
+      middleCenter: "menu",
+      middleRight: "next",
+      bottomLeft: "next",
+      bottomCenter: "next",
+      bottomRight: "next",
+    });
+  });
+
+  it("restores the top-center-previous preset after settings rehydration", async () => {
+    useReaderStore.getState().applyTapZonePreset("top-center-previous");
+    const selectedGeneral = useReaderStore.getState().general;
+    const storedSettings = localStorageHarness.values.get("reader-settings")!;
+    useReaderStore.getState().resetReaderSettings();
+    localStorageHarness.values.set("reader-settings", storedSettings);
+
+    await useReaderStore.persist.rehydrate();
+
+    expect(useReaderStore.getState().general.tapZonePresetId).toBe(
+      "top-center-previous",
+    );
+    expect(useReaderStore.getState().general.tapZones).toEqual(
+      selectedGeneral.tapZones,
+    );
+  });
+
   it("setAppearance clamps textSize to [12, 36] and rounds", () => {
     useReaderStore.getState().setAppearance({ textSize: 0 });
     expect(useReaderStore.getState().appearance.textSize).toBe(12);

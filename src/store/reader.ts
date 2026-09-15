@@ -21,7 +21,8 @@ export type ReaderTapPresetId =
   | "side-columns"
   | "vertical-scroll"
   | "bottom-forward"
-  | "bottom-forward-wide";
+  | "bottom-forward-wide"
+  | "top-center-previous";
 export type ReaderTapZone =
   | "topLeft"
   | "topCenter"
@@ -554,6 +555,20 @@ export const READER_TAP_PRESETS: ReaderTapPreset[] = [
       topCenter: "menu",
       topRight: "next",
       middleLeft: "previous",
+      middleCenter: "menu",
+      middleRight: "next",
+      bottomLeft: "next",
+      bottomCenter: "next",
+      bottomRight: "next",
+    },
+  },
+  {
+    id: "top-center-previous",
+    zones: {
+      topLeft: "next",
+      topCenter: "previous",
+      topRight: "next",
+      middleLeft: "next",
       middleCenter: "menu",
       middleRight: "next",
       bottomLeft: "next",
