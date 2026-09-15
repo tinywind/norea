@@ -234,6 +234,27 @@ export function applySourceAccessBrowserOutcome(
 let activeSourceAccessBrowserTaskId: string | null = null;
 let sourceAccessBrowserOpening = false;
 
+export function cancelSourceAccessWait(
+  scopeKey: string,
+  revision: number,
+): boolean {
+  return taskScheduler.batch(() => {
+    if (!taskScheduler.cancelSourceAccessBlock(scopeKey, revision)) return false;
+    const browser = useSiteBrowserStore.getState();
+    if (
+      browser.visible &&
+      browser.taskId &&
+      browser.context?.mode === "source-access" &&
+      browser.context.scopeKey === scopeKey &&
+      browser.context.revision === revision
+    ) {
+      taskScheduler.cancel(browser.taskId);
+      if (useSiteBrowserStore.getState().taskId === browser.taskId) browser.hide();
+    }
+    return true;
+  });
+}
+
 export async function openSourceAccessBrowser(
   block: SourceAccessBlock,
   options: OpenSourceAccessBrowserOptions,

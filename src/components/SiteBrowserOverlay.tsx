@@ -11,6 +11,7 @@ import { registerPageBackNavigationHandler } from "../lib/android-back-navigatio
 import { sourceAccessScopeKey } from "../lib/plugins/source-access";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { taskScheduler } from "../lib/tasks/scheduler";
+import { cancelSourceAccessWait } from "../lib/tasks/source-access-coordinator";
 import { redactUrlForLog, redactUrlsForLog } from "../lib/url-log";
 import { useSiteBrowserStore } from "../store/site-browser";
 
@@ -251,11 +252,13 @@ export function SiteBrowserOverlay() {
     const state = useSiteBrowserStore.getState();
     if (!state.visible) return false;
     if (state.context?.mode === "source-access") {
+      // Closing requests a real source check; browser readiness is not proof
+      // of authentication. The explicit Keep paused action remains separate.
       return finishSourceAccess(
         state.taskId,
         state.context.revision,
         state.openSequence,
-        "keep-paused",
+        state.phase === "ready" ? "verify" : "keep-paused",
       );
     }
     navigationController.current?.abort();
@@ -581,7 +584,11 @@ export function SiteBrowserOverlay() {
         )}
         <IconButton
           label={
-            sourceAccessContext ? keepPausedLabel : t("siteBrowser.close")
+            sourceAccessContext
+              ? phase === "ready"
+                ? verifyLabel
+                : keepPausedLabel
+              : t("siteBrowser.close")
           }
           size="lg"
           onClick={closeBrowser}
@@ -631,6 +638,18 @@ export function SiteBrowserOverlay() {
               })}
             </Text>
             <Group gap="xs">
+              <Button
+                color="red"
+                variant="light"
+                onClick={() =>
+                  cancelSourceAccessWait(
+                    sourceAccessContext.scopeKey,
+                    sourceAccessContext.revision,
+                  )
+                }
+              >
+                {t("sourceAccess.forceStopAndContinue")}
+              </Button>
               <Button
                 variant="default"
                 onClick={() =>

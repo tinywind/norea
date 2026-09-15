@@ -1,4 +1,4 @@
-import { Button, Progress, Text } from "@mantine/core";
+import { Button, Group, Progress, Text } from "@mantine/core";
 import {
   memo,
   useEffect,
@@ -27,6 +27,8 @@ import { useTranslation, type TranslationKey } from "../i18n";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
 import {
+  applySourceAccessBrowserOutcome,
+  cancelSourceAccessWait,
   openSourceAccessBrowser,
   sourceAccessBlockSourceNames,
 } from "../lib/tasks/source-access-coordinator";
@@ -846,7 +848,9 @@ function SourceAccessBanner({
         </Text>
         {block.verificationError ? (
           <Text c="red" component="p" size="sm">
-            {t("sourceAccess.verificationFailed")}
+            {t("sourceAccess.verificationFailed", {
+              error: block.verificationError,
+            })}
           </Text>
         ) : null}
         {!verifying && !canOpenVerification ? (
@@ -854,23 +858,46 @@ function SourceAccessBanner({
             {t("sourceAccess.queueTaskToVerify")}
           </Text>
         ) : null}
+        <Text c="dimmed" component="p" size="sm">
+          {t("sourceAccess.forceStopHelp")}
+        </Text>
       </div>
-      <Button
-        disabled={browserVisible || verifying || !canOpenVerification}
-        loading={verifying}
-        onClick={() => {
-          void openSourceAccessBrowser(block, {
-            sourceName: sourceLabel,
-            title,
-          });
-        }}
-        size="xs"
-        variant="light"
-      >
-        {verifying
-          ? t("sourceAccess.verifying")
-          : t("sourceAccess.openVerification")}
-      </Button>
+      <Group gap="xs" justify="flex-end">
+        <Button
+          disabled={browserVisible || verifying || !canOpenVerification}
+          onClick={() => {
+            void openSourceAccessBrowser(block, {
+              sourceName: sourceLabel,
+              title,
+            });
+          }}
+          size="xs"
+          variant="light"
+        >
+          {t("sourceAccess.openVerification")}
+        </Button>
+        <Button
+          disabled={browserVisible || verifying || !canOpenVerification}
+          loading={verifying}
+          onClick={() =>
+            applySourceAccessBrowserOutcome(taskScheduler, block, "verify")
+          }
+          size="xs"
+          variant="light"
+        >
+          {verifying
+            ? t("sourceAccess.verifying")
+            : t("sourceAccess.verifyAndResume")}
+        </Button>
+        <Button
+          color="red"
+          onClick={() => cancelSourceAccessWait(block.scopeKey, block.revision)}
+          size="xs"
+          variant="light"
+        >
+          {t("sourceAccess.forceStopAndContinue")}
+        </Button>
+      </Group>
     </section>
   );
 }

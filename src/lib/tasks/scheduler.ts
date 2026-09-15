@@ -1258,7 +1258,15 @@ export class TaskScheduler {
     expectedRevision: number | undefined,
   ): boolean {
     const scopeKey = entry.spec.sourceAccessScopeKey;
-    if (!scopeKey || expectedRevision === undefined) return false;
+    if (
+      !scopeKey ||
+      expectedRevision === undefined ||
+      entry.record.status !== "running" ||
+      entry.controller.signal.aborted ||
+      entry.pauseRequested
+    ) {
+      return false;
+    }
     const block = this.sourceAccessBlocks.get(scopeKey);
     if (
       !block ||
@@ -1269,26 +1277,8 @@ export class TaskScheduler {
       return false;
     }
 
-    return true;
-  }
-
-  private completeSourceAccessVerificationForEntry(
-    entry: TaskEntry,
-    expectedRevision: number,
-  ): boolean {
-    const scopeKey = entry.spec.sourceAccessScopeKey;
-    if (!scopeKey) return false;
-    const block = this.sourceAccessBlocks.get(scopeKey);
-    if (
-      !block ||
-      block.revision !== expectedRevision ||
-      entry.sourceAccessVerificationRevision !== expectedRevision ||
-      block.verificationTaskId !== entry.record.id
-    ) {
-      return false;
-    }
-
-    entry.sourceAccessVerificationRevision = undefined;
+    // Authentication is proven by the source response, not later media or
+    // storage work. Keep the running canary pinned to its verified hostname.
     this.sourceAccessBlocks.delete(scopeKey);
     this.debug("source access verified", entry, {
       scopeKey,
@@ -1775,6 +1765,45 @@ export class TaskScheduler {
     });
     this.publishSnapshot();
     this.drain();
+    return true;
+  }
+
+  /** Cancel the blocked origin or active canary, then allow fresh source work. */
+  cancelSourceAccessBlock(scopeKey: string, expectedRevision: number): boolean {
+    const block = this.sourceAccessBlocks.get(scopeKey);
+    if (!block || block.revision !== expectedRevision) return false;
+
+    const taskId = block.verificationTaskId ?? block.originTaskId;
+    const entry =
+      (taskId ? this.entries.get(taskId) : undefined) ??
+      (block.originTaskKey
+        ? [...this.entries.values()].find((candidate) => (
+            normalizedSourceAccessTaskKey(candidate.spec.sourceAccessVerificationKey) ===
+              block.originTaskKey &&
+            candidate.record.lane === "source" &&
+            (candidate.record.status === "queued" || candidate.record.status === "running")
+          ))
+        : undefined);
+
+    this.batch(() => {
+      if (
+        entry?.record.lane === "source" &&
+        this.matchesSourceAccessBlock(entry, block)
+      ) {
+        if (entry.record.status === "running") {
+          this.cancelRunningEntry(entry);
+        } else {
+          this.cancelQueuedEntries([entry], false);
+        }
+      }
+      this.sourceAccessBlocks.delete(scopeKey);
+      this.debug("source access wait cancelled", entry, {
+        scopeKey,
+        sourceAccessRevision: expectedRevision,
+      });
+      this.publishSnapshot();
+      this.requestDrain();
+    });
     return true;
   }
 
@@ -2421,18 +2450,6 @@ export class TaskScheduler {
         ) {
           return;
         }
-        if (
-          sourceAccessVerificationRevision !== undefined &&
-          sourceAccessConfirmed &&
-          !this.completeSourceAccessVerificationForEntry(
-            entry,
-            sourceAccessVerificationRevision,
-          )
-        ) {
-          entry.pauseRequested = true;
-          this.requeuePausedRunningAfterSettlement(entry);
-          return;
-        }
         this.finishRunning(entry, "succeeded", {
           canCancel: false,
           canRetry: false,
@@ -3073,7 +3090,7 @@ export class TaskScheduler {
     ) {
       this.activeDedupeByKey.delete(entry.dedupeKey);
     }
-    entry.reject(new Error("Task was cancelled."));
+    entry.reject(new DOMException("Task was cancelled.", "AbortError"));
   }
 
   private cancelQueuedEntries(
@@ -3111,7 +3128,7 @@ export class TaskScheduler {
       ) {
         this.activeDedupeByKey.delete(entry.dedupeKey);
       }
-      entry.reject(new Error("Task was cancelled."));
+      entry.reject(new DOMException("Task was cancelled.", "AbortError"));
       if (discardCancelled) {
         discardedEntries.push(entry);
       } else {

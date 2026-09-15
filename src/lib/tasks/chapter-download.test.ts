@@ -681,6 +681,50 @@ describe("enqueueChapterDownloadBatch", () => {
     ).toHaveLength(1);
   });
 
+  it.each([true, false])("removes only manually cancelled restored jobs (cancelled: %s)", async (cancelled) => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferreds: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(() => {
+      const deferred = createDeferred<void>();
+      deferreds.push(deferred);
+      return { id: `task-${deferreds.length}`, promise: deferred.promise };
+    });
+    const jobs = [1, 2].map((id) => ({
+      id,
+      pluginId: "source-a",
+      chapterPath: `/chapter/${id}`,
+      title: `Chapter ${id}`,
+    }));
+    for (const job of jobs) backendQueueValues.set(job.id, job);
+    const batch = enqueueChapterDownloadBatch({
+      jobs,
+      persist: false,
+      removeBackendQueuedJobsOnCancel: true,
+      title: "Restore downloads",
+      windowSize: 1,
+    });
+    await flushMicrotasks();
+    deferreds[0]!.reject(cancelled
+      ? new DOMException("Task was cancelled.", "AbortError")
+      : new Error("Storage is full."));
+    await flushMicrotasks();
+    await waitForChapterDownloadQueueMutations();
+
+    expect([...backendQueueValues.keys()]).toEqual(cancelled ? [2] : [1, 2]);
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
+    deferreds[1]!.resolve();
+    if (cancelled) {
+      await expect(batch.promise).resolves.toEqual({
+        cancelled: 1,
+        failed: 0,
+        succeeded: 1,
+        total: 2,
+      });
+    } else {
+      await expect(batch.promise).rejects.toThrow("1 chapter downloads failed.");
+    }
+  });
+
   it("removes restored backend queued jobs when the restored batch is cancelled", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const deferreds: Deferred<void>[] = [];

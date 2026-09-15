@@ -1226,7 +1226,7 @@ function enqueueChapterDownloadForExecutor(
     () => removeQueuedChapterDownloadJob(job),
     (error) => {
       if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
-      if (!removeQueuedJobOnFailure) return;
+      if (!removeQueuedJobOnFailure && !isAbortError(error)) return;
       removeQueuedChapterDownloadJob(job);
     },
   );

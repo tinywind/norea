@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { SourceAccessBlock } from "./scheduler";
+import { useSiteBrowserStore } from "../../store/site-browser";
+import { taskScheduler, type SourceAccessBlock } from "./scheduler";
 import {
   SOURCE_ACCESS_STORAGE_KEY,
   applySourceAccessBrowserOutcome,
+  cancelSourceAccessWait,
   loadPersistedSourceAccessBlocks,
   startSourceAccessPersistence,
 } from "./source-access-coordinator";
@@ -250,5 +252,65 @@ describe("source access persistence", () => {
       applySourceAccessBrowserOutcome(scheduler, current, "verify"),
     ).toBe(true);
     expect(scheduler.beginSourceAccessVerification).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelSourceAccessWait", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useSiteBrowserStore.getState().hide();
+  });
+
+  function queueBrowser(revision: number) {
+    const block = sourceAccessBlock({ revision });
+    useSiteBrowserStore.getState().queueAt(
+      "source-a",
+      block.challenge.url,
+      "browser-task",
+      {
+        mode: "source-access",
+        challenge: block.challenge,
+        revision,
+        scopeKey: block.scopeKey,
+        sourceName: "Source A",
+      },
+    );
+    return block;
+  }
+
+  it.each(["queued", "loading", "ready"] as const)("closes only the cancelled block's %s browser", (phase) => {
+    const block = queueBrowser(3);
+    useSiteBrowserStore.setState({ phase });
+    vi.spyOn(taskScheduler, "cancelSourceAccessBlock").mockReturnValue(true);
+    const cancelBrowser = vi.spyOn(taskScheduler, "cancel").mockReturnValue(true);
+
+    expect(cancelSourceAccessWait(block.scopeKey, block.revision)).toBe(true);
+    expect(taskScheduler.cancelSourceAccessBlock).toHaveBeenCalledWith(block.scopeKey, 3);
+    expect(cancelBrowser).toHaveBeenCalledWith("browser-task");
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      completion: null,
+      phase: "closed",
+      visible: false,
+    });
+  });
+
+  it("ignores stale force-stop actions", () => {
+    const block = queueBrowser(4);
+    vi.spyOn(taskScheduler, "cancelSourceAccessBlock").mockReturnValue(false);
+    const cancelBrowser = vi.spyOn(taskScheduler, "cancel");
+
+    expect(cancelSourceAccessWait(block.scopeKey, 3)).toBe(false);
+    expect(cancelBrowser).not.toHaveBeenCalled();
+    expect(useSiteBrowserStore.getState().visible).toBe(true);
+  });
+
+  it("does not close another source's browser", () => {
+    queueBrowser(3);
+    vi.spyOn(taskScheduler, "cancelSourceAccessBlock").mockReturnValue(true);
+    const cancelBrowser = vi.spyOn(taskScheduler, "cancel");
+
+    expect(cancelSourceAccessWait("site:other.test", 3)).toBe(true);
+    expect(cancelBrowser).not.toHaveBeenCalled();
+    expect(useSiteBrowserStore.getState().visible).toBe(true);
   });
 });
