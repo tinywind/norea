@@ -332,6 +332,9 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       pluginId,
       shouldLoadListing,
     ),
+    // Source failures (blocked sites, parser errors) are not transient, and
+    // the default three retries only delay the visible error by ~7 seconds.
+    retry: false,
     queryKey: [
       "plugin",
       "source",
