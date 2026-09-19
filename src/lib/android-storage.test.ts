@@ -69,10 +69,11 @@ describe("android storage bridge facade", () => {
     const cappedWrite = vi.fn(() =>
       JSON.stringify({ bytes: 12, ok: true }),
     );
-    installBridge({
+    const bridge = {
       writeContentUriFile: legacyWrite,
       writeContentUriFileCapped: cappedWrite,
-    });
+    };
+    installBridge(bridge);
 
     await writeAndroidContentUriFile(
       "content://backup",
@@ -87,6 +88,8 @@ describe("android storage bridge facade", () => {
       "application/zip",
       "4096",
     );
+    // The WebView rejects @JavascriptInterface methods detached from the bridge.
+    expect(cappedWrite.mock.contexts[0]).toBe(bridge);
     expect(legacyWrite).not.toHaveBeenCalled();
   });
 

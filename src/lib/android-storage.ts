@@ -637,11 +637,15 @@ export async function writeAndroidContentUriFile(
   maxBytes: number = MAX_BACKUP_ARCHIVE_BYTES,
 ): Promise<void> {
   const bridge = androidStorageBridge();
-  const cappedWriter = bridge.writeContentUriFileCapped;
   const maxByteLimit = normalizeContentUriMaxBytes(maxBytes);
-  if (cappedWriter) {
+  if (bridge.writeContentUriFileCapped) {
     parseStorageResponse(
-      cappedWriter(uri, inputPath, mimeType, String(maxByteLimit)),
+      bridge.writeContentUriFileCapped(
+        uri,
+        inputPath,
+        mimeType,
+        String(maxByteLimit),
+      ),
     );
     return;
   }
