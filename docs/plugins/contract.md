@@ -132,9 +132,11 @@ seconds), then acts on the first match like a user would:
 - `waitFor` only waits for the element.
 
 A missing target fails the acquisition with `interaction-failed` unless the
-step is `optional`. A step that navigates within the same site continues the
+step is `optional`. A step that navigates within the same origin continues the
 sequence from the next step on the new document; the host does not replay
-earlier steps. Content loaded asynchronously by a step is not detected by
+earlier steps. A navigation to a different origin ends the sequence and the
+acquisition then fails with a timeout, because the host does not carry the
+request into a foreign document. Content loaded asynchronously by a step is not detected by
 `readySelector` alone, so follow such a step with `waitFor` on an element that
 exists only after the load. The host dispatches DOM events, so pages see
 `isTrusted: false`; interactions cannot solve a CAPTCHA or Cloudflare

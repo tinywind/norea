@@ -153,7 +153,7 @@ export function validateWebViewInteractions(
 
 /**
  * Unique id for one interaction sequence. The in-page runtime keys its resume
- * cursor on it so a step that navigates within the same site continues from
+ * cursor on it so a step that navigates within the same origin continues from
  * the next step on the new document instead of replaying earlier steps.
  */
 export function nextWebViewInteractionRunId(): string {

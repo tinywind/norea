@@ -40,6 +40,7 @@ import {
 
 const SNAPSHOT_CONTENT_WAIT_MIN_MS = 1_000;
 const SNAPSHOT_HOST_TIMEOUT_MARGIN_MS = 1_000;
+const SNAPSHOT_CHALLENGE_CHECK_INTERVAL_MS = 1_000;
 
 export interface WebViewFetchOptions {
   beforeContentScript?: string;
@@ -238,9 +239,25 @@ function webViewSnapshotScript(options: WebViewSnapshotScriptOptions): string {
     }
     callback();
   }
+  var lastChallengeCheckAt = 0;
+  var challengeDetected = false;
+  function shouldAbortForChallenge() {
+    if (challengeDetected) return true;
+    if (Date.now() - lastChallengeCheckAt < ${SNAPSHOT_CHALLENGE_CHECK_INTERVAL_MS}) return false;
+    lastChallengeCheckAt = Date.now();
+    challengeDetected = manualActionKind() !== null;
+    return challengeDetected;
+  }
   function start() {
     if (postChallenge()) return;
-    runWebViewInteractions(interactions, { runId: interactionRunId }, function (error) {
+    runWebViewInteractions(interactions, {
+      runId: interactionRunId,
+      shouldAbort: shouldAbortForChallenge
+    }, function (error, aborted) {
+      if (aborted) {
+        readPage();
+        return;
+      }
       if (error) {
         post({ ok: false, code: "interaction-failed", error: errorMessage(error) });
         return;

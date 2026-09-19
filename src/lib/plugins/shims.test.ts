@@ -143,13 +143,20 @@ describe("parseCsv", () => {
 
 interface SnapshotPage {
   buttonPresent?: boolean;
+  /** Turns the page into a Cloudflare challenge once the button is clicked. */
+  challengeAfterClick?: boolean;
   contentPresent?: boolean;
 }
 
 async function executeSnapshotScript(
   script: string,
   page: SnapshotPage = {},
-): Promise<{ clicks: number; message: string; window: Record<string, unknown> }> {
+): Promise<{
+  clicks: number;
+  elapsedMs: number;
+  message: string;
+  window: Record<string, unknown>;
+}> {
   const timers: Array<{ at: number; callback: () => void }> = [];
   let now = 0;
   let clicks = 0;
@@ -188,7 +195,13 @@ async function executeSnapshotScript(
     },
     Promise,
     document: {
-      body: { innerText: "Whole page" },
+      body: {
+        get innerText() {
+          return page.challengeAfterClick && clicks > 0
+            ? "Checking if the site connection is secure. Cloudflare Ray ID: 1"
+            : "Whole page";
+        },
+      },
       documentElement: { outerHTML: "<html><body>Whole page</body></html>" },
       querySelector: (selector: string) => {
         if (selector === ".more") {
@@ -199,7 +212,9 @@ async function executeSnapshotScript(
       },
       querySelectorAll: () => [],
       readyState: "complete",
-      title: "Novel",
+      get title() {
+        return page.challengeAfterClick && clicks > 0 ? "Just a moment..." : "Novel";
+      },
     },
     location: { href: "https://source.test/novel/1" },
     setTimeout: (callback: () => void, delay: number) => {
@@ -217,11 +232,12 @@ async function executeSnapshotScript(
     await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
   }
   if (!postedMessage) throw new Error("Snapshot script did not post a result.");
-  return { clicks, message: postedMessage, window };
+  return { clicks, elapsedMs: now, message: postedMessage, window };
 }
 
 function mockSnapshotExtract(page: SnapshotPage = {}): {
   clicks: () => number;
+  elapsedMs: () => number;
   window: () => Record<string, unknown>;
 } {
   let execution: Awaited<ReturnType<typeof executeSnapshotScript>> | undefined;
@@ -237,6 +253,7 @@ function mockSnapshotExtract(page: SnapshotPage = {}): {
   });
   return {
     clicks: () => execution?.clicks ?? 0,
+    elapsedMs: () => execution?.elapsedMs ?? 0,
     window: () => execution?.window ?? {},
   };
 }
@@ -548,6 +565,28 @@ describe("createShimResolver", () => {
     ).rejects.toThrow(
       'Interaction step 1 (click ".more") timed out after 200ms.',
     );
+  });
+
+  it("@libs/webView webViewLoad reports a challenge that appears between steps", async () => {
+    const extract = mockSnapshotExtract({ challengeAfterClick: true });
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (url: string, options: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/novel/1", {
+        interactions: [
+          { type: "click", selector: ".more" },
+          { type: "waitFor", selector: ".never", timeoutMs: 5_000 },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "source-access-required",
+      challenge: { kind: "cloudflare", url: "https://source.test/novel/1" },
+    });
+
+    expect(extract.clicks()).toBe(1);
+    expect(extract.elapsedMs()).toBeLessThan(5_000);
   });
 
   it("@libs/webView webViewLoad reports a content selector that never matches", async () => {

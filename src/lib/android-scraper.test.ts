@@ -274,6 +274,7 @@ function androidBridgeScript(name: string): string {
 interface BridgeDocument {
   hash?: string;
   name?: string;
+  origin?: string;
 }
 
 function loadBridgeDocument(document: BridgeDocument) {
@@ -281,7 +282,12 @@ function loadBridgeDocument(document: BridgeDocument) {
   const legacyPosts: string[] = [];
   const evaluated: string[] = [];
   const replacedUrls: string[] = [];
-  const location = { hash: document.hash ?? "", pathname: "/novel/1", search: "?p=2" };
+  const location = {
+    hash: document.hash ?? "",
+    origin: document.origin ?? "https://source.test",
+    pathname: "/novel/1",
+    search: "?p=2",
+  };
   const window: Record<string, unknown> = { name: document.name ?? "" };
   runInNewContext(androidBridgeScript("INIT_SCRIPT"), {
     AndroidScraper: {
@@ -326,6 +332,9 @@ describe("Android scraper bridge init script", () => {
     ]);
     expect(first.replacedUrls).toEqual(["/novel/1?p=2"]);
     expect(String(first.window.name)).toMatch(/^__lnr_script__=/);
+    expect(String(first.window.name)).toContain(
+      `&__lnr_origin__=${encodeURIComponent("https://source.test")}`,
+    );
 
     const second = loadBridgeDocument({ name: String(first.window.name) });
 
@@ -335,6 +344,22 @@ describe("Android scraper bridge init script", () => {
     ]);
     expect(second.replacedUrls).toEqual([]);
     expect(second.window.name).toBe(first.window.name);
+  });
+
+  it("drops the armed request before a foreign-origin document can use it", () => {
+    const armed = loadBridgeDocument({ hash });
+
+    const foreign = loadBridgeDocument({
+      name: String(armed.window.name),
+      origin: "https://evil.test",
+    });
+
+    expect(foreign.evaluated).toEqual([]);
+    expect(foreign.posts).toEqual([]);
+    expect(foreign.window.name).toBe("");
+    foreign.postMessage("forged");
+    expect(foreign.posts).toEqual([]);
+    expect(foreign.legacyPosts).toEqual(["forged"]);
   });
 
   it("ignores unrelated window names and falls back to the legacy result bridge", () => {

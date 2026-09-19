@@ -1836,7 +1836,15 @@ class AndroidScraperBridge(
           try {
             name = window.name || "";
           } catch (e) {}
-          return name.indexOf(scriptPrefix) === 0 ? parseParams(name) : {};
+          if (name.indexOf(scriptPrefix) !== 0) return {};
+          var params = parseParams(name);
+          if (params.__lnr_origin__ !== location.origin) {
+            try {
+              window.name = "";
+            } catch (e) {}
+            return {};
+          }
+          return params;
         }
         var params = hashParams();
         var fromHash = !!params.__lnr_script__;
@@ -1869,7 +1877,8 @@ class AndroidScraperBridge(
               try {
                 window.name = scriptPrefix + encodeURIComponent(script) +
                   "&__lnr_request_id__=" + encodeURIComponent(bridgeRequestId) +
-                  "&__lnr_nonce__=" + encodeURIComponent(bridgeNonce);
+                  "&__lnr_nonce__=" + encodeURIComponent(bridgeNonce) +
+                  "&__lnr_origin__=" + encodeURIComponent(location.origin);
               } catch (e) {}
             }
             try {
