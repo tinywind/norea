@@ -15,6 +15,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.webkit.CookieManagerCompat
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.File
@@ -50,10 +51,25 @@ internal fun shouldCompleteBlankNavigation(
   isCurrentWebView: Boolean,
   finishedUrl: String?,
   timeoutElapsed: Boolean,
+  expectedUrl: String = BLANK_PAGE_URL,
 ): Boolean =
   blankNavigationInProgress &&
     isCurrentWebView &&
-    (timeoutElapsed || finishedUrl == BLANK_PAGE_URL)
+    (timeoutElapsed || finishedUrl == expectedUrl)
+
+private const val PARKED_PAGE_FRAGMENT = "norea-parked"
+private val HTTP_ORIGIN_PREFIX = Regex("""^(https?://[^/?#]+)""", RegexOption.IGNORE_CASE)
+
+/**
+ * Resting page for an idle scraper WebView. Parking on an empty document at the
+ * previous origin instead of `about:blank` drops the old page while the next
+ * plugin fetch to the same site can skip the context navigation.
+ */
+internal fun scraperParkingUrl(currentUrl: String?): String? {
+  if (currentUrl.isNullOrBlank()) return null
+  val origin = HTTP_ORIGIN_PREFIX.find(currentUrl)?.groupValues?.get(1) ?: return null
+  return "$origin/#$PARKED_PAGE_FRAGMENT"
+}
 
 internal fun deleteLegacyChapterPageCache(directory: File) {
   if (directory.exists() && !directory.deleteRecursively()) {
@@ -127,6 +143,7 @@ class AndroidScraperBridge(
     val queue: MutableList<QueuedAction> = mutableListOf()
     var activeAction: QueuedAction? = null
     var activeExtractId: String? = null
+    var activeExtractScript: ScriptHandler? = null
     var activeFetchId: String? = null
     var activeResultNonce: String? = null
     var activeTimeout: Runnable? = null
@@ -136,6 +153,7 @@ class AndroidScraperBridge(
     var currentUrl: String? = null
     var documentStartScriptEnabled = false
     var nextSequence = 0L
+    var pendingDocumentReady: ((String) -> Unit)? = null
     var pendingSurfaceLayoutListener: View.OnLayoutChangeListener? = null
     var sourceId: String? = null
     var userAgent: String? = null
@@ -778,6 +796,8 @@ class AndroidScraperBridge(
     webView.webViewClient = WebViewClient()
     state.pendingSurfaceLayoutListener?.let(webView::removeOnLayoutChangeListener)
     state.pendingSurfaceLayoutListener = null
+    state.pendingDocumentReady = null
+    clearExtractScript(state)
     webView.stopLoading()
     runCatching { profileCookieManager(webView).flush() }
       .onFailure { error ->
@@ -1051,6 +1071,8 @@ class AndroidScraperBridge(
     }
 
     state.blankNavigationInProgress = true
+    val parkingUrl = scraperParkingUrl(state.currentUrl)
+    val expectedUrl = parkingUrl ?: BLANK_PAGE_URL
     webView.stopLoading()
     webView.webViewClient = makeClient(state) { finishedUrl ->
       if (!shouldCompleteBlankNavigation(
@@ -1058,6 +1080,7 @@ class AndroidScraperBridge(
           isCurrentWebView = state.webView === webView,
           finishedUrl = finishedUrl,
           timeoutElapsed = false,
+          expectedUrl = expectedUrl,
         )) {
         return@makeClient
       }
@@ -1078,7 +1101,12 @@ class AndroidScraperBridge(
     }
     state.activeTimeout = timeout
     mainHandler.postDelayed(timeout, BLANK_NAVIGATION_TIMEOUT_MS)
-    webView.loadUrl(BLANK_PAGE_URL)
+    if (parkingUrl != null) {
+      logState(state, "park idle webview", parkingUrl)
+      webView.loadDataWithBaseURL(parkingUrl, PARKED_PAGE_HTML, "text/html", "utf-8", parkingUrl)
+    } else {
+      webView.loadUrl(BLANK_PAGE_URL)
+    }
   }
 
   private fun finishBlankNavigation(
@@ -1105,7 +1133,8 @@ class AndroidScraperBridge(
 
   private fun makeClient(
     state: QueueState,
-    onFinished: ((String) -> Unit)?,
+    onStarted: ((String) -> Unit)? = null,
+    onFinished: ((String) -> Unit)? = null,
   ): WebViewClient {
     return object : WebViewClient() {
       override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
@@ -1114,6 +1143,7 @@ class AndroidScraperBridge(
         if (!state.documentStartScriptEnabled) {
           view.evaluateJavascript(INIT_SCRIPT, null)
         }
+        onStarted?.invoke(url)
       }
 
       override fun onPageFinished(view: WebView, url: String) {
@@ -1219,7 +1249,13 @@ class AndroidScraperBridge(
     val beforeScript = payload.optString("beforeScript").takeIf { it.isNotEmpty() }
     val timeoutMs = payload.optLong("timeoutMs", 30_000L)
     val resultNonce = beforeScript?.let { bridgeSession.newNonce() }
-    val targetUrl = if (beforeScript != null) {
+    val webView = scraper(state, payloadUserAgent(payload))
+    // Page CSP applies to the eval fallback in INIT_SCRIPT but not to embedder
+    // document-start scripts, so a per-request script scoped to the page origin
+    // keeps captures working on sites that forbid 'unsafe-eval'.
+    val extractOriginRule = originUrl(Uri.parse(url))
+      ?.takeIf { beforeScript != null && state.documentStartScriptEnabled }
+    val targetUrl = if (beforeScript != null && extractOriginRule == null) {
       val base = url.substringBefore("#")
       "$base#__lnr_script__=${Uri.encode(beforeScript)}" +
         "&__lnr_request_id__=${Uri.encode(id)}" +
@@ -1232,11 +1268,19 @@ class AndroidScraperBridge(
     state.activeResultNonce = resultNonce
     logState(
       state,
-      "runExtract start id=$id url=$url timeoutMs=$timeoutMs beforeScriptLength=${beforeScript?.length ?: 0}",
+      "runExtract start id=$id url=$url timeoutMs=$timeoutMs beforeScriptLength=${beforeScript?.length ?: 0} " +
+        "documentStartScript=${extractOriginRule != null}",
       url,
     )
     setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms")
-    val webView = scraper(state, payloadUserAgent(payload))
+    clearExtractScript(state)
+    if (beforeScript != null && extractOriginRule != null) {
+      state.activeExtractScript = WebViewCompat.addDocumentStartJavaScript(
+        webView,
+        buildExtractStartScript(id, resultNonce.orEmpty(), beforeScript),
+        setOf(extractOriginRule),
+      )
+    }
     val loadTarget = {
       if (state.activeExtractId == id && state.activeAction?.id == id) {
         runCatching { webView.loadUrl(targetUrl) }
@@ -1305,11 +1349,13 @@ class AndroidScraperBridge(
     logState(state, "prepareContext navigate id=$id contextUrl=$contextUrl", contextUrl)
 
     var finished = false
+    var navigationStarted = false
     var fallbackAttempted = false
     var activeFallbackUrl: String? = null
     val timeout = Runnable {
       if (finished) return@Runnable
       finished = true
+      state.pendingDocumentReady = null
       webView.stopLoading()
       webView.webViewClient = makeClient(state, null)
       logState(state, "prepareContext timeout id=$id contextUrl=$contextUrl", contextUrl)
@@ -1317,46 +1363,58 @@ class AndroidScraperBridge(
     }
     state.activeTimeout = timeout
     mainHandler.postDelayed(timeout, 15_000L)
-    webView.webViewClient = makeClient(state) { finishedUrl ->
-      if (finished) return@makeClient
-      if (!sameOrigin(finishedUrl, contextUrl)) {
+    // A browser fetch only needs a same-origin document whose HTML has been
+    // parsed, so the main-frame DOMContentLoaded notification from INIT_SCRIPT
+    // completes the preparation without waiting for images, ads, or trackers.
+    // onPageFinished stays as the fallback for documents that never post it.
+    fun onContextDocument(documentUrl: String, event: String) {
+      if (finished || !navigationStarted) return
+      if (!sameOrigin(documentUrl, contextUrl)) {
         val fallbackUrl = fallbackContextUrl?.takeIf { it != contextUrl }
         if (!fallbackAttempted && fallbackUrl != null) {
           fallbackAttempted = true
           activeFallbackUrl = fallbackUrl
           logState(
             state,
-            "prepareContext fallback id=$id contextUrl=$contextUrl finishedUrl=$finishedUrl fallbackUrl=$fallbackUrl",
+            "prepareContext fallback id=$id contextUrl=$contextUrl finishedUrl=$documentUrl fallbackUrl=$fallbackUrl event=$event",
             fallbackUrl,
           )
           webView.loadUrl(fallbackUrl)
-          return@makeClient
+          return
         }
-        if (fallbackAttempted && activeFallbackUrl != null && isHttpUrl(finishedUrl)) {
+        if (fallbackAttempted && activeFallbackUrl != null && isHttpUrl(documentUrl)) {
           finished = true
+          state.pendingDocumentReady = null
           clearTimeout(state)
           webView.webViewClient = makeClient(state, null)
           logState(
             state,
-            "prepareContext ready fallback id=$id contextUrl=$contextUrl finishedUrl=$finishedUrl",
-            finishedUrl,
+            "prepareContext ready fallback id=$id contextUrl=$contextUrl finishedUrl=$documentUrl event=$event",
+            documentUrl,
           )
-          ready(finishedUrl)
-          return@makeClient
+          ready(documentUrl)
+          return
         }
         logState(
           state,
-          "prepareContext waiting origin id=$id contextUrl=$contextUrl finishedUrl=$finishedUrl",
+          "prepareContext waiting origin id=$id contextUrl=$contextUrl finishedUrl=$documentUrl event=$event",
           contextUrl,
         )
-        return@makeClient
+        return
       }
       finished = true
+      state.pendingDocumentReady = null
       clearTimeout(state)
       webView.webViewClient = makeClient(state, null)
-      logState(state, "prepareContext ready id=$id contextUrl=$contextUrl", contextUrl)
+      logState(state, "prepareContext ready id=$id contextUrl=$contextUrl event=$event", contextUrl)
       ready(null)
     }
+    state.pendingDocumentReady = { documentUrl -> onContextDocument(documentUrl, "documentReady") }
+    webView.webViewClient = makeClient(
+      state,
+      onFinished = { finishedUrl -> onContextDocument(finishedUrl, "pageFinished") },
+      onStarted = { navigationStarted = true },
+    )
     webView.loadUrl(contextUrl)
   }
 
@@ -1534,6 +1592,7 @@ class AndroidScraperBridge(
     if (browserAction) state.blankBeforeNextAction = true
     if (id == null) {
       clearTimeout(state)
+      state.pendingDocumentReady = null
       state.activeResultNonce = null
       state.activeAction = null
       state.busy = false
@@ -1574,9 +1633,11 @@ class AndroidScraperBridge(
   private fun finish(state: QueueState, id: String, envelope: JSONObject) {
     clearTimeout(state)
     clearBackgroundScraperLayoutWait(state)
+    state.pendingDocumentReady = null
     logState(state, "finish id=$id envelope=${envelopeForLog(envelope)}")
     state.webView?.let { webView ->
       if (state.activeExtractId == id) {
+        clearExtractScript(state)
         webView.evaluateJavascript(CLEAR_EXTRACT_BRIDGE_SCRIPT, null)
       }
       if (
@@ -1659,6 +1720,47 @@ class AndroidScraperBridge(
     finishSuccess(state, id, result)
   }
 
+  private fun clearExtractScript(state: QueueState) {
+    state.activeExtractScript?.remove()
+    state.activeExtractScript = null
+  }
+
+  private fun buildExtractStartScript(id: String, nonce: String, beforeScript: String): String {
+    return """
+      (function () {
+        if (window.top !== window) return;
+        window.ReactNativeWebView = window.ReactNativeWebView || {};
+        window.ReactNativeWebView.postMessage = function (payload) {
+          try {
+            AndroidScraper.postExtractResultWithNonce(
+              ${JSONObject.quote(id)},
+              ${JSONObject.quote(nonce)},
+              String(payload)
+            );
+          } catch (e) {}
+        };
+      })();
+      if (window.top === window) {
+        try {
+          $beforeScript
+        } catch (e) {
+          try {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              ok: false,
+              error: "before-script error: " + ((e && e.message) || String(e))
+            }));
+          } catch (e2) {}
+        }
+      }
+    """.trimIndent()
+  }
+
+  private fun onDocumentReady(state: QueueState, url: String) {
+    if (closed) return
+    val listener = state.pendingDocumentReady ?: return
+    listener(url)
+  }
+
   private fun onExtractResult(state: QueueState, id: String?, nonce: String?, payload: String) {
     val activeId = state.activeExtractId ?: return
     if (id != null && id != activeId) return
@@ -1689,6 +1791,11 @@ class AndroidScraperBridge(
     @JavascriptInterface
     fun postFetchResultWithNonce(id: String, nonce: String, payload: String) {
       owner.parseFetchResult(state, id, nonce, payload)
+    }
+
+    @JavascriptInterface
+    fun postDocumentReady(url: String) {
+      owner.mainHandler.post { owner.onDocumentReady(state, url) }
     }
 
     @JavascriptInterface
@@ -1786,6 +1893,7 @@ class AndroidScraperBridge(
     private const val IMMEDIATE_EXECUTOR = "immediate"
     private const val LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY = "scraper-chapter-pages"
     private const val MAX_SOURCE_ID_BYTES = 512
+    private const val PARKED_PAGE_HTML = "<!doctype html><title></title>"
     private const val PRIORITY_INTERACTIVE = 0
     private const val PRIORITY_USER = 1
     private const val PRIORITY_NORMAL = 2
@@ -1867,6 +1975,18 @@ class AndroidScraperBridge(
             }
           } catch (e) {}
         };
+        try {
+          if (window.top === window && typeof AndroidScraper.postDocumentReady === "function") {
+            var notifyDocumentReady = function () {
+              try { AndroidScraper.postDocumentReady(String(location.href)); } catch (e) {}
+            };
+            if (document.readyState === "loading") {
+              document.addEventListener("DOMContentLoaded", notifyDocumentReady, { once: true });
+            } else {
+              notifyDocumentReady();
+            }
+          }
+        } catch (e) {}
         try {
           if (params.__lnr_script__) {
             var script = params.__lnr_script__;

@@ -4,6 +4,7 @@ import java.io.File
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -120,6 +121,39 @@ class AndroidScraperBridgePolicyTest {
         timeoutElapsed = true,
       ),
     )
+    assertTrue(
+      shouldCompleteBlankNavigation(
+        blankNavigationInProgress = true,
+        isCurrentWebView = true,
+        finishedUrl = "https://example.com/#norea-parked",
+        timeoutElapsed = false,
+        expectedUrl = "https://example.com/#norea-parked",
+      ),
+    )
+    assertFalse(
+      shouldCompleteBlankNavigation(
+        blankNavigationInProgress = true,
+        isCurrentWebView = true,
+        finishedUrl = "about:blank",
+        timeoutElapsed = false,
+        expectedUrl = "https://example.com/#norea-parked",
+      ),
+    )
+  }
+
+  @Test
+  fun parksIdleWebViewsAtTheCurrentOrigin() {
+    assertEquals(
+      "https://example.com/#norea-parked",
+      scraperParkingUrl("https://example.com/novel/1?page=2#top"),
+    )
+    assertEquals(
+      "http://example.com:8080/#norea-parked",
+      scraperParkingUrl("http://example.com:8080"),
+    )
+    assertNull(scraperParkingUrl("about:blank"))
+    assertNull(scraperParkingUrl(""))
+    assertNull(scraperParkingUrl(null))
   }
 
   @Test

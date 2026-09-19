@@ -321,6 +321,15 @@ reuse the same browser-owned user data. Android WebViews that must be destroyed
 flush their profile cookies first. A later WebView for the same source reopens
 the same persistent profile.
 
+Before a plugin fetch runs, the host makes sure the executor WebView holds a
+document on the request origin, normally by navigating to the plugin base URL
+or to the request origin. The request starts as soon as that document has
+parsed its HTML (`DOMContentLoaded`); the host does not wait for images, ads,
+or other late resources. An idle executor WebView rests on an empty document at
+its last origin rather than `about:blank`, so consecutive requests to one site
+skip the context navigation. Plugins must not depend on the context page's
+late-loading scripts having run before a fetch.
+
 Browser sessions created by versions that used one shared scraper profile are
 not copied into source-owned profiles because the host cannot infer which
 source owns shared cookies or DOM storage. Users may need to sign in once per
