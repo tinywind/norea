@@ -59,7 +59,6 @@ import {
 import { getSourceRequestTimeoutMs, useBrowseStore } from "../store/browse";
 import { useReaderStore } from "../store/reader";
 import { isTauriRuntime } from "../lib/tauri-runtime";
-import { novelMergeRoute } from "../router";
 import "../styles/novel-merge.css";
 
 export type { NovelMergeChapterDecision } from "../lib/novel-merge";
@@ -503,9 +502,12 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function NovelMergePage() {
+interface NovelMergePageProps {
+  sourceNovelId: number;
+}
+
+export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   const { t } = useTranslation();
-  const { sourceNovelId } = novelMergeRoute.useSearch();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const sourceWorkConcurrency = useBrowseStore(

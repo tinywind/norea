@@ -67,7 +67,6 @@ import {
 } from "../lib/tasks/scheduler";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useTranslation } from "../i18n";
-import { sourceRoute } from "../router";
 import "../styles/browse.css";
 
 const INSTALLED_QUERY_KEY = ["plugin", "installed"] as const;
@@ -237,9 +236,13 @@ function BackGlyph() {
   );
 }
 
-export function SourcePage() {
+interface SourcePageProps {
+  pluginId: string;
+  query: string;
+}
+
+export function SourcePage({ pluginId, query }: SourcePageProps) {
   const { t } = useTranslation();
-  const { pluginId, query } = sourceRoute.useSearch();
   const currentHref = useRouterState({
     select: (state) => state.location.href,
   });

@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState } from "react";
 import { Anchor, AppShell } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -7,6 +7,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
+import { PageSlot } from "../components/PageSlot";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { useTranslation, type TranslationKey } from "../i18n";
@@ -18,6 +19,19 @@ import {
   getAppNavigationHistoryIndex,
   recordAppNavigationEntry,
 } from "../lib/navigation-history";
+import {
+  pageInstanceKey,
+  readHistoryEntryKey,
+  reducePageStack,
+  type PageStackEntry,
+  type PageStackOptions,
+} from "../lib/page-stack";
+import {
+  parseNovelMergeSearch,
+  parseNovelSearch,
+  parseReaderSearch,
+  parseSourceSearch,
+} from "../lib/route-search";
 import { importSystemOpenedFile } from "../lib/system-file-import";
 import { isAndroidRuntime, isTauriRuntime } from "../lib/tauri-runtime";
 import { useAppearanceStore } from "../store/appearance";
@@ -28,7 +42,11 @@ import { BrowsePage, type BrowseTab } from "./browse";
 import { DownloadsPage } from "./downloads";
 import { HistoryPage } from "./history";
 import { LibraryPage } from "./library";
+import { NovelDetailPage } from "./novel";
+import { NovelMergePage } from "./novel-merge";
+import { ReaderPage } from "./reader";
 import { SettingsPage } from "./settings";
+import { SourcePage } from "./source";
 import { TasksPage } from "./tasks";
 import { UpdatesPage } from "./updates";
 
@@ -39,6 +57,17 @@ const PersistentHistoryPage = memo(HistoryPage);
 const PersistentDownloadsPage = memo(DownloadsPage);
 const PersistentTasksPage = memo(TasksPage);
 const PersistentSettingsPage = memo(SettingsPage);
+const StackedNovelPage = memo(NovelDetailPage);
+const StackedNovelMergePage = memo(NovelMergePage);
+const StackedReaderPage = memo(ReaderPage);
+const StackedSourcePage = memo(SourcePage);
+
+const MAX_HIDDEN_STACKED_PAGES = 6;
+const PAGE_STACK_OPTIONS: PageStackOptions = {
+  maxHiddenEntries: MAX_HIDDEN_STACKED_PAGES,
+  singleInstancePathnames: new Set(["/reader"]),
+  stackedPathnames: new Set(["/novel", "/novel-merge", "/reader", "/source"]),
+};
 
 type NavItem = {
   compactKey: TranslationKey;
@@ -155,18 +184,29 @@ function asSearchRecord(search: unknown): Record<string, unknown> {
     : {};
 }
 
-function PersistentPageSlot({
-  active,
-  children,
-}: {
-  active: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div hidden={!active} aria-hidden={!active}>
-      {children}
-    </div>
-  );
+function StackedPage({ entry }: { entry: PageStackEntry }) {
+  switch (entry.pathname) {
+    case "/novel":
+      return <StackedNovelPage id={parseNovelSearch(entry.search).id} />;
+    case "/novel-merge":
+      return (
+        <StackedNovelMergePage
+          sourceNovelId={parseNovelMergeSearch(entry.search).sourceNovelId}
+        />
+      );
+    case "/reader":
+      return (
+        <StackedReaderPage
+          chapterId={parseReaderSearch(entry.search).chapterId}
+        />
+      );
+    case "/source": {
+      const { pluginId, query } = parseSourceSearch(entry.search);
+      return <StackedSourcePage pluginId={pluginId} query={query} />;
+    }
+    default:
+      return null;
+  }
 }
 
 function isNavItemVisible(
@@ -306,6 +346,7 @@ export function RootLayout() {
   const location = useRouterState({
     select: (state) => ({
       historyIndex: getAppNavigationHistoryIndex(state.location.state),
+      historyKey: readHistoryEntryKey(state.location.state),
       href: state.location.href,
       pathname: state.location.pathname,
       search: state.location.search,
@@ -316,6 +357,22 @@ export function RootLayout() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const activePersistentPage = getPersistentPage(pathname);
+  const stackLocation = {
+    historyIndex: location.historyIndex ?? 0,
+    historyKey: location.historyKey ?? String(location.historyIndex ?? 0),
+    pathname,
+    search,
+  };
+  const [pageStack, setPageStack] = useState<readonly PageStackEntry[]>([]);
+  const nextPageStack = reducePageStack(
+    pageStack,
+    stackLocation,
+    PAGE_STACK_OPTIONS,
+  );
+  if (nextPageStack !== pageStack) setPageStack(nextPageStack);
+  const activeStackKey = PAGE_STACK_OPTIONS.stackedPathnames.has(pathname)
+    ? pageInstanceKey(stackLocation, PAGE_STACK_OPTIONS)
+    : null;
   const [visitedPages, setVisitedPages] = useState<ReadonlySet<PersistentPage>>(
     () =>
       new Set<PersistentPage>(
@@ -523,51 +580,61 @@ export function RootLayout() {
       >
         <div className="lnr-app-scroll">
           {pageVisited("library") ? (
-            <PersistentPageSlot active={activePersistentPage === "library"}>
+            <PageSlot active={activePersistentPage === "library"}>
               <PersistentLibraryPage
                 active={activePersistentPage === "library"}
               />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
           {pageVisited("browse") ? (
-            <PersistentPageSlot active={activePersistentPage === "browse"}>
+            <PageSlot active={activePersistentPage === "browse"}>
               <PersistentBrowsePage
                 active={activePersistentPage === "browse"}
                 query={browseQuery}
                 tab={browseTab}
               />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
           {pageVisited("updates") ? (
-            <PersistentPageSlot active={activePersistentPage === "updates"}>
+            <PageSlot active={activePersistentPage === "updates"}>
               <PersistentUpdatesPage
                 active={activePersistentPage === "updates"}
               />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
           {pageVisited("history") ? (
-            <PersistentPageSlot active={activePersistentPage === "history"}>
+            <PageSlot active={activePersistentPage === "history"}>
               <PersistentHistoryPage />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
           {pageVisited("downloads") ? (
-            <PersistentPageSlot active={activePersistentPage === "downloads"}>
+            <PageSlot active={activePersistentPage === "downloads"}>
               <PersistentDownloadsPage
                 active={activePersistentPage === "downloads"}
               />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
           {pageVisited("tasks") ? (
-            <PersistentPageSlot active={activePersistentPage === "tasks"}>
+            <PageSlot active={activePersistentPage === "tasks"}>
               <PersistentTasksPage active={activePersistentPage === "tasks"} />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
           {pageVisited("settings") ? (
-            <PersistentPageSlot active={activePersistentPage === "settings"}>
+            <PageSlot active={activePersistentPage === "settings"}>
               <PersistentSettingsPage section={settingsSection} />
-            </PersistentPageSlot>
+            </PageSlot>
           ) : null}
-          {activePersistentPage === null ? <Outlet /> : null}
+          {nextPageStack.map((entry) => (
+            <PageSlot
+              active={entry.instanceKey === activeStackKey}
+              key={entry.instanceKey}
+            >
+              <StackedPage entry={entry} />
+            </PageSlot>
+          ))}
+          {activePersistentPage === null && activeStackKey === null ? (
+            <Outlet />
+          ) : null}
         </div>
       </AppShell.Main>
       <nav

@@ -3,16 +3,18 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
+import {
+  parseNovelMergeSearch,
+  parseNovelSearch,
+  parseReaderSearch,
+  parseSourceSearch,
+} from "./lib/route-search";
 import { RootLayout } from "./routes/__root";
 import { BrowsePage, type BrowseTab } from "./routes/browse";
 import { DownloadsPage } from "./routes/downloads";
 import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
-import { NovelDetailPage } from "./routes/novel";
-import { NovelMergePage } from "./routes/novel-merge";
-import { ReaderPage } from "./routes/reader";
 import { SettingsPage } from "./routes/settings";
-import { SourcePage } from "./routes/source";
 import { TasksPage } from "./routes/tasks";
 import { UpdatesPage } from "./routes/updates";
 
@@ -38,36 +40,22 @@ export const browseRoute = createRoute({
   component: BrowseRoutePage,
 });
 
-function asPositiveId(raw: unknown): number {
-  const value = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-export const readerRoute = createRoute({
+const readerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/reader",
-  validateSearch: (search: Record<string, unknown>) => ({
-    chapterId: asPositiveId(search.chapterId),
-  }),
-  component: ReaderPage,
+  validateSearch: parseReaderSearch,
 });
 
-export const novelRoute = createRoute({
+const novelRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/novel",
-  validateSearch: (search: Record<string, unknown>) => ({
-    id: asPositiveId(search.id),
-  }),
-  component: NovelDetailPage,
+  validateSearch: parseNovelSearch,
 });
 
-export const novelMergeRoute = createRoute({
+const novelMergeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/novel-merge",
-  validateSearch: (search: Record<string, unknown>) => ({
-    sourceNovelId: asPositiveId(search.sourceNovelId),
-  }),
-  component: NovelMergePage,
+  validateSearch: parseNovelMergeSearch,
 });
 
 export const settingsRoute = createRoute({
@@ -103,15 +91,10 @@ const tasksRoute = createRoute({
   component: TasksPage,
 });
 
-export const sourceRoute = createRoute({
+const sourceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/source",
-  validateSearch: (search: Record<string, unknown>) => ({
-    pluginId:
-      typeof search.pluginId === "string" ? search.pluginId : "",
-    query: typeof search.query === "string" ? search.query : "",
-  }),
-  component: SourcePage,
+  validateSearch: parseSourceSearch,
 });
 
 const routeTree = rootRoute.addChildren([

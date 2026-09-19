@@ -47,6 +47,7 @@ import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
+import { usePageActivity } from "../lib/page-activity";
 import {
   chapterDetailQueryKey,
   chapterListQueryKey,
@@ -72,7 +73,6 @@ import {
 } from "../lib/tasks/chapter-download";
 import { taskScheduler, type TaskHandle } from "../lib/tasks/scheduler";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
-import { readerRoute } from "../router";
 import { useLibraryStore } from "../store/library";
 import {
   getEffectiveReaderAppearanceSettings,
@@ -563,9 +563,13 @@ function ReaderBottomStrip({
   );
 }
 
-export function ReaderPage() {
+interface ReaderPageProps {
+  chapterId: number;
+}
+
+export function ReaderPage({ chapterId }: ReaderPageProps) {
   const { t } = useTranslation();
-  const { chapterId } = readerRoute.useSearch();
+  const active = usePageActivity();
   const navigate = useNavigate();
   const currentHref = useRouterState({
     select: (state) => state.location.href,
@@ -1261,7 +1265,7 @@ export function ReaderPage() {
 
   useEffect(() => {
     const novelId = chapter?.novelId;
-    if (!novelId) return;
+    if (!active || !novelId) return;
 
     const handleReaderPopState = () => {
       window.setTimeout(() => {
@@ -1283,7 +1287,7 @@ export function ReaderPage() {
     return () => {
       window.removeEventListener("popstate", handleReaderPopState);
     };
-  }, [chapter?.novelId, navigate]);
+  }, [active, chapter?.novelId, navigate]);
 
   useEffect(() => {
     if (
@@ -1311,6 +1315,8 @@ export function ReaderPage() {
   ]);
 
   useEffect(() => {
+    if (!active) return;
+
     const handleKey = (event: KeyboardEvent) => {
       if (readerSettingsOpen) {
         if (event.key === "Escape") {
@@ -1374,6 +1380,7 @@ export function ReaderPage() {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [
+    active,
     closeReaderSettingsPanel,
     handleReaderActivity,
     handleReaderBack,
@@ -1747,9 +1754,9 @@ export function ReaderPage() {
   ]);
 
   useEffect(() => {
-    setFullPageReaderActive(fullPageReader);
+    setFullPageReaderActive(active && fullPageReader);
     return () => setFullPageReaderActive(false);
-  }, [fullPageReader, setFullPageReaderActive]);
+  }, [active, fullPageReader, setFullPageReaderActive]);
 
   useEffect(
     () => () => {

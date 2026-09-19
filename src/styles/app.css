@@ -292,7 +292,17 @@ a {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  position: relative;
   width: 100%;
+}
+
+.lnr-page-slot[data-active="false"] {
+  inset: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  visibility: hidden;
 }
 
 .lnr-app-main[data-reader-full-page="true"] .lnr-app-scroll {

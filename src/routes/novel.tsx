@@ -127,7 +127,6 @@ import { pluginManager } from "../lib/plugins/manager";
 import {
   DEFAULT_CHAPTER_SORT_LABEL_KEYS,
 } from "../lib/library-settings-options";
-import { novelRoute } from "../router";
 import { useTranslation } from "../i18n";
 import {
   normalizeFontScalePercent,
@@ -1793,9 +1792,12 @@ function NovelWorkspace({
   );
 }
 
-export function NovelDetailPage() {
+interface NovelDetailPageProps {
+  id: number;
+}
+
+export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const { t } = useTranslation();
-  const { id } = novelRoute.useSearch();
   const navigate = useNavigate();
   const currentHref = useRouterState({
     select: (state) => state.location.href,

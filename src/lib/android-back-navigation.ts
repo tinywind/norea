@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { usePageActivity } from "./page-activity";
 
 export interface PageBackNavigationHandler {
   back: () => boolean;
@@ -47,14 +48,14 @@ export function startAndroidBackNavigationBridge(): () => void {
 }
 
 export function usePageBackNavigation(onBack: () => boolean): void {
+  const active = usePageActivity();
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;
 
-  useEffect(
-    () =>
-      registerPageBackNavigationHandler({
-        back: () => onBackRef.current(),
-      }),
-    [],
-  );
+  useEffect(() => {
+    if (!active) return;
+    return registerPageBackNavigationHandler({
+      back: () => onBackRef.current(),
+    });
+  }, [active]);
 }
