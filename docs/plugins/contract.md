@@ -41,6 +41,7 @@ type ChapterAcquisitionPlan =
       readySelector?: string;
       excludeSelectors?: string[];
       documentStartScript?: string;
+      interactions?: WebViewInteraction[];
       loadStrategy?: "selector" | "network-idle" | "scroll-to-end";
       cacheBust?: boolean;
       timeoutMs?: number;
@@ -48,6 +49,26 @@ type ChapterAcquisitionPlan =
   | {
       type: "resource";
     };
+
+type WebViewInteraction =
+  | { type: "click"; selector: string; optional?: boolean; timeoutMs?: number }
+  | {
+      type: "type";
+      selector: string;
+      text: string;
+      clear?: boolean;
+      submit?: boolean;
+      optional?: boolean;
+      timeoutMs?: number;
+    }
+  | {
+      type: "select";
+      selector: string;
+      value: string;
+      optional?: boolean;
+      timeoutMs?: number;
+    }
+  | { type: "waitFor"; selector: string; optional?: boolean; timeoutMs?: number };
 
 interface Plugin {
   apiVersion: "0.2";
@@ -89,6 +110,37 @@ present in the light DOM. It may observe source API responses or open shadow
 roots and place the final content under a stable synthetic selector. It must
 not send a competing `ReactNativeWebView.postMessage()` result because the host
 owns the capture envelope.
+
+### Page interactions
+
+`interactions` describes what a reader would do on the page before the content
+is ready, such as opening a "show full chapter" toggle or selecting a chapter
+sort order. The host performs the steps in order inside the rendered page after
+the document is ready and before it waits for `readySelector`, applies
+`loadStrategy`, and clones `contentSelector`.
+
+Each step waits for its `selector` to appear, up to `timeoutMs` (default 10
+seconds), then acts on the first match like a user would:
+
+- `click` scrolls the element into view, dispatches the pointer and mouse
+  event sequence, focuses it, and activates it.
+- `type` focuses the field, optionally clears it, types `text` one character
+  at a time with key and input events, and with `submit` presses Enter and
+  submits the owning form.
+- `select` picks the option whose value or text equals `value` and dispatches
+  input and change events.
+- `waitFor` only waits for the element.
+
+A missing target fails the acquisition with `interaction-failed` unless the
+step is `optional`. A step that navigates within the same site continues the
+sequence from the next step on the new document; the host does not replay
+earlier steps. Content loaded asynchronously by a step is not detected by
+`readySelector` alone, so follow such a step with `waitFor` on an element that
+exists only after the load. The host dispatches DOM events, so pages see
+`isTrusted: false`; interactions cannot solve a CAPTCHA or Cloudflare
+challenge, and a `data-norea-manual-action` marker that appears during the
+sequence still fails the acquisition with `manual-action-required`. The host
+limits a plan to 32 steps.
 
 When login, a challenge, acknowledgement, or paid gate needs user action, add
 an element with `data-norea-manual-action`. The host fails the acquisition with
@@ -275,6 +327,32 @@ source after upgrading.
 Ordinary page chapters must use a page plan even if a static HTTP parser would
 appear simpler. This keeps challenge handling, logged-in sessions, rendered
 content, and browser cache behavior consistent.
+
+### Rendered source pages
+
+Novel pages and listings that only render their data after user actions may
+use `@libs/webView.webViewLoad()` instead of a plain fetch. It navigates the
+task-owned scraper WebView and resolves with the page HTML, visible text,
+final URL, and title.
+
+```ts
+webViewLoad(url, {
+  interactions?: WebViewInteraction[];
+  contentSelector?: string;
+  beforeContentScript?: string;
+  afterContentScript?: string;
+  timeoutMs?: number;
+}): Promise<{ html: string; text: string; url: string; title: string }>;
+```
+
+`interactions` uses the same steps and rules as a page plan and runs after the
+document is ready. `afterContentScript` then runs in the page; a returned
+promise is awaited. When `contentSelector` is set, the host waits for the first
+matching element and returns its markup and text instead of the whole document.
+The helper rejects with `interaction-failed` when a required step target never
+appears and with `content-not-found` when `contentSelector` never matches, and
+it preserves the structured `manual-action-required` challenge error. Neither
+`beforeContentScript` nor `afterContentScript` may post its own WebView result.
 
 ### App-local plugin VPN
 

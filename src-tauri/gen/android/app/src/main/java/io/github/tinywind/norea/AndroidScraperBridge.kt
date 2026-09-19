@@ -1576,6 +1576,9 @@ class AndroidScraperBridge(
     clearBackgroundScraperLayoutWait(state)
     logState(state, "finish id=$id envelope=${envelopeForLog(envelope)}")
     state.webView?.let { webView ->
+      if (state.activeExtractId == id) {
+        webView.evaluateJavascript(CLEAR_EXTRACT_BRIDGE_SCRIPT, null)
+      }
       if (
         shouldCollapseAndroidScraperSurface(
           activeExtractId = state.activeExtractId,
@@ -1791,16 +1794,23 @@ class AndroidScraperBridge(
     private val HTTP_URL_IN_LOG_MESSAGE = Regex("""(?i)\bhttps?://[^\s"'<>]+""")
     private val MALFORMED_URL_USER_INFO = Regex("""(?i)^([a-z][a-z\d+.-]*://)[^/@\s]+@""")
 
+    private val CLEAR_EXTRACT_BRIDGE_SCRIPT = """
+      (function () {
+        try {
+          if ((window.name || "").indexOf("__lnr_script__=") === 0) {
+            window.name = "";
+          }
+        } catch (e) {}
+      })();
+    """.trimIndent()
+
     private val INIT_SCRIPT = """
       (function () {
-        function parseHashParams() {
+        var scriptPrefix = "__lnr_script__=";
+        function parseParams(raw) {
           var params = {};
-          var hash = location.hash || "";
-          if (hash.charAt(0) === "#") {
-            hash = hash.substring(1);
-          }
-          if (!hash) return params;
-          var parts = hash.split("&");
+          if (!raw) return params;
+          var parts = raw.split("&");
           for (var index = 0; index < parts.length; index += 1) {
             var part = parts[index];
             var equals = part.indexOf("=");
@@ -1814,7 +1824,25 @@ class AndroidScraperBridge(
           }
           return params;
         }
-        var params = parseHashParams();
+        function hashParams() {
+          var hash = location.hash || "";
+          if (hash.charAt(0) === "#") {
+            hash = hash.substring(1);
+          }
+          return parseParams(hash);
+        }
+        function nameParams() {
+          var name = "";
+          try {
+            name = window.name || "";
+          } catch (e) {}
+          return name.indexOf(scriptPrefix) === 0 ? parseParams(name) : {};
+        }
+        var params = hashParams();
+        var fromHash = !!params.__lnr_script__;
+        if (!fromHash) {
+          params = nameParams();
+        }
         var bridgeRequestId = params.__lnr_request_id__ || "";
         var bridgeNonce = params.__lnr_nonce__ || "";
         window.ReactNativeWebView = window.ReactNativeWebView || {};
@@ -1834,9 +1862,16 @@ class AndroidScraperBridge(
         try {
           if (params.__lnr_script__) {
             var script = params.__lnr_script__;
-            try {
-              history.replaceState(null, "", location.pathname + location.search);
-            } catch (e) {}
+            if (fromHash) {
+              try {
+                history.replaceState(null, "", location.pathname + location.search);
+              } catch (e) {}
+              try {
+                window.name = scriptPrefix + encodeURIComponent(script) +
+                  "&__lnr_request_id__=" + encodeURIComponent(bridgeRequestId) +
+                  "&__lnr_nonce__=" + encodeURIComponent(bridgeNonce);
+              } catch (e) {}
+            }
             try {
               (0, eval)(script);
             } catch (e) {

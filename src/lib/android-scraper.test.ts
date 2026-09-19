@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./tauri-runtime", () => ({
@@ -251,4 +255,105 @@ describe("Android scraper extraction", () => {
     await expect(extraction).resolves.toBe("captured");
   });
 
+});
+
+const ANDROID_BRIDGE_SOURCE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../src-tauri/gen/android/app/src/main/java/io/github/tinywind/norea/AndroidScraperBridge.kt",
+);
+
+function androidBridgeScript(name: string): string {
+  const source = readFileSync(ANDROID_BRIDGE_SOURCE, "utf8");
+  const match = source.match(
+    new RegExp(`private val ${name} = """\\n([\\s\\S]*?)\\n\\s*"""\\.trimIndent\\(\\)`),
+  );
+  if (!match?.[1]) throw new Error(`${name} was not found in AndroidScraperBridge.kt`);
+  return match[1];
+}
+
+interface BridgeDocument {
+  hash?: string;
+  name?: string;
+}
+
+function loadBridgeDocument(document: BridgeDocument) {
+  const posts: Array<{ id: string; nonce: string; payload: string }> = [];
+  const legacyPosts: string[] = [];
+  const evaluated: string[] = [];
+  const replacedUrls: string[] = [];
+  const location = { hash: document.hash ?? "", pathname: "/novel/1", search: "?p=2" };
+  const window: Record<string, unknown> = { name: document.name ?? "" };
+  runInNewContext(androidBridgeScript("INIT_SCRIPT"), {
+    AndroidScraper: {
+      postExtractResult: (payload: string) => {
+        legacyPosts.push(payload);
+      },
+      postExtractResultWithNonce: (id: string, nonce: string, payload: string) => {
+        posts.push({ id, nonce, payload });
+      },
+    },
+    __evaluated: evaluated,
+    decodeURIComponent,
+    encodeURIComponent,
+    history: {
+      replaceState: (_state: unknown, _title: string, url: string) => {
+        location.hash = "";
+        replacedUrls.push(url);
+      },
+    },
+    location,
+    window,
+  });
+  const postMessage = (
+    window.ReactNativeWebView as { postMessage: (payload: string) => void }
+  ).postMessage;
+  return { evaluated, legacyPosts, postMessage, posts, replacedUrls, window };
+}
+
+describe("Android scraper bridge init script", () => {
+  const script =
+    '__evaluated.push(location.pathname); window.ReactNativeWebView.postMessage("result:" + location.pathname);';
+  const hash =
+    `#__lnr_script__=${encodeURIComponent(script)}` +
+    "&__lnr_request_id__=android-scraper-7&__lnr_nonce__=nonce-7";
+
+  it("arms the request from the URL hash and keeps it for later same-site documents", () => {
+    const first = loadBridgeDocument({ hash });
+
+    expect(first.evaluated).toEqual(["/novel/1"]);
+    expect(first.posts).toEqual([
+      { id: "android-scraper-7", nonce: "nonce-7", payload: "result:/novel/1" },
+    ]);
+    expect(first.replacedUrls).toEqual(["/novel/1?p=2"]);
+    expect(String(first.window.name)).toMatch(/^__lnr_script__=/);
+
+    const second = loadBridgeDocument({ name: String(first.window.name) });
+
+    expect(second.evaluated).toEqual(["/novel/1"]);
+    expect(second.posts).toEqual([
+      { id: "android-scraper-7", nonce: "nonce-7", payload: "result:/novel/1" },
+    ]);
+    expect(second.replacedUrls).toEqual([]);
+    expect(second.window.name).toBe(first.window.name);
+  });
+
+  it("ignores unrelated window names and falls back to the legacy result bridge", () => {
+    const document = loadBridgeDocument({ name: "adframe" });
+
+    expect(document.evaluated).toEqual([]);
+    expect(document.window.name).toBe("adframe");
+    document.postMessage("late");
+    expect(document.posts).toEqual([]);
+    expect(document.legacyPosts).toEqual(["late"]);
+  });
+
+  it("clears only bridge-owned window names when an extract finishes", () => {
+    const armed: Record<string, unknown> = { name: "__lnr_script__=abc&__lnr_request_id__=x" };
+    runInNewContext(androidBridgeScript("CLEAR_EXTRACT_BRIDGE_SCRIPT"), { window: armed });
+    expect(armed.name).toBe("");
+
+    const unrelated: Record<string, unknown> = { name: "adframe" };
+    runInNewContext(androidBridgeScript("CLEAR_EXTRACT_BRIDGE_SCRIPT"), { window: unrelated });
+    expect(unrelated.name).toBe("adframe");
+  });
 });

@@ -30,12 +30,29 @@ import {
   setPluginInputValue,
 } from "./inputs";
 import { sourceAccessErrorFromEnvelope } from "./source-access";
-import { NovelStatus } from "./types";
+import { NovelStatus, type WebViewInteraction } from "./types";
+import {
+  nextWebViewInteractionRunId,
+  validateWebViewInteractions,
+  validateWebViewSelector,
+  webViewInteractionRuntimeScript,
+} from "./webview-interactions";
+
+const SNAPSHOT_CONTENT_WAIT_MIN_MS = 1_000;
+const SNAPSHOT_HOST_TIMEOUT_MARGIN_MS = 1_000;
 
 export interface WebViewFetchOptions {
   beforeContentScript?: string;
-  /** Accepted for upstream compatibility; no host hook today. */
+  /**
+   * `webViewLoad` and `webViewNavigate` run it after the document is ready and
+   * every interaction finished. A returned promise is awaited before the
+   * snapshot. It must not post its own WebView result.
+   */
   afterContentScript?: string;
+  /** User-like DOM steps `webViewLoad` and `webViewNavigate` perform first. */
+  interactions?: WebViewInteraction[];
+  /** Restricts the `webViewLoad` snapshot to the first matching element. */
+  contentSelector?: string;
   /** Overrides the scraper WebView User-Agent for this request. */
   userAgent?: string;
   timeoutMs?: number;
@@ -57,14 +74,34 @@ interface WebViewNavigateResult {
   title?: string;
 }
 
-function webViewSnapshotScript(
-  includeContent: boolean,
-  beforeContentScript?: string,
-): string {
-  const beforeScript = JSON.stringify(beforeContentScript ?? "");
+interface WebViewSnapshotScriptOptions {
+  includeContent: boolean;
+  beforeContentScript?: string;
+  afterContentScript?: string;
+  contentSelector?: string;
+  interactions: WebViewInteraction[];
+  interactionRunId: string;
+  timeoutMs: number;
+}
+
+function webViewSnapshotScript(options: WebViewSnapshotScriptOptions): string {
+  const includeContent = options.includeContent;
+  const contentWaitMs = Math.max(
+    SNAPSHOT_CONTENT_WAIT_MIN_MS,
+    options.timeoutMs - SNAPSHOT_HOST_TIMEOUT_MARGIN_MS,
+  );
   return `(function () {
-  var beforeContentScript = ${beforeScript};
+  ${webViewInteractionRuntimeScript()}
+  var beforeContentScript = ${JSON.stringify(options.beforeContentScript ?? "")};
+  var afterContentScript = ${JSON.stringify(options.afterContentScript ?? "")};
+  var contentSelector = ${JSON.stringify(options.contentSelector ?? "")};
+  var interactions = ${JSON.stringify(options.interactions)};
+  var interactionRunId = ${JSON.stringify(options.interactionRunId)};
+  var contentDeadline = Date.now() + ${contentWaitMs};
+  var finished = false;
   function post(payload) {
+    if (finished) return;
+    finished = true;
     window.ReactNativeWebView.postMessage(JSON.stringify(payload));
   }
   function errorMessage(error) {
@@ -134,33 +171,93 @@ function webViewSnapshotScript(
     }
     return null;
   }
-  function readPage() {
+  function postChallenge() {
     var challengeKind = manualActionKind();
-    if (challengeKind) {
-      post({
-        ok: false,
-        code: "manual-action-required",
-        error: challengeKind === "captcha"
-          ? "Complete the CAPTCHA in the source browser."
-          : "Complete the Cloudflare verification in the source browser.",
-        challenge: { kind: challengeKind, url: location.href }
-      });
-      return;
-    }
+    if (!challengeKind) return false;
+    post({
+      ok: false,
+      code: "manual-action-required",
+      error: challengeKind === "captcha"
+        ? "Complete the CAPTCHA in the source browser."
+        : "Complete the Cloudflare verification in the source browser.",
+      challenge: { kind: challengeKind, url: location.href }
+    });
+    return true;
+  }
+  function readPage() {
+    if (postChallenge()) return;
+    var root = contentSelector ? document.querySelector(contentSelector) : null;
     var payload = {
       url: location.href,
       title: document.title || ""
     };
     if (${includeContent ? "true" : "false"}) {
-      payload.html = document.documentElement ? document.documentElement.outerHTML : "";
-      payload.text = document.body ? document.body.innerText || "" : "";
+      if (root) {
+        payload.html = root.outerHTML || "";
+        payload.text = root.innerText || root.textContent || "";
+      } else {
+        payload.html = document.documentElement ? document.documentElement.outerHTML : "";
+        payload.text = document.body ? document.body.innerText || "" : "";
+      }
     }
     post({ ok: true, result: payload });
+  }
+  function readWhenContentReady() {
+    if (!contentSelector || document.querySelector(contentSelector)) {
+      readPage();
+      return;
+    }
+    if (Date.now() >= contentDeadline) {
+      post({
+        ok: false,
+        code: "content-not-found",
+        error: "contentSelector " + JSON.stringify(contentSelector) +
+          " did not match before the timeout."
+      });
+      return;
+    }
+    setTimeout(readWhenContentReady, 100);
+  }
+  function runAfterContentScript(callback) {
+    if (!afterContentScript) {
+      callback();
+      return;
+    }
+    var result;
+    try {
+      result = (0, eval)(afterContentScript);
+    } catch (error) {
+      post({ ok: false, error: "after-script error: " + errorMessage(error) });
+      return;
+    }
+    if (result && typeof result.then === "function") {
+      result.then(function () { callback(); }, function (error) {
+        post({ ok: false, error: "after-script error: " + errorMessage(error) });
+      });
+      return;
+    }
+    callback();
+  }
+  function start() {
+    if (postChallenge()) return;
+    runWebViewInteractions(interactions, { runId: interactionRunId }, function (error) {
+      if (error) {
+        post({ ok: false, code: "interaction-failed", error: errorMessage(error) });
+        return;
+      }
+      runAfterContentScript(function () {
+        try {
+          readWhenContentReady();
+        } catch (readError) {
+          post({ ok: false, error: "webView snapshot error: " + errorMessage(readError) });
+        }
+      });
+    });
   }
   function readWhenReady() {
     setTimeout(function () {
       try {
-        readPage();
+        start();
       } catch (error) {
         post({ ok: false, error: "webView snapshot error: " + errorMessage(error) });
       }
@@ -346,6 +443,33 @@ async function desktopWebViewExtract(
   }
 }
 
+function snapshotScriptOptions(
+  operation: string,
+  includeContent: boolean,
+  options: WebViewFetchOptions,
+): WebViewSnapshotScriptOptions {
+  const contentSelector =
+    options.contentSelector === undefined
+      ? undefined
+      : validateWebViewSelector(
+          options.contentSelector,
+          "contentSelector",
+          operation,
+        );
+  return {
+    includeContent,
+    beforeContentScript: options.beforeContentScript,
+    afterContentScript: options.afterContentScript,
+    ...(contentSelector !== undefined ? { contentSelector } : {}),
+    interactions:
+      options.interactions === undefined
+        ? []
+        : validateWebViewInteractions(options.interactions, operation),
+    interactionRunId: nextWebViewInteractionRunId(),
+    timeoutMs: options.timeoutMs ?? getSourceRequestTimeoutMs(),
+  };
+}
+
 async function webViewLoad(
   url: string,
   options: WebViewFetchOptions = {},
@@ -353,8 +477,7 @@ async function webViewLoad(
   const raw = await webViewFetch(url, {
     ...options,
     beforeContentScript: webViewSnapshotScript(
-      true,
-      options.beforeContentScript,
+      snapshotScriptOptions("webViewLoad", true, options),
     ),
   });
   return parseWebViewLoadResult(raw, url);
@@ -367,8 +490,7 @@ async function webViewNavigate(
   const raw = await webViewFetch(url, {
     ...options,
     beforeContentScript: webViewSnapshotScript(
-      false,
-      options.beforeContentScript,
+      snapshotScriptOptions("webViewNavigate", false, options),
     ),
   });
   return parseWebViewNavigateResult(raw, url);

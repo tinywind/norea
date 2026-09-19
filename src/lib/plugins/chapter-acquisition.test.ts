@@ -373,3 +373,201 @@ describe("captureChapterPage", () => {
     );
   });
 });
+
+interface InteractiveCapturePage {
+  buttonPresent?: boolean;
+  manualActionAfterClick?: boolean;
+}
+
+function executeInteractiveCaptureScript(
+  script: string,
+  page: InteractiveCapturePage = {},
+): { clicks: number; elapsedMs: number; message: string } {
+  const timers: Array<{ at: number; callback: () => void }> = [];
+  let now = 0;
+  let clicks = 0;
+  let revealed = false;
+  let postedMessage: string | undefined;
+  const clone = { innerHTML: "<p>Full chapter</p>", querySelectorAll: () => [] };
+  const root = {
+    cloneNode: () => clone,
+    querySelectorAll: () => [],
+    tagName: "ARTICLE",
+  };
+  const button = {
+    click() {
+      clicks += 1;
+      revealed = true;
+    },
+    dispatchEvent: () => true,
+    focus() {},
+    getBoundingClientRect: () => ({ height: 10, left: 0, top: 0, width: 10 }),
+    scrollIntoView() {},
+    tagName: "BUTTON",
+  };
+
+  runInNewContext(script, {
+    Date: { now: () => now },
+    Event: class {
+      constructor(
+        readonly type: string,
+        readonly init: Record<string, unknown> = {},
+      ) {}
+    },
+    URL,
+    document: {
+      querySelector: (selector: string) => {
+        if (selector === "[data-norea-manual-action]") {
+          return page.manualActionAfterClick && clicks > 0
+            ? { getAttribute: () => "captcha" }
+            : null;
+        }
+        if (selector === "button.more") {
+          return page.buttonPresent === false ? null : button;
+        }
+        if (selector === "article") return revealed ? root : null;
+        return null;
+      },
+      readyState: "complete",
+    },
+    location: { href: "https://source.test/chapter/1" },
+    setTimeout: (callback: () => void, delay: number) => {
+      timers.push({ at: now + delay, callback });
+    },
+    window: {
+      ReactNativeWebView: {
+        postMessage: (message: string) => {
+          postedMessage = message;
+        },
+      },
+    },
+  });
+  while (!postedMessage && timers.length > 0) {
+    timers.sort((left, right) => left.at - right.at);
+    const next = timers.shift()!;
+    now = Math.max(now, next.at);
+    next.callback();
+  }
+  if (!postedMessage) throw new Error("Capture script did not post a result.");
+  return { clicks, elapsedMs: now, message: postedMessage };
+}
+
+describe("chapter page interactions", () => {
+  it("normalizes plan interactions", () => {
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      interactions: [{ type: "click", selector: " button.more ", timeoutMs: 50 }],
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+    expect(plan.interactions).toEqual([
+      { type: "click", selector: "button.more", timeoutMs: 100 },
+    ]);
+
+    const withoutSteps = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      interactions: [],
+    });
+    expect(withoutSteps).not.toHaveProperty("interactions");
+
+    expect(() =>
+      validateChapterAcquisitionPlan({
+        type: "page",
+        url: "https://source.test/chapter/1",
+        contentSelector: "article",
+        interactions: [{ type: "click", selector: "" }],
+      }),
+    ).toThrow(
+      "Chapter acquisition interactions[0].selector must be a non-empty selector.",
+    );
+  });
+
+  it("performs interactions before waiting for the content selector", async () => {
+    let clicks = 0;
+    mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
+      const execution = executeInteractiveCaptureScript(
+        options?.beforeContentScript ?? "",
+      );
+      clicks = execution.clicks;
+      return execution.message;
+    });
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      interactions: [{ type: "click", selector: "button.more" }],
+      loadStrategy: "selector",
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    const result = await captureChapterPage(plan, {
+      contentType: "html",
+      executor: "immediate",
+      sourceId: "source-a",
+    });
+
+    expect(clicks).toBe(1);
+    expect(result.content).toBe("<p>Full chapter</p>");
+  });
+
+  it("fails with interaction-failed when a required target never appears", async () => {
+    mockedCaptureChapterWebView.mockImplementationOnce(
+      async (_url, options) =>
+        executeInteractiveCaptureScript(options?.beforeContentScript ?? "", {
+          buttonPresent: false,
+        }).message,
+    );
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      interactions: [{ type: "click", selector: "button.more", timeoutMs: 300 }],
+      loadStrategy: "selector",
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    await expect(
+      captureChapterPage(plan, {
+        contentType: "html",
+        executor: "immediate",
+        sourceId: "source-a",
+      }),
+    ).rejects.toThrow(
+      'interaction-failed: Interaction step 1 (click "button.more") timed out after 300ms.',
+    );
+  });
+
+  it("reports a manual-action marker that appears during interactions", async () => {
+    mockedCaptureChapterWebView.mockImplementationOnce(
+      async (_url, options) =>
+        executeInteractiveCaptureScript(options?.beforeContentScript ?? "", {
+          manualActionAfterClick: true,
+        }).message,
+    );
+    const plan = validateChapterAcquisitionPlan({
+      type: "page",
+      url: "https://source.test/chapter/1",
+      contentSelector: "article",
+      interactions: [
+        { type: "click", selector: "button.more" },
+        { type: "waitFor", selector: ".never" },
+      ],
+      loadStrategy: "selector",
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+
+    await expect(
+      captureChapterPage(plan, {
+        contentType: "html",
+        executor: "immediate",
+        sourceId: "source-a",
+      }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isSourceAccessRequiredError(error) && error.challenge.kind === "captcha",
+    );
+  });
+});

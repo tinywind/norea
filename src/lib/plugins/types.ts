@@ -17,10 +17,37 @@ export type ChapterCaptureErrorCode =
   | "invalid-plan"
   | "navigation-failed"
   | "manual-action-required"
+  | "interaction-failed"
   | "timeout"
   | "content-not-found"
   | "capture-failed"
   | "cancelled";
+
+interface WebViewInteractionBase {
+  /** First matching element is the interaction target. */
+  selector: string;
+  /** Skips the step instead of failing when the target never appears. */
+  optional?: boolean;
+  /** Host-clamped wait for the target to appear. Defaults to 10 seconds. */
+  timeoutMs?: number;
+}
+
+/**
+ * One user-like DOM action the host performs inside the rendered source page
+ * before it captures content. Steps run in order after the document is ready.
+ */
+export type WebViewInteraction =
+  | ({ type: "click" } & WebViewInteractionBase)
+  | ({
+      type: "type";
+      text: string;
+      /** Empties the field before typing. */
+      clear?: boolean;
+      /** Presses Enter and submits the owning form after typing. */
+      submit?: boolean;
+    } & WebViewInteractionBase)
+  | ({ type: "select"; value: string } & WebViewInteractionBase)
+  | ({ type: "waitFor" } & WebViewInteractionBase);
 
 export type SourceAccessChallengeKind = "captcha" | "cloudflare";
 
@@ -65,6 +92,8 @@ export interface ChapterPageAcquisitionPlan {
   excludeSelectors?: string[];
   /** Runs before source page scripts and may prepare a capturable DOM root. */
   documentStartScript?: string;
+  /** User-like DOM steps performed after the document is ready and before capture. */
+  interactions?: WebViewInteraction[];
   /** Defaults to network-idle. */
   loadStrategy?: ChapterCaptureLoadStrategy;
   /** Adds a host-owned query value while preserving source query parameters. */

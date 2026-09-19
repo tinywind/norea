@@ -8,6 +8,11 @@ import type {
   ChapterPageAcquisitionPlan,
   TextChapterContentType,
 } from "./types";
+import {
+  nextWebViewInteractionRunId,
+  validateWebViewInteractions,
+  webViewInteractionRuntimeScript,
+} from "./webview-interactions";
 
 const MIN_CAPTURE_TIMEOUT_MS = 1_000;
 const MAX_CAPTURE_TIMEOUT_MS = 120_000;
@@ -117,6 +122,10 @@ function validatePagePlan(
   if (value.cacheBust !== undefined && typeof value.cacheBust !== "boolean") {
     throw new Error("Chapter acquisition cacheBust must be a boolean.");
   }
+  const interactions =
+    value.interactions === undefined
+      ? []
+      : validateWebViewInteractions(value.interactions, "Chapter acquisition");
 
   return {
     type: "page",
@@ -133,6 +142,7 @@ function validatePagePlan(
         }
       : {}),
     ...(documentStartScript ? { documentStartScript } : {}),
+    ...(interactions.length > 0 ? { interactions } : {}),
     loadStrategy: captureLoadStrategy(value.loadStrategy),
     ...(value.cacheBust === true ? { cacheBust: true } : {}),
     timeoutMs: captureTimeoutMs(value.timeoutMs),
@@ -201,12 +211,16 @@ function captureBaseUrl(
 function chapterCaptureScript(
   plan: ChapterPageAcquisitionPlan,
   contentType: ChapterContentType,
+  interactionRunId: string,
 ): string {
   const serializedPlan = JSON.stringify(plan);
   const serializedContentType = JSON.stringify(contentType);
   return `(function () {
+  ${webViewInteractionRuntimeScript()}
   var plan = ${serializedPlan};
   var contentType = ${serializedContentType};
+  var interactionRunId = ${JSON.stringify(interactionRunId)};
+  var interactionsState = "pending";
   var finished = false;
   var lastActivityAt = Date.now();
   var lastHeight = -1;
@@ -319,6 +333,25 @@ function chapterCaptureScript(
     }
     post({ ok: true, result: { content: content, url: location.href } });
   }
+  function hasManualActionMarker() {
+    return !!document.querySelector("[data-norea-manual-action]");
+  }
+  function runInteractions() {
+    interactionsState = "running";
+    var steps = plan.interactions || [];
+    runWebViewInteractions(steps, {
+      runId: interactionRunId,
+      shouldAbort: hasManualActionMarker
+    }, function (error) {
+      if (error) {
+        fail("interaction-failed", error);
+        return;
+      }
+      interactionsState = "done";
+      if (steps.length > 0) markActivity();
+      poll();
+    });
+  }
   function poll() {
     if (finished) return;
     var manualAction = document.querySelector("[data-norea-manual-action]");
@@ -330,6 +363,15 @@ function chapterCaptureScript(
       fail("manual-action-required", "The source page requires manual action.", challenge);
       return;
     }
+    if (document.readyState === "loading") {
+      setTimeout(poll, 100);
+      return;
+    }
+    if (interactionsState === "pending") {
+      runInteractions();
+      return;
+    }
+    if (interactionsState === "running") return;
     var readySelector = plan.readySelector || plan.contentSelector;
     var ready = document.readyState !== "loading" && document.querySelector(readySelector);
     if (!ready) {
@@ -414,7 +456,11 @@ export async function captureChapterPage(
 ): Promise<CapturedChapterPage> {
   const navigation = captureNavigation(plan);
   const raw = await captureChapterWebView(navigation.url, {
-    beforeContentScript: chapterCaptureScript(plan, options.contentType),
+    beforeContentScript: chapterCaptureScript(
+      plan,
+      options.contentType,
+      nextWebViewInteractionRunId(),
+    ),
     scraperExecutor: options.executor,
     signal: options.signal,
     sourceId: options.sourceId,

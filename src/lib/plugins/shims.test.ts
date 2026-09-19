@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -139,6 +140,106 @@ describe("parseCsv", () => {
     ]);
   });
 });
+
+interface SnapshotPage {
+  buttonPresent?: boolean;
+  contentPresent?: boolean;
+}
+
+async function executeSnapshotScript(
+  script: string,
+  page: SnapshotPage = {},
+): Promise<{ clicks: number; message: string; window: Record<string, unknown> }> {
+  const timers: Array<{ at: number; callback: () => void }> = [];
+  let now = 0;
+  let clicks = 0;
+  let revealed = page.contentPresent ?? false;
+  let postedMessage: string | undefined;
+  const content = {
+    innerText: "Chapter 1",
+    outerHTML: '<ul class="chapters"><li>Chapter 1</li></ul>',
+  };
+  const button = {
+    click() {
+      clicks += 1;
+      revealed = true;
+    },
+    dispatchEvent: () => true,
+    focus() {},
+    getBoundingClientRect: () => ({ height: 10, left: 0, top: 0, width: 10 }),
+    scrollIntoView() {},
+    tagName: "BUTTON",
+  };
+  const window: Record<string, unknown> = {
+    ReactNativeWebView: {
+      postMessage: (message: string) => {
+        postedMessage = message;
+      },
+    },
+  };
+
+  runInNewContext(script, {
+    Date: { now: () => now },
+    Event: class {
+      constructor(
+        readonly type: string,
+        readonly init: Record<string, unknown> = {},
+      ) {}
+    },
+    Promise,
+    document: {
+      body: { innerText: "Whole page" },
+      documentElement: { outerHTML: "<html><body>Whole page</body></html>" },
+      querySelector: (selector: string) => {
+        if (selector === ".more") {
+          return page.buttonPresent === false ? null : button;
+        }
+        if (selector === ".chapters") return revealed ? content : null;
+        return null;
+      },
+      querySelectorAll: () => [],
+      readyState: "complete",
+      title: "Novel",
+    },
+    location: { href: "https://source.test/novel/1" },
+    setTimeout: (callback: () => void, delay: number) => {
+      timers.push({ at: now + delay, callback });
+    },
+    window,
+  });
+  for (let round = 0; round < 50 && !postedMessage; round += 1) {
+    while (!postedMessage && timers.length > 0) {
+      timers.sort((left, right) => left.at - right.at);
+      const next = timers.shift()!;
+      now = Math.max(now, next.at);
+      next.callback();
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  }
+  if (!postedMessage) throw new Error("Snapshot script did not post a result.");
+  return { clicks, message: postedMessage, window };
+}
+
+function mockSnapshotExtract(page: SnapshotPage = {}): {
+  clicks: () => number;
+  window: () => Record<string, unknown>;
+} {
+  let execution: Awaited<ReturnType<typeof executeSnapshotScript>> | undefined;
+  invokeMock.mockImplementationOnce(async (command, payload) => {
+    if (command !== "webview_extract") {
+      throw new Error(`Unexpected command ${command}`);
+    }
+    execution = await executeSnapshotScript(
+      String((payload as { beforeScript?: unknown })?.beforeScript ?? ""),
+      page,
+    );
+    return execution.message;
+  });
+  return {
+    clicks: () => execution?.clicks ?? 0,
+    window: () => execution?.window ?? {},
+  };
+}
 
 describe("createShimResolver", () => {
   const resolve = createShimResolver("test-plugin");
@@ -384,6 +485,100 @@ describe("createShimResolver", () => {
       userAgent: globalThis.navigator?.userAgent ?? null,
       queue: "pool:2",
     });
+  });
+
+  it("@libs/webView webViewLoad performs interactions before snapshotting the content selector", async () => {
+    const extract = mockSnapshotExtract();
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (
+        url: string,
+        options: Record<string, unknown>,
+      ) => Promise<{ html: string; text: string; title: string; url: string }>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/novel/1", {
+        afterContentScript:
+          "window.__after = document.querySelector('.chapters') ? 'seen' : 'missing';",
+        contentSelector: ".chapters",
+        interactions: [{ type: "click", selector: ".more" }],
+      }),
+    ).resolves.toEqual({
+      html: '<ul class="chapters"><li>Chapter 1</li></ul>',
+      text: "Chapter 1",
+      title: "Novel",
+      url: "https://source.test/novel/1",
+    });
+
+    expect(extract.clicks()).toBe(1);
+    expect(extract.window().__after).toBe("seen");
+  });
+
+  it("@libs/webView webViewLoad awaits a promise returned by afterContentScript", async () => {
+    const extract = mockSnapshotExtract({ contentPresent: true });
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (
+        url: string,
+        options: Record<string, unknown>,
+      ) => Promise<{ html: string }>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/novel/1", {
+        afterContentScript:
+          "new Promise(function (resolve) { setTimeout(function () { window.__after = 'resolved'; resolve(); }, 10); })",
+      }),
+    ).resolves.toMatchObject({
+      html: "<html><body>Whole page</body></html>",
+    });
+
+    expect(extract.window().__after).toBe("resolved");
+  });
+
+  it("@libs/webView webViewLoad reports a step whose target never appears", async () => {
+    mockSnapshotExtract({ buttonPresent: false });
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (url: string, options: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/novel/1", {
+        interactions: [{ type: "click", selector: ".more", timeoutMs: 200 }],
+      }),
+    ).rejects.toThrow(
+      'Interaction step 1 (click ".more") timed out after 200ms.',
+    );
+  });
+
+  it("@libs/webView webViewLoad reports a content selector that never matches", async () => {
+    mockSnapshotExtract({ contentPresent: false });
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (url: string, options: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/novel/1", {
+        contentSelector: ".chapters",
+        timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(
+      'contentSelector ".chapters" did not match before the timeout.',
+    );
+  });
+
+  it("@libs/webView webViewLoad rejects invalid interactions before navigating", async () => {
+    const lib = resolve("@libs/webView") as {
+      webViewLoad: (url: string, options: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await expect(
+      lib.webViewLoad("https://source.test/novel/1", {
+        interactions: [{ type: "hover", selector: ".more" }],
+      }),
+    ).rejects.toThrow(
+      "webViewLoad interactions[0].type must be click, type, select, or waitFor.",
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("@libs/pluginInputs reads app-managed plugin input values", () => {
