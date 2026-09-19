@@ -114,6 +114,21 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(round.chapters[0]?.content).toBe("<p>hi</p>");
   });
 
+  it("preserves chapter content byte counts in the round trip", () => {
+    const manifest: BackupManifest = {
+      ...VALID_MANIFEST,
+      chapters: [
+        {
+          ...VALID_MANIFEST.chapters[0]!,
+          isDownloaded: true,
+          contentBytes: 4096,
+        },
+      ],
+    };
+    const round = parseBackupManifest(encodeBackupManifest(manifest));
+    expect(round.chapters[0]?.contentBytes).toBe(4096);
+  });
+
   it("normalizes markdown chapter content type to html in the round trip", () => {
     const manifest: BackupManifest = {
       ...VALID_MANIFEST,
@@ -200,6 +215,13 @@ describe("parseBackupManifest error cases", () => {
     expect(() => parseBackupManifest("[]")).toThrow(BackupFormatError);
   });
 
+  it("accepts version 1 manifests written by earlier builds", () => {
+    const legacy = JSON.stringify({ ...VALID_MANIFEST, version: 1 });
+    const parsed = parseBackupManifest(legacy);
+    expect(parsed.version).toBe(BACKUP_FORMAT_VERSION);
+    expect(parsed.chapters).toEqual(VALID_MANIFEST.chapters);
+  });
+
   it("throws on a wrong version", () => {
     const wrong = JSON.stringify({ ...VALID_MANIFEST, version: 99 });
     expect(() => parseBackupManifest(wrong)).toThrow(/version 99/);
@@ -237,6 +259,19 @@ describe("parseBackupManifest error cases", () => {
     expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
       /chapters contains a malformed entry/,
     );
+  });
+
+  it("throws on a non-numeric chapter contentBytes", () => {
+    const json = encodeBackupManifest({
+      ...VALID_MANIFEST,
+      chapters: [
+        {
+          ...VALID_MANIFEST.chapters[0]!,
+          contentBytes: "4096" as unknown as number,
+        },
+      ],
+    });
+    expect(() => parseBackupManifest(json)).toThrow(BackupFormatError);
   });
 
   it("throws on a malformed VPN Gate server verdict row", () => {

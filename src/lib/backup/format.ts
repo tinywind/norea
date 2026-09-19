@@ -1,11 +1,17 @@
 /**
- * Backup file format v1.
+ * Backup file format.
  *
  * The on-disk artifact is a `.zip` whose entries are written and
- * read by `pack.ts` and `unpack.ts` in later iterations. This
- * module owns the envelope: the JSON payload that lives in
- * `manifest.json` inside the zip. Keeping the format self-describing
- * lets future format versions evolve without breaking older backups.
+ * read by `pack.ts` and `unpack.ts`. This module owns the envelope:
+ * the JSON payload that lives in `manifest.json` inside the zip.
+ * Keeping the format self-describing lets future format versions
+ * evolve without breaking older backups.
+ *
+ * Version 2 manifests carry chapter download metadata without inline
+ * chapter bodies; version 1 readers would treat such chapters as not
+ * downloaded, so version 2 exports are rejected by earlier builds
+ * instead of restoring with wrong flags. Version 1 archives written
+ * by earlier builds remain readable.
  *
  * The project intentionally uses its own backup format instead of
  * preserving upstream backup zip compatibility.
@@ -18,7 +24,12 @@ import {
   type ChapterContentType,
 } from "../chapter-content";
 
-export const BACKUP_FORMAT_VERSION = 1 as const;
+export const BACKUP_FORMAT_VERSION = 2 as const;
+
+const READABLE_BACKUP_FORMAT_VERSIONS: ReadonlySet<unknown> = new Set([
+  1,
+  BACKUP_FORMAT_VERSION,
+]);
 
 export interface BackupNovel {
   id: number;
@@ -53,10 +64,15 @@ export interface BackupChapter {
   isDownloaded: boolean;
   /** Plugin acquisition type. Falls back to contentType for older v1 backups. */
   sourceContentType?: ChapterContentType;
-  /** Physical/effective type of the backed-up content body. */
+  /** Physical/effective type of the stored chapter body. */
   contentType?: ChapterContentType;
-  /** Inline reader body. Null when the chapter wasn't downloaded yet. */
+  /**
+   * Inline reader body carried by archives from earlier 0.2 builds. Current
+   * exports keep chapter bodies in chapter storage and write null.
+   */
   content: string | null;
+  /** Bytes of the stored chapter body. Zero when the chapter is not downloaded. */
+  contentBytes?: number;
   /** Bytes occupied by local chapter media files referenced by content. */
   mediaBytes?: number;
   releaseTime: string | null;
@@ -201,6 +217,8 @@ function isChapter(value: unknown): value is BackupChapter {
       value.sourceContentType === "pdf" ||
       value.sourceContentType === "markdown" ||
       value.sourceContentType === "epub") &&
+    (value.contentBytes === undefined ||
+      typeof value.contentBytes === "number") &&
     (value.mediaBytes === undefined || typeof value.mediaBytes === "number") &&
     typeof value.updatedAt === "number" &&
     (value.createdAt === undefined || typeof value.createdAt === "number") &&
@@ -321,9 +339,11 @@ export function parseBackupManifest(json: string): BackupManifest {
   if (!isObject(parsed)) {
     throw new BackupFormatError("Backup manifest is not a JSON object.");
   }
-  if (parsed.version !== BACKUP_FORMAT_VERSION) {
+  if (!READABLE_BACKUP_FORMAT_VERSIONS.has(parsed.version)) {
     throw new BackupFormatError(
-      `Unsupported backup version ${String(parsed.version)}; expected ${BACKUP_FORMAT_VERSION}.`,
+      `Unsupported backup version ${String(parsed.version)}; expected ${[
+        ...READABLE_BACKUP_FORMAT_VERSIONS,
+      ].join(" or ")}.`,
     );
   }
   if (typeof parsed.exportedAt !== "number") {

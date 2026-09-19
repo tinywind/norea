@@ -4,17 +4,15 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("../chapter-media", () => ({
-  localChapterMediaSources: vi.fn(),
-}));
-
 import { invoke } from "@tauri-apps/api/core";
-import { localChapterMediaSources } from "../chapter-media";
-import { BACKUP_FORMAT_VERSION, type BackupManifest } from "./format";
+import {
+  BACKUP_FORMAT_VERSION,
+  encodeBackupManifest,
+  type BackupManifest,
+} from "./format";
 import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
 
 const invokeMock = vi.mocked(invoke);
-const localChapterMediaSourcesMock = vi.mocked(localChapterMediaSources);
 
 function makeManifest(): BackupManifest {
   return {
@@ -54,7 +52,9 @@ function makeManifest(): BackupManifest {
         progress: 0,
         isDownloaded: true,
         contentType: "html",
-        content: "<p>downloaded</p>",
+        content: null,
+        contentBytes: 17,
+        mediaBytes: 0,
         releaseTime: null,
         readAt: null,
         createdAt: 1_700_000_000,
@@ -75,6 +75,8 @@ function makeManifest(): BackupManifest {
         isDownloaded: false,
         contentType: "html",
         content: null,
+        contentBytes: 0,
+        mediaBytes: 0,
         releaseTime: null,
         readAt: null,
         createdAt: 1_700_000_000,
@@ -105,31 +107,25 @@ describe("packBackup", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
-    localChapterMediaSourcesMock.mockReset();
-    localChapterMediaSourcesMock.mockReturnValue([]);
   });
 
-  it("invokes backup_pack with manifest content and media payloads", async () => {
+  it("invokes backup_pack with the manifest only", async () => {
     const manifest = makeManifest();
     await packBackup(manifest, "C:\\backup.zip");
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    const [command, args] = invokeMock.mock.calls[0]!;
-    expect(command).toBe("backup_pack");
+    expect(invokeMock).toHaveBeenCalledWith("backup_pack", {
+      manifestJson: encodeBackupManifest(manifest),
+      outputPath: "C:\\backup.zip",
+    });
 
-    const typed = args as {
-      chapterMedia: unknown[];
-      manifestJson: string;
-      outputPath: string;
-    };
-    expect(typed.outputPath).toBe("C:\\backup.zip");
-    expect(args).not.toHaveProperty("chapters");
-    expect(typed.chapterMedia).toEqual([]);
-
-    const packedManifest = JSON.parse(typed.manifestJson) as BackupManifest;
-    expect(packedManifest.chapters[0]?.content).toBe("<p>downloaded</p>");
+    const [, args] = invokeMock.mock.calls[0]!;
+    const packedManifest = JSON.parse(
+      (args as { manifestJson: string }).manifestJson,
+    ) as BackupManifest;
     expect(packedManifest.chapters[0]?.isDownloaded).toBe(true);
-    expect(packedManifest.chapters[1]?.content).toBeNull();
+    expect(packedManifest.chapters[0]?.content).toBeNull();
+    expect(packedManifest.chapters[0]?.contentBytes).toBe(17);
     expect(packedManifest.chapters[1]?.isDownloaded).toBe(false);
     expect(packedManifest.novels).toEqual(manifest.novels);
   });
@@ -143,7 +139,7 @@ describe("packBackup", () => {
     expect(manifest).toEqual(before);
   });
 
-  it("invokes backup_pack_temp_file with manifest content", async () => {
+  it("invokes backup_pack_temp_file with the manifest only", async () => {
     const manifest = makeManifest();
     invokeMock.mockResolvedValue("C:\\temp\\norea-backup.zip");
 
@@ -152,68 +148,8 @@ describe("packBackup", () => {
     );
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    const [command, args] = invokeMock.mock.calls[0]!;
-    expect(command).toBe("backup_pack_temp_file");
-
-    const typed = args as { chapterMedia: unknown[]; manifestJson: string };
-    expect(typed.chapterMedia).toEqual([]);
-    const packedManifest = JSON.parse(typed.manifestJson) as BackupManifest;
-    expect(packedManifest.chapters[0]?.content).toBe("<p>downloaded</p>");
-    expect(packedManifest.chapters[0]?.isDownloaded).toBe(true);
-  });
-
-  it("sends media refs with chapter context without materializing bodies", async () => {
-    const manifest = makeManifest();
-    manifest.chapters[0] = {
-      ...manifest.chapters[0]!,
-      content:
-        '<img src="norea-media://reader-asset/image.png"><img src="norea-media://reader-asset/image.png">',
-    };
-    localChapterMediaSourcesMock.mockReturnValue([
-      "norea-media://reader-asset/image.png",
-      "norea-media://reader-asset/image.png",
-    ]);
-    await packBackup(manifest, "C:\\backup.zip");
-
-    const [, args] = invokeMock.mock.calls[0]!;
-    expect(args).toMatchObject({
-      chapterMedia: [],
-      chapterMediaFiles: [
-        {
-          media_src: "norea-media://reader-asset/image.png",
-          chapter_id: 10,
-          novel_id: 1,
-          source_id: "demo",
-          novel_name: "Sample Novel",
-          novel_path: "/n/1",
-          chapter_number: "1",
-          chapter_name: "Chapter 1",
-          chapter_position: 1,
-        },
-      ],
-    });
-  });
-
-  it("lets the Rust command enforce media file size budgets", async () => {
-    const manifest = makeManifest();
-    manifest.chapters[0] = {
-      ...manifest.chapters[0]!,
-      content: '<img src="norea-media://reader-asset/large.png">',
-    };
-    localChapterMediaSourcesMock.mockReturnValue([
-      "norea-media://reader-asset/large.png",
-    ]);
-    await packBackup(manifest, "C:\\backup.zip");
-
-    const [, args] = invokeMock.mock.calls[0]!;
-    expect(args).toMatchObject({
-      chapterMedia: [],
-      chapterMediaFiles: [
-        {
-          media_src: "norea-media://reader-asset/large.png",
-          chapter_id: 10,
-        },
-      ],
+    expect(invokeMock).toHaveBeenCalledWith("backup_pack_temp_file", {
+      manifestJson: encodeBackupManifest(manifest),
     });
   });
 

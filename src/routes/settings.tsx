@@ -246,6 +246,16 @@ async function refreshImportedDataQueries(
   await queryClient.invalidateQueries({ refetchType: "active" });
 }
 
+function reconcileChapterStorage(queryClient: QueryClient): void {
+  restartChapterContentStorageMirrorSweep({
+    onComplete: () => {
+      void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+      void queryClient.invalidateQueries({ queryKey: ["novel"] });
+    },
+  });
+}
+
 function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -271,13 +281,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
       const root = await selectChapterMediaStorageRoot();
       if (root) {
         setMediaStorageRoot(root);
-        restartChapterContentStorageMirrorSweep({
-          onComplete: () => {
-            void queryClient.invalidateQueries({ queryKey: ["chapter"] });
-            void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-            void queryClient.invalidateQueries({ queryKey: ["novel"] });
-          },
-        });
+        reconcileChapterStorage(queryClient);
         showSettingsToast(
           "green",
           t("settings.toast.saved"),
@@ -1869,6 +1873,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
             await pluginManager.reloadInstalledFromDb();
             await rehydrateImportedSettings();
             await refreshImportedDataQueries(queryClient);
+            reconcileChapterStorage(queryClient);
           }
           return path;
         },

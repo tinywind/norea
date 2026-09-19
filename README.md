@@ -47,7 +47,7 @@ webtoons or read manga and comics page by page.
 - Track reading progress, history, unread chapters, and downloaded chapters.
 - Download chapters for later reading.
 - Export and import local backups for your library, progress, categories,
-  source settings, and downloaded chapters.
+  source settings, and chapter download status.
 
 ## Current State
 
@@ -127,9 +127,14 @@ the source site's terms.
 ## Backup
 
 Use Settings -> Backup to export or import your local library data. Backups
-include your library, progress, categories, source settings, and downloaded
-chapter content, including cached chapter media used by downloaded HTML
-chapters.
+include your library, reading progress, categories, source settings, installed
+sources, and chapter download status. Downloaded chapter bodies and cached
+chapter media are not packed into the backup; they stay in the chapter storage
+folder, and Norea re-checks that folder after a restore so download flags match
+the files that are actually present. Backups written by earlier 0.2 builds that
+still carry chapter bodies and media continue to import. Backups written by this
+build use manifest format 2, which earlier 0.2 builds refuse to import instead
+of restoring every chapter as not downloaded.
 
 ## Version Compatibility
 

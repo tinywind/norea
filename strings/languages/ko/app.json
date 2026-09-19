@@ -288,7 +288,7 @@
   "settings.data.mediaStorage.restore.failed": "미디어 저장소 복구 실패: {error}",
   "settings.data.backup.title": "백업",
   "settings.data.backupFile.label": "백업 파일",
-  "settings.data.backupFile.description": "현재 앱 데이터를 로컬 백업 파일로 씁니다.",
+  "settings.data.backupFile.description": "서재, 읽기 기록, 카테고리, 소스 설정, 챕터 다운로드 상태를 로컬 백업 파일로 씁니다. 다운로드한 챕터 파일은 챕터 저장 폴더에 그대로 남습니다.",
   "settings.data.exportBackup": "백업 내보내기",
   "settings.data.importBackup": "백업 가져오기",
   "settings.data.maintenance.title": "유지 관리",

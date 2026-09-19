@@ -14,16 +14,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("../chapter-content-storage", () => ({
-  reconcileAndReadStoredChapterContent: vi.fn(),
   writeStoredChapterContentMirror: vi.fn(),
 }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db/client";
-import {
-  reconcileAndReadStoredChapterContent,
-  writeStoredChapterContentMirror,
-} from "../chapter-content-storage";
+import { writeStoredChapterContentMirror } from "../chapter-content-storage";
 import {
   BACKUP_FORMAT_VERSION,
   encodeBackupManifest,
@@ -34,9 +30,6 @@ import { attachBackupChapterMediaFiles } from "./unpack";
 
 const mockedGetDb = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
-const reconcileAndReadStoredChapterContentMock = vi.mocked(
-  reconcileAndReadStoredChapterContent,
-);
 const writeStoredChapterContentMirrorMock = vi.mocked(
   writeStoredChapterContentMirror,
 );
@@ -64,15 +57,6 @@ beforeEach(() => {
     execute: mockExecute,
   } as never);
   invokeMock.mockResolvedValue(undefined);
-  reconcileAndReadStoredChapterContentMock.mockResolvedValue({
-    artifacts: {
-      status: "present",
-      contentFile: "contents/demo/novel/chapter/content.html",
-      contentBytes: 9,
-      mediaBytes: 5,
-    },
-    content: "<p>hi</p>",
-  });
   writeStoredChapterContentMirrorMock.mockResolvedValue(undefined);
 });
 
@@ -184,6 +168,7 @@ const RAW_CHAPTER = {
   isDownloaded: 0,
   sourceContentType: "text",
   storedContentType: "html",
+  contentBytes: 0,
   mediaBytes: 99,
   releaseTime: null,
   readAt: null,
@@ -216,10 +201,10 @@ const VPN_GATE_SERVER_VERDICT = {
   updatedAt: 1_700_000_000,
 };
 
-function primeSelect(): void {
+function primeSelect(chapterRows: unknown[] = [RAW_CHAPTER]): void {
   mockSelect
     .mockResolvedValueOnce([RAW_NOVEL])
-    .mockResolvedValueOnce([RAW_CHAPTER])
+    .mockResolvedValueOnce(chapterRows)
     .mockResolvedValueOnce([RAW_CATEGORY])
     .mockResolvedValueOnce([NOVEL_CATEGORY])
     .mockResolvedValueOnce([REPOSITORY])
@@ -237,32 +222,38 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.novels[0]?.isLocal).toBe(false);
     expect(manifest.chapters[0]?.bookmark).toBe(false);
     expect(manifest.chapters[0]?.unread).toBe(true);
-    expect(manifest.chapters[0]?.isDownloaded).toBe(true);
+    expect(manifest.chapters[0]?.isDownloaded).toBe(false);
     expect(manifest.chapters[0]?.contentType).toBe("html");
     expect(manifest.chapters[0]?.sourceContentType).toBe("text");
-    expect(manifest.chapters[0]?.content).toBe("<p>hi</p>");
-    expect(manifest.chapters[0]?.mediaBytes).toBe(5);
+    expect(manifest.chapters[0]?.content).toBeNull();
+    expect(manifest.chapters[0]?.contentBytes).toBe(0);
+    expect(manifest.chapters[0]?.mediaBytes).toBe(99);
     expect(manifest.categories[0]?.isSystem).toBe(true);
     expect(manifest.vpnGateServerVerdicts).toEqual([
       VPN_GATE_SERVER_VERDICT,
     ]);
   });
 
-  it("uses the physical final content type in the backup", async () => {
-    reconcileAndReadStoredChapterContentMock.mockResolvedValueOnce({
-      artifacts: {
-        status: "present",
-        contentFile: "contents/demo/novel/chapter/content.pdf",
-        contentBytes: 24,
-        mediaBytes: 0,
+  it("carries download metadata from the chapter row without reading storage", async () => {
+    primeSelect([
+      {
+        ...RAW_CHAPTER,
+        isDownloaded: 1,
+        storedContentType: "pdf",
+        contentBytes: 4096,
+        mediaBytes: 12,
       },
-      content: "data:application/pdf;base64,JVBERi0xLjQ=",
-    });
-    primeSelect();
+    ]);
 
     const manifest = await gatherBackupSnapshot();
 
+    expect(manifest.chapters[0]?.isDownloaded).toBe(true);
     expect(manifest.chapters[0]?.contentType).toBe("pdf");
+    expect(manifest.chapters[0]?.content).toBeNull();
+    expect(manifest.chapters[0]?.contentBytes).toBe(4096);
+    expect(manifest.chapters[0]?.mediaBytes).toBe(12);
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 
   it("calls one SELECT per backup table", async () => {
@@ -278,6 +269,8 @@ describe("gatherBackupSnapshot", () => {
     expect(chapterSql).toContain(
       "stored_content_type AS storedContentType",
     );
+    expect(chapterSql).toContain("content_bytes  AS contentBytes");
+    expect(mockExecute).not.toHaveBeenCalled();
     expect(sqls.some((s) => /FROM category\b/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM novel_category\b/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM repository\b/m.test(s))).toBe(true);
@@ -333,10 +326,50 @@ describe("applyBackupSnapshot", () => {
       manifestJson: encodeBackupManifest(manifest),
       mediaBytesByChapterId: {},
     });
+    expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
+  });
+
+  it("writes chapter bodies carried by archives from earlier builds", async () => {
+    const gathered = await gatherForTest();
+    const manifest = parseBackupManifest(
+      encodeBackupManifest({
+        ...gathered,
+        chapters: [
+          {
+            ...gathered.chapters[0]!,
+            isDownloaded: true,
+            content: "<p>hi</p>",
+          },
+        ],
+      }),
+    );
+
+    await applyBackupSnapshot(manifest);
+
     expect(writeStoredChapterContentMirrorMock).toHaveBeenCalledWith(
       10,
       "<p>hi</p>",
     );
+  });
+
+  it("leaves chapter files alone for downloaded chapters without inline bodies", async () => {
+    const gathered = await gatherForTest();
+    const manifest = parseBackupManifest(
+      encodeBackupManifest({
+        ...gathered,
+        chapters: [
+          { ...gathered.chapters[0]!, isDownloaded: true, content: null },
+        ],
+      }),
+    );
+
+    await applyBackupSnapshot(manifest);
+
+    expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
+      manifestJson: encodeBackupManifest(manifest),
+      mediaBytesByChapterId: {},
+    });
+    expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
   });
 
   it("restores backed up settings without touching unrelated localStorage", async () => {

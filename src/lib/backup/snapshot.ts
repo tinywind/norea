@@ -9,10 +9,7 @@ import {
   normalizeChapterContentType,
   storedChapterContentType,
 } from "../chapter-content";
-import {
-  reconcileAndReadStoredChapterContent,
-  writeStoredChapterContentMirror,
-} from "../chapter-content-storage";
+import { writeStoredChapterContentMirror } from "../chapter-content-storage";
 import { clearResolvedChapterStorageDirs } from "../chapter-storage-resolution";
 import { invalidateAllNovelCoverSources } from "../novel-cover-storage";
 import {
@@ -99,6 +96,7 @@ interface RawChapterRow {
   isDownloaded: unknown;
   sourceContentType: string;
   storedContentType: string | null;
+  contentBytes: number;
   mediaBytes: number;
   releaseTime: string | null;
   readAt: number | null;
@@ -179,6 +177,7 @@ const SELECT_CHAPTERS = `
     is_downloaded  AS isDownloaded,
     content_type   AS sourceContentType,
     stored_content_type AS storedContentType,
+    content_bytes  AS contentBytes,
     media_bytes    AS mediaBytes,
     release_time   AS releaseTime,
     read_at        AS readAt,
@@ -301,12 +300,7 @@ function toNovel(row: RawNovelRow): BackupNovel {
   };
 }
 
-function toChapter(
-  row: RawChapterRow,
-  content: string | null,
-  mediaBytes: number,
-  contentType = row.storedContentType ?? row.sourceContentType,
-): BackupChapter {
+function toChapter(row: RawChapterRow): BackupChapter {
   return {
     id: row.id,
     novelId: row.novelId,
@@ -318,39 +312,22 @@ function toChapter(
     bookmark: sqliteBoolean(row.bookmark),
     unread: sqliteBoolean(row.unread),
     progress: row.progress,
-    isDownloaded: content !== null,
+    isDownloaded: sqliteBoolean(row.isDownloaded),
     sourceContentType: normalizeChapterContentType(row.sourceContentType),
     contentType: storedChapterContentType(
-      normalizeChapterContentType(contentType),
+      normalizeChapterContentType(
+        row.storedContentType ?? row.sourceContentType,
+      ),
     ),
-    content,
-    mediaBytes,
+    content: null,
+    contentBytes: row.contentBytes,
+    mediaBytes: row.mediaBytes,
     releaseTime: row.releaseTime,
     readAt: row.readAt,
     createdAt: row.createdAt,
     foundAt: row.foundAt,
     updatedAt: row.updatedAt,
   };
-}
-
-async function toBackupChapter(row: RawChapterRow): Promise<BackupChapter> {
-  const { artifacts, content } =
-    await reconcileAndReadStoredChapterContent(row.id);
-  const contentType =
-    artifacts.status === "present" && artifacts.contentFile.endsWith(".pdf")
-      ? "pdf"
-      : artifacts.status === "present" &&
-          normalizeChapterContentType(
-            row.storedContentType ?? row.sourceContentType,
-          ) === "pdf"
-        ? "html"
-        : (row.storedContentType ?? row.sourceContentType);
-  return toChapter(
-    row,
-    content,
-    artifacts.status === "present" ? artifacts.mediaBytes : 0,
-    contentType,
-  );
 }
 
 function parseBackupChapterMediaSource(
@@ -557,7 +534,8 @@ async function restoreBackupChapterContentFiles(
 /**
  * Read every row from the backup-relevant tables and return a
  * fresh `BackupManifest` ready to feed `encodeBackupManifest` and
- * `packBackup`.
+ * `packBackup`. Chapter rows carry their download flags and byte
+ * counts from the database; chapter bodies and media are not read.
  */
 export async function gatherBackupSnapshot(): Promise<BackupManifest> {
   const db = await getDb();
@@ -582,16 +560,11 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
       ),
     ]);
 
-  const backupChapters: BackupChapter[] = [];
-  for (const chapter of chapters) {
-    backupChapters.push(await toBackupChapter(chapter));
-  }
-
   return {
     version: BACKUP_FORMAT_VERSION,
     exportedAt: Math.floor(Date.now() / 1000),
     novels: novels.map(toNovel),
-    chapters: backupChapters,
+    chapters: chapters.map(toChapter),
     categories: categories.map(toCategory),
     novelCategories,
     repositories,

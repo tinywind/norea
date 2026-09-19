@@ -1,17 +1,18 @@
-//! Backup file format v1: zip pack / unpack.
+//! Backup archive pack / unpack.
 //!
-//! The current zip layout is:
+//! Current exports write a single entry:
 //!
 //! ```text
 //! manifest.json
-//! chapter-media/<chapterId>/<fileName>
 //! ```
 //!
-//! The manifest is the source of truth for structure, downloaded
-//! chapter content, and metadata. Chapter media files are stored as
-//! flat `chapter-media/<chapterId>/<fileName>` entries.
+//! The manifest carries library, progress, category, repository, plugin,
+//! and chapter download metadata. Chapter bodies and media stay in chapter
+//! storage. Archives written by earlier 0.2 builds may also carry
+//! `chapters/<id>.html` and `chapter-media/<chapterId>/<fileName>` entries;
+//! unpack still reads those so older backups restore their content.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
 use std::net::Ipv4Addr;
@@ -25,10 +26,7 @@ use tauri_plugin_sql::{DbInstances, DbPool};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::chapter_media::{
-    chapter_media_body_from_src_with_context, chapter_media_from_backup_entry,
-    store_chapter_media_file_source,
-};
+use crate::chapter_media::{chapter_media_from_backup_entry, store_chapter_media_file_source};
 
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const MANIFEST_ENTRY: &str = "manifest.json";
@@ -151,26 +149,12 @@ pub struct ChapterContent {
     pub html: String,
 }
 
-/// One local chapter media file to include in the backup archive.
+/// One local chapter media file read from an archive written by an earlier build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterMediaContent {
     pub media_src: String,
     pub chapter_id: Option<i64>,
     pub body: Vec<u8>,
-}
-
-/// One local chapter media ref to resolve and include in the backup archive.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChapterMediaFileRef {
-    pub media_src: String,
-    pub chapter_id: Option<i64>,
-    pub novel_id: Option<i64>,
-    pub source_id: Option<String>,
-    pub novel_name: Option<String>,
-    pub novel_path: Option<String>,
-    pub chapter_number: Option<String>,
-    pub chapter_name: Option<String>,
-    pub chapter_position: Option<i64>,
 }
 
 /// Result of `backup_unpack`: the raw manifest JSON plus legacy
@@ -251,6 +235,7 @@ struct BackupRestoreChapter {
     content_type: Option<String>,
     source_content_type: Option<String>,
     content: Option<String>,
+    content_bytes: Option<i64>,
     media_bytes: Option<i64>,
     release_time: Option<String>,
     read_at: Option<i64>,
@@ -579,7 +564,14 @@ async fn execute_restore_snapshot(
     }
 
     for chapter in &manifest.chapters {
-        let restored_downloaded = chapter.is_downloaded && chapter.content.is_some();
+        let restored_downloaded = chapter.is_downloaded;
+        let restored_content_bytes = if !restored_downloaded {
+            0
+        } else if chapter.content.is_some() {
+            content_byte_len(chapter.content.as_deref())
+        } else {
+            chapter.content_bytes.unwrap_or(0)
+        };
         let restored_media_bytes = if restored_downloaded {
             media_bytes_by_chapter_id
                 .get(&chapter.id)
@@ -609,7 +601,7 @@ async fn execute_restore_snapshot(
         .bind(bool_to_int(chapter.unread))
         .bind(chapter.progress)
         .bind(bool_to_int(restored_downloaded))
-        .bind(content_byte_len(chapter.content.as_deref()))
+        .bind(restored_content_bytes)
         .bind(restored_media_bytes)
         .bind(chapter_media_repair_needed(
             chapter.content.as_deref(),
@@ -657,7 +649,6 @@ fn write_manifest_entry<W: Write + Seek>(
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
-
     zip.start_file(MANIFEST_ENTRY, options)
         .map_err(|err| format!("{error_prefix}: start manifest: {err}"))?;
     zip.write_all(manifest_json.as_bytes())
@@ -665,217 +656,22 @@ fn write_manifest_entry<W: Write + Seek>(
     Ok(())
 }
 
-fn media_backup_entry_name(
-    media_src: &str,
-    context_chapter_id: Option<i64>,
-) -> Result<String, String> {
-    let file_name = media_src
-        .strip_prefix("norea-media://reader-asset/")
-        .ok_or_else(|| "backup_pack: unsupported chapter media uri".to_string())?;
-    let chapter_id =
-        context_chapter_id.ok_or_else(|| "backup_pack: missing chapter media id".to_string())?;
-    if chapter_id <= 0 {
-        return Err("backup_pack: chapter media id must be positive".to_string());
-    }
-    if !is_safe_media_relative_path(file_name) {
-        return Err("backup_pack: invalid chapter media file name".to_string());
-    }
-    Ok(format!("chapter-media/{chapter_id}/{file_name}"))
-}
-
-fn is_safe_media_relative_path(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.is_empty()
-        || trimmed.starts_with('.')
-        || trimmed.starts_with('/')
-        || trimmed.starts_with('#')
-        || trimmed.contains('\\')
-        || trimmed.contains(':')
-        || trimmed.contains('?')
-        || trimmed.contains('&')
-        || trimmed.contains('=')
-        || trimmed.contains('\0')
-    {
-        return false;
-    }
-    trimmed.split('/').all(|part| {
-        !part.is_empty()
-            && part != "."
-            && part != ".."
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    })
-}
-
-fn write_chapter_media_entries<W: Write + Seek>(
-    zip: &mut ZipWriter<W>,
-    chapter_media: &[ChapterMediaContent],
-    error_prefix: &str,
-    total_uncompressed_bytes: &mut u64,
-) -> Result<(), String> {
-    if chapter_media.is_empty() {
-        return Ok(());
-    }
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o644);
-    let mut written = HashSet::new();
-    for file in chapter_media {
-        let entry_name = media_backup_entry_name(&file.media_src, file.chapter_id)?;
-        if !written.insert(entry_name.clone()) {
-            continue;
-        }
-        validate_backup_media_entry_size(
-            &entry_name,
-            file.body.len() as u64,
-            error_prefix,
-            total_uncompressed_bytes,
-        )?;
-        zip.start_file(&entry_name, options)
-            .map_err(|err| format!("{error_prefix}: start media entry: {err}"))?;
-        zip.write_all(&file.body)
-            .map_err(|err| format!("{error_prefix}: write media entry: {err}"))?;
-    }
-    Ok(())
-}
-
-fn validate_backup_media_entry_size(
-    entry_name: &str,
-    bytes: u64,
-    error_prefix: &str,
-    total_uncompressed_bytes: &mut u64,
-) -> Result<(), String> {
-    if bytes > MAX_BACKUP_MEDIA_ENTRY_BYTES {
-        return Err(format!(
-            "{error_prefix}: media entry '{entry_name}' is {bytes} bytes, which exceeds the {MAX_BACKUP_MEDIA_ENTRY_BYTES} byte limit"
-        ));
-    }
-    *total_uncompressed_bytes = total_uncompressed_bytes
-        .checked_add(bytes)
-        .ok_or_else(|| format!("{error_prefix}: media total byte count overflow"))?;
-    if *total_uncompressed_bytes > MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES {
-        return Err(format!(
-            "{error_prefix}: media total is {} bytes, which exceeds the {MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES} byte limit",
-            *total_uncompressed_bytes
-        ));
-    }
-    Ok(())
-}
-
-fn write_chapter_media_file_ref_entries<W: Write + Seek>(
-    app: &AppHandle,
-    zip: &mut ZipWriter<W>,
-    chapter_media_files: &[ChapterMediaFileRef],
-    error_prefix: &str,
-    total_uncompressed_bytes: &mut u64,
-) -> Result<(), String> {
-    if chapter_media_files.is_empty() {
-        return Ok(());
-    }
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o644);
-    let mut written = HashSet::new();
-    for file in chapter_media_files {
-        let entry_name = media_backup_entry_name(&file.media_src, file.chapter_id)?;
-        if !written.insert(entry_name.clone()) {
-            continue;
-        }
-        let (body, _) = chapter_media_body_from_src_with_context(
-            app,
-            &file.media_src,
-            file.chapter_id,
-            file.novel_id,
-            file.source_id.as_deref(),
-            file.novel_path.as_deref(),
-            file.novel_name.as_deref(),
-            file.chapter_number.as_deref(),
-            file.chapter_name.as_deref(),
-            file.chapter_position,
-        )
-        .map_err(|err| format!("{error_prefix}: resolve media entry '{entry_name}': {err}"))?;
-        validate_backup_media_entry_size(
-            &entry_name,
-            body.len() as u64,
-            error_prefix,
-            total_uncompressed_bytes,
-        )?;
-        zip.start_file(&entry_name, options)
-            .map_err(|err| format!("{error_prefix}: start media entry: {err}"))?;
-        zip.write_all(&body)
-            .map_err(|err| format!("{error_prefix}: write media entry: {err}"))?;
-    }
-    Ok(())
-}
-
-fn write_backup_zip(
-    app: Option<AppHandle>,
-    manifest_json: String,
-    chapter_media: Vec<ChapterMediaContent>,
-    chapter_media_files: Vec<ChapterMediaFileRef>,
-    output_path: String,
-) -> Result<(), String> {
-    let file = File::create(&output_path)
-        .map_err(|err| format!("backup_pack: failed to create '{output_path}': {err}"))?;
-    let mut zip = ZipWriter::new(BufWriter::new(file));
-    write_manifest_entry(&mut zip, &manifest_json, "backup_pack")?;
-    let mut total_uncompressed_bytes = 0;
-    write_chapter_media_entries(
-        &mut zip,
-        &chapter_media,
-        "backup_pack",
-        &mut total_uncompressed_bytes,
-    )?;
-    if !chapter_media_files.is_empty() {
-        let app = app
-            .as_ref()
-            .ok_or_else(|| "backup_pack: app handle required for media refs".to_string())?;
-        write_chapter_media_file_ref_entries(
-            app,
-            &mut zip,
-            &chapter_media_files,
-            "backup_pack",
-            &mut total_uncompressed_bytes,
-        )?;
-    }
-    zip.finish()
-        .map_err(|err| format!("backup_pack: finalize: {err}"))?;
-    Ok(())
-}
-
 fn write_backup_zip_file<W: Write + Seek>(
-    app: Option<AppHandle>,
     file: W,
-    manifest_json: String,
-    chapter_media: Vec<ChapterMediaContent>,
-    chapter_media_files: Vec<ChapterMediaFileRef>,
+    manifest_json: &str,
     error_prefix: &str,
 ) -> Result<(), String> {
     let mut zip = ZipWriter::new(BufWriter::new(file));
-    write_manifest_entry(&mut zip, &manifest_json, error_prefix)?;
-    let mut total_uncompressed_bytes = 0;
-    write_chapter_media_entries(
-        &mut zip,
-        &chapter_media,
-        error_prefix,
-        &mut total_uncompressed_bytes,
-    )?;
-    if !chapter_media_files.is_empty() {
-        let app = app
-            .as_ref()
-            .ok_or_else(|| format!("{error_prefix}: app handle required for media refs"))?;
-        write_chapter_media_file_ref_entries(
-            app,
-            &mut zip,
-            &chapter_media_files,
-            error_prefix,
-            &mut total_uncompressed_bytes,
-        )?;
-    }
+    write_manifest_entry(&mut zip, manifest_json, error_prefix)?;
     zip.finish()
         .map_err(|err| format!("{error_prefix}: finalize: {err}"))?;
     Ok(())
+}
+
+fn write_backup_zip(manifest_json: &str, output_path: &str) -> Result<(), String> {
+    let file = File::create(output_path)
+        .map_err(|err| format!("backup_pack: failed to create '{output_path}': {err}"))?;
+    write_backup_zip_file(file, manifest_json, "backup_pack")
 }
 
 fn backup_temp_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -897,25 +693,15 @@ fn backup_temp_path(dir: &Path, attempt: u32) -> PathBuf {
     dir.join(format!("norea-backup-{now}-{attempt}.zip"))
 }
 
-fn write_backup_temp_file(
-    app: AppHandle,
-    manifest_json: String,
-    chapter_media: Vec<ChapterMediaContent>,
-    chapter_media_files: Vec<ChapterMediaFileRef>,
-) -> Result<String, String> {
+fn write_backup_temp_file(app: AppHandle, manifest_json: String) -> Result<String, String> {
     let dir = backup_temp_dir(&app)?;
     for attempt in 0..16 {
         let path = backup_temp_path(&dir, attempt);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => {
-                if let Err(err) = write_backup_zip_file(
-                    Some(app.clone()),
-                    file,
-                    manifest_json,
-                    chapter_media.clone(),
-                    chapter_media_files.clone(),
-                    "backup_pack_temp_file",
-                ) {
+                if let Err(err) =
+                    write_backup_zip_file(file, &manifest_json, "backup_pack_temp_file")
+                {
                     let _ = fs::remove_file(&path);
                     return Err(err);
                 }
@@ -930,33 +716,9 @@ fn write_backup_temp_file(
     Err("backup_pack_temp_file: failed to allocate a temp file".to_string())
 }
 
-fn backup_zip_bytes(
-    app: Option<AppHandle>,
-    manifest_json: String,
-    chapter_media: Vec<ChapterMediaContent>,
-    chapter_media_files: Vec<ChapterMediaFileRef>,
-) -> Result<Vec<u8>, String> {
+fn backup_zip_bytes(manifest_json: &str) -> Result<Vec<u8>, String> {
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    write_manifest_entry(&mut zip, &manifest_json, "backup_pack_bytes")?;
-    let mut total_uncompressed_bytes = 0;
-    write_chapter_media_entries(
-        &mut zip,
-        &chapter_media,
-        "backup_pack_bytes",
-        &mut total_uncompressed_bytes,
-    )?;
-    if !chapter_media_files.is_empty() {
-        let app = app
-            .as_ref()
-            .ok_or_else(|| "backup_pack_bytes: app handle required for media refs".to_string())?;
-        write_chapter_media_file_ref_entries(
-            app,
-            &mut zip,
-            &chapter_media_files,
-            "backup_pack_bytes",
-            &mut total_uncompressed_bytes,
-        )?;
-    }
+    write_manifest_entry(&mut zip, manifest_json, "backup_pack_bytes")?;
     let cursor = zip
         .finish()
         .map_err(|err| format!("backup_pack_bytes: finalize: {err}"))?;
@@ -979,23 +741,9 @@ where
 /// `encodeBackupManifest(...)`; this command does not validate or
 /// reshape it; the JS side owns the schema.
 #[tauri::command]
-pub async fn backup_pack(
-    app: AppHandle,
-    manifest_json: String,
-    chapter_media: Option<Vec<ChapterMediaContent>>,
-    chapter_media_files: Option<Vec<ChapterMediaFileRef>>,
-    output_path: String,
-) -> Result<(), String> {
-    let chapter_media = chapter_media.unwrap_or_default();
-    let chapter_media_files = chapter_media_files.unwrap_or_default();
+pub async fn backup_pack(manifest_json: String, output_path: String) -> Result<(), String> {
     backup_blocking("backup_pack", move || {
-        write_backup_zip(
-            Some(app),
-            manifest_json,
-            chapter_media,
-            chapter_media_files,
-            output_path,
-        )
+        write_backup_zip(&manifest_json, &output_path)
     })
     .await
 }
@@ -1004,13 +752,9 @@ pub async fn backup_pack(
 pub async fn backup_pack_temp_file(
     app: AppHandle,
     manifest_json: String,
-    chapter_media: Option<Vec<ChapterMediaContent>>,
-    chapter_media_files: Option<Vec<ChapterMediaFileRef>>,
 ) -> Result<String, String> {
-    let chapter_media = chapter_media.unwrap_or_default();
-    let chapter_media_files = chapter_media_files.unwrap_or_default();
     backup_blocking("backup_pack_temp_file", move || {
-        write_backup_temp_file(app, manifest_json, chapter_media, chapter_media_files)
+        write_backup_temp_file(app, manifest_json)
     })
     .await
 }
@@ -1139,16 +883,9 @@ pub async fn backup_cleanup_staged_unpack(
 }
 
 #[tauri::command]
-pub async fn backup_pack_bytes(
-    app: AppHandle,
-    manifest_json: String,
-    chapter_media: Option<Vec<ChapterMediaContent>>,
-    chapter_media_files: Option<Vec<ChapterMediaFileRef>>,
-) -> Result<Vec<u8>, String> {
-    let chapter_media = chapter_media.unwrap_or_default();
-    let chapter_media_files = chapter_media_files.unwrap_or_default();
+pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String> {
     backup_blocking("backup_pack_bytes", move || {
-        backup_zip_bytes(Some(app), manifest_json, chapter_media, chapter_media_files)
+        backup_zip_bytes(&manifest_json)
     })
     .await
 }
@@ -1784,6 +1521,76 @@ mod tests {
         assert!(error.contains("canonical IPv4 address"));
     }
 
+    async fn restore_pool() -> sqlx::SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect");
+        for sql in [
+            include_str!("schema.sql"),
+            include_str!("schema_download_queue.sql"),
+            include_str!("schema_download_cache_work.sql"),
+            include_str!("schema_chapter_stored_content_type.sql"),
+            include_str!("schema_vpn_gate_server_verdict.sql"),
+        ] {
+            sqlx::raw_sql(sql)
+                .execute(&pool)
+                .await
+                .expect("apply schema");
+        }
+        pool
+    }
+
+    fn restore_chapter_json(id: i64, downloaded: bool, content: Option<&str>) -> String {
+        let content = content
+            .map(|value| format!("\"{value}\""))
+            .unwrap_or_else(|| "null".to_string());
+        format!(
+            r#"{{"id":{id},"novelId":1,"path":"/c/{id}","name":"Chapter {id}","chapterNumber":"{id}","position":{id},"page":"1","bookmark":false,"unread":false,"progress":40,"isDownloaded":{downloaded},"contentType":"html","sourceContentType":"text","content":{content},"contentBytes":1234,"mediaBytes":56,"releaseTime":null,"readAt":7,"createdAt":1,"foundAt":1,"updatedAt":1}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_keeps_download_metadata_without_chapter_bodies() {
+        let pool = restore_pool().await;
+        let json = format!(
+            r#"{{
+                "novels": [{{"id":1,"pluginId":"demo","path":"/n/1","name":"Novel","inLibrary":true,"isLocal":false,"createdAt":1,"updatedAt":1}}],
+                "chapters": [{}, {}, {}],
+                "categories": [],
+                "novelCategories": [],
+                "repositories": []
+            }}"#,
+            restore_chapter_json(10, true, None),
+            restore_chapter_json(11, true, Some("<p>hi</p>")),
+            restore_chapter_json(12, false, None),
+        );
+        let manifest: BackupRestoreManifest = serde_json::from_str(&json).expect("parse manifest");
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest, HashMap::new())
+            .await
+            .expect("restore");
+        tx.commit().await.expect("commit");
+
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64, Option<String>, i64, i64)>(
+            "SELECT id, is_downloaded, content_bytes, media_bytes, stored_content_type, unread, progress
+             FROM chapter
+             ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read chapters");
+        assert_eq!(
+            rows,
+            vec![
+                (10, 1, 1234, 56, Some("html".to_string()), 0, 40),
+                (11, 1, 9, 56, Some("html".to_string()), 0, 40),
+                (12, 0, 0, 0, None, 0, 40),
+            ]
+        );
+    }
+
     fn test_limits() -> BackupArchiveLimits {
         BackupArchiveLimits {
             max_entries: 8,
@@ -1849,50 +1656,12 @@ mod tests {
 
         let manifest_json = r#"{"version":1,"exportedAt":1700000000}"#.to_string();
 
-        write_backup_zip(
-            None,
-            manifest_json.clone(),
-            Vec::new(),
-            Vec::new(),
-            zip_path_str.clone(),
-        )
-        .expect("pack");
+        write_backup_zip(&manifest_json, &zip_path_str).expect("pack");
 
         let unpacked = unpack_backup_path(zip_path_str).expect("unpack");
         assert_eq!(unpacked.manifest_json, manifest_json);
         assert!(unpacked.chapters.is_empty());
         assert!(unpacked.chapter_media.is_empty());
-    }
-
-    #[test]
-    fn pack_includes_chapter_media_entries() {
-        let dir = tempdir().expect("tempdir");
-        let zip_path = dir.path().join("backup.zip");
-        let zip_path_str = zip_path.to_string_lossy().to_string();
-        let manifest_json = r#"{"version":1,"exportedAt":1700000000}"#.to_string();
-
-        write_backup_zip(
-            None,
-            manifest_json.clone(),
-            vec![ChapterMediaContent {
-                media_src: "norea-media://reader-asset/image.png".to_string(),
-                chapter_id: Some(10),
-                body: vec![1, 2, 3, 4],
-            }],
-            Vec::new(),
-            zip_path_str.clone(),
-        )
-        .expect("pack");
-
-        let unpacked = unpack_backup_path(zip_path_str).expect("unpack");
-        assert_eq!(unpacked.manifest_json, manifest_json);
-        assert_eq!(unpacked.chapter_media.len(), 1);
-        assert_eq!(
-            unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://reader-asset/image.png"
-        );
-        assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
-        assert_eq!(unpacked.chapter_media[0].body.as_slice(), &[1, 2, 3, 4]);
     }
 
     #[test]

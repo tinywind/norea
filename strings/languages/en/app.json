@@ -288,7 +288,7 @@
   "settings.data.mediaStorage.restore.failed": "Failed to restore media storage: {error}",
   "settings.data.backup.title": "Backup",
   "settings.data.backupFile.label": "Backup file",
-  "settings.data.backupFile.description": "Write the current app data to a local backup file.",
+  "settings.data.backupFile.description": "Write your library, reading progress, categories, source settings, and chapter download status to a local backup file. Downloaded chapter files stay in the chapter storage folder.",
   "settings.data.exportBackup": "Export backup",
   "settings.data.importBackup": "Import backup",
   "settings.data.maintenance.title": "Maintenance",
