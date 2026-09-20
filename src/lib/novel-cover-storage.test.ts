@@ -764,6 +764,7 @@ describe("resolveNovelCoverDisplaySource", () => {
         "https://source.test/covers/cover.jpg",
         {
           contextUrl: "https://source.test/books/",
+          priority: "deferred",
           sourceId: "demo",
         },
       );
@@ -801,6 +802,7 @@ describe("resolveNovelCoverDisplaySource", () => {
         "https://source.test/covers/cover.jpg",
         {
           contextUrl: "https://source.test/books/",
+          priority: "deferred",
           sourceId: "demo",
         },
       );
@@ -874,6 +876,7 @@ describe("resolveNovelCoverDisplaySource", () => {
         "https://source.test/covers/cover.jpg",
         {
           contextUrl: "https://source.test/books/",
+          priority: "deferred",
           sourceId: "demo",
         },
       );

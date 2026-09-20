@@ -236,6 +236,7 @@ export async function resolveNovelCoverDisplaySource(
   const response = await pluginMediaFetch(sourceUrl, {
     ...(plugin.imageRequestInit ?? {}),
     ...(baseUrl ? { contextUrl: baseUrl } : {}),
+    priority: "deferred",
     sourceId: plugin.id,
   });
   throwIfCoverRequestAborted(signal);
@@ -593,6 +594,9 @@ function absolutePluginCoverUrl(
 ): string | null {
   const trimmed = cover?.trim();
   if (!trimmed) return null;
+
+  const absolute = parseUrl(trimmed);
+  if (absolute && isFetchableCoverUrl(absolute)) return absolute.href;
 
   const candidates: string[] = [];
   if (plugin.resolveUrl) {

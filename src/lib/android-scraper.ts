@@ -221,6 +221,7 @@ export function androidWebviewFetch(
   executor: ScraperExecutorId,
   timeoutMs: number,
   signal?: AbortSignal,
+  priority?: string,
 ): Promise<AndroidFetchResultWire> {
   return callNative<AndroidFetchResultWire>(
     "fetch",
@@ -232,6 +233,7 @@ export function androidWebviewFetch(
       ...(sourceId ? { sourceId } : {}),
       queue: executor,
       timeoutMs,
+      ...(priority ? { priority } : {}),
     },
     timeoutMs + 5_000,
     signal,

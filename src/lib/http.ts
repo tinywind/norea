@@ -18,6 +18,13 @@ import {
   type ScraperExecutorId,
 } from "./tasks/scraper-queue";
 
+export type PluginFetchPriority =
+  | "interactive"
+  | "user"
+  | "normal"
+  | "deferred"
+  | "background";
+
 export interface HttpInit {
   method?: string;
   headers?: Record<string, string>;
@@ -40,6 +47,12 @@ export interface HttpInit {
   scraperExecutor?: ScraperExecutorId;
   /** Per-request timeout for plugin-owned site traffic. */
   timeoutMs?: number;
+  /**
+   * Queue position among requests waiting for the same scraper executor.
+   * Display-only traffic such as cover images should yield to plugin requests
+   * that a user action is waiting on.
+   */
+  priority?: PluginFetchPriority;
   /** Cancels the plugin-owned WebView request when the owning task is aborted. */
   signal?: AbortSignal;
 }
@@ -736,6 +749,7 @@ async function pluginFetchInternal(
           scraperExecutor,
           timeoutMs,
           signal,
+          init.priority,
         )
       : await desktopWebviewFetch(
           url,

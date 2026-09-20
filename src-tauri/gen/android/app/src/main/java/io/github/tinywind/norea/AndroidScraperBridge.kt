@@ -258,14 +258,21 @@ class AndroidScraperBridge(
 
   private fun logState(state: QueueState, message: String, url: String? = null) {
     requireMainThread()
+    // Cookie summaries cost two synchronous cookie-store calls per line, so they
+    // stay behind `setprop log.tag.NoreaScraper VERBOSE`.
+    val cookies = if (Log.isLoggable(TAG, Log.VERBOSE)) {
+      " currentCookies=${cookieSummary(state, state.currentUrl)} " +
+        "targetCookies=${cookieSummary(state, url)}"
+    } else {
+      ""
+    }
     Log.d(
       TAG,
       "[${state.key}] ${redactUrlsForLog(message)} busy=${state.busy} queue=${state.queue.size} " +
         "browserVisible=$browserVisible currentUrl=${urlForLog(state.currentUrl)} " +
         "knownQueues=${queues.keys.joinToString(",")} " +
         "webViews=${queues.values.count { it.webView != null }} " +
-        "targetUrl=${urlForLog(url)} currentCookies=${cookieSummary(state, state.currentUrl)} " +
-        "targetCookies=${cookieSummary(state, url)}",
+        "targetUrl=${urlForLog(url)}$cookies",
     )
   }
 
@@ -1210,6 +1217,9 @@ class AndroidScraperBridge(
     val url = payload.getString("url")
     val contextUrl = payload.optString("contextUrl").takeIf { it.isNotBlank() }
     val fetchContextUrl = fetchContextUrl(url, contextUrl)
+    // A context derived from the request origin (cross-origin media such as a
+    // cover CDN) only needs a same-origin document, not the origin's root page.
+    val syntheticContext = fetchContextUrl != null && fetchContextUrl != contextUrl
     val init = payload.optJSONObject("init") ?: JSONObject()
     val timeoutMs = payload.optLong("timeoutMs", 60_000L).coerceAtLeast(1L)
     val webView = scraper(state, payloadUserAgent(payload))
@@ -1222,7 +1232,7 @@ class AndroidScraperBridge(
       url,
     )
 
-    prepareContext(state, webView, id, fetchContextUrl, url) { preparedFetchUrl ->
+    prepareContext(state, webView, id, fetchContextUrl, url, syntheticContext) { preparedFetchUrl ->
       if (state.activeFetchId != id) return@prepareContext
       val fetchUrl = fetchUrlAfterPreparedContext(url, preparedFetchUrl, init)
       logState(
@@ -1335,6 +1345,7 @@ class AndroidScraperBridge(
     id: String,
     contextUrl: String?,
     fallbackContextUrl: String?,
+    syntheticContext: Boolean,
     ready: (String?) -> Unit,
   ) {
     if (contextUrl == null || sameOrigin(state.currentUrl, contextUrl)) {
@@ -1346,7 +1357,11 @@ class AndroidScraperBridge(
       ready(null)
       return
     }
-    logState(state, "prepareContext navigate id=$id contextUrl=$contextUrl", contextUrl)
+    logState(
+      state,
+      "prepareContext navigate id=$id contextUrl=$contextUrl synthetic=$syntheticContext",
+      contextUrl,
+    )
 
     var finished = false
     var navigationStarted = false
@@ -1415,7 +1430,12 @@ class AndroidScraperBridge(
       onFinished = { finishedUrl -> onContextDocument(finishedUrl, "pageFinished") },
       onStarted = { navigationStarted = true },
     )
-    webView.loadUrl(contextUrl)
+    if (syntheticContext) {
+      val documentUrl = "${contextUrl.trimEnd('/')}/"
+      webView.loadDataWithBaseURL(documentUrl, PARKED_PAGE_HTML, "text/html", "utf-8", documentUrl)
+    } else {
+      webView.loadUrl(contextUrl)
+    }
   }
 
   private fun fetchUrlAfterPreparedContext(
