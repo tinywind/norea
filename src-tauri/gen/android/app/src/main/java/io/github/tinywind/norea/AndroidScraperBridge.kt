@@ -137,6 +137,12 @@ class AndroidScraperBridge(
     val browserAction: Boolean,
     val run: (QueueState) -> Unit,
     val sequence: Long = 0,
+    val fetchPayload: JSONObject? = null,
+  )
+
+  private class ConcurrentFetch(
+    val nonce: String,
+    val timeout: Runnable,
   )
 
   private class QueueState(val key: String) {
@@ -150,7 +156,9 @@ class AndroidScraperBridge(
     var blankBeforeNextAction = false
     var blankNavigationInProgress = false
     var busy = false
+    val concurrentFetches: MutableMap<String, ConcurrentFetch> = mutableMapOf()
     var currentUrl: String? = null
+    var fetchInFlight = false
     var documentStartScriptEnabled = false
     var nextSequence = 0L
     var pendingDocumentReady: ((String) -> Unit)? = null
@@ -318,6 +326,7 @@ class AndroidScraperBridge(
       val message = json.optString("message", "scraper: background work cancelled")
       val state = queueState(executorFromPayload(json))
       cancelQueuedWhere(state, message) { true }
+      cancelConcurrentFetches(state, message)
       if (state.busy) cancelActive(state, message)
     }
   }
@@ -413,6 +422,7 @@ class AndroidScraperBridge(
           priority = payloadPriority(json),
           browserAction = false,
           run = { runFetch(it, json) },
+          fetchPayload = json,
         ),
       )
     }
@@ -661,6 +671,7 @@ class AndroidScraperBridge(
     state.queue.add(action.copy(sequence = state.nextSequence))
     state.nextSequence += 1
     runNext(state)
+    if (state.busy || state.concurrentFetches.isNotEmpty()) startConcurrentFetches(state)
   }
 
   private fun requireMainThread() {
@@ -678,6 +689,10 @@ class AndroidScraperBridge(
         state.blankNavigationInProgress,
       ) || state.queue.isEmpty()
     ) {
+      return
+    }
+    if (state.concurrentFetches.isNotEmpty()) {
+      startConcurrentFetches(state)
       return
     }
     val index = takeNextActionIndex(state) ?: return
@@ -710,8 +725,104 @@ class AndroidScraperBridge(
       state.activeResultNonce = null
       state.activeAction = null
       state.busy = false
+      state.fetchInFlight = false
       sendError(action.id, "scraper: ${error.message ?: error.toString()}")
       runNextAfterPendingBlank(state)
+    }
+  }
+
+  private fun canStartConcurrentFetch(state: QueueState, action: QueuedAction): Boolean {
+    val payload = action.fetchPayload ?: return false
+    if (action.sourceId != state.sourceId) return false
+    if (payloadUserAgent(payload) != state.userAgent) return false
+    val url = payload.optString("url")
+    val contextUrl = payload.optString("contextUrl").takeIf { it.isNotBlank() }
+    val fetchContextUrl = fetchContextUrl(url, contextUrl) ?: return true
+    return sameOrigin(state.currentUrl, fetchContextUrl)
+  }
+
+  // Plain fetches share the current document, so independent requests that
+  // need no context navigation run side by side; navigation, extraction, and
+  // parking stay exclusive until every in-flight fetch has settled.
+  private fun startConcurrentFetches(state: QueueState) {
+    requireMainThread()
+    val webView = state.webView ?: return
+    if (state.blankBeforeNextAction || state.blankNavigationInProgress) return
+    if (state.activeAction != null && !state.fetchInFlight) return
+    if (state.key == IMMEDIATE_EXECUTOR && browserVisible) return
+    val primarySlots = if (state.fetchInFlight) 1 else 0
+    while (state.concurrentFetches.size + primarySlots < FETCH_CONCURRENCY) {
+      var selectedIndex: Int? = null
+      for (index in state.queue.indices) {
+        val candidate = state.queue[index]
+        if (!canStartConcurrentFetch(state, candidate)) continue
+        val selected = selectedIndex?.let { state.queue[it] }
+        if (
+          selected == null ||
+          candidate.priority < selected.priority ||
+          (candidate.priority == selected.priority && candidate.sequence < selected.sequence)
+        ) {
+          selectedIndex = index
+        }
+      }
+      val index = selectedIndex ?: return
+      val action = state.queue.removeAt(index)
+      runCatching { startConcurrentFetch(state, webView, action) }
+        .onFailure { error ->
+          state.concurrentFetches.remove(action.id)?.let { mainHandler.removeCallbacks(it.timeout) }
+          sendError(action.id, "scraper: ${error.message ?: error.toString()}")
+        }
+    }
+  }
+
+  private fun startConcurrentFetch(state: QueueState, webView: WebView, action: QueuedAction) {
+    val payload = action.fetchPayload ?: return
+    val id = action.id
+    val url = payload.getString("url")
+    val init = payload.optJSONObject("init") ?: JSONObject()
+    val timeoutMs = payload.optLong("timeoutMs", 60_000L).coerceAtLeast(1L)
+    val nonce = bridgeSession.newNonce()
+    val timeout = Runnable {
+      abortActiveFetch(state, id)
+      finishConcurrentFetch(
+        state,
+        id,
+        JSONObject()
+          .put("ok", false)
+          .put("error", redactUrlsForLog("scraper: browser fetch to $url timed out after ${timeoutMs}ms")),
+      )
+    }
+    state.concurrentFetches[id] = ConcurrentFetch(nonce, timeout)
+    mainHandler.postDelayed(timeout, timeoutMs)
+    logState(state, "runFetch concurrent id=$id url=$url inFlight=${state.concurrentFetches.size}", url)
+    val request = JSONObject()
+      .put("url", url)
+      .put("init", init)
+    webView.evaluateJavascript(buildFetchScript(id, nonce, request), null)
+  }
+
+  private fun finishConcurrentFetch(state: QueueState, id: String, envelope: JSONObject) {
+    val entry = state.concurrentFetches.remove(id) ?: return
+    mainHandler.removeCallbacks(entry.timeout)
+    logState(state, "finish concurrent id=$id envelope=${envelopeForLog(envelope)}")
+    sendResult(id, envelope)
+    if (state.concurrentFetches.isEmpty() && !state.busy) {
+      runNextAfterPendingBlank(state)
+    } else {
+      startConcurrentFetches(state)
+    }
+  }
+
+  private fun cancelConcurrentFetches(state: QueueState, message: String) {
+    for (id in state.concurrentFetches.keys.toList()) {
+      abortActiveFetch(state, id)
+      finishConcurrentFetch(
+        state,
+        id,
+        JSONObject()
+          .put("ok", false)
+          .put("error", redactUrlsForLog(message)),
+      )
     }
   }
 
@@ -805,6 +916,7 @@ class AndroidScraperBridge(
     state.pendingSurfaceLayoutListener = null
     state.pendingDocumentReady = null
     clearExtractScript(state)
+    cancelConcurrentFetches(state, "scraper: webview closed during $reason")
     webView.stopLoading()
     runCatching { profileCookieManager(webView).flush() }
       .onFailure { error ->
@@ -1070,6 +1182,7 @@ class AndroidScraperBridge(
   private fun loadBlankThenRunNext(state: QueueState) {
     requireMainThread()
     if (state.busy || !state.blankBeforeNextAction || state.blankNavigationInProgress) return
+    if (state.concurrentFetches.isNotEmpty()) return
     val webView = state.webView
     if (webView == null) {
       state.blankBeforeNextAction = false
@@ -1250,6 +1363,8 @@ class AndroidScraperBridge(
         .put("url", fetchUrl)
         .put("init", init)
       webView.evaluateJavascript(buildFetchScript(id, resultNonce, request), null)
+      state.fetchInFlight = true
+      startConcurrentFetches(state)
     }
   }
 
@@ -1591,6 +1706,17 @@ class AndroidScraperBridge(
         }
       }
       if (cancelledQueued) return
+      if (state.concurrentFetches.containsKey(id)) {
+        abortActiveFetch(state, id)
+        finishConcurrentFetch(
+          state,
+          id,
+          JSONObject()
+            .put("ok", false)
+            .put("error", redactUrlsForLog(message)),
+        )
+        return
+      }
       if (
         state.activeFetchId == id ||
         state.activeExtractId == id ||
@@ -1616,6 +1742,7 @@ class AndroidScraperBridge(
       state.activeResultNonce = null
       state.activeAction = null
       state.busy = false
+      state.fetchInFlight = false
       runNextAfterPendingBlank(state)
       return
     }
@@ -1674,6 +1801,7 @@ class AndroidScraperBridge(
     state.activeExtractId = null
     state.activeResultNonce = null
     state.activeAction = null
+    state.fetchInFlight = false
     sendResult(id, envelope)
     state.busy = false
     runNextAfterPendingBlank(state)
@@ -1705,19 +1833,29 @@ class AndroidScraperBridge(
               onFetchResult(state, id, nonce, result, summary)
             },
             onFailure = { error ->
-              if (state.activeFetchId == id) {
-                finishError(state, id, "scraper: invalid browser fetch result: ${error.message}")
-              }
+              failFetchResult(state, id, "scraper: invalid browser fetch result: ${error.message}")
             },
           )
         }
       }
     }.onFailure { error ->
       mainHandler.post {
-        if (state.activeFetchId == id) {
-          finishError(state, id, "scraper: invalid browser fetch result: ${error.message}")
-        }
+        failFetchResult(state, id, "scraper: invalid browser fetch result: ${error.message}")
       }
+    }
+  }
+
+  private fun failFetchResult(state: QueueState, id: String, message: String) {
+    if (state.activeFetchId == id) {
+      finishError(state, id, message)
+    } else if (state.concurrentFetches.containsKey(id)) {
+      finishConcurrentFetch(
+        state,
+        id,
+        JSONObject()
+          .put("ok", false)
+          .put("error", redactUrlsForLog(message)),
+      )
     }
   }
 
@@ -1728,6 +1866,26 @@ class AndroidScraperBridge(
     result: JSONObject,
     logSummary: String,
   ) {
+    state.concurrentFetches[id]?.let { entry ->
+      if (nonce != entry.nonce) {
+        failFetchResult(state, id, "scraper: browser result authority mismatch")
+        return
+      }
+      logState(state, "onFetchResult concurrent id=$id $logSummary")
+      if (!result.optBoolean("success", false)) {
+        failFetchResult(state, id, result.optString("error", "unknown browser fetch error"))
+        return
+      }
+      result.remove("success")
+      finishConcurrentFetch(
+        state,
+        id,
+        JSONObject()
+          .put("ok", true)
+          .put("result", result),
+      )
+      return
+    }
     if (state.activeFetchId != id) return
     if (!isExpectedResultNonce(state, id, nonce)) return
     state.webView?.let { profileCookieManager(it).flush() }
@@ -1909,6 +2067,7 @@ class AndroidScraperBridge(
   companion object {
     private const val TAG = "NoreaScraper"
     private const val BLANK_NAVIGATION_TIMEOUT_MS = 5_000L
+    private const val FETCH_CONCURRENCY = 4
     private const val HEX_DIGITS = "0123456789abcdef"
     private const val IMMEDIATE_EXECUTOR = "immediate"
     private const val LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY = "scraper-chapter-pages"

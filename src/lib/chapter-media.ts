@@ -2393,6 +2393,17 @@ export async function cacheHtmlChapterMedia({
     capturedHandle: Awaited<ReturnType<typeof takeCapturedMediaHandle>>;
     releaseFallback?: () => void;
   }> => {
+    if (isAndroidRuntime()) {
+      // No captured responses exist on Android, and the bridge runs
+      // same-context fetches concurrently, so the acquisition order lock
+      // would only serialize the downloads.
+      if (terminalDownloadError !== undefined) throw terminalDownloadError;
+      throwIfAborted(signal);
+      if (shouldYield?.()) {
+        throw new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError");
+      }
+      return { capturedHandle: null };
+    }
     const previous = mediaAcquisitionQueue;
     let released = false;
     let resolveNext!: () => void;
