@@ -257,18 +257,13 @@ describe("Android scraper extraction", () => {
 
 });
 
-const ANDROID_BRIDGE_SOURCE = path.resolve(
+const ANDROID_SCRAPER_SCRIPT_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../src-tauri/gen/android/app/src/main/java/io/github/tinywind/norea/AndroidScraperBridge.kt",
+  "../../src-tauri/gen/android/app/src/main/res/raw",
 );
 
 function androidBridgeScript(name: string): string {
-  const source = readFileSync(ANDROID_BRIDGE_SOURCE, "utf8");
-  const match = source.match(
-    new RegExp(`private val ${name} = """\\n([\\s\\S]*?)\\n\\s*"""\\.trimIndent\\(\\)`),
-  );
-  if (!match?.[1]) throw new Error(`${name} was not found in AndroidScraperBridge.kt`);
-  return match[1];
+  return readFileSync(path.join(ANDROID_SCRAPER_SCRIPT_DIR, `${name}.js`), "utf8");
 }
 
 interface BridgeDocument {
@@ -289,7 +284,7 @@ function loadBridgeDocument(document: BridgeDocument) {
     search: "?p=2",
   };
   const window: Record<string, unknown> = { name: document.name ?? "" };
-  runInNewContext(androidBridgeScript("INIT_SCRIPT"), {
+  runInNewContext(androidBridgeScript("norea_scraper_init"), {
     AndroidScraper: {
       postExtractResult: (payload: string) => {
         legacyPosts.push(payload);
@@ -374,11 +369,11 @@ describe("Android scraper bridge init script", () => {
 
   it("clears only bridge-owned window names when an extract finishes", () => {
     const armed: Record<string, unknown> = { name: "__norea_script__=abc&__norea_request_id__=x" };
-    runInNewContext(androidBridgeScript("CLEAR_EXTRACT_BRIDGE_SCRIPT"), { window: armed });
+    runInNewContext(androidBridgeScript("norea_scraper_clear_extract"), { window: armed });
     expect(armed.name).toBe("");
 
     const unrelated: Record<string, unknown> = { name: "adframe" };
-    runInNewContext(androidBridgeScript("CLEAR_EXTRACT_BRIDGE_SCRIPT"), { window: unrelated });
+    runInNewContext(androidBridgeScript("norea_scraper_clear_extract"), { window: unrelated });
     expect(unrelated.name).toBe("adframe");
   });
 });

@@ -57,20 +57,6 @@ internal fun shouldCompleteBlankNavigation(
     isCurrentWebView &&
     (timeoutElapsed || finishedUrl == expectedUrl)
 
-private const val PARKED_PAGE_FRAGMENT = "norea-parked"
-private val HTTP_ORIGIN_PREFIX = Regex("""^(https?://[^/?#]+)""", RegexOption.IGNORE_CASE)
-
-/**
- * Resting page for an idle scraper WebView. Parking on an empty document at the
- * previous origin instead of `about:blank` drops the old page while the next
- * plugin fetch to the same site can skip the context navigation.
- */
-internal fun scraperParkingUrl(currentUrl: String?): String? {
-  if (currentUrl.isNullOrBlank()) return null
-  val origin = HTTP_ORIGIN_PREFIX.find(currentUrl)?.groupValues?.get(1) ?: return null
-  return "$origin/#$PARKED_PAGE_FRAGMENT"
-}
-
 internal fun deleteLegacyChapterPageCache(directory: File) {
   if (directory.exists() && !directory.deleteRecursively()) {
     throw IOException("Could not delete legacy chapter page cache: ${directory.absolutePath}")
@@ -177,6 +163,7 @@ class AndroidScraperBridge(
   }
   private val legacyChapterPageCache =
     File(mainWebView.context.cacheDir, LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY)
+  private val scripts = AndroidScraperScripts(mainWebView.resources)
   private val queues = mutableMapOf(IMMEDIATE_EXECUTOR to QueueState(IMMEDIATE_EXECUTOR))
   @Volatile
   private var closed = false
@@ -239,29 +226,6 @@ class AndroidScraperBridge(
     val body = init.optString("body").takeIf { init.has("body") }
     return "method=${init.opt("method")} headers=${jsonKeysForLog(init.optJSONObject("headers"))} " +
       "bodyLength=${body?.length ?: 0}"
-  }
-
-  private fun urlForLog(url: String?): String {
-    if (url.isNullOrBlank()) return "<none>"
-    val parsed = runCatching { Uri.parse(url) }.getOrNull()
-    val scheme = parsed?.scheme?.lowercase()
-    if (scheme == "http" || scheme == "https") {
-      val origin = parsed?.let(::originUrl)
-      if (origin != null) {
-        return origin
-      }
-    }
-    if (!scheme.isNullOrBlank()) return "<$scheme-url>"
-
-    val secretBoundary = listOf(url.indexOf('?'), url.indexOf('#'))
-      .filter { it >= 0 }
-      .minOrNull()
-    val withoutSecrets = if (secretBoundary == null) url else url.substring(0, secretBoundary)
-    return MALFORMED_URL_USER_INFO.replaceFirst(withoutSecrets, "\$1")
-  }
-
-  private fun redactUrlsForLog(message: String): String {
-    return HTTP_URL_IN_LOG_MESSAGE.replace(message) { match -> urlForLog(match.value) }
   }
 
   private fun logState(state: QueueState, message: String, url: String? = null) {
@@ -798,7 +762,7 @@ class AndroidScraperBridge(
     val request = JSONObject()
       .put("url", url)
       .put("init", init)
-    webView.evaluateJavascript(buildFetchScript(id, nonce, request), null)
+    webView.evaluateJavascript(scripts.fetch(id, nonce, request), null)
   }
 
   private fun finishConcurrentFetch(state: QueueState, id: String, envelope: JSONObject) {
@@ -987,7 +951,7 @@ class AndroidScraperBridge(
     state.documentStartScriptEnabled =
       WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
     if (state.documentStartScriptEnabled) {
-      WebViewCompat.addDocumentStartJavaScript(webView, INIT_SCRIPT, setOf("*"))
+      WebViewCompat.addDocumentStartJavaScript(webView, scripts.init, setOf("*"))
     }
     webView.webViewClient = makeClient(state, null)
     webView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -1261,7 +1225,7 @@ class AndroidScraperBridge(
         state.currentUrl = url
         logState(state, "pageStarted url=$url", url)
         if (!state.documentStartScriptEnabled) {
-          view.evaluateJavascript(INIT_SCRIPT, null)
+          view.evaluateJavascript(scripts.init, null)
         }
         onStarted?.invoke(url)
       }
@@ -1362,7 +1326,7 @@ class AndroidScraperBridge(
       val request = JSONObject()
         .put("url", fetchUrl)
         .put("init", init)
-      webView.evaluateJavascript(buildFetchScript(id, resultNonce, request), null)
+      webView.evaluateJavascript(scripts.fetch(id, resultNonce, request), null)
       state.fetchInFlight = true
       startConcurrentFetches(state)
     }
@@ -1375,7 +1339,7 @@ class AndroidScraperBridge(
     val timeoutMs = payload.optLong("timeoutMs", 30_000L)
     val resultNonce = beforeScript?.let { bridgeSession.newNonce() }
     val webView = scraper(state, payloadUserAgent(payload))
-    // Page CSP applies to the eval fallback in INIT_SCRIPT but not to embedder
+    // Page CSP applies to the eval fallback in norea_scraper_init.js but not to embedder
     // document-start scripts, so a per-request script scoped to the page origin
     // keeps captures working on sites that forbid 'unsafe-eval'.
     val extractOriginRule = originUrl(Uri.parse(url))
@@ -1402,7 +1366,7 @@ class AndroidScraperBridge(
     if (beforeScript != null && extractOriginRule != null) {
       state.activeExtractScript = WebViewCompat.addDocumentStartJavaScript(
         webView,
-        buildExtractStartScript(id, resultNonce.orEmpty(), beforeScript),
+        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript),
         setOf(extractOriginRule),
       )
     }
@@ -1494,7 +1458,7 @@ class AndroidScraperBridge(
     state.activeTimeout = timeout
     mainHandler.postDelayed(timeout, 15_000L)
     // A browser fetch only needs a same-origin document whose HTML has been
-    // parsed, so the main-frame DOMContentLoaded notification from INIT_SCRIPT
+    // parsed, so the main-frame DOMContentLoaded notification from norea_scraper_init.js
     // completes the preparation without waiting for images, ads, or trackers.
     // onPageFinished stays as the fallback for documents that never post it.
     fun onContextDocument(documentUrl: String, event: String) {
@@ -1568,63 +1532,6 @@ class AndroidScraperBridge(
     val method = init.optString("method", "GET").ifBlank { "GET" }
     return method.equals("GET", ignoreCase = true) ||
       method.equals("HEAD", ignoreCase = true)
-  }
-
-  private fun isHttpUrl(url: String): Boolean {
-    val uri = Uri.parse(url)
-    return uri.scheme == "http" || uri.scheme == "https"
-  }
-
-  private fun fetchContextUrl(url: String, contextUrl: String?): String? {
-    val requestUri = Uri.parse(url)
-    val requestOrigin = originUrl(requestUri) ?: return contextUrl
-    if (contextUrl == null) return requestOrigin
-    val configuredContextUri = Uri.parse(contextUrl)
-    return if (sameOrigin(requestUri, configuredContextUri)) {
-      contextUrl
-    } else {
-      requestOrigin
-    }
-  }
-
-  private fun originUrl(uri: Uri): String? {
-    val scheme = uri.scheme?.lowercase() ?: return null
-    if (scheme != "http" && scheme != "https") return null
-    val host = uri.host?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
-    val defaultPort = effectivePortForScheme(scheme)
-    val port = uri.port
-    if (port < -1 || port > 65_535) return null
-    val portPart = if (port != -1 && port != defaultPort) ":$port" else ""
-    val serializedHost = if (host.contains(':')) {
-      "[${host.removePrefix("[").removeSuffix("]")}]"
-    } else {
-      host
-    }
-    return "$scheme://$serializedHost$portPart"
-  }
-
-  private fun sameOrigin(left: String?, right: String): Boolean {
-    if (left == null) return false
-    return sameOrigin(Uri.parse(left), Uri.parse(right))
-  }
-
-  private fun sameOrigin(leftUri: Uri, rightUri: Uri): Boolean {
-    return leftUri.scheme == rightUri.scheme &&
-      leftUri.host.equals(rightUri.host, ignoreCase = true) &&
-      effectivePort(leftUri) == effectivePort(rightUri)
-  }
-
-  private fun effectivePort(uri: Uri): Int {
-    if (uri.port != -1) return uri.port
-    return effectivePortForScheme(uri.scheme)
-  }
-
-  private fun effectivePortForScheme(scheme: String?): Int {
-    return when (scheme) {
-      "http" -> 80
-      "https" -> 443
-      else -> -1
-    }
   }
 
   private fun setTimeout(
@@ -1785,7 +1692,7 @@ class AndroidScraperBridge(
     state.webView?.let { webView ->
       if (state.activeExtractId == id) {
         clearExtractScript(state)
-        webView.evaluateJavascript(CLEAR_EXTRACT_BRIDGE_SCRIPT, null)
+        webView.evaluateJavascript(scripts.clearExtractBridge, null)
       }
       if (
         shouldCollapseAndroidScraperSurface(
@@ -1903,36 +1810,6 @@ class AndroidScraperBridge(
     state.activeExtractScript = null
   }
 
-  private fun buildExtractStartScript(id: String, nonce: String, beforeScript: String): String {
-    return """
-      (function () {
-        if (window.top !== window) return;
-        window.ReactNativeWebView = window.ReactNativeWebView || {};
-        window.ReactNativeWebView.postMessage = function (payload) {
-          try {
-            AndroidScraper.postExtractResultWithNonce(
-              ${JSONObject.quote(id)},
-              ${JSONObject.quote(nonce)},
-              String(payload)
-            );
-          } catch (e) {}
-        };
-      })();
-      if (window.top === window) {
-        try {
-          $beforeScript
-        } catch (e) {
-          try {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              ok: false,
-              error: "before-script error: " + ((e && e.message) || String(e))
-            }));
-          } catch (e2) {}
-        }
-      }
-    """.trimIndent()
-  }
-
   private fun onDocumentReady(state: QueueState, url: String) {
     if (closed) return
     val listener = state.pendingDocumentReady ?: return
@@ -1987,85 +1864,8 @@ class AndroidScraperBridge(
     }
   }
 
-  private fun buildFetchScript(id: String, nonce: String, request: JSONObject): String {
-    return """
-      (function () {
-        const request = ${request};
-        const requestId = ${JSONObject.quote(id)};
-        const requestNonce = ${JSONObject.quote(nonce)};
-        const blockedHeaders = new Set([
-          "accept-charset", "accept-encoding", "access-control-request-headers",
-          "access-control-request-method", "connection", "content-length", "cookie",
-          "cookie2", "date", "dnt", "expect", "host", "keep-alive", "origin",
-          "referer", "te", "trailer", "transfer-encoding", "upgrade", "via",
-          "user-agent"
-        ]);
-        (async function () {
-          try {
-            const init = request.init || {};
-            const controllers = window.__noreaAndroidFetchControllers || (window.__noreaAndroidFetchControllers = {});
-            const controller = new AbortController();
-            controllers[requestId] = controller;
-            const headers = new Headers();
-            for (const key of Object.keys(init.headers || {})) {
-              if (!blockedHeaders.has(key.toLowerCase())) {
-                headers.set(key, String(init.headers[key]));
-              }
-            }
-            const fetchInit = {
-              method: init.method || "GET",
-              headers,
-              credentials: "include",
-              redirect: "follow",
-              signal: controller.signal
-            };
-            if (init.body !== undefined && init.body !== null) {
-              fetchInit.body = init.body;
-            }
-            const response = await fetch(request.url, fetchInit);
-            const responseHeaders = {};
-            response.headers.forEach(function (value, key) {
-              responseHeaders[key] = value;
-            });
-            const responseBytes = new Uint8Array(await response.arrayBuffer());
-            const responseChunks = [];
-            const chunkSize = 0x6000;
-            for (let offset = 0; offset < responseBytes.length; offset += chunkSize) {
-              const chunk = responseBytes.subarray(offset, offset + chunkSize);
-              responseChunks.push(btoa(String.fromCharCode.apply(null, Array.from(chunk))));
-              if (responseChunks.length % 16 === 0 && offset + chunkSize < responseBytes.length) {
-                await new Promise(function (resolve) {
-                  setTimeout(resolve, 0);
-                });
-              }
-            }
-            const bodyBase64 = responseChunks.join("");
-            AndroidScraper.postFetchResultWithNonce(requestId, requestNonce, JSON.stringify({
-              success: true,
-              status: response.status,
-              statusText: response.statusText || "",
-              bodyBase64,
-              headers: responseHeaders,
-              finalUrl: response.url || request.url
-            }));
-          } catch (error) {
-            const message = (error && (error.message || error.toString())) || String(error);
-            AndroidScraper.postFetchResultWithNonce(requestId, requestNonce, JSON.stringify({
-              success: false,
-              error: "scraper: browser fetch failed: " + message
-            }));
-          } finally {
-            try {
-              delete window.__noreaAndroidFetchControllers[requestId];
-            } catch (e) {}
-          }
-        })();
-      })();
-    """.trimIndent()
-  }
-
   companion object {
-    private const val TAG = "NoreaScraper"
+    private const val TAG = SCRAPER_LOG_TAG
     private const val BLANK_NAVIGATION_TIMEOUT_MS = 5_000L
     private const val FETCH_CONCURRENCY = 4
     private const val HEX_DIGITS = "0123456789abcdef"
@@ -2078,122 +1878,5 @@ class AndroidScraperBridge(
     private const val PRIORITY_NORMAL = 2
     private const val PRIORITY_DEFERRED = 3
     private const val PRIORITY_BACKGROUND = 4
-    private val HTTP_URL_IN_LOG_MESSAGE = Regex("""(?i)\bhttps?://[^\s"'<>]+""")
-    private val MALFORMED_URL_USER_INFO = Regex("""(?i)^([a-z][a-z\d+.-]*://)[^/@\s]+@""")
-
-    private val CLEAR_EXTRACT_BRIDGE_SCRIPT = """
-      (function () {
-        try {
-          if ((window.name || "").indexOf("__norea_script__=") === 0) {
-            window.name = "";
-          }
-        } catch (e) {}
-      })();
-    """.trimIndent()
-
-    private val INIT_SCRIPT = """
-      (function () {
-        var scriptPrefix = "__norea_script__=";
-        function parseParams(raw) {
-          var params = {};
-          if (!raw) return params;
-          var parts = raw.split("&");
-          for (var index = 0; index < parts.length; index += 1) {
-            var part = parts[index];
-            var equals = part.indexOf("=");
-            var key = equals === -1 ? part : part.substring(0, equals);
-            var value = equals === -1 ? "" : part.substring(equals + 1);
-            try {
-              params[decodeURIComponent(key)] = decodeURIComponent(value);
-            } catch (e) {
-              params[key] = value;
-            }
-          }
-          return params;
-        }
-        function hashParams() {
-          var hash = location.hash || "";
-          if (hash.charAt(0) === "#") {
-            hash = hash.substring(1);
-          }
-          return parseParams(hash);
-        }
-        function nameParams() {
-          var name = "";
-          try {
-            name = window.name || "";
-          } catch (e) {}
-          if (name.indexOf(scriptPrefix) !== 0) return {};
-          var params = parseParams(name);
-          if (params.__norea_origin__ !== location.origin) {
-            try {
-              window.name = "";
-            } catch (e) {}
-            return {};
-          }
-          return params;
-        }
-        var params = hashParams();
-        var fromHash = !!params.__norea_script__;
-        if (!fromHash) {
-          params = nameParams();
-        }
-        var bridgeRequestId = params.__norea_request_id__ || "";
-        var bridgeNonce = params.__norea_nonce__ || "";
-        window.ReactNativeWebView = window.ReactNativeWebView || {};
-        window.ReactNativeWebView.postMessage = function (payload) {
-          try {
-            if (bridgeRequestId && bridgeNonce && AndroidScraper.postExtractResultWithNonce) {
-              AndroidScraper.postExtractResultWithNonce(
-                bridgeRequestId,
-                bridgeNonce,
-                String(payload)
-              );
-            } else {
-              AndroidScraper.postExtractResult(String(payload));
-            }
-          } catch (e) {}
-        };
-        try {
-          if (window.top === window && typeof AndroidScraper.postDocumentReady === "function") {
-            var notifyDocumentReady = function () {
-              try { AndroidScraper.postDocumentReady(String(location.href)); } catch (e) {}
-            };
-            if (document.readyState === "loading") {
-              document.addEventListener("DOMContentLoaded", notifyDocumentReady, { once: true });
-            } else {
-              notifyDocumentReady();
-            }
-          }
-        } catch (e) {}
-        try {
-          if (params.__norea_script__) {
-            var script = params.__norea_script__;
-            if (fromHash) {
-              try {
-                history.replaceState(null, "", location.pathname + location.search);
-              } catch (e) {}
-              try {
-                window.name = scriptPrefix + encodeURIComponent(script) +
-                  "&__norea_request_id__=" + encodeURIComponent(bridgeRequestId) +
-                  "&__norea_nonce__=" + encodeURIComponent(bridgeNonce) +
-                  "&__norea_origin__=" + encodeURIComponent(location.origin);
-              } catch (e) {}
-            }
-            try {
-              (0, eval)(script);
-            } catch (e) {
-              var msg = (e && e.message) || String(e);
-              try {
-                window.ReactNativeWebView.postMessage(JSON.stringify({
-                  ok: false,
-                  error: "before-script error: " + msg
-                }));
-              } catch (e2) {}
-            }
-          }
-        } catch (e) {}
-      })();
-    """.trimIndent()
   }
 }
