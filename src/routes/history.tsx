@@ -211,11 +211,11 @@ function HistoryProgress({ value }: { value: number }) {
       aria-valuemax={100}
       aria-valuemin={0}
       aria-valuenow={clamped}
-      className="lnr-history-progress"
+      className="norea-history-progress"
       role="progressbar"
     >
       <div
-        className="lnr-history-progress-bar"
+        className="norea-history-progress-bar"
         data-status={status}
         style={{ width: `${clamped}%` }}
       />
@@ -231,7 +231,7 @@ function StatusFlag({ entry }: { entry: RecentlyReadEntry }) {
 
   return (
     <HistoryIconFlag
-      className="lnr-history-status-flag"
+      className="norea-history-status-flag"
       label={label}
       tone={status === "finished" ? "done" : "accent"}
     >
@@ -257,7 +257,7 @@ function HistoryIconButton({
   onClick,
   tone = "default",
 }: HistoryIconButtonProps) {
-  const classNames = `lnr-history-icon-button${
+  const classNames = `norea-history-icon-button${
     className ? ` ${className}` : ""
   }`;
 
@@ -295,7 +295,7 @@ function HistoryIconFlag({
   tone = "default",
 }: HistoryIconFlagProps) {
   const hasCount = count != null;
-  const classNames = `lnr-history-icon-flag${
+  const classNames = `norea-history-icon-flag${
     className ? ` ${className}` : ""
   }`;
 
@@ -311,7 +311,7 @@ function HistoryIconFlag({
       >
         {children}
         {hasCount ? (
-          <span className="lnr-history-icon-count">{count}</span>
+          <span className="norea-history-icon-count">{count}</span>
         ) : null}
       </span>
     </Tooltip>
@@ -417,7 +417,7 @@ function HistoryRow({
         progress: entry.progress,
         position: entry.position,
       })}
-      className="lnr-history-row"
+      className="norea-history-row"
       component="article"
       data-removing={removing ? "true" : "false"}
       onClick={onOpenNovel}
@@ -432,10 +432,10 @@ function HistoryRow({
       withBorder
     >
       <HistoryCover entry={entry} />
-      <Box className="lnr-history-row-main">
+      <Box className="norea-history-row-main">
         <Group gap="xs" mb={2} wrap="nowrap">
           <Text
-            className="lnr-history-row-title"
+            className="norea-history-row-title"
             component="span"
             lineClamp={1}
             title={entry.novelName}
@@ -445,7 +445,7 @@ function HistoryRow({
           <StatusFlag entry={entry} />
         </Group>
         <Text
-          className="lnr-history-row-chapter"
+          className="norea-history-row-chapter"
           component="div"
           lineClamp={1}
           title={entry.chapterName}
@@ -456,8 +456,8 @@ function HistoryRow({
           </span>{" "}
           - <em>{entry.chapterName}</em>
         </Text>
-        <Group className="lnr-history-row-meta" gap="xs" wrap="nowrap">
-          <Box className="lnr-history-row-progress">
+        <Group className="norea-history-row-meta" gap="xs" wrap="nowrap">
+          <Box className="norea-history-row-progress">
             <HistoryProgress value={entry.progress} />
           </Box>
           <Text component="span">
@@ -467,14 +467,14 @@ function HistoryRow({
         </Group>
       </Box>
       <Group
-        className="lnr-history-row-actions"
+        className="norea-history-row-actions"
         gap={6}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
         wrap="nowrap"
       >
         {removing ? (
-          <span className="lnr-history-removing">
+          <span className="norea-history-removing">
             <Loader size={10} />
             {t("history.removing")}
           </span>
@@ -537,14 +537,14 @@ function ResumePanel({
           : t("history.nextChapterMissing");
 
   return (
-    <Paper className="lnr-history-resume" withBorder>
+    <Paper className="norea-history-resume" withBorder>
       <HistoryCover entry={entry} size="resume" />
-      <Box className="lnr-history-resume-main">
-        <Text className="lnr-history-kicker">{t("history.resume")}</Text>
-        <Title className="lnr-history-resume-title" order={2} lineClamp={1}>
+      <Box className="norea-history-resume-main">
+        <Text className="norea-history-kicker">{t("history.resume")}</Text>
+        <Title className="norea-history-resume-title" order={2} lineClamp={1}>
           {entry.novelName}
         </Title>
-        <Text className="lnr-history-resume-last" lineClamp={1}>
+        <Text className="norea-history-resume-last" lineClamp={1}>
           {t("history.lastRead")} -{" "}
           <span>
             {t("history.chapterPrefix")}
@@ -552,16 +552,16 @@ function ResumePanel({
           </span>{" "}
           <em>{entry.chapterName}</em>
         </Text>
-        <Group className="lnr-history-resume-meta" gap="xs" mt={8} wrap="nowrap">
+        <Group className="norea-history-resume-meta" gap="xs" mt={8} wrap="nowrap">
           <Box style={{ flex: 1 }}>
             <HistoryProgress value={entry.progress} />
           </Box>
-          <Text className="lnr-history-percent">{entry.progress}%</Text>
+          <Text className="norea-history-percent">{entry.progress}%</Text>
         </Group>
-        <Text className="lnr-history-next" lineClamp={1}>
+        <Text className="norea-history-next" lineClamp={1}>
           {nextLabel}
         </Text>
-        <Group className="lnr-history-resume-actions" gap="xs" mt="auto">
+        <Group className="norea-history-resume-actions" gap="xs" mt="auto">
           <HistoryIconButton
             label={continueLabel}
             onClick={onContinueReading}
@@ -609,16 +609,16 @@ function HistorySummaryPanel({
   const olderCount = countFor("older");
 
   return (
-    <Paper className="lnr-history-summary" withBorder>
+    <Paper className="norea-history-summary" withBorder>
       <Box>
-        <Text className="lnr-history-kicker">{t("history.summary.week")}</Text>
-        <Title className="lnr-history-summary-title" order={2}>
+        <Text className="norea-history-kicker">{t("history.summary.week")}</Text>
+        <Title className="norea-history-summary-title" order={2}>
           {t("history.summary.title", {
             novels: thisWeekCount,
             finished: finishedCount,
           })}
         </Title>
-        <Text className="lnr-history-summary-copy">
+        <Text className="norea-history-summary-copy">
           {t("history.summary.copy", { progress: averageProgress })}
         </Text>
       </Box>
@@ -663,9 +663,9 @@ function FilterBar({
   const { t } = useTranslation();
 
   return (
-    <div className="lnr-history-filter">
+    <div className="norea-history-filter">
       <SegmentedToggle
-        className="lnr-history-segments"
+        className="norea-history-segments"
         data={[
           { value: "all", label: t("history.filter.all") },
           { value: "inProgress", label: t("common.inProgress") },
@@ -674,7 +674,7 @@ function FilterBar({
         onChange={(value) => onProgressFilterChange(value as ProgressFilter)}
         value={progressFilter}
       />
-      <div className="lnr-history-search">
+      <div className="norea-history-search">
         <SearchBar
           value={searchInput}
           onChange={onSearchInputChange}
@@ -698,12 +698,12 @@ function HistorySection({
   const { t } = useTranslation();
 
   return (
-    <section className="lnr-history-section">
+    <section className="norea-history-section">
       <Group align="baseline" gap="xs" mb={8}>
-        <Title className="lnr-history-section-title" order={3}>
+        <Title className="norea-history-section-title" order={3}>
           {getDateBucketLabel(title, t)}
         </Title>
-        <Text className="lnr-history-section-count">- {count}</Text>
+        <Text className="norea-history-section-count">- {count}</Text>
       </Group>
       <Stack gap={6}>{children}</Stack>
     </section>
@@ -714,9 +714,9 @@ function HistoryLoadingState() {
   const { t } = useTranslation();
 
   return (
-    <Stack className="lnr-history-loading" gap={6}>
+    <Stack className="norea-history-loading" gap={6}>
       {[0, 1, 2].map((item) => (
-        <Paper className="lnr-history-row" key={item} withBorder>
+        <Paper className="norea-history-row" key={item} withBorder>
           <Skeleton height={68} radius={3} width={46} />
           <Box style={{ flex: 1 }}>
             <Skeleton height={12} radius={3} width="40%" />
@@ -725,7 +725,7 @@ function HistoryLoadingState() {
           </Box>
         </Paper>
       ))}
-      <Text className="lnr-history-loading-label">{t("history.loading")}</Text>
+      <Text className="norea-history-loading-label">{t("history.loading")}</Text>
     </Stack>
   );
 }
@@ -740,7 +740,7 @@ function HistoryEmptyState({
   const { t } = useTranslation();
 
   return (
-    <Paper className="lnr-history-empty" withBorder>
+    <Paper className="norea-history-empty" withBorder>
       <Title order={3}>
         {hasSearch ? t("common.noMatches") : t("history.empty.noHistory.title")}
       </Title>
@@ -774,7 +774,7 @@ function HistoryErrorState({
   const { t } = useTranslation();
 
   return (
-    <Paper className="lnr-history-empty" withBorder>
+    <Paper className="norea-history-empty" withBorder>
       <Title order={3}>{t("history.loadError")}</Title>
       <Text>
         {error instanceof Error ? error.message : String(error)}
@@ -860,12 +860,12 @@ export function HistoryPage() {
   };
 
   return (
-    <PageFrame className="lnr-history-page" size="wide">
+    <PageFrame className="norea-history-page" size="wide">
       <PageHeader
         title={
-          <span className="lnr-history-header-title">
+          <span className="norea-history-header-title">
             <span>{t("history.title")}</span>
-            <span className="lnr-history-header-description">
+            <span className="norea-history-header-description">
               {t("history.description")}
             </span>
           </span>
@@ -881,7 +881,7 @@ export function HistoryPage() {
       />
 
       {latestEntry ? (
-        <div className="lnr-history-top-grid">
+        <div className="norea-history-top-grid">
           <ResumePanel
             entry={latestEntry}
             nextChapterName={nextChapterQuery.data?.name ?? null}

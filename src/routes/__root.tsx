@@ -322,10 +322,10 @@ function AppNavLink({
       to={item.to}
       underline="never"
     >
-      <span className="lnr-rail-icon">
+      <span className="norea-rail-icon">
         <NavIcon icon={item.icon} />
       </span>
-      <span className="lnr-rail-label">{label}</span>
+      <span className="norea-rail-label">{label}</span>
     </Anchor>
   );
 }
@@ -537,10 +537,10 @@ export function RootLayout() {
       }}
       padding={0}
     >
-      <AppShell.Navbar className="lnr-app-rail" data-show-labels={showLabelsInNav}>
+      <AppShell.Navbar className="norea-app-rail" data-show-labels={showLabelsInNav}>
         <Anchor
           aria-label="Norea"
-          className="lnr-rail-brand"
+          className="norea-rail-brand"
           component={Link}
           to="/"
           underline="never"
@@ -548,20 +548,20 @@ export function RootLayout() {
           <img
             alt=""
             aria-hidden="true"
-            className="lnr-rail-mark"
+            className="norea-rail-mark"
             src="/app-icon.svg"
           />
-          <span className="lnr-rail-title">Norea</span>
+          <span className="norea-rail-title">Norea</span>
         </Anchor>
         <nav
-          className="lnr-rail-nav"
+          className="norea-rail-nav"
           data-show-labels={showLabelsInNav}
           aria-label={t("nav.primary")}
         >
           {navItems.map((item) => (
             <AppNavLink
-              activeClassName="lnr-rail-link--active"
-              className="lnr-rail-link"
+              activeClassName="norea-rail-link--active"
+              className="norea-rail-link"
               item={item}
               key={item.to}
               label={t(item.labelKey)}
@@ -570,15 +570,15 @@ export function RootLayout() {
         </nav>
       </AppShell.Navbar>
       <AppShell.Main
-        className="lnr-app-main"
+        className="norea-app-main"
         data-reader-full-page={readerFullPageActive}
         style={{
-          background: "var(--lnr-design-bg)",
-          color: "var(--lnr-design-ink)",
+          background: "var(--norea-design-bg)",
+          color: "var(--norea-design-ink)",
           padding: readerFullPageActive ? 0 : undefined,
         }}
       >
-        <div className="lnr-app-scroll">
+        <div className="norea-app-scroll">
           {pageVisited("library") ? (
             <PageSlot active={activePersistentPage === "library"}>
               <PersistentLibraryPage
@@ -638,7 +638,7 @@ export function RootLayout() {
         </div>
       </AppShell.Main>
       <nav
-        className="lnr-mobile-nav"
+        className="norea-mobile-nav"
         data-reader-full-page={readerFullPageActive}
         data-reader-visible={mobileNavVisible}
         data-show-labels={showLabelsInNav}
@@ -646,8 +646,8 @@ export function RootLayout() {
       >
         {navItems.map((item) => (
           <AppNavLink
-            activeClassName="lnr-mobile-nav-link--active"
-            className="lnr-mobile-nav-link"
+            activeClassName="norea-mobile-nav-link--active"
+            className="norea-mobile-nav-link"
             item={item}
             key={item.to}
             label={t(item.compactKey)}

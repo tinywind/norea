@@ -39,15 +39,15 @@ export function SearchBar({
       placeholder={placeholder ?? t("searchBar.defaultPlaceholder")}
       size="sm"
       classNames={{
-        input: "lnr-search-field-input",
-        root: "lnr-search-field",
+        input: "norea-search-field-input",
+        root: "norea-search-field",
       }}
       style={{ flex: 1, minWidth: 0 }}
       rightSectionWidth={40}
       rightSection={
         value.length > 0 ? (
           <IconButton
-            className="lnr-search-clear-button"
+            className="norea-search-clear-button"
             label={t("searchBar.clear")}
             size="sm"
             onClick={() => onChange("")}
@@ -63,14 +63,14 @@ export function SearchBar({
 
   return (
     <Group
-      className="lnr-search-bar"
+      className="norea-search-bar"
       gap="xs"
       wrap="nowrap"
       style={{ flex: 1, minWidth: 0, width: "100%" }}
     >
       {input}
       <IconButton
-        className="lnr-search-submit-button"
+        className="norea-search-submit-button"
         label={t("common.search")}
         size="lg"
         onClick={onSubmit}

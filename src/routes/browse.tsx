@@ -624,12 +624,12 @@ export function BrowsePage({
   });
 
   return (
-    <PageFrame size="wide" className="lnr-browse-page">
+    <PageFrame size="wide" className="norea-browse-page">
       <PageHeader
         title={
-          <span className="lnr-browse-title-inline">
+          <span className="norea-browse-title-inline">
             <span>{t("browse.title")}</span>
-            <span className="lnr-browse-title-description">
+            <span className="norea-browse-title-description">
               {t("browse.description")}
             </span>
           </span>
@@ -647,9 +647,9 @@ export function BrowsePage({
           });
         }}
         keepMounted
-        className="lnr-browse-tabs"
+        className="norea-browse-tabs"
       >
-        <Tabs.List grow className="lnr-browse-tab-list">
+        <Tabs.List grow className="norea-browse-tab-list">
           <Tabs.Tab
             value="search"
             rightSection={
@@ -668,9 +668,9 @@ export function BrowsePage({
           </Tabs.Tab>
         </Tabs.List>
 
-        <Tabs.Panel value="search" className="lnr-browse-tab-panel">
-          <div className="lnr-browse-tab-stack">
-            <ConsolePanel className="lnr-browse-search-panel">
+        <Tabs.Panel value="search" className="norea-browse-tab-panel">
+          <div className="norea-browse-tab-stack">
+            <ConsolePanel className="norea-browse-search-panel">
               <PluginSearchSection
                 installedPlugins={installedPlugins}
                 query={q}
@@ -685,8 +685,8 @@ export function BrowsePage({
           </div>
         </Tabs.Panel>
 
-        <Tabs.Panel value="sources" className="lnr-browse-tab-panel">
-          <div className="lnr-browse-tab-stack">
+        <Tabs.Panel value="sources" className="norea-browse-tab-panel">
+          <div className="norea-browse-tab-stack">
             <PluginSettingsSection
               languageOptions={languageOptions}
               selectedLanguages={pluginLanguageFilter}
@@ -1050,13 +1050,13 @@ function PluginSettingsSection({
   const { t } = useTranslation();
 
   return (
-    <ConsolePanel className="lnr-browse-panel lnr-browse-filter-panel">
-      <div className="lnr-browse-filter-title-row">
-        <span className="lnr-browse-filter-title">
+    <ConsolePanel className="norea-browse-panel norea-browse-filter-panel">
+      <div className="norea-browse-filter-title-row">
+        <span className="norea-browse-filter-title">
           {t("browse.pluginFilters.title")}
         </span>
         <MultiSelect
-          className="lnr-browse-language-input"
+          className="norea-browse-language-input"
           aria-label={t("browse.pluginLanguages.label")}
           data={languageOptions}
           value={selectedLanguages}
@@ -1084,7 +1084,7 @@ function RepositoriesSection({
 
   return (
     <ConsolePanel
-      className="lnr-browse-panel lnr-browse-repository-panel"
+      className="norea-browse-panel norea-browse-repository-panel"
       title={t("browse.repository.title")}
     >
       <Stack gap="sm" p="sm">
@@ -1108,10 +1108,10 @@ function RepositoriesSection({
             }
           />
         ) : repository ? (
-          <div key={repository.id} className="lnr-browse-repo-row">
+          <div key={repository.id} className="norea-browse-repo-row">
             <Group justify="space-between" align="center" wrap="nowrap">
               <span
-                className="lnr-icon-state"
+                className="norea-icon-state"
                 role="img"
                 aria-label={t("browse.repository.badge")}
                 title={t("browse.repository.badge")}
@@ -1128,7 +1128,7 @@ function RepositoriesSection({
                   </Text>
                 ) : null}
               </Box>
-              <span className="lnr-browse-repository-actions">
+              <span className="norea-browse-repository-actions">
                 <IconButton
                   label={t("common.refresh")}
                   size="lg"
@@ -1160,10 +1160,10 @@ function RepositoriesSection({
             </Group>
           </div>
         ) : (
-          <div className="lnr-browse-repo-row">
+          <div className="norea-browse-repo-row">
             <Group justify="space-between" align="center" wrap="nowrap">
               <span
-                className="lnr-icon-state"
+                className="norea-icon-state"
                 role="img"
                 aria-label={t("browse.repository.badge")}
                 title={t("browse.repository.badge")}
@@ -1178,7 +1178,7 @@ function RepositoriesSection({
                   {t("browse.repository.emptyMessage")}
                 </Text>
               </Box>
-              <span className="lnr-browse-repository-actions">
+              <span className="norea-browse-repository-actions">
                 <IconButton
                   label={t("browse.setRepository")}
                   size="lg"
@@ -1206,7 +1206,7 @@ function LocalPluginSection({
 
   return (
     <ConsolePanel
-      className="lnr-browse-panel"
+      className="norea-browse-panel"
       title={t("browse.localPlugin.title")}
     >
       <Stack gap="sm" p="sm">
@@ -1221,10 +1221,10 @@ function LocalPluginSection({
             if (file) onInstallFile(file);
           }}
         />
-        <div className="lnr-browse-repo-row">
+        <div className="norea-browse-repo-row">
           <Group justify="space-between" align="center" wrap="nowrap">
             <span
-              className="lnr-icon-state"
+              className="norea-icon-state"
               role="img"
               aria-label={t("browse.localPlugin.badge")}
               title={t("browse.localPlugin.badge")}
@@ -1325,7 +1325,7 @@ function PluginRow({
     uninstalling || clearingCookiePluginId !== null;
 
   return (
-    <div key={plugin.id} className="lnr-browse-plugin-row">
+    <div key={plugin.id} className="norea-browse-plugin-row">
       <Group justify="space-between" align="center" wrap="nowrap" gap="sm">
         <Box style={{ minWidth: 0, flex: "1 1 auto" }}>
           <Group gap="xs" wrap="wrap">
@@ -1345,7 +1345,7 @@ function PluginRow({
             </ConsoleChip>
             {lastUsed ? (
               <span
-                className="lnr-icon-state"
+                className="norea-icon-state"
                 data-tone="accent"
                 role="img"
                 aria-label={t("browse.lastUsed")}
@@ -1374,7 +1374,7 @@ function PluginRow({
             {getPluginBaseUrl(plugin)}
           </Anchor>
         </Box>
-        <Group className="lnr-action-strip" gap={4} wrap="nowrap" justify="flex-end">
+        <Group className="norea-action-strip" gap={4} wrap="nowrap" justify="flex-end">
           {hasPluginInputs(plugin) ? (
             <IconButton
               label={`${t("common.settings")}: ${plugin.name}`}
@@ -1458,7 +1458,7 @@ function InstalledSection({
 
   return (
     <ConsolePanel
-      className="lnr-browse-panel"
+      className="norea-browse-panel"
       title={t("browse.installedSources.title")}
     >
       <Stack gap="sm" p="sm">
@@ -1517,7 +1517,7 @@ function AvailableSection({
 
   return (
     <ConsolePanel
-      className="lnr-browse-panel"
+      className="norea-browse-panel"
       title={t("browse.availableSourcePlugins.title")}
     >
       <Stack gap="sm" p="sm">
@@ -1623,7 +1623,7 @@ function AvailablePluginRow({
   }
 
   return (
-    <div className="lnr-browse-plugin-row">
+    <div className="norea-browse-plugin-row">
       <Group justify="space-between" align="center" wrap="nowrap" gap="sm">
         <Box style={{ minWidth: 0, flex: "1 1 auto" }}>
           <Group gap="xs" wrap="wrap">
@@ -1657,7 +1657,7 @@ function AvailablePluginRow({
             )}
             {isInstalled ? (
               <span
-                className="lnr-icon-state"
+                className="norea-icon-state"
                 data-tone="success"
                 role="img"
                 aria-label={t("common.installed")}
@@ -1671,7 +1671,7 @@ function AvailablePluginRow({
             {t("browse.repositoryLabel", { url: repoUrl })}
           </Text>
         </Box>
-        <Group className="lnr-action-strip" gap={4} wrap="nowrap" justify="flex-end">
+        <Group className="norea-action-strip" gap={4} wrap="nowrap" justify="flex-end">
           <IconButton
             label={`${actionLabel}: ${item.name}`}
             size="lg"

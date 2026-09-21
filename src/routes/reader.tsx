@@ -232,30 +232,30 @@ function ReaderTopChrome({
   const { t } = useTranslation();
 
   return (
-    <header className="lnr-reader-topbar">
+    <header className="norea-reader-topbar">
       <BackIconButton
-        className="lnr-reader-icon-button"
+        className="norea-reader-icon-button"
         label={t("reader.backToNovel")}
         onClick={onBack}
       />
-      <div className="lnr-reader-topbar-title">
-        <div className="lnr-reader-title" title={getReaderTitle(chapter, t)}>
+      <div className="norea-reader-topbar-title">
+        <div className="norea-reader-title" title={getReaderTitle(chapter, t)}>
           {getReaderTitle(chapter, t)}
         </div>
-        <div className="lnr-reader-meta">
+        <div className="norea-reader-meta">
           {getReaderMeta(chapter, chapterIndex, chapterCount, t)}
         </div>
       </div>
-      <div className="lnr-reader-topbar-spacer" />
+      <div className="norea-reader-topbar-spacer" />
       {incognitoMode ? (
-        <span className="lnr-reader-status" data-status="muted">
+        <span className="norea-reader-status" data-status="muted">
           {t("reader.incognito")}
         </span>
       ) : null}
-      <span className="lnr-reader-status">{Math.round(progress)}%</span>
+      <span className="norea-reader-status">{Math.round(progress)}%</span>
       {showMediaRepair ? (
         <IconButton
-          className="lnr-reader-icon-button"
+          className="norea-reader-icon-button"
           disabled={repairMediaDisabled || repairMediaLoading}
           label={t("reader.repairMedia")}
           onClick={onRepairMedia}
@@ -267,7 +267,7 @@ function ReaderTopChrome({
       ) : null}
       <IconButton
         active={Boolean(chapter?.bookmark)}
-        className="lnr-reader-icon-button"
+        className="norea-reader-icon-button"
         disabled={bookmarkDisabled || bookmarkLoading}
         label={
           chapter?.bookmark
@@ -281,7 +281,7 @@ function ReaderTopChrome({
       </IconButton>
       <IconButton
         active={settingsOpen}
-        className="lnr-reader-icon-button"
+        className="norea-reader-icon-button"
         label={t("reader.openSettings")}
         onClick={onOpenSettings}
         size="sm"
@@ -338,7 +338,7 @@ function ReaderSettingsOverlay({
 
   return (
     <div
-      className="lnr-reader-settings-overlay"
+      className="norea-reader-settings-overlay"
       onPointerDown={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}
       onPointerMove={(event) => event.stopPropagation()}
@@ -352,19 +352,19 @@ function ReaderSettingsOverlay({
     >
       <section
         aria-labelledby="reader-settings-overlay-title"
-        className="lnr-reader-settings-sheet"
+        className="norea-reader-settings-sheet"
         role="dialog"
       >
-        <header className="lnr-reader-settings-header">
+        <header className="norea-reader-settings-header">
           <h2
-            className="lnr-reader-settings-title"
+            className="norea-reader-settings-title"
             id="reader-settings-overlay-title"
           >
             {t("settings.category.reader.title")}
           </h2>
-          <div className="lnr-reader-settings-actions">
+          <div className="norea-reader-settings-actions">
             <IconButton
-              className="lnr-reader-icon-button"
+              className="norea-reader-icon-button"
               label={t("reader.openFullSettings")}
               onClick={onOpenSettingsPage}
               size="sm"
@@ -372,7 +372,7 @@ function ReaderSettingsOverlay({
               <ReaderSettingsGlyph />
             </IconButton>
             <IconButton
-              className="lnr-reader-icon-button"
+              className="norea-reader-icon-button"
               label={t("reader.closeSettings")}
               onClick={onClose}
               size="sm"
@@ -381,7 +381,7 @@ function ReaderSettingsOverlay({
             </IconButton>
           </div>
         </header>
-        <div className="lnr-reader-settings-scroll">
+        <div className="norea-reader-settings-scroll">
           <ReaderSettingsPanel
             inlineAutomation
             target={settingsTarget}
@@ -443,21 +443,21 @@ function ReaderChapterPanel({
 
   return (
     <aside
-      className="lnr-reader-chapter-panel"
+      className="norea-reader-chapter-panel"
       aria-label={t("reader.chapters")}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       ref={panelRef}
     >
-      <div className="lnr-reader-panel-kicker">{t("reader.chapters")}</div>
+      <div className="norea-reader-panel-kicker">{t("reader.chapters")}</div>
       {loading ? (
-        <div className="lnr-reader-panel-empty">{t("reader.loadingIndex")}</div>
+        <div className="norea-reader-panel-empty">{t("reader.loadingIndex")}</div>
       ) : chapters.length === 0 ? (
-        <div className="lnr-reader-panel-empty">
+        <div className="norea-reader-panel-empty">
           {t("reader.noIndexedChapters")}
         </div>
       ) : (
         <div
-          className="lnr-reader-chapter-list"
+          className="norea-reader-chapter-list"
           style={{ display: "block", height: totalHeight, position: "relative" }}
         >
           <div
@@ -479,7 +479,7 @@ function ReaderChapterPanel({
               return (
                 <button
                   aria-current={current ? "true" : undefined}
-                  className="lnr-reader-chapter-row"
+                  className="norea-reader-chapter-row"
                   data-current={current}
                   data-status={status}
                   key={item.id}
@@ -488,11 +488,11 @@ function ReaderChapterPanel({
                   title={item.name}
                   type="button"
                 >
-                  <span className="lnr-reader-chapter-number">
+                  <span className="norea-reader-chapter-number">
                     {getChapterLabel(item, t)}
                   </span>
-                  <span className="lnr-reader-chapter-name">{item.name}</span>
-                  <span className="lnr-reader-chapter-dot" aria-hidden />
+                  <span className="norea-reader-chapter-name">{item.name}</span>
+                  <span className="norea-reader-chapter-dot" aria-hidden />
                 </button>
               );
             })}
@@ -526,33 +526,33 @@ function ReaderBottomStrip({
   const roundedProgress = Math.round(progress);
 
   return (
-    <footer className="lnr-reader-bottom-strip">
+    <footer className="norea-reader-bottom-strip">
       <button
-        className="lnr-reader-strip-link"
+        className="norea-reader-strip-link"
         disabled={!hasPreviousChapter}
         onClick={onPreviousChapter}
         type="button"
       >
         {previousLabel}
       </button>
-      <div className="lnr-reader-strip-progress">
-        <div className="lnr-reader-strip-current">{currentLabel}</div>
+      <div className="norea-reader-strip-progress">
+        <div className="norea-reader-strip-current">{currentLabel}</div>
         <div
           aria-label={t("reader.progressAria", { progress: roundedProgress })}
           aria-valuemax={100}
           aria-valuemin={0}
           aria-valuenow={roundedProgress}
-          className="lnr-reader-progress-track"
+          className="norea-reader-progress-track"
           role="meter"
         >
           <span
-            className="lnr-reader-progress-bar"
+            className="norea-reader-progress-bar"
             style={{ width: `${roundedProgress}%` }}
           />
         </div>
       </div>
       <button
-        className="lnr-reader-strip-link"
+        className="norea-reader-strip-link"
         disabled={!hasNextChapter}
         onClick={onNextChapter}
         type="button"
@@ -1680,8 +1680,8 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     [effectiveReaderGeneral, readerSeekbarMounted],
   );
   const readerOverlayBottom = fullPageReader
-    ? "calc(var(--lnr-safe-area-bottom) + 0.5rem)"
-    : "calc(var(--lnr-app-bottom-inset) + 2rem)";
+    ? "calc(var(--norea-safe-area-bottom) + 0.5rem)"
+    : "calc(var(--norea-app-bottom-inset) + 2rem)";
   const sharedFullPageReaderChromeVisible =
     fullPageReader && readerChromeVisible;
   const handleRemoteMediaError = useCallback(() => {
@@ -1808,7 +1808,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
 
   const readerContent =
     readerPreparation.error ? (
-      <Box className="lnr-reader-state-frame">
+      <Box className="norea-reader-state-frame">
         <StateView
           color="red"
           title={t("reader.loadFailed")}
@@ -1817,7 +1817,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       </Box>
     ) : readerPreparation.isPending ||
       (chapterId > 0 && !hasChapterContent && chapterQuery.isLoading) ? (
-      <Box className="lnr-reader-state-frame">
+      <Box className="norea-reader-state-frame">
         <StateView
           color="blue"
           title={t("reader.loadingChapter")}
@@ -1825,7 +1825,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         />
       </Box>
     ) : chapterId > 0 && !hasChapterContent && chapterQuery.error ? (
-      <Box className="lnr-reader-state-frame">
+      <Box className="norea-reader-state-frame">
         <StateView
           color="red"
           title={t("reader.loadFailed")}
@@ -1837,7 +1837,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         />
       </Box>
     ) : chapterId > 0 && !hasChapterContent && chapterQuery.data === null ? (
-      <Box className="lnr-reader-state-frame">
+      <Box className="norea-reader-state-frame">
         <StateView
           color="orange"
           title={t("reader.chapterNotFound")}
@@ -1845,7 +1845,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         />
       </Box>
     ) : chapterId > 0 && chapter && !hasChapterContent ? (
-      <Box className="lnr-reader-state-frame">
+      <Box className="norea-reader-state-frame">
         <StateView
           color="blue"
           title={
@@ -1909,7 +1909,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
 
   return (
     <Box
-      className="lnr-reader-shell"
+      className="norea-reader-shell"
       data-chrome-visible={readerChromeVisible}
       data-full-page={fullPageReader}
       data-seekbar-visible={readerSeekbarVisible}
@@ -1936,14 +1936,14 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         settingsOpen={readerSettingsOpen}
         showMediaRepair={showMediaRepair}
       />
-      <Box className="lnr-reader-body">
+      <Box className="norea-reader-body">
         <ReaderChapterPanel
           chapters={chapters}
           currentChapterId={chapter?.id}
           loading={chapterListQuery.isLoading}
           onOpenChapter={openChapter}
         />
-        <Box className="lnr-reader-content-frame">{readerContent}</Box>
+        <Box className="norea-reader-content-frame">{readerContent}</Box>
       </Box>
       {readerSettingsOpen ? (
         <ReaderSettingsOverlay

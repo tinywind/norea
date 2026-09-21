@@ -97,8 +97,8 @@ static FETCH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 /// asynchronously via `window.ReactNativeWebView.postMessage`.
 ///
 /// Bridge wiring:
-/// - `window.name=__lnr_script__=ENCODED` or the legacy
-///   `__lnr_script__=ENCODED` fragment: decoded + eval'd before any
+/// - `window.name=__norea_script__=ENCODED` or the legacy
+///   `__norea_script__=ENCODED` fragment: decoded + eval'd before any
 ///   page script runs (e.g. patches `Element.prototype.attachShadow`).
 /// - `ReactNativeWebView.postMessage(payload)` polyfill: stores the
 ///   payload in page state and also mirrors it to `location.hash` as a
@@ -109,16 +109,16 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
   window.ReactNativeWebView = window.ReactNativeWebView || {};
   window.ReactNativeWebView.postMessage = function (payload) {
     try {
-      window.__lnrExtractResult = String(payload);
+      window.__noreaExtractResult = String(payload);
       var encoded = encodeURIComponent(String(payload));
-      var marker = "#__lnr_result__=" + encoded;
+      var marker = "#__norea_result__=" + encoded;
       try {
         history.replaceState(null, "", location.pathname + location.search + marker);
       } catch (e) {
         location.hash = marker;
       }
       try {
-        var rid = window.__lnrExtractRequestId;
+        var rid = window.__noreaExtractRequestId;
         if (rid) {
           location.href = "https://norea.localhost/__norea_scraper_result__/" +
             encodeURIComponent(rid);
@@ -129,7 +129,7 @@ const SCRAPER_INIT_SCRIPT: &str = r##"
   try {
     var hash = location.hash || "";
     var name = window.name || "";
-    var prefix = "__lnr_script__=";
+    var prefix = "__norea_script__=";
     var hashPrefix = "#" + prefix;
     var idx = hash.indexOf(hashPrefix);
     var encoded = "";
@@ -2485,7 +2485,7 @@ fn build_webview_fetch_start_script(
     "user-agent"
   ]);
   const init = request.init || {{}};
-  const controllers = window.__lnrFetchControllers || (window.__lnrFetchControllers = {{}});
+  const controllers = window.__noreaFetchControllers || (window.__noreaFetchControllers = {{}});
   const controller = new AbortController();
   controllers[requestId] = controller;
   const headers = new Headers();
@@ -2494,8 +2494,8 @@ fn build_webview_fetch_start_script(
       headers.set(key, String(init.headers[key]));
     }}
   }}
-  window.__lnrFetchResults = window.__lnrFetchResults || {{}};
-  window.__lnrFetchResults[requestId] = {{ done: false }};
+  window.__noreaFetchResults = window.__noreaFetchResults || {{}};
+  window.__noreaFetchResults[requestId] = {{ done: false }};
   (async function () {{
     try {{
       const fetchInit = {{
@@ -2521,7 +2521,7 @@ fn build_webview_fetch_start_script(
         responseChunks.push(String.fromCharCode.apply(null, Array.from(chunk)));
       }}
       const bodyBase64 = btoa(responseChunks.join(""));
-      window.__lnrFetchResults[requestId] = {{
+      window.__noreaFetchResults[requestId] = {{
         done: true,
         ok: true,
         status: response.status,
@@ -2531,14 +2531,14 @@ fn build_webview_fetch_start_script(
         finalUrl: response.url || request.url
       }};
     }} catch (error) {{
-      window.__lnrFetchResults[requestId] = {{
+      window.__noreaFetchResults[requestId] = {{
         done: true,
         ok: false,
         error: (error && (error.message || error.toString())) || String(error)
       }};
     }} finally {{
       try {{
-        delete window.__lnrFetchControllers[requestId];
+        delete window.__noreaFetchControllers[requestId];
       }} catch (error) {{}}
       try {{
         location.href = "https://norea.localhost/__norea_scraper_result__/" +
@@ -2557,7 +2557,7 @@ fn build_webview_fetch_poll_script(request_id: &str) -> Result<String, String> {
     Ok(format!(
         r#"(function () {{
   const requestId = {request_id_json};
-  const store = window.__lnrFetchResults || {{}};
+  const store = window.__noreaFetchResults || {{}};
   const result = store[requestId];
   if (!result || !result.done) return null;
   delete store[requestId];
@@ -2573,14 +2573,14 @@ fn build_webview_fetch_cleanup_script(request_id: &str) -> Result<String, String
     Ok(format!(
         r#"(function () {{
   const requestId = {request_id_json};
-  if (window.__lnrFetchResults) {{
-    delete window.__lnrFetchResults[requestId];
+  if (window.__noreaFetchResults) {{
+    delete window.__noreaFetchResults[requestId];
   }}
-  if (window.__lnrFetchControllers && window.__lnrFetchControllers[requestId]) {{
+  if (window.__noreaFetchControllers && window.__noreaFetchControllers[requestId]) {{
     try {{
-      window.__lnrFetchControllers[requestId].abort();
+      window.__noreaFetchControllers[requestId].abort();
     }} catch (error) {{}}
-    delete window.__lnrFetchControllers[requestId];
+    delete window.__noreaFetchControllers[requestId];
   }}
 }})();"#
     ))
@@ -2593,8 +2593,8 @@ fn build_webview_fetch_cancel_script(message: &str) -> Result<String, String> {
     Ok(format!(
         r#"(function () {{
   const message = {message_json};
-  const controllers = window.__lnrFetchControllers || {{}};
-  const results = window.__lnrFetchResults || (window.__lnrFetchResults = {{}});
+  const controllers = window.__noreaFetchControllers || {{}};
+  const results = window.__noreaFetchResults || (window.__noreaFetchResults = {{}});
   let cancelled = 0;
   try {{ window.stop(); }} catch (error) {{}}
   for (const requestId of Object.keys(controllers)) {{
@@ -2614,7 +2614,7 @@ fn build_webview_fetch_cancel_script(message: &str) -> Result<String, String> {
 
 #[cfg(desktop)]
 fn clear_webview_extract_result_marker(scraper: &ScraperWebview, current_url: &str) {
-    let result_marker = "#__lnr_result__=";
+    let result_marker = "#__norea_result__=";
     let Some((clean_url, _result)) = current_url.split_once(result_marker) else {
         return;
     };
@@ -2636,9 +2636,9 @@ async fn take_webview_extract_result(scraper: &ScraperWebview) -> Option<String>
     eval_json::<Option<String>>(
         scraper,
         r#"(function () {
-  if (typeof window.__lnrExtractResult !== "string") return null;
-  var result = window.__lnrExtractResult;
-  window.__lnrExtractResult = null;
+  if (typeof window.__noreaExtractResult !== "string") return null;
+  var result = window.__noreaExtractResult;
+  window.__noreaExtractResult = null;
   return result;
 })()"#
             .to_string(),
@@ -2659,7 +2659,7 @@ fn install_webview_extract_before_script(
     // The id-setter runs on the destination document via the SCRAPER_INIT_SCRIPT
     // bridge, so the page's postMessage polyfill can navigate to the result
     // sentinel and wake the awaiting extract for this request id.
-    let id_script = format!("window.__lnrExtractRequestId = {request_id_json};");
+    let id_script = format!("window.__noreaExtractRequestId = {request_id_json};");
     let combined = match before_script {
         Some(before_script) => format!("{id_script}\n{before_script}"),
         None => id_script,
@@ -2668,9 +2668,9 @@ fn install_webview_extract_before_script(
         .map_err(|err| format!("webview_extract: serialize before script: {err}"))?;
     let script = format!(
         r#"(function () {{
-  try {{ window.__lnrExtractResult = null; }} catch (error) {{}}
+  try {{ window.__noreaExtractResult = null; }} catch (error) {{}}
   try {{
-    window.name = "__lnr_script__=" + encodeURIComponent({combined_json});
+    window.name = "__norea_script__=" + encodeURIComponent({combined_json});
   }} catch (error) {{}}
 }})();"#
     );
@@ -2683,10 +2683,10 @@ fn install_webview_extract_before_script(
 fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&str>) {
     let _ = scraper.eval(
         r#"(function () {
-  try { window.__lnrExtractResult = null; } catch (error) {}
-  try { window.__lnrExtractRequestId = null; } catch (error) {}
+  try { window.__noreaExtractResult = null; } catch (error) {}
+  try { window.__noreaExtractRequestId = null; } catch (error) {}
   try {
-    if ((window.name || "").indexOf("__lnr_script__=") === 0) {
+    if ((window.name || "").indexOf("__norea_script__=") === 0) {
       window.name = "";
     }
   } catch (error) {}
@@ -3220,7 +3220,7 @@ pub async fn webview_extract(
         .map_err(|err| format!("webview_extract: invalid url '{target_url_for_log}': {err}"))?;
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
-    let result_marker = "#__lnr_result__=";
+    let result_marker = "#__norea_result__=";
     let mut retried_after_browser_challenge = false;
     let max_attempts = 2;
 

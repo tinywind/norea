@@ -544,10 +544,10 @@ export function SiteBrowserOverlay() {
         boxSizing: "border-box",
         display: "flex",
         flexDirection: "column",
-        paddingTop: "var(--lnr-safe-area-top)",
-        paddingRight: "var(--lnr-safe-area-right)",
-        paddingBottom: "var(--lnr-safe-area-bottom)",
-        paddingLeft: "var(--lnr-safe-area-left)",
+        paddingTop: "var(--norea-safe-area-top)",
+        paddingRight: "var(--norea-safe-area-right)",
+        paddingBottom: "var(--norea-safe-area-bottom)",
+        paddingLeft: "var(--norea-safe-area-left)",
       }}
     >
       <Group

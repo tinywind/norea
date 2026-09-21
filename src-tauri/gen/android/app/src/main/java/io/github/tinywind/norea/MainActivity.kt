@@ -1011,7 +1011,7 @@ class MainActivity : TauriActivity() {
       val insets = windowInsets.getInsets(types)
       safeAreaInsetsJson = insetsJson(insets)
       val script =
-        "window.__lnrApplyAndroidSafeAreaInsets && window.__lnrApplyAndroidSafeAreaInsets($safeAreaInsetsJson);"
+        "window.__noreaApplyAndroidSafeAreaInsets && window.__noreaApplyAndroidSafeAreaInsets($safeAreaInsetsJson);"
       webView.evaluateJavascript(
         script,
         null,
@@ -2556,7 +2556,7 @@ class MainActivity : TauriActivity() {
 
   private fun resolveStorageRootPick(requestId: String, payload: JSONObject) {
     val script =
-      "window.__lnrResolveAndroidStoragePick && window.__lnrResolveAndroidStoragePick(" +
+      "window.__noreaResolveAndroidStoragePick && window.__noreaResolveAndroidStoragePick(" +
         "${JSONObject.quote(requestId)}, $payload);"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)
@@ -2565,8 +2565,8 @@ class MainActivity : TauriActivity() {
 
   private fun resolveStorageOperation(requestId: String, response: String) {
     val script =
-      "window.__lnrResolveAndroidStorageOperation && " +
-        "window.__lnrResolveAndroidStorageOperation(" +
+      "window.__noreaResolveAndroidStorageOperation && " +
+        "window.__noreaResolveAndroidStorageOperation(" +
         "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)
@@ -2575,7 +2575,7 @@ class MainActivity : TauriActivity() {
 
   private fun resolveChapterArtifactInspection(requestId: String, response: String) {
     val script =
-      "window.__lnrResolveAndroidChapterArtifacts && window.__lnrResolveAndroidChapterArtifacts(" +
+      "window.__noreaResolveAndroidChapterArtifacts && window.__noreaResolveAndroidChapterArtifacts(" +
         "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)
@@ -2584,7 +2584,7 @@ class MainActivity : TauriActivity() {
 
   private fun resolveNovelCoverInspection(requestId: String, response: String) {
     val script =
-      "window.__lnrResolveAndroidNovelCover && window.__lnrResolveAndroidNovelCover(" +
+      "window.__noreaResolveAndroidNovelCover && window.__noreaResolveAndroidNovelCover(" +
         "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)
@@ -2593,8 +2593,8 @@ class MainActivity : TauriActivity() {
 
   private fun resolveChapterStorageTransfer(requestId: String, response: String) {
     val script =
-      "window.__lnrResolveAndroidChapterStorageTransfer && " +
-        "window.__lnrResolveAndroidChapterStorageTransfer(" +
+      "window.__noreaResolveAndroidChapterStorageTransfer && " +
+        "window.__noreaResolveAndroidChapterStorageTransfer(" +
         "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView?.post {
       mainWebView?.evaluateJavascript(script, null)

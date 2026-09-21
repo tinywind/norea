@@ -231,7 +231,7 @@ describe("android storage bridge facade", () => {
     const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     const readText = vi.fn((requestId: string) => {
       queueMicrotask(() => {
-        window.__lnrResolveAndroidStorageOperation?.(
+        window.__noreaResolveAndroidStorageOperation?.(
           requestId,
           JSON.stringify({ ok: true, text: "<html></html>" }),
         );
@@ -264,7 +264,7 @@ describe("android storage bridge facade", () => {
     const deletePath = vi.fn();
     const deletePaths = vi.fn((requestId: string) => {
       queueMicrotask(() => {
-        window.__lnrResolveAndroidStorageOperation?.(
+        window.__noreaResolveAndroidStorageOperation?.(
           requestId,
           JSON.stringify({ ok: true }),
         );
@@ -298,7 +298,7 @@ describe("android storage bridge facade", () => {
     const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     const deletePath = vi.fn((requestId: string) => {
       queueMicrotask(() => {
-        window.__lnrResolveAndroidStorageOperation?.(
+        window.__noreaResolveAndroidStorageOperation?.(
           requestId,
           JSON.stringify({ ok: true }),
         );
@@ -360,7 +360,7 @@ describe("android storage bridge facade", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
-    window.__lnrResolveAndroidStorageOperation?.(
+    window.__noreaResolveAndroidStorageOperation?.(
       requestId,
       JSON.stringify({ bytes: 13, ok: true }),
     );
@@ -409,7 +409,7 @@ describe("android storage bridge facade", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
-    window.__lnrResolveAndroidChapterArtifacts?.(
+    window.__noreaResolveAndroidChapterArtifacts?.(
       requestId,
       JSON.stringify({
         contentBytes: 12,
@@ -477,7 +477,7 @@ describe("android storage bridge facade", () => {
       await Promise.resolve();
       expect(settled).toBe(false);
 
-      window.__lnrResolveAndroidNovelCover?.(requestId, response);
+      window.__noreaResolveAndroidNovelCover?.(requestId, response);
 
       const expected = {
         manifest: JSON.stringify({ fileName: "cover.jpg", version: 1 }),
@@ -508,7 +508,7 @@ describe("android storage bridge facade", () => {
       sourceDir: "contents/demo",
     });
     await vi.waitFor(() => expect(inspectNovelCover).toHaveBeenCalled());
-    window.__lnrResolveAndroidNovelCover?.(
+    window.__noreaResolveAndroidNovelCover?.(
       requestId,
       JSON.stringify({ ok: true, status: "missing" }),
     );
@@ -534,7 +534,7 @@ describe("android storage bridge facade", () => {
       sourceDir: "contents/demo",
     });
     await vi.waitFor(() => expect(inspectNovelCover).toHaveBeenCalled());
-    window.__lnrResolveAndroidNovelCover?.(
+    window.__noreaResolveAndroidNovelCover?.(
       requestId,
       JSON.stringify({
         error: "Multiple stored novel cover folders match -novel-1",
@@ -603,7 +603,7 @@ describe("android storage bridge facade", () => {
 
     const prepared = prepareAndroidChapterStorageTransfer(entries);
     await vi.waitFor(() => expect(requests.get("prepare")).toBeTruthy());
-    window.__lnrResolveAndroidChapterStorageTransfer?.(
+    window.__noreaResolveAndroidChapterStorageTransfer?.(
       requests.get("prepare")!,
       JSON.stringify({ ok: true, preparation }),
     );
@@ -611,7 +611,7 @@ describe("android storage bridge facade", () => {
 
     const finalized = finalizeAndroidChapterStorageTransfer(preparation);
     await vi.waitFor(() => expect(requests.get("finalize")).toBeTruthy());
-    window.__lnrResolveAndroidChapterStorageTransfer?.(
+    window.__noreaResolveAndroidChapterStorageTransfer?.(
       requests.get("finalize")!,
       JSON.stringify({ ok: true }),
     );
@@ -619,7 +619,7 @@ describe("android storage bridge facade", () => {
 
     const rolledBack = rollbackAndroidChapterStorageTransfer(preparation);
     await vi.waitFor(() => expect(requests.get("rollback")).toBeTruthy());
-    window.__lnrResolveAndroidChapterStorageTransfer?.(
+    window.__noreaResolveAndroidChapterStorageTransfer?.(
       requests.get("rollback")!,
       JSON.stringify({ ok: true }),
     );
@@ -629,7 +629,7 @@ describe("android storage bridge facade", () => {
       entries[0]!.sourceRelativeDir,
     );
     await vi.waitFor(() => expect(requests.get("remove")).toBeTruthy());
-    window.__lnrResolveAndroidChapterStorageTransfer?.(
+    window.__noreaResolveAndroidChapterStorageTransfer?.(
       requests.get("remove")!,
       JSON.stringify({ ok: true }),
     );
@@ -661,7 +661,7 @@ describe("android storage bridge facade", () => {
     const root = "content://tree/primary%3ANoreaSelect";
     const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
     const pickMediaStorageRoot = vi.fn((requestId: string) => {
-      window.__lnrResolveAndroidStoragePick?.(requestId, { ok: true, root });
+      window.__noreaResolveAndroidStoragePick?.(requestId, { ok: true, root });
     });
     invokeMock.mockResolvedValue(root);
     installBridge({ ensureNoMedia, pickMediaStorageRoot });

@@ -53,7 +53,7 @@ export function LocalCoverPicker({
         <Stack gap={6} style={{ minWidth: 0 }}>
           <input
             accept={LOCAL_COVER_ACCEPT}
-            className="lnr-local-cover-picker-input"
+            className="norea-local-cover-picker-input"
             disabled={disabled}
             onChange={handleFileSelected}
             ref={inputRef}

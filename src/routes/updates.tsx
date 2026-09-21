@@ -61,7 +61,7 @@ const UPDATES_PAGE_SIZE = 100;
 const UPDATES_INDEX_REFRESH_DEBOUNCE_MS = 500;
 const UPDATES_INDEX_REFRESH_LIMIT = UPDATES_PAGE_SIZE;
 const LOAD_MORE_THRESHOLD_PX = 480;
-const APP_SCROLL_SELECTOR = ".lnr-app-scroll";
+const APP_SCROLL_SELECTOR = ".norea-app-scroll";
 
 function getUpdatesScrollElement(): HTMLElement | null {
   return document.querySelector<HTMLElement>(APP_SCROLL_SELECTOR);
@@ -119,8 +119,8 @@ function UpdateSummary({
   const failures = result?.failures.length ?? 0;
 
   return (
-    <ConsolePanel className="lnr-updates-summary">
-      <div className="lnr-updates-summary-row">
+    <ConsolePanel className="norea-updates-summary">
+      <div className="norea-updates-summary-row">
         <Group gap="xs" wrap="wrap">
           <ConsoleStatusDot
             status={running ? "active" : failures > 0 ? "warning" : "idle"}
@@ -183,19 +183,19 @@ function FailureRow({ failure, onOpenNovel }: FailureRowProps) {
       : failure.reason.message;
 
   return (
-    <div className="lnr-updates-failure-row">
-      <div className="lnr-updates-failure-main">
+    <div className="norea-updates-failure-row">
+      <div className="norea-updates-failure-main">
         <Group gap="xs" wrap="nowrap">
           <ConsoleStatusDot status="error" label={t("common.failed")} />
           <button
-            className="lnr-updates-link"
+            className="norea-updates-link"
             type="button"
             onClick={onOpenNovel}
           >
             {failure.novelName}
           </button>
         </Group>
-        <Text className="lnr-updates-row-meta" title={reason}>
+        <Text className="norea-updates-row-meta" title={reason}>
           {sourceName} / {reason}
         </Text>
       </div>
@@ -223,7 +223,7 @@ function UpdateIconButton({
   onClick,
   tone = "default",
 }: UpdateIconButtonProps) {
-  const classNames = `lnr-updates-icon-button${
+  const classNames = `norea-updates-icon-button${
     className ? ` ${className}` : ""
   }`;
 
@@ -263,7 +263,7 @@ function UpdateFlag({
     <Tooltip label={label} openDelay={350} withArrow>
       <span
         aria-label={label}
-        className="lnr-updates-icon-flag"
+        className="norea-updates-icon-flag"
         data-count={hasCount ? "true" : undefined}
         data-tone={tone}
         role="img"
@@ -271,7 +271,7 @@ function UpdateFlag({
       >
         {children}
         {hasCount ? (
-          <span className="lnr-updates-icon-count">{count}</span>
+          <span className="norea-updates-icon-count">{count}</span>
         ) : null}
       </span>
     </Tooltip>
@@ -351,7 +351,7 @@ function UpdateRow({
 
   return (
     <div
-      className="lnr-updates-row"
+      className="norea-updates-row"
       role="button"
       tabIndex={0}
       aria-label={t("updates.openChapter", { name: entry.chapterName })}
@@ -369,14 +369,14 @@ function UpdateRow({
         width={48}
       />
 
-      <div className="lnr-updates-row-main">
+      <div className="norea-updates-row-main">
         <Group gap="xs" wrap="nowrap">
           <ConsoleStatusDot
             status={status}
             label={entry.isDownloaded ? t("common.downloaded") : t("common.new")}
           />
           <button
-            className="lnr-updates-link"
+            className="norea-updates-link"
             type="button"
             onClick={(event) => {
               event.stopPropagation();
@@ -386,11 +386,11 @@ function UpdateRow({
             {entry.novelName}
           </button>
         </Group>
-        <Text className="lnr-updates-row-title" title={entry.chapterName}>
+        <Text className="norea-updates-row-title" title={entry.chapterName}>
           #{entry.position} - {entry.chapterName}
         </Text>
         <Group gap="xs" mt={6} wrap="wrap">
-          <span className="lnr-updates-row-flags" aria-label={t("novel.chapterStatus")}>
+          <span className="norea-updates-row-flags" aria-label={t("novel.chapterStatus")}>
             <UpdateFlag label={entry.pluginName ?? entry.pluginId}>
               <SourceIcon />
             </UpdateFlag>
@@ -404,13 +404,13 @@ function UpdateRow({
             ) : null}
             <UpdateDownloadStatusFlag status={downloadStatus} />
           </span>
-          <Text className="lnr-updates-row-meta">
+          <Text className="norea-updates-row-meta">
             {formatDateTime(entry.foundAt, locale)}
           </Text>
         </Group>
       </div>
 
-      <div className="lnr-updates-row-actions">
+      <div className="norea-updates-row-actions">
         <UpdateIconButton label={t("common.read")} onClick={onOpen} tone="accent">
           <ReadForwardIcon />
         </UpdateIconButton>
@@ -472,7 +472,7 @@ function AlertIcon() {
 function SpinnerIcon() {
   return (
     <svg
-      className="lnr-updates-spin-icon"
+      className="norea-updates-spin-icon"
       aria-hidden="true"
       viewBox="0 0 24 24"
     >
@@ -821,19 +821,19 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   const result = lastCheckResult ?? undefined;
 
   return (
-    <PageFrame className="lnr-updates-page" size="wide">
+    <PageFrame className="norea-updates-page" size="wide">
       <PageHeader
         title={
-          <span className="lnr-updates-title-line">
+          <span className="norea-updates-title-line">
             <span>{t("updates.title")}</span>
-            <span className="lnr-updates-title-description">
+            <span className="norea-updates-title-description">
               {t("updates.description")}
             </span>
           </span>
         }
         actions={
           <UpdateIconButton
-            className="lnr-updates-check-button"
+            className="norea-updates-check-button"
             disabled={check.isPending}
             label={t("updates.check")}
             onClick={() => check.mutate()}
@@ -905,7 +905,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
             />
           ) : result && result.failures.length > 0 ? (
             <ConsolePanel
-              className="lnr-updates-failures"
+              className="norea-updates-failures"
               title={t("updates.sourceFailures")}
             >
               <Stack gap={0}>
@@ -917,12 +917,12 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                   />
                 ))}
               </Stack>
-              <div className="lnr-updates-failure-footer">
-                <Text className="lnr-updates-row-meta">
+              <div className="norea-updates-failure-footer">
+                <Text className="norea-updates-row-meta">
                   {t("updates.failureFooter")}
                 </Text>
                 <UpdateIconButton
-                  className="lnr-updates-footer-action"
+                  className="norea-updates-footer-action"
                   disabled={check.isPending}
                   label={t("updates.retryFailedCheck")}
                   onClick={() => check.mutate()}
@@ -934,7 +934,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
             </ConsolePanel>
           ) : null}
 
-          <ConsolePanel className="lnr-updates-queue">
+          <ConsolePanel className="norea-updates-queue">
             <ConsoleSectionHeader
               title={t("updates.newChapters")}
               count={`${countLabel(
@@ -958,9 +958,9 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                   />
                 ))}
                 {hasMoreUpdates ? (
-                  <div className="lnr-updates-load-more">
+                  <div className="norea-updates-load-more">
                     <UpdateIconButton
-                      className="lnr-updates-load-more-action"
+                      className="norea-updates-load-more-action"
                       disabled={isLoadingMore || !nextUpdateCursor}
                       label={t("updates.loadMore")}
                       onClick={() => {
@@ -970,7 +970,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                     >
                       {isLoadingMore ? <SpinnerIcon /> : <PlusIcon />}
                     </UpdateIconButton>
-                    <Text className="lnr-updates-row-meta">
+                    <Text className="norea-updates-row-meta">
                       {t("updates.autoLoadMore")}
                     </Text>
                   </div>

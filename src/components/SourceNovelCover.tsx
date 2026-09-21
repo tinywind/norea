@@ -50,11 +50,11 @@ export function SourceNovelCover({
   if (!inLibrary) return cover;
 
   return (
-    <span className="lnr-source-cover-frame">
+    <span className="norea-source-cover-frame">
       {cover}
       <span
         aria-label={t("novel.inLibrary")}
-        className="lnr-source-library-mark"
+        className="norea-source-library-mark"
         role="img"
         title={t("novel.inLibrary")}
       >

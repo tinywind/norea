@@ -32,11 +32,11 @@ export function BlockingLoadingOverlay({
       aria-busy="true"
       aria-labelledby={labelId}
       aria-modal="true"
-      className="lnr-blocking-loading-overlay"
+      className="norea-blocking-loading-overlay"
       role="dialog"
     >
       <Paper
-        className="lnr-blocking-loading-panel"
+        className="norea-blocking-loading-panel"
         p="lg"
         radius="sm"
         withBorder
@@ -71,14 +71,14 @@ export function PageFrame({
   size = "default",
 }: PageFrameProps) {
   const sizeClassName =
-    size === "default" ? "" : ` lnr-page-frame--${size}`;
-  const classNames = `lnr-page-frame${sizeClassName}${
+    size === "default" ? "" : ` norea-page-frame--${size}`;
+  const classNames = `norea-page-frame${sizeClassName}${
     className ? ` ${className}` : ""
   }`;
 
   return (
     <main className={classNames}>
-      <Stack className="lnr-page-frame-stack" gap="lg">
+      <Stack className="norea-page-frame-stack" gap="lg">
         {children}
       </Stack>
     </main>
@@ -102,16 +102,16 @@ export function PageHeader({
 }: PageHeaderProps) {
   return (
     <header
-      className="lnr-page-header"
+      className="norea-page-header"
       data-has-actions={actions ? "true" : "false"}
     >
-      <Box className="lnr-page-header-copy">
-        {eyebrow ? <Text className="lnr-page-kicker">{eyebrow}</Text> : null}
-        <Title className="lnr-page-title" order={1}>
+      <Box className="norea-page-header-copy">
+        {eyebrow ? <Text className="norea-page-kicker">{eyebrow}</Text> : null}
+        <Title className="norea-page-title" order={1}>
           {title}
         </Title>
         {description ? (
-          <Text className="lnr-page-description" mt="xs">
+          <Text className="norea-page-description" mt="xs">
             {description}
           </Text>
         ) : null}
@@ -141,7 +141,7 @@ export function PageSection({
 }: PageSectionProps) {
   return (
     <Paper
-      className={`lnr-surface${className ? ` ${className}` : ""}`}
+      className={`norea-surface${className ? ` ${className}` : ""}`}
       p={{ base: "md", sm: "lg" }}
       radius="sm"
       withBorder
@@ -172,11 +172,11 @@ export function StateView({
   title,
 }: StateViewProps) {
   return (
-    <Alert className="lnr-surface" color={color} radius="sm" title={title}>
+    <Alert className="norea-surface" color={color} radius="sm" title={title}>
       {message ? <Text size="sm">{message}</Text> : null}
       {action?.iconOnly && action.icon ? (
         <IconButton
-          className="lnr-state-action-icon"
+          className="norea-state-action-icon"
           label={action.label}
           mt="md"
           onClick={action.onClick}
@@ -231,7 +231,7 @@ export function ListRow({
 
   return (
     <Paper
-      className={`lnr-surface lnr-list-row${onActivate ? " lnr-list-row--interactive" : ""}${className ? ` ${className}` : ""}`}
+      className={`norea-surface norea-list-row${onActivate ? " norea-list-row--interactive" : ""}${className ? ` ${className}` : ""}`}
       onClick={onActivate}
       onKeyDown={handleKeyDown}
       p="md"
@@ -243,26 +243,26 @@ export function ListRow({
       {...props}
     >
       <Group align="center" gap="md" wrap="nowrap">
-        {leading ? <Box className="lnr-list-row-leading">{leading}</Box> : null}
-        <Box className="lnr-list-row-main">
+        {leading ? <Box className="norea-list-row-leading">{leading}</Box> : null}
+        <Box className="norea-list-row-main">
           <Group gap="xs" wrap="wrap">
-            <Box className="lnr-list-row-heading">{heading}</Box>
+            <Box className="norea-list-row-heading">{heading}</Box>
             {badges}
           </Group>
           {subtitle ? (
-            <Box className="lnr-list-row-subtitle">
+            <Box className="norea-list-row-subtitle">
               {subtitle}
             </Box>
           ) : null}
           {meta ? (
-            <Group className="lnr-list-row-meta" gap="xs" mt={6} wrap="wrap">
+            <Group className="norea-list-row-meta" gap="xs" mt={6} wrap="wrap">
               {meta}
             </Group>
           ) : null}
         </Box>
         {actions ? (
           <Group
-            className="lnr-list-row-actions"
+            className="norea-list-row-actions"
             gap="xs"
             justify="flex-end"
             onClick={(event) => event.stopPropagation()}

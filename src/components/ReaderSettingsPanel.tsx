@@ -518,19 +518,19 @@ export function ReaderSettingsPanel({
   return (
     <Stack gap="md">
       <div
-        className="lnr-reader-settings-scope-card"
+        className="norea-reader-settings-scope-card"
         data-enabled={targetSettingsEnabled}
         data-scope={targetKind}
       >
-        <div className="lnr-reader-settings-scope-main">
-          <span className="lnr-reader-settings-scope-title">
+        <div className="norea-reader-settings-scope-main">
+          <span className="norea-reader-settings-scope-title">
             {scopeTitle}
           </span>
-          <span className="lnr-reader-settings-scope-description">
+          <span className="norea-reader-settings-scope-description">
             {scopeDescription}
           </span>
         </div>
-        <span className="lnr-reader-settings-scope-badge">
+        <span className="norea-reader-settings-scope-badge">
           {scopeBadge}
         </span>
       </div>
@@ -558,24 +558,24 @@ export function ReaderSettingsPanel({
         </SettingsSection>
       ) : null}
       {settingsLocked ? (
-        <div className="lnr-reader-settings-disabled-notice" role="status">
-          <span className="lnr-reader-settings-disabled-title">
+        <div className="norea-reader-settings-disabled-notice" role="status">
+          <span className="norea-reader-settings-disabled-title">
             {t("readerSettings.scope.disabledTitle")}
           </span>
-          <span className="lnr-reader-settings-disabled-description">
+          <span className="norea-reader-settings-disabled-description">
             {t("readerSettings.scope.disabledDescription", {
               scope: appliedScopeLabel,
             })}
           </span>
         </div>
       ) : (
-        <fieldset className="lnr-reader-settings-controls">
+        <fieldset className="norea-reader-settings-controls">
           <Tabs
-            className="lnr-reader-settings-tabs"
+            className="norea-reader-settings-tabs"
             defaultValue="reading"
             keepMounted={false}
           >
-      <Tabs.List className="lnr-reader-settings-tab-list">
+      <Tabs.List className="norea-reader-settings-tab-list">
         <Tabs.Tab value="reading">
           {t("readerSettings.reading.title")}
         </Tabs.Tab>
@@ -594,7 +594,7 @@ export function ReaderSettingsPanel({
         <Tabs.Tab value="advanced">{t("readerSettings.advanced")}</Tabs.Tab>
       </Tabs.List>
 
-      <Tabs.Panel className="lnr-reader-settings-tab-panel" value="reading">
+      <Tabs.Panel className="norea-reader-settings-tab-panel" value="reading">
         <Stack gap="lg">
           <SettingsSection title={t("readerSettings.reading.title")}>
         <SettingsFieldRow
@@ -716,7 +716,7 @@ export function ReaderSettingsPanel({
         </Stack>
       </Tabs.Panel>
 
-      <Tabs.Panel className="lnr-reader-settings-tab-panel" value="text">
+      <Tabs.Panel className="norea-reader-settings-tab-panel" value="text">
         <Stack gap="lg">
       <SettingsSection
         title={t("readerSettings.text.title")}
@@ -846,7 +846,7 @@ export function ReaderSettingsPanel({
         </Stack>
       </Tabs.Panel>
 
-      <Tabs.Panel className="lnr-reader-settings-tab-panel" value="controls">
+      <Tabs.Panel className="norea-reader-settings-tab-panel" value="controls">
         <Stack gap="lg">
       <SettingsSection
         title={t("readerSettings.controls.title")}
@@ -880,7 +880,7 @@ export function ReaderSettingsPanel({
             layout="stacked"
           >
             <SettingsWideField>
-              <div className="lnr-reader-tap-preset-grid">
+              <div className="norea-reader-tap-preset-grid">
                 {READER_TAP_PRESETS.map((preset, index) => (
                   <TapZonePresetCard
                     key={preset.id}
@@ -899,12 +899,12 @@ export function ReaderSettingsPanel({
       </Tabs.Panel>
 
       {!inlineAutomation ? (
-        <Tabs.Panel className="lnr-reader-settings-tab-panel" value="automation">
+        <Tabs.Panel className="norea-reader-settings-tab-panel" value="automation">
           <Stack gap="lg">{automationSettings}</Stack>
         </Tabs.Panel>
       ) : null}
 
-      <Tabs.Panel className="lnr-reader-settings-tab-panel" value="indicators">
+      <Tabs.Panel className="norea-reader-settings-tab-panel" value="indicators">
         <Stack gap="lg">
       <SettingsSection
         title={t("readerSettings.indicators.title")}
@@ -965,7 +965,7 @@ export function ReaderSettingsPanel({
         </Stack>
       </Tabs.Panel>
 
-      <Tabs.Panel className="lnr-reader-settings-tab-panel" value="advanced">
+      <Tabs.Panel className="norea-reader-settings-tab-panel" value="advanced">
         <Stack gap="lg">
           <SettingsSection title={t("readerSettings.advanced")}>
             <Stack gap="md">
@@ -1111,8 +1111,8 @@ function SettingSlider({
 }) {
   return (
     <SettingsFieldRow label={label} description={description}>
-      <div className="lnr-settings-slider-control">
-        <Text className="lnr-settings-slider-value">{valueLabel}</Text>
+      <div className="norea-settings-slider-control">
+        <Text className="norea-settings-slider-value">{valueLabel}</Text>
         <Slider
           min={min}
           max={max}
@@ -1142,7 +1142,7 @@ function TapZonePresetCard({
     <UnstyledButton
       aria-label={`${t("readerSettings.tapControls")} ${index + 1}`}
       aria-pressed={selected}
-      className="lnr-reader-tap-preset"
+      className="norea-reader-tap-preset"
       data-selected={selected}
       onClick={() => onApply(preset.id)}
       type="button"

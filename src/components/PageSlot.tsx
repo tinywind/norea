@@ -9,7 +9,7 @@ interface PageSlotProps {
 /**
  * Keeps a page mounted while hidden and restores the shared scroll container
  * to where this page left it when it becomes active again. Hidden slots stay
- * laid out at their normal size (see `.lnr-page-slot` in app.css) so
+ * laid out at their normal size (see `.norea-page-slot` in app.css) so
  * virtualized lists and reader progress never observe a collapsed viewport.
  */
 export function PageSlot({ active, children }: PageSlotProps) {
@@ -37,7 +37,7 @@ export function PageSlot({ active, children }: PageSlotProps) {
     <PageActivityContext.Provider value={active}>
       <div
         aria-hidden={!active}
-        className="lnr-page-slot"
+        className="norea-page-slot"
         data-active={active}
         inert={!active}
         ref={slotRef}

@@ -310,23 +310,23 @@ const novelCoverInspectionsByBridge = new WeakMap<
 
 declare global {
   interface Window {
-    __lnrResolveAndroidStoragePick?: (
+    __noreaResolveAndroidStoragePick?: (
       requestId: string,
       payload: AndroidStoragePickPayload,
     ) => void;
-    __lnrResolveAndroidChapterArtifacts?: (
+    __noreaResolveAndroidChapterArtifacts?: (
       requestId: string,
       response: string,
     ) => void;
-    __lnrResolveAndroidNovelCover?: (
+    __noreaResolveAndroidNovelCover?: (
       requestId: string,
       response: string,
     ) => void;
-    __lnrResolveAndroidChapterStorageTransfer?: (
+    __noreaResolveAndroidChapterStorageTransfer?: (
       requestId: string,
       response: string,
     ) => void;
-    __lnrResolveAndroidStorageOperation?: (
+    __noreaResolveAndroidStorageOperation?: (
       requestId: string,
       response: string,
     ) => void;
@@ -447,7 +447,7 @@ async function androidStorageRoot(): Promise<string> {
 }
 
 function ensurePickResolver(): void {
-  window.__lnrResolveAndroidStoragePick ??= (
+  window.__noreaResolveAndroidStoragePick ??= (
     requestId: string,
     payload: AndroidStoragePickPayload,
   ) => {
@@ -459,7 +459,7 @@ function ensurePickResolver(): void {
 }
 
 function ensureChapterArtifactResolver(): void {
-  window.__lnrResolveAndroidChapterArtifacts ??= (requestId, response) => {
+  window.__noreaResolveAndroidChapterArtifacts ??= (requestId, response) => {
     const resolve = chapterArtifactResolvers.get(requestId);
     if (!resolve) return;
     chapterArtifactResolvers.delete(requestId);
@@ -468,7 +468,7 @@ function ensureChapterArtifactResolver(): void {
 }
 
 function ensureStorageOperationResolver(): void {
-  window.__lnrResolveAndroidStorageOperation ??= (requestId, response) => {
+  window.__noreaResolveAndroidStorageOperation ??= (requestId, response) => {
     const resolve = storageOperationResolvers.get(requestId);
     if (!resolve) return;
     storageOperationResolvers.delete(requestId);
@@ -494,7 +494,7 @@ async function runAndroidStorageOperation<T extends AndroidStorageResponse>(
 }
 
 function ensureNovelCoverInspectionResolver(): void {
-  window.__lnrResolveAndroidNovelCover ??= (requestId, response) => {
+  window.__noreaResolveAndroidNovelCover ??= (requestId, response) => {
     const resolve = novelCoverInspectionResolvers.get(requestId);
     if (!resolve) return;
     novelCoverInspectionResolvers.delete(requestId);
@@ -544,7 +544,7 @@ function isNovelStorageDirectoryPath(relativePath: string): boolean {
 }
 
 function ensureChapterStorageTransferResolver(): void {
-  window.__lnrResolveAndroidChapterStorageTransfer ??= (
+  window.__noreaResolveAndroidChapterStorageTransfer ??= (
     requestId,
     response,
   ) => {

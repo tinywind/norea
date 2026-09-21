@@ -462,7 +462,7 @@ function PdfPageCanvas({
   return (
     <div
       aria-hidden={active ? undefined : "true"}
-      className="lnr-pdf-reader-page-frame"
+      className="norea-pdf-reader-page-frame"
       data-virtualized={active ? undefined : "true"}
       style={frameStyle}
     >
@@ -470,7 +470,7 @@ function PdfPageCanvas({
         <canvas
           ref={canvasRef}
           aria-label={`${pageNumber}`}
-          className="lnr-pdf-reader-canvas"
+          className="norea-pdf-reader-canvas"
           data-rendering={rendering}
         />
       ) : null}
@@ -545,7 +545,7 @@ function PdfReaderContentInner(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const viewportHeight =
-    requestedViewportHeight ?? "calc(var(--lnr-app-content-height) - 3.75rem)";
+    requestedViewportHeight ?? "calc(var(--norea-app-content-height) - 3.75rem)";
   const isPagedReader = general.pageReader;
   const isTwoPageReader =
     isPagedReader && general.twoPageReader && twoPageMediaMatches;
@@ -608,7 +608,7 @@ function PdfReaderContentInner(
     () =>
       isTwoPageReader && renderBounds.width > 0
         ? ({
-            "--lnr-pdf-page-slot-width": `${renderBounds.width}px`,
+            "--norea-pdf-page-slot-width": `${renderBounds.width}px`,
           } as CSSProperties)
         : {},
     [isTwoPageReader, renderBounds.width],
@@ -1421,7 +1421,7 @@ function PdfReaderContentInner(
 
   return (
     <Box
-      className="lnr-pdf-reader-stage"
+      className="norea-pdf-reader-stage"
       style={{
         height: viewportHeight,
         background: appearance.backgroundColor,
@@ -1430,7 +1430,7 @@ function PdfReaderContentInner(
     >
       <div
         ref={viewportRef}
-        className={`lnr-pdf-reader-viewport${
+        className={`norea-pdf-reader-viewport${
           isTwoPageReader ? " reader-viewport-two-page" : ""
         }`}
         data-fit-mode={pdfPageFitMode}
@@ -1469,18 +1469,18 @@ function PdfReaderContentInner(
       >
         <div
           ref={canvasWrapRef}
-          className="lnr-pdf-reader-page-wrap"
+          className="norea-pdf-reader-page-wrap"
           data-fit-mode={pdfPageFitMode}
           data-mode={isPagedReader ? "paged" : "scroll"}
           data-two-page={isTwoPageReader}
           style={pageWrapStyle}
         >
           {loading ? (
-            <div className="lnr-pdf-reader-state">
+            <div className="norea-pdf-reader-state">
               {t("reader.loadingContent")}
             </div>
           ) : error ? (
-            <div className="lnr-pdf-reader-state" role="alert">
+            <div className="norea-pdf-reader-state" role="alert">
               <span>{t("reader.loadFailed")}</span>
               <span>{error}</span>
             </div>
@@ -1512,7 +1512,7 @@ function PdfReaderContentInner(
           {showTrailingPageSlot ? (
             <div
               aria-hidden="true"
-              className="lnr-pdf-reader-page-frame lnr-pdf-reader-page-frame--placeholder"
+              className="norea-pdf-reader-page-frame norea-pdf-reader-page-frame--placeholder"
             />
           ) : null}
         </div>

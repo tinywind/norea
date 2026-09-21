@@ -200,11 +200,11 @@ function NovelSummaryCard({
   const { t } = useTranslation();
 
   return (
-    <article className="lnr-novel-merge-summary-card">
+    <article className="norea-novel-merge-summary-card">
       {cover}
-      <div className="lnr-novel-merge-summary-copy">
-        <Text className="lnr-novel-merge-summary-label">{label}</Text>
-        <Title className="lnr-novel-merge-summary-title" order={3}>
+      <div className="norea-novel-merge-summary-copy">
+        <Text className="norea-novel-merge-summary-label">{label}</Text>
+        <Title className="norea-novel-merge-summary-title" order={3}>
           {name}
         </Title>
         <Text size="xs" c="dimmed">
@@ -295,17 +295,17 @@ function DecisionWorkbench({
       : undefined;
 
   return (
-    <div className="lnr-novel-merge-workbench">
-      <section className="lnr-novel-merge-chapter-column">
-        <header className="lnr-novel-merge-column-header">
+    <div className="norea-novel-merge-workbench">
+      <section className="norea-novel-merge-chapter-column">
+        <header className="norea-novel-merge-column-header">
           <Text fw={700}>{t("novelMerge.sourceChapters")}</Text>
           <Text size="xs" c="dimmed">
             {t("novel.chaptersCount", { count: sourceChapters.length })}
           </Text>
         </header>
-        <div className="lnr-novel-merge-chapter-list">
+        <div className="norea-novel-merge-chapter-list">
           {sourceChapters.length === 0 ? (
-            <Text className="lnr-novel-merge-empty" size="sm" c="dimmed">
+            <Text className="norea-novel-merge-empty" size="sm" c="dimmed">
               {t("novel.noChapters")}
             </Text>
           ) : (
@@ -327,7 +327,7 @@ function DecisionWorkbench({
               return (
                 <button
                   aria-pressed={activeSourceChapterId === chapter.id}
-                  className="lnr-novel-merge-chapter-button"
+                  className="norea-novel-merge-chapter-button"
                   data-active={
                     activeSourceChapterId === chapter.id ? "true" : undefined
                   }
@@ -336,10 +336,10 @@ function DecisionWorkbench({
                   onClick={() => onActiveSourceChapterChange(chapter.id)}
                   type="button"
                 >
-                  <span className="lnr-novel-merge-chapter-name">
+                  <span className="norea-novel-merge-chapter-name">
                     {sourceChapterLabel(chapter)}
                   </span>
-                  <span className="lnr-novel-merge-chapter-status">
+                  <span className="norea-novel-merge-chapter-status">
                     {chapter.isDownloaded
                       ? t("novelMerge.decision.downloadedStatus", {
                           decision: decisionLabel,
@@ -353,12 +353,12 @@ function DecisionWorkbench({
         </div>
       </section>
 
-      <section className="lnr-novel-merge-decision-column">
-        <header className="lnr-novel-merge-column-header">
+      <section className="norea-novel-merge-decision-column">
+        <header className="norea-novel-merge-column-header">
           <Text fw={700}>{t("novelMerge.decision.title")}</Text>
         </header>
         {activeSourceChapter ? (
-          <Stack gap="sm" className="lnr-novel-merge-decision-card">
+          <Stack gap="sm" className="norea-novel-merge-decision-card">
             <Text fw={700}>{sourceChapterLabel(activeSourceChapter)}</Text>
             <Text size="sm" c="dimmed">
               {activeDecision?.kind === "exclude"
@@ -396,22 +396,22 @@ function DecisionWorkbench({
             </Group>
           </Stack>
         ) : (
-          <Text className="lnr-novel-merge-empty" size="sm" c="dimmed">
+          <Text className="norea-novel-merge-empty" size="sm" c="dimmed">
             {t("novelMerge.decision.selectSource")}
           </Text>
         )}
       </section>
 
-      <section className="lnr-novel-merge-chapter-column">
-        <header className="lnr-novel-merge-column-header">
+      <section className="norea-novel-merge-chapter-column">
+        <header className="norea-novel-merge-column-header">
           <Text fw={700}>{t("novelMerge.targetChapters")}</Text>
           <Text size="xs" c="dimmed">
             {t("novel.chaptersCount", { count: targetChapters.length })}
           </Text>
         </header>
-        <div className="lnr-novel-merge-chapter-list">
+        <div className="norea-novel-merge-chapter-list">
           {targetChapters.length === 0 ? (
-            <Text className="lnr-novel-merge-empty" size="sm" c="dimmed">
+            <Text className="norea-novel-merge-empty" size="sm" c="dimmed">
               {t("novelMerge.targetNoChapters")}
             </Text>
           ) : (
@@ -430,12 +430,12 @@ function DecisionWorkbench({
 
               return (
                 <div
-                  className="lnr-novel-merge-target-row"
+                  className="norea-novel-merge-target-row"
                   data-active={active ? "true" : undefined}
                   key={`${chapter.path}:${index}`}
                 >
                   <button
-                    className="lnr-novel-merge-chapter-button"
+                    className="norea-novel-merge-chapter-button"
                     disabled={!activeSourceChapter}
                     onClick={() => {
                       if (!activeSourceChapter) return;
@@ -447,10 +447,10 @@ function DecisionWorkbench({
                     }}
                     type="button"
                   >
-                    <span className="lnr-novel-merge-chapter-name">
+                    <span className="norea-novel-merge-chapter-name">
                       {targetChapterLabel(chapter)}
                     </span>
-                    <span className="lnr-novel-merge-chapter-status">
+                    <span className="norea-novel-merge-chapter-status">
                       {mappedSourceIds.length > 0
                         ? t("novelMerge.mappedSourceCount", {
                             count: mappedSourceIds.length,
@@ -459,7 +459,7 @@ function DecisionWorkbench({
                     </span>
                   </button>
                   {downloadedMappedSources.length > 1 ? (
-                    <label className="lnr-novel-merge-artifact-field">
+                    <label className="norea-novel-merge-artifact-field">
                       <span>{t("novelMerge.artifact.label")}</span>
                       <select
                         aria-label={t("novelMerge.artifact.labelFor", {
@@ -813,7 +813,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   if (sourceNovelId <= 0) {
     return (
-      <PageFrame className="lnr-novel-merge-page" size="wide">
+      <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
           color="orange"
           title={t("novelMerge.missingSource")}
@@ -825,8 +825,8 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   if (sourceNovelQuery.isPending || sourceChaptersQuery.isPending) {
     return (
-      <PageFrame className="lnr-novel-merge-page" size="wide">
-        <Group justify="center" gap="sm" className="lnr-novel-merge-loading">
+      <PageFrame className="norea-novel-merge-page" size="wide">
+        <Group justify="center" gap="sm" className="norea-novel-merge-loading">
           <Loader size="sm" />
           <Text>{t("novelMerge.loadingSource")}</Text>
         </Group>
@@ -837,7 +837,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   if (sourceNovelQuery.isError || sourceChaptersQuery.isError) {
     const error = sourceNovelQuery.error ?? sourceChaptersQuery.error;
     return (
-      <PageFrame className="lnr-novel-merge-page" size="wide">
+      <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
           color="red"
           title={t("novelMerge.loadSourceFailed")}
@@ -850,7 +850,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   if (!sourceNovel) {
     return (
-      <PageFrame className="lnr-novel-merge-page" size="wide">
+      <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
           color="orange"
           title={t("novelMerge.sourceNotFound")}
@@ -863,7 +863,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   if (sourceNovel.isLocal) {
     return (
-      <PageFrame className="lnr-novel-merge-page" size="wide">
+      <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
           color="orange"
           title={t("novelMerge.localSourceBlocked")}
@@ -876,7 +876,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   if (!sourceNovel.inLibrary) {
     return (
-      <PageFrame className="lnr-novel-merge-page" size="wide">
+      <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
           color="orange"
           title={t("novelMerge.librarySourceRequired")}
@@ -896,15 +896,15 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     : null;
 
   return (
-    <PageFrame className="lnr-novel-merge-page" size="wide">
-      <header className="lnr-novel-merge-header">
+    <PageFrame className="norea-novel-merge-page" size="wide">
+      <header className="norea-novel-merge-header">
         <BackIconButton onClick={() => goBack()} />
         <div>
-          <Text className="lnr-page-kicker">{t("novelMerge.eyebrow")}</Text>
-          <Title className="lnr-page-title" order={1}>
+          <Text className="norea-page-kicker">{t("novelMerge.eyebrow")}</Text>
+          <Title className="norea-page-title" order={1}>
             {t("novelMerge.title")}
           </Title>
-          <Text className="lnr-page-description" mt="xs">
+          <Text className="norea-page-description" mt="xs">
             {t("novelMerge.description")}
           </Text>
         </div>
@@ -912,7 +912,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
       {selectedTarget ? (
         <>
-          <PageSection className="lnr-novel-merge-overview">
+          <PageSection className="norea-novel-merge-overview">
             <NovelSummaryCard
               chapterCount={sourceChapters.length}
               cover={<StoredNovelCover novel={sourceNovel} />}
@@ -920,7 +920,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
               name={sourceNovel.name}
               sourceName={sourceName}
             />
-            <div className="lnr-novel-merge-direction" aria-hidden="true">
+            <div className="norea-novel-merge-direction" aria-hidden="true">
               &rarr;
             </div>
             <NovelSummaryCard
@@ -946,7 +946,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
             </TextButton>
           </PageSection>
 
-          <PageSection className="lnr-novel-merge-decision-section">
+          <PageSection className="norea-novel-merge-decision-section">
             <Group justify="space-between" align="flex-start" wrap="wrap">
               <div>
                 <Title order={2} size="h3">
@@ -956,7 +956,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
                   {t("novelMerge.decisions.description")}
                 </Text>
               </div>
-              <div className="lnr-novel-merge-progress" role="status">
+              <div className="norea-novel-merge-progress" role="status">
                 {t("novelMerge.decisions.progress", {
                   decided: decidedCount,
                   total: sourceChapters.length,
@@ -1013,7 +1013,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
         </>
       ) : (
         <>
-          <PageSection className="lnr-novel-merge-source-summary">
+          <PageSection className="norea-novel-merge-source-summary">
             <NovelSummaryCard
               chapterCount={sourceChapters.length}
               cover={<StoredNovelCover novel={sourceNovel} />}
@@ -1023,7 +1023,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
             />
           </PageSection>
 
-          <PageSection className="lnr-novel-merge-target-search">
+          <PageSection className="norea-novel-merge-target-search">
             <Title order={2} size="h3">
               {t("novelMerge.findTarget.title")}
             </Title>
@@ -1048,7 +1048,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
             )}
 
             {searchTargets.isPending ? (
-              <Group gap="sm" className="lnr-novel-merge-search-state">
+              <Group gap="sm" className="norea-novel-merge-search-state">
                 <Loader size="sm" />
                 <Text size="sm">{t("novelMerge.findTarget.searching")}</Text>
               </Group>
@@ -1066,9 +1066,9 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
               </Alert>
             ) : null}
 
-            <div className="lnr-novel-merge-search-results">
+            <div className="norea-novel-merge-search-results">
               {searchResults.map((result) => (
-                <section className="lnr-novel-merge-source-results" key={result.pluginId}>
+                <section className="norea-novel-merge-source-results" key={result.pluginId}>
                   <Group justify="space-between" gap="sm" wrap="nowrap">
                     <Text fw={700}>{result.pluginName}</Text>
                     <Text size="xs" c="dimmed">
@@ -1086,14 +1086,14 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
                       {t("novelMerge.findTarget.noResultsFromSource")}
                     </Text>
                   ) : (
-                    <div className="lnr-novel-merge-result-grid">
+                    <div className="norea-novel-merge-result-grid">
                       {result.novels.map((item, index) => {
                         const key = `${result.pluginId}:${item.path}`;
                         const previewing =
                           previewTarget.isPending && previewingKey === key;
                         return (
                           <button
-                            className="lnr-novel-merge-result-card"
+                            className="norea-novel-merge-result-card"
                             disabled={previewTarget.isPending}
                             key={`${key}:${index}`}
                             onClick={() =>
@@ -1111,10 +1111,10 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
                               plugin={pluginManager.getPlugin(result.pluginId)}
                               width={74}
                             />
-                            <span className="lnr-novel-merge-result-name">
+                            <span className="norea-novel-merge-result-name">
                               {item.name}
                             </span>
-                            <span className="lnr-novel-merge-result-action">
+                            <span className="norea-novel-merge-result-action">
                               {previewing ? (
                                 <Loader size="xs" />
                               ) : (

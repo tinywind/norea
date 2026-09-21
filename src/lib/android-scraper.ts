@@ -38,7 +38,7 @@ interface NativeEnvelope<T> {
 declare global {
   interface Window {
     __NoreaAndroidScraper?: AndroidScraperBridge;
-    __lnrAndroidScraperResolve?: (id: string, payload: string) => void;
+    __noreaAndroidScraperResolve?: (id: string, payload: string) => void;
   }
 }
 
@@ -59,11 +59,11 @@ function requestAbortedError(): DOMException {
 }
 
 function installResolver(): void {
-  if (typeof window === "undefined" || window.__lnrAndroidScraperResolve) {
+  if (typeof window === "undefined" || window.__noreaAndroidScraperResolve) {
     return;
   }
 
-  window.__lnrAndroidScraperResolve = (id, payload) => {
+  window.__noreaAndroidScraperResolve = (id, payload) => {
     const entry = pending.get(id);
     if (!entry) return;
     pending.delete(id);

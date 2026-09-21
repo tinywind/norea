@@ -24,10 +24,10 @@ export function SettingsSection({
 }: SettingsSectionProps) {
   return (
     <ConsolePanel
-      className="lnr-settings-group"
-      title={<Text className="lnr-settings-group-title">{title}</Text>}
+      className="norea-settings-group"
+      title={<Text className="norea-settings-group-title">{title}</Text>}
     >
-      <div className="lnr-settings-group-body">{children}</div>
+      <div className="norea-settings-group-body">{children}</div>
     </ConsolePanel>
   );
 }
@@ -42,21 +42,21 @@ export function SettingsFieldRow({
 
   return (
     <div
-      className="lnr-settings-form-row"
+      className="norea-settings-form-row"
       data-copy={hasCopy ? "visible" : "empty"}
       data-layout={layout}
     >
       {hasCopy ? (
-        <div className="lnr-settings-form-copy">
+        <div className="norea-settings-form-copy">
           {label ? (
-            <Text className="lnr-settings-form-label">{label}</Text>
+            <Text className="norea-settings-form-label">{label}</Text>
           ) : null}
           {description ? (
-            <Text className="lnr-settings-form-description">{description}</Text>
+            <Text className="norea-settings-form-description">{description}</Text>
           ) : null}
         </div>
       ) : null}
-      <div className="lnr-settings-form-control">{children}</div>
+      <div className="norea-settings-form-control">{children}</div>
     </div>
   );
 }
@@ -64,9 +64,9 @@ export function SettingsFieldRow({
 export function SettingsInlineControls({
   children,
 }: SettingsInlineControlsProps) {
-  return <div className="lnr-settings-inline-controls">{children}</div>;
+  return <div className="norea-settings-inline-controls">{children}</div>;
 }
 
 export function SettingsWideField({ children }: { children: ReactNode }) {
-  return <div className="lnr-settings-wide-field">{children}</div>;
+  return <div className="norea-settings-wide-field">{children}</div>;
 }

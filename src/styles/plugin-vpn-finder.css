@@ -1,40 +1,40 @@
-.lnr-plugin-vpn-finder-state {
+.norea-plugin-vpn-finder-state {
   align-items: flex-start;
-  background: var(--lnr-design-surface);
-  border: 1px solid var(--lnr-design-rule);
+  background: var(--norea-design-surface);
+  border: 1px solid var(--norea-design-rule);
   border-radius: 0.5rem;
   min-height: 4rem;
   padding: 0.875rem;
 }
 
-.lnr-plugin-vpn-finder-table {
+.norea-plugin-vpn-finder-table {
   min-width: 54rem;
 }
 
-.lnr-plugin-vpn-finder-table :where(th) {
-  background: var(--lnr-design-panel);
-  color: var(--lnr-design-ink-muted);
-  font-family: var(--lnr-font-meta);
+.norea-plugin-vpn-finder-table :where(th) {
+  background: var(--norea-design-panel);
+  color: var(--norea-design-ink-muted);
+  font-family: var(--norea-font-meta);
   font-size: 0.6875rem;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.lnr-plugin-vpn-finder-table :where(td) {
-  color: var(--lnr-design-ink);
-  font-family: var(--lnr-font-ui);
+.norea-plugin-vpn-finder-table :where(td) {
+  color: var(--norea-design-ink);
+  font-family: var(--norea-font-ui);
   font-size: 0.75rem;
   white-space: nowrap;
 }
 
-.lnr-vpn-gate-verdict-control {
+.norea-vpn-gate-verdict-control {
   align-items: center;
-  background: var(--lnr-design-surface);
-  border: 1px solid var(--lnr-design-rule-strong);
+  background: var(--norea-design-surface);
+  border: 1px solid var(--norea-design-rule-strong);
   border-radius: 0.25rem;
-  color: var(--lnr-design-ink-muted);
+  color: var(--norea-design-ink-muted);
   display: inline-flex;
-  font-family: var(--lnr-font-meta);
+  font-family: var(--norea-font-meta);
   font-size: 0.75rem;
   font-weight: 800;
   height: 1.75rem;
@@ -43,39 +43,39 @@
   min-width: 1.75rem;
 }
 
-.lnr-vpn-gate-verdict-control:not(:disabled):hover {
-  background: var(--lnr-design-accent-soft);
+.norea-vpn-gate-verdict-control:not(:disabled):hover {
+  background: var(--norea-design-accent-soft);
 }
 
-.lnr-vpn-gate-verdict-control[data-verdict="works"] {
-  border-color: var(--lnr-design-ok);
-  color: var(--lnr-design-ok);
+.norea-vpn-gate-verdict-control[data-verdict="works"] {
+  border-color: var(--norea-design-ok);
+  color: var(--norea-design-ok);
 }
 
-.lnr-vpn-gate-verdict-control[data-verdict="fails"] {
-  border-color: var(--lnr-design-error);
-  color: var(--lnr-design-error);
+.norea-vpn-gate-verdict-control[data-verdict="fails"] {
+  border-color: var(--norea-design-error);
+  color: var(--norea-design-error);
 }
 
-.lnr-vpn-gate-verdict-control:disabled {
+.norea-vpn-gate-verdict-control:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.lnr-plugin-vpn-finder-cards {
+.norea-plugin-vpn-finder-cards {
   display: none;
 }
 
-.lnr-plugin-vpn-finder-card {
-  background: var(--lnr-design-panel);
-  border: 1px solid var(--lnr-design-rule);
+.norea-plugin-vpn-finder-card {
+  background: var(--norea-design-panel);
+  border: 1px solid var(--norea-design-rule);
   border-radius: 0.5rem;
   display: grid;
   gap: 0.5rem;
   padding: 0.625rem;
 }
 
-.lnr-plugin-vpn-finder-card-header {
+.norea-plugin-vpn-finder-card-header {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -83,7 +83,7 @@
   justify-content: space-between;
 }
 
-.lnr-plugin-vpn-finder-card-identity {
+.norea-plugin-vpn-finder-card-identity {
   align-items: baseline;
   display: flex;
   flex: 1 1 8rem;
@@ -91,25 +91,25 @@
   min-width: 0;
 }
 
-.lnr-plugin-vpn-finder-card-country {
+.norea-plugin-vpn-finder-card-country {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.lnr-plugin-vpn-finder-card-ip {
+.norea-plugin-vpn-finder-card-ip {
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.lnr-plugin-vpn-finder-card-verdict {
+.norea-plugin-vpn-finder-card-verdict {
   align-items: center;
   display: inline-flex;
   gap: 0.25rem;
   white-space: nowrap;
 }
 
-.lnr-plugin-vpn-finder-metadata {
+.norea-plugin-vpn-finder-metadata {
   align-items: baseline;
   display: flex;
   flex-wrap: wrap;
@@ -117,7 +117,7 @@
   margin: 0;
 }
 
-.lnr-plugin-vpn-finder-metadata > div {
+.norea-plugin-vpn-finder-metadata > div {
   align-items: baseline;
   display: inline-flex;
   gap: 0.25rem;
@@ -125,16 +125,16 @@
   min-width: 0;
 }
 
-.lnr-plugin-vpn-finder-metadata :where(dt) {
-  color: var(--lnr-design-ink-muted);
-  font-family: var(--lnr-font-meta);
+.norea-plugin-vpn-finder-metadata :where(dt) {
+  color: var(--norea-design-ink-muted);
+  font-family: var(--norea-font-meta);
   font-size: 0.6875rem;
   font-weight: 700;
 }
 
-.lnr-plugin-vpn-finder-metadata :where(dd) {
-  color: var(--lnr-design-ink);
-  font-family: var(--lnr-font-ui);
+.norea-plugin-vpn-finder-metadata :where(dd) {
+  color: var(--norea-design-ink);
+  font-family: var(--norea-font-ui);
   font-size: 0.75rem;
   margin: 0;
   overflow: hidden;
@@ -143,37 +143,37 @@
 }
 
 @media (max-width: 991px) {
-  .lnr-plugin-vpn-finder-modal-body {
+  .norea-plugin-vpn-finder-modal-body {
     padding: 0 0.75rem 0.75rem;
   }
 
-  .lnr-plugin-vpn-finder-content {
+  .norea-plugin-vpn-finder-content {
     gap: 0.5rem;
   }
 
-  .lnr-plugin-vpn-finder-state {
+  .norea-plugin-vpn-finder-state {
     min-height: 0;
     padding: 0.625rem;
   }
 
-  .lnr-plugin-vpn-finder-table {
+  .norea-plugin-vpn-finder-table {
     display: none;
   }
 
-  .lnr-plugin-vpn-finder-cards {
+  .norea-plugin-vpn-finder-cards {
     display: grid;
     gap: 0.5rem;
   }
 }
 
 @media (min-width: 768px) and (max-width: 991px) {
-  .lnr-plugin-vpn-finder-cards {
+  .norea-plugin-vpn-finder-cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 575px) {
-  .lnr-plugin-vpn-finder-modal-body {
+  .norea-plugin-vpn-finder-modal-body {
     padding-inline: 0.5rem;
   }
 }

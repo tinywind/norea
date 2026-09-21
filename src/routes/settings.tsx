@@ -313,7 +313,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
         layout="stacked"
       >
         <SettingsWideField>
-          <Text className="lnr-settings-path-value">
+          <Text className="norea-settings-path-value">
             {mediaStorageRoot ?? t("settings.data.mediaStorage.folder.empty")}
           </Text>
         </SettingsWideField>
@@ -702,7 +702,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
           </SettingsFieldRow>
           {vpnQuery.isError ? (
             <Stack align="flex-start" gap="xs">
-              <Text className="lnr-storage-setup-error" role="alert">
+              <Text className="norea-storage-setup-error" role="alert">
                 {t("common.loadFailed")}
               </Text>
               <TextButton
@@ -716,7 +716,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               </TextButton>
             </Stack>
           ) : visibleStatusError ? (
-            <Text className="lnr-storage-setup-error" role="alert">
+            <Text className="norea-storage-setup-error" role="alert">
               {visibleStatusError}
             </Text>
           ) : null}
@@ -987,8 +987,8 @@ function AppSettingsSection({ isBusy }: { isBusy: boolean }) {
             label={t("settings.app.androidViewScale.label")}
             description={t("settings.app.androidViewScale.description")}
           >
-            <div className="lnr-settings-slider-control">
-              <Text className="lnr-settings-slider-value">
+            <div className="norea-settings-slider-control">
+              <Text className="norea-settings-slider-value">
                 {appearance.androidViewScalePercent}%
               </Text>
               <Slider
@@ -1708,24 +1708,24 @@ function SettingsCategoryList({
   const { t } = useTranslation();
 
   return (
-    <aside className="lnr-settings-nav" aria-label={t("settings.title")}>
-      <div className="lnr-settings-nav-header">
-        <Text className="lnr-console-kicker">{t("settings.title")}</Text>
+    <aside className="norea-settings-nav" aria-label={t("settings.title")}>
+      <div className="norea-settings-nav-header">
+        <Text className="norea-console-kicker">{t("settings.title")}</Text>
       </div>
-      <ScrollArea className="lnr-settings-nav-scroll">
-        <div className="lnr-settings-nav-list">
+      <ScrollArea className="norea-settings-nav-scroll">
+        <div className="norea-settings-nav-list">
           {categories.map((category) => {
             const selected = category.id === activeId;
             return (
               <UnstyledButton
                 key={category.id}
                 aria-current={selected ? "page" : undefined}
-                className="lnr-settings-nav-item"
+                className="norea-settings-nav-item"
                 data-active={selected}
                 onClick={() => onSelect(category.id)}
                 type="button"
               >
-                <span className="lnr-settings-nav-label">
+                <span className="norea-settings-nav-label">
                   {category.title}
                 </span>
               </UnstyledButton>
@@ -1733,7 +1733,7 @@ function SettingsCategoryList({
           })}
         </div>
       </ScrollArea>
-      <div className="lnr-settings-nav-footer">Tauri 2</div>
+      <div className="norea-settings-nav-footer">Tauri 2</div>
     </aside>
   );
 }
@@ -1751,22 +1751,22 @@ function SettingsDetail({
 
   return (
     <section
-      className="lnr-settings-detail"
+      className="norea-settings-detail"
       aria-labelledby={`settings-${category.id}-title`}
     >
-      <div className="lnr-settings-detail-inner">
-        <Text className="lnr-settings-kicker">
+      <div className="norea-settings-detail-inner">
+        <Text className="norea-settings-kicker">
           {t("settings.breadcrumb", { title: category.title })}
         </Text>
         <Group
-          className="lnr-settings-detail-header"
+          className="norea-settings-detail-header"
           align="center"
           justify="flex-start"
           wrap="wrap"
         >
-          <Box className="lnr-settings-detail-copy">
+          <Box className="norea-settings-detail-copy">
             <Title
-              className="lnr-settings-detail-title"
+              className="norea-settings-detail-title"
               id={`settings-${category.id}-title`}
               order={1}
             >
@@ -1776,7 +1776,7 @@ function SettingsDetail({
           <Select
             allowDeselect={false}
             aria-label={t("settings.sectionSelect.label")}
-            className="lnr-settings-section-select"
+            className="norea-settings-section-select"
             data={categories.map((item) => ({
               value: item.id,
               label: item.title,
@@ -1789,7 +1789,7 @@ function SettingsDetail({
           />
         </Group>
 
-        <Stack className="lnr-settings-detail-body" gap="md">
+        <Stack className="norea-settings-detail-body" gap="md">
           {category.content}
         </Stack>
       </div>
@@ -2129,8 +2129,8 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   };
 
   return (
-    <PageFrame className="lnr-settings-page" size="full">
-      <div className="lnr-settings-shell">
+    <PageFrame className="norea-settings-page" size="full">
+      <div className="norea-settings-shell">
         <SettingsCategoryList
           activeId={activeCategory.id}
           categories={categories}

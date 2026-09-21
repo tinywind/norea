@@ -25,7 +25,7 @@ case "$(uname -s)" in
     ;;
 esac
 
-if [ "${LNR_ANDROID_PRE_PUSH:-0}" = "1" ]; then
+if [ "${NOREA_ANDROID_PRE_PUSH:-0}" = "1" ]; then
   if ! command -v rustup >/dev/null 2>&1; then
     echo "rustup is required for Android pre-push builds."
     exit 1
@@ -67,5 +67,5 @@ if [ "${LNR_ANDROID_PRE_PUSH:-0}" = "1" ]; then
   fi
   pnpm android:apk:release
 else
-  echo "Skipping Android release APK build. Set LNR_ANDROID_PRE_PUSH=1 to run it."
+  echo "Skipping Android release APK build. Set NOREA_ANDROID_PRE_PUSH=1 to run it."
 fi

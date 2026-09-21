@@ -44,9 +44,9 @@ export function ConsoleCover({
   }, [normalizedSrc]);
 
   const style = {
-    "--lnr-console-cover-height":
+    "--norea-console-cover-height":
       typeof height === "number" ? pxToRem(height) : height,
-    "--lnr-console-cover-width":
+    "--norea-console-cover-width":
       typeof width === "number" ? pxToRem(width) : width,
     ...fallbackStyle,
   } as CSSProperties;
@@ -54,13 +54,13 @@ export function ConsoleCover({
   return (
     <span
       aria-label={alt}
-      className={`lnr-console-cover${className ? ` ${className}` : ""}`}
+      className={`norea-console-cover${className ? ` ${className}` : ""}`}
       style={style}
     >
       {showImage ? (
         <img
           alt={alt}
-          className="lnr-console-cover-image"
+          className="norea-console-cover-image"
           decoding="async"
           draggable={false}
           loading="lazy"
@@ -162,8 +162,8 @@ function ConsoleCoverFallback({ title }: { title: string }) {
   }, [title]);
 
   return (
-    <span className="lnr-console-cover-fallback" ref={boxRef} title={title}>
-      <span className="lnr-console-cover-fallback-title" ref={titleRef}>
+    <span className="norea-console-cover-fallback" ref={boxRef} title={title}>
+      <span className="norea-console-cover-fallback-title" ref={titleRef}>
         {title}
       </span>
     </span>
@@ -180,12 +180,12 @@ function createCoverFallbackStyle(title: string): CSSProperties {
   const stripeWidth = 5 + ((hash >>> 24) % 4);
 
   return {
-    "--lnr-console-cover-bg-a": `hsl(${hueA}, 52%, 32%)`,
-    "--lnr-console-cover-bg-b": `hsl(${hueB}, 48%, 20%)`,
-    "--lnr-console-cover-glow": `hsla(${(hueA + 26) % 360}, 70%, 72%, 0.42)`,
-    "--lnr-console-cover-stripe-angle": `${stripeAngle}deg`,
-    "--lnr-console-cover-stripe-gap": pxToRem(stripeGap),
-    "--lnr-console-cover-stripe-width": pxToRem(stripeWidth),
+    "--norea-console-cover-bg-a": `hsl(${hueA}, 52%, 32%)`,
+    "--norea-console-cover-bg-b": `hsl(${hueB}, 48%, 20%)`,
+    "--norea-console-cover-glow": `hsla(${(hueA + 26) % 360}, 70%, 72%, 0.42)`,
+    "--norea-console-cover-stripe-angle": `${stripeAngle}deg`,
+    "--norea-console-cover-stripe-gap": pxToRem(stripeGap),
+    "--norea-console-cover-stripe-width": pxToRem(stripeWidth),
   } as CSSProperties;
 }
 
@@ -214,7 +214,7 @@ export function ConsoleProgress({
 
   return (
     <span
-      className={`lnr-console-progress${className ? ` ${className}` : ""}`}
+      className={`norea-console-progress${className ? ` ${className}` : ""}`}
       aria-label={t("reader.progressAria", { progress: clamped })}
       role="meter"
       aria-valuemin={0}
@@ -222,7 +222,7 @@ export function ConsoleProgress({
       aria-valuenow={clamped}
     >
       <span
-        className="lnr-console-progress-bar"
+        className="norea-console-progress-bar"
         data-status={status}
         style={{ width: `${clamped}%` }}
       />
@@ -240,8 +240,8 @@ export function ConsoleStatusDot({
   status = "idle",
 }: ConsoleStatusDotProps) {
   return (
-    <span className="lnr-console-status" data-status={status}>
-      <span className="lnr-console-status-dot" aria-hidden />
+    <span className="norea-console-status" data-status={status}>
+      <span className="norea-console-status-dot" aria-hidden />
       {label}
     </span>
   );
@@ -274,7 +274,7 @@ export function ConsoleChip({
         aria-label={ariaLabel}
         aria-pressed={pressed}
         active={active}
-        className="lnr-console-chip"
+        className="norea-console-chip"
         disabled={disabled}
         onClick={onClick}
         size="sm"
@@ -290,7 +290,7 @@ export function ConsoleChip({
   return (
     <span
       aria-label={ariaLabel}
-      className="lnr-console-chip"
+      className="norea-console-chip"
       data-active={active}
       data-tone={tone}
       title={title}
@@ -313,12 +313,12 @@ export function ConsolePanel({
 }: ConsolePanelProps) {
   return (
     <Paper
-      className={`lnr-console-panel${className ? ` ${className}` : ""}`}
+      className={`norea-console-panel${className ? ` ${className}` : ""}`}
       radius={5}
       withBorder
       {...props}
     >
-      {title ? <div className="lnr-console-panel-title">{title}</div> : null}
+      {title ? <div className="norea-console-panel-title">{title}</div> : null}
       {children}
     </Paper>
   );
@@ -338,14 +338,14 @@ export function ConsoleSectionHeader({
   title,
 }: ConsoleSectionHeaderProps) {
   return (
-    <Group className="lnr-console-section-header" justify="space-between">
+    <Group className="norea-console-section-header" justify="space-between">
       <Box style={{ minWidth: 0 }}>
-        {eyebrow ? <Text className="lnr-console-kicker">{eyebrow}</Text> : null}
+        {eyebrow ? <Text className="norea-console-kicker">{eyebrow}</Text> : null}
         <Group gap="xs" wrap="nowrap">
-          <Text className="lnr-console-section-title" truncate>
+          <Text className="norea-console-section-title" truncate>
             {title}
           </Text>
-          {count ? <span className="lnr-console-section-count">{count}</span> : null}
+          {count ? <span className="norea-console-section-count">{count}</span> : null}
         </Group>
       </Box>
       {actions ? (
@@ -368,7 +368,7 @@ export function ConsoleStatusStrip({
 }: ConsoleStatusStripProps) {
   return (
     <Box
-      className={`lnr-console-status-strip${className ? ` ${className}` : ""}`}
+      className={`norea-console-status-strip${className ? ` ${className}` : ""}`}
       {...props}
     >
       {children}

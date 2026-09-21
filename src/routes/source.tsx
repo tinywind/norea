@@ -206,7 +206,7 @@ function SourceNovelButton({
   return (
     <button
       type="button"
-      className="lnr-source-card"
+      className="norea-source-card"
       disabled={disabled}
       onClick={() => onOpen(item)}
     >
@@ -217,10 +217,10 @@ function SourceNovelButton({
         plugin={plugin}
         width={104}
       />
-      <span className="lnr-source-card-title" title={item.name}>
+      <span className="norea-source-card-title" title={item.name}>
         {item.name}
       </span>
-      <span className="lnr-source-card-path" title={item.path}>
+      <span className="norea-source-card-path" title={item.path}>
         {item.path}
       </span>
     </button>
@@ -564,7 +564,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   const blockingLoading = open.isPending || (listing.isFetching && page === 1);
 
   return (
-    <PageFrame size="wide" className="lnr-source-page">
+    <PageFrame size="wide" className="norea-source-page">
       {blockingLoading ? (
         <BlockingLoadingOverlay
           cancelLabel={open.isPending ? t("common.cancel") : t("common.back")}
@@ -604,7 +604,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             >
               <BackGlyph />
             </IconButton>
-            <span className="lnr-source-header-action-divider" aria-hidden />
+            <span className="norea-source-header-action-divider" aria-hidden />
             <IconButton
               active={readerSettingsDrawerOpen}
               label={t("readerSettings.source.open", { name: plugin.name })}
@@ -614,7 +614,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             >
               <ReaderSettingsGlyph />
             </IconButton>
-            <span className="lnr-source-header-action-divider" aria-hidden />
+            <span className="norea-source-header-action-divider" aria-hidden />
             {hasPluginSettings ? (
               <IconButton
                 active={settingsDrawerOpen}
@@ -634,8 +634,8 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
         }
       />
 
-      <div className="lnr-source-workbench">
-        <aside className="lnr-source-tools">
+      <div className="norea-source-workbench">
+        <aside className="norea-source-tools">
           <ConsolePanel title={t("source.controls")}>
             <Stack gap="sm" p="sm">
               <SegmentedToggle
@@ -668,9 +668,9 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
               ) : null}
 
               {isFilterMode && filterCount > 0 ? (
-                <div className="lnr-source-filter-row">
+                <div className="norea-source-filter-row">
                   <TextButton
-                    className="lnr-source-filter-trigger"
+                    className="norea-source-filter-trigger"
                     variant="light"
                     size="sm"
                     onClick={() => {
@@ -685,7 +685,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                   </TextButton>
                   {activeFilterLabels.map((filter) => (
                     <span
-                      className="lnr-source-active-filter"
+                      className="norea-source-active-filter"
                       key={filter.key}
                       title={filter.label}
                     >
@@ -698,8 +698,8 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           </ConsolePanel>
 
           <ConsolePanel title={t("source.state")}>
-            <div className="lnr-source-state-body">
-              <Stack className="lnr-source-state-copy" gap="sm">
+            <div className="norea-source-state-body">
+              <Stack className="norea-source-state-copy" gap="sm">
                 <Group gap={6} wrap="wrap">
                   <ConsoleStatusDot
                     status={sourceStatus}
@@ -720,7 +720,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                   )}
                 </Group>
                 <Box style={{ minWidth: 0 }}>
-                  <Text className="lnr-console-kicker">
+                  <Text className="norea-console-kicker">
                     {t("source.preparedOrigin")}
                   </Text>
                   <Anchor
@@ -748,7 +748,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
         </aside>
 
 
-        <section className="lnr-source-results-panel">
+        <section className="norea-source-results-panel">
           <ConsoleSectionHeader
             eyebrow={
               isKeywordMode
@@ -798,7 +798,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             />
           ) : (
             <>
-              <div className="lnr-source-grid">
+              <div className="norea-source-grid">
                 {accumulatedNovels.map(({ item, key }) => (
                   <SourceNovelButton
                     key={key}
@@ -813,9 +813,9 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                 ))}
               </div>
               {showLoadMoreButton ? (
-                <div className="lnr-source-load-more">
+                <div className="norea-source-load-more">
                   <IconButton
-                    className="lnr-source-load-more-action"
+                    className="norea-source-load-more-action"
                     label={t("common.loadMore")}
                     variant="default"
                     size="lg"
@@ -929,8 +929,8 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       ) : null}
       <Drawer
         classNames={{
-          body: "lnr-reader-settings-drawer-body",
-          content: "lnr-reader-settings-drawer-content",
+          body: "norea-reader-settings-drawer-body",
+          content: "norea-reader-settings-drawer-content",
         }}
         opened={readerSettingsDrawerOpen}
         onClose={() => setReaderSettingsDrawerOpen(false)}

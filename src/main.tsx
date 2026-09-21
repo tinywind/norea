@@ -174,7 +174,7 @@ declare global {
   interface Window {
     __NoreaAndroidSafeArea?: AndroidSafeAreaBridge;
     __NoreaAndroidWindow?: AndroidWindowBridge;
-    __lnrApplyAndroidSafeAreaInsets?: (insets: RuntimeSafeAreaInsets) => void;
+    __noreaApplyAndroidSafeAreaInsets?: (insets: RuntimeSafeAreaInsets) => void;
   }
 }
 
@@ -333,19 +333,19 @@ function safeInsetPx(value: unknown, roundUp = false): string {
 function applyNativeSafeAreaInsets(insets: RuntimeSafeAreaInsets): void {
   const root = document.documentElement;
   root.style.setProperty(
-    "--lnr-native-safe-area-top",
+    "--norea-native-safe-area-top",
     safeInsetPx(insets.top, true),
   );
   root.style.setProperty(
-    "--lnr-native-safe-area-right",
+    "--norea-native-safe-area-right",
     safeInsetPx(insets.right),
   );
   root.style.setProperty(
-    "--lnr-native-safe-area-bottom",
+    "--norea-native-safe-area-bottom",
     safeInsetPx(insets.bottom),
   );
   root.style.setProperty(
-    "--lnr-native-safe-area-left",
+    "--norea-native-safe-area-left",
     safeInsetPx(insets.left),
   );
 }
@@ -365,10 +365,10 @@ function readAndroidSafeAreaInsets(): RuntimeSafeAreaInsets | null {
 
 function clearNativeSafeAreaInsets(): void {
   const root = document.documentElement;
-  root.style.removeProperty("--lnr-native-safe-area-top");
-  root.style.removeProperty("--lnr-native-safe-area-right");
-  root.style.removeProperty("--lnr-native-safe-area-bottom");
-  root.style.removeProperty("--lnr-native-safe-area-left");
+  root.style.removeProperty("--norea-native-safe-area-top");
+  root.style.removeProperty("--norea-native-safe-area-right");
+  root.style.removeProperty("--norea-native-safe-area-bottom");
+  root.style.removeProperty("--norea-native-safe-area-left");
 }
 
 function applyRuntimeSafeAreaInsets(): void {
@@ -390,16 +390,16 @@ function applyRuntimeUiScale(
   const root = document.documentElement;
   const fontScale = normalizeFontScalePercent(fontScalePercent) / 100;
   root.style.setProperty(
-    "--lnr-root-font-size",
+    "--norea-root-font-size",
     `${ROOT_FONT_SIZE_PX * fontScale}px`,
   );
-  root.style.setProperty("--lnr-ui-scale", fontScale.toFixed(3));
+  root.style.setProperty("--norea-ui-scale", fontScale.toFixed(3));
 
   if (!isAndroidRuntime()) {
     resetViewportScale();
-    delete root.dataset.lnrPlatform;
-    delete root.dataset.lnrAndroidLayout;
-    root.style.removeProperty("--lnr-mobile-nav-content-height");
+    delete root.dataset.noreaPlatform;
+    delete root.dataset.noreaAndroidLayout;
+    root.style.removeProperty("--norea-mobile-nav-content-height");
     androidNativePxPerCssPx = 1;
     clearNativeSafeAreaInsets();
     return;
@@ -407,10 +407,10 @@ function applyRuntimeUiScale(
 
   const layout = resolveAndroidLayout(androidViewScalePercent);
   androidNativePxPerCssPx = layout.nativePxPerCssPx;
-  root.dataset.lnrPlatform = "android";
-  root.dataset.lnrAndroidLayout = layout.className;
+  root.dataset.noreaPlatform = "android";
+  root.dataset.noreaAndroidLayout = layout.className;
   applyAndroidViewport(layout.viewportWidth);
-  root.style.removeProperty("--lnr-mobile-nav-content-height");
+  root.style.removeProperty("--norea-mobile-nav-content-height");
 }
 
 function isAndroidEnterBlurInput(
@@ -434,7 +434,7 @@ function blurAndroidInputOnEnter(event: KeyboardEvent): void {
   }, 0);
 }
 
-window.__lnrApplyAndroidSafeAreaInsets = (insets) => {
+window.__noreaApplyAndroidSafeAreaInsets = (insets) => {
   if (isAndroidRuntime()) {
     applyNativeSafeAreaInsets(insets);
   }
@@ -581,19 +581,19 @@ function PluginVpnProxyGate({ children }: RuntimeGateProps) {
 
   if (!android || ready) return children;
   return (
-    <div className="lnr-storage-setup">
-      <Paper className="lnr-storage-setup-card" withBorder>
+    <div className="norea-storage-setup">
+      <Paper className="norea-storage-setup-card" withBorder>
         <Stack gap="md">
           <Stack gap="xs">
-            <Title order={1} className="lnr-storage-setup-title">
+            <Title order={1} className="norea-storage-setup-title">
               {translate(appLocale, "pluginVpn.bootstrap.title")}
             </Title>
-            <Text className="lnr-storage-setup-copy">
+            <Text className="norea-storage-setup-copy">
               {translate(appLocale, "pluginVpn.bootstrap.description")}
             </Text>
           </Stack>
           {error ? (
-            <Text className="lnr-storage-setup-error" role="alert">
+            <Text className="norea-storage-setup-error" role="alert">
               {translate(appLocale, "pluginVpn.bootstrap.failed", { error })}
             </Text>
           ) : null}
@@ -676,8 +676,8 @@ function ChapterMediaStorageGate({
 
   if (checking) {
     return (
-      <div className="lnr-storage-setup">
-        <Paper className="lnr-storage-setup-card" withBorder>
+      <div className="norea-storage-setup">
+        <Paper className="norea-storage-setup-card" withBorder>
           <Text>{translate(appLocale, "storageSetup.checking")}</Text>
         </Paper>
       </div>
@@ -686,14 +686,14 @@ function ChapterMediaStorageGate({
 
   if (!storageReady) {
     return (
-      <div className="lnr-storage-setup">
-        <Paper className="lnr-storage-setup-card" withBorder>
+      <div className="norea-storage-setup">
+        <Paper className="norea-storage-setup-card" withBorder>
           <Stack gap="md">
             <Stack gap="xs">
-              <Title order={1} className="lnr-storage-setup-title">
+              <Title order={1} className="norea-storage-setup-title">
                 {translate(appLocale, "storageSetup.title")}
               </Title>
-              <Text className="lnr-storage-setup-copy">
+              <Text className="norea-storage-setup-copy">
                 {translate(
                   appLocale,
                   isAndroidRuntime()
@@ -703,7 +703,7 @@ function ChapterMediaStorageGate({
               </Text>
             </Stack>
             {error ? (
-              <Text className="lnr-storage-setup-error" role="alert">
+              <Text className="norea-storage-setup-error" role="alert">
                 {translate(appLocale, "storageSetup.failed", { error })}
               </Text>
             ) : null}
@@ -789,57 +789,57 @@ function AppProviders() {
   useEffect(() => {
     const root = document.documentElement;
     root.lang = appLocale;
-    root.style.setProperty("--lnr-background", palette.background);
-    root.style.setProperty("--lnr-on-background", palette.onBackground);
-    root.style.setProperty("--lnr-surface", palette.surface);
-    root.style.setProperty("--lnr-on-surface", palette.onSurface);
-    root.style.setProperty("--lnr-surface-variant", palette.surfaceVariant);
+    root.style.setProperty("--norea-background", palette.background);
+    root.style.setProperty("--norea-on-background", palette.onBackground);
+    root.style.setProperty("--norea-surface", palette.surface);
+    root.style.setProperty("--norea-on-surface", palette.onSurface);
+    root.style.setProperty("--norea-surface-variant", palette.surfaceVariant);
     root.style.setProperty(
-      "--lnr-on-surface-variant",
+      "--norea-on-surface-variant",
       palette.onSurfaceVariant,
     );
-    root.style.setProperty("--lnr-outline", palette.outlineVariant);
-    root.style.setProperty("--lnr-primary", palette.primary);
-    root.style.setProperty("--lnr-on-primary", palette.onPrimary);
-    root.style.setProperty("--lnr-design-bg", palette.background);
-    root.style.setProperty("--lnr-design-surface", palette.surface);
-    root.style.setProperty("--lnr-design-panel", palette.surfaceVariant);
-    root.style.setProperty("--lnr-design-ink", palette.onBackground);
-    root.style.setProperty("--lnr-design-ink-muted", palette.onSurfaceVariant);
-    root.style.setProperty("--lnr-design-ink-subtle", palette.outline);
-    root.style.setProperty("--lnr-design-rule", palette.outlineVariant);
-    root.style.setProperty("--lnr-design-rule-strong", palette.outline);
-    root.style.setProperty("--lnr-design-accent", palette.primary);
-    root.style.setProperty("--lnr-design-on-accent", palette.onPrimary);
+    root.style.setProperty("--norea-outline", palette.outlineVariant);
+    root.style.setProperty("--norea-primary", palette.primary);
+    root.style.setProperty("--norea-on-primary", palette.onPrimary);
+    root.style.setProperty("--norea-design-bg", palette.background);
+    root.style.setProperty("--norea-design-surface", palette.surface);
+    root.style.setProperty("--norea-design-panel", palette.surfaceVariant);
+    root.style.setProperty("--norea-design-ink", palette.onBackground);
+    root.style.setProperty("--norea-design-ink-muted", palette.onSurfaceVariant);
+    root.style.setProperty("--norea-design-ink-subtle", palette.outline);
+    root.style.setProperty("--norea-design-rule", palette.outlineVariant);
+    root.style.setProperty("--norea-design-rule-strong", palette.outline);
+    root.style.setProperty("--norea-design-accent", palette.primary);
+    root.style.setProperty("--norea-design-on-accent", palette.onPrimary);
     root.style.setProperty(
-      "--lnr-design-accent-soft",
+      "--norea-design-accent-soft",
       withAlpha(palette.primary, colorScheme === "dark" ? 0.18 : 0.1),
     );
     const warn = colorScheme === "dark" ? "#f0c36a" : "#9a6a1a";
-    root.style.setProperty("--lnr-design-warn", warn);
+    root.style.setProperty("--norea-design-warn", warn);
     root.style.setProperty(
-      "--lnr-design-warn-soft",
+      "--norea-design-warn-soft",
       withAlpha(warn, colorScheme === "dark" ? 0.16 : 0.08),
     );
-    root.style.setProperty("--lnr-design-error", palette.error);
+    root.style.setProperty("--norea-design-error", palette.error);
     root.style.setProperty(
-      "--lnr-design-ok",
+      "--norea-design-ok",
       colorScheme === "dark" ? "#7ecf91" : "#3a7a4a",
     );
     root.style.setProperty(
-      "--lnr-design-hover-overlay",
+      "--norea-design-hover-overlay",
       colorScheme === "dark"
         ? "rgba(255, 255, 255, 0.08)"
         : "rgba(255, 255, 255, 0.65)",
     );
     root.style.setProperty(
-      "--lnr-design-selection-hover-overlay",
+      "--norea-design-selection-hover-overlay",
       colorScheme === "dark"
         ? "rgba(255, 255, 255, 0.14)"
         : "rgba(255, 255, 255, 0.55)",
     );
     root.style.setProperty(
-      "--lnr-design-shadow-floating",
+      "--norea-design-shadow-floating",
       colorScheme === "dark"
         ? "0 0.5rem 1.5rem rgba(0, 0, 0, 0.42)"
         : "0 0.5rem 1.25rem rgba(15, 23, 42, 0.14)",

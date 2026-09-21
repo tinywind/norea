@@ -1382,9 +1382,9 @@ class AndroidScraperBridge(
       ?.takeIf { beforeScript != null && state.documentStartScriptEnabled }
     val targetUrl = if (beforeScript != null && extractOriginRule == null) {
       val base = url.substringBefore("#")
-      "$base#__lnr_script__=${Uri.encode(beforeScript)}" +
-        "&__lnr_request_id__=${Uri.encode(id)}" +
-        "&__lnr_nonce__=${Uri.encode(resultNonce.orEmpty())}"
+      "$base#__norea_script__=${Uri.encode(beforeScript)}" +
+        "&__norea_request_id__=${Uri.encode(id)}" +
+        "&__norea_nonce__=${Uri.encode(resultNonce.orEmpty())}"
     } else {
       url
     }
@@ -1809,7 +1809,7 @@ class AndroidScraperBridge(
 
   private fun sendResult(id: String, envelope: JSONObject) {
     val script =
-      "window.__lnrAndroidScraperResolve(${JSONObject.quote(id)}, ${JSONObject.quote(envelope.toString())});"
+      "window.__noreaAndroidScraperResolve(${JSONObject.quote(id)}, ${JSONObject.quote(envelope.toString())});"
     mainWebView.evaluateJavascript(script, null)
   }
 
@@ -2084,7 +2084,7 @@ class AndroidScraperBridge(
     private val CLEAR_EXTRACT_BRIDGE_SCRIPT = """
       (function () {
         try {
-          if ((window.name || "").indexOf("__lnr_script__=") === 0) {
+          if ((window.name || "").indexOf("__norea_script__=") === 0) {
             window.name = "";
           }
         } catch (e) {}
@@ -2093,7 +2093,7 @@ class AndroidScraperBridge(
 
     private val INIT_SCRIPT = """
       (function () {
-        var scriptPrefix = "__lnr_script__=";
+        var scriptPrefix = "__norea_script__=";
         function parseParams(raw) {
           var params = {};
           if (!raw) return params;
@@ -2125,7 +2125,7 @@ class AndroidScraperBridge(
           } catch (e) {}
           if (name.indexOf(scriptPrefix) !== 0) return {};
           var params = parseParams(name);
-          if (params.__lnr_origin__ !== location.origin) {
+          if (params.__norea_origin__ !== location.origin) {
             try {
               window.name = "";
             } catch (e) {}
@@ -2134,12 +2134,12 @@ class AndroidScraperBridge(
           return params;
         }
         var params = hashParams();
-        var fromHash = !!params.__lnr_script__;
+        var fromHash = !!params.__norea_script__;
         if (!fromHash) {
           params = nameParams();
         }
-        var bridgeRequestId = params.__lnr_request_id__ || "";
-        var bridgeNonce = params.__lnr_nonce__ || "";
+        var bridgeRequestId = params.__norea_request_id__ || "";
+        var bridgeNonce = params.__norea_nonce__ || "";
         window.ReactNativeWebView = window.ReactNativeWebView || {};
         window.ReactNativeWebView.postMessage = function (payload) {
           try {
@@ -2167,17 +2167,17 @@ class AndroidScraperBridge(
           }
         } catch (e) {}
         try {
-          if (params.__lnr_script__) {
-            var script = params.__lnr_script__;
+          if (params.__norea_script__) {
+            var script = params.__norea_script__;
             if (fromHash) {
               try {
                 history.replaceState(null, "", location.pathname + location.search);
               } catch (e) {}
               try {
                 window.name = scriptPrefix + encodeURIComponent(script) +
-                  "&__lnr_request_id__=" + encodeURIComponent(bridgeRequestId) +
-                  "&__lnr_nonce__=" + encodeURIComponent(bridgeNonce) +
-                  "&__lnr_origin__=" + encodeURIComponent(location.origin);
+                  "&__norea_request_id__=" + encodeURIComponent(bridgeRequestId) +
+                  "&__norea_nonce__=" + encodeURIComponent(bridgeNonce) +
+                  "&__norea_origin__=" + encodeURIComponent(location.origin);
               } catch (e) {}
             }
             try {

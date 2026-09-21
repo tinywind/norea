@@ -345,20 +345,20 @@ export function PluginVpnFinder({
       closeButtonProps={{
         "aria-label": t("settings.data.pluginVpn.finder.close"),
       }}
-      classNames={{ body: "lnr-plugin-vpn-finder-modal-body" }}
+      classNames={{ body: "norea-plugin-vpn-finder-modal-body" }}
       onClose={closeFinder}
       opened={opened}
       size="68rem"
       title={t("settings.data.pluginVpn.finder.title")}
     >
-      <Stack className="lnr-plugin-vpn-finder-content" gap="sm">
+      <Stack className="norea-plugin-vpn-finder-content" gap="sm">
         <Text size="sm">
           {t("settings.data.pluginVpn.finder.description")}
         </Text>
         {pendingCandidateId !== null ||
         connectionPhase === "connecting" ||
         connectionPhase === "reconnecting" ? (
-          <Stack className="lnr-plugin-vpn-finder-state" gap="xs">
+          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Group aria-live="polite" gap="xs" role="status">
               <Loader size="sm" />
               <Text size="sm">
@@ -384,7 +384,7 @@ export function PluginVpnFinder({
         ) : connectionPhase === "connected" ? (
           <Text
             aria-live="polite"
-            className="lnr-plugin-vpn-finder-state"
+            className="norea-plugin-vpn-finder-state"
             role="status"
             size="sm"
           >
@@ -393,7 +393,7 @@ export function PluginVpnFinder({
         ) : connectionPhase === "disconnecting" ? (
           <Group
             aria-live="polite"
-            className="lnr-plugin-vpn-finder-state"
+            className="norea-plugin-vpn-finder-state"
             role="status"
           >
             <Loader size="sm" />
@@ -402,16 +402,16 @@ export function PluginVpnFinder({
             </Text>
           </Group>
         ) : connectionPhase === "error" ? (
-          <Text className="lnr-plugin-vpn-finder-state" role="alert" size="sm">
+          <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
             {connectionError ?? t("settings.data.pluginVpn.status.error")}
           </Text>
         ) : connectionError ? (
-          <Text className="lnr-plugin-vpn-finder-state" role="alert" size="sm">
+          <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
             {connectionError}
           </Text>
         ) : null}
         {disabled && disabledReason ? (
-          <Text className="lnr-plugin-vpn-finder-state" role="status" size="sm">
+          <Text className="norea-plugin-vpn-finder-state" role="status" size="sm">
             {disabledReason}
           </Text>
         ) : null}
@@ -491,7 +491,7 @@ export function PluginVpnFinder({
         </Group>
 
         {catalogStopped ? (
-          <Stack className="lnr-plugin-vpn-finder-state" gap="xs">
+          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Text role="status" size="sm">
               {t("settings.data.pluginVpn.finder.stopped")}
             </Text>
@@ -504,14 +504,14 @@ export function PluginVpnFinder({
             </TextButton>
           </Stack>
         ) : catalogRefreshing || serversQuery.isPending ? (
-          <Group className="lnr-plugin-vpn-finder-state" justify="center">
+          <Group className="norea-plugin-vpn-finder-state" justify="center">
             <Loader size="sm" />
             <Text size="sm">
               {t("settings.data.pluginVpn.finder.loading")}
             </Text>
           </Group>
         ) : serversQuery.isError ? (
-          <Stack className="lnr-plugin-vpn-finder-state" gap="xs">
+          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Text role="alert" size="sm">
               {t("settings.data.pluginVpn.finder.loadFailed")}
             </Text>
@@ -529,12 +529,12 @@ export function PluginVpnFinder({
             </TextButton>
           </Stack>
         ) : visibleServers.length === 0 ? (
-          <Text className="lnr-plugin-vpn-finder-state" size="sm">
+          <Text className="norea-plugin-vpn-finder-state" size="sm">
             {t("settings.data.pluginVpn.finder.empty")}
           </Text>
         ) : (
           <ScrollArea.Autosize mah="min(36rem, 60vh)" offsetScrollbars>
-            <div className="lnr-plugin-vpn-finder-table">
+            <div className="norea-plugin-vpn-finder-table">
               <Table highlightOnHover stickyHeader verticalSpacing="xs">
                 <Table.Thead>
                   <Table.Tr>
@@ -612,16 +612,16 @@ export function PluginVpnFinder({
                 </Table.Tbody>
               </Table>
             </div>
-            <div className="lnr-plugin-vpn-finder-cards">
+            <div className="norea-plugin-vpn-finder-cards">
               {visibleServers.map((server) => (
                 <section
-                  className="lnr-plugin-vpn-finder-card"
+                  className="norea-plugin-vpn-finder-card"
                   key={server.candidateId}
                 >
-                  <div className="lnr-plugin-vpn-finder-card-header">
-                    <div className="lnr-plugin-vpn-finder-card-identity">
+                  <div className="norea-plugin-vpn-finder-card-header">
+                    <div className="norea-plugin-vpn-finder-card-identity">
                       <Text
-                        className="lnr-plugin-vpn-finder-card-country"
+                        className="norea-plugin-vpn-finder-card-country"
                         component="span"
                         fw={700}
                         size="sm"
@@ -630,7 +630,7 @@ export function PluginVpnFinder({
                       </Text>
                       <Text
                         c="dimmed"
-                        className="lnr-plugin-vpn-finder-card-ip"
+                        className="norea-plugin-vpn-finder-card-ip"
                         component="span"
                         size="xs"
                       >
@@ -643,7 +643,7 @@ export function PluginVpnFinder({
                           ? t("settings.data.pluginVpn.finder.protocol.tcp")
                           : t("settings.data.pluginVpn.finder.protocol.udp")}
                       </Badge>
-                      <span className="lnr-plugin-vpn-finder-card-verdict">
+                      <span className="norea-plugin-vpn-finder-card-verdict">
                         <Text c="dimmed" component="span" size="xs">
                           {t("settings.data.pluginVpn.finder.verdict.label")}
                         </Text>
@@ -687,7 +687,7 @@ export function PluginVpnFinder({
                       </TextButton>
                     </Group>
                   </div>
-                  <dl className="lnr-plugin-vpn-finder-metadata">
+                  <dl className="norea-plugin-vpn-finder-metadata">
                     <div>
                       <dt>{t("settings.data.pluginVpn.finder.metadata.score")}</dt>
                       <dd>{server.score.toLocaleString(locale)}</dd>

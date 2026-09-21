@@ -1001,8 +1001,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
   return (
     <>
-      <PageFrame className="lnr-library-page" size="full">
-        <div className="lnr-library-shell">
+      <PageFrame className="norea-library-page" size="full">
+        <div className="norea-library-shell">
           <CategorySubpanel
             activeId={selectedCategoryId}
             allCount={allCategoryCount}
@@ -1020,39 +1020,39 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           />
 
           <section
-            className="lnr-library-main"
+            className="norea-library-main"
             aria-label={t("library.mainLabel")}
           >
-            <header className="lnr-library-main-header">
-              <div className="lnr-library-header-copy">
-                <h1 className="lnr-library-title-heading">
-                  <span className="lnr-library-title-static">
+            <header className="norea-library-main-header">
+              <div className="norea-library-header-copy">
+                <h1 className="norea-library-title-heading">
+                  <span className="norea-library-title-static">
                     {activeCategory}
                   </span>
                   <UnstyledButton
                     aria-label={t("library.openCategories", {
                       name: activeCategory,
                     })}
-                    className="lnr-library-title-button"
+                    className="norea-library-title-button"
                     onClick={() => setCategoriesOpen(true)}
                     title={activeCategory}
                   >
                     <span>{activeCategory}</span>
                   </UnstyledButton>
                 </h1>
-                <span className="lnr-library-header-meta">
+                <span className="norea-library-header-meta">
                   {t("library.sortedMeta", {
                     count: summary.totalNovels,
                     sort: sortLabel.toLowerCase(),
                   })}
                 </span>
               </div>
-              <div className="lnr-library-header-actions">
+              <div className="norea-library-header-actions">
                 <IconButton
                   active={showMobileSearch}
                   aria-controls="library-mobile-search"
                   aria-expanded={showMobileSearch}
-                  className="lnr-library-mobile-search-button"
+                  className="norea-library-mobile-search-button"
                   label={t("library.search.aria")}
                   onClick={() => setMobileSearchOpen((open) => !open)}
                   size="sm"
@@ -1061,7 +1061,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   <SearchIcon />
                 </IconButton>
                 <UnstyledButton
-                  className="lnr-library-mobile-category-button"
+                  className="norea-library-mobile-category-button"
                   onClick={() => setCategoriesOpen(true)}
                 >
                   {t("categories.title")}
@@ -1090,7 +1090,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   t={t}
                 />
                 <IconButton
-                  className="lnr-library-icon-button lnr-library-local-import-button"
+                  className="norea-library-icon-button norea-library-local-import-button"
                   label={t("library.localImport.open")}
                   onClick={openLocalImportInput}
                   size="sm"
@@ -1099,7 +1099,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   <ImportFileIcon />
                 </IconButton>
                 <IconButton
-                  className="lnr-library-icon-button"
+                  className="norea-library-icon-button"
                   label={t("library.localNovel.create")}
                   onClick={openLocalNovelEditor}
                   size="sm"
@@ -1108,7 +1108,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   <PlusGlyph />
                 </IconButton>
                 <IconButton
-                  className="lnr-library-icon-button lnr-library-refresh-button"
+                  className="norea-library-icon-button norea-library-refresh-button"
                   disabled={
                     summary.totalNovels === 0 ||
                     metadataRefreshMutation.isPending
@@ -1127,7 +1127,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 <Popover position="bottom-end" shadow="md" width={390}>
                   <Popover.Target>
                     <IconButton
-                      className="lnr-library-icon-button"
+                      className="norea-library-icon-button"
                       label={t("library.settings.open")}
                       size="sm"
                       title={t("library.settings.title")}
@@ -1135,7 +1135,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                       <SlidersIcon />
                     </IconButton>
                   </Popover.Target>
-                  <Popover.Dropdown className="lnr-library-settings-popover">
+                  <Popover.Dropdown className="norea-library-settings-popover">
                     <LibrarySettingsPanel />
                   </Popover.Dropdown>
                 </Popover>
@@ -1143,7 +1143,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             </header>
             {showMobileSearch ? (
               <div
-                className="lnr-library-mobile-search-row"
+                className="norea-library-mobile-search-row"
                 id="library-mobile-search"
               >
                 <LibraryCommandSearch value={search} onChange={setSearch} />
@@ -1164,9 +1164,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             ) : null}
 
             {selectedIds.size > 0 ? (
-              <div className="lnr-library-selection-strip">
+              <div className="norea-library-selection-strip">
                 <span>{t("library.selectedCount", { count: selectedIds.size })}</span>
-                <div className="lnr-library-selection-actions">
+                <div className="norea-library-selection-actions">
                   <LibraryBatchDownloadPicker
                     onDownload={(mode) => batchDownloadMutation.mutate(mode)}
                     preparing={batchDownloadMutation.isPending}
@@ -1184,7 +1184,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     t={t}
                   />
                   <IconButton
-                    className="lnr-library-selection-icon"
+                    className="norea-library-selection-icon"
                     disabled={
                       selectedDownloadedChapterCount === 0 ||
                       deleteSelectedDownloadsMutation.isPending ||
@@ -1223,7 +1223,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     )}
                   </IconButton>
                   <IconButton
-                    className="lnr-library-selection-icon"
+                    className="norea-library-selection-icon"
                     disabled={
                       removeSelectedFromLibraryMutation.isPending ||
                       deleteSelectedDownloadsMutation.isPending
@@ -1258,11 +1258,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               </div>
             ) : null}
 
-            <div className="lnr-library-body" ref={libraryBodyRef}>
+            <div className="norea-library-body" ref={libraryBodyRef}>
               {isInitialLibraryLoading ? (
                 <StateView
                   title={
-                    <span className="lnr-library-loading-title">
+                    <span className="norea-library-loading-title">
                       <Loader size="sm" />
                       <Text c="dimmed" component="span">
                         {t("library.loading")}
@@ -1294,9 +1294,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     onLongPress={handleLongPress}
                   />
                   {novels.hasNextPage ? (
-                    <div className="lnr-library-load-more">
+                    <div className="norea-library-load-more">
                       <TextButton
-                        className="lnr-library-load-more-action"
+                        className="norea-library-load-more-action"
                         disabled={novels.isFetchingNextPage}
                         leftSection={
                           novels.isFetchingNextPage ? undefined : <PlusGlyph />
@@ -1333,7 +1333,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               )}
             </div>
 
-            <ConsoleStatusStrip className="lnr-library-status-strip">
+            <ConsoleStatusStrip className="norea-library-status-strip">
               <span>{status}</span>
               <span>{t("library.statusUpdated", { time: stats.lastUpdatedLabel })}</span>
               <span>{activeCategory}</span>
@@ -1350,7 +1350,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       <input
         ref={localImportInputRef}
         accept={LOCAL_IMPORT_ACCEPT}
-        className="lnr-library-file-input"
+        className="norea-library-file-input"
         multiple
         onChange={handleLocalImportFilesSelected}
         type="file"
@@ -1388,7 +1388,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           ) : null}
 
           {localImportItems.length > 0 ? (
-            <div className="lnr-library-local-import-list">
+            <div className="norea-library-local-import-list">
               {localImportItems.map((item) => (
                 <LocalImportReviewRow
                   item={item}
@@ -1687,30 +1687,30 @@ function LibrarySourceFilterBar({
 
   return (
     <div
-      className="lnr-library-source-filter"
+      className="norea-library-source-filter"
       aria-label={t("library.sources.title")}
     >
       <ScrollArea
-        className="lnr-library-source-scroll"
+        className="norea-library-source-scroll"
         offsetScrollbars
         scrollbarSize={4}
         type="hover"
       >
-        <div className="lnr-library-source-list">
+        <div className="norea-library-source-list">
           <UnstyledButton
             aria-pressed={activeSourceId === null}
-            className="lnr-library-source-chip"
+            className="norea-library-source-chip"
             data-active={activeSourceId === null}
             onClick={() => onChange(null)}
             title={t("library.sources.all")}
           >
-            <span className="lnr-library-source-chip-label">
+            <span className="norea-library-source-chip-label">
               {t("library.sources.all")}
             </span>
-            <span className="lnr-library-source-chip-count">{allCount}</span>
+            <span className="norea-library-source-chip-count">{allCount}</span>
           </UnstyledButton>
           {loading && sources.length === 0 ? (
-            <span className="lnr-library-source-loading">
+            <span className="norea-library-source-loading">
               {t("library.sources.loading")}
             </span>
           ) : null}
@@ -1723,14 +1723,14 @@ function LibrarySourceFilterBar({
                   count: source.totalNovels,
                 })}`}
                 aria-pressed={activeSourceId === source.pluginId}
-                className="lnr-library-source-chip"
+                className="norea-library-source-chip"
                 data-active={activeSourceId === source.pluginId}
                 key={source.pluginId}
                 onClick={() => onChange(source.pluginId)}
                 title={label}
               >
-                <span className="lnr-library-source-chip-label">{label}</span>
-                <span className="lnr-library-source-chip-count">{count}</span>
+                <span className="norea-library-source-chip-label">{label}</span>
+                <span className="norea-library-source-chip-count">{count}</span>
               </UnstyledButton>
             );
           })}
@@ -1757,7 +1757,7 @@ function LibraryScopeFilters({
 }: LibraryScopeFiltersProps) {
   return (
     <div
-      className="lnr-library-filter-toggle"
+      className="norea-library-filter-toggle"
       role="group"
       aria-label={t("library.filters.label")}
     >
@@ -1765,7 +1765,7 @@ function LibraryScopeFilters({
         <IconButton
           active={downloadedOnly}
           aria-pressed={downloadedOnly}
-          className="lnr-library-filter-button"
+          className="norea-library-filter-button"
           label={t("library.downloadedOnly")}
           onClick={() => onDownloadedOnlyChange(!downloadedOnly)}
           size="sm"
@@ -1778,7 +1778,7 @@ function LibraryScopeFilters({
         <IconButton
           active={unreadOnly}
           aria-pressed={unreadOnly}
-          className="lnr-library-filter-button"
+          className="norea-library-filter-button"
           label={t("library.unreadOnly")}
           onClick={() => onUnreadOnlyChange(!unreadOnly)}
           size="sm"
@@ -1823,12 +1823,12 @@ function CategorySubpanel({
   uncategorizedCount,
 }: CategorySubpanelProps) {
   return (
-    <aside className="lnr-library-subpanel" aria-label={t("categories.title")}>
-      <div className="lnr-library-subpanel-header">
-        <Text className="lnr-console-kicker">{t("categories.title")}</Text>
+    <aside className="norea-library-subpanel" aria-label={t("categories.title")}>
+      <div className="norea-library-subpanel-header">
+        <Text className="norea-console-kicker">{t("categories.title")}</Text>
         <Tooltip label={t("categories.add")} openDelay={350} withArrow>
           <IconButton
-            className="lnr-library-subpanel-icon"
+            className="norea-library-subpanel-icon"
             label={t("categories.add")}
             onClick={onCreate}
             size="sm"
@@ -1838,8 +1838,8 @@ function CategorySubpanel({
           </IconButton>
         </Tooltip>
       </div>
-      <ScrollArea className="lnr-library-category-scroll">
-        <div className="lnr-library-category-list">
+      <ScrollArea className="norea-library-category-scroll">
+        <div className="norea-library-category-list">
             <CategoryButton
               active={activeId === null}
               count={allCount}
@@ -1855,9 +1855,9 @@ function CategorySubpanel({
               t={t}
             />
           {loading ? (
-            <Text className="lnr-library-subpanel-note">{t("common.loading")}</Text>
+            <Text className="norea-library-subpanel-note">{t("common.loading")}</Text>
           ) : error ? (
-            <Text className="lnr-library-subpanel-note" c="red">
+            <Text className="norea-library-subpanel-note" c="red">
               {error instanceof Error ? error.message : String(error)}
             </Text>
           ) : categories.length > 0 ? (
@@ -1875,29 +1875,29 @@ function CategorySubpanel({
               />
             ))
           ) : (
-            <Text className="lnr-library-subpanel-note">
+            <Text className="norea-library-subpanel-note">
               {t("categories.noManual")}
             </Text>
           )}
 
-          <div className="lnr-library-tags">
-            <div className="lnr-library-tags-title">{t("library.tags.title")}</div>
+          <div className="norea-library-tags">
+            <div className="norea-library-tags-title">{t("library.tags.title")}</div>
             {tags.length > 0 ? (
               tags.map((tag) => (
-                <div className="lnr-library-tag-row" key={tag.label}>
+                <div className="norea-library-tag-row" key={tag.label}>
                   <span>{`#${tag.label}`}</span>
                   <span>{tag.count}</span>
                 </div>
               ))
             ) : (
-              <Text className="lnr-library-subpanel-note">
+              <Text className="norea-library-subpanel-note">
                 {t("library.tags.none")}
               </Text>
             )}
           </div>
         </div>
       </ScrollArea>
-      <div className="lnr-library-subpanel-footer">
+      <div className="norea-library-subpanel-footer">
         <span>{t("library.footer.shortcuts")}</span>
         <UnstyledButton onClick={onOpenDrawer}>
           {t("library.manageCategories")}
@@ -1929,19 +1929,19 @@ function CategoryButton({
   t,
 }: CategoryButtonProps) {
   return (
-    <div className="lnr-library-category-row" data-active={active}>
+    <div className="norea-library-category-row" data-active={active}>
       <UnstyledButton
-        className="lnr-library-category"
+        className="norea-library-category"
         data-active={active}
         onClick={onClick}
       >
-        <span className="lnr-library-category-label">{label}</span>
+        <span className="norea-library-category-label">{label}</span>
       </UnstyledButton>
       {canEdit ? (
-        <span className="lnr-library-category-actions">
+        <span className="norea-library-category-actions">
           <Tooltip label={t("categories.rename")} openDelay={350} withArrow>
             <IconButton
-              className="lnr-library-category-action"
+              className="norea-library-category-action"
               label={t("categories.renameNamed", { name: label })}
               onClick={onRename}
               size="sm"
@@ -1952,7 +1952,7 @@ function CategoryButton({
           </Tooltip>
           <Tooltip label={t("categories.delete")} openDelay={350} withArrow>
             <IconButton
-              className="lnr-library-category-action"
+              className="norea-library-category-action"
               label={t("categories.deleteNamed", { name: label })}
               onClick={onDelete}
               size="sm"
@@ -1963,7 +1963,7 @@ function CategoryButton({
           </Tooltip>
         </span>
       ) : null}
-      <span className="lnr-library-category-count">{count ?? 0}</span>
+      <span className="norea-library-category-count">{count ?? 0}</span>
     </div>
   );
 }
@@ -1992,7 +1992,7 @@ function LibraryBatchDownloadPicker({
     >
       <Popover.Target>
         <IconButton
-          className="lnr-library-selection-icon"
+          className="norea-library-selection-icon"
           disabled={preparing}
           label={t("library.batchDownload.open")}
           onClick={() => setOpened((current) => !current)}
@@ -2002,11 +2002,11 @@ function LibraryBatchDownloadPicker({
           <DownloadGlyph />
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-library-batch-download-popover">
-        <div className="lnr-library-batch-download-list">
+      <Popover.Dropdown className="norea-library-batch-download-popover">
+        <div className="norea-library-batch-download-list">
           {LIBRARY_BATCH_DOWNLOAD_OPTIONS.map((option) => (
             <UnstyledButton
-              className="lnr-library-batch-download-option"
+              className="norea-library-batch-download-option"
               disabled={preparing}
               key={option.mode}
               onClick={() => {
@@ -2014,10 +2014,10 @@ function LibraryBatchDownloadPicker({
                 setOpened(false);
               }}
             >
-              <span className="lnr-library-batch-download-label">
+              <span className="norea-library-batch-download-label">
                 {t(option.labelKey)}
               </span>
-              <span className="lnr-library-batch-download-description">
+              <span className="norea-library-batch-download-description">
                 {t(option.descriptionKey)}
               </span>
             </UnstyledButton>
@@ -2038,7 +2038,7 @@ function SelectionCategoryPicker({
     <Popover position="bottom-end" shadow="md" width={220}>
       <Popover.Target>
         <IconButton
-          className="lnr-library-selection-icon"
+          className="norea-library-selection-icon"
           disabled={categories.length === 0 || assigning}
           label={t("library.addSelectedToCategory")}
           size="sm"
@@ -2047,12 +2047,12 @@ function SelectionCategoryPicker({
           <FolderPlusIcon />
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-library-category-assign-popover">
-        <div className="lnr-library-category-assign-list">
+      <Popover.Dropdown className="norea-library-category-assign-popover">
+        <div className="norea-library-category-assign-list">
           {categories.length > 0 ? (
             categories.map((category) => (
               <UnstyledButton
-                className="lnr-library-category-assign-option"
+                className="norea-library-category-assign-option"
                 disabled={assigning}
                 key={category.id}
                 onClick={() => onAssign(category.id)}
@@ -2093,15 +2093,15 @@ function LocalImportReviewRow({
   ].join(" - ");
 
   return (
-    <div className="lnr-library-local-import-row" data-status={item.status}>
-      <div className="lnr-library-local-import-file">
-        <span className="lnr-library-local-import-title">{title}</span>
-        <span className="lnr-library-local-import-meta">{meta}</span>
+    <div className="norea-library-local-import-row" data-status={item.status}>
+      <div className="norea-library-local-import-file">
+        <span className="norea-library-local-import-title">{title}</span>
+        <span className="norea-library-local-import-meta">{meta}</span>
         {detail ? (
-          <span className="lnr-library-local-import-detail">{detail}</span>
+          <span className="norea-library-local-import-detail">{detail}</span>
         ) : null}
       </div>
-      <span className="lnr-library-local-import-status">
+      <span className="norea-library-local-import-status">
         {getLocalImportStatusLabel(item.status, t)}
       </span>
     </div>
@@ -2120,7 +2120,7 @@ function LibraryCommandSearch({
   const { t } = useTranslation();
 
   return (
-    <label className="lnr-library-command-search">
+    <label className="norea-library-command-search">
       <SearchIcon />
       <input
         aria-label={t("library.search.aria")}
@@ -2163,7 +2163,7 @@ interface ViewModeToggleProps {
 function ViewModeToggle({ displayMode, onChange, t }: ViewModeToggleProps) {
   return (
     <div
-      className="lnr-library-view-toggle"
+      className="norea-library-view-toggle"
       role="group"
       aria-label={t("library.viewMode.label")}
     >
@@ -2172,7 +2172,7 @@ function ViewModeToggle({ displayMode, onChange, t }: ViewModeToggleProps) {
         return (
           <IconButton
             active={displayMode === option.mode}
-            className="lnr-library-view-button"
+            className="norea-library-view-button"
             key={option.mode}
             label={label}
             onClick={() => onChange(option.mode)}
@@ -2201,7 +2201,7 @@ function MobileViewModePicker({
     <Popover position="bottom-end" shadow="md" width={180}>
       <Popover.Target>
         <IconButton
-          className="lnr-library-mobile-view-button"
+          className="norea-library-mobile-view-button"
           label={t("library.viewMode.label")}
           size="sm"
           title={activeLabel}
@@ -2209,12 +2209,12 @@ function MobileViewModePicker({
           <ViewModeIcon icon={activeOption.icon} />
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-library-mobile-view-menu">
+      <Popover.Dropdown className="norea-library-mobile-view-menu">
         {VIEW_MODE_OPTIONS.map((option) => {
           const label = t(option.labelKey);
           return (
             <UnstyledButton
-              className="lnr-library-mobile-view-option"
+              className="norea-library-mobile-view-option"
               data-active={displayMode === option.mode}
               key={option.mode}
               onClick={() => onChange(option.mode)}
@@ -2255,7 +2255,7 @@ function LibrarySortPicker({
       <Popover.Target>
         <IconButton
           active={opened}
-          className="lnr-library-icon-button lnr-library-sort-button"
+          className="norea-library-icon-button norea-library-sort-button"
           data-sort-direction={sortDirection}
           label={t("librarySettings.sort")}
           onClick={() => setOpened((current) => !current)}
@@ -2265,12 +2265,12 @@ function LibrarySortPicker({
           <SortGlyph />
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-library-sort-menu">
+      <Popover.Dropdown className="norea-library-sort-menu">
         {LIBRARY_SORT_ORDERS.map((value) => {
           const label = t(SORT_LABEL_KEYS[value]);
           return (
             <UnstyledButton
-              className="lnr-library-sort-option"
+              className="norea-library-sort-option"
               data-active={sortOrder === value}
               key={value}
               onClick={() => {

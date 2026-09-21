@@ -39,8 +39,8 @@ export function TextButton({
     <Button
       {...props}
       className={joinClassNames(
-        "lnr-text-button",
-        `lnr-text-button--${size}`,
+        "norea-text-button",
+        `norea-text-button--${size}`,
         className,
       )}
       data-active={active ? "true" : undefined}

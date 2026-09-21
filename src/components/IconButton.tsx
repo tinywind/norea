@@ -30,7 +30,7 @@ export function IconButton({
   variant = "subtle",
   ...props
 }: IconButtonProps) {
-  const classNames = `lnr-icon-button lnr-icon-button--${size}${
+  const classNames = `norea-icon-button norea-icon-button--${size}${
     className ? ` ${className}` : ""
   }`;
 

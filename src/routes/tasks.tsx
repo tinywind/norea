@@ -279,7 +279,7 @@ function TaskSortMenu() {
   };
 
   return (
-    <div className="lnr-task-sort-menu">
+    <div className="norea-task-sort-menu">
       <IconButton
         active={open}
         aria-expanded={open}
@@ -290,9 +290,9 @@ function TaskSortMenu() {
         <SortGlyph />
       </IconButton>
       {open ? (
-        <div className="lnr-task-sort-popover" role="menu">
-          <div className="lnr-task-sort-section">
-            <span className="lnr-task-sort-heading">
+        <div className="norea-task-sort-popover" role="menu">
+          <div className="norea-task-sort-section">
+            <span className="norea-task-sort-heading">
               {t("tasks.sortTasks")}
             </span>
             <button type="button" onClick={() => sortTasks("oldest")}>
@@ -308,8 +308,8 @@ function TaskSortMenu() {
               {t("tasks.sortTasksTitle")}
             </button>
           </div>
-          <div className="lnr-task-sort-section">
-            <span className="lnr-task-sort-heading">
+          <div className="norea-task-sort-section">
+            <span className="norea-task-sort-heading">
               {t("tasks.sortSources")}
             </span>
             <button type="button" onClick={() => sortSources("sourceName")}>
@@ -434,7 +434,7 @@ const TaskRow = memo(function TaskRow({
   return (
     <div
       aria-selected={selected}
-      className="lnr-task-row"
+      className="norea-task-row"
       data-selected={selected ? "true" : undefined}
       data-status={currentTask.status}
       onClick={onSelect}
@@ -451,53 +451,53 @@ const TaskRow = memo(function TaskRow({
         status={statusTone(currentTask.status)}
         label={t(taskStatusKey(currentTask.status))}
       />
-      <div className="lnr-task-row-main">
-        <div className="lnr-task-row-heading">
+      <div className="norea-task-row-main">
+        <div className="norea-task-row-heading">
           {chapterHeading ? (
             <div
-              className="lnr-task-row-title lnr-task-row-download-title"
+              className="norea-task-row-title norea-task-row-download-title"
               title={chapterHeading.title}
             >
-              <span className="lnr-task-row-download-novel">
+              <span className="norea-task-row-download-novel">
                 {chapterHeading.novelName}
               </span>
-              <span className="lnr-task-row-download-chapter">
+              <span className="norea-task-row-download-chapter">
                 {chapterHeading.chapterLabel}
               </span>
             </div>
           ) : (
-            <Text className="lnr-task-row-title" lineClamp={1}>
+            <Text className="norea-task-row-title" lineClamp={1}>
               {currentTask.title}
             </Text>
           )}
-          {label ? <span className="lnr-task-progress-text">{label}</span> : null}
+          {label ? <span className="norea-task-progress-text">{label}</span> : null}
         </div>
-        <Text className="lnr-task-row-meta" lineClamp={1}>
+        <Text className="norea-task-row-meta" lineClamp={1}>
           {taskMeta(t, currentTask)}
         </Text>
         {sourcePaused ? (
-          <Text className="lnr-task-row-detail" lineClamp={1}>
+          <Text className="norea-task-row-detail" lineClamp={1}>
             {sourceQueuesPaused
               ? t("tasks.allSourcesPaused")
               : t("tasks.sourcePaused")}
           </Text>
         ) : blockingSourceTask ? (
-          <Text className="lnr-task-row-detail" lineClamp={1}>
+          <Text className="norea-task-row-detail" lineClamp={1}>
             {t("tasks.downloadWaiting")}
           </Text>
         ) : currentTask.detail ? (
-          <Text className="lnr-task-row-detail" lineClamp={1}>
+          <Text className="norea-task-row-detail" lineClamp={1}>
             {currentTask.detail}
           </Text>
         ) : null}
         {currentTask.error ? (
-          <Text className="lnr-task-row-error" lineClamp={1}>
+          <Text className="norea-task-row-error" lineClamp={1}>
             {currentTask.error}
           </Text>
         ) : null}
         {currentTask.progress ? (
           <Progress
-            className="lnr-task-row-progress"
+            className="norea-task-row-progress"
             size="xs"
             value={
               currentTask.progress.total
@@ -513,7 +513,7 @@ const TaskRow = memo(function TaskRow({
           />
         ) : null}
       </div>
-      <div className="lnr-task-row-actions">
+      <div className="norea-task-row-actions">
         {showActions && canMove ? (
           <>
             <IconButton
@@ -583,19 +583,19 @@ function TaskWorkGroup({
 
   return (
     <div
-      className="lnr-task-work-group"
+      className="norea-task-work-group"
       data-collapsed={open ? undefined : "true"}
     >
-      <div className="lnr-task-work-header">
-        <div className="lnr-task-work-copy">
-          <Text className="lnr-task-work-title" lineClamp={1}>
+      <div className="norea-task-work-header">
+        <div className="norea-task-work-copy">
+          <Text className="norea-task-work-title" lineClamp={1}>
             {group.title}
           </Text>
-          <span className="lnr-task-group-count">
+          <span className="norea-task-group-count">
             {t("tasks.count", { count: group.tasks.length })}
           </span>
         </div>
-        <div className="lnr-task-group-actions">
+        <div className="norea-task-group-actions">
           <IconButton
             active={!open}
             label={open ? t("tasks.collapse") : t("tasks.expand")}
@@ -655,7 +655,7 @@ function TaskWorkGroup({
       </div>
       {open ? (
         <TaskRows
-          className="lnr-task-work-rows"
+          className="norea-task-work-rows"
           renderTask={(task) => (
             <TaskRow
               blockingSourceTask={hasBlockingSourceTask(
@@ -777,16 +777,16 @@ function VirtualTaskRows({
 
   return (
     <div
-      className={`${className} lnr-task-virtual-viewport`}
+      className={`${className} norea-task-virtual-viewport`}
       onScroll={handleScroll}
       ref={viewportRef}
     >
       <div
-        className="lnr-task-virtual-spacer"
+        className="norea-task-virtual-spacer"
         style={{ height: totalHeight }}
       >
         <div
-          className="lnr-task-virtual-window"
+          className="norea-task-virtual-window"
           style={{ transform: `translateY(${offsetY}px)` }}
         >
           {visibleTasks.map(renderTask)}
@@ -804,7 +804,7 @@ function SummaryPill({
   tone?: "error" | "warning";
 }) {
   return (
-    <span className="lnr-task-summary-pill" data-tone={tone}>
+    <span className="norea-task-summary-pill" data-tone={tone}>
       {children}
     </span>
   );
@@ -838,8 +838,8 @@ function SourceAccessBanner({
     taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
 
   return (
-    <section className="lnr-source-access-banner" role="alert">
-      <div className="lnr-source-access-copy">
+    <section className="norea-source-access-banner" role="alert">
+      <div className="norea-source-access-copy">
         <Text component="h2" fw={700} size="sm">
           {title} · {hostname}
         </Text>
@@ -936,20 +936,20 @@ function TaskGroup({
 
   return (
     <section
-      className="lnr-task-group"
+      className="norea-task-group"
       data-collapsed={sourceCollapsed ? "true" : undefined}
       data-source-group={sourceId ? "true" : undefined}
     >
-      <header className="lnr-task-group-header">
-        <div className="lnr-task-group-copy">
-          <Text className="lnr-task-group-title" lineClamp={1}>
+      <header className="norea-task-group-header">
+        <div className="norea-task-group-copy">
+          <Text className="norea-task-group-title" lineClamp={1}>
             {title}
           </Text>
-          <span className="lnr-task-group-count">
+          <span className="norea-task-group-count">
             {t("tasks.count", { count: tasks.length })}
           </span>
         </div>
-        <div className="lnr-task-group-actions">
+        <div className="norea-task-group-actions">
           {sourceId ? (
             <IconButton
               active={sourceCollapsed}
@@ -1001,7 +1001,7 @@ function TaskGroup({
         </div>
       </header>
       {sourceCollapsed ? null : sourceId ? (
-        <div className="lnr-task-rows">
+        <div className="norea-task-rows">
           {sourceItems.map((item) =>
             item.type === "work" ? (
               <TaskWorkGroup
@@ -1040,7 +1040,7 @@ function TaskGroup({
         </div>
       ) : (
         <TaskRows
-          className="lnr-task-rows"
+          className="norea-task-rows"
           renderTask={(task) => (
             <TaskRow
               blockingSourceTask={hasBlockingSourceTask(
@@ -1183,16 +1183,16 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
   };
 
   return (
-    <PageFrame className="lnr-tasks-page" size="wide">
+    <PageFrame className="norea-tasks-page" size="wide">
       <PageHeader
         title={
-          <span className="lnr-task-page-title">
+          <span className="norea-task-page-title">
             {t("tasks.title")}
-            <span className="lnr-task-title-count">{snapshot.total}</span>
+            <span className="norea-task-title-count">{snapshot.total}</span>
           </span>
         }
         actions={
-          <div className="lnr-task-header-actions">
+          <div className="norea-task-header-actions">
             <TaskSortMenu />
             <IconButton
               active={snapshot.sourceQueuesPaused}
@@ -1239,7 +1239,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           </div>
         }
         meta={
-          <div className="lnr-task-summary-strip">
+          <div className="norea-task-summary-strip">
             <SummaryPill>
               {t("tasks.summary.running", { count: taskStats.running })}
             </SummaryPill>
@@ -1266,7 +1266,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
       />
 
       {snapshot.sourceAccessBlocks.length > 0 ? (
-        <div className="lnr-source-access-banners">
+        <div className="norea-source-access-banners">
           {snapshot.sourceAccessBlocks.map((block) => (
             <SourceAccessBanner
               block={block}
@@ -1284,7 +1284,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           message={t("tasks.empty.message")}
         />
       ) : (
-        <div className="lnr-task-shell">
+        <div className="norea-task-shell">
           {mainTasks.length > 0 ? (
             <TaskGroup
               onSelectTask={setSelectedTaskId}

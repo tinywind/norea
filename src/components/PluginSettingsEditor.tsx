@@ -124,7 +124,7 @@ export function PluginSettingsEditor({
   }
 
   return (
-    <Stack className="lnr-plugin-settings-editor" gap={0}>
+    <Stack className="norea-plugin-settings-editor" gap={0}>
       {settings.map(({ key, definition }) => {
         const label = definition.label ?? key;
         const value = values[key] ?? "";

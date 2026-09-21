@@ -215,7 +215,7 @@ function ReaderSeekbar({
       aria-valuemin={0}
       aria-valuenow={Math.round(clampedProgress)}
       aria-valuetext={`${Math.round(clampedProgress)}%`}
-      className="lnr-reader-floating-seekbar"
+      className="norea-reader-floating-seekbar"
       data-active={active}
       data-orientation={orientation}
       onClick={(event) => {
@@ -255,13 +255,13 @@ function ReaderSeekbar({
       }}
       role="slider"
       style={
-        { "--lnr-reader-seek-progress": `${clampedProgress}%` } as CSSProperties
+        { "--norea-reader-seek-progress": `${clampedProgress}%` } as CSSProperties
       }
       tabIndex={0}
     >
-      <span ref={trackRef} className="lnr-reader-floating-seekbar-track">
-        <span className="lnr-reader-floating-seekbar-fill" />
-        <span className="lnr-reader-floating-seekbar-thumb" />
+      <span ref={trackRef} className="norea-reader-floating-seekbar-track">
+        <span className="norea-reader-floating-seekbar-fill" />
+        <span className="norea-reader-floating-seekbar-thumb" />
       </span>
     </div>
   );
@@ -285,11 +285,11 @@ export function ReaderSeekbars({
 
   return (
     <div
-      className="lnr-reader-seekbars"
+      className="norea-reader-seekbars"
       data-visible={visible}
       style={
         {
-          "--lnr-reader-seek-bottom":
+          "--norea-reader-seek-bottom":
             typeof bottomOffset === "number"
               ? `${bottomOffset}px`
               : bottomOffset,

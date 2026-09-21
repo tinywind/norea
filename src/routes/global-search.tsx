@@ -231,24 +231,24 @@ function ScopePanel({
     return (
       <div
         key={plugin.id}
-        className="lnr-search-source-chip lnr-search-source-chip--with-actions"
+        className="norea-search-source-chip norea-search-source-chip--with-actions"
         data-active={active}
         data-pinned={pinned ? "true" : "false"}
       >
         <button
           type="button"
-          className="lnr-search-source-select"
+          className="norea-search-source-select"
           aria-pressed={active}
           onClick={
             options?.onSelect ?? (() => onToggleSelectedPlugin(plugin.id))
           }
         >
-          <span className="lnr-search-source-icon">
+          <span className="norea-search-source-icon">
             {pluginInitial(plugin)}
           </span>
-          <span className="lnr-search-source-name">{plugin.name}</span>
+          <span className="norea-search-source-name">{plugin.name}</span>
         </button>
-        <span className="lnr-search-source-actions">
+        <span className="norea-search-source-actions">
           <IconButton
             active={pinned}
             label={`${pinned ? t("browse.unpin") : t("browse.pin")}: ${plugin.name}`}
@@ -284,14 +284,14 @@ function ScopePanel({
   };
 
   return (
-    <aside className="lnr-search-scope">
+    <aside className="norea-search-scope">
       <ConsoleSectionHeader
         eyebrow={t("globalSearch.scope.eyebrow")}
         title={t("globalSearch.scope.title")}
         count={`${scopedCount}/${installedPlugins.length}`}
       />
 
-      <div className="lnr-search-scope-mode-row">
+      <div className="norea-search-scope-mode-row">
         <SegmentedToggle
           value={scopeMode}
           onChange={(value) => onScopeModeChange(value as ScopeMode)}
@@ -316,7 +316,7 @@ function ScopePanel({
             },
           ]}
           fullWidth
-          className="lnr-search-scope-mode"
+          className="norea-search-scope-mode"
         />
         <IconButton
           label={t("globalSearch.clearSelected")}
@@ -330,8 +330,8 @@ function ScopePanel({
       </div>
 
       {lastUsedPlugin ? (
-        <div className="lnr-search-scope-block">
-          <Text className="lnr-console-kicker">{t("globalSearch.recentlyUsed")}</Text>
+        <div className="norea-search-scope-block">
+          <Text className="norea-console-kicker">{t("globalSearch.recentlyUsed")}</Text>
           {renderSourceChip(lastUsedPlugin, {
             onSelect: () => {
               if (!selectedPluginIds.includes(lastUsedPlugin.id)) {
@@ -344,27 +344,27 @@ function ScopePanel({
       ) : null}
 
       {visiblePinnedPlugins.length > 0 ? (
-        <div className="lnr-search-scope-block lnr-search-pinned-source-block">
-          <div className="lnr-search-pinned-source-list">
+        <div className="norea-search-scope-block norea-search-pinned-source-block">
+          <div className="norea-search-pinned-source-list">
             {visiblePinnedPlugins.map((plugin) => renderSourceChip(plugin))}
           </div>
         </div>
       ) : null}
 
-      <div className="lnr-search-scope-block lnr-search-scope-source-block">
-        <div className="lnr-search-source-heading">
-          <span className="lnr-search-source-heading-actions">
+      <div className="norea-search-scope-block norea-search-scope-source-block">
+        <div className="norea-search-source-heading">
+          <span className="norea-search-source-heading-actions">
             <IconButton
               size="lg"
               variant="subtle"
-              className="lnr-search-source-toggle"
+              className="norea-search-source-toggle"
               aria-expanded={sourceListOpen}
               label={
                 sourceListOpen
                   ? t("globalSearch.hideSources")
                   : t("globalSearch.showSources")
               }
-              aria-controls="lnr-search-source-list"
+              aria-controls="norea-search-source-list"
               title={
                 sourceListOpen
                   ? t("globalSearch.hideSources")
@@ -377,8 +377,8 @@ function ScopePanel({
           </span>
         </div>
         <div
-          id="lnr-search-source-list"
-          className="lnr-search-source-list"
+          id="norea-search-source-list"
+          className="norea-search-source-list"
           data-open={sourceListOpen ? "true" : "false"}
         >
           {unpinnedPlugins.map((plugin) => renderSourceChip(plugin))}
@@ -409,8 +409,8 @@ function ActiveScopeRow({
         : t("common.selected");
 
   return (
-    <Group className="lnr-search-active-row" gap={6} wrap="wrap">
-      <Text className="lnr-console-kicker">{t("globalSearch.active")}</Text>
+    <Group className="norea-search-active-row" gap={6} wrap="wrap">
+      <Text className="norea-console-kicker">{t("globalSearch.active")}</Text>
       <ConsoleChip active>{scopeLabel}</ConsoleChip>
       <ConsoleChip active>
         {t("globalSearch.sourcesCount", { count: scopedCount })}
@@ -448,7 +448,7 @@ function ResultFilters({
   const { t } = useTranslation();
 
   return (
-    <Group className="lnr-search-result-filters" gap={6} wrap="wrap">
+    <Group className="norea-search-result-filters" gap={6} wrap="wrap">
       <TextButton
         aria-pressed={hideEmpty}
         active={hideEmpty}
@@ -476,7 +476,7 @@ function ResultFilters({
           { value: "count", label: t("globalSearch.sort.count") },
           { value: "source", label: t("common.source") },
         ]}
-        className="lnr-search-sort"
+        className="norea-search-sort"
       />
       {failedCount > 0 ? (
         <TextButton
@@ -514,8 +514,8 @@ function SearchSummary({
   const { t } = useTranslation();
 
   return (
-    <ConsoleStatusStrip className="lnr-search-summary">
-      <span className="lnr-search-summary-query">"{query}"</span>
+    <ConsoleStatusStrip className="norea-search-summary">
+      <span className="norea-search-summary-query">"{query}"</span>
       <span>
         {t("globalSearch.summary.searched", {
           searched: searchedCount,
@@ -582,17 +582,17 @@ function SearchResultSection({
         });
 
   return (
-    <section className="lnr-search-result-row">
-      <Group className="lnr-search-result-head" gap="sm" wrap="nowrap">
-        <span className="lnr-search-source-icon">{pluginInitial(plugin)}</span>
-        <Box className="lnr-search-result-title">
+    <section className="norea-search-result-row">
+      <Group className="norea-search-result-head" gap="sm" wrap="nowrap">
+        <span className="norea-search-source-icon">{pluginInitial(plugin)}</span>
+        <Box className="norea-search-result-title">
           <Group gap={6} wrap="nowrap">
             <Text size="sm" fw={700} truncate>
               {plugin.name}
             </Text>
             {pinned ? (
               <span
-                className="lnr-icon-state"
+                className="norea-icon-state"
                 data-active="true"
                 role="img"
                 aria-label={t("common.pinned")}
@@ -608,7 +608,7 @@ function SearchResultSection({
           </Text>
         </Box>
         <ConsoleStatusDot status={status} label={statusLabel} />
-        <Group className="lnr-search-result-actions" gap={6} wrap="nowrap">
+        <Group className="norea-search-result-actions" gap={6} wrap="nowrap">
           {error ? (
             <>
               <IconButton
@@ -645,19 +645,19 @@ function SearchResultSection({
         <Alert
           color={cloudflare ? "yellow" : "red"}
           variant="light"
-          className="lnr-search-diagnostic"
+          className="norea-search-diagnostic"
         >
           {error}
         </Alert>
       ) : previewNovels.length > 0 && result ? (
-        <div className="lnr-search-preview-strip">
+        <div className="norea-search-preview-strip">
           {previewNovels.map((novel, index) => {
             const key = resultKey(result.pluginId, novel.path);
             return (
               <button
                 key={`${key}::${index}`}
                 type="button"
-                className="lnr-search-preview-card"
+                className="norea-search-preview-card"
                 data-selected={openingKey === key}
                 onClick={() => onOpen(result, novel)}
               >
@@ -668,7 +668,7 @@ function SearchResultSection({
                   plugin={plugin}
                   width={74}
                 />
-                <span className="lnr-search-preview-title" title={novel.name}>
+                <span className="norea-search-preview-title" title={novel.name}>
                   {novel.name}
                 </span>
               </button>
@@ -676,14 +676,14 @@ function SearchResultSection({
           })}
         </div>
       ) : row.pending ? (
-        <Group gap="sm" className="lnr-search-pending">
+        <Group gap="sm" className="norea-search-pending">
           <Loader size="xs" />
           <Text size="xs" c="dimmed">
             {t("globalSearch.waiting")}
           </Text>
         </Group>
       ) : (
-        <Text className="lnr-search-empty-row" size="sm" c="dimmed">
+        <Text className="norea-search-empty-row" size="sm" c="dimmed">
           {t("globalSearch.noResultsFromSource")}
         </Text>
       )}
@@ -1136,7 +1136,7 @@ export function PluginSearchSection({
   }, []);
 
   return (
-    <div className="lnr-search-console">
+    <div className="norea-search-console">
       {openingKey !== null ? (
         <BlockingLoadingOverlay
           cancelLabel={t("common.cancel")}
@@ -1168,8 +1168,8 @@ export function PluginSearchSection({
         onToggleSelectedPlugin={toggleSelectedPlugin}
       />
 
-      <section className="lnr-search-results">
-        <div className="lnr-search-result-heading">
+      <section className="norea-search-results">
+        <div className="norea-search-result-heading">
           <ConsoleSectionHeader
             title={t("globalSearch.searchInstalledSources")}
             count={t("globalSearch.eligibleCount", { count: installedCount })}

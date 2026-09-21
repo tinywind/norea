@@ -1283,7 +1283,7 @@ function ReaderContentInner(
 
   const viewportHeight =
     requestedViewportHeight ??
-    "calc(var(--lnr-app-content-height) - 3.75rem)";
+    "calc(var(--norea-app-content-height) - 3.75rem)";
   const viewportWidth = viewportSize.width;
   const viewportHeightPx =
     viewportSize.height > 0
@@ -2408,7 +2408,7 @@ function ReaderContentInner(
   const contentStyle = useMemo<CSSProperties>(
     () =>
       ({
-        "--lnr-reader-page-media-max-height": `${Math.max(
+        "--norea-reader-page-media-max-height": `${Math.max(
           1,
           viewportHeightPx - appearance.padding * 2,
         )}px`,
@@ -2453,7 +2453,7 @@ function ReaderContentInner(
     () =>
       isPagedReader
         ? ({
-            "--lnr-reader-page-column-width": `${pageColumnWidth}px`,
+            "--norea-reader-page-column-width": `${pageColumnWidth}px`,
             columnFill: "auto",
             columnWidth: `${pageColumnWidth}px`,
             columnGap: `${pageColumnGap}px`,
@@ -2565,7 +2565,7 @@ function ReaderContentInner(
             height: auto;
           }
           ${pagedMediaSelector} {
-            max-height: var(--lnr-reader-page-media-max-height);
+            max-height: var(--norea-reader-page-media-max-height);
             object-fit: contain;
           }
           ${pagedAtomicMediaSelector} {
@@ -2632,8 +2632,8 @@ function ReaderContentInner(
           .reader-viewport-paged.reader-viewport-multi-page .reader-content .reader-epub-body,
           .reader-viewport-paged.reader-viewport-multi-page .reader-content .reader-epub-body > .body {
             box-sizing: border-box;
-            max-width: var(--lnr-reader-page-column-width) !important;
-            width: var(--lnr-reader-page-column-width) !important;
+            max-width: var(--norea-reader-page-column-width) !important;
+            width: var(--norea-reader-page-column-width) !important;
           }
           .reader-viewport-paged.reader-viewport-multi-page::after {
             content: none;
@@ -2784,7 +2784,7 @@ function ReaderContentInner(
 
   return (
     <Box
-      className="lnr-reader-content-stage"
+      className="norea-reader-content-stage"
       style={{
         height: viewportHeight,
         background: appearance.backgroundColor,

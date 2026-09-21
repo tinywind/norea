@@ -117,7 +117,7 @@ function RefreshIcon({ spinning = false }: { spinning?: boolean }) {
   return (
     <svg
       aria-hidden="true"
-      className={spinning ? "lnr-downloads-spin-icon" : undefined}
+      className={spinning ? "norea-downloads-spin-icon" : undefined}
       viewBox="0 0 24 24"
     >
       <path d="M20 12a8 8 0 1 1-2.34-5.66" />
@@ -148,12 +148,12 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
 
 function DownloadCacheLoadingState() {
   return (
-    <Stack className="lnr-downloads-loading" gap="xs">
+    <Stack className="norea-downloads-loading" gap="xs">
       {[0, 1, 2].map((item) => (
-        <Paper className="lnr-downloads-novel" key={item} withBorder>
-          <div className="lnr-downloads-novel-row">
+        <Paper className="norea-downloads-novel" key={item} withBorder>
+          <div className="norea-downloads-novel-row">
             <Skeleton height={84} radius={3} width={56} />
-            <Box className="lnr-downloads-novel-main">
+            <Box className="norea-downloads-novel-main">
               <Skeleton height={14} radius={3} width="42%" />
               <Skeleton height={10} mt={10} radius={3} width="70%" />
               <Skeleton height={10} mt={8} radius={3} width="48%" />
@@ -217,20 +217,20 @@ function DownloadCacheChapterRow({
   ].join(" / ");
 
   return (
-    <div className="lnr-downloads-chapter-row">
-      <Box className="lnr-downloads-chapter-main">
-        <Text className="lnr-downloads-chapter-title" title={chapter.name}>
+    <div className="norea-downloads-chapter-row">
+      <Box className="norea-downloads-chapter-main">
+        <Text className="norea-downloads-chapter-title" title={chapter.name}>
           {chapter.name}
         </Text>
         <Text
-          className="lnr-downloads-chapter-status"
+          className="norea-downloads-chapter-status"
           component="div"
           title={chapterStatusText}
         >
           {chapterStatusText}
         </Text>
       </Box>
-      <Group className="lnr-downloads-row-actions" gap={6} wrap="nowrap">
+      <Group className="norea-downloads-row-actions" gap={6} wrap="nowrap">
         {chapter.mediaRepairNeeded ? (
           <Badge color="yellow" variant="light">
             {t("downloads.mediaFallback")}
@@ -238,7 +238,7 @@ function DownloadCacheChapterRow({
         ) : null}
         {chapter.mediaRepairNeeded ? (
           <IconButton
-            className="lnr-downloads-icon-button"
+            className="norea-downloads-icon-button"
             disabled={repairing || deleting}
             label={t("downloads.repairChapterMedia", { name: chapter.name })}
             onClick={onRepair}
@@ -249,7 +249,7 @@ function DownloadCacheChapterRow({
           </IconButton>
         ) : null}
         <IconButton
-          className="lnr-downloads-icon-button"
+          className="norea-downloads-icon-button"
           disabled={deleting}
           label={t("downloads.deleteChapter", { name: chapter.name })}
           onClick={onDelete}
@@ -312,15 +312,15 @@ function DownloadCacheChapters({
 
   if (chapters.isLoading) {
     return (
-      <div className="lnr-downloads-chapter-list">
-        <Text className="lnr-downloads-note">{t("downloads.chaptersLoading")}</Text>
+      <div className="norea-downloads-chapter-list">
+        <Text className="norea-downloads-note">{t("downloads.chaptersLoading")}</Text>
       </div>
     );
   }
 
   if (chapters.error) {
     return (
-      <div className="lnr-downloads-chapter-list">
+      <div className="norea-downloads-chapter-list">
         <Text c="red" size="sm">
           {chapters.error instanceof Error
             ? chapters.error.message
@@ -333,14 +333,14 @@ function DownloadCacheChapters({
   const rows = chapters.data ?? [];
   if (rows.length === 0) {
     return (
-      <div className="lnr-downloads-chapter-list">
-        <Text className="lnr-downloads-note">{t("downloads.chaptersEmpty")}</Text>
+      <div className="norea-downloads-chapter-list">
+        <Text className="norea-downloads-note">{t("downloads.chaptersEmpty")}</Text>
       </div>
     );
   }
 
   return (
-    <div className="lnr-downloads-chapter-list">
+    <div className="norea-downloads-chapter-list">
       {rows.map((chapter) => (
         <DownloadCacheChapterRow
           key={chapter.id}
@@ -442,32 +442,32 @@ function DownloadCacheNovelCard({
   const toggleLabel = expanded ? t("downloads.collapse") : t("downloads.expand");
 
   return (
-    <Paper className="lnr-downloads-novel" component="article" withBorder>
-      <div className="lnr-downloads-novel-row">
+    <Paper className="norea-downloads-novel" component="article" withBorder>
+      <div className="norea-downloads-novel-row">
         <ConsoleCover
           alt={novel.novelName}
           height={84}
           src={coverSource}
           width={56}
         />
-        <Box className="lnr-downloads-novel-main">
+        <Box className="norea-downloads-novel-main">
           <Text
-            className="lnr-downloads-novel-title"
+            className="norea-downloads-novel-title"
             component="h2"
             title={novel.novelName}
           >
             {novel.novelName}
           </Text>
           <Text
-            className="lnr-downloads-novel-status"
+            className="norea-downloads-novel-status"
             component="div"
             title={statusText}
           >
             {statusText}
           </Text>
-          <div className="lnr-downloads-novel-badge-line">
+          <div className="norea-downloads-novel-badge-line">
             <Badge
-              className="lnr-downloads-library-badge"
+              className="norea-downloads-library-badge"
               color={novel.inLibrary ? "green" : "gray"}
               title={libraryLabel}
               variant="light"
@@ -476,7 +476,7 @@ function DownloadCacheNovelCard({
             </Badge>
             {novel.mediaRepairNeededChapters > 0 ? (
               <Badge
-                className="lnr-downloads-library-badge"
+                className="norea-downloads-library-badge"
                 color="yellow"
                 title={t("downloads.mediaFallback")}
                 variant="light"
@@ -487,7 +487,7 @@ function DownloadCacheNovelCard({
           </div>
         </Box>
         <Group
-          className="lnr-downloads-row-actions"
+          className="norea-downloads-row-actions"
           gap={6}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => event.stopPropagation()}
@@ -496,7 +496,7 @@ function DownloadCacheNovelCard({
           <IconButton
             active={expanded}
             aria-expanded={expanded}
-            className="lnr-downloads-icon-button"
+            className="norea-downloads-icon-button"
             disabled={novelDeleting}
             label={toggleLabel}
             onClick={() => setExpanded((current) => !current)}
@@ -506,7 +506,7 @@ function DownloadCacheNovelCard({
             <ChevronIcon expanded={expanded} />
           </IconButton>
           <IconButton
-            className="lnr-downloads-icon-button"
+            className="norea-downloads-icon-button"
             disabled={novelDeleting}
             label={t("downloads.openNovel")}
             onClick={onOpenNovel}
@@ -516,7 +516,7 @@ function DownloadCacheNovelCard({
             <DetailsGlyph />
           </IconButton>
           <IconButton
-            className="lnr-downloads-icon-button"
+            className="norea-downloads-icon-button"
             disabled={novelDeleting}
             label={t("downloads.deleteNovel", { name: novel.novelName })}
             onClick={() => {
@@ -603,7 +603,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
   const totalSize = formatBytes(totals.bytes, locale);
 
   return (
-    <PageFrame className="lnr-downloads-page" size="wide">
+    <PageFrame className="norea-downloads-page" size="wide">
       <PageHeader
         title={t("downloads.title")}
         description={t("downloads.description")}
@@ -629,7 +629,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
           <>
             <IconButton
               active={mediaFallbackOnly}
-              className="lnr-downloads-header-button"
+              className="norea-downloads-header-button"
               disabled={totals.repairNeeded === 0}
               label={t("downloads.filterMediaFallback")}
               onClick={() =>
@@ -641,7 +641,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               <RetryGlyph />
             </IconButton>
             <IconButton
-              className="lnr-downloads-header-button"
+              className="norea-downloads-header-button"
               disabled={query.isFetching}
               label={t("downloads.refresh")}
               onClick={() => {
@@ -653,7 +653,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               <RefreshIcon spinning={query.isFetching} />
             </IconButton>
             <IconButton
-              className="lnr-downloads-header-button"
+              className="norea-downloads-header-button"
               disabled={rows.length === 0 || deleteActivity.all}
               label={t("downloads.deleteAll")}
               onClick={() => {
@@ -675,7 +675,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
         }
       />
 
-      <div className="lnr-downloads-body">
+      <div className="norea-downloads-body">
         {query.isLoading ? (
           <DownloadCacheLoadingState />
         ) : query.error ? (

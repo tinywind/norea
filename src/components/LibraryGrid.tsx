@@ -50,8 +50,8 @@ export function LibraryGrid({
   const { t } = useTranslation();
 
   return displayMode === "list" ? (
-    <div className="lnr-library-table" role="table">
-      <div className="lnr-library-table-header" role="row">
+    <div className="norea-library-table" role="table">
+      <div className="norea-library-table-header" role="row">
         <span />
         <span />
         <span>{t("library.grid.titleAuthor")}</span>
@@ -74,13 +74,13 @@ export function LibraryGrid({
       ))}
     </div>
   ) : (
-    <div className="lnr-library-grid-panel">
+    <div className="norea-library-grid-panel">
       <div
-        className="lnr-library-grid"
+        className="norea-library-grid"
         data-mode={displayMode}
         style={
           {
-            "--lnr-library-grid-columns": novelsPerRow,
+            "--norea-library-grid-columns": novelsPerRow,
           } as CSSProperties
         }
       >
@@ -213,13 +213,13 @@ const LibraryTableRow = memo(function LibraryTableRow({
 
   return (
     <LibraryInteractiveItem
-      className="lnr-library-table-row"
+      className="norea-library-table-row"
       novelId={novel.id}
       onActivate={onActivate}
       onLongPress={onLongPress}
       selected={selected}
     >
-      <span className="lnr-library-row-marker">
+      <span className="norea-library-row-marker">
         {showNumberBadges ? (
           index + 1
         ) : (
@@ -227,28 +227,28 @@ const LibraryTableRow = memo(function LibraryTableRow({
         )}
       </span>
       <ConsoleCover alt={novel.name} height={42} src={coverSource} width={28} />
-      <span className="lnr-library-title-cell">
-        <span className="lnr-library-title">{novel.name}</span>
-        <span className="lnr-library-subtitle">
+      <span className="norea-library-title-cell">
+        <span className="norea-library-title">{novel.name}</span>
+        <span className="norea-library-subtitle">
           {getCreatorLabel(novel, t)}
         </span>
       </span>
-      <span className="lnr-library-source">{getSourceLabel(novel, t)}</span>
-      <span className="lnr-library-progress-cell">
+      <span className="norea-library-source">{getSourceLabel(novel, t)}</span>
+      <span className="norea-library-progress-cell">
         <ConsoleProgress
           status={progress >= 100 ? "done" : "active"}
           value={progress}
         />
-        <span className="lnr-library-percent">{progress}%</span>
+        <span className="norea-library-percent">{progress}%</span>
       </span>
-      <span className="lnr-library-unread" data-active={hasUnread}>
+      <span className="norea-library-unread" data-active={hasUnread}>
         {hasUnread ? `+${novel.chaptersUnread}` : "-"}
       </span>
-      <span className="lnr-library-updated">
+      <span className="norea-library-updated">
         {formatRelativeTimeForLocale(locale, novel.lastUpdatedAt, "compact")}
       </span>
       <span
-        className="lnr-library-actions"
+        className="norea-library-actions"
         data-downloaded={downloadProgress > 0}
         title={status.label}
       >
@@ -279,15 +279,15 @@ const LibraryCard = memo(function LibraryCard({
 
   return (
     <LibraryInteractiveItem
-      className="lnr-library-card"
+      className="norea-library-card"
       novelId={novel.id}
       onActivate={onActivate}
       onLongPress={onLongPress}
       selected={selected}
     >
-      <div className="lnr-library-card-cover">
+      <div className="norea-library-card-cover">
         {showNumberBadges ? (
-          <span className="lnr-library-card-number">{index + 1}</span>
+          <span className="norea-library-card-number">{index + 1}</span>
         ) : null}
         <ConsoleCover
           alt={novel.name}
@@ -297,19 +297,19 @@ const LibraryCard = memo(function LibraryCard({
         />
       </div>
       {coverOnly ? null : (
-        <div className="lnr-library-card-body">
-          <span className="lnr-library-title">{novel.name}</span>
-          <span className="lnr-library-subtitle">
+        <div className="norea-library-card-body">
+          <span className="norea-library-title">{novel.name}</span>
+          <span className="norea-library-subtitle">
             {getCreatorLabel(novel, t)}
           </span>
-          <div className="lnr-library-card-progress">
+          <div className="norea-library-card-progress">
             <ConsoleProgress
               status={readingProgress >= 100 ? "done" : "active"}
               value={readingProgress}
             />
-            <span className="lnr-library-percent">{readingProgress}%</span>
+            <span className="norea-library-percent">{readingProgress}%</span>
           </div>
-          <div className="lnr-library-card-meta">
+          <div className="norea-library-card-meta">
             <ConsoleStatusDot label={status.label} status={status.tone} />
             {showUnreadBadges && novel.chaptersUnread > 0 ? (
               <ConsoleChip tone="accent">

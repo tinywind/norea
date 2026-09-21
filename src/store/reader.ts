@@ -131,7 +131,7 @@ const WEBTOON_STRIP_CSS = createWebtoonStripCss("0 auto");
 const WEBTOON_STRIP_SPACED_CSS = createWebtoonStripCss("0 auto 1rem");
 
 const PAGE_FIT_MEDIA_CSS = `.reader-viewport-paged .reader-content {
-  --lnr-page-fit-media-height: var(--lnr-reader-page-media-max-height, 100dvh);
+  --norea-page-fit-media-height: var(--norea-reader-page-media-max-height, 100dvh);
 }
 
 .reader-viewport-paged .reader-content :where(p, div, figure, a):has(> :where(img, picture, svg, video, canvas):only-child) {
@@ -142,7 +142,7 @@ const PAGE_FIT_MEDIA_CSS = `.reader-viewport-paged .reader-content {
 .reader-viewport-paged .reader-content :where(img, picture, svg, video, canvas) {
   display: block !important;
   max-width: 100% !important;
-  max-height: var(--lnr-page-fit-media-height) !important;
+  max-height: var(--norea-page-fit-media-height) !important;
   width: auto !important;
   height: auto !important;
   object-fit: contain !important;
@@ -150,13 +150,13 @@ const PAGE_FIT_MEDIA_CSS = `.reader-viewport-paged .reader-content {
 }
 
 .reader-viewport-paged .reader-content picture > img {
-  max-height: var(--lnr-page-fit-media-height) !important;
+  max-height: var(--norea-page-fit-media-height) !important;
   width: auto !important;
   height: auto !important;
 }`;
 
 const LEGACY_PAGE_FIT_MEDIA_CSS = PAGE_FIT_MEDIA_CSS.replace(
-  "var(--lnr-reader-page-media-max-height, 100dvh)",
+  "var(--norea-reader-page-media-max-height, 100dvh)",
   "calc(100dvh - 8rem)",
 );
 

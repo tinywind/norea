@@ -20,8 +20,8 @@ export function BackIconButton({
     <IconButton
       className={
         className
-          ? `lnr-back-icon-button ${className}`
-          : "lnr-back-icon-button"
+          ? `norea-back-icon-button ${className}`
+          : "norea-back-icon-button"
       }
       label={resolvedLabel}
       onClick={onClick}

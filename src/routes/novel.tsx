@@ -379,7 +379,7 @@ function useAutoFitNovelTitle(title: string, enabled: boolean) {
         NOVEL_TITLE_FONT_SIZES[NOVEL_TITLE_FONT_SIZES.length - 1];
 
       for (const size of NOVEL_TITLE_FONT_SIZES) {
-        element.style.setProperty("--lnr-novel-title-font-size", size);
+        element.style.setProperty("--norea-novel-title-font-size", size);
         if (!overflows()) {
           nextFontSize = size;
           break;
@@ -387,7 +387,7 @@ function useAutoFitNovelTitle(title: string, enabled: boolean) {
       }
 
       element.style.setProperty(
-        "--lnr-novel-title-font-size",
+        "--norea-novel-title-font-size",
         nextFontSize,
       );
       setFontSize((currentFontSize) =>
@@ -421,7 +421,7 @@ function useAutoFitNovelTitle(title: string, enabled: boolean) {
   return {
     titleRef,
     titleStyle: {
-      "--lnr-novel-title-font-size": fontSize,
+      "--norea-novel-title-font-size": fontSize,
     } as CSSProperties,
   };
 }
@@ -482,7 +482,7 @@ function isChapterInteractiveTarget(target: EventTarget | null): boolean {
     target instanceof HTMLElement &&
     Boolean(
       target.closest(
-        "button, input, .lnr-novel-chapter-drag-handle, .lnr-novel-chapter-selection",
+        "button, input, .norea-novel-chapter-drag-handle, .norea-novel-chapter-selection",
       ),
     )
   );
@@ -633,8 +633,8 @@ function ChapterListItem({
   return (
     <div
       ref={setNodeRef}
-      className={`lnr-novel-chapter-row${
-        isCurrent ? " lnr-novel-chapter-row--current" : ""
+      className={`norea-novel-chapter-row${
+        isCurrent ? " norea-novel-chapter-row--current" : ""
       }`}
       role="button"
       tabIndex={0}
@@ -672,7 +672,7 @@ function ChapterListItem({
         if (
           event.target instanceof HTMLElement &&
           event.target.closest(
-            ".lnr-novel-chapter-drag-handle, .lnr-novel-chapter-selection",
+            ".norea-novel-chapter-drag-handle, .norea-novel-chapter-selection",
           )
         ) {
           return;
@@ -692,7 +692,7 @@ function ChapterListItem({
       style={style}
     >
       <label
-        className="lnr-novel-chapter-selection"
+        className="norea-novel-chapter-selection"
         onClick={(event) => event.stopPropagation()}
       >
         <input
@@ -710,7 +710,7 @@ function ChapterListItem({
           {...(canDrag ? listeners : undefined)}
           aria-disabled={!canDrag}
           aria-label={t("novel.local.dragChapter")}
-          className="lnr-novel-chapter-drag-handle"
+          className="norea-novel-chapter-drag-handle"
           data-disabled={canDrag ? undefined : "true"}
           onClick={(event) => event.stopPropagation()}
           role="button"
@@ -720,38 +720,38 @@ function ChapterListItem({
           <DragHandleGlyph />
         </span>
       ) : null}
-      <div className="lnr-novel-chapter-position">
+      <div className="norea-novel-chapter-position">
         <span>{formatChapterPosition(chapter.position)}</span>
         {isCurrent ? (
           <span
             aria-label={t("common.current")}
-            className="lnr-novel-chapter-current-dot"
+            className="norea-novel-chapter-current-dot"
             role="img"
             title={t("common.current")}
           />
         ) : null}
       </div>
 
-      <div className="lnr-novel-chapter-main">
-        <div className="lnr-novel-chapter-title-line">
+      <div className="norea-novel-chapter-main">
+        <div className="norea-novel-chapter-title-line">
           <Text
-            className="lnr-novel-chapter-title"
+            className="norea-novel-chapter-title"
             data-read={!chapter.unread}
             title={chapter.name}
           >
             {chapter.name}
           </Text>
         </div>
-        <div className="lnr-novel-chapter-meta-row">
+        <div className="norea-novel-chapter-meta-row">
           {releaseTime ? (
-            <Text className="lnr-novel-chapter-meta">{releaseTime}</Text>
+            <Text className="norea-novel-chapter-meta">{releaseTime}</Text>
           ) : null}
-          <span className="lnr-novel-chapter-percent lnr-novel-chapter-percent--inline">
+          <span className="norea-novel-chapter-percent norea-novel-chapter-percent--inline">
             {progress}%
           </span>
           {hasChapterFlags ? (
             <span
-              className="lnr-novel-chapter-flags lnr-novel-chapter-flags--inline"
+              className="norea-novel-chapter-flags norea-novel-chapter-flags--inline"
               aria-label={t("novel.chapterStatus")}
             >
               {renderChapterFlags()}
@@ -762,22 +762,22 @@ function ChapterListItem({
 
       {hasChapterFlags ? (
         <div
-          className="lnr-novel-chapter-flags lnr-novel-chapter-flags--desktop"
+          className="norea-novel-chapter-flags norea-novel-chapter-flags--desktop"
           aria-label={t("novel.chapterStatus")}
         >
           {renderChapterFlags()}
         </div>
       ) : null}
 
-      <div className="lnr-novel-chapter-progress">
+      <div className="norea-novel-chapter-progress">
         <ConsoleProgress value={progress} status={progressStatus} />
         <span>{progress}%</span>
       </div>
 
-      <div className="lnr-novel-chapter-actions">
+      <div className="norea-novel-chapter-actions">
         {showDownloadButton ? (
           <IconButton
-            className="lnr-novel-icon-button"
+            className="norea-novel-icon-button"
             label={downloadActionLabel}
             size="lg"
             title={failedMessage ?? downloadActionLabel}
@@ -792,7 +792,7 @@ function ChapterListItem({
         ) : null}
         {chapter.isDownloaded && chapter.mediaRepairNeeded ? (
           <IconButton
-            className="lnr-novel-icon-button"
+            className="norea-novel-icon-button"
             data-busy={repairBusy ? "true" : undefined}
             disabled={repairBusy}
             label={t("novel.repairChapterMedia")}
@@ -807,7 +807,7 @@ function ChapterListItem({
         ) : null}
         {chapter.isDownloaded && canDeleteDownload ? (
           <IconButton
-            className="lnr-novel-icon-button"
+            className="norea-novel-icon-button"
             data-busy={deleteBusy ? "true" : undefined}
             disabled={deleteBusy}
             label={t("novel.deleteDownloadedChapter")}
@@ -955,16 +955,16 @@ function VirtualChapterList({
 
   const chapterList = (
     <div
-      className="lnr-novel-chapter-list"
+      className="norea-novel-chapter-list"
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       ref={viewportRef}
     >
       <div
-        className="lnr-novel-chapter-list-spacer"
+        className="norea-novel-chapter-list-spacer"
         style={{ height: totalHeight }}
       >
         <div
-          className="lnr-novel-chapter-list-window"
+          className="norea-novel-chapter-list-window"
           style={{ transform: `translateY(${offsetY}px)` }}
         >
           {visibleChapters.map((chapter, index) => {
@@ -1034,7 +1034,7 @@ function ChapterFlag({
     <Tooltip label={label} openDelay={350} withArrow>
       <span
         aria-label={label}
-        className="lnr-novel-chapter-flag"
+        className="norea-novel-chapter-flag"
         data-tone={tone}
         role="img"
         title={label}
@@ -1121,7 +1121,7 @@ function NovelActionButton({
     <IconButton
       active={active}
       aria-pressed={pressed}
-      className="lnr-novel-icon-button"
+      className="norea-novel-icon-button"
       disabled={disabled}
       label={label}
       onClick={onClick}
@@ -1151,7 +1151,7 @@ function NovelBatchDownloadMenu({
     >
       <Popover.Target>
         <IconButton
-          className="lnr-novel-icon-button"
+          className="norea-novel-icon-button"
           disabled={disabled}
           label={t("novel.batchDownload.open")}
           onClick={() => setOpened((current) => !current)}
@@ -1160,11 +1160,11 @@ function NovelBatchDownloadMenu({
           <DownloadGlyph />
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-novel-batch-download-menu">
-        <div className="lnr-novel-batch-download-list">
+      <Popover.Dropdown className="norea-novel-batch-download-menu">
+        <div className="norea-novel-batch-download-list">
           {options.map((option) => (
             <button
-              className="lnr-novel-batch-download-option"
+              className="norea-novel-batch-download-option"
               disabled={option.chapters.length === 0}
               key={option.key}
               onClick={() => {
@@ -1173,10 +1173,10 @@ function NovelBatchDownloadMenu({
               }}
               type="button"
             >
-              <span className="lnr-novel-batch-download-label">
+              <span className="norea-novel-batch-download-label">
                 {option.label}
               </span>
-              <span className="lnr-novel-batch-download-description">
+              <span className="norea-novel-batch-download-description">
                 {option.description}
               </span>
             </button>
@@ -1207,7 +1207,7 @@ function ChapterRelativeReadMenu({
     >
       <Popover.Target>
         <IconButton
-          className="lnr-novel-selection-icon"
+          className="norea-novel-selection-icon"
           disabled={busy || (beforeCount === 0 && afterCount === 0)}
           label={t("novel.selection.moreActions")}
           onClick={() => setOpened((current) => !current)}
@@ -1217,10 +1217,10 @@ function ChapterRelativeReadMenu({
           {busy ? <Loader size={14} /> : <MoreGlyph />}
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-novel-batch-download-menu">
-        <div className="lnr-novel-batch-download-list">
+      <Popover.Dropdown className="norea-novel-batch-download-menu">
+        <div className="norea-novel-batch-download-list">
           <button
-            className="lnr-novel-batch-download-option"
+            className="norea-novel-batch-download-option"
             disabled={busy || beforeCount === 0}
             onClick={() => {
               onMarkPreviousRead();
@@ -1228,17 +1228,17 @@ function ChapterRelativeReadMenu({
             }}
             type="button"
           >
-            <span className="lnr-novel-batch-download-label">
+            <span className="norea-novel-batch-download-label">
               {t("novel.selection.markPreviousRead")}
             </span>
-            <span className="lnr-novel-batch-download-description">
+            <span className="norea-novel-batch-download-description">
               {t("novel.selection.markPreviousReadDescription", {
                 count: beforeCount,
               })}
             </span>
           </button>
           <button
-            className="lnr-novel-batch-download-option"
+            className="norea-novel-batch-download-option"
             disabled={busy || afterCount === 0}
             onClick={() => {
               onMarkFollowingUnread();
@@ -1246,10 +1246,10 @@ function ChapterRelativeReadMenu({
             }}
             type="button"
           >
-            <span className="lnr-novel-batch-download-label">
+            <span className="norea-novel-batch-download-label">
               {t("novel.selection.markFollowingUnread")}
             </span>
-            <span className="lnr-novel-batch-download-description">
+            <span className="norea-novel-batch-download-description">
               {t("novel.selection.markFollowingUnreadDescription", {
                 count: afterCount,
               })}
@@ -1281,7 +1281,7 @@ function NovelMetadataRefreshMenu({
     >
       <Popover.Target>
         <IconButton
-          className="lnr-novel-icon-button"
+          className="norea-novel-icon-button"
           disabled={busy}
           label={t("novel.refreshMetadataMenu")}
           onClick={() => setOpened((current) => !current)}
@@ -1290,10 +1290,10 @@ function NovelMetadataRefreshMenu({
           {busy ? <Loader size={14} /> : <RefreshGlyph />}
         </IconButton>
       </Popover.Target>
-      <Popover.Dropdown className="lnr-novel-batch-download-menu">
-        <div className="lnr-novel-batch-download-list">
+      <Popover.Dropdown className="norea-novel-batch-download-menu">
+        <div className="norea-novel-batch-download-list">
           <button
-            className="lnr-novel-batch-download-option"
+            className="norea-novel-batch-download-option"
             disabled={busy}
             onClick={() => {
               onRefresh();
@@ -1301,15 +1301,15 @@ function NovelMetadataRefreshMenu({
             }}
             type="button"
           >
-            <span className="lnr-novel-batch-download-label">
+            <span className="norea-novel-batch-download-label">
               {t("novel.refreshMetadata")}
             </span>
-            <span className="lnr-novel-batch-download-description">
+            <span className="norea-novel-batch-download-description">
               {t("novel.refreshMetadataDescription")}
             </span>
           </button>
           <button
-            className="lnr-novel-batch-download-option"
+            className="norea-novel-batch-download-option"
             disabled={busy}
             onClick={() => {
               onFullRefresh();
@@ -1317,10 +1317,10 @@ function NovelMetadataRefreshMenu({
             }}
             type="button"
           >
-            <span className="lnr-novel-batch-download-label">
+            <span className="norea-novel-batch-download-label">
               {t("novel.refreshMetadataFull")}
             </span>
-            <span className="lnr-novel-batch-download-description">
+            <span className="norea-novel-batch-download-description">
               {t("novel.refreshMetadataFullDescription")}
             </span>
           </button>
@@ -1343,7 +1343,7 @@ function ChapterSortPicker({ onChange, value }: ChapterSortPickerProps) {
   return (
     <IconButton
       active={value === "desc"}
-      className="lnr-novel-icon-button lnr-novel-chapter-sort-button"
+      className="norea-novel-icon-button norea-novel-chapter-sort-button"
       data-sort-direction={value}
       label={activeLabel}
       onClick={() => onChange(nextValue)}
@@ -1372,7 +1372,7 @@ function NovelReadButton({
 }: NovelReadButtonProps) {
   return (
     <IconButton
-      className="lnr-novel-read-icon-button"
+      className="norea-novel-read-icon-button"
       disabled={disabled}
       label={label}
       onClick={onClick}
@@ -1444,7 +1444,7 @@ function AlertIcon() {
 
 function SpinnerIcon() {
   return (
-    <svg className="lnr-novel-spin-icon" aria-hidden="true" viewBox="0 0 24 24">
+    <svg className="norea-novel-spin-icon" aria-hidden="true" viewBox="0 0 24 24">
       <path d="M12 3a9 9 0 1 1-8.49 6" />
     </svg>
   );
@@ -1584,7 +1584,7 @@ function NovelWorkspace({
     [batchDownloadOptions],
   );
   const renderCoverPanel = () => (
-    <ConsolePanel className="lnr-novel-cover-panel">
+    <ConsolePanel className="norea-novel-cover-panel">
       <ConsoleCover
         alt={novel.name}
         height={204}
@@ -1596,9 +1596,9 @@ function NovelWorkspace({
 
   const renderGenreTags = () =>
     genres.length > 0 ? (
-      <div className="lnr-novel-tags-row" aria-label={t("library.tags.title")}>
+      <div className="norea-novel-tags-row" aria-label={t("library.tags.title")}>
         {genres.map((genre) => (
-          <span className="lnr-novel-genre-chip" key={genre}>
+          <span className="norea-novel-genre-chip" key={genre}>
             <ConsoleChip>{genre}</ConsoleChip>
           </span>
         ))}
@@ -1606,7 +1606,7 @@ function NovelWorkspace({
     ) : null;
 
   const renderActionGroup = () => (
-    <div className="lnr-novel-title-actions">
+    <div className="norea-novel-title-actions">
       {novel.isLocal ? (
         <>
           <NovelActionButton
@@ -1681,30 +1681,30 @@ function NovelWorkspace({
   );
 
   const renderInfoPanel = (isDesktop: boolean) => (
-    <ConsolePanel className="lnr-novel-info-panel">
-      <div className="lnr-novel-title-row">
-        <BackIconButton className="lnr-novel-icon-button" onClick={onBack} />
-        <div className="lnr-novel-title-copy">
+    <ConsolePanel className="norea-novel-info-panel">
+      <div className="norea-novel-title-row">
+        <BackIconButton className="norea-novel-icon-button" onClick={onBack} />
+        <div className="norea-novel-title-copy">
           <Title
-            className="lnr-novel-title"
+            className="norea-novel-title"
             order={1}
             ref={isDesktop ? titleRef : undefined}
             style={isDesktop ? titleStyle : undefined}
           >
             {novel.name}
           </Title>
-          <Group className="lnr-novel-meta-row" gap="xs" mt={6} wrap="wrap">
+          <Group className="norea-novel-meta-row" gap="xs" mt={6} wrap="wrap">
             {novel.author ? (
-              <Text className="lnr-novel-meta">
+              <Text className="norea-novel-meta">
                 {t("novel.author", { name: novel.author })}
               </Text>
             ) : null}
             {novel.artist && novel.artist !== novel.author ? (
-              <Text className="lnr-novel-meta">
+              <Text className="norea-novel-meta">
                 {t("novel.artist", { name: novel.artist })}
               </Text>
             ) : null}
-            <Text className="lnr-novel-meta">
+            <Text className="norea-novel-meta">
               {t("novel.source", {
                 name: sourceName,
               })}
@@ -1714,24 +1714,24 @@ function NovelWorkspace({
         {isDesktop ? renderActionGroup() : null}
       </div>
 
-      <div className="lnr-novel-status-block">
-        <Group className="lnr-novel-identity-strip" gap="xs" wrap="wrap">
+      <div className="norea-novel-status-block">
+        <Group className="norea-novel-identity-strip" gap="xs" wrap="wrap">
           {novel.status ? (
             <ConsoleChip tone="accent">{novel.status}</ConsoleChip>
           ) : null}
           {novel.isLocal ? <ConsoleChip>{t("common.local")}</ConsoleChip> : null}
         </Group>
 
-        <div className="lnr-novel-progress-row">
-          <div className="lnr-novel-progress-block">
-            <div className="lnr-novel-progress-line">
+        <div className="norea-novel-progress-row">
+          <div className="norea-novel-progress-block">
+            <div className="norea-novel-progress-line">
               <ConsoleProgress
                 value={readPercent}
                 status={readPercent >= 100 ? "done" : "active"}
               />
               <span>{t("novel.percentRead", { progress: readPercent })}</span>
             </div>
-            <div className="lnr-novel-read-actions">
+            <div className="norea-novel-read-actions">
               <NovelReadButton
                 disabled={!lastReadChapter}
                 label={t("novel.continueReading")}
@@ -1757,14 +1757,14 @@ function NovelWorkspace({
 
   const renderSummaryPanel = () => (
     <ConsolePanel
-      className="lnr-novel-summary-panel"
+      className="norea-novel-summary-panel"
       title={t("common.summary")}
     >
-      <div className="lnr-novel-summary-content">
+      <div className="norea-novel-summary-content">
         {novel.summary ? (
-          <Text className="lnr-novel-summary-text">{novel.summary}</Text>
+          <Text className="norea-novel-summary-text">{novel.summary}</Text>
         ) : (
-          <Text className="lnr-novel-empty-copy">{t("novel.noSummary")}</Text>
+          <Text className="norea-novel-empty-copy">{t("novel.noSummary")}</Text>
         )}
         {renderGenreTags()}
       </div>
@@ -1772,17 +1772,17 @@ function NovelWorkspace({
   );
 
   return (
-    <div className="lnr-novel-workspace">
+    <div className="norea-novel-workspace">
       {isDesktopLayout ? (
-        <div className="lnr-novel-hero-desktop">
+        <div className="norea-novel-hero-desktop">
           {renderCoverPanel()}
           {renderInfoPanel(true)}
           {renderSummaryPanel()}
         </div>
       ) : (
-        <div className="lnr-novel-hero-mobile">
+        <div className="norea-novel-hero-mobile">
           {renderInfoPanel(false)}
-          <div className="lnr-novel-cover-summary-card">
+          <div className="norea-novel-cover-summary-card">
             {renderCoverPanel()}
             {renderSummaryPanel()}
           </div>
@@ -2611,8 +2611,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   return (
     <>
-      <PageFrame className="lnr-novel-page" size="wide">
-        <div className="lnr-novel-layout">
+      <PageFrame className="norea-novel-page" size="wide">
+        <div className="norea-novel-layout">
           <NovelWorkspace
             key={novel.id}
             novel={novel}
@@ -2637,7 +2637,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             toggleBusy={toggle.isPending}
           />
 
-          <ConsolePanel className="lnr-novel-chapters-panel">
+          <ConsolePanel className="norea-novel-chapters-panel">
             <ConsoleSectionHeader
               actions={
                 <ChapterSortPicker
@@ -2655,15 +2655,15 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             />
 
             {chapterSelectionMode ? (
-              <div className="lnr-novel-selection-strip">
+              <div className="norea-novel-selection-strip">
                 <span>
                   {t("novel.selection.selectedCount", {
                     count: selectedChapterCount,
                   })}
                 </span>
-                <div className="lnr-novel-selection-actions">
+                <div className="norea-novel-selection-actions">
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     disabled={allChaptersSelected}
                     label={t("novel.selection.selectAll")}
                     onClick={selectAllChapters}
@@ -2673,7 +2673,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     <CheckGlyph />
                   </IconButton>
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     disabled={selectedChapterCount === 0}
                     label={t("novel.selection.clearSelected")}
                     onClick={clearSelectedChapters}
@@ -2683,7 +2683,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     <SelectionClearIcon />
                   </IconButton>
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     disabled={
                       selectedDownloadTargets.length === 0 || chapterSelectionBusy
                     }
@@ -2703,7 +2703,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     <DownloadGlyph />
                   </IconButton>
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     disabled={
                       novel.isLocal ||
                       selectedDownloadedChapterIds.length === 0 ||
@@ -2741,7 +2741,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     )}
                   </IconButton>
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     disabled={selectedUnreadCount === 0 || chapterSelectionBusy}
                     label={t("novel.selection.markRead")}
                     onClick={() =>
@@ -2761,7 +2761,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     )}
                   </IconButton>
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     disabled={selectedReadCount === 0 || chapterSelectionBusy}
                     label={t("novel.selection.markUnread")}
                     onClick={() =>
@@ -2802,7 +2802,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     />
                   ) : null}
                   <IconButton
-                    className="lnr-novel-selection-icon"
+                    className="norea-novel-selection-icon"
                     label={t("novel.selection.close")}
                     onClick={closeChapterSelectionMode}
                     size="sm"
@@ -2815,13 +2815,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             ) : null}
 
             {localChapterError ? (
-              <Text c="red" className="lnr-novel-local-error" size="sm">
+              <Text c="red" className="norea-novel-local-error" size="sm">
                 {localChapterError}
               </Text>
             ) : null}
 
             {metadataRefreshError ? (
-              <Text c="red" className="lnr-novel-local-error" size="sm">
+              <Text c="red" className="norea-novel-local-error" size="sm">
                 {metadataRefreshError instanceof Error
                   ? metadataRefreshError.message
                   : String(metadataRefreshError)}
@@ -2888,7 +2888,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       <input
         ref={localChapterInputRef}
         accept={LOCAL_IMPORT_ACCEPT}
-        className="lnr-novel-file-input"
+        className="norea-novel-file-input"
         multiple
         onChange={handleLocalChapterFilesSelected}
         type="file"
@@ -2896,8 +2896,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
       <Drawer
         classNames={{
-          body: "lnr-reader-settings-drawer-body",
-          content: "lnr-reader-settings-drawer-content",
+          body: "norea-reader-settings-drawer-body",
+          content: "norea-reader-settings-drawer-content",
         }}
         opened={readerSettingsOpen}
         onClose={() => setReaderSettingsOpen(false)}

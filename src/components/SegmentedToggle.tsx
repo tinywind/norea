@@ -24,19 +24,19 @@ export function SegmentedToggle({
   return (
     <SegmentedControl
       {...props}
-      className={joinClassNames("lnr-segmented-toggle", className)}
+      className={joinClassNames("norea-segmented-toggle", className)}
       classNames={{
         ...classNames,
         control: joinClassNames(
-          "lnr-segmented-toggle-control",
+          "norea-segmented-toggle-control",
           classNames?.control,
         ),
         indicator: joinClassNames(
-          "lnr-segmented-toggle-indicator",
+          "norea-segmented-toggle-indicator",
           classNames?.indicator,
         ),
         label: joinClassNames(
-          "lnr-segmented-toggle-label",
+          "norea-segmented-toggle-label",
           classNames?.label,
         ),
       }}

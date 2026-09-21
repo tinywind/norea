@@ -87,7 +87,7 @@ describe("Android scraper navigation", () => {
     });
     expect(payload).not.toHaveProperty("resetHistory");
 
-    window.__lnrAndroidScraperResolve?.(
+    window.__noreaAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({ ok: true, result: true }),
     );
@@ -141,7 +141,7 @@ describe("Android scraper browser state", () => {
     };
     expect(payload.sourceId).toBe("source-a");
 
-    window.__lnrAndroidScraperResolve?.(
+    window.__noreaAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({
         ok: true,
@@ -180,7 +180,7 @@ describe("Android scraper cookie clearing", () => {
       sourceId: "source-a",
       url: "https://example.com/",
     });
-    window.__lnrAndroidScraperResolve?.(
+    window.__noreaAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({ ok: true, result: 3 }),
     );
@@ -205,7 +205,7 @@ describe("Android scraper cache clearing", () => {
       id: string;
     };
 
-    window.__lnrAndroidScraperResolve?.(
+    window.__noreaAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({ ok: true, result: null }),
     );
@@ -247,7 +247,7 @@ describe("Android scraper extraction", () => {
       url: "https://example.com/chapter/1",
     });
     expect(payload).not.toHaveProperty("pageCachePolicy");
-    window.__lnrAndroidScraperResolve?.(
+    window.__noreaAndroidScraperResolve?.(
       payload.id,
       JSON.stringify({ ok: true, result: "captured" }),
     );
@@ -320,8 +320,8 @@ describe("Android scraper bridge init script", () => {
   const script =
     '__evaluated.push(location.pathname); window.ReactNativeWebView.postMessage("result:" + location.pathname);';
   const hash =
-    `#__lnr_script__=${encodeURIComponent(script)}` +
-    "&__lnr_request_id__=android-scraper-7&__lnr_nonce__=nonce-7";
+    `#__norea_script__=${encodeURIComponent(script)}` +
+    "&__norea_request_id__=android-scraper-7&__norea_nonce__=nonce-7";
 
   it("arms the request from the URL hash and keeps it for later same-site documents", () => {
     const first = loadBridgeDocument({ hash });
@@ -331,9 +331,9 @@ describe("Android scraper bridge init script", () => {
       { id: "android-scraper-7", nonce: "nonce-7", payload: "result:/novel/1" },
     ]);
     expect(first.replacedUrls).toEqual(["/novel/1?p=2"]);
-    expect(String(first.window.name)).toMatch(/^__lnr_script__=/);
+    expect(String(first.window.name)).toMatch(/^__norea_script__=/);
     expect(String(first.window.name)).toContain(
-      `&__lnr_origin__=${encodeURIComponent("https://source.test")}`,
+      `&__norea_origin__=${encodeURIComponent("https://source.test")}`,
     );
 
     const second = loadBridgeDocument({ name: String(first.window.name) });
@@ -373,7 +373,7 @@ describe("Android scraper bridge init script", () => {
   });
 
   it("clears only bridge-owned window names when an extract finishes", () => {
-    const armed: Record<string, unknown> = { name: "__lnr_script__=abc&__lnr_request_id__=x" };
+    const armed: Record<string, unknown> = { name: "__norea_script__=abc&__norea_request_id__=x" };
     runInNewContext(androidBridgeScript("CLEAR_EXTRACT_BRIDGE_SCRIPT"), { window: armed });
     expect(armed.name).toBe("");
 

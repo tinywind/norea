@@ -47,7 +47,7 @@ export function CategoriesDrawer({
     >
       <Stack gap={8}>
         <UnstyledButton
-          className="lnr-library-drawer-add"
+          className="norea-library-drawer-add"
           onClick={() => {
             onCreate();
             onClose();
@@ -140,17 +140,17 @@ function DrawerCategoryButton({
   const { t } = useTranslation();
 
   return (
-    <div className="lnr-library-drawer-category-row" data-active={active}>
+    <div className="norea-library-drawer-category-row" data-active={active}>
       <UnstyledButton
-        className="lnr-library-drawer-category"
+        className="norea-library-drawer-category"
         onClick={onClick}
       >
         <span>{label}</span>
       </UnstyledButton>
       {canEdit ? (
-        <span className="lnr-library-category-actions">
+        <span className="norea-library-category-actions">
           <IconButton
-            className="lnr-library-category-action"
+            className="norea-library-category-action"
             label={t("categories.renameNamed", { name: label })}
             onClick={onRename}
             size="sm"
@@ -159,7 +159,7 @@ function DrawerCategoryButton({
             <EditIcon />
           </IconButton>
           <IconButton
-            className="lnr-library-category-action"
+            className="norea-library-category-action"
             label={t("categories.deleteNamed", { name: label })}
             onClick={onDelete}
             size="sm"
@@ -169,7 +169,7 @@ function DrawerCategoryButton({
           </IconButton>
         </span>
       ) : null}
-      <span className="lnr-library-category-count">{count ?? 0}</span>
+      <span className="norea-library-category-count">{count ?? 0}</span>
     </div>
   );
 }

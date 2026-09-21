@@ -54,7 +54,7 @@ export function VpnGateServerVerdictControl({
   return (
     <UnstyledButton
       aria-label={accessibleLabel}
-      className="lnr-vpn-gate-verdict-control"
+      className="norea-vpn-gate-verdict-control"
       data-verdict={verdict ?? "unmarked"}
       disabled={disabled}
       onClick={() => {
