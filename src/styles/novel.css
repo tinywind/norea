@@ -370,19 +370,18 @@
   background: var(--norea-design-surface);
   border-top: 1px solid var(--norea-design-rule);
   box-sizing: border-box;
-  cursor: pointer;
   display: grid;
   gap: 0.625rem;
-  grid-template-areas: "selection position main flags progress actions";
-  grid-template-columns: 2rem 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr) auto;
+  grid-template-areas: "selection content actions";
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
   height: 3.375rem;
   min-height: 3.375rem;
   padding: 0.375rem 0 0.375rem 0.5rem;
 }
 
 .norea-novel-chapter-row[data-has-drag="true"] {
-  grid-template-areas: "drag selection position main flags progress actions";
-  grid-template-columns: 2rem 2rem 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr) auto;
+  grid-template-areas: "drag selection content actions";
+  grid-template-columns: 2rem 2rem minmax(0, 1fr) auto;
 }
 
 .norea-novel-chapter-row[data-dragging="true"] {
@@ -395,9 +394,28 @@
   background: var(--norea-design-accent-soft);
 }
 
-.norea-novel-chapter-row:focus-visible {
+.norea-novel-chapter-open:focus-visible,
+.norea-novel-chapter-drag-handle:focus-visible {
   outline: 0.125rem solid var(--norea-design-accent);
   outline-offset: 0.125rem;
+}
+
+.norea-novel-chapter-open {
+  align-items: center;
+  align-self: stretch;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: inherit;
+  grid-area: content;
+  grid-template-areas: "position main flags progress";
+  grid-template-columns: 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr);
+  min-width: 0;
+  padding: 0;
+  text-align: left;
 }
 
 .norea-novel-chapter-selection {
@@ -418,13 +436,17 @@
 
 .norea-novel-chapter-drag-handle {
   align-items: center;
+  background: transparent;
+  border: 0;
   border-radius: 0.25rem;
   color: var(--norea-design-ink-subtle);
   cursor: grab;
   display: inline-flex;
+  font: inherit;
   grid-area: drag;
   height: 2rem;
   justify-content: center;
+  padding: 0;
   width: 2rem;
 }
 
@@ -927,15 +949,20 @@
 
   .norea-novel-chapter-row {
     gap: 0.5rem;
-    grid-template-areas: "position main flags actions";
-    grid-template-columns: 2.625rem minmax(0, 1fr) auto auto;
+    grid-template-areas: "content actions";
+    grid-template-columns: minmax(0, 1fr) auto;
     min-height: 3.25rem;
     padding: 0.25rem 0 0.25rem 0.5rem;
   }
 
   .norea-novel-chapter-row[data-has-drag="true"] {
-    grid-template-areas: "drag position main flags actions";
-    grid-template-columns: 2rem 2.625rem minmax(0, 1fr) auto auto;
+    grid-template-areas: "drag content actions";
+    grid-template-columns: 2rem minmax(0, 1fr) auto;
+  }
+
+  .norea-novel-chapter-open {
+    grid-template-areas: "position main flags";
+    grid-template-columns: 2.625rem minmax(0, 1fr) auto;
   }
 
   .norea-novel-chapter-selection {
@@ -943,13 +970,13 @@
   }
 
   .norea-novel-chapter-row[data-selection-mode="true"] {
-    grid-template-areas: "selection position main flags actions";
-    grid-template-columns: 2rem 2.625rem minmax(0, 1fr) auto auto;
+    grid-template-areas: "selection content actions";
+    grid-template-columns: 2rem minmax(0, 1fr) auto;
   }
 
   .norea-novel-chapter-row[data-selection-mode="true"][data-has-drag="true"] {
-    grid-template-areas: "drag selection position main flags actions";
-    grid-template-columns: 2rem 2rem 2.625rem minmax(0, 1fr) auto auto;
+    grid-template-areas: "drag selection content actions";
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) auto;
   }
 
   .norea-novel-chapter-row[data-selection-mode="true"]
