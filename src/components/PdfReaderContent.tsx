@@ -516,6 +516,7 @@ function PdfReaderContentInner(
   const completedForNavigationRef = useRef(false);
   const pendingPageScrollRef = useRef<"start" | "end" | null>(null);
   const renderedPagesRef = useRef<Set<number>>(new Set());
+  const hasPdfErrorRef = useRef(false);
   const wheelDeltaRef = useRef(0);
   const wheelCooldownTimerRef = useRef<number | null>(null);
   const wheelPagingLockedRef = useRef(false);
@@ -659,7 +660,43 @@ function PdfReaderContentInner(
     visiblePageCountRef.current = visiblePageCount;
   }, [visiblePageCount]);
 
+  const isProgressReady = useCallback(() => {
+    const node = viewportRef.current;
+    const currentPageCount = pageCountRef.current;
+    if (
+      hasPdfErrorRef.current ||
+      restorePendingRef.current ||
+      pendingPageScrollRef.current ||
+      !node ||
+      node.clientHeight <= 0 ||
+      currentPageCount <= 0 ||
+      renderBoundsRef.current.width <= 0
+    ) {
+      return false;
+    }
+    const range = isPagedReader
+      ? {
+          start: pageNumberRef.current - 1,
+          end: Math.min(
+            currentPageCount - 1,
+            pageNumberRef.current + visiblePageCountRef.current - 2,
+          ),
+        }
+      : virtualRangeForScroll(
+          node.scrollTop,
+          node.clientHeight,
+          scrollPageOffsets,
+          0,
+        );
+    if (range.end < range.start) return false;
+    for (let index = range.start; index <= range.end; index += 1) {
+      if (!renderedPagesRef.current.has(index + 1)) return false;
+    }
+    return true;
+  }, [isPagedReader, scrollPageOffsets]);
+
   const flushProgress = useCallback((value: number) => {
+    if (!isProgressReady()) return;
     const callback = onProgressChangeRef.current;
     if (!callback) return;
     const rounded = Math.round(clampProgress(value));
@@ -670,7 +707,12 @@ function PdfReaderContentInner(
       lastSavedProgressRef.current = rounded;
       callback(rounded);
     }
-  }, []);
+  }, [isProgressReady]);
+  const flushProgressRef = useRef(flushProgress);
+
+  useEffect(() => {
+    flushProgressRef.current = flushProgress;
+  }, [flushProgress]);
 
   const cancelPendingScrollRestore = useCallback((source: string) => {
     if (isPagedReader || !restorePendingRef.current) return false;
@@ -688,11 +730,11 @@ function PdfReaderContentInner(
         window.clearTimeout(progressTimerRef.current);
       }
       progressTimerRef.current = window.setTimeout(() => {
-        flushProgress(value);
+        flushProgressRef.current(value);
         progressTimerRef.current = null;
       }, PROGRESS_SAVE_DELAY_MS);
     },
-    [flushProgress],
+    [],
   );
 
   const syncScrollCanvasRange = useCallback(() => {
@@ -719,6 +761,7 @@ function PdfReaderContentInner(
     if (
       !node ||
       currentPageCount <= 0 ||
+      !isProgressReady() ||
       completedForNavigationRef.current
     ) {
       return;
@@ -768,7 +811,12 @@ function PdfReaderContentInner(
         : getScrollPageIndex(nextProgress, currentPageCount),
     );
     scheduleProgressSave(nextProgress);
-  }, [isPagedReader, scheduleProgressSave, syncScrollCanvasRange]);
+  }, [
+    isPagedReader,
+    isProgressReady,
+    scheduleProgressSave,
+    syncScrollCanvasRange,
+  ]);
 
   const applyPagedScrollPosition = useCallback((position: "start" | "end") => {
     const node = viewportRef.current;
@@ -824,7 +872,7 @@ function PdfReaderContentInner(
     (direction: 1 | -1, source = "imperative") => {
       const node = viewportRef.current;
       const currentPageCount = pageCountRef.current;
-      if (!node || currentPageCount <= 0) return;
+      if (!node || currentPageCount <= 0 || !isProgressReady()) return;
       if (isPagedReader && pendingPageScrollRef.current) {
         logPdfReaderInput("page-step-suppressed", {
           source,
@@ -901,7 +949,7 @@ function PdfReaderContentInner(
       }
       moveToPage(targetPage, direction === -1 ? "end" : "start");
     },
-    [cancelPendingScrollRestore, isPagedReader, moveToPage],
+    [cancelPendingScrollRestore, isPagedReader, isProgressReady, moveToPage],
   );
 
   useImperativeHandle(
@@ -910,7 +958,7 @@ function PdfReaderContentInner(
       completeIfAtEnd() {
         const node = viewportRef.current;
         const currentPageCount = pageCountRef.current;
-        if (!node || currentPageCount <= 0) return false;
+        if (!node || currentPageCount <= 0 || !isProgressReady()) return false;
         if (canScrollVertically(node, 1)) return false;
         if (
           isPagedReader &&
@@ -947,8 +995,26 @@ function PdfReaderContentInner(
         syncScrollCanvasRange();
       },
     }),
-    [flushProgress, isPagedReader, moveToPage, scrollByPage, syncScrollCanvasRange],
+    [
+      flushProgress,
+      isPagedReader,
+      isProgressReady,
+      moveToPage,
+      scrollByPage,
+      syncScrollCanvasRange,
+    ],
   );
+
+  const handleRenderError = useCallback((nextError: unknown) => {
+    hasPdfErrorRef.current = true;
+    if (progressTimerRef.current !== null) {
+      window.clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+    latestProgressRef.current = lastSavedProgressRef.current;
+    setProgress(lastSavedProgressRef.current);
+    setError(nextError instanceof Error ? nextError.message : String(nextError));
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -957,6 +1023,11 @@ function PdfReaderContentInner(
     setPdfDocument(null);
     setPageCount(0);
     setPageNumber(1);
+    hasPdfErrorRef.current = false;
+    if (progressTimerRef.current !== null) {
+      window.clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
     pageCountRef.current = 0;
     pageNumberRef.current = 1;
     latestProgressRef.current = initialProgressRef.current;
@@ -994,7 +1065,7 @@ function PdfReaderContentInner(
         setLoading(false);
       } catch (nextError) {
         if (disposed) return;
-        setError(nextError instanceof Error ? nextError.message : String(nextError));
+        handleRenderError(nextError);
         setLoading(false);
       }
     })();
@@ -1003,7 +1074,7 @@ function PdfReaderContentInner(
       disposed = true;
       void loadingTask?.destroy();
     };
-  }, [dataUrl, localMediaContext]);
+  }, [dataUrl, handleRenderError, localMediaContext]);
 
   useEffect(() => {
     if (pageCount <= 0) return;
@@ -1093,10 +1164,6 @@ function PdfReaderContentInner(
     syncScrollCanvasRange,
   ]);
 
-  const handleRenderError = useCallback((nextError: unknown) => {
-    setError(nextError instanceof Error ? nextError.message : String(nextError));
-  }, []);
-
   const handlePageRendered = useCallback(
     (renderedPageNumber: number, height: number) => {
       renderedPagesRef.current.add(renderedPageNumber);
@@ -1124,7 +1191,7 @@ function PdfReaderContentInner(
 
   useEffect(() => {
     if (
-      !restorePendingRef.current ||
+      hasPdfErrorRef.current ||
       !pdfDocument ||
       pageCount <= 0 ||
       renderBounds.width <= 0 ||
@@ -1135,11 +1202,16 @@ function PdfReaderContentInner(
       return;
     }
 
+    if (!restorePendingRef.current) {
+      updateProgressFromScroll();
+      return;
+    }
+
     const node = viewportRef.current;
     if (!node) return;
     const value = latestProgressRef.current;
     const applyRestore = () => {
-      if (!restorePendingRef.current) {
+      if (!restorePendingRef.current || hasPdfErrorRef.current) {
         logPdfReaderInput("restore-suppressed", {
           reason: "canceled-before-frame",
           snapshot: getPdfReaderDebugSnapshot(node),
@@ -1251,9 +1323,9 @@ function PdfReaderContentInner(
       if (wheelCooldownTimerRef.current !== null) {
         window.clearTimeout(wheelCooldownTimerRef.current);
       }
-      flushProgress(latestProgressRef.current);
+      flushProgressRef.current(latestProgressRef.current);
     },
-    [flushProgress],
+    [],
   );
 
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
@@ -1362,7 +1434,7 @@ function PdfReaderContentInner(
     (value: number) => {
       const node = viewportRef.current;
       const currentPageCount = pageCountRef.current;
-      if (!node || currentPageCount <= 0) return;
+      if (!node || currentPageCount <= 0 || !isProgressReady()) return;
       const clamped = clampProgress(value);
       if (clamped < 97) {
         completedForNavigationRef.current = false;
@@ -1412,7 +1484,7 @@ function PdfReaderContentInner(
 
       scheduleProgressSave(clamped);
     },
-    [isPagedReader, scheduleProgressSave, syncScrollCanvasRange],
+    [isPagedReader, isProgressReady, scheduleProgressSave, syncScrollCanvasRange],
   );
 
   const commitSeekProgress = useCallback(() => {
