@@ -3,6 +3,7 @@ import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../db/queries/category";
+import { PlusGlyph, TrashGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
 import { useTranslation } from "../i18n";
 
@@ -53,7 +54,7 @@ export function CategoriesDrawer({
             onClose();
           }}
         >
-          <PlusIcon />
+          <PlusGlyph />
           <span>{t("categories.add")}</span>
         </UnstyledButton>
         <ScrollArea.Autosize mah="calc(100vh - 9.375rem)">
@@ -165,21 +166,12 @@ function DrawerCategoryButton({
             size="sm"
             title={t("categories.delete")}
           >
-            <TrashIcon />
+            <TrashGlyph />
           </IconButton>
         </span>
       ) : null}
       <span className="norea-library-category-count">{count ?? 0}</span>
     </div>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </svg>
   );
 }
 
@@ -189,18 +181,6 @@ function EditIcon() {
       <path d="M4 20h4" />
       <path d="M14 5l5 5" />
       <path d="M17 3l4 4L9 19H5v-4z" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 7h16" />
-      <path d="M10 11v6" />
-      <path d="M14 11v6" />
-      <path d="M6 7l1 14h10l1-14" />
-      <path d="M9 7V4h6v3" />
     </svg>
   );
 }

@@ -20,7 +20,12 @@ import {
   PageFrame,
   PageHeader,
 } from "../components/AppFrame";
-import { DetailsGlyph, PlayGlyph } from "../components/ActionGlyphs";
+import {
+  ClockGlyph,
+  DetailsGlyph,
+  PlayGlyph,
+  TrashGlyph,
+} from "../components/ActionGlyphs";
 import { ConsoleCover } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { SearchBar } from "../components/SearchBar";
@@ -235,7 +240,7 @@ function StatusFlag({ entry }: { entry: RecentlyReadEntry }) {
       label={label}
       tone={status === "finished" ? "done" : "accent"}
     >
-      {status === "finished" ? <CheckIcon /> : <ClockIcon />}
+      {status === "finished" ? <CheckIcon /> : <ClockGlyph />}
     </HistoryIconFlag>
   );
 }
@@ -318,31 +323,10 @@ function HistoryIconFlag({
   );
 }
 
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 7h16" />
-      <path d="M9 7V4h6v3" />
-      <path d="M7 7l1 13h8l1-13" />
-      <path d="M10 11v5" />
-      <path d="M14 11v5" />
-    </svg>
-  );
-}
-
 function CheckIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M4 12l5 5L20 6" />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="8" />
-      <path d="M12 8v5l3 2" />
     </svg>
   );
 }
@@ -498,7 +482,7 @@ function HistoryRow({
               onClick={onRemoveNovel}
               tone="danger"
             >
-              <TrashIcon />
+              <TrashGlyph />
             </HistoryIconButton>
           </>
         )}
@@ -628,7 +612,7 @@ function HistorySummaryPanel({
           label={`${getDateBucketLabel("today", t)} - ${todayCount}`}
           tone="accent"
         >
-          <ClockIcon />
+          <ClockGlyph />
         </HistoryIconFlag>
         <HistoryIconFlag
           count={weekCount}

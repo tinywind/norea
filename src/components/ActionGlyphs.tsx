@@ -299,6 +299,14 @@ export function SortGlyph({ className }: ActionGlyphProps) {
   );
 }
 
+export function SpinnerGlyph({ className }: ActionGlyphProps) {
+  return (
+    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M12 3a9 9 0 1 1-8.49 6" />
+    </svg>
+  );
+}
+
 export function TrashGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
@@ -307,6 +315,17 @@ export function TrashGlyph({ className }: ActionGlyphProps) {
       <path d="M7 7l1 13h8l1-13" />
       <path d="M10 11v5" />
       <path d="M14 11v5" />
+    </svg>
+  );
+}
+
+export function UnreadGlyph({ className }: ActionGlyphProps) {
+  return (
+    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M5 5h14v14H5z" />
+      <path d="M8 10h6" />
+      <path d="M8 14h5" />
+      <circle cx="17" cy="7" r="2" />
     </svg>
   );
 }

@@ -16,7 +16,11 @@ import {
   Stack,
   Text,
 } from "@mantine/core";
-import { DetailsGlyph, RetryGlyph } from "../components/ActionGlyphs";
+import {
+  DetailsGlyph,
+  RetryGlyph,
+  TrashGlyph,
+} from "../components/ActionGlyphs";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { ConsoleCover } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
@@ -113,31 +117,6 @@ function getCacheTotals(novels: readonly DownloadCacheNovel[]) {
   );
 }
 
-function RefreshIcon({ spinning = false }: { spinning?: boolean }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={spinning ? "norea-downloads-spin-icon" : undefined}
-      viewBox="0 0 24 24"
-    >
-      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-      <path d="M20 4v6h-6" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 7h16" />
-      <path d="M10 11v6" />
-      <path d="M14 11v6" />
-      <path d="M6 7l1 14h10l1-14" />
-      <path d="M9 7V4h6v3" />
-    </svg>
-  );
-}
-
 function ChevronIcon({ expanded }: { expanded: boolean }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -179,7 +158,7 @@ function DownloadCacheErrorState({
       title={t("downloads.loadFailed")}
       message={error instanceof Error ? error.message : String(error)}
       action={{
-        icon: <RefreshIcon />,
+        icon: <RetryGlyph />,
         iconOnly: true,
         label: t("common.retry"),
         onClick: onRetry,
@@ -257,7 +236,7 @@ function DownloadCacheChapterRow({
           title={t("downloads.deleteChapter", { name: chapter.name })}
           tone="danger"
         >
-          {deleting ? <Loader size={14} /> : <TrashIcon />}
+          {deleting ? <Loader size={14} /> : <TrashGlyph />}
         </IconButton>
       </Group>
     </div>
@@ -533,7 +512,7 @@ function DownloadCacheNovelCard({
             title={t("downloads.deleteNovel", { name: novel.novelName })}
             tone="danger"
           >
-            {novelDeleting ? <Loader size={14} /> : <TrashIcon />}
+            {novelDeleting ? <Loader size={14} /> : <TrashGlyph />}
           </IconButton>
         </Group>
       </div>
@@ -650,7 +629,11 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               size="lg"
               title={t("downloads.refresh")}
             >
-              <RefreshIcon spinning={query.isFetching} />
+              <RetryGlyph
+                className={
+                  query.isFetching ? "norea-downloads-spin-icon" : undefined
+                }
+              />
             </IconButton>
             <IconButton
               className="norea-downloads-header-button"
@@ -669,7 +652,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               title={t("downloads.deleteAll")}
               tone="danger"
             >
-              {deleteActivity.all ? <Loader size={14} /> : <TrashIcon />}
+              {deleteActivity.all ? <Loader size={14} /> : <TrashGlyph />}
             </IconButton>
           </>
         }
