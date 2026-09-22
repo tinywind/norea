@@ -1,74 +1,36 @@
-import {
-  StrictMode,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import { createRoot } from "react-dom/client";
-import {
-  Button,
-  MantineProvider,
-  Paper,
-  Stack,
-  Text,
-  Title,
-  createTheme,
-} from "@mantine/core";
-import { Notifications, notifications } from "@mantine/notifications";
+import { createTheme, MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
+import { Notifications } from "@mantine/notifications";
 import "@mantine/notifications/styles.css";
-import "./styles/app.css";
-import { RouterProvider } from "@tanstack/react-router";
 import {
   MutationCache,
   QueryCache,
   QueryClient,
   QueryClientProvider,
-  useQueryClient,
 } from "@tanstack/react-query";
+import { RouterProvider } from "@tanstack/react-router";
+import { StrictMode, useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { ChapterMediaStorageGate } from "./components/runtime/ChapterMediaStorageGate";
+import { PluginVpnProxyGate } from "./components/runtime/PluginVpnProxyGate";
+import { translate } from "./i18n";
+import { describeError } from "./lib/errors";
 import {
   installRuntimeLogLevelFilter,
   setRuntimeLogLevel,
 } from "./lib/logging";
+import { showErrorToast } from "./lib/runtime/error-toast";
 import {
-  ensureAndroidPluginVpnProxy,
-  PLUGIN_VPN_QUERY_KEY,
-  shouldShowPluginVpnReconnectedToast,
-  startPluginVpnStatusListener,
-  type PluginVpnStatusEvent,
-} from "./lib/plugin-vpn";
-import { startPluginVpnLifecycle } from "./lib/plugin-vpn-lifecycle";
-import {
-  getChapterMediaStorageRoot,
-  selectChapterMediaStorageRoot,
-} from "./lib/chapter-media-storage";
-import { pluginManager } from "./lib/plugins/manager";
-import { isAndroidRuntime, isTauriRuntime } from "./lib/tauri-runtime";
+  initializeRuntimeViewport,
+  useRuntimeViewport,
+} from "./lib/runtime/viewport";
 import { initializeSourceAccessCoordinator } from "./lib/tasks/source-access-coordinator";
 import { redactUrlsForLog } from "./lib/url-log";
 import { router } from "./router";
-import {
-  normalizeAndroidViewScalePercent,
-  normalizeFontScalePercent,
-  useAppearanceStore,
-} from "./store/appearance";
+import { useAppearanceStore } from "./store/appearance";
 import { useLoggingStore } from "./store/logging";
-import { translate } from "./i18n";
+import "./styles/app.css";
 import { makeMantineColorScale, resolveMd3Palette } from "./theme/md3";
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function showErrorToast(title: string, error: unknown): void {
-  notifications.show({
-    color: "red",
-    title,
-    message: describeError(error),
-    autoClose: 7_000,
-  });
-}
 
 installRuntimeLogLevelFilter(useLoggingStore.getState().logLevel);
 
@@ -125,323 +87,7 @@ if (!rootElement) {
   throw new Error("Root element #root not found in index.html");
 }
 
-const ROOT_FONT_SIZE_PX = 16;
-const DEFAULT_VIEWPORT_META =
-  "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover";
-const ANDROID_MIN_VIEWPORT_WIDTH = 320;
-const ANDROID_MAX_VIEWPORT_WIDTH = 1920;
-const ANDROID_ENTER_BLUR_INPUT_TYPES = new Set([
-  "email",
-  "number",
-  "password",
-  "search",
-  "tel",
-  "text",
-  "url",
-]);
-const MANTINE_XS_MIN_WIDTH = 576;
-const MANTINE_SM_MIN_WIDTH = 768;
-const MANTINE_MD_MIN_WIDTH = 992;
-const MANTINE_LG_MIN_WIDTH = 1200;
-const MANTINE_XL_MIN_WIDTH = 1408;
-
-type AndroidLayoutClass = "base" | "xs" | "sm" | "md" | "lg" | "xl";
-
-interface AndroidSafeAreaBridge {
-  getInsets(): string;
-}
-
-interface AndroidWindowBridge {
-  getMetrics(): string;
-}
-
-interface RuntimeSafeAreaInsets {
-  bottom?: unknown;
-  left?: unknown;
-  right?: unknown;
-  top?: unknown;
-}
-
-interface RuntimeWindowMetrics {
-  density?: unknown;
-  heightDp?: unknown;
-  heightPx?: unknown;
-  widthDp?: unknown;
-  widthPx?: unknown;
-}
-
-declare global {
-  interface Window {
-    __NoreaAndroidSafeArea?: AndroidSafeAreaBridge;
-    __NoreaAndroidWindow?: AndroidWindowBridge;
-    __noreaApplyAndroidSafeAreaInsets?: (insets: RuntimeSafeAreaInsets) => void;
-  }
-}
-
-interface AndroidLayoutConfig {
-  className: AndroidLayoutClass;
-  nativePxPerCssPx: number;
-  viewportWidth: number;
-}
-
-let androidNativePxPerCssPx = 1;
-
-function positiveNumber(value: unknown): number | null {
-  const numeric = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(numeric) && numeric > 0
-    ? numeric
-    : null;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function classifyAndroidLayout(width: number): AndroidLayoutClass {
-  if (width >= MANTINE_XL_MIN_WIDTH) return "xl";
-  if (width >= MANTINE_LG_MIN_WIDTH) return "lg";
-  if (width >= MANTINE_MD_MIN_WIDTH) return "md";
-  if (width >= MANTINE_SM_MIN_WIDTH) return "sm";
-  if (width >= MANTINE_XS_MIN_WIDTH) return "xs";
-  return "base";
-}
-
-function readAndroidWindowMetrics(): RuntimeWindowMetrics | null {
-  const raw = window.__NoreaAndroidWindow?.getMetrics();
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object"
-      ? (parsed as RuntimeWindowMetrics)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveAndroidViewportWidth(
-  viewportWidth: number,
-  androidViewScalePercent: unknown,
-): number {
-  const scale = normalizeAndroidViewScalePercent(androidViewScalePercent) / 100;
-  return viewportWidth * (1 / scale);
-}
-
-function resolveFallbackAndroidLayout(
-  androidViewScalePercent: unknown,
-): AndroidLayoutConfig {
-  const density =
-    Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
-      ? window.devicePixelRatio
-      : 1;
-  const fallbackWidth =
-    positiveNumber(window.screen?.availWidth) ??
-    positiveNumber(window.screen?.width) ??
-    window.innerWidth;
-  const widthPx = fallbackWidth >= MANTINE_SM_MIN_WIDTH
-    ? fallbackWidth
-    : fallbackWidth * density;
-  const baseViewportWidth = clamp(
-    widthPx / density,
-    ANDROID_MIN_VIEWPORT_WIDTH,
-    ANDROID_MAX_VIEWPORT_WIDTH,
-  );
-  const viewportWidth = resolveAndroidViewportWidth(
-    baseViewportWidth,
-    androidViewScalePercent,
-  );
-
-  return {
-    className: classifyAndroidLayout(viewportWidth),
-    nativePxPerCssPx: widthPx / viewportWidth,
-    viewportWidth,
-  };
-}
-
-function resolveAndroidLayout(
-  androidViewScalePercent: unknown,
-): AndroidLayoutConfig {
-  const metrics = readAndroidWindowMetrics();
-  if (!metrics) return resolveFallbackAndroidLayout(androidViewScalePercent);
-
-  const widthDp = positiveNumber(metrics.widthDp);
-  const widthPx = positiveNumber(metrics.widthPx);
-  const density = positiveNumber(metrics.density);
-  const rawViewportWidth =
-    widthDp ?? (widthPx && density ? widthPx / density : null);
-
-  if (!rawViewportWidth) {
-    return resolveFallbackAndroidLayout(androidViewScalePercent);
-  }
-
-  const baseViewportWidth = clamp(
-    rawViewportWidth,
-    ANDROID_MIN_VIEWPORT_WIDTH,
-    ANDROID_MAX_VIEWPORT_WIDTH,
-  );
-  const viewportWidth = resolveAndroidViewportWidth(
-    baseViewportWidth,
-    androidViewScalePercent,
-  );
-  const physicalWidthPx =
-    widthPx ?? (density ? baseViewportWidth * density : null);
-  const nativePxPerCssPx =
-    physicalWidthPx && physicalWidthPx > 0
-      ? physicalWidthPx / viewportWidth
-      : density ?? 1;
-
-  return {
-    className: classifyAndroidLayout(viewportWidth),
-    nativePxPerCssPx,
-    viewportWidth,
-  };
-}
-
-function viewportMeta(): HTMLMetaElement | null {
-  return document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
-}
-
-function applyAndroidViewport(width: number): void {
-  const viewport = viewportMeta();
-  if (!viewport) return;
-  const content =
-    `width=${Math.round(width)}, initial-scale=1.0, maximum-scale=1.0, ` +
-    "user-scalable=no, viewport-fit=cover";
-  if (viewport.content !== content) {
-    viewport.content = content;
-  }
-}
-
-function resetViewportScale(): void {
-  const viewport = viewportMeta();
-  if (viewport && viewport.content !== DEFAULT_VIEWPORT_META) {
-    viewport.content = DEFAULT_VIEWPORT_META;
-  }
-}
-
-function safeInsetPx(value: unknown, roundUp = false): string {
-  const numeric = typeof value === "number" ? value : Number(value);
-  const nativePxPerCssPx = isAndroidRuntime() ? androidNativePxPerCssPx : 1;
-  const cssPixels =
-    (Number.isFinite(numeric) ? numeric : 0) / nativePxPerCssPx;
-  const rounded = roundUp
-    ? Math.ceil(cssPixels - 0.001)
-    : Math.round(cssPixels);
-  return `${Math.max(0, rounded)}px`;
-}
-
-function applyNativeSafeAreaInsets(insets: RuntimeSafeAreaInsets): void {
-  const root = document.documentElement;
-  root.style.setProperty(
-    "--norea-native-safe-area-top",
-    safeInsetPx(insets.top, true),
-  );
-  root.style.setProperty(
-    "--norea-native-safe-area-right",
-    safeInsetPx(insets.right),
-  );
-  root.style.setProperty(
-    "--norea-native-safe-area-bottom",
-    safeInsetPx(insets.bottom),
-  );
-  root.style.setProperty(
-    "--norea-native-safe-area-left",
-    safeInsetPx(insets.left),
-  );
-}
-
-function readAndroidSafeAreaInsets(): RuntimeSafeAreaInsets | null {
-  const raw = window.__NoreaAndroidSafeArea?.getInsets();
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object"
-      ? (parsed as RuntimeSafeAreaInsets)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearNativeSafeAreaInsets(): void {
-  const root = document.documentElement;
-  root.style.removeProperty("--norea-native-safe-area-top");
-  root.style.removeProperty("--norea-native-safe-area-right");
-  root.style.removeProperty("--norea-native-safe-area-bottom");
-  root.style.removeProperty("--norea-native-safe-area-left");
-}
-
-function applyRuntimeSafeAreaInsets(): void {
-  if (!isAndroidRuntime()) {
-    clearNativeSafeAreaInsets();
-    return;
-  }
-  const insets = readAndroidSafeAreaInsets();
-  if (insets) {
-    applyNativeSafeAreaInsets(insets);
-  }
-}
-
-function applyRuntimeUiScale(
-  fontScalePercent = useAppearanceStore.getState().fontScalePercent,
-  androidViewScalePercent =
-    useAppearanceStore.getState().androidViewScalePercent,
-): void {
-  const root = document.documentElement;
-  const fontScale = normalizeFontScalePercent(fontScalePercent) / 100;
-  root.style.setProperty(
-    "--norea-root-font-size",
-    `${ROOT_FONT_SIZE_PX * fontScale}px`,
-  );
-  root.style.setProperty("--norea-ui-scale", fontScale.toFixed(3));
-
-  if (!isAndroidRuntime()) {
-    resetViewportScale();
-    delete root.dataset.noreaPlatform;
-    delete root.dataset.noreaAndroidLayout;
-    root.style.removeProperty("--norea-mobile-nav-content-height");
-    androidNativePxPerCssPx = 1;
-    clearNativeSafeAreaInsets();
-    return;
-  }
-
-  const layout = resolveAndroidLayout(androidViewScalePercent);
-  androidNativePxPerCssPx = layout.nativePxPerCssPx;
-  root.dataset.noreaPlatform = "android";
-  root.dataset.noreaAndroidLayout = layout.className;
-  applyAndroidViewport(layout.viewportWidth);
-  root.style.removeProperty("--norea-mobile-nav-content-height");
-}
-
-function isAndroidEnterBlurInput(
-  target: EventTarget | null,
-): target is HTMLInputElement {
-  return (
-    target instanceof HTMLInputElement &&
-    !target.disabled &&
-    !target.readOnly &&
-    ANDROID_ENTER_BLUR_INPUT_TYPES.has(target.type)
-  );
-}
-
-function blurAndroidInputOnEnter(event: KeyboardEvent): void {
-  if (event.key !== "Enter" || event.isComposing) return;
-  if (!isAndroidEnterBlurInput(event.target)) return;
-
-  const target = event.target;
-  window.setTimeout(() => {
-    if (document.activeElement === target) target.blur();
-  }, 0);
-}
-
-window.__noreaApplyAndroidSafeAreaInsets = (insets) => {
-  if (isAndroidRuntime()) {
-    applyNativeSafeAreaInsets(insets);
-  }
-};
-
-applyRuntimeUiScale();
-applyRuntimeSafeAreaInsets();
+initializeRuntimeViewport();
 
 function useResolvedColorScheme(): "light" | "dark" {
   const themeMode = useAppearanceStore((state) => state.themeMode);
@@ -469,7 +115,9 @@ function useResolvedColorScheme(): "light" | "dark" {
 }
 
 function withAlpha(color: string, alpha: number): string {
-  const rgbMatch = color.match(/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i);
+  const rgbMatch = color.match(
+    /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i,
+  );
   if (rgbMatch) {
     return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${alpha})`;
   }
@@ -490,252 +138,15 @@ function withAlpha(color: string, alpha: number): string {
   return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
 }
 
-interface RuntimeGateProps {
-  children: ReactNode;
-}
-
-function PluginVpnProxyGate({ children }: RuntimeGateProps) {
-  const appLocale = useAppearanceStore((state) => state.appLocale);
-  const queryClient = useQueryClient();
-  const android = isAndroidRuntime();
-  const [attempt, setAttempt] = useState(0);
-  const [checking, setChecking] = useState(android);
-  const [ready, setReady] = useState(!android);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!android) return;
-    let cancelled = false;
-    setChecking(true);
-    setError(null);
-    void ensureAndroidPluginVpnProxy()
-      .then(() => {
-        if (!cancelled) setReady(true);
-      })
-      .catch((unknownError: unknown) => {
-        if (cancelled) return;
-        setReady(false);
-        setError(describeError(unknownError));
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [android, attempt]);
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    let active = true;
-    let unlisten: (() => void) | undefined;
-
-    const onStatusEvent = (event: PluginVpnStatusEvent) => {
-      if (!active) return;
-      queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, event.status);
-      if (shouldShowPluginVpnReconnectedToast(event)) {
-        const eventLocale = useAppearanceStore.getState().appLocale;
-        notifications.show({
-          autoClose: 3_000,
-          color: "green",
-          message: translate(
-            eventLocale,
-            "settings.data.pluginVpn.toast.reconnected",
-          ),
-          title: translate(eventLocale, "settings.data.pluginVpn.title"),
-        });
-      }
-    };
-    const stopRecovery = startPluginVpnLifecycle({
-      onRestored: (status) => onStatusEvent({ kind: "reconnected", status }),
-      onError: (error) => {
-        console.warn("[plugin-vpn] automatic reconnection failed", error);
-        void queryClient.invalidateQueries({ queryKey: PLUGIN_VPN_QUERY_KEY });
-        showErrorToast(
-          translate(
-            useAppearanceStore.getState().appLocale,
-            "settings.data.pluginVpn.title",
-          ),
-          error,
-        );
-      },
-    });
-    void startPluginVpnStatusListener(onStatusEvent)
-      .then((cleanup) => {
-        if (active) {
-          unlisten = cleanup;
-        } else {
-          cleanup();
-        }
-      })
-      .catch((error: unknown) => {
-        console.warn("[plugin-vpn] failed to listen for status events", error);
-      });
-
-    return () => {
-      active = false;
-      stopRecovery();
-      unlisten?.();
-    };
-  }, [queryClient]);
-
-  if (!android || ready) return children;
-  return (
-    <div className="norea-storage-setup">
-      <Paper className="norea-storage-setup-card" withBorder>
-        <Stack gap="md">
-          <Stack gap="xs">
-            <Title order={1} className="norea-storage-setup-title">
-              {translate(appLocale, "pluginVpn.bootstrap.title")}
-            </Title>
-            <Text className="norea-storage-setup-copy">
-              {translate(appLocale, "pluginVpn.bootstrap.description")}
-            </Text>
-          </Stack>
-          {error ? (
-            <Text className="norea-storage-setup-error" role="alert">
-              {translate(appLocale, "pluginVpn.bootstrap.failed", { error })}
-            </Text>
-          ) : null}
-          <Button
-            loading={checking}
-            onClick={() => {
-              setAttempt((value) => value + 1);
-            }}
-          >
-            {translate(appLocale, "pluginVpn.bootstrap.retry")}
-          </Button>
-        </Stack>
-      </Paper>
-    </div>
-  );
-}
-
-function ChapterMediaStorageGate({
-  children,
-}: RuntimeGateProps) {
-  const appLocale = useAppearanceStore((state) => state.appLocale);
-  const [checking, setChecking] = useState(isTauriRuntime());
-  const [storageReady, setStorageReady] = useState(!isTauriRuntime());
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-
-    let cancelled = false;
-    void getChapterMediaStorageRoot()
-      .then((root) => {
-        if (cancelled) return;
-        if (isAndroidRuntime()) {
-          setStorageReady(root?.trim().startsWith("content://") === true);
-          return;
-        }
-        setStorageReady(root !== null && root.trim() !== "");
-      })
-      .catch((unknownError: unknown) => {
-        if (cancelled) return;
-        setError(describeError(unknownError));
-        setStorageReady(false);
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!storageReady || !isTauriRuntime()) return;
-
-    void pluginManager.loadInstalledFromDb().catch((unknownError: unknown) => {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[bootstrap] failed to rehydrate installed plugins",
-        unknownError,
-      );
-    });
-  }, [storageReady]);
-
-  async function chooseStorageRoot(): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      const root = await selectChapterMediaStorageRoot();
-      if (root) {
-        setStorageReady(true);
-      }
-    } catch (unknownError) {
-      setError(describeError(unknownError));
-    } finally {
-      setBusy(false);
-      setChecking(false);
-    }
-  }
-
-  if (checking) {
-    return (
-      <div className="norea-storage-setup">
-        <Paper className="norea-storage-setup-card" withBorder>
-          <Text>{translate(appLocale, "storageSetup.checking")}</Text>
-        </Paper>
-      </div>
-    );
-  }
-
-  if (!storageReady) {
-    return (
-      <div className="norea-storage-setup">
-        <Paper className="norea-storage-setup-card" withBorder>
-          <Stack gap="md">
-            <Stack gap="xs">
-              <Title order={1} className="norea-storage-setup-title">
-                {translate(appLocale, "storageSetup.title")}
-              </Title>
-              <Text className="norea-storage-setup-copy">
-                {translate(
-                  appLocale,
-                  isAndroidRuntime()
-                    ? "storageSetup.androidDefaultDescription"
-                    : "storageSetup.description",
-                )}
-              </Text>
-            </Stack>
-            {error ? (
-              <Text className="norea-storage-setup-error" role="alert">
-                {translate(appLocale, "storageSetup.failed", { error })}
-              </Text>
-            ) : null}
-            <Button
-              loading={busy}
-              onClick={() => {
-                void chooseStorageRoot();
-              }}
-            >
-              {translate(
-                appLocale,
-                isAndroidRuntime()
-                  ? "storageSetup.useAppStorage"
-                  : "storageSetup.selectFolder",
-              )}
-            </Button>
-          </Stack>
-        </Paper>
-      </div>
-    );
-  }
-
-  return children;
-}
-
 function AppProviders() {
   const appLocale = useAppearanceStore((state) => state.appLocale);
   const appThemeId = useAppearanceStore((state) => state.appThemeId);
   const androidViewScalePercent = useAppearanceStore(
     (state) => state.androidViewScalePercent,
   );
-  const fontScalePercent = useAppearanceStore((state) => state.fontScalePercent);
+  const fontScalePercent = useAppearanceStore(
+    (state) => state.fontScalePercent,
+  );
   const amoledBlack = useAppearanceStore((state) => state.amoledBlack);
   const customAccentColor = useAppearanceStore(
     (state) => state.customAccentColor,
@@ -805,7 +216,10 @@ function AppProviders() {
     root.style.setProperty("--norea-design-surface", palette.surface);
     root.style.setProperty("--norea-design-panel", palette.surfaceVariant);
     root.style.setProperty("--norea-design-ink", palette.onBackground);
-    root.style.setProperty("--norea-design-ink-muted", palette.onSurfaceVariant);
+    root.style.setProperty(
+      "--norea-design-ink-muted",
+      palette.onSurfaceVariant,
+    );
     root.style.setProperty("--norea-design-ink-subtle", palette.outline);
     root.style.setProperty("--norea-design-rule", palette.outlineVariant);
     root.style.setProperty("--norea-design-rule-strong", palette.outline);
@@ -852,43 +266,7 @@ function AppProviders() {
     setRuntimeLogLevel(logLevel);
   }, [logLevel]);
 
-  useEffect(() => {
-    applyRuntimeUiScale(fontScalePercent, androidViewScalePercent);
-    applyRuntimeSafeAreaInsets();
-  }, [androidViewScalePercent, fontScalePercent]);
-
-  useEffect(() => {
-    if (!isAndroidRuntime()) return;
-
-    document.addEventListener("keydown", blurAndroidInputOnEnter, true);
-    return () => {
-      document.removeEventListener("keydown", blurAndroidInputOnEnter, true);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isAndroidRuntime()) return;
-
-    let frame = 0;
-    const scheduleRuntimeUpdate = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        applyRuntimeUiScale(fontScalePercent, androidViewScalePercent);
-        applyRuntimeSafeAreaInsets();
-      });
-    };
-
-    scheduleRuntimeUpdate();
-    window.addEventListener("resize", scheduleRuntimeUpdate);
-    window.visualViewport?.addEventListener("resize", scheduleRuntimeUpdate);
-    window.visualViewport?.addEventListener("scroll", scheduleRuntimeUpdate);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", scheduleRuntimeUpdate);
-      window.visualViewport?.removeEventListener("resize", scheduleRuntimeUpdate);
-      window.visualViewport?.removeEventListener("scroll", scheduleRuntimeUpdate);
-    };
-  }, [androidViewScalePercent, fontScalePercent]);
+  useRuntimeViewport(fontScalePercent, androidViewScalePercent);
 
   return (
     <MantineProvider theme={theme} forceColorScheme={colorScheme}>
