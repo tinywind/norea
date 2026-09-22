@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { load } from "cheerio";
 import dayjs from "dayjs";
 import { Parser } from "htmlparser2";
-import { androidWebviewExtract } from "../android-scraper";
 import { getSourceRequestTimeoutMs } from "../../store/browse";
+import { getScraperUserAgent } from "../../store/user-agent";
+import { requestAbortedError } from "../abort";
+import { androidWebviewExtract } from "../android-scraper";
 import {
   cancelScraperExecutor,
   type ContextUrlProvider,
@@ -12,16 +14,15 @@ import {
   createPluginFetchText,
   pluginFetch,
   pluginFetchText,
-  requestAbortedError,
-  type HttpInit,
+  type PluginHttpInit,
 } from "../http";
-import { isAndroidRuntime } from "../tauri-runtime";
-import { getScraperUserAgent } from "../../store/user-agent";
 import {
   activeScraperExecutor,
   activeScraperExecutorSignal,
   type ScraperExecutorId,
 } from "../tasks/scraper-queue";
+import { isAndroidRuntime } from "../tauri-runtime";
+import browserChallengeDetectorSource from "./browser-challenge-detector.js?raw";
 import {
   createPluginInputsApi,
   deletePluginInputValue,
@@ -37,6 +38,7 @@ import {
   validateWebViewSelector,
   webViewInteractionRuntimeScript,
 } from "./webview-interactions";
+import webViewSnapshotSource from "./webview-snapshot.js?raw";
 
 const SNAPSHOT_CONTENT_WAIT_MIN_MS = 1_000;
 const SNAPSHOT_HOST_TIMEOUT_MARGIN_MS = 1_000;
@@ -91,207 +93,40 @@ function webViewSnapshotScript(options: WebViewSnapshotScriptOptions): string {
     SNAPSHOT_CONTENT_WAIT_MIN_MS,
     options.timeoutMs - SNAPSHOT_HOST_TIMEOUT_MARGIN_MS,
   );
-  return `(function () {
-  ${webViewInteractionRuntimeScript()}
-  var beforeContentScript = ${JSON.stringify(options.beforeContentScript ?? "")};
-  var afterContentScript = ${JSON.stringify(options.afterContentScript ?? "")};
-  var contentSelector = ${JSON.stringify(options.contentSelector ?? "")};
-  var interactions = ${JSON.stringify(options.interactions)};
-  var interactionRunId = ${JSON.stringify(options.interactionRunId)};
-  var contentDeadline = Date.now() + ${contentWaitMs};
-  var finished = false;
-  function post(payload) {
-    if (finished) return;
-    finished = true;
-    window.ReactNativeWebView.postMessage(JSON.stringify(payload));
-  }
-  function errorMessage(error) {
-    return (error && (error.message || error.toString())) || String(error);
-  }
-  function runBeforeContentScript() {
-    if (!beforeContentScript) return;
-    (0, eval)(beforeContentScript);
-  }
-  function isVisible(element) {
-    if (!element || typeof element.getBoundingClientRect !== "function") return false;
-    var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
-    if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
-      return false;
-    }
-    var rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-  function hasVisibleSelector(selectors) {
-    for (var index = 0; index < selectors.length; index += 1) {
-      var elements = document.querySelectorAll(selectors[index]);
-      for (var elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
-        if (isVisible(elements[elementIndex])) return true;
-      }
-    }
-    return false;
-  }
-  function manualActionKind() {
-    var title = (document.title || "").toLowerCase();
-    var body = ((document.body && document.body.innerText) || "").toLowerCase();
-    if (body.length > 12000) body = body.slice(0, 12000);
-    var hasCloudflareEvidence = document.querySelector(
-      "script[src*='/cdn-cgi/challenge-platform/'], link[href*='/cdn-cgi/challenge-platform/'], [data-ray], #cf-error-details"
-    ) !== null || /cloudflare ray id|cf-ray|cf-chl/.test(body);
-    var hasChallengeText =
-      title.indexOf("just a moment") !== -1 ||
-      title.indexOf("attention required") !== -1 ||
-      body.indexOf("checking if the site connection is secure") !== -1 ||
-      body.indexOf("enable javascript and cookies to continue") !== -1;
-    if (hasVisibleSelector([
-      "#challenge-running",
-      "#cf-challenge-running",
-      "#challenge-stage",
-      "form#challenge-form",
-      ".cf-browser-verification",
-      ".cf-turnstile",
-      "iframe[src*='challenges.cloudflare.com']"
-    ]) || (hasCloudflareEvidence && hasChallengeText)) {
-      return "cloudflare";
-    }
-    if (hasVisibleSelector([
-      "iframe[src*='recaptcha']",
-      "iframe[src*='hcaptcha']",
-      "iframe[src*='captcha']",
-      ".g-recaptcha",
-      ".h-captcha",
-      ".geetest_panel",
-      ".geetest_holder",
-      "[class*='captcha-slider']",
-      "[class*='slider-captcha']",
-      "[class*='puzzle-captcha']",
-      "#tcaptcha_iframe_dy",
-      ".tcaptcha-transform",
-      ".secsdk-captcha-drag-icon"
-    ])) {
-      return "captcha";
-    }
-    return null;
-  }
-  function postChallenge() {
-    var challengeKind = manualActionKind();
-    if (!challengeKind) return false;
-    post({
-      ok: false,
-      code: "manual-action-required",
-      error: challengeKind === "captcha"
-        ? "Complete the CAPTCHA in the source browser."
-        : "Complete the Cloudflare verification in the source browser.",
-      challenge: { kind: challengeKind, url: location.href }
-    });
-    return true;
-  }
-  function readPage() {
-    if (postChallenge()) return;
-    var root = contentSelector ? document.querySelector(contentSelector) : null;
-    var payload = {
-      url: location.href,
-      title: document.title || ""
-    };
-    if (${includeContent ? "true" : "false"}) {
-      if (root) {
-        payload.html = root.outerHTML || "";
-        payload.text = root.innerText || root.textContent || "";
-      } else {
-        payload.html = document.documentElement ? document.documentElement.outerHTML : "";
-        payload.text = document.body ? document.body.innerText || "" : "";
-      }
-    }
-    post({ ok: true, result: payload });
-  }
-  function readWhenContentReady() {
-    if (!contentSelector || document.querySelector(contentSelector)) {
-      readPage();
-      return;
-    }
-    if (Date.now() >= contentDeadline) {
-      post({
-        ok: false,
-        code: "content-not-found",
-        error: "contentSelector " + JSON.stringify(contentSelector) +
-          " did not match before the timeout."
-      });
-      return;
-    }
-    setTimeout(readWhenContentReady, 100);
-  }
-  function runAfterContentScript(callback) {
-    if (!afterContentScript) {
-      callback();
-      return;
-    }
-    var result;
-    try {
-      result = (0, eval)(afterContentScript);
-    } catch (error) {
-      post({ ok: false, error: "after-script error: " + errorMessage(error) });
-      return;
-    }
-    if (result && typeof result.then === "function") {
-      result.then(function () { callback(); }, function (error) {
-        post({ ok: false, error: "after-script error: " + errorMessage(error) });
-      });
-      return;
-    }
-    callback();
-  }
-  var lastChallengeCheckAt = 0;
-  var challengeDetected = false;
-  function shouldAbortForChallenge() {
-    if (challengeDetected) return true;
-    if (Date.now() - lastChallengeCheckAt < ${SNAPSHOT_CHALLENGE_CHECK_INTERVAL_MS}) return false;
-    lastChallengeCheckAt = Date.now();
-    challengeDetected = manualActionKind() !== null;
-    return challengeDetected;
-  }
-  function start() {
-    if (postChallenge()) return;
-    runWebViewInteractions(interactions, {
-      runId: interactionRunId,
-      shouldAbort: shouldAbortForChallenge
-    }, function (error, aborted) {
-      if (aborted) {
-        readPage();
-        return;
-      }
-      if (error) {
-        post({ ok: false, code: "interaction-failed", error: errorMessage(error) });
-        return;
-      }
-      runAfterContentScript(function () {
-        try {
-          readWhenContentReady();
-        } catch (readError) {
-          post({ ok: false, error: "webView snapshot error: " + errorMessage(readError) });
-        }
-      });
-    });
-  }
-  function readWhenReady() {
-    setTimeout(function () {
-      try {
-        start();
-      } catch (error) {
-        post({ ok: false, error: "webView snapshot error: " + errorMessage(error) });
-      }
-    }, 0);
-  }
-  try {
-    runBeforeContentScript();
-  } catch (error) {
-    post({ ok: false, error: "before-script error: " + errorMessage(error) });
-    return;
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", readWhenReady, { once: true });
-  } else {
-    readWhenReady();
-  }
-})(); true;`;
+  const values: Record<string, string> = {
+    __NOREA_SNAPSHOT_INTERACTION_RUNTIME__: String(
+      webViewInteractionRuntimeScript(),
+    ),
+    __NOREA_SNAPSHOT_BEFORE_CONTENT_SCRIPT__: String(
+      JSON.stringify(options.beforeContentScript ?? ""),
+    ),
+    __NOREA_SNAPSHOT_AFTER_CONTENT_SCRIPT__: String(
+      JSON.stringify(options.afterContentScript ?? ""),
+    ),
+    __NOREA_SNAPSHOT_CONTENT_SELECTOR__: String(
+      JSON.stringify(options.contentSelector ?? ""),
+    ),
+    __NOREA_SNAPSHOT_INTERACTIONS__: String(
+      JSON.stringify(options.interactions),
+    ),
+    __NOREA_SNAPSHOT_INTERACTION_RUN_ID__: String(
+      JSON.stringify(options.interactionRunId),
+    ),
+    __NOREA_SNAPSHOT_CONTENT_WAIT_MS__: String(contentWaitMs),
+    __NOREA_SNAPSHOT_CHALLENGE_DETECTOR__: String(
+      browserChallengeDetectorSource,
+    ),
+    __NOREA_SNAPSHOT_INCLUDE_CONTENT__: String(
+      includeContent ? "true" : "false",
+    ),
+    __NOREA_SNAPSHOT_CHALLENGE_CHECK_INTERVAL_MS__: String(
+      SNAPSHOT_CHALLENGE_CHECK_INTERVAL_MS,
+    ),
+  };
+  return webViewSnapshotSource.replace(
+    /__NOREA_SNAPSHOT_[A-Z_]+__/g,
+    (token) => values[token]!,
+  );
 }
 
 function parseWebViewEnvelope(
@@ -331,10 +166,11 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function parseWebViewLoadResult(raw: string, fallbackUrl: string): WebViewLoadResult {
-  const value = asRecord(
-    parseWebViewEnvelope(raw, "webViewLoad", fallbackUrl),
-  );
+function parseWebViewLoadResult(
+  raw: string,
+  fallbackUrl: string,
+): WebViewLoadResult {
+  const value = asRecord(parseWebViewEnvelope(raw, "webViewLoad", fallbackUrl));
   return {
     html: typeof value.html === "string" ? value.html : "",
     text: typeof value.text === "string" ? value.text : "",
@@ -562,8 +398,7 @@ export const FilterTypes = {
   ExcludableCheckboxGroup: "XCheckbox",
 } as const;
 
-export const defaultCover =
-  "https://placehold.co/200x300?text=No+Cover";
+export const defaultCover = "https://placehold.co/200x300?text=No+Cover";
 
 export function isUrlAbsolute(url: string): boolean {
   return /^[a-z][a-z\d+\-.]*:/i.test(url);
@@ -789,7 +624,7 @@ export function createShimResolver(
   const pluginInputs = createPluginInputsApi(pluginId);
   const fetchApi = baseUrl
     ? createPluginFetch(baseUrl, pluginId, scraperExecutor)
-    : (url: string, init: HttpInit = {}) =>
+    : (url: string, init: PluginHttpInit = {}) =>
         pluginFetch(url, {
           ...init,
           scraperExecutor: init.scraperExecutor ?? scraperExecutor,
@@ -797,7 +632,7 @@ export function createShimResolver(
         });
   const fetchText = baseUrl
     ? createPluginFetchText(baseUrl, pluginId, scraperExecutor)
-    : (url: string, init: HttpInit = {}) =>
+    : (url: string, init: PluginHttpInit = {}) =>
         pluginFetchText(url, {
           ...init,
           scraperExecutor: init.scraperExecutor ?? scraperExecutor,
@@ -823,9 +658,7 @@ export function createShimResolver(
           fetchText,
           fetchProto: () =>
             Promise.reject(
-              new Error(
-                "fetchProto is not implemented in this runtime.",
-              ),
+              new Error("fetchProto is not implemented in this runtime."),
             ),
         };
       case "@libs/novelStatus":
