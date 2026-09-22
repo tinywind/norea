@@ -200,9 +200,28 @@ machine's LAN IP or `10.0.2.2` for the Android emulator.
 | Tauri/Rust host | `src-tauri/` |
 | Android project shell | `src-tauri/gen/android/` |
 | Database queries and schema | `src/db/`, `src-tauri/src/schema.sql`, `drizzle.config.ts` |
-| Plugin runtime | `src/lib/plugins/`, `src/lib/http.ts`, `src-tauri/src/scraper.rs` |
+| Plugin runtime | `src/lib/plugins/`, `src/lib/http/`, `src-tauri/src/scraper/` |
+| Chapter media and storage | `src/lib/chapter-media/`, `src/lib/chapter-content/`, `src-tauri/src/chapter_media/` |
+| Task scheduling | `src/lib/tasks/` |
+| Runtime viewport and startup gates | `src/lib/runtime/`, `src/components/runtime/` |
 | Local import and local novel data | `src/lib/local-import.ts`, `src/db/queries/novel.ts` |
 | i18n strings | `strings/languages/` |
+
+The Android project stays under `src-tauri/gen/android/` because Tauri owns
+that build location. Its tracked `app/src/main/java/io/github/tinywind/norea/`
+sources and `app/src/main/res/raw/` scripts are maintained app code; Gradle's
+generated bindings and build outputs remain untracked. `MainActivity` connects
+the lifecycle and WebView to the storage, media, update and scraper modules.
+
+The TypeScript scheduler owns app tasks and source access. The Android scraper
+queue separately owns WebView navigation/extraction exclusivity and concurrent
+fetch requests. Keep cancellation and source identity intact across both.
+
+`src/lib/http.ts` and `src/lib/chapter-media.ts` preserve the public import
+surface. Their modules separate app HTTP from source-session HTTP, and media
+HTML/manifest/recovery logic from platform storage. Generic request data uses
+`HttpInit`; source routing and executor context use `PluginFetchContext` through
+`PluginHttpInit`.
 
 ## Contribution Rules
 

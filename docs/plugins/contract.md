@@ -213,6 +213,12 @@ failure and does not create a source-wide access block. Plugins identify the
 challenge; they must not solve, bypass, or relay it. These optional failure
 fields are additive, so the contract version remains 0.2.
 
+The host snapshot and desktop scraper share the generic browser challenge
+detector in `src/lib/plugins/browser-challenge-detector.js`. Source plugins
+should rely on host challenge failures for ordinary CAPTCHA and Cloudflare
+pages. They may add source-specific markers or capture checks for custom gates
+and shadow-root content that the generic detector cannot observe.
+
 ### Resource plans
 
 Use a resource plan only when there is no navigable content page, such as:
@@ -483,8 +489,15 @@ interface Plugin {
     chapterPath: string,
     contentType: ChapterContentType,
   ): ChapterAcquisitionPlan;
+  resolveUrl?(path: string, isNovel?: boolean): string;
 }
 ```
+
+The optional `resolveUrl` returns an absolute URL for a source path. It must
+preserve already absolute URLs; `isNovel` selects a novel-specific path prefix
+when the source needs one. Without it, the host resolves paths against
+`getBaseUrl()`. Cover storage accepts absolute HTTP(S) URLs directly so media
+hosts are not accidentally prefixed with the source's base URL.
 
 `ChapterItem.chapterNumber` is a stable source-owned order key unique within a
 novel. `ChapterItem.path` may be an absolute URL, relative path, or opaque
