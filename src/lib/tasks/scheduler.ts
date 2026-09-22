@@ -41,93 +41,49 @@ import {
   runWithScraperExecutor,
   type ScraperExecutorId,
 } from "./scraper-queue";
+import { isAbortError } from "../abort";
+import { describeError } from "../errors";
 import { recordPerformanceObservation } from "../observability";
-import { MAX_SCHEDULER_MATERIALIZED_TASKS } from "../performance-budgets";
 import {
-  isSourceAccessRequiredError,
   normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
-  type SourceAccessChallenge,
   type SourceAccessRequiredErrorShape,
 } from "../plugins/source-access";
 import { redactUrlsForLog } from "../url-log";
+import { SourceExecutorLeases } from "./source-executor-leases";
+import { TaskHistory } from "./task-history";
+import { SourceCooldowns } from "./source-cooldown";
+import {
+  SourceAccessGate,
+  normalizedSourceAccessTaskKey,
+  normalizedSourceAccessUrl,
+  type SourceAccessBlock,
+  type SourceAccessBlockState,
+} from "./source-access-gate";
+import type {
+  MainTaskSpec,
+  SourceQueueSortMode,
+  SourceTaskSpec,
+  TaskCancelOptions,
+  TaskEvent,
+  TaskHandle,
+  TaskKind,
+  TaskMoveTarget,
+  TaskPriority,
+  TaskQueueSortMode,
+  TaskRecord,
+  TaskRunContext,
+  TaskSnapshot,
+  TaskSpec,
+  TaskStatus,
+  TaskSubject,
+} from "./task-types";
+
+export type { SourceAccessBlock } from "./source-access-gate";
+export type * from "./task-types";
+export { sourceBaseDomainKey } from "./source-cooldown";
 
 const TASK_BULK_EVENT_CHUNK_SIZE = 250;
-
-export type TaskLane = "main" | "source";
-
-export type TaskPriority =
-  | "interactive"
-  | "user"
-  | "normal"
-  | "deferred"
-  | "background";
-
-export type TaskStatus =
-  | "queued"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
-
-export type MainTaskKind =
-  | "backup.export"
-  | "backup.restore"
-  | "library.checkUpdates"
-  | "library.refreshMetadata"
-  | "maintenance.clearLibraryMembership"
-  | "maintenance.clearDownloadedContent"
-  | "maintenance.clearWebViewCache"
-  | "maintenance.clearReadingProgress"
-  | "maintenance.clearUpdates"
-  | "repository.add"
-  | "repository.remove"
-  | "repository.refreshIndex"
-  | "plugin.install"
-  | "plugin.uninstall";
-
-export type MainLaneTaskKind = MainTaskKind;
-
-export type SourceTaskKind =
-  | "source.clearCookies"
-  | "source.openSite"
-  | "source.openNovel"
-  | "source.previewNovel"
-  | "source.mergeNovel"
-  | "source.listPopular"
-  | "source.listLatest"
-  | "source.search"
-  | "source.refreshNovel"
-  | "source.checkLibraryUpdates"
-  | "source.globalSearch";
-
-export type ChapterTaskKind =
-  | "chapter.download"
-  | "chapter.repairMedia"
-  | "chapter.deleteDownload";
-
-export type TaskKind = MainLaneTaskKind | SourceTaskKind | ChapterTaskKind;
-
-export interface TaskSource {
-  id: string;
-  name: string;
-}
-
-export interface TaskSubject {
-  batchId?: string;
-  batchTitle?: string;
-  chapterId?: number;
-  chapterName?: string;
-  chapterNumber?: string;
-  contentType?: string;
-  categoryId?: number | null;
-  novelId?: number;
-  novelName?: string;
-  novelPath?: string;
-  path?: string;
-  pluginId?: string;
-  url?: string;
-}
 
 export function taskWorkQueueKey(subject: TaskSubject | undefined): string | null {
   if (!subject) return null;
@@ -137,139 +93,6 @@ export function taskWorkQueueKey(subject: TaskSubject | undefined): string | nul
   const novelName = subject.novelName?.trim();
   if (novelName) return `name:${novelName}`;
   return null;
-}
-
-export interface TaskProgress {
-  current: number;
-  total?: number;
-}
-
-export interface TaskRecord {
-  id: string;
-  lane: TaskLane;
-  kind: TaskKind;
-  priority: TaskPriority;
-  title: string;
-  source?: TaskSource;
-  subject?: TaskSubject;
-  status: TaskStatus;
-  createdAt: number;
-  startedAt?: number;
-  finishedAt?: number;
-  progress?: TaskProgress;
-  queueIndex?: number;
-  queueSize?: number;
-  detail?: string;
-  error?: string;
-  canCancel: boolean;
-  canRetry: boolean;
-}
-
-export type TaskMoveTarget = "top" | "up" | "down" | "bottom";
-
-export type TaskQueueSortMode =
-  | "oldest"
-  | "newest"
-  | "priority"
-  | "title";
-
-export type SourceQueueSortMode =
-  | "sourceName"
-  | "oldestTask"
-  | "newestTask"
-  | "queuedCount";
-
-export interface SourceAccessBlock {
-  challenge: SourceAccessChallenge;
-  challengeUrlRedacted?: boolean;
-  detectedAt: number;
-  originTaskId?: string;
-  originTaskKey?: string;
-  revision: number;
-  scopeKey: string;
-  sourceIds: string[];
-  verificationError?: string;
-  verificationRequested: boolean;
-  verificationTaskId?: string;
-}
-
-export interface TaskSnapshot {
-  pausedSourceIds: string[];
-  records: TaskRecord[];
-  recordLimit: number;
-  recordsTruncated: boolean;
-  sourceQueueLimit: number;
-  sourceQueueOrder: string[];
-  sourceQueuesTotal: number;
-  sourceQueuesTruncated: boolean;
-  sourceQueuesPaused: boolean;
-  sourceAccessBlocks: SourceAccessBlock[];
-  total: number;
-  running: number;
-  queued: number;
-  failed: number;
-  succeeded: number;
-  cancelled: number;
-}
-
-export interface TaskEvent {
-  task: TaskRecord;
-  previousStatus: TaskStatus | null;
-}
-
-export interface TaskRunContext {
-  confirmSourceAccess?: () => boolean;
-  executor?: ScraperExecutorId;
-  setSourceAccessUrl?: (url: string) => boolean;
-  shouldYield?: () => boolean;
-  signal: AbortSignal;
-  sourceAccessVerification?: boolean;
-  taskId: string;
-  setDetail: (detail: string) => void;
-  setProgress: (progress: TaskProgress | undefined) => void;
-  /** Returns false when the task must return so the scheduler can requeue it behind source gates. */
-  tryStartSourceAccess?: () => boolean;
-}
-
-export interface TaskSpec<T> {
-  lane: TaskLane;
-  kind: TaskKind;
-  title: string;
-  priority?: TaskPriority;
-  source?: TaskSource;
-  subject?: TaskSubject;
-  dedupeKey?: string;
-  canCancel?: boolean;
-  canCompleteWithoutSourceAccess?: boolean;
-  exclusive?: boolean;
-  requiresForegroundExecutor?: boolean;
-  resolveSourceAccessUrl?: () => string | Promise<string>;
-  sourceAccessScopeKey?: string;
-  sourceAccessVerificationKey?: string;
-  sourceCooldownKey?: string;
-  sourceCooldownMs?: number;
-  run: (context: TaskRunContext) => Promise<T>;
-}
-
-export interface MainTaskSpec<T>
-  extends Omit<TaskSpec<T>, "lane" | "source"> {
-  kind: MainLaneTaskKind;
-}
-
-export interface SourceTaskSpec<T> extends Omit<TaskSpec<T>, "lane"> {
-  kind: SourceTaskKind | ChapterTaskKind;
-  source: TaskSource;
-}
-
-export interface TaskHandle<T> {
-  id: string;
-  promise: Promise<T>;
-}
-
-export interface TaskCancelOptions {
-  discardQueued?: boolean;
-  sourceId?: string;
-  workKey?: string;
 }
 
 interface TaskEntry {
@@ -290,13 +113,7 @@ interface TaskEntry {
   spec: TaskSpec<unknown>;
 }
 
-interface SourceAccessBlockState
-  extends Omit<SourceAccessBlock, "sourceIds"> {
-  sourceIds: Set<string>;
-}
-
 const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
-const HISTORY_LIMIT = Math.min(200, MAX_SCHEDULER_MATERIALIZED_TASKS);
 
 /**
  * When background concurrency follows the foreground setting, reserve one pool
@@ -309,7 +126,6 @@ const HISTORY_LIMIT = Math.min(200, MAX_SCHEDULER_MATERIALIZED_TASKS);
 function reservedBackgroundConcurrency(foregroundConcurrency: number): number {
   return Math.max(1, foregroundConcurrency - 1);
 }
-const TERMINAL_TASK_RETENTION_MS = 2_000;
 export const TASK_PAUSE_ABORT_MESSAGE = "Task was paused.";
 
 function priorityRank(priority: TaskPriority): number {
@@ -349,24 +165,6 @@ function canVerifySourceAccess(kind: TaskKind, isOriginTask: boolean): boolean {
     kind !== "source.clearCookies" &&
     (kind !== "chapter.repairMedia" || isOriginTask)
   );
-}
-
-function normalizedSourceAccessUrl(
-  value: string,
-  scopeKey: string,
-): string | null {
-  try {
-    if (sourceAccessScopeKey(value) !== scopeKey) return null;
-    return new URL(value).href;
-  } catch {
-    return null;
-  }
-}
-
-function normalizedSourceAccessTaskKey(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const key = value.trim();
-  return key && key.length <= 512 ? key : undefined;
 }
 
 function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
@@ -414,121 +212,37 @@ function canUsePoolExecutorForImmediateInteraction(entry: TaskEntry): boolean {
   );
 }
 
-function poolExecutorId(index: number): ScraperExecutorId {
-  return `pool:${index}`;
-}
-
-const commonSecondLevelDomainLabels = new Set([
-  "ac",
-  "co",
-  "com",
-  "edu",
-  "go",
-  "gov",
-  "net",
-  "ne",
-  "or",
-  "org",
-  "re",
-]);
-
-function poolExecutorIndex(executorId: ScraperExecutorId): number | null {
-  const match = /^pool:(\d+)$/.exec(executorId);
-  return match ? Number(match[1]) : null;
-}
-
-export function sourceBaseDomainKey(baseUrl: string | undefined): string | null {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  let hostname: string;
-  try {
-    const normalizedUrl = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
-    hostname = new URL(normalizedUrl).hostname.toLowerCase().replace(/\.$/, "");
-  } catch {
-    return null;
-  }
-
-  const withoutWww = hostname.startsWith("www.") ? hostname.slice(4) : hostname;
-  if (!withoutWww || withoutWww === "localhost" || withoutWww.includes(":")) {
-    return withoutWww || null;
-  }
-
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(withoutWww)) {
-    return withoutWww;
-  }
-
-  const labels = withoutWww.split(".").filter(Boolean);
-  if (labels.length <= 2) {
-    return withoutWww;
-  }
-
-  const topLevel = labels[labels.length - 1]!;
-  const secondLevel = labels[labels.length - 2]!;
-  if (
-    topLevel.length === 2 &&
-    commonSecondLevelDomainLabels.has(secondLevel) &&
-    labels.length >= 3
-  ) {
-    return labels.slice(-3).join(".");
-  }
-
-  return labels.slice(-2).join(".");
-}
-
 function makeTaskId(): string {
   return `task-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 9)}`;
 }
 
-function describeError(error: unknown): string {
-  return redactUrlsForLog(
-    error instanceof Error ? error.message : String(error),
-  );
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof DOMException && error.name === "AbortError"
-  ) || (error instanceof Error && error.name === "AbortError");
+function describeTaskError(error: unknown): string {
+  return redactUrlsForLog(describeError(error));
 }
 
 export class TaskScheduler {
   private readonly activeDedupeByKey = new Map<string, string>();
-  private readonly activeSourceTaskIdsById = new Map<string, Set<string>>();
   private readonly entries = new Map<string, TaskEntry>();
   private readonly eventListeners = new Set<(event: TaskEvent) => void>();
-  private readonly latestByDedupeKey = new Map<string, string>();
+  private readonly history: TaskHistory;
   private readonly mainQueue: string[] = [];
   private readonly pausedSourceIds = new Set<string>();
-  private readonly cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly snapshotListeners = new Set<() => void>();
   private readonly sourceTaskSettlementWaiters = new Map<
     string,
     Set<() => void>
   >();
-  private readonly sourceCooldownTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
-  private readonly sourceCooldownUntilByKey = new Map<string, number>();
-  private readonly sourceAccessBlocks = new Map<
-    string,
-    SourceAccessBlockState
-  >();
+  private readonly sourceCooldowns = new SourceCooldowns(() => this.drain());
+  private readonly sourceAccess = new SourceAccessGate();
+  private readonly sourceExecutors: SourceExecutorLeases;
   private readonly sourceQueueOrder: string[] = [];
   private readonly sourceQueues = new Map<string, string[]>();
   private sourceForegroundConcurrency: number;
   private sourceBackgroundConcurrency: number;
   private readonly sourceBackgroundConcurrencyFollowsForeground: boolean;
-  private readonly terminalTaskRetentionMs: number;
   private sourceQueuesPaused: boolean;
-  private sourceAccessRevision = 0;
-  private activeBackgroundCount = 0;
-  private activeImmediateTaskId: string | null = null;
   private activeMainTaskId: string | null = null;
   private batchDepth = 0;
   private drainAfterBatch = false;
@@ -537,8 +251,6 @@ export class TaskScheduler {
   private snapshotDirty = false;
   private snapshotFlushScheduled = false;
   private snapshotRafHandle: number | null = null;
-  private readonly activePoolTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
-  private readonly sourceExecutorBySource = new Map<string, ScraperExecutorId>();
   private readonly sourceLastServedAt = new Map<string, number>();
   private snapshotRecordIndexes = new Map<string, number>();
   private snapshot: TaskSnapshot = {
@@ -567,10 +279,17 @@ export class TaskScheduler {
     terminalTaskRetentionMs?: number;
   } = {}) {
     this.sourceQueuesPaused = options.sourceQueuesPaused ?? false;
-    this.terminalTaskRetentionMs = Math.max(
-      0,
-      options.terminalTaskRetentionMs ?? TERMINAL_TASK_RETENTION_MS,
-    );
+    this.history = new TaskHistory(options.terminalTaskRetentionMs, (id) => {
+      const current = this.entries.get(id);
+      if (
+        !current ||
+        (current.record.status !== "succeeded" && current.record.status !== "cancelled")
+      ) {
+        return;
+      }
+      this.deleteEntry(current);
+      this.publishSnapshot();
+    });
     this.sourceForegroundConcurrency = Math.max(
       1,
       options.sourceForegroundConcurrency ??
@@ -582,6 +301,9 @@ export class TaskScheduler {
       this.sourceBackgroundConcurrencyFollowsForeground
         ? reservedBackgroundConcurrency(this.sourceForegroundConcurrency)
         : Math.max(1, options.sourceBackgroundConcurrency ?? 1);
+    this.sourceExecutors = new SourceExecutorLeases(
+      this.sourceForegroundConcurrency,
+    );
     this.snapshot = this.buildSnapshot();
   }
 
@@ -591,10 +313,10 @@ export class TaskScheduler {
     extra?: Record<string, unknown>,
   ): void {
     recordPerformanceObservation("scheduler.event", {
-      activeBackgroundCount: this.activeBackgroundCount,
-      activeImmediateTaskId: this.activeImmediateTaskId,
+      activeBackgroundCount: this.sourceExecutors.activeBackgroundCount,
+      activeImmediateTaskId: this.sourceExecutors.activeImmediateTaskId,
       activePoolTaskIdsByExecutor: Object.fromEntries(
-        this.activePoolTaskIdsByExecutor,
+        this.sourceExecutors.activePoolTasks,
       ),
       activeMainTaskId: this.activeMainTaskId,
       exclusive: entry?.exclusive,
@@ -604,7 +326,7 @@ export class TaskScheduler {
       pausedSourceIds: [...this.pausedSourceIds].sort(),
       priority: entry?.record.priority,
       sourceAccessScopeKey: entry?.spec.sourceAccessScopeKey,
-      sourceAccessScopesBlocked: this.sourceAccessBlocks.size,
+      sourceAccessScopesBlocked: this.sourceAccess.size,
       sourceId: entry?.record.source?.id,
       sourceName: entry?.record.source?.name,
       sourceQueueLength: entry?.record.source
@@ -692,7 +414,7 @@ export class TaskScheduler {
     this.registerSourceAccessScopeEntry(entry);
     if (spec.dedupeKey) {
       this.activeDedupeByKey.set(spec.dedupeKey, id);
-      this.latestByDedupeKey.set(spec.dedupeKey, id);
+      this.history.rememberLatest(spec.dedupeKey, id);
     }
 
     if (spec.lane === "main") {
@@ -961,15 +683,6 @@ export class TaskScheduler {
     return true;
   }
 
-  private nextSourceAccessRevision(): number {
-    this.sourceAccessRevision += 1;
-    return this.sourceAccessRevision;
-  }
-
-  private isSourceAccessScopeBlocked(scopeKey: string | undefined): boolean {
-    return Boolean(scopeKey && this.sourceAccessBlocks.has(scopeKey));
-  }
-
   private matchesSourceAccessBlock(
     entry: TaskEntry,
     block: SourceAccessBlockState,
@@ -982,20 +695,17 @@ export class TaskScheduler {
   }
 
   private isSourceAccessBlocked(entry: TaskEntry): boolean {
-    if (this.isSourceAccessScopeBlocked(entry.spec.sourceAccessScopeKey)) {
-      return true;
-    }
-    for (const block of this.sourceAccessBlocks.values()) {
-      if (this.matchesSourceAccessBlock(entry, block)) return true;
-    }
-    return false;
+    return this.sourceAccess.isBlocked(
+      entry.spec.sourceAccessScopeKey,
+      entry.record.source?.id,
+    );
   }
 
   private registerSourceAccessScopeEntry(entry: TaskEntry): void {
-    const scopeKey = entry.spec.sourceAccessScopeKey;
-    const sourceId = entry.record.source?.id;
-    if (!scopeKey || !sourceId) return;
-    this.sourceAccessBlocks.get(scopeKey)?.sourceIds.add(sourceId);
+    this.sourceAccess.registerSource(
+      entry.spec.sourceAccessScopeKey,
+      entry.record.source?.id,
+    );
   }
 
   private setSourceAccessUrlForEntry(entry: TaskEntry, url: string): boolean {
@@ -1019,12 +729,12 @@ export class TaskScheduler {
       entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
     }
 
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     if (!block || entry.sourceAccessVerificationRevision !== undefined) {
       return true;
     }
     const sourceId = entry.record.source?.id;
-    if (sourceId) block.sourceIds.add(sourceId);
+    this.sourceAccess.registerSource(scopeKey, sourceId);
     entry.sourceAccessPauseRequested = true;
     entry.pauseRequested = true;
     entry.controller.abort(
@@ -1032,30 +742,6 @@ export class TaskScheduler {
     );
     this.publishSnapshot();
     return false;
-  }
-
-  private sourceAccessBlockRecords(): SourceAccessBlock[] {
-    return [...this.sourceAccessBlocks.values()]
-      .map((block) => ({
-        challenge: { ...block.challenge },
-        ...(block.challengeUrlRedacted
-          ? { challengeUrlRedacted: true }
-          : {}),
-        detectedAt: block.detectedAt,
-        ...(block.originTaskId ? { originTaskId: block.originTaskId } : {}),
-        ...(block.originTaskKey ? { originTaskKey: block.originTaskKey } : {}),
-        revision: block.revision,
-        scopeKey: block.scopeKey,
-        sourceIds: [...block.sourceIds].sort(),
-        ...(block.verificationError
-          ? { verificationError: block.verificationError }
-          : {}),
-        verificationRequested: block.verificationRequested,
-        ...(block.verificationTaskId
-          ? { verificationTaskId: block.verificationTaskId }
-          : {}),
-      }))
-      .sort((left, right) => left.detectedAt - right.detectedAt);
   }
 
   private recordSourceAccessChallenge(
@@ -1069,31 +755,8 @@ export class TaskScheduler {
     }
     const scopeKey = configuredScopeKey;
 
-    const existing = this.sourceAccessBlocks.get(scopeKey);
-    const invalidatesVerification = Boolean(
-      existing?.verificationRequested || existing?.verificationTaskId,
-    );
-    const challengeChanged = Boolean(
-      existing &&
-        (existing.challenge.kind !== error.challenge.kind ||
-          existing.challenge.url !== error.challenge.url),
-    );
-    const replacesChallenge = invalidatesVerification || challengeChanged;
-    const originTaskKey = replacesChallenge || !existing
-      ? normalizedSourceAccessTaskKey(entry.spec.sourceAccessVerificationKey)
-      : existing.originTaskKey;
-    if (existing?.verificationTaskId) {
-      const verificationEntry = this.entries.get(existing.verificationTaskId);
-      if (verificationEntry) {
-        verificationEntry.sourceAccessVerificationRevision = undefined;
-      }
-    }
-    const revision =
-      !existing || replacesChallenge
-        ? this.nextSourceAccessRevision()
-        : existing.revision;
     const sourceId = entry.record.source?.id;
-    const sourceIds = new Set(existing?.sourceIds ?? []);
+    const sourceIds = new Set<string>();
     for (const candidate of this.entries.values()) {
       const candidateSourceId = candidate.record.source?.id;
       if (
@@ -1106,25 +769,22 @@ export class TaskScheduler {
     }
     if (sourceId) sourceIds.add(sourceId);
 
-    const block: SourceAccessBlockState = {
-      challenge: { ...error.challenge },
-      detectedAt: Date.now(),
-      originTaskId:
-        !existing || replacesChallenge
-          ? entry.record.id
-          : existing.originTaskId,
-      ...(originTaskKey ? { originTaskKey } : {}),
-      revision,
+    const { block, revokedVerificationTaskId } = this.sourceAccess.recordChallenge(
       scopeKey,
-      sourceIds,
-      ...(invalidatesVerification
-        ? { verificationError: describeError(error) }
-        : !challengeChanged && existing?.verificationError
-          ? { verificationError: existing.verificationError }
-          : {}),
-      verificationRequested: false,
-    };
-    this.sourceAccessBlocks.set(scopeKey, block);
+      error.challenge,
+      {
+        taskId: entry.record.id,
+        taskKey: entry.spec.sourceAccessVerificationKey,
+        sourceIds,
+      },
+      describeTaskError(error),
+    );
+    if (revokedVerificationTaskId) {
+      const verificationEntry = this.entries.get(revokedVerificationTaskId);
+      if (verificationEntry) {
+        verificationEntry.sourceAccessVerificationRevision = undefined;
+      }
+    }
     this.publishSnapshot();
 
     this.pauseRunningSourceTasks(
@@ -1141,14 +801,14 @@ export class TaskScheduler {
     this.debug("source access required", entry, {
       challengeKind: error.challenge.kind,
       scopeKey,
-      sourceAccessRevision: revision,
+      sourceAccessRevision: block.revision,
     });
     this.requeuePausedRunningAfterSettlement(entry);
     return true;
   }
 
   private hasRunningSourceAccessTask(scopeKey: string): boolean {
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     if (!block) return false;
     for (const entry of this.entries.values()) {
       if (
@@ -1208,7 +868,8 @@ export class TaskScheduler {
   }
 
   private prepareSourceAccessVerificationTask(): TaskEntry | null {
-    for (const [scopeKey, block] of this.sourceAccessBlocks) {
+    for (const block of this.sourceAccess.values()) {
+      const { scopeKey } = block;
       if (
         !block.verificationRequested ||
         block.verificationTaskId ||
@@ -1222,10 +883,7 @@ export class TaskScheduler {
         block,
       );
       if (!entry) {
-        this.sourceAccessBlocks.set(scopeKey, {
-          ...block,
-          verificationRequested: false,
-        });
+        this.sourceAccess.prepareVerification(scopeKey, undefined);
         this.debug("source access verification request reset", undefined, {
           scopeKey,
           sourceAccessRevision: block.revision,
@@ -1238,11 +896,7 @@ export class TaskScheduler {
         entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
       }
       entry.sourceAccessVerificationRevision = block.revision;
-      this.sourceAccessBlocks.set(scopeKey, {
-        ...block,
-        verificationRequested: false,
-        verificationTaskId: entry.record.id,
-      });
+      this.sourceAccess.prepareVerification(scopeKey, entry.record.id);
       this.debug("source access verification started", entry, {
         scopeKey,
         sourceAccessRevision: block.revision,
@@ -1267,19 +921,20 @@ export class TaskScheduler {
     ) {
       return false;
     }
-    const block = this.sourceAccessBlocks.get(scopeKey);
     if (
-      !block ||
-      block.revision !== expectedRevision ||
       entry.sourceAccessVerificationRevision !== expectedRevision ||
-      block.verificationTaskId !== entry.record.id
+      !this.sourceAccess.matchesVerification(
+        scopeKey,
+        entry.record.id,
+        expectedRevision,
+      )
     ) {
       return false;
     }
 
     // Authentication is proven by the source response, not later media or
     // storage work. Keep the running canary pinned to its verified hostname.
-    this.sourceAccessBlocks.delete(scopeKey);
+    this.sourceAccess.clear(scopeKey);
     this.debug("source access verified", entry, {
       scopeKey,
       sourceAccessRevision: expectedRevision,
@@ -1296,27 +951,20 @@ export class TaskScheduler {
     const scopeKey = entry.spec.sourceAccessScopeKey;
     const revision = entry.sourceAccessVerificationRevision;
     if (!scopeKey || revision === undefined) return false;
-    const block = this.sourceAccessBlocks.get(scopeKey);
     if (
-      !block ||
-      block.revision !== revision ||
-      block.verificationTaskId !== entry.record.id
+      !this.sourceAccess.matchesVerification(scopeKey, entry.record.id, revision)
     ) {
       return false;
     }
 
-    const nextRevision = this.nextSourceAccessRevision();
+    const nextRevision = this.sourceAccess.stopVerification(
+      scopeKey,
+      describeTaskError(error),
+    );
     entry.sourceAccessVerificationRevision = undefined;
-    this.sourceAccessBlocks.set(scopeKey, {
-      ...block,
-      revision: nextRevision,
-      verificationError: describeError(error),
-      verificationRequested: false,
-      verificationTaskId: undefined,
-    });
     entry.pauseRequested = true;
     this.debug("source access verification failed", entry, {
-      error: describeError(error),
+      error: describeTaskError(error),
       scopeKey,
       sourceAccessRevision: nextRevision,
     });
@@ -1330,21 +978,13 @@ export class TaskScheduler {
     const revision = entry.sourceAccessVerificationRevision;
     entry.sourceAccessVerificationRevision = undefined;
     if (!scopeKey || revision === undefined) return;
-    const block = this.sourceAccessBlocks.get(scopeKey);
     if (
-      !block ||
-      block.revision !== revision ||
-      block.verificationTaskId !== entry.record.id
+      !this.sourceAccess.matchesVerification(scopeKey, entry.record.id, revision)
     ) {
       return;
     }
 
-    this.sourceAccessBlocks.set(scopeKey, {
-      ...block,
-      revision: this.nextSourceAccessRevision(),
-      verificationRequested: false,
-      verificationTaskId: undefined,
-    });
+    this.sourceAccess.stopVerification(scopeKey);
     this.publishSnapshot();
   }
 
@@ -1583,67 +1223,7 @@ export class TaskScheduler {
   }
 
   hydrateSourceAccessBlocks(blocks: Iterable<SourceAccessBlock>): void {
-    const hydrated = new Map<string, SourceAccessBlockState>();
-    let highestRevision = this.sourceAccessRevision;
-
-    for (const block of blocks) {
-      const scopeKey = block.scopeKey?.trim();
-      const revision = Math.floor(block.revision);
-      if (
-        !scopeKey ||
-        !Number.isFinite(block.detectedAt) ||
-        !Number.isFinite(revision) ||
-        revision <= 0 ||
-        !isSourceAccessRequiredError({
-          challenge: block.challenge,
-          code: "source-access-required",
-        })
-      ) {
-        continue;
-      }
-
-      try {
-        if (sourceAccessScopeKey(block.challenge.url) !== scopeKey) continue;
-      } catch {
-        continue;
-      }
-
-      const sourceIds = new Set(
-        Array.isArray(block.sourceIds)
-          ? block.sourceIds
-              .filter((sourceId) => typeof sourceId === "string")
-              .map((sourceId) => sourceId.trim())
-              .filter(Boolean)
-          : [],
-      );
-      const current = hydrated.get(scopeKey);
-      if (current && current.revision > revision) continue;
-      hydrated.set(scopeKey, {
-        challenge: { ...block.challenge },
-        ...(block.challengeUrlRedacted
-          ? { challengeUrlRedacted: true }
-          : {}),
-        detectedAt: block.detectedAt,
-        ...(normalizedSourceAccessTaskKey(block.originTaskKey)
-          ? { originTaskKey: normalizedSourceAccessTaskKey(block.originTaskKey) }
-          : {}),
-        revision,
-        scopeKey,
-        sourceIds,
-        ...(typeof block.verificationError === "string" &&
-        block.verificationError.trim()
-          ? { verificationError: block.verificationError }
-          : {}),
-        verificationRequested: false,
-      });
-      highestRevision = Math.max(highestRevision, revision);
-    }
-
-    this.sourceAccessBlocks.clear();
-    for (const [scopeKey, block] of hydrated) {
-      this.sourceAccessBlocks.set(scopeKey, block);
-    }
-    this.sourceAccessRevision = highestRevision;
+    this.sourceAccess.hydrate(blocks);
     for (const entry of this.entries.values()) {
       entry.sourceAccessVerificationRevision = undefined;
       this.registerSourceAccessScopeEntry(entry);
@@ -1654,14 +1234,14 @@ export class TaskScheduler {
       { includeNonCancellable: true, sourceAccess: true },
     );
     this.debug("source access blocks hydrated", undefined, {
-      sourceAccessScopesBlocked: this.sourceAccessBlocks.size,
+      sourceAccessScopesBlocked: this.sourceAccess.size,
     });
     this.publishSnapshot();
     this.drain();
   }
 
   canBeginSourceAccessVerification(scopeKey: string): boolean {
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     return Boolean(
       block &&
         !block.verificationRequested &&
@@ -1678,7 +1258,7 @@ export class TaskScheduler {
     scopeKey: string;
     url: string;
   } | null> {
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     if (!block || block.revision !== expectedRevision) return null;
     const fallbackUrl = normalizedSourceAccessUrl(
       block.challenge.url,
@@ -1712,7 +1292,7 @@ export class TaskScheduler {
     }
     candidateScopeKey ??= scopeKey;
 
-    const current = this.sourceAccessBlocks.get(scopeKey);
+    const current = this.sourceAccess.get(scopeKey);
     if (
       !current ||
       current.revision !== expectedRevision ||
@@ -1735,15 +1315,12 @@ export class TaskScheduler {
     const resolvedUrl = rebuiltUrl ?? fallbackUrl;
     if (!resolvedUrl) return null;
     if (rebuiltUrl) {
-      this.sourceAccessBlocks.set(scopeKey, {
-        ...current,
-        challenge: { ...current.challenge, url: rebuiltUrl },
-        challengeUrlRedacted: undefined,
-        originTaskId: entry.record.id,
-        originTaskKey: normalizedSourceAccessTaskKey(
-          entry.spec.sourceAccessVerificationKey,
-        ),
-      });
+      this.sourceAccess.refreshChallengeUrl(
+        scopeKey,
+        rebuiltUrl,
+        entry.record.id,
+        entry.spec.sourceAccessVerificationKey,
+      );
       this.publishSnapshot();
     }
     return { revision: current.revision, scopeKey, url: resolvedUrl };
@@ -1751,14 +1328,10 @@ export class TaskScheduler {
 
   beginSourceAccessVerification(scopeKey: string): boolean {
     if (!this.canBeginSourceAccessVerification(scopeKey)) return false;
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     if (!block) return false;
 
-    this.sourceAccessBlocks.set(scopeKey, {
-      ...block,
-      verificationError: undefined,
-      verificationRequested: true,
-    });
+    this.sourceAccess.requestVerification(scopeKey);
     this.debug("source access verification requested", undefined, {
       scopeKey,
       sourceAccessRevision: block.revision,
@@ -1770,7 +1343,7 @@ export class TaskScheduler {
 
   /** Cancel the blocked origin or active canary, then allow fresh source work. */
   cancelSourceAccessBlock(scopeKey: string, expectedRevision: number): boolean {
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     if (!block || block.revision !== expectedRevision) return false;
 
     const taskId = block.verificationTaskId ?? block.originTaskId;
@@ -1796,7 +1369,7 @@ export class TaskScheduler {
           this.cancelQueuedEntries([entry], false);
         }
       }
-      this.sourceAccessBlocks.delete(scopeKey);
+      this.sourceAccess.clear(scopeKey);
       this.debug("source access wait cancelled", entry, {
         scopeKey,
         sourceAccessRevision: expectedRevision,
@@ -1808,7 +1381,7 @@ export class TaskScheduler {
   }
 
   keepSourceAccessBlocked(scopeKey: string): boolean {
-    const block = this.sourceAccessBlocks.get(scopeKey);
+    const block = this.sourceAccess.get(scopeKey);
     if (!block) return false;
 
     const verificationTaskId = block.verificationTaskId;
@@ -1822,13 +1395,7 @@ export class TaskScheduler {
     if (verificationEntry) {
       verificationEntry.sourceAccessVerificationRevision = undefined;
     }
-    const revision = this.nextSourceAccessRevision();
-    this.sourceAccessBlocks.set(scopeKey, {
-      ...block,
-      revision,
-      verificationRequested: false,
-      verificationTaskId: undefined,
-    });
+    const revision = this.sourceAccess.stopVerification(scopeKey);
     if (verificationTaskId) {
       this.pauseRunningSourceTasks(
         undefined,
@@ -1855,7 +1422,7 @@ export class TaskScheduler {
       this.sourceBackgroundConcurrency =
         reservedBackgroundConcurrency(nextConcurrency);
     }
-    this.dropDisabledSourceExecutors();
+    this.sourceExecutors.resize(nextConcurrency);
     this.debug("source foreground concurrency changed", undefined, {
       sourceForegroundConcurrency: nextConcurrency,
       sourceBackgroundConcurrency: this.sourceBackgroundConcurrency,
@@ -1874,7 +1441,7 @@ export class TaskScheduler {
   }
 
   getTaskByDedupeKey(key: string): TaskRecord | undefined {
-    const id = this.latestByDedupeKey.get(key);
+    const id = this.history.latestId(key);
     return id ? this.getTask(id) : undefined;
   }
 
@@ -1958,10 +1525,7 @@ export class TaskScheduler {
   }
 
   private hasActiveSourceExecutor(): boolean {
-    return (
-      this.activeImmediateTaskId !== null ||
-      this.activePoolTaskIdsByExecutor.size > 0
-    );
+    return this.sourceExecutors.hasActiveExecutor;
   }
 
   private sourceDispatchBlockedByMainBarrier(): boolean {
@@ -1976,7 +1540,7 @@ export class TaskScheduler {
   }
 
   private drainImmediateExecutor(): void {
-    if (this.activeImmediateTaskId) return;
+    if (this.sourceExecutors.activeImmediateTaskId) return;
     const next = this.pickSourceTask(
       (entry) => isOpenSiteSourceKind(entry.record.kind),
       { allowPaused: true, allowActiveSource: true },
@@ -2007,10 +1571,10 @@ export class TaskScheduler {
   }
 
   private drainSourcePool(): void {
-    const freeExecutorIds = this.freePoolExecutorIds();
+    const freeExecutorIds = this.sourceExecutors.freePoolExecutorIds();
     if (freeExecutorIds.length === 0) return;
-    const activeImmediateEntry = this.activeImmediateTaskId
-      ? this.entries.get(this.activeImmediateTaskId)
+    const activeImmediateEntry = this.sourceExecutors.activeImmediateTaskId
+      ? this.entries.get(this.sourceExecutors.activeImmediateTaskId)
       : undefined;
     const immediateExecutorHasDownload =
       activeImmediateEntry !== undefined &&
@@ -2037,7 +1601,8 @@ export class TaskScheduler {
             if (!this.canUseExecutorForSource(entry, executorId)) return false;
             if (
               isBackgroundPriority(entry.record.priority) &&
-              this.activeBackgroundCount >= this.sourceBackgroundConcurrency
+              this.sourceExecutors.activeBackgroundCount >=
+                this.sourceBackgroundConcurrency
             ) {
               return false;
             }
@@ -2051,67 +1616,15 @@ export class TaskScheduler {
     }
   }
 
-  private freePoolExecutorIds(): ScraperExecutorId[] {
-    const ids: ScraperExecutorId[] = [];
-    for (let index = 0; index < this.sourceForegroundConcurrency; index += 1) {
-      const executorId = poolExecutorId(index);
-      if (!this.activePoolTaskIdsByExecutor.has(executorId)) ids.push(executorId);
-    }
-    return ids;
-  }
-
-  private isEnabledPoolExecutor(executorId: ScraperExecutorId): boolean {
-    const index = poolExecutorIndex(executorId);
-    return index !== null && index < this.sourceForegroundConcurrency;
-  }
-
-  private assignedSourceExecutor(
-    sourceId: string,
-  ): ScraperExecutorId | undefined {
-    const executorId = this.sourceExecutorBySource.get(sourceId);
-    if (!executorId) return undefined;
-    if (this.isEnabledPoolExecutor(executorId)) return executorId;
-    this.sourceExecutorBySource.delete(sourceId);
-    return undefined;
-  }
-
-  private dropDisabledSourceExecutors(): void {
-    for (const [sourceId, executorId] of this.sourceExecutorBySource) {
-      if (!this.isEnabledPoolExecutor(executorId)) {
-        this.sourceExecutorBySource.delete(sourceId);
-      }
-    }
-  }
-
   private canUseExecutorForSource(
     entry: TaskEntry,
     executorId: ScraperExecutorId,
   ): boolean {
-    const sourceId = entry.record.source?.id;
-    if (sourceId) {
-      const assignedExecutor = this.assignedSourceExecutor(sourceId);
-      if (assignedExecutor) return assignedExecutor === executorId;
-    }
-    return !this.isExecutorReservedForQueuedSource(
+    return this.sourceExecutors.canUseExecutor(
+      entry.record.source?.id,
       executorId,
-      sourceId ?? null,
+      (sourceId) => this.hasQueuedSource(sourceId),
     );
-  }
-
-  private isExecutorReservedForQueuedSource(
-    executorId: ScraperExecutorId,
-    candidateSourceId: string | null,
-  ): boolean {
-    for (const [sourceId, assignedExecutor] of this.sourceExecutorBySource) {
-      if (sourceId === candidateSourceId) continue;
-      if (assignedExecutor !== executorId) continue;
-      if (!this.isEnabledPoolExecutor(assignedExecutor)) {
-        this.sourceExecutorBySource.delete(sourceId);
-        continue;
-      }
-      if (this.hasQueuedSource(sourceId)) return true;
-    }
-    return false;
   }
 
   private hasQueuedSource(sourceId: string): boolean {
@@ -2129,22 +1642,13 @@ export class TaskScheduler {
   private startSource(entry: TaskEntry, executorId: ScraperExecutorId): void {
     this.removeFromSourceQueue(entry);
     const sourceId = entry.record.source!.id;
-    const activeIds = this.activeSourceTaskIdsById.get(sourceId) ?? new Set();
-    activeIds.add(entry.record.id);
-    this.activeSourceTaskIdsById.set(sourceId, activeIds);
-    if (executorId !== "immediate" && !this.assignedSourceExecutor(sourceId)) {
-      this.sourceExecutorBySource.set(sourceId, executorId);
-    }
+    this.sourceExecutors.acquire(entry.record.id, {
+      sourceId,
+      executorId,
+      background: isBackgroundPriority(entry.record.priority),
+    });
     entry.sourceExecutorId = executorId;
     entry.activeReleased = false;
-    if (executorId === "immediate") {
-      this.activeImmediateTaskId = entry.record.id;
-    } else {
-      this.activePoolTaskIdsByExecutor.set(executorId, entry.record.id);
-    }
-    if (isBackgroundPriority(entry.record.priority)) {
-      this.activeBackgroundCount += 1;
-    }
     this.start(entry);
   }
 
@@ -2173,9 +1677,11 @@ export class TaskScheduler {
           continue;
         }
         if (!canRunBeforeSourceGates) {
-          const cooldownDelay = this.sourceCooldownDelay(entry);
+          const cooldownDelay = this.sourceCooldowns.delay(
+            entry.spec.sourceCooldownKey,
+          );
           if (cooldownDelay > 0) {
-            this.scheduleSourceCooldownDrain(
+            this.sourceCooldowns.scheduleDrain(
               entry.spec.sourceCooldownKey!,
               cooldownDelay,
             );
@@ -2219,9 +1725,11 @@ export class TaskScheduler {
         continue;
       }
       if (!canRunBeforeSourceGates) {
-        const cooldownDelay = this.sourceCooldownDelay(entry);
+        const cooldownDelay = this.sourceCooldowns.delay(
+          entry.spec.sourceCooldownKey,
+        );
         if (cooldownDelay > 0) {
-          this.scheduleSourceCooldownDrain(
+          this.sourceCooldowns.scheduleDrain(
             entry.spec.sourceCooldownKey!,
             cooldownDelay,
           );
@@ -2264,7 +1772,7 @@ export class TaskScheduler {
   }
 
   private hasActiveNonOpenSiteSourceTask(sourceId: string): boolean {
-    const activeIds = this.activeSourceTaskIdsById.get(sourceId);
+    const activeIds = this.sourceExecutors.activeTaskIds(sourceId);
     if (!activeIds) return false;
     for (const id of activeIds) {
       const activeEntry = this.entries.get(id);
@@ -2292,54 +1800,6 @@ export class TaskScheduler {
     return a.record.createdAt - b.record.createdAt;
   }
 
-  private sourceCooldownDelay(entry: TaskEntry): number {
-    const key = entry.spec.sourceCooldownKey;
-    if (!key) return 0;
-    const until = this.sourceCooldownUntilByKey.get(key);
-    if (!until) return 0;
-
-    const delay = until - Date.now();
-    if (delay > 0) return delay;
-
-    this.clearSourceCooldown(key);
-    return 0;
-  }
-
-  private setSourceCooldown(entry: TaskEntry): void {
-    const key = entry.spec.sourceCooldownKey;
-    const cooldownMs = entry.spec.sourceCooldownMs ?? 0;
-    if (!key || cooldownMs <= 0) return;
-
-    const delayMs = Math.max(0, Math.round(cooldownMs));
-    const until = Date.now() + delayMs;
-    this.clearSourceCooldown(key);
-    this.sourceCooldownUntilByKey.set(key, until);
-    this.scheduleSourceCooldownDrain(key, delayMs);
-  }
-
-  private clearSourceCooldown(key: string): void {
-    const timer = this.sourceCooldownTimers.get(key);
-    if (timer) clearTimeout(timer);
-    this.sourceCooldownTimers.delete(key);
-    this.sourceCooldownUntilByKey.delete(key);
-  }
-
-  private scheduleSourceCooldownDrain(key: string, delayMs: number): void {
-    if (this.sourceCooldownTimers.has(key)) return;
-    const timer = setTimeout(() => {
-      this.sourceCooldownTimers.delete(key);
-      const until = this.sourceCooldownUntilByKey.get(key);
-      if (until !== undefined && until <= Date.now()) {
-        this.sourceCooldownUntilByKey.delete(key);
-      }
-      this.drain();
-    }, Math.max(0, delayMs));
-    if (typeof timer === "object" && "unref" in timer) {
-      timer.unref();
-    }
-    this.sourceCooldownTimers.set(key, timer);
-  }
-
   private tryStartSourceAccess(entry: TaskEntry): boolean {
     if (
       entry.record.status !== "running" ||
@@ -2354,9 +1814,9 @@ export class TaskScheduler {
       return true;
     }
 
-    const cooldownDelay = this.sourceCooldownDelay(entry);
+    const cooldownDelay = this.sourceCooldowns.delay(entry.spec.sourceCooldownKey);
     if (cooldownDelay > 0) {
-      this.scheduleSourceCooldownDrain(
+      this.sourceCooldowns.scheduleDrain(
         entry.spec.sourceCooldownKey!,
         cooldownDelay,
       );
@@ -2485,7 +1945,7 @@ export class TaskScheduler {
         }
         if (!cancelled) {
           console.error("[task-scheduler] task failed", {
-            error: describeError(error),
+            error: describeTaskError(error),
             kind: entry.record.kind,
             sourceId: entry.record.source?.id,
             taskId: entry.record.id,
@@ -2495,7 +1955,7 @@ export class TaskScheduler {
         this.finishRunning(entry, cancelled ? "cancelled" : "failed", {
           canCancel: false,
           canRetry: cancelled,
-          error: cancelled ? undefined : describeError(error),
+          error: cancelled ? undefined : describeTaskError(error),
           finishedAt: Date.now(),
         });
         if (entry.record.status === "cancelled" || entry.record.status === "failed") {
@@ -2587,7 +2047,7 @@ export class TaskScheduler {
     this.debug("paused task settled", entry);
     this.releaseActive(entry);
     if (sourceCooldownKey) {
-      this.clearSourceCooldown(sourceCooldownKey);
+      this.sourceCooldowns.clear(sourceCooldownKey);
     }
     if (entry.dedupeKey) {
       this.activeDedupeByKey.set(entry.dedupeKey, entry.record.id);
@@ -2681,35 +2141,13 @@ export class TaskScheduler {
       if (this.activeMainTaskId === entry.record.id) this.activeMainTaskId = null;
     } else {
       const sourceId = entry.record.source?.id;
-      if (sourceId) {
-        const activeIds = this.activeSourceTaskIdsById.get(sourceId);
-        activeIds?.delete(entry.record.id);
-        const hasActiveSource = (activeIds?.size ?? 0) > 0;
-        if (!hasActiveSource) {
-          this.activeSourceTaskIdsById.delete(sourceId);
-          if (!this.hasQueuedSource(sourceId)) {
-            this.sourceExecutorBySource.delete(sourceId);
-          }
-        }
-      }
+      this.sourceExecutors.release(
+        entry.record.id,
+        Boolean(sourceId && this.hasQueuedSource(sourceId)),
+      );
       const fairnessKey = this.sourceFairnessKey(entry);
       if (fairnessKey) {
         this.sourceLastServedAt.set(fairnessKey, Date.now());
-      }
-      if (entry.sourceExecutorId === "immediate") {
-        if (this.activeImmediateTaskId === entry.record.id) {
-          this.activeImmediateTaskId = null;
-        }
-      } else if (entry.sourceExecutorId) {
-        if (this.activePoolTaskIdsByExecutor.get(entry.sourceExecutorId) === entry.record.id) {
-          this.activePoolTaskIdsByExecutor.delete(entry.sourceExecutorId);
-        }
-      }
-      if (isBackgroundPriority(entry.record.priority)) {
-        this.activeBackgroundCount = Math.max(
-          0,
-          this.activeBackgroundCount - 1,
-        );
       }
       entry.sourceExecutorId = undefined;
       entry.activeReleased = true;
@@ -2724,7 +2162,10 @@ export class TaskScheduler {
         entry.spec.canCompleteWithoutSourceAccess !== true ||
         entry.sourceAccessStarted === true
       ) {
-        this.setSourceCooldown(entry);
+        this.sourceCooldowns.set(
+          entry.spec.sourceCooldownKey,
+          entry.spec.sourceCooldownMs ?? 0,
+        );
       }
     }
 
@@ -2759,26 +2200,7 @@ export class TaskScheduler {
     }
     if (!entry.activeReleased) return;
 
-    const existingTimer = this.cleanupTimers.get(entry.record.id);
-    if (existingTimer) clearTimeout(existingTimer);
-
-    const timer = setTimeout(() => {
-      this.cleanupTimers.delete(entry.record.id);
-      const current = this.entries.get(entry.record.id);
-      if (
-        !current ||
-        (current.record.status !== "succeeded" &&
-          current.record.status !== "cancelled")
-      ) {
-        return;
-      }
-      this.deleteEntry(current);
-      this.publishSnapshot();
-    }, this.terminalTaskRetentionMs);
-    if (typeof timer === "object" && "unref" in timer) {
-      timer.unref();
-    }
-    this.cleanupTimers.set(entry.record.id, timer);
+    this.history.scheduleCleanup(entry.record.id);
   }
 
   private publish(entry: TaskEntry, previousStatus: TaskStatus | null): void {
@@ -3055,7 +2477,7 @@ export class TaskScheduler {
       sourceQueuesTotal,
       sourceQueuesTruncated: false,
       sourceQueuesPaused: this.sourceQueuesPaused,
-      sourceAccessBlocks: this.sourceAccessBlockRecords(),
+      sourceAccessBlocks: this.sourceAccess.snapshot(),
       total,
       running: counts.running,
       queued: counts.queued,
@@ -3338,18 +2760,19 @@ export class TaskScheduler {
   }
 
   private trimHistory(): void {
-    if (this.entries.size <= HISTORY_LIMIT) return;
-    const removable = [...this.entries.values()]
-      .filter(
-        (entry) =>
-          entry.record.status !== "queued" && entry.record.status !== "running",
-      )
-      .sort((a, b) => a.record.createdAt - b.record.createdAt);
-    for (const entry of removable) {
-      if (this.entries.size <= HISTORY_LIMIT) return;
-      this.deleteEntry(entry);
+    const overflowIds = this.history.overflowTaskIds(
+      [...this.entries.values()].map(({ record }) => ({
+        id: record.id,
+        status: record.status,
+        createdAt: record.createdAt,
+      })),
+      this.entries.size,
+    );
+    for (const id of overflowIds) {
+      const entry = this.entries.get(id);
+      if (entry) this.deleteEntry(entry);
     }
-    this.snapshot = this.buildSnapshot();
+    if (overflowIds.length > 0) this.snapshot = this.buildSnapshot();
   }
 
   private deleteEntry(entry: TaskEntry): void {
@@ -3369,19 +2792,9 @@ export class TaskScheduler {
   }
 
   private deleteEntryRecord(entry: TaskEntry): string | undefined {
-    const timer = this.cleanupTimers.get(entry.record.id);
-    if (timer) {
-      clearTimeout(timer);
-      this.cleanupTimers.delete(entry.record.id);
-    }
+    this.history.forget(entry.record.id, entry.dedupeKey);
     const sourceId = entry.record.source?.id;
     this.entries.delete(entry.record.id);
-    if (
-      entry.dedupeKey &&
-      this.latestByDedupeKey.get(entry.dedupeKey) === entry.record.id
-    ) {
-      this.latestByDedupeKey.delete(entry.dedupeKey);
-    }
     return sourceId;
   }
 }
