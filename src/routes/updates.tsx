@@ -15,9 +15,14 @@ import {
   Tooltip,
 } from "@mantine/core";
 import {
+  ClockGlyph,
   DetailsGlyph,
   DownloadGlyph,
   DownloadedGlyph,
+  PlusGlyph,
+  RetryGlyph,
+  SpinnerGlyph,
+  UnreadGlyph,
 } from "../components/ActionGlyphs";
 import {
   ConsoleCover,
@@ -142,7 +147,7 @@ function UpdateSummary({
             )}
             tone={loadedUpdates > 0 ? "accent" : "default"}
           >
-            <UnreadIcon />
+            <UnreadGlyph />
           </UpdateFlag>
           {failures > 0 ? (
             <UpdateFlag
@@ -160,7 +165,7 @@ function UpdateSummary({
           ) : null}
           {hasMoreUpdates ? (
             <UpdateFlag label={t("updates.moreAvailable")} tone="accent">
-              <PlusIcon />
+              <PlusGlyph />
             </UpdateFlag>
           ) : null}
         </Group>
@@ -300,14 +305,14 @@ function UpdateDownloadStatusFlag({
   if (status.kind === "running") {
     return (
       <UpdateFlag label={t("common.downloading")}>
-        <SpinnerIcon />
+        <SpinnerGlyph className="norea-updates-spin-icon" />
       </UpdateFlag>
     );
   }
 
   return (
     <UpdateFlag label={t("common.queued")}>
-      <ClockIcon />
+      <ClockGlyph />
     </UpdateFlag>
   );
 }
@@ -350,24 +355,20 @@ function UpdateRow({
         : t("novel.downloadChapter");
 
   return (
-    <div
-      className="norea-updates-row"
-      role="button"
-      tabIndex={0}
-      aria-label={t("updates.openChapter", { name: entry.chapterName })}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        onOpen();
-      }}
-    >
-      <ConsoleCover
-        alt={entry.novelName}
-        height={72}
-        src={coverSource}
-        width={48}
-      />
+    <div className="norea-updates-row">
+      <button
+        aria-label={t("updates.openChapter", { name: entry.chapterName })}
+        className="norea-updates-row-open"
+        onClick={onOpen}
+        type="button"
+      >
+        <ConsoleCover
+          alt={entry.novelName}
+          height={72}
+          src={coverSource}
+          width={48}
+        />
+      </button>
 
       <div className="norea-updates-row-main">
         <Group gap="xs" wrap="nowrap">
@@ -386,28 +387,42 @@ function UpdateRow({
             {entry.novelName}
           </button>
         </Group>
-        <Text className="norea-updates-row-title" title={entry.chapterName}>
-          #{entry.position} - {entry.chapterName}
-        </Text>
-        <Group gap="xs" mt={6} wrap="wrap">
-          <span className="norea-updates-row-flags" aria-label={t("novel.chapterStatus")}>
-            <UpdateFlag label={entry.pluginName ?? entry.pluginId}>
-              <SourceIcon />
-            </UpdateFlag>
-            <UpdateFlag label={t("library.grid.unread")} tone="accent">
-              <UnreadIcon />
-            </UpdateFlag>
-            {entry.isDownloaded ? (
-              <UpdateFlag label={t("novel.downloaded")} tone="done">
-                <DownloadedGlyph />
-              </UpdateFlag>
-            ) : null}
-            <UpdateDownloadStatusFlag status={downloadStatus} />
-          </span>
-          <Text className="norea-updates-row-meta">
-            {formatDateTime(entry.foundAt, locale)}
+        <button
+          aria-label={t("updates.openChapter", { name: entry.chapterName })}
+          className="norea-updates-row-open"
+          onClick={onOpen}
+          type="button"
+        >
+          <Text
+            component="span"
+            className="norea-updates-row-title"
+            title={entry.chapterName}
+          >
+            #{entry.position} - {entry.chapterName}
           </Text>
-        </Group>
+          <Group component="span" gap="xs" mt={6} wrap="wrap">
+            <span
+              className="norea-updates-row-flags"
+              aria-label={t("novel.chapterStatus")}
+            >
+              <UpdateFlag label={entry.pluginName ?? entry.pluginId}>
+                <SourceIcon />
+              </UpdateFlag>
+              <UpdateFlag label={t("library.grid.unread")} tone="accent">
+                <UnreadGlyph />
+              </UpdateFlag>
+              {entry.isDownloaded ? (
+                <UpdateFlag label={t("novel.downloaded")} tone="done">
+                  <DownloadedGlyph />
+                </UpdateFlag>
+              ) : null}
+              <UpdateDownloadStatusFlag status={downloadStatus} />
+            </span>
+            <Text component="span" className="norea-updates-row-meta">
+              {formatDateTime(entry.foundAt, locale)}
+            </Text>
+          </Group>
+        </button>
       </div>
 
       <div className="norea-updates-row-actions">
@@ -422,9 +437,9 @@ function UpdateRow({
             tone={failedMessage ? "danger" : "default"}
           >
             {isRunning ? (
-              <SpinnerIcon />
+              <SpinnerGlyph className="norea-updates-spin-icon" />
             ) : isQueued ? (
-              <ClockIcon />
+              <ClockGlyph />
             ) : (
               <DownloadGlyph />
             )}
@@ -448,53 +463,12 @@ function ReadForwardIcon() {
   );
 }
 
-function UnreadIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 5h14v14H5z" />
-      <path d="M8 10h6" />
-      <path d="M8 14h5" />
-      <circle cx="17" cy="7" r="2" />
-    </svg>
-  );
-}
-
 function AlertIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M12 4l9 16H3z" />
       <path d="M12 9v5" />
       <path d="M12 18h.01" />
-    </svg>
-  );
-}
-
-function SpinnerIcon() {
-  return (
-    <svg
-      className="norea-updates-spin-icon"
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-    >
-      <path d="M12 3a9 9 0 1 1-8.49 6" />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="8" />
-      <path d="M12 8v5l3 2" />
-    </svg>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M21 12a9 9 0 1 1-3-6.7" />
-      <path d="M21 4v5h-5" />
     </svg>
   );
 }
@@ -506,15 +480,6 @@ function SourceIcon() {
       <path d="M3 12h18" />
       <path d="M12 3a14 14 0 0 1 0 18" />
       <path d="M12 3a14 14 0 0 0 0 18" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
     </svg>
   );
 }
@@ -839,7 +804,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
             onClick={() => check.mutate()}
             tone="accent"
           >
-            {check.isPending ? <SpinnerIcon /> : <RefreshIcon />}
+            {check.isPending ? (
+              <SpinnerGlyph className="norea-updates-spin-icon" />
+            ) : (
+              <RetryGlyph />
+            )}
           </UpdateIconButton>
         }
       />
@@ -863,7 +832,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       ) : refresh.error && !hasLoaded ? (
         <StateView
           action={{
-            icon: <RefreshIcon />,
+            icon: <RetryGlyph />,
             iconOnly: true,
             label: t("common.retry"),
             onClick: () => refreshFirstPage(),
@@ -890,7 +859,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
           ) : check.error ? (
             <StateView
               action={{
-                icon: <RefreshIcon />,
+                icon: <RetryGlyph />,
                 iconOnly: true,
                 label: t("common.retry"),
                 onClick: () => check.mutate(),
@@ -928,7 +897,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                   onClick={() => check.mutate()}
                   tone="accent"
                 >
-                  {check.isPending ? <SpinnerIcon /> : <RefreshIcon />}
+                  {check.isPending ? (
+                    <SpinnerGlyph className="norea-updates-spin-icon" />
+                  ) : (
+                    <RetryGlyph />
+                  )}
                 </UpdateIconButton>
               </div>
             </ConsolePanel>
@@ -968,7 +941,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                       }}
                       tone="accent"
                     >
-                      {isLoadingMore ? <SpinnerIcon /> : <PlusIcon />}
+                      {isLoadingMore ? (
+                        <SpinnerGlyph className="norea-updates-spin-icon" />
+                      ) : (
+                        <PlusGlyph />
+                      )}
                     </UpdateIconButton>
                     <Text className="norea-updates-row-meta">
                       {t("updates.autoLoadMore")}

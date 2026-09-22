@@ -43,13 +43,12 @@
 }
 
 .norea-updates-row {
-  cursor: pointer;
   grid-template-columns: 3rem minmax(0, 1fr) auto;
   min-height: 5.375rem;
   padding: 0.4375rem 0.5rem 0.4375rem 0.125rem;
 }
 
-.norea-updates-row:focus-visible,
+.norea-updates-row-open:focus-visible,
 .norea-updates-link:focus-visible,
 .norea-updates-icon-button:focus-visible {
   outline: 0.125rem solid var(--norea-design-accent);
@@ -60,6 +59,19 @@
   background: var(--norea-design-accent-soft);
 }
 
+.norea-updates-row-open {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
 .norea-updates-row-main,
 .norea-updates-failure-main {
   min-width: 0;
@@ -67,6 +79,7 @@
 
 .norea-updates-row-title {
   color: var(--norea-design-ink);
+  display: block;
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.35;
