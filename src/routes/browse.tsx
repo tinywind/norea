@@ -781,7 +781,7 @@ export function BrowsePage({
         <Stack gap="sm">
           <TextInput
             label={t("browse.repositoryUrl")}
-            placeholder="https://example.com/plugins.json"
+            placeholder={t("browse.repositoryUrlPlaceholder")}
             value={url}
             onChange={(event) => setUrl(event.currentTarget.value)}
             autoFocus
@@ -835,7 +835,7 @@ export function BrowsePage({
         <Stack gap="sm">
           <TextInput
             label={t("browse.sourceInstance.workTitle")}
-            placeholder="My novel"
+            placeholder={t("browse.sourceInstance.workTitlePlaceholder")}
             value={sourceForm.workTitle}
             onChange={(event) => {
               const value = event.currentTarget.value;
@@ -848,7 +848,7 @@ export function BrowsePage({
           />
           <TextInput
             label={t("browse.sourceInstance.repository")}
-            placeholder="owner/repo"
+            placeholder={t("browse.sourceInstance.repositoryPlaceholder")}
             value={sourceForm.repository}
             onChange={(event) => {
               const value = event.currentTarget.value;
@@ -860,7 +860,7 @@ export function BrowsePage({
           />
           <TextInput
             label={t("browse.sourceInstance.ref")}
-            placeholder="main"
+            placeholder={t("browse.sourceInstance.refPlaceholder")}
             value={sourceForm.ref}
             onChange={(event) => {
               const value = event.currentTarget.value;
@@ -872,7 +872,7 @@ export function BrowsePage({
           />
           <TextInput
             label={t("browse.sourceInstance.workRoot")}
-            placeholder="works/my-novel/manuscripts"
+            placeholder={t("browse.sourceInstance.workRootPlaceholder")}
             value={sourceForm.workRoot}
             onChange={(event) => {
               const value = event.currentTarget.value;
@@ -884,7 +884,7 @@ export function BrowsePage({
           />
           <TextInput
             label={t("browse.sourceInstance.chapterFiles")}
-            placeholder="regex:^arc-[0-9]{3}/ch-[0-9]+\\.md$"
+            placeholder={t("browse.sourceInstance.chapterFilesPlaceholder")}
             value={sourceForm.chapterFilePattern}
             onChange={(event) => {
               const value = event.currentTarget.value;
@@ -896,7 +896,7 @@ export function BrowsePage({
           />
           <TextInput
             label={t("browse.sourceInstance.excludeFiles")}
-            placeholder="README.md,draft-*,regex:^legacy/"
+            placeholder={t("browse.sourceInstance.excludeFilesPlaceholder")}
             value={sourceForm.chapterExcludePattern}
             onChange={(event) => {
               const value = event.currentTarget.value;
@@ -908,7 +908,7 @@ export function BrowsePage({
           />
           <PasswordInput
             label={t("browse.sourceInstance.token")}
-            placeholder="Optional personal access token"
+            placeholder={t("browse.sourceInstance.tokenPlaceholder")}
             value={sourceForm.token}
             onChange={(event) => {
               const value = event.currentTarget.value;
