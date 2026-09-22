@@ -41,6 +41,18 @@ internal fun inferAndroidStorageMimeType(
     ?: "application/octet-stream"
 }
 
+internal fun androidStorageCreationMimeType(
+  fileName: String,
+  requestedMimeType: String,
+  mimeTypeForExtension: (String) -> String?,
+): String {
+  if (requestedMimeType.substringBefore(';').trim().equals("application/octet-stream", ignoreCase = true)) {
+    return "application/octet-stream"
+  }
+  // SAF may append a MIME-derived extension, but app storage paths must stay exact.
+  return inferAndroidStorageMimeType(fileName, mimeTypeForExtension)
+}
+
 internal fun createRawAndroidStorageFile(parent: File, name: String): File? {
   val child = File(parent, name)
   return try {
@@ -346,7 +358,10 @@ internal class AndroidStorageDocuments(private val context: Context) {
     name: String,
   ): DocumentFile? {
     if (parent.uri.scheme != ContentResolver.SCHEME_FILE) {
-      return parent.createFile(mimeType, name)
+      val creationMimeType = androidStorageCreationMimeType(name, mimeType) { extension ->
+        MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+      }
+      return parent.createFile(creationMimeType, name)
     }
     val parentPath = parent.uri.path ?: return null
     val created = createRawAndroidStorageFile(File(parentPath), name) ?: return null

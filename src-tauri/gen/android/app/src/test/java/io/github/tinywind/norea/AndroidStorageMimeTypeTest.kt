@@ -13,6 +13,10 @@ class AndroidStorageMimeTypeTest {
 
   private val mimeTypes = mapOf(
     "html" to "text/html",
+    "jpg" to "image/jpeg",
+    "jpeg" to "image/jpeg",
+    "gif" to "image/gif",
+    "zip" to "application/zip",
   )
 
   @Test
@@ -36,6 +40,62 @@ class AndroidStorageMimeTypeTest {
     assertEquals(
       "text/html",
       inferAndroidStorageMimeType("contents/chapter/content.html", mimeTypes::get),
+    )
+  }
+
+  @Test
+  fun createsMediaUsingTheExactFileNamesMimeType() {
+    assertEquals(
+      "image/jpeg",
+      androidStorageCreationMimeType("0001-p001.jpg", "image/gif", mimeTypes::get),
+    )
+    assertEquals(
+      "image/gif",
+      androidStorageCreationMimeType("0001-p001.gif", "image/jpeg", mimeTypes::get),
+    )
+    assertEquals(
+      "image/jpeg",
+      androidStorageCreationMimeType(
+        "0001-p001.JPEG",
+        "image/jpeg; charset=binary",
+        mimeTypes::get,
+      ),
+    )
+  }
+
+  @Test
+  fun avoidsProviderExtensionsForUnknownOrInternalSuffixes() {
+    val fileNames = listOf(
+      "content.html.tmp",
+      "archive.zip.tmp",
+      ".chapter-content.partial",
+      "image",
+      "image.custom",
+    )
+    for (name in fileNames) {
+      assertEquals(
+        name,
+        "application/octet-stream",
+        androidStorageCreationMimeType(name, "image/gif", mimeTypes::get),
+      )
+    }
+  }
+
+  @Test
+  fun preservesGenericDocumentCreationAndMatchingMimeTypes() {
+    for (mimeType in listOf("application/octet-stream", "Application/Octet-Stream; charset=binary")) {
+      assertEquals(
+        "application/octet-stream",
+        androidStorageCreationMimeType("content.html", mimeType, mimeTypes::get),
+      )
+    }
+    assertEquals(
+      "text/html",
+      androidStorageCreationMimeType("content.html", "text/html", mimeTypes::get),
+    )
+    assertEquals(
+      "application/zip",
+      androidStorageCreationMimeType("media.zip", "application/zip", mimeTypes::get),
     )
   }
 
