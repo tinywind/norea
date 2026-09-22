@@ -1,3 +1,5 @@
+import { yieldToEventLoop } from "../event-loop";
+
 export const TASK_BATCH_MATERIALIZATION_WINDOW = 16;
 const TASK_BATCH_EVENT_LOOP_YIELD_INTERVAL =
   TASK_BATCH_MATERIALIZATION_WINDOW;
@@ -16,10 +18,6 @@ function normalizeTaskBatchWindowSize(windowSize: number): number {
     TASK_BATCH_MATERIALIZATION_WINDOW,
     Math.max(1, Math.floor(windowSize)),
   );
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 }
 
 export async function runBoundedTaskBatch<T>({

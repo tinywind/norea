@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { isRecord } from "../lib/type-guards";
 
 export type ReaderPresetTheme = "paper" | "sepia" | "sage" | "dark" | "amoled";
 export type ReaderTextAlign = "left" | "justify" | "center" | "right";
@@ -773,10 +774,6 @@ function normalizeAppearanceOverride(
     settings,
   );
   return override;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function areSettingValuesEqual(left: unknown, right: unknown): boolean {

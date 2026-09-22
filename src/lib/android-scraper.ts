@@ -1,3 +1,4 @@
+import { requestAbortedError } from "./abort";
 import { isAndroidRuntime } from "./tauri-runtime";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 
@@ -53,10 +54,6 @@ const pending = new Map<
     timeoutId: number;
   }
 >();
-
-function requestAbortedError(): DOMException {
-  return new DOMException("Request cancelled", "AbortError");
-}
 
 function installResolver(): void {
   if (typeof window === "undefined" || window.__noreaAndroidScraperResolve) {

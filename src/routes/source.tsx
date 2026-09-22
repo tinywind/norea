@@ -65,6 +65,7 @@ import {
   taskScheduler,
   type TaskHandle,
 } from "../lib/tasks/scheduler";
+import { isAbortError } from "../lib/abort";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useTranslation } from "../i18n";
 import "../styles/browse.css";
@@ -82,15 +83,6 @@ interface ListingPage {
 interface AccumulatedNovel {
   item: NovelItem;
   key: string;
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    error.name === "AbortError"
-  );
 }
 
 export function canLoadSourceListing(

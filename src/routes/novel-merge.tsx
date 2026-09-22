@@ -58,6 +58,7 @@ import {
 } from "../lib/novel-merge";
 import { getSourceRequestTimeoutMs, useBrowseStore } from "../store/browse";
 import { useReaderStore } from "../store/reader";
+import { describeError } from "../lib/errors";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import "../styles/novel-merge.css";
 
@@ -496,10 +497,6 @@ function DecisionWorkbench({
       </section>
     </div>
   );
-}
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 interface NovelMergePageProps {

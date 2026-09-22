@@ -46,6 +46,8 @@ import {
   type TaskHandle,
 } from "../lib/tasks/scheduler";
 import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
+import { isAbortError } from "../lib/abort";
+import { describeError } from "../lib/errors";
 import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
 import { useBrowseStore } from "../store/browse";
 import "../styles/browse.css";
@@ -66,19 +68,6 @@ interface ResultViewRow {
 
 function resultKey(pluginId: string, novelPath: string): string {
   return `${pluginId}::${novelPath}`;
-}
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    error.name === "AbortError"
-  );
 }
 
 function isCloudflareError(message: string): boolean {

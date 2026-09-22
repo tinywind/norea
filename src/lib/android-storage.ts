@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  base64ToBytes,
+  bytesToBase64,
+  bytesToBase64Cooperatively,
+} from "./base64";
+import {
   MAX_BACKUP_ARCHIVE_BYTES,
   assertByteBudget,
 } from "./performance-budgets";
@@ -278,8 +283,6 @@ export interface AndroidStorageTempFile {
 }
 
 type AndroidStorageBytes = Uint8Array | readonly number[];
-const ANDROID_STORAGE_BASE64_CHUNK_SIZE = 0x6000;
-const ANDROID_STORAGE_BASE64_YIELD_INTERVAL = 16;
 
 const ANDROID_STORAGE_NOT_SELECTED =
   "Android media storage folder has not been selected.";
@@ -348,48 +351,6 @@ function parseStorageResponse<T extends AndroidStorageResponse>(raw: string): T 
     throw new Error(payload.error ?? "Android storage operation failed.");
   }
   return payload;
-}
-
-function bytesToBase64(bytes: AndroidStorageBytes): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = Array.from(bytes.slice(index, index + chunkSize));
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
-
-async function bytesToBase64Cooperatively(
-  bytes: AndroidStorageBytes,
-): Promise<string> {
-  const encodedChunks: string[] = [];
-  for (
-    let index = 0;
-    index < bytes.length;
-    index += ANDROID_STORAGE_BASE64_CHUNK_SIZE
-  ) {
-    const chunk = Array.from(
-      bytes.slice(index, index + ANDROID_STORAGE_BASE64_CHUNK_SIZE),
-    );
-    encodedChunks.push(btoa(String.fromCharCode(...chunk)));
-    if (
-      encodedChunks.length % ANDROID_STORAGE_BASE64_YIELD_INTERVAL === 0 &&
-      index + ANDROID_STORAGE_BASE64_CHUNK_SIZE < bytes.length
-    ) {
-      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
-    }
-  }
-  return encodedChunks.join("");
-}
-
-function base64ToBytes(base64: string): number[] {
-  const binary = atob(base64);
-  const bytes = new Array<number>(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }
 
 function makeRequestId(): string {
@@ -709,7 +670,7 @@ export async function readAndroidContentUriBytes(uri: string): Promise<number[]>
   const response = parseStorageResponse<AndroidStorageBase64Response>(
     androidStorageBridge().readContentUriBase64(uri),
   );
-  return base64ToBytes(response.base64 ?? "");
+  return Array.from(base64ToBytes(response.base64 ?? ""));
 }
 
 export async function writeAndroidStorageText(

@@ -2,6 +2,7 @@ import { enqueueSourceTask } from "../tasks/source-tasks";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import type { TaskHandle } from "../tasks/scheduler";
 import { isKnownChapterContentType } from "../chapter-content";
+import { isRecord } from "../type-guards";
 import {
   NovelStatus,
   type NovelItem,
@@ -39,10 +40,6 @@ export class NovelMergePreviewValidationError extends Error {
     super(message);
     this.name = "NovelMergePreviewValidationError";
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 export function validateNovelMergeTargetPreview(value: unknown): SourceNovel {

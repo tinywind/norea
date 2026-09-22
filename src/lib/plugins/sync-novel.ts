@@ -1,4 +1,5 @@
 import { getDb, runDatabaseTransaction } from "../../db/client";
+import { sqliteBoolean } from "../../db/sqlite-value";
 import {
   getLatestSourceChapterAnchor,
   upsertSourceChaptersInDb,
@@ -71,10 +72,6 @@ function rememberSourceDuplicateChapters(
 
 function optionalText(value: string | undefined | null): string | null {
   return value ?? null;
-}
-
-function sqliteBoolean(value: unknown): boolean {
-  return value === true || value === 1 || value === "1";
 }
 
 function pluginChapterContentType(value: unknown): ChapterContentType {

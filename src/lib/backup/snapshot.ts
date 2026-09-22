@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getDb, runExclusiveDatabaseOperation } from "../../db/client";
+import { sqliteBoolean } from "../../db/sqlite-value";
 import {
   beginAndroidStorageRestore,
   commitAndroidStorageRestore,
@@ -68,15 +69,6 @@ interface RawNovelRow {
 }
 
 const LOCAL_PLUGIN_ID = "local";
-
-function sqliteBoolean(value: unknown): boolean {
-  if (value === true || value === 1) return true;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true";
-  }
-  return false;
-}
 
 function isLocalNovel(pluginId: string, value: unknown): boolean {
   return pluginId === LOCAL_PLUGIN_ID && sqliteBoolean(value);

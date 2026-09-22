@@ -1,4 +1,5 @@
 import { getDb, runDatabaseTransaction } from "../client";
+import { sqliteBoolean } from "../sqlite-value";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import { upsertDownloadedChaptersInDb } from "./chapter";
 import {
@@ -965,15 +966,6 @@ function nullableLocalCover(value: string | null | undefined): string | null {
 
 function displayLocalCover(value: string | null): string | null {
   return isLocalCoverSource(value) ? value : null;
-}
-
-function sqliteBoolean(value: unknown): boolean {
-  if (value === true || value === 1) return true;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true";
-  }
-  return false;
 }
 
 function isLocalNovel(pluginId: string, value: unknown): boolean {

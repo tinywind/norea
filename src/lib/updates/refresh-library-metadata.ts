@@ -6,6 +6,7 @@ import {
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource } from "../plugins/sync-novel";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
+import { describeError } from "../errors";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { enqueueSourceTask } from "../tasks/source-tasks";
 import { taskScheduler, type TaskRunContext } from "../tasks/scheduler";
@@ -34,10 +35,6 @@ export interface RefreshLibraryMetadataOptions {
     total: number;
   }) => void;
   taskTitle?: (novel: LibraryNovelRefreshTarget) => string;
-}
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function metadataRefreshScopeKey(

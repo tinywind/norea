@@ -49,6 +49,8 @@ import type {
   Plugin,
   TextChapterContentType,
 } from "../plugins/types";
+import { isAbortError } from "../abort";
+import { bytesToBase64 } from "../base64";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
   sourceBaseDomainKey,
@@ -247,16 +249,6 @@ function absolutePluginUrl(plugin: Plugin, path: string): string | null {
   return null;
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
-
 function resourceBytes(bytes: unknown): Uint8Array {
   if (bytes instanceof Uint8Array) {
     return bytes;
@@ -390,13 +382,6 @@ function normalizeChapterDownloadBatchWindowSize(
 
 function yieldChapterDownloadRestoreInspection(): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof DOMException ||
-    (error !== null && typeof error === "object" && "name" in error)
-  ) && (error as { name?: unknown }).name === "AbortError";
 }
 
 function isPauseAbort(signal: AbortSignal): boolean {

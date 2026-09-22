@@ -6,6 +6,7 @@ import {
 } from "../../db/queries/chapter";
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource } from "../plugins/sync-novel";
+import { describeError } from "../errors";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { enqueueSourceTask } from "../tasks/source-tasks";
@@ -57,10 +58,6 @@ const SELECT_LIBRARY_NOVELS_FOR_UPDATE = `
   WHERE in_library = 1
   ORDER BY name COLLATE NOCASE ASC
 `;
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 async function listLibraryNovelsForUpdate(): Promise<
   LibraryNovelForUpdate[]

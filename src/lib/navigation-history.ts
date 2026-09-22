@@ -1,3 +1,5 @@
+import { isRecord } from "./type-guards";
+
 export interface AppNavigationEntry {
   historyIndex: number | null;
   href: string;
@@ -13,10 +15,6 @@ const MAX_ENTRIES = 80;
 const TANSTACK_HISTORY_INDEX_KEY = "__TSR_index";
 
 let cachedEntries: AppNavigationEntry[] | null = null;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
-}
 
 function isNavigationEntry(value: unknown): value is AppNavigationEntry {
   return (

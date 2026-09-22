@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { bytesToBase64 } from "./base64";
 import {
   chapterContentToHtml,
   type ChapterContentType,
@@ -299,20 +300,6 @@ function assertFileWithinLimit(file: File, format: LocalImportFormat): void {
       `${file.name} is larger than the ${format} import limit.`,
     );
   }
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  if (typeof btoa !== "function") {
-    throw new LocalImportError("Base64 encoding is not available.");
-  }
-
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
 }
 
 function utf8Decode(bytes: Uint8Array): string {

@@ -1,4 +1,5 @@
 import { getDb } from "../client";
+import { sqliteBoolean } from "../sqlite-value";
 import {
   normalizeChapterContentType,
   type ChapterContentType,
@@ -76,15 +77,6 @@ interface RawDownloadCacheChapter
   extends Omit<DownloadCacheChapter, "unread" | "mediaRepairNeeded"> {
   unread: number;
   mediaRepairNeeded: unknown;
-}
-
-function sqliteBoolean(value: unknown): boolean {
-  if (value === true || value === 1) return true;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true";
-  }
-  return false;
 }
 
 export interface DownloadCacheMediaBackfillCandidate {

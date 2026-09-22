@@ -1,3 +1,5 @@
+import { bytesToBase64 } from "./base64";
+
 export const LOCAL_COVER_ACCEPT = ".avif,.gif,.jpeg,.jpg,.png,.webp";
 
 export const LOCAL_COVER_LIMITS = {
@@ -71,13 +73,4 @@ function mediaTypeFromFile(file: File): string | null {
   const dot = lowerName.lastIndexOf(".");
   if (dot < 0) return null;
   return IMAGE_MEDIA_TYPES.get(lowerName.slice(dot)) ?? null;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.byteLength; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
-  }
-  return btoa(binary);
 }

@@ -112,6 +112,7 @@ import {
   normalizeTaskNotificationMode,
   useNotificationStore,
 } from "../store/notifications";
+import { describeError } from "../lib/errors";
 import { APP_THEME_OPTIONS } from "../theme/md3";
 import "../styles/settings.css";
 
@@ -197,10 +198,6 @@ function updateSettingsToast(
 }
 
 type UpdateBusy = `${UpdateChannel}:check` | `${UpdateChannel}:install`;
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function normalizeSection(section: string | undefined): SettingsCategoryId {
   switch (section?.toLowerCase()) {

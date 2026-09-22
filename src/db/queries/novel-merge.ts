@@ -3,6 +3,7 @@ import {
   type ChapterContentType,
 } from "../../lib/chapter-content";
 import { runDatabaseTransaction } from "../client";
+import { sqliteBoolean } from "../sqlite-value";
 
 export type NovelMergeChapterDecision =
   | {
@@ -87,15 +88,6 @@ const NOVEL_MERGE_UPDATE_PARAM_COUNT = 9;
 const NOVEL_MERGE_UPDATE_CHUNK_SIZE = Math.floor(
   SQLITE_BIND_PARAMETER_BUDGET / NOVEL_MERGE_UPDATE_PARAM_COUNT,
 );
-
-function sqliteBoolean(value: unknown): boolean {
-  if (value === true || value === 1) return true;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true";
-  }
-  return false;
-}
 
 function assertPositiveId(value: number, label: string): void {
   if (!Number.isInteger(value) || value <= 0) {

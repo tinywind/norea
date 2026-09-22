@@ -10,6 +10,7 @@ import {
 import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
 import { sourceAccessScopeKey } from "../lib/plugins/source-access";
 import { isTauriRuntime } from "../lib/tauri-runtime";
+import { isAbortError } from "../lib/abort";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { cancelSourceAccessWait } from "../lib/tasks/source-access-coordinator";
 import { redactUrlForLog, redactUrlsForLog } from "../lib/url-log";
@@ -29,13 +30,6 @@ function reportScraperError(action: string, error: unknown): void {
 
 function debugSiteBrowser(message: string, data?: unknown): void {
   console.debug(`[site-browser] ${message}`, data);
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException && error.name === "AbortError") ||
-    (error instanceof Error && error.name === "AbortError")
-  );
 }
 
 function sourceAccessOrigin(url: string | null): string | null {

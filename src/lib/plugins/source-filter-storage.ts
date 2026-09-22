@@ -1,5 +1,6 @@
 import { FilterTypes, type Filters } from "./filterTypes";
 import type { Plugin } from "./types";
+import { isRecord } from "../type-guards";
 
 export const SOURCE_FILTER_STORAGE_PREFIX = "source-filters:";
 
@@ -14,10 +15,6 @@ function browserLocalStorage(): Storage | null {
   } catch {
     return null;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function emptySourceFilterValue(def: Filters[string]): unknown {

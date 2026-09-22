@@ -15,6 +15,7 @@ import {
   clampRouteQueryLimit,
 } from "../../lib/performance-budgets";
 import { getDb, runDatabaseTransaction } from "../client";
+import { sqliteBoolean } from "../sqlite-value";
 
 export interface ChapterRow {
   id: number;
@@ -89,19 +90,6 @@ const CHAPTER_DETAIL_SELECT_FIELDS = CHAPTER_LIST_SELECT_FIELDS;
 
 function getUtf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-
-function sqliteBoolean(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1") return true;
-    if (normalized === "false" || normalized === "0" || normalized === "") {
-      return false;
-    }
-  }
-  return Boolean(value);
 }
 
 function normalizeChapterListRow(row: RawChapterListRow): ChapterListRow {
