@@ -63,7 +63,9 @@ const markStoredChapterContentMissingMock = vi.mocked(
   markStoredChapterContentMissing,
 );
 const saveChapterContentMetadataMock = vi.mocked(saveChapterContentMetadata);
-const saveChapterPartialContentMetadataMock = vi.mocked(saveChapterPartialContentMetadata);
+const saveChapterPartialContentMetadataMock = vi.mocked(
+  saveChapterPartialContentMetadata,
+);
 const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
 const inspectAndroidChapterArtifactsMock = vi.mocked(
   inspectAndroidChapterArtifacts,
@@ -152,7 +154,8 @@ describe("chapter content storage", () => {
       if (command === "chapter_content_mirror_inspect") {
         return {
           status: "present",
-          contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+          contentFile:
+            "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
           contentBytes: 13,
           mediaBytes: 0,
         };
@@ -167,12 +170,16 @@ describe("chapter content storage", () => {
       "<p>stored</p>",
     );
 
-    expect(selectMock).toHaveBeenCalledWith(expect.stringContaining("FROM chapter c"), [
-      10,
-    ]);
-    expect(invokeMock).toHaveBeenCalledWith("chapter_content_mirror_read_file", {
-      contentFile: expect.stringContaining("content.html"),
-    });
+    expect(selectMock).toHaveBeenCalledWith(
+      expect.stringContaining("FROM chapter c"),
+      [10],
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_content_mirror_read_file",
+      {
+        contentFile: expect.stringContaining("content.html"),
+      },
+    );
     expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
       10,
       13,
@@ -186,7 +193,8 @@ describe("chapter content storage", () => {
       if (command === "chapter_content_mirror_inspect") {
         return {
           status: "present",
-          contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+          contentFile:
+            "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
           contentBytes: 0,
           mediaBytes: 0,
         };
@@ -256,6 +264,35 @@ describe("chapter content storage", () => {
     await expect(readStoredChapterContentMirror(10)).resolves.toBeNull();
     expect(markStoredChapterContentMissingMock).toHaveBeenCalledWith(10);
   });
+
+  it.each([
+    ["1", true],
+    [" true ", true],
+    ["0", false],
+    ["false", false],
+    [null, false],
+  ])(
+    "reconciles missing content using persisted boolean %s",
+    async (flag, downloaded) => {
+      selectMock.mockResolvedValueOnce([
+        chapterRow({
+          isDownloaded: flag,
+          contentBytes: 0,
+          mediaBytes: 0,
+        }),
+      ]);
+      invokeMock.mockResolvedValueOnce({
+        status: "missing",
+        contentFile: null,
+        contentBytes: 0,
+        mediaBytes: 0,
+      });
+      await reconcileStoredChapterContent(10);
+      expect(markStoredChapterContentMissingMock).toHaveBeenCalledTimes(
+        downloaded ? 1 : 0,
+      );
+    },
+  );
 
   it("writes chapter content to the storage file and saves metadata", async () => {
     const result = await saveStoredChapterContent(10, "<p>stored</p>", "html", {

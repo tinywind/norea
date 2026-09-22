@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { getDb } from "../db/client";
 import {
   adoptStoredChapterContentMetadata,
   markStoredChapterContentMissing,
@@ -7,14 +7,7 @@ import {
   type ChapterMutationResult,
   type SaveChapterContentOptions,
 } from "../db/queries/chapter";
-import { getDb } from "../db/client";
-import {
-  deleteAndroidStoragePath,
-  inspectAndroidChapterArtifacts,
-  readAndroidStorageText,
-  renameAndroidStoragePath,
-  writeAndroidStorageText,
-} from "./android-storage";
+import { sqliteBoolean } from "../db/sqlite-value";
 import {
   DEFAULT_CHAPTER_CONTENT_TYPE,
   normalizeChapterContentType,
@@ -22,59 +15,44 @@ import {
   type ChapterContentType,
 } from "./chapter-content";
 import {
+  chapterContentRelativePath,
+  chapterPartialContentRelativePath,
+  clearChapterContentFiles,
+  inspectChapterContentArtifacts,
+  readStoredChapterContentFile,
+  writeChapterContentFile,
+  writeChapterPartialContentFile,
+  type ChapterContentStorageIdentity,
+  type StoredChapterArtifactsInspection,
+} from "./chapter-content/storage-platform";
+import {
   chapterStorageIdentityPrefix,
   chapterStorageRelativeDir,
-  chapterContentRelativePath as buildChapterContentRelativePath,
   novelStorageIdentitySuffix,
   sourceStorageRelativeDir,
-  type ChapterStorageChapterPathInput,
-  type ChapterStorageNovelPathInput,
 } from "./chapter-storage-path";
 import {
   clearResolvedChapterStorageDirs,
   forgetResolvedChapterStorageDir,
   rememberResolvedChapterStorageDir,
-  resolvedChapterStorageDir,
 } from "./chapter-storage-resolution";
 import { clampBackfillLimit } from "./performance-budgets";
-import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { isTauriRuntime } from "./tauri-runtime";
 
 interface ChapterStorageRow {
-  artist: string | null;
-  author: string | null;
-  bookmark: unknown;
-  chapterCreatedAt: number | null;
-  chapterFoundAt: number;
   chapterId: number;
   chapterName: string;
   chapterNumber: string | null;
-  chapterPath: string;
-  chapterUpdatedAt: number;
   contentBytes: number;
   sourceContentType: string;
   storedContentType: string | null;
-  cover: string | null;
-  genres: string | null;
-  inLibrary: unknown;
   isDownloaded: unknown;
-  isLocal: unknown;
-  lastReadAt: number | null;
-  libraryAddedAt: number | null;
   mediaBytes: number;
-  novelCreatedAt: number;
   novelId: number;
   novelName: string;
   novelPath: string;
-  novelUpdatedAt: number;
-  page: string;
   pluginId: string;
   position: number;
-  progress: number;
-  readAt: number | null;
-  releaseTime: string | null;
-  status: string | null;
-  summary: string | null;
-  unread: unknown;
 }
 
 export type StoredChapterArtifacts =
@@ -90,13 +68,6 @@ export type StoredChapterArtifacts =
       contentBytes: number;
       mediaBytes: number;
     };
-
-interface StoredChapterArtifactsInspection {
-  status: "missing" | "present";
-  contentFile: string | null;
-  contentBytes: number;
-  mediaBytes: number;
-}
 
 export interface ReconciledStoredChapterContent {
   artifacts: StoredChapterArtifacts;
@@ -116,59 +87,21 @@ export interface ChapterStorageRestoreOptions {
   limit?: number;
 }
 
-const LOCAL_PLUGIN_ID = "local";
-const CHAPTER_PARTIAL_CONTENT_FILE = ".chapter-content.partial";
-
-function sqliteBoolean(value: unknown): boolean {
-  if (value === true || value === 1) return true;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "1" || normalized === "true";
-  }
-  return false;
-}
-
-function isLocalNovel(pluginId: string, value: unknown): boolean {
-  return pluginId === LOCAL_PLUGIN_ID && sqliteBoolean(value);
-}
-
 const SELECT_CHAPTER_STORAGE_ROW = `
   SELECT
-    c.id             AS chapterId,
-    c.novel_id       AS novelId,
-    c.path           AS chapterPath,
-    c.name           AS chapterName,
+    c.id AS chapterId,
+    c.novel_id AS novelId,
+    c.name AS chapterName,
     c.chapter_number AS chapterNumber,
     c.position,
-    c.page,
-    c.bookmark,
-    c.unread,
-    c.progress,
-    c.is_downloaded  AS isDownloaded,
-    c.content_type   AS sourceContentType,
+    c.is_downloaded AS isDownloaded,
+    c.content_type AS sourceContentType,
     c.stored_content_type AS storedContentType,
-    c.content_bytes  AS contentBytes,
-    c.media_bytes    AS mediaBytes,
-    c.release_time   AS releaseTime,
-    c.read_at        AS readAt,
-    c.created_at     AS chapterCreatedAt,
-    c.found_at       AS chapterFoundAt,
-    c.updated_at     AS chapterUpdatedAt,
-    n.plugin_id      AS pluginId,
-    n.path           AS novelPath,
-    n.name           AS novelName,
-    n.cover,
-    n.summary,
-    n.author,
-    n.artist,
-    n.status,
-    n.genres,
-    n.in_library     AS inLibrary,
-    n.is_local       AS isLocal,
-    n.created_at     AS novelCreatedAt,
-    n.updated_at     AS novelUpdatedAt,
-    n.library_added_at AS libraryAddedAt,
-    n.last_read_at   AS lastReadAt
+    c.content_bytes AS contentBytes,
+    c.media_bytes AS mediaBytes,
+    n.plugin_id AS pluginId,
+    n.path AS novelPath,
+    n.name AS novelName
   FROM chapter c
   JOIN novel n ON n.id = c.novel_id
 `;
@@ -193,72 +126,26 @@ const SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS = `
   ORDER BY c.novel_id, c.position, c.id
 `;
 
-function chapterContentExtension(contentType: string | undefined): string {
-  if (contentType === "pdf") return "pdf";
-  if (contentType === "markdown") return "html";
-  if (contentType === "epub") return "html";
-  return "html";
-}
-
-function chapterContentRelativePath(
-  novel: ChapterStorageNovelPathInput,
-  chapter: ChapterStorageChapterPathInput & { contentType?: string },
-): string {
-  const extension = chapterContentExtension(chapter.contentType);
-  return buildChapterContentRelativePath(novel, chapter, extension);
-}
-
-function chapterPartialContentRelativePath(
-  novel: ChapterStorageNovelPathInput,
-  chapter: ChapterStorageChapterPathInput,
-): string {
-  return `${chapterStorageRelativeDir(novel, chapter)}/${CHAPTER_PARTIAL_CONTENT_FILE}`;
-}
-
-function storageMetadata(row: ChapterStorageRow) {
+function storageMetadata(
+  row: ChapterStorageRow,
+): ChapterContentStorageIdentity {
   return {
     novel: {
       id: row.novelId,
       pluginId: row.pluginId,
       path: row.novelPath,
       name: row.novelName,
-      cover: row.cover,
-      summary: row.summary,
-      author: row.author,
-      artist: row.artist,
-      status: row.status,
-      genres: row.genres,
-      inLibrary: sqliteBoolean(row.inLibrary),
-      isLocal: isLocalNovel(row.pluginId, row.isLocal),
-      createdAt: row.novelCreatedAt,
-      updatedAt: row.novelUpdatedAt,
-      libraryAddedAt: row.libraryAddedAt,
-      lastReadAt: row.lastReadAt,
     },
     chapter: {
       id: row.chapterId,
-      novelId: row.novelId,
-      path: row.chapterPath,
       name: row.chapterName,
       chapterNumber: row.chapterNumber,
       position: row.position,
-      page: row.page,
-      bookmark: sqliteBoolean(row.bookmark),
-      unread: sqliteBoolean(row.unread),
-      progress: row.progress,
-      isDownloaded: sqliteBoolean(row.isDownloaded),
       contentType: normalizeChapterContentType(
         row.storedContentType ??
           row.sourceContentType ??
           DEFAULT_CHAPTER_CONTENT_TYPE,
       ),
-      contentBytes: row.contentBytes,
-      mediaBytes: row.mediaBytes,
-      releaseTime: row.releaseTime,
-      readAt: row.readAt,
-      createdAt: row.chapterCreatedAt,
-      foundAt: row.chapterFoundAt,
-      updatedAt: row.chapterUpdatedAt,
     },
   };
 }
@@ -275,17 +162,6 @@ async function getChapterStorageRow(chapterId: number) {
 async function getChapterStorageMetadata(chapterId: number) {
   const row = await getChapterStorageRow(chapterId);
   return row ? storageMetadata(row) : null;
-}
-
-async function readStoredChapterContentFile(
-  contentFile: string,
-): Promise<string | null> {
-  if (isAndroidRuntime()) {
-    return readAndroidStorageText(contentFile);
-  }
-  return invoke<string | null>("chapter_content_mirror_read_file", {
-    contentFile,
-  });
 }
 
 function artifactLookupInput(metadata: ReturnType<typeof storageMetadata>) {
@@ -340,12 +216,7 @@ async function inspectStoredChapterArtifactsForRow(
     };
   }
   const input = artifactLookupInput(storageMetadata(row));
-  const artifacts = isAndroidRuntime()
-    ? await inspectAndroidChapterArtifacts(input)
-    : await invoke<StoredChapterArtifactsInspection>(
-        "chapter_content_mirror_inspect",
-        input,
-      );
+  const artifacts = await inspectChapterContentArtifacts(input);
   return normalizeStoredChapterArtifacts(artifacts);
 }
 
@@ -451,48 +322,17 @@ async function writeStoredChapterContent(
   if (!isTauriRuntime()) return;
   const metadata = await getChapterStorageMetadata(chapterId);
   if (!metadata) return;
-  if (contentType !== undefined) {
-    metadata.chapter.contentType = normalizeChapterContentType(contentType);
-  }
-
-  if (isAndroidRuntime()) {
-    const preferredContentPath = chapterContentRelativePath(
-      metadata.novel,
-      metadata.chapter,
-    );
-    const contentFileName =
-      preferredContentPath.split("/").at(-1) ?? "content.html";
-    const preferredChapterDir = chapterStorageRelativeDir(
-      metadata.novel,
-      metadata.chapter,
-    );
-    const chapterDir =
-      resolvedChapterStorageDir(chapterId) ?? preferredChapterDir;
-    const contentPath = `${chapterDir}/${contentFileName}`;
-    const tempPath = `${contentPath}.tmp`;
-    await writeAndroidStorageText(tempPath, content);
-    await renameAndroidStoragePath(tempPath, contentFileName);
-    await Promise.all(
-      ["content.html", "content.pdf"]
-        .filter((fileName) => fileName !== contentFileName)
-        .map((fileName) => deleteAndroidStoragePath(`${chapterDir}/${fileName}`)),
-    );
-    await deleteAndroidStoragePath(
-      `${chapterDir}/${CHAPTER_PARTIAL_CONTENT_FILE}`,
-    );
-    if (chapterDir !== preferredChapterDir) {
-      await deleteAndroidStoragePath(
-        chapterPartialContentRelativePath(metadata.novel, metadata.chapter),
-      );
-    }
-    return;
-  }
-
-  await invoke("chapter_content_mirror_store", {
-    chapterId,
-    content,
-    metadata,
-  });
+  const identity =
+    contentType === undefined
+      ? metadata
+      : {
+          ...metadata,
+          chapter: {
+            ...metadata.chapter,
+            contentType: normalizeChapterContentType(contentType),
+          },
+        };
+  await writeChapterContentFile(chapterId, content, identity);
 }
 
 async function writeStoredChapterPartialContent(
@@ -502,17 +342,7 @@ async function writeStoredChapterPartialContent(
   if (!isTauriRuntime()) return;
   const metadata = await getChapterStorageMetadata(chapterId);
   if (!metadata) return;
-  if (isAndroidRuntime()) {
-    await writeAndroidStorageText(
-      chapterPartialContentRelativePath(metadata.novel, metadata.chapter),
-      content,
-    );
-    return;
-  }
-  await invoke("chapter_content_mirror_store_partial", {
-    content,
-    metadata,
-  });
+  await writeChapterPartialContentFile(content, metadata);
 }
 
 export async function writeStoredChapterContentMirror(
@@ -556,34 +386,15 @@ export async function clearStoredChapterContentMirror(
   chapterId: number,
 ): Promise<void> {
   if (!isTauriRuntime()) return;
-  if (isAndroidRuntime()) {
-    const metadata = await getChapterStorageMetadata(chapterId);
-    if (!metadata) return;
-    await deleteAndroidStoragePath(
-      chapterContentRelativePath(metadata.novel, metadata.chapter),
-    );
-    await deleteAndroidStoragePath(
-      chapterPartialContentRelativePath(metadata.novel, metadata.chapter),
-    );
-    return;
-  }
-  await invoke("chapter_content_mirror_clear", { chapterId });
+  await clearChapterContentFiles(chapterId, () =>
+    getChapterStorageMetadata(chapterId),
+  );
 }
 
 async function clearStoredChapterContentRow(
   row: ChapterStorageRow,
 ): Promise<void> {
-  if (isAndroidRuntime()) {
-    const metadata = storageMetadata(row);
-    await deleteAndroidStoragePath(
-      chapterContentRelativePath(metadata.novel, metadata.chapter),
-    );
-    await deleteAndroidStoragePath(
-      chapterPartialContentRelativePath(metadata.novel, metadata.chapter),
-    );
-    return;
-  }
-  await invoke("chapter_content_mirror_clear", { chapterId: row.chapterId });
+  await clearChapterContentFiles(row.chapterId, () => storageMetadata(row));
 }
 
 export async function clearStoredNovelChapterContentMirrors(
