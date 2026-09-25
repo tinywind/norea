@@ -100,6 +100,7 @@ class AndroidScraperBridge(
   @Volatile
   private var closed = false
   private var browserVisible = false
+  private var backgroundWorkActive = false
   private var bounds = CssBounds(0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
 
   init {
@@ -416,10 +417,12 @@ class AndroidScraperBridge(
 
   fun resumeBackgroundWorkWebViews() {
     val resume = Runnable {
+      backgroundWorkActive = true
       queues.values.forEach { state ->
         state.webView?.let { webView ->
           webView.resumeTimers()
           webView.onResume()
+          syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
         }
       }
     }
@@ -427,6 +430,22 @@ class AndroidScraperBridge(
       resume.run()
     } else {
       mainHandler.post(resume)
+    }
+  }
+
+  fun releaseBackgroundWorkWebViews() {
+    val release = Runnable {
+      backgroundWorkActive = false
+      queues.values.forEach { state ->
+        state.webView?.let { webView ->
+          syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = false)
+        }
+      }
+    }
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      release.run()
+    } else {
+      mainHandler.post(release)
     }
   }
 
@@ -856,6 +875,9 @@ class AndroidScraperBridge(
     webView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
 
     scraperContainer().addView(webView, hiddenLayoutParams())
+    if (backgroundWorkActive) {
+      syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
+    }
     return webView
   }
 

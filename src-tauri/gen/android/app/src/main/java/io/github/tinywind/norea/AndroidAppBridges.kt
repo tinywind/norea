@@ -66,6 +66,7 @@ internal class AndroidTaskNotificationBridge(
   private val activity: Activity,
   private val requestNotificationPermission: () -> Unit,
   private val resumeBackgroundWorkWebViews: () -> Unit,
+  private val releaseBackgroundWorkWebViews: () -> Unit,
 ) {
   var isForegroundServiceActive = false
     private set
@@ -103,6 +104,7 @@ internal class AndroidTaskNotificationBridge(
     activity.runOnUiThread {
       try {
         isForegroundServiceActive = false
+        releaseBackgroundWorkWebViews()
         TaskForegroundService.stop(activity)
       } catch (_: Throwable) {
         // The service may already be stopped by Android.

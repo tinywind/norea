@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.ViewGroup
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -31,7 +32,11 @@ class MainActivity : TauriActivity() {
       this,
       ::requestNotificationPermissionIfNeeded,
       ::resumeTaskWebViewsForBackgroundWork,
+      ::releaseTaskWebViewsFromBackgroundWork,
     )
+  }
+  private val windowVisibilityProbe by lazy {
+    WindowVisibilityProbe(this, ::resumeTaskWebViewsForBackgroundWork)
   }
   private var androidScraperBridge: AndroidScraperBridge? = null
   private var scraperBackPressedCallback: OnBackPressedCallback? = null
@@ -47,6 +52,13 @@ class MainActivity : TauriActivity() {
     RustlsPlatformVerifierBridge.init(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+  }
+
+  override fun onContentChanged() {
+    super.onContentChanged()
+    if (windowVisibilityProbe.parent == null) {
+      findViewById<ViewGroup>(android.R.id.content)?.addView(windowVisibilityProbe, 0, 0)
+    }
   }
 
   override fun onPause() {
@@ -213,9 +225,23 @@ class MainActivity : TauriActivity() {
   private fun resumeTaskWebViewsForBackgroundWork() {
     if (!taskNotificationBridge.isForegroundServiceActive) return
     mainWebView?.post {
-      mainWebView?.resumeTimers()
-      mainWebView?.onResume()
+      if (!taskNotificationBridge.isForegroundServiceActive) return@post
+      mainWebView?.let { webView ->
+        webView.resumeTimers()
+        webView.onResume()
+        syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
+      }
       androidScraperBridge?.resumeBackgroundWorkWebViews()
+    }
+  }
+
+  private fun releaseTaskWebViewsFromBackgroundWork() {
+    mainWebView?.post {
+      if (taskNotificationBridge.isForegroundServiceActive) return@post
+      mainWebView?.let { webView ->
+        syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = false)
+      }
+      androidScraperBridge?.releaseBackgroundWorkWebViews()
     }
   }
 
