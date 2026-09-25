@@ -40,6 +40,13 @@ function mediaFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Chromium reports dropped or reset connections with these fetch messages.
+const TRANSIENT_MEDIA_NETWORK_ERROR = /\b(?:failed to fetch|network error)\b/i;
+
+export function isTransientMediaNetworkError(error: unknown): boolean {
+  return TRANSIENT_MEDIA_NETWORK_ERROR.test(mediaFailureMessage(error));
+}
+
 function mediaFailureHost(url: string): string {
   try {
     return new URL(url).host;

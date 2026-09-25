@@ -11,6 +11,7 @@ import {
 import {
   ChapterMediaFinalizationError,
   isMediaAbortError,
+  isTransientMediaNetworkError,
   recordChapterMediaFailure,
 } from "./errors";
 import {
@@ -59,6 +60,52 @@ const DEFAULT_MEDIA_ACCEPT =
   "image/avif,image/webp,image/apng,image/svg+xml,image/*,video/*,audio/*,*/*;q=0.8";
 
 const CHAPTER_MEDIA_STORE_WINDOW = 4;
+const MEDIA_NETWORK_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+
+function waitForMediaRetry(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new DOMException(CHAPTER_MEDIA_CANCELLED_MESSAGE, "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+// A reset connection fails every media request multiplexed on it, so retry
+// network-level failures before keeping the asset on its remote URL.
+async function fetchChapterMedia(
+  url: string,
+  request: Parameters<typeof pluginMediaFetch>[1],
+  signal: AbortSignal | undefined,
+): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await pluginMediaFetch(url, request);
+    } catch (error) {
+      const delayMs = MEDIA_NETWORK_RETRY_DELAYS_MS[attempt];
+      if (
+        delayMs === undefined ||
+        signal?.aborted ||
+        !isTransientMediaNetworkError(error)
+      ) {
+        throw error;
+      }
+      await waitForMediaRetry(delayMs, signal);
+    }
+  }
+}
 
 export async function cacheHtmlChapterMedia({
   baseUrl,
@@ -308,7 +355,7 @@ export async function cacheHtmlChapterMedia({
       releaseFallbackAcquisition = acquisition.releaseFallback;
       const response = capturedHandle
         ? null
-        : await pluginMediaFetch(url, mediaRequest);
+        : await fetchChapterMedia(url, mediaRequest, signal);
       const status = capturedHandle?.status ?? response?.status ?? 0;
       const statusText =
         capturedHandle?.statusText ?? response?.statusText ?? "";

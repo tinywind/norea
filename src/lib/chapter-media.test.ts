@@ -951,6 +951,109 @@ describe("cacheHtmlChapterMedia", () => {
     }
   });
 
+  it("retries transient network failures before storing media", async () => {
+    vi.useFakeTimers();
+    pluginMediaFetchMock
+      .mockRejectedValueOnce(
+        new Error("scraper: browser fetch failed: Failed to fetch"),
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-type": "image/png" },
+          status: 200,
+          statusText: "OK",
+        }),
+      );
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_archive_cache") return 3;
+      if (command === "chapter_media_write_manifest") return null;
+      const input = args as { fileName: string };
+      return `norea-media://reader-asset/${input.fileName}`;
+    });
+
+    try {
+      const pending = cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/chapter/1",
+        chapterId: 42,
+        html: `<img src="./page.png">`,
+      });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+      expect(result.mediaFailures).toEqual([]);
+      expect(result.storedMediaCount).toBe(1);
+      expect(result.html).toContain(
+        'src="norea-media://reader-asset/0001-page.png"',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the remote URL after transient network retries are exhausted", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    pluginMediaFetchMock.mockRejectedValue(new TypeError("network error"));
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_archive_cache") return 0;
+      if (command === "chapter_media_write_manifest") return null;
+      return null;
+    });
+
+    try {
+      const pending = cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/chapter/1",
+        chapterId: 42,
+        html: `<img src="./page.png">`,
+      });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);
+      expect(result.mediaFailures).toEqual([
+        expect.objectContaining({
+          message: "network error",
+          url: "https://source.test/chapter/page.png",
+        }),
+      ]);
+      expect(result.html).toContain('src="https://source.test/chapter/page.png"');
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry media requests that fail with an HTTP status", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    pluginMediaFetchMock.mockResolvedValue(
+      new Response("missing", { status: 404, statusText: "Not Found" }),
+    );
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_media_prepare_workspace") return null;
+      if (command === "chapter_media_archive_cache") return 0;
+      if (command === "chapter_media_write_manifest") return null;
+      return null;
+    });
+
+    try {
+      const result = await cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/chapter/1",
+        chapterId: 42,
+        html: `<img src="./page.png">`,
+      });
+
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+      expect(result.mediaFailures).toEqual([
+        expect.objectContaining({ status: 404 }),
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("propagates source access errors without using remote media fallbacks", async () => {
     const accessError = new SourceAccessRequiredError(
       "Complete the Cloudflare challenge.",
