@@ -20,7 +20,7 @@ class TaskForegroundService : Service() {
 
   override fun onCreate() {
     super.onCreate()
-    ensureChannel()
+    ensureChannels()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -30,7 +30,8 @@ class TaskForegroundService : Service() {
         val body = intent.getStringExtra(EXTRA_BODY) ?: ""
         val current = intent.getIntExtra(EXTRA_CURRENT, -1)
         val total = intent.getIntExtra(EXTRA_TOTAL, -1)
-        val notification = buildNotification(title, body, current, total)
+        val quiet = intent.getBooleanExtra(EXTRA_QUIET, false)
+        val notification = buildNotification(title, body, current, total, quiet)
         acquireWakeLock()
         startForeground(NOTIFICATION_ID, notification)
       }
@@ -48,7 +49,7 @@ class TaskForegroundService : Service() {
     super.onDestroy()
   }
 
-  private fun ensureChannel() {
+  private fun ensureChannels() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val channel = NotificationChannel(
       CHANNEL_ID,
@@ -58,7 +59,15 @@ class TaskForegroundService : Service() {
       description = CHANNEL_DESCRIPTION
       setShowBadge(false)
     }
-    notificationManager().createNotificationChannel(channel)
+    val quietChannel = NotificationChannel(
+      QUIET_CHANNEL_ID,
+      QUIET_CHANNEL_NAME,
+      NotificationManager.IMPORTANCE_MIN,
+    ).apply {
+      description = QUIET_CHANNEL_DESCRIPTION
+      setShowBadge(false)
+    }
+    notificationManager().createNotificationChannels(listOf(channel, quietChannel))
   }
 
   private fun buildNotification(
@@ -66,6 +75,7 @@ class TaskForegroundService : Service() {
     body: String,
     current: Int,
     total: Int,
+    quiet: Boolean,
   ): Notification {
     val pendingIntent = PendingIntent.getActivity(
       this,
@@ -75,8 +85,7 @@ class TaskForegroundService : Service() {
       },
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
-    val hasProgress = total > 0 && current >= 0
-    return NotificationCompat.Builder(this, CHANNEL_ID)
+    val builder = NotificationCompat.Builder(this, if (quiet) QUIET_CHANNEL_ID else CHANNEL_ID)
       .setSmallIcon(android.R.drawable.stat_sys_download)
       .setContentTitle(title)
       .setContentText(body)
@@ -84,13 +93,16 @@ class TaskForegroundService : Service() {
       .setCategory(NotificationCompat.CATEGORY_PROGRESS)
       .setOngoing(true)
       .setOnlyAlertOnce(true)
-      .setPriority(NotificationCompat.PRIORITY_LOW)
-      .setProgress(
+      .setPriority(if (quiet) NotificationCompat.PRIORITY_MIN else NotificationCompat.PRIORITY_LOW)
+    if (!quiet) {
+      val hasProgress = total > 0 && current >= 0
+      builder.setProgress(
         if (hasProgress) total else 0,
         if (hasProgress) current.coerceIn(0, total) else 0,
         !hasProgress,
       )
-      .build()
+    }
+    return builder.build()
   }
 
   private fun notificationManager(): NotificationManager =
@@ -136,9 +148,14 @@ class TaskForegroundService : Service() {
     private const val DEFAULT_TITLE = "Norea tasks"
     private const val EXTRA_BODY = "body"
     private const val EXTRA_CURRENT = "current"
+    private const val EXTRA_QUIET = "quiet"
     private const val EXTRA_TITLE = "title"
     private const val EXTRA_TOTAL = "total"
     private const val NOTIFICATION_ID = 1001
+    private const val QUIET_CHANNEL_DESCRIPTION =
+      "Keeps downloads and library tasks running while task progress notifications are off."
+    private const val QUIET_CHANNEL_ID = "task-background"
+    private const val QUIET_CHANNEL_NAME = "Background tasks"
 
     fun update(
       context: Context,
@@ -146,6 +163,7 @@ class TaskForegroundService : Service() {
       body: String,
       current: Int?,
       total: Int?,
+      quiet: Boolean,
     ) {
       val intent = Intent(context, TaskForegroundService::class.java).apply {
         action = ACTION_UPDATE
@@ -153,6 +171,7 @@ class TaskForegroundService : Service() {
         putExtra(EXTRA_BODY, body)
         putExtra(EXTRA_CURRENT, current ?: -1)
         putExtra(EXTRA_TOTAL, total ?: -1)
+        putExtra(EXTRA_QUIET, quiet)
       }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.startForegroundService(intent)

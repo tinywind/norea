@@ -20,14 +20,13 @@ declare global {
   }
 }
 
+// Android only keeps task work alive through the foreground service, so it
+// runs in every mode; without progress notifications it posts a quiet one.
 export function startAndroidTaskNotifications(
   t: TaskNotificationTranslate,
   mode: TaskNotificationMode,
 ): () => void {
-  if (!isAndroidRuntime() || mode !== "progress") {
-    window.__NoreaAndroidTasks?.stop();
-    return () => undefined;
-  }
+  if (!isAndroidRuntime()) return () => undefined;
 
   let lastPayload = "";
   let publishTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,7 +47,11 @@ export function startAndroidTaskNotifications(
       return;
     }
 
-    const serialized = JSON.stringify(payload);
+    const serialized = JSON.stringify(
+      mode === "progress"
+        ? payload
+        : { body: "", quiet: true, title: t("tasks.notification.title") },
+    );
     if (serialized === lastPayload) return;
     bridge.update(serialized);
     lastPayload = serialized;

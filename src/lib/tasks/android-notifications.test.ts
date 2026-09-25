@@ -154,6 +154,60 @@ describe("startAndroidTaskNotifications", () => {
     dispose();
     expect(stopNative).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["off", "completion"] as const)(
+    "keeps background work alive with a quiet notification in %s mode",
+    (mode) => {
+      let eventListener: (() => void) | undefined;
+      const update = vi.fn();
+      const stopNative = vi.fn();
+      Object.assign(window, {
+        __NoreaAndroidTasks: { stop: stopNative, update },
+      });
+      schedulerMocks.subscribeEvents.mockImplementation(
+        (listener: () => void) => {
+          eventListener = listener;
+          return vi.fn();
+        },
+      );
+      schedulerMocks.getSnapshot.mockReturnValue({
+        records: [
+          {
+            canCancel: true,
+            canRetry: false,
+            createdAt: 1,
+            id: "download-1",
+            kind: "chapter.download",
+            lane: "source",
+            priority: "background",
+            progress: { current: 0, total: 2 },
+            status: "running",
+            title: "Chapter 1",
+          },
+        ],
+      });
+      const t = ((key: string) => key) as Parameters<
+        typeof startAndroidTaskNotifications
+      >[0];
+
+      const dispose = startAndroidTaskNotifications(t, mode);
+      expect(update).toHaveBeenCalledExactlyOnceWith(
+        JSON.stringify({
+          body: "",
+          quiet: true,
+          title: "tasks.notification.title",
+        }),
+      );
+
+      schedulerMocks.getSnapshot.mockReturnValue({ records: [] });
+      eventListener?.();
+      vi.advanceTimersByTime(250);
+      expect(stopNative).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenCalledTimes(1);
+
+      dispose();
+    },
+  );
 });
 
 describe("startAndroidBackgroundDownloadRecovery", () => {

@@ -75,12 +75,15 @@ internal class AndroidTaskNotificationBridge(
   fun update(payload: String) {
     activity.runOnUiThread {
       try {
-        try {
-          requestNotificationPermission()
-        } catch (_: Throwable) {
-          // Permission prompts are best-effort; task execution must continue.
-        }
         val json = JSONObject(payload)
+        val quiet = json.optBoolean("quiet", false)
+        if (!quiet) {
+          try {
+            requestNotificationPermission()
+          } catch (_: Throwable) {
+            // Permission prompts are best-effort; task execution must continue.
+          }
+        }
         val progress = json.optJSONObject("progress")
         val current = progress?.takeIf { it.has("current") }?.optInt("current")
         val total = progress?.takeIf { it.has("total") }?.optInt("total")
@@ -91,6 +94,7 @@ internal class AndroidTaskNotificationBridge(
           json.optString("body", ""),
           current,
           total,
+          quiet,
         )
         resumeBackgroundWorkWebViews()
       } catch (_: Throwable) {
