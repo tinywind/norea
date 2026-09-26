@@ -398,10 +398,26 @@ as reconnecting, restores tunneled routing only after the replacement tunnel is
 ready, and emits a short in-app toast after recovery. A user disconnect restores
 direct access only after teardown completes and prevents stale recovery events
 from reviving that session. When connected, plugin traffic is forwarded through
-the OpenVPN tunnel. A connection attempt that fails before a tunnel is
-established returns to the disabled direct state and retains the failure reason
-for the UI. Terminal authentication, profile, or session failures remain errors
-instead of being retried as recoverable interruptions.
+the OpenVPN tunnel. A failed connection or recovery attempt retains the user's
+On setting and keeps the proxy blocked, including between recovery attempts.
+Direct routing is restored only by an explicit disconnect or a profile action
+that switches VPN use off. A server switch preserves blocked routing.
+
+While VPN use is On, host-mediated source fetches and page acquisition wait for
+a confirmed connected tunnel before starting network work. Media retries share
+a bounded 120-second VPN-readiness deadline; waiting for recovery does not
+consume their ordinary transient-network retry budget. Cancellation interrupts
+this wait. Expiry or an unavailable VPN fails the chapter task rather than
+publishing uncached images as a completed remote-fallback download. Already
+stored partial content remains available for a later retry.
+
+The renderer lifecycle retries a lost session with bounded backoff while the
+renderer is running. Task activity keeps Android task WebViews running even when
+progress notifications are off. Idle Android sessions are not guaranteed to
+recover while the operating system blocks background networking or freezes or
+suspends the app; foreground, network-online, and new source-work signals request
+recovery when execution and network access resume. Native recoverable transport interruptions remain distinct from a new
+connection attempt after a terminal session failure.
 
 Proxied plugin destination hostnames are resolved inside the userspace VPN
 network using a plain DNS server supplied by the tunnel. The OpenVPN profile's

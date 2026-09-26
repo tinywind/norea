@@ -944,6 +944,37 @@ describe("enqueueChapterDownload", () => {
     ).toHaveLength(0);
   });
 
+  it("keeps an unavailable-VPN job resumable instead of discarding it", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const vpnError = Object.assign(
+      new Error("Plugin VPN is unavailable."),
+      { code: "plugin-vpn-unavailable" as const },
+    );
+    schedulerMocks.enqueueSource.mockImplementationOnce(
+      (spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        return { id: "task-1", promise: Promise.reject(vpnError) };
+      },
+    );
+
+    const handle = enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    });
+
+    await expect(handle.promise).rejects.toBe(vpnError);
+    await flushMicrotasks();
+
+    expect([...backendQueueValues.keys()]).toEqual([7]);
+    expect(
+      tauriMocks.invoke.mock.calls.filter(
+        ([command]) => command === "chapter_download_queue_remove",
+      ),
+    ).toHaveLength(0);
+  });
+
   it("keeps chapter downloads off the interaction executor", () => {
     pluginMocks.getPlugin.mockReturnValueOnce({
       apiVersion: "0.2",
@@ -1322,6 +1353,26 @@ describe("enqueueChapterDownload", () => {
       );
     },
   );
+
+  it("keeps partial content without marking the chapter downloaded after VPN wait expiry", async () => {
+    const vpnError = Object.assign(new Error("Plugin VPN is unavailable."), {
+      code: "plugin-vpn-unavailable" as const,
+    });
+    vi.mocked(getChapterById).mockResolvedValueOnce({ contentType: "html", id: 7, isDownloaded: false } as never);
+    pluginMocks.getChapterResource.mockResolvedValueOnce(contentResource('<img src="https://source.test/page.png">'));
+    vi.mocked(cacheHtmlChapterMedia).mockRejectedValueOnce(vpnError);
+    enqueueChapterDownload({
+      id: 7, pluginId: "source-a", chapterPath: "/chapter/7", contentType: "html", title: "Chapter 7",
+    });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(capturedSpec.run({
+      executor: "pool:1", setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1",
+    })).rejects.toBe(vpnError);
+    expect(saveStoredChapterPartialContent).toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+    expect(clearChapterMedia).not.toHaveBeenCalled();
+  });
 
   it("uses stored chapter HTML as the media download source", async () => {
     const storedHtml = `<img src="norea-media://reader-asset/page.png">`;

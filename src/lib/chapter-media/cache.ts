@@ -1,6 +1,11 @@
 import { throwIfAborted } from "../abort";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "../http";
 import { cancelNativeStream } from "../native-stream";
+import {
+  isPluginVpnUnavailableError,
+  PLUGIN_VPN_READY_TIMEOUT_MS,
+  waitForPluginVpnReady,
+} from "../plugin-vpn-traffic";
 import { isSourceAccessRequiredError } from "../plugins/source-access";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { isTauriRuntime } from "../tauri-runtime";
@@ -90,18 +95,29 @@ async function fetchChapterMedia(
   request: Parameters<typeof pluginMediaFetch>[1],
   signal: AbortSignal | undefined,
 ): Promise<Response> {
-  for (let attempt = 0; ; attempt += 1) {
+  const vpnDeadline = Date.now() + PLUGIN_VPN_READY_TIMEOUT_MS;
+  let networkFailures = 0;
+  for (;;) {
+    await waitForPluginVpnReady(signal, vpnDeadline);
     try {
-      return await pluginMediaFetch(url, request);
+      const response = await pluginMediaFetch(url, { ...request, vpnReadyDeadline: vpnDeadline });
+      // Plain HTTP proxy refusals are 502 responses, not fetch exceptions.
+      if (response.status === 502 && await waitForPluginVpnReady(signal, vpnDeadline)) {
+        continue;
+      }
+      return response;
     } catch (error) {
-      const delayMs = MEDIA_NETWORK_RETRY_DELAYS_MS[attempt];
       if (
-        delayMs === undefined ||
         signal?.aborted ||
+        isMediaAbortError(error) ||
         !isTransientMediaNetworkError(error)
       ) {
         throw error;
       }
+      if (await waitForPluginVpnReady(signal, vpnDeadline)) continue;
+      const delayMs = MEDIA_NETWORK_RETRY_DELAYS_MS[networkFailures];
+      if (delayMs === undefined) throw error;
+      networkFailures += 1;
       await waitForMediaRetry(delayMs, signal);
     }
   }
@@ -491,7 +507,7 @@ export async function cacheHtmlChapterMedia({
         session.fail(error);
         return;
       }
-      if (isSourceAccessRequiredError(error)) {
+      if (isSourceAccessRequiredError(error) || isPluginVpnUnavailableError(error)) {
         releaseMediaAcquisition();
         session.fail(error);
         return;

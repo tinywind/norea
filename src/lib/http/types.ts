@@ -28,6 +28,8 @@ export interface PluginFetchContext {
   sourceAccessUrl?: string;
   sourceId?: string;
   scraperExecutor?: ScraperExecutorId;
+  /** Internal absolute deadline shared across media retries; never sent to a source. */
+  vpnReadyDeadline?: number;
   priority?: PluginFetchPriority;
 }
 

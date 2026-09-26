@@ -11,7 +11,7 @@ import {
   type PluginVpnStatus,
   type PluginVpnStatusEvent,
 } from "./plugin-vpn";
-import { startPluginVpnLifecycle } from "./plugin-vpn-lifecycle";
+import { requestPluginVpnRecovery, startPluginVpnLifecycle } from "./plugin-vpn-lifecycle";
 
 const restoreMock = vi.mocked(restorePluginVpnConnection);
 const statusListenerMock = vi.mocked(startPluginVpnStatusListener);
@@ -167,6 +167,38 @@ describe("plugin VPN app lifecycle", () => {
     emitStatus?.({ kind: "error", status: ERROR_STATUS });
     expect(restoreMock).toHaveBeenCalledTimes(1);
     expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets background traffic request recovery without bypassing backoff", async () => {
+    vi.useFakeTimers();
+    visibility = "hidden";
+    restoreMock.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+    stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
+    await vi.advanceTimersByTimeAsync(0);
+    requestPluginVpnRecovery();
+    requestPluginVpnRecovery();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restoreMock).toHaveBeenCalledTimes(2);
+    for (let count = 0; count < 10; count += 1) requestPluginVpnRecovery();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(restoreMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(restoreMock).toHaveBeenCalledTimes(3);
+    stop();
+    requestPluginVpnRecovery();
+    expect(restoreMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("responds to an online event while hidden", async () => {
+    visibility = "hidden";
+    stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
+    await Promise.resolve();
+    window.dispatchEvent(new Event("online"));
+    expect(restoreMock).toHaveBeenCalledTimes(2);
+    stop();
+    window.dispatchEvent(new Event("online"));
+    expect(restoreMock).toHaveBeenCalledTimes(2);
   });
 
   it("removes resume listeners and ignores completion after teardown", async () => {

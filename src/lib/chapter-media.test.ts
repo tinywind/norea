@@ -51,6 +51,8 @@ import {
 } from "./chapter-media";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "./http";
 import { SourceAccessRequiredError } from "./plugins/source-access";
+import { usePluginVpnStore } from "../store/plugin-vpn";
+import { PLUGIN_VPN_READY_TIMEOUT_MS } from "./plugin-vpn-traffic";
 
 const invokeMock = vi.mocked(invoke);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
@@ -1052,6 +1054,135 @@ describe("cacheHtmlChapterMedia", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  describe("VPN-aware media acquisition", () => {
+    let vpnPhase: "connected" | "reconnecting";
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      usePluginVpnStore.getState().setEnabled(true);
+      vpnPhase = "connected";
+      invokeMock.mockImplementation(async (command, args) => {
+        if (command === "plugin_vpn_status") return {
+          phase: vpnPhase, error: null, supported: true, proxyPort: 43127,
+          profile: { remoteHost: "203.0.113.1", isVpnGateFinder: true, requiresUsernamePassword: false },
+        };
+        if (command === "chapter_media_store") {
+          return `norea-media://reader-asset/${(args as { fileName: string }).fileName}`;
+        }
+        if (command === "chapter_media_archive_cache") return 3;
+        return null;
+      });
+      pluginMediaFetchMock.mockImplementation(async () => new Response(new Uint8Array([1, 2, 3]), {
+        status: 200, headers: { "content-type": "image/png" },
+      }));
+    });
+
+    afterEach(() => {
+      usePluginVpnStore.getState().setEnabled(false);
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    const download = (signal?: AbortSignal) => cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/1", chapterId: 42,
+      html: '<img src="./page.png">', signal,
+    });
+
+    it("does not consume network retries during a 50-second VPN reconnect", async () => {
+      pluginMediaFetchMock.mockImplementationOnce(async () => {
+        vpnPhase = "reconnecting";
+        throw new TypeError("Failed to fetch");
+      });
+      const pending = download();
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      vpnPhase = "connected";
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await pending;
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+      expect(result.mediaFailures).toEqual([]);
+      expect(result.storedMediaCount).toBe(1);
+    });
+
+    it("waits before starting a new request while the VPN is reconnecting", async () => {
+      vpnPhase = "reconnecting";
+      const pending = download();
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+      vpnPhase = "connected";
+      await vi.advanceTimersByTimeAsync(500);
+      expect((await pending).storedMediaCount).toBe(1);
+    });
+
+    it("does not publish remote fallback or a completed archive after VPN wait timeout", async () => {
+      vpnPhase = "reconnecting";
+      const checked = expect(download()).rejects.toMatchObject({ code: "plugin-vpn-unavailable" });
+      await vi.advanceTimersByTimeAsync(PLUGIN_VPN_READY_TIMEOUT_MS);
+      await checked;
+      expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      expect(console.warn).not.toHaveBeenCalledWith(
+        "[chapter-media] media asset using remote fallback", expect.anything(),
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("cancels a waiting image without marking it as remote fallback", async () => {
+      vpnPhase = "reconnecting";
+      const controller = new AbortController();
+      const checked = expect(download(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+      await vi.advanceTimersByTimeAsync(0);
+      controller.abort();
+      await checked;
+      expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("retries a plain-HTTP proxy 502 after a confirmed VPN recovery", async () => {
+      pluginMediaFetchMock.mockImplementationOnce(async () => {
+        vpnPhase = "reconnecting";
+        return new Response(null, { status: 502 });
+      });
+      const pending = download();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+      vpnPhase = "connected";
+      await vi.advanceTimersByTimeAsync(500);
+      expect((await pending).mediaFailures).toEqual([]);
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry an origin 502 when the VPN remains connected", async () => {
+      pluginMediaFetchMock.mockResolvedValue(new Response(null, { status: 502 }));
+      const result = await download();
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+      expect(result.mediaFailures).toEqual([expect.objectContaining({ status: 502 })]);
+    });
+
+    it("retains the ordinary network retry budget across a separate VPN outage", async () => {
+      pluginMediaFetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        .mockImplementationOnce(async () => {
+          vpnPhase = "reconnecting";
+          throw new TypeError("Failed to fetch");
+        })
+        .mockRejectedValueOnce(new TypeError("network error"));
+      const pending = download();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+      vpnPhase = "connected";
+      await vi.advanceTimersByTimeAsync(500);
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect((await pending).mediaFailures).toEqual([]);
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(4);
+      const deadlines = pluginMediaFetchMock.mock.calls.map(([, request]) => request?.vpnReadyDeadline);
+      expect(new Set(deadlines).size).toBe(1);
+    });
   });
 
   it("propagates source access errors without using remote media fallbacks", async () => {

@@ -8,6 +8,13 @@ import {
 // without waiting for the user to bring the app back to the foreground.
 const RECOVERY_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
 
+const recoveryRequests = new Set<() => void>();
+
+// Network work can resume before a foreground event or after a missed native event.
+export function requestPluginVpnRecovery(): void {
+  for (const request of recoveryRequests) request();
+}
+
 interface PluginVpnLifecycleCallbacks {
   onRestored: (status: PluginVpnStatus) => void;
   onError: (error: unknown) => void;
@@ -57,12 +64,18 @@ export function startPluginVpnLifecycle({
       },
     );
   };
+  const requestRecovery = () => {
+    // Concurrent image requests must not bypass the shared recovery backoff.
+    if (retryTimer === null) restore();
+  };
+  recoveryRequests.add(requestRecovery);
   const foreground = () => {
     if (document.visibilityState !== "hidden") restore();
   };
   document.addEventListener("visibilitychange", foreground);
   window.addEventListener("focus", foreground);
   window.addEventListener("norea-app-resumed", restore);
+  window.addEventListener("online", restore);
   void startPluginVpnStatusListener((event) => {
     if (event.kind === "error") restore();
   }).then(
@@ -85,5 +98,7 @@ export function startPluginVpnLifecycle({
     document.removeEventListener("visibilitychange", foreground);
     window.removeEventListener("focus", foreground);
     window.removeEventListener("norea-app-resumed", restore);
+    window.removeEventListener("online", restore);
+    recoveryRequests.delete(requestRecovery);
   };
 }

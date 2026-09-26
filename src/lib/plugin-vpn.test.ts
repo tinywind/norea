@@ -172,6 +172,7 @@ describe("plugin VPN", () => {
     invokeMock.mockResolvedValueOnce(STATUS).mockRejectedValueOnce("network unavailable");
     await expect(restorePluginVpnConnection()).rejects.toBe("network unavailable");
     expect(usePluginVpnStore.getState().enabled).toBe(true);
+    expect(invokeMock).toHaveBeenLastCalledWith("plugin_vpn_disconnect", { preserveBlock: true });
     invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(CONNECTED_STATUS);
     await expect(restorePluginVpnConnection()).resolves.toEqual(CONNECTED_STATUS);
   });
@@ -538,6 +539,41 @@ describe("plugin VPN", () => {
     expect(onConnecting).toHaveBeenCalledOnce();
   });
 
+  it("does not turn On or disconnect for an already superseded Finder switch", async () => {
+    await expect(switchPluginVpnFinderServer("candidate-1", {
+      isCurrent: () => false, onConnecting: vi.fn(),
+    })).resolves.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
+  });
+
+  it("does not let automatic recovery reconnect the old profile during a Finder switch", async () => {
+    let releaseProfile!: (status: PluginVpnStatus) => void;
+    let profileStarted!: () => void;
+    const started = new Promise<void>((resolve) => { profileStarted = resolve; });
+    invokeMock.mockResolvedValueOnce(STATUS).mockImplementationOnce(() => {
+      profileStarted();
+      return new Promise((resolve) => { releaseProfile = resolve; });
+    }).mockResolvedValueOnce(CONNECTED_STATUS);
+    const switching = switchPluginVpnFinderServer("candidate-2", {
+      isCurrent: () => true, onConnecting: vi.fn(),
+    });
+    await started;
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "plugin_vpn_disconnect", "plugin_vpn_apply_finder_profile",
+    ]);
+    releaseProfile(STATUS);
+    await expect(switching).resolves.toEqual(CONNECTED_STATUS);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "plugin_vpn_disconnect", "plugin_vpn_apply_finder_profile", "plugin_vpn_connect",
+    ]);
+    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenLastCalledWith("plugin_vpn_status");
+  });
+
   it("stops a superseded Finder switch before replacing the profile", async () => {
     let current = true;
     invokeMock.mockImplementationOnce(async () => {
@@ -584,7 +620,7 @@ describe("plugin VPN", () => {
     expect(onConnecting).not.toHaveBeenCalled();
   });
 
-  it("restores direct routing when applying a Finder profile fails", async () => {
+  it("keeps traffic blocked when applying a Finder profile fails", async () => {
     invokeMock
       .mockResolvedValueOnce(STATUS)
       .mockRejectedValueOnce("invalid Finder profile");
@@ -599,8 +635,9 @@ describe("plugin VPN", () => {
     expect(invokeMock.mock.calls).toEqual([
       ["plugin_vpn_disconnect", { preserveBlock: true }],
       ["plugin_vpn_apply_finder_profile", { candidateId: "candidate-1" }],
-      ["plugin_vpn_disconnect", { preserveBlock: false }],
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
     ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
   });
 
   it("rejects a native connect result that is not connected", async () => {
@@ -630,7 +667,7 @@ describe("plugin VPN", () => {
           },
         },
       ],
-      ["plugin_vpn_disconnect", { preserveBlock: false }],
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
     ]);
   });
 
@@ -663,6 +700,10 @@ describe("plugin VPN", () => {
       "plugin_vpn_connect",
       "plugin_vpn_disconnect",
     ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+    expect(invokeMock).toHaveBeenLastCalledWith("plugin_vpn_disconnect", { preserveBlock: true });
+    await disconnectPluginVpn();
+    expect(invokeMock).toHaveBeenLastCalledWith("plugin_vpn_disconnect", { preserveBlock: false });
     expect(usePluginVpnStore.getState().enabled).toBe(false);
   });
 

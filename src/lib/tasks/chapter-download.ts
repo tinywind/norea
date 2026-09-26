@@ -38,6 +38,7 @@ import {
   validateChapterAcquisitionPlan,
 } from "../plugins/chapter-acquisition";
 import { pluginManager } from "../plugins/manager";
+import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import {
   normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
@@ -648,7 +649,7 @@ function installChapterDownloadLifecycleListeners(): void {
 function shouldKeepQueuedChapterDownloadJobAfterRejection(
   error: unknown,
 ): boolean {
-  if (isChapterMediaFinalizationError(error)) return true;
+  if (isChapterMediaFinalizationError(error) || isPluginVpnUnavailableError(error)) return true;
   if (!isAbortError(error)) return false;
   if (chapterDownloadLifecycleSuspending) return true;
   return (

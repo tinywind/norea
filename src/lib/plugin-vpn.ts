@@ -130,6 +130,7 @@ let finderQuerySequence = 0;
 let connectionGeneration = 0;
 let connectionAttempt: Promise<PluginVpnStatus | null> | null = null;
 let recoveryAttempt: Promise<PluginVpnStatus | null> | null = null;
+let activeProfileSwitches = 0;
 let sessionCredentials: PluginVpnCredentials | null = null;
 
 function clearPluginVpnIntent(): void {
@@ -151,8 +152,9 @@ function trackPluginVpnConnection(
 }
 
 async function preparePluginVpnProfileChange(): Promise<void> {
+  const wasEnabled = usePluginVpnStore.getState().enabled;
   clearPluginVpnIntent();
-  if (connectionAttempt) {
+  if (wasEnabled || connectionAttempt) {
     await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
   }
 }
@@ -233,26 +235,34 @@ export async function switchPluginVpnFinderServer(
   candidateId: string,
   lifecycle: PluginVpnFinderSwitchLifecycle,
 ): Promise<PluginVpnStatus | null> {
-  await disconnectPluginVpn(true);
   if (!lifecycle.isCurrent()) return null;
+  activeProfileSwitches += 1;
   try {
-    await applyPluginVpnFinderProfile(candidateId);
-  } catch (error) {
-    if (lifecycle.isCurrent()) await cancelFailedPluginVpnConnection();
-    throw error;
+    usePluginVpnStore.getState().setEnabled(true);
+    await disconnectPluginVpn(true);
+    if (!lifecycle.isCurrent()) return null;
+    try {
+      // Keep On and blocked routing without letting recovery reconnect the old profile.
+      await invoke<PluginVpnStatus>("plugin_vpn_apply_finder_profile", { candidateId });
+    } catch (error) {
+      if (lifecycle.isCurrent()) await cancelFailedPluginVpnConnection();
+      throw error;
+    }
+    if (!lifecycle.isCurrent()) return null;
+    lifecycle.onConnecting();
+    const status = await connectPluginVpn(
+      {
+        challengeResponse: "",
+        password: "",
+        privateKeyPassword: "",
+        username: "",
+      },
+      lifecycle.isCurrent,
+    );
+    return lifecycle.isCurrent() ? status : null;
+  } finally {
+    activeProfileSwitches -= 1;
   }
-  if (!lifecycle.isCurrent()) return null;
-  lifecycle.onConnecting();
-  const status = await connectPluginVpn(
-    {
-      challengeResponse: "",
-      password: "",
-      privateKeyPassword: "",
-      username: "",
-    },
-    lifecycle.isCurrent,
-  );
-  return lifecycle.isCurrent() ? status : null;
 }
 
 export async function configureAndroidPluginVpnProxy(
@@ -361,7 +371,7 @@ export function connectPluginVpn(
         return await establishPluginVpnConnection(credentials, current);
       } catch (error) {
         if (!current()) return null;
-        clearPluginVpnIntent();
+        // A failed attempt is not permission to send source traffic directly.
         throw error;
       } finally {
         if (generation === connectionGeneration && !isCurrent()) clearPluginVpnIntent();
@@ -397,7 +407,9 @@ async function establishPluginVpnConnection(
 
 async function cancelFailedPluginVpnConnection(): Promise<void> {
   try {
-    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
+    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", {
+      preserveBlock: usePluginVpnStore.getState().enabled,
+    });
   } catch (error) {
     console.warn("[plugin-vpn] failed connection cleanup failed", error);
   }
@@ -406,7 +418,12 @@ async function cancelFailedPluginVpnConnection(): Promise<void> {
 export function disconnectPluginVpn(
   preserveBlock = false,
 ): Promise<PluginVpnStatus> {
-  clearPluginVpnIntent();
+  if (preserveBlock) {
+    connectionGeneration += 1;
+    sessionCredentials = null;
+  } else {
+    clearPluginVpnIntent();
+  }
   return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock });
 }
 
@@ -416,7 +433,9 @@ export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {
 }
 
 export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
-  if (!usePluginVpnStore.getState().enabled) return Promise.resolve(null);
+  if (!usePluginVpnStore.getState().enabled || activeProfileSwitches > 0) {
+    return Promise.resolve(null);
+  }
   if (recoveryAttempt) return recoveryAttempt;
   if (connectionAttempt) return Promise.resolve(null);
   const generation = connectionGeneration;

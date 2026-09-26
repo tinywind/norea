@@ -46,6 +46,7 @@ struct PluginVpnShared {
 
 struct PluginVpnRuntime {
     generation: u64,
+    connection_requested: bool,
     phase: PluginVpnPhase,
     profile: Option<PluginVpnProfile>,
     error: Option<String>,
@@ -138,6 +139,7 @@ impl PluginVpnState {
                 operation: tokio::sync::Mutex::new(()),
                 state: Mutex::new(PluginVpnRuntime {
                     generation: 0,
+                    connection_requested: false,
                     phase: PluginVpnPhase::Disabled,
                     profile: None,
                     error: None,
@@ -224,6 +226,17 @@ impl PluginVpnState {
         Ok(())
     }
 
+    fn request_connection(&self) -> u64 {
+        let mut state = self.shared.state.lock().expect("plugin VPN state lock");
+        state.connection_requested = true;
+        // Block before waiting for an older teardown to release the operation lock.
+        #[cfg(any(target_os = "android", target_os = "windows", test))]
+        if state.phase != PluginVpnPhase::Connected {
+            self.shared.proxy.block("The plugin VPN connection is starting");
+        }
+        state.generation
+    }
+
     fn begin_connection(
         &self,
         request_generation: u64,
@@ -239,6 +252,7 @@ impl PluginVpnState {
             return Err("import an OpenVPN profile before connecting".to_string());
         }
         let (cancellation, cancellation_receiver) = tokio::sync::watch::channel(false);
+        state.connection_requested = true;
         state.generation = state.generation.wrapping_add(1);
         #[cfg(any(target_os = "android", target_os = "windows", test))]
         self.shared
@@ -257,8 +271,8 @@ impl PluginVpnState {
             return;
         }
         #[cfg(any(target_os = "android", target_os = "windows", test))]
-        self.shared.proxy.direct();
-        state.phase = PluginVpnPhase::Disabled;
+        self.shared.proxy.block("The plugin VPN connection is unavailable");
+        state.phase = PluginVpnPhase::Error;
         state.error = Some(error);
         state.connecting_cancellation = None;
         #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -311,7 +325,7 @@ impl PluginVpnState {
         Some(self.status_from_runtime(&state))
     }
 
-    #[cfg(any(target_os = "android", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "windows", test))]
     fn set_disconnected_proxy(&self, preserve_block: bool) {
         if preserve_block {
             self.shared
@@ -422,12 +436,7 @@ pub(crate) async fn plugin_vpn_connect(
     state: State<'_, PluginVpnState>,
 ) -> Result<PluginVpnStatus, String> {
     ensure_supported()?;
-    let request_generation = state
-        .shared
-        .state
-        .lock()
-        .expect("plugin VPN state lock")
-        .generation;
+    let request_generation = state.request_connection();
     let _operation = state.shared.operation.lock().await;
     let profile_path = state.profile_path()?;
     let (generation, cancellation) = state.begin_connection(request_generation)?;
@@ -579,16 +588,17 @@ pub(crate) async fn plugin_vpn_disconnect(
     let _ = preserve_block;
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
-    let cancellation = {
+    let (request_generation, cancellation) = {
         let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
         runtime.generation = runtime.generation.wrapping_add(1);
+        runtime.connection_requested = preserve_block;
         if runtime.phase == PluginVpnPhase::Disabled {
             runtime.connecting_cancellation = None;
             state.set_disconnected_proxy(preserve_block);
             drop(runtime);
             return Ok(state.status());
         }
-        if runtime.phase == PluginVpnPhase::Disconnecting {
+        let cancellation = if runtime.phase == PluginVpnPhase::Disconnecting {
             None
         } else {
             state
@@ -597,7 +607,8 @@ pub(crate) async fn plugin_vpn_disconnect(
                 .block("The plugin VPN connection is stopping");
             runtime.phase = PluginVpnPhase::Disconnecting;
             runtime.connecting_cancellation.take()
-        }
+        };
+        (runtime.generation, cancellation)
     };
     #[cfg(any(target_os = "android", target_os = "windows"))]
     if let Some(cancellation) = cancellation {
@@ -609,6 +620,9 @@ pub(crate) async fn plugin_vpn_disconnect(
     #[cfg(any(target_os = "android", target_os = "windows"))]
     let (control, completion) = {
         let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        if runtime.generation != request_generation {
+            return Ok(state.status_from_runtime(&runtime));
+        }
         if runtime.phase == PluginVpnPhase::Disabled {
             state.set_disconnected_proxy(preserve_block);
             drop(runtime);
@@ -641,6 +655,11 @@ pub(crate) async fn plugin_vpn_disconnect(
             let error =
                 "OpenVPN session cleanup timed out; plugin traffic remains blocked".to_string();
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            if runtime.generation != request_generation {
+                // The newer disconnect still has to wait for this session to end.
+                runtime.session_completion = Some(completion);
+                return Ok(state.status_from_runtime(&runtime));
+            }
             state
                 .shared
                 .proxy
@@ -653,14 +672,20 @@ pub(crate) async fn plugin_vpn_disconnect(
     }
 
     let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+    #[cfg(any(target_os = "android", target_os = "windows"))]
+    if runtime.generation != request_generation {
+        return Ok(state.status_from_runtime(&runtime));
+    }
     runtime.phase = PluginVpnPhase::Disabled;
-    runtime.error = None;
+    if !runtime.connection_requested {
+        runtime.error = None;
+    }
     runtime.connecting_cancellation = None;
     #[cfg(any(target_os = "android", target_os = "windows"))]
     {
         runtime.control = None;
         runtime.session_completion = None;
-        state.set_disconnected_proxy(preserve_block);
+        state.set_disconnected_proxy(runtime.connection_requested);
     }
     drop(runtime);
     Ok(state.status())
@@ -878,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_connection_returns_to_disabled_state() {
+    fn failed_connection_remains_blocked_with_an_error() {
         let state = PluginVpnState::bind().expect("plugin VPN state");
         {
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
@@ -893,7 +918,7 @@ mod tests {
         state.set_connection_error(generation, "missing credentials".to_string());
 
         let status = state.status();
-        assert_eq!(status.phase, PluginVpnPhase::Disabled);
+        assert_eq!(status.phase, PluginVpnPhase::Error);
         assert_eq!(status.error.as_deref(), Some("missing credentials"));
         assert_eq!(
             status.profile.as_ref().map(|profile| profile.remote_host.as_str()),
@@ -901,6 +926,63 @@ mod tests {
         );
         let runtime = state.shared.state.lock().expect("plugin VPN state lock");
         assert!(runtime.connecting_cancellation.is_none());
+    }
+
+    #[test]
+    fn failed_connection_proxy_rejects_traffic_until_explicit_off() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        let destination = TcpListener::bind("127.0.0.1:0").expect("destination listener");
+        destination.set_nonblocking(true).expect("nonblocking destination");
+        let target = destination.local_addr().expect("destination address");
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.profile = Some(PluginVpnProfile {
+                is_vpn_gate_finder: false,
+                remote_host: "vpn.example.test".to_string(),
+                requires_username_password: false,
+            });
+        }
+        let (generation, _cancellation) = state.begin_connection(0).expect("begin connection");
+        state.set_connection_error(generation, "authentication failed".to_string());
+
+        let request = || {
+            let mut client = TcpStream::connect(state.shared.proxy.address()).expect("proxy client");
+            client.set_read_timeout(Some(Duration::from_secs(3))).expect("read timeout");
+            write!(client, "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n")
+                .expect("send proxy request");
+            let mut response = [0u8; 256];
+            let size = client.read(&mut response).expect("read proxy response");
+            String::from_utf8_lossy(&response[..size]).into_owned()
+        };
+        assert!(request().starts_with("HTTP/1.1 502"));
+        assert_eq!(destination.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        state.set_disconnected_proxy(true);
+        assert!(request().starts_with("HTTP/1.1 502"));
+        assert_eq!(destination.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        state.set_disconnected_proxy(false);
+        assert!(request().starts_with("HTTP/1.1 200"));
+        assert!(destination.accept().is_ok());
+    }
+
+    #[test]
+    fn a_pending_connect_keeps_an_older_teardown_from_enabling_direct_routing() {
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        {
+            let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            runtime.generation = 3;
+            runtime.phase = PluginVpnPhase::Disconnecting;
+            runtime.connection_requested = false;
+        }
+        assert_eq!(state.request_connection(), 3);
+        let runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        assert!(runtime.connection_requested);
+        // Teardown publishes the latest native intent, not its stale Off argument.
+        state.set_disconnected_proxy(runtime.connection_requested);
+        assert_eq!(runtime.phase, PluginVpnPhase::Disconnecting);
     }
 
     #[test]

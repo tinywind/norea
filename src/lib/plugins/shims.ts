@@ -5,6 +5,7 @@ import { Parser } from "htmlparser2";
 import { getSourceRequestTimeoutMs } from "../../store/browse";
 import { getScraperUserAgent } from "../../store/user-agent";
 import { requestAbortedError } from "../abort";
+import { waitForPluginVpnReady } from "../plugin-vpn-traffic";
 import { androidWebviewExtract } from "../android-scraper";
 import {
   cancelScraperExecutor,
@@ -225,6 +226,7 @@ async function webViewFetchInternal(
     options.scraperExecutor ?? activeScraperExecutor(options.sourceId);
   const timeoutMs = options.timeoutMs ?? getSourceRequestTimeoutMs();
   const signal = options.signal ?? activeScraperExecutorSignal(scraperExecutor);
+  await waitForPluginVpnReady(signal);
   if (isAndroidRuntime()) {
     return androidWebviewExtract(
       url,

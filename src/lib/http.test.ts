@@ -315,6 +315,16 @@ describe("pluginFetch", () => {
     expect(response.status).toBe(403);
   });
 
+  it("does not start native work when cancelled before the readiness check settles", async () => {
+    const controller = new AbortController();
+    const request = pluginFetch("https://ok.test/slow", {
+      scraperExecutor: "pool:0", signal: controller.signal,
+    });
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   it("cancels the desktop scraper executor when the request signal aborts", async () => {
     const controller = new AbortController();
     invokeMock.mockImplementation(async (command) => {
@@ -329,6 +339,9 @@ describe("pluginFetch", () => {
       scraperExecutor: "pool:0",
       signal: controller.signal,
     });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "webview_fetch", expect.any(Object),
+    ));
     controller.abort();
 
     await expect(request).rejects.toMatchObject({ name: "AbortError" });

@@ -423,7 +423,11 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
         : vpnOperation?.kind === "finder"
           ? vpnOperation.phase
           : undefined;
-  const displayPhase = localPhase ?? status?.phase;
+  const displayPhase = localPhase ?? (
+    vpnEnabled && status?.phase === "disabled" && status.error
+      ? "error"
+      : status?.phase
+  );
   const statusAvailable = status !== undefined;
   const disconnected = status?.phase === "disabled";
   const profileOperationActive =
