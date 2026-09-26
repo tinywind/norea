@@ -35,12 +35,25 @@ sessions, library rows, or download folders. Keep terminal HTTP errors such as
 ## Failure and Cancellation
 
 - Keep the VPN unavailable past the shared 120-second media-readiness deadline.
-  The chapter task must fail without publishing a completed remote-fallback
-  download. Partial files and the resumable backend queue entry must remain.
+  The current acquisition run must release its executor and return to the same
+  queued task with automatic backoff, without publishing a completed remote-fallback
+  download or settling the batch. Partial files and the backend queue entry remain;
+  the task foreground service must stay active while recovery is pending.
 - Cancel a waiting task. It must stop promptly without creating a completed
   content file or leaving readiness timers and listeners attached.
-- Restore connectivity and retry the failed chapter. Confirm partial media is
-  reused and the remaining files complete normally.
+- Restore connectivity without opening the app or pressing Retry. Confirm the
+  same task resumes automatically, reuses partial media, and completes normally.
+- Cancel both running and retry-waiting tasks while hidden. Confirm their backend
+  queue entries are removed and do not reappear after an app restart.
+- Test temporary HTTP failures separately from permanent 404 responses. Temporary
+  failures must back off; missing content must remain explicitly incomplete.
+- On Android 15+, shorten data_sync_fgs_timeout_duration only for a controlled
+  test, saving and restoring the original setting in a cleanup path. Confirm quota
+  expiry stops the service without a crash or restart loop, preserves queued work,
+  and resumes after a user foreground visit without clearing a user queue pause.
+- Run the final non-debuggable APK with at least two independent source queues,
+  a large uncached batch, screen lock, and repeated outages including one exceeding
+  three minutes. Inspect every completed manifest and ZIP entry, not only counts.
 - Cause a connection attempt to fail while VPN intent remains On. Confirm source
   traffic stays blocked, including during backoff. Only explicit Off (or an
   explicit profile action that turns VPN use off) may restore direct routing.

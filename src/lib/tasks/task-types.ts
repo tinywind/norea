@@ -150,6 +150,11 @@ export interface TaskRunContext {
   tryStartSourceAccess?: () => boolean;
 }
 
+export interface TaskRetryDecision {
+  delayMs: number;
+  detail?: string;
+}
+
 export interface TaskSpec<T> {
   lane: TaskLane;
   kind: TaskKind;
@@ -167,6 +172,8 @@ export interface TaskSpec<T> {
   sourceAccessVerificationKey?: string;
   sourceCooldownKey?: string;
   sourceCooldownMs?: number;
+  /** Called only after a non-cancelled run has settled; retains the task and its promise. */
+  retry?: (error: unknown, attempt: number) => TaskRetryDecision | null;
   run: (context: TaskRunContext) => Promise<T>;
 }
 

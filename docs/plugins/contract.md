@@ -404,12 +404,24 @@ Direct routing is restored only by an explicit disconnect or a profile action
 that switches VPN use off. A server switch preserves blocked routing.
 
 While VPN use is On, host-mediated source fetches and page acquisition wait for
-a confirmed connected tunnel before starting network work. Media retries share
-a bounded 120-second VPN-readiness deadline; waiting for recovery does not
-consume their ordinary transient-network retry budget. Cancellation interrupts
-this wait. Expiry or an unavailable VPN fails the chapter task rather than
-publishing uncached images as a completed remote-fallback download. Already
-stored partial content remains available for a later retry.
+a confirmed connected tunnel before starting network work. A single media run
+shares an abortable 120-second VPN-readiness deadline across its requests.
+Waiting for recovery does not consume its ordinary transient-network retry budget.
+If a run exhausts that deadline, the download scheduler keeps the same task and
+persistent queue record, releases its scraper executor, and automatically retries
+with 5/15/30/60-second capped backoff. Queued retry work keeps the Android task
+foreground service active; it is not a completed or failed batch item. Partial
+media is reused on the next run. Missing/unsupported VPN configuration is terminal,
+not an endless network retry.
+
+Offline download and repair tasks require complete media. Exhausted fast network
+retries and temporary HTTP 408/429/502/503/504 responses are handed to the durable
+task retry policy, honoring valid Retry-After headers. Permanent HTTP failures
+such as 404 leave a failed/incomplete chapter instead of publishing a successful
+offline archive with remote-only images. Local-file import remains explicitly
+best-effort. User cancellation is tagged separately from lifecycle suspension
+and removes the cancelled chapter's persistent queue entry even while hidden.
+Genuine process/lifecycle interruptions keep resumable work.
 
 The renderer lifecycle retries a lost session with bounded backoff while the
 renderer is running. Task activity keeps Android task WebViews running even when
@@ -480,6 +492,14 @@ processes. Another local process that discovers that port could deliberately
 connect to it. The app-local guarantee therefore covers routing and automatic
 proxy configuration, not adversarial isolation from other software running on
 the same device.
+
+Android may revoke background execution (including the Android 15+ dataSync
+foreground-service time budget). The service stops promptly on its timeout,
+releases its wake lock, and suspends source execution without cancelling stored
+work or repeatedly attempting an illegal service restart. A subsequent user
+foreground visit resumes the suspended work independently of user queue pauses.
+Explicit system force-stop is not bypassed; remaining jobs restore at the next
+app launch. This is not an always-on idle VPN service.
 
 ## Required plugin surface
 

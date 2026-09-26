@@ -18,6 +18,8 @@
   "nav.downloads": "Cache",
   "nav.tasks": "Tasks",
   "nav.settings": "Settings",
+  "tasks.downloadRetryWaiting": "Waiting for the network or VPN. Retrying automatically in {seconds}s.",
+  "tasks.backgroundExecutionSuspended": "Android paused background execution. Open the app to continue; queued downloads are preserved.",
   "tasks.title": "Tasks",
   "tasks.description": "Monitor queued and long-running work.",
   "tasks.currentWork": "Current work",

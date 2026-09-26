@@ -39,6 +39,9 @@ import {
 } from "../plugins/chapter-acquisition";
 import { pluginManager } from "../plugins/manager";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
+import { isTaskUserCancelledError } from "./task-errors";
+import { downloadRetryDecision, isRetryableDownloadError } from "./download-retry";
 import {
   normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
@@ -649,6 +652,7 @@ function installChapterDownloadLifecycleListeners(): void {
 function shouldKeepQueuedChapterDownloadJobAfterRejection(
   error: unknown,
 ): boolean {
+  if (isTaskUserCancelledError(error)) return false;
   if (isChapterMediaFinalizationError(error) || isPluginVpnUnavailableError(error)) return true;
   if (!isAbortError(error)) return false;
   if (chapterDownloadLifecycleSuspending) return true;
@@ -835,6 +839,7 @@ function enqueueChapterDownloadForExecutor(
   }
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
+    retry: downloadRetryDecision,
     priority: job.priority ?? "background",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -861,7 +866,6 @@ function enqueueChapterDownloadForExecutor(
     run: async ({
       confirmSourceAccess,
       executor,
-      setDetail,
       setProgress,
       setSourceAccessUrl,
       shouldYield,
@@ -1113,6 +1117,7 @@ function enqueueChapterDownloadForExecutor(
               await persistPartialHtml(partialHtml);
             }
             const media = await cacheHtmlChapterMedia({
+              requireComplete: true,
               ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
               ...(trustedAccessUrl
                 ? { sourceAccessUrl: trustedAccessUrl }
@@ -1158,9 +1163,7 @@ function enqueueChapterDownloadForExecutor(
             html = media.html;
             mediaBytes = media.mediaBytes;
             if (media.mediaFailures.length > 0) {
-              setDetail(
-                `${media.mediaFailures.length} media assets using remote fallback`,
-              );
+              throw new ChapterMediaIncompleteError(media.mediaFailures);
             }
           }
         }
@@ -1195,6 +1198,7 @@ function enqueueChapterDownloadForExecutor(
       } catch (error) {
         if (
           !normalizeSourceAccessRequiredError(error) &&
+          (signal.aborted || !isRetryableDownloadError(error)) &&
           !isPauseAbort(signal) &&
           !isPauseAbortError(error)
         ) {
@@ -1237,6 +1241,7 @@ export function enqueueChapterMediaRepair(
     : undefined;
   return taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
+    retry: downloadRetryDecision,
     priority: job.priority ?? "user",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -1414,6 +1419,7 @@ export function enqueueChapterMediaRepair(
         return;
       }
       const media = await cacheHtmlChapterMedia({
+        requireComplete: true,
         baseUrl,
         chapterId: chapter.id,
         chapterName: chapter.name,
@@ -1466,6 +1472,9 @@ export function enqueueChapterMediaRepair(
         isBinaryChapterContentType(sourceContentType)
       ) {
         confirmSourceAccess?.();
+      }
+      if (media.mediaFailures.length > 0) {
+        throw new ChapterMediaIncompleteError(media.mediaFailures);
       }
       const mediaBytes = await getStoredChapterMediaBytes(
         media.html,

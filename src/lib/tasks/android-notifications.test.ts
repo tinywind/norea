@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const schedulerMocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
+  setBackgroundExecutionSuspended: vi.fn(),
   requeueRunningInterruptibleDownloads: vi.fn(),
   subscribe: vi.fn(),
   subscribeEvents: vi.fn(),
@@ -81,6 +82,38 @@ afterEach(() => {
 });
 
 describe("startAndroidTaskNotifications", () => {
+  it("stops restarting the FGS after platform suspension and resumes on foreground", () => {
+    const update = vi.fn();
+    const stopNative = vi.fn();
+    let blocked = false;
+    Object.assign(window, { __NoreaAndroidTasks: { update, stop: stopNative, isExecutionSuspended: () => blocked } });
+    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop = startAndroidTaskNotifications(t, "off");
+    blocked = true;
+    dispatch("window", "norea-background-execution-suspended");
+    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true, "tasks.backgroundExecutionSuspended");
+    update.mockClear();
+    dispatch("window", "norea-app-resumed");
+    expect(update).not.toHaveBeenCalled();
+    blocked = false;
+    dispatch("window", "norea-app-resumed");
+    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenLastCalledWith(false);
+    stop();
+    const count = schedulerMocks.setBackgroundExecutionSuspended.mock.calls.length;
+    dispatch("window", "norea-background-execution-suspended");
+    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledTimes(count);
+  });
+
+  it("detects native suspension when a notification-mode change remounts the publisher", () => {
+    const update = vi.fn();
+    Object.assign(window, { __NoreaAndroidTasks: { update, stop: vi.fn(), isExecutionSuspended: () => true } });
+    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop = startAndroidTaskNotifications(t, "off");
+    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true, "tasks.backgroundExecutionSuspended");
+    expect(update).not.toHaveBeenCalled();
+    stop();
+  });
+
   it("coalesces task event bursts before rebuilding the notification", () => {
     let eventListener: (() => void) | undefined;
     const update = vi.fn();

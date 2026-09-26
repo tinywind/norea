@@ -42,6 +42,7 @@ import {
   type ScraperExecutorId,
 } from "./scraper-queue";
 import { isAbortError } from "../abort";
+import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
 import { recordPerformanceObservation } from "../observability";
 import {
@@ -101,6 +102,8 @@ interface TaskEntry {
   dedupeKey?: string;
   exclusive: boolean;
   pauseRequested?: boolean;
+  retryAttempt?: number;
+  retryTimer?: ReturnType<typeof setTimeout>;
   promise: Promise<unknown>;
   record: TaskRecord;
   reject: (error: unknown) => void;
@@ -243,6 +246,8 @@ export class TaskScheduler {
   private sourceBackgroundConcurrency: number;
   private readonly sourceBackgroundConcurrencyFollowsForeground: boolean;
   private sourceQueuesPaused: boolean;
+  private backgroundExecutionSuspended = false;
+  private backgroundExecutionDetail: string | undefined;
   private activeMainTaskId: string | null = null;
   private batchDepth = 0;
   private drainAfterBatch = false;
@@ -1185,6 +1190,21 @@ export class TaskScheduler {
     return failedEntries.length;
   }
 
+  setBackgroundExecutionSuspended(suspended: boolean, detail?: string): void {
+    if (this.backgroundExecutionSuspended === suspended) return;
+    this.backgroundExecutionSuspended = suspended;
+    if (suspended) this.pauseRunningSourceTasks();
+    for (const entry of this.entries.values()) {
+      if (entry.record.lane !== "source" ||
+          (entry.record.status !== "queued" && entry.record.status !== "running")) continue;
+      if (suspended) entry.record.detail = detail;
+      else if (entry.record.detail === this.backgroundExecutionDetail) delete entry.record.detail;
+    }
+    this.backgroundExecutionDetail = suspended ? detail : undefined;
+    this.publishSnapshot();
+    if (!suspended) this.requestDrain();
+  }
+
   pauseSourceQueue(sourceId?: string): boolean {
     const paused = this.pauseRunningSourceTasks(sourceId);
     if (!sourceId) {
@@ -1765,6 +1785,7 @@ export class TaskScheduler {
     entry: TaskEntry,
     options: { allowActiveSource?: boolean } = {},
   ): boolean {
+    if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
     if (options.allowActiveSource) return true;
     const sourceId = entry.record.source?.id;
     if (!sourceId) return true;
@@ -1831,6 +1852,7 @@ export class TaskScheduler {
   }
 
   private start(entry: TaskEntry): void {
+    if (entry.retryAttempt) delete entry.record.detail;
     entry.sourceAccessDeferred = false;
     entry.sourceAccessStarted = false;
     this.setStatus(entry, "running", {
@@ -1943,6 +1965,7 @@ export class TaskScheduler {
         ) {
           return;
         }
+        if (!cancelled && this.requeueRetryableTask(entry, error)) return;
         if (!cancelled) {
           console.error("[task-scheduler] task failed", {
             error: describeTaskError(error),
@@ -1954,7 +1977,7 @@ export class TaskScheduler {
         }
         this.finishRunning(entry, cancelled ? "cancelled" : "failed", {
           canCancel: false,
-          canRetry: cancelled,
+          canRetry: cancelled || entry.spec.retry !== undefined,
           error: cancelled ? undefined : describeTaskError(error),
           finishedAt: Date.now(),
         });
@@ -1962,6 +1985,60 @@ export class TaskScheduler {
           entry.reject(error);
         }
       });
+  }
+
+  private clearTaskRetry(entry: TaskEntry): void {
+    if (entry.retryTimer !== undefined) clearTimeout(entry.retryTimer);
+    entry.retryTimer = undefined;
+  }
+
+  private requeueRetryableTask(entry: TaskEntry, error: unknown): boolean {
+    if (
+      entry.record.lane !== "source" || entry.record.status !== "running" ||
+      entry.controller.signal.aborted || !entry.spec.retry
+    ) return false;
+    const attempt = (entry.retryAttempt ?? 0) + 1;
+    let decision;
+    try {
+      decision = entry.spec.retry(error, attempt);
+    } catch {
+      return false;
+    }
+    if (!decision || !Number.isFinite(decision.delayMs) || decision.delayMs < 0) {
+      return false;
+    }
+    const previousStatus = entry.record.status;
+    this.revokeSourceAccessVerificationForEntry(entry);
+    // The old run and its native scraper have settled before the executor is released.
+    this.releaseActive(entry);
+    if (entry.dedupeKey) this.activeDedupeByKey.set(entry.dedupeKey, entry.record.id);
+    entry.retryAttempt = attempt;
+    entry.controller = new AbortController();
+    entry.pauseRequested = false;
+    entry.sourceAccessPauseRequested = false;
+    entry.sourceAccessDeferred = false;
+    entry.sourceAccessStarted = false;
+    const next = { ...entry.record };
+    delete next.startedAt;
+    delete next.finishedAt;
+    delete next.error;
+    entry.record = {
+      ...next, status: "queued", canCancel: taskCanCancel(entry.spec.kind, entry.spec.canCancel),
+      canRetry: false, detail: decision.detail,
+    };
+    // Queued retry work remains active for batch accounting and the Android task FGS.
+    // A timer, rather than a sleeping executor, lets unrelated source/UI work continue.
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = undefined;
+      if (this.entries.get(entry.record.id) === entry && entry.record.status === "queued") {
+        this.drain();
+      }
+    }, Math.max(1, Math.min(2_147_483_647, Math.round(decision.delayMs))));
+    this.requeueSourceEntry(entry);
+    this.debug("waiting for automatic retry", entry, { attempt, delayMs: decision.delayMs });
+    this.publish(entry, previousStatus);
+    this.drain();
+    return true;
   }
 
   private runWithScraperExecutorContext(
@@ -2006,7 +2083,7 @@ export class TaskScheduler {
     this.revokeSourceAccessVerificationForEntry(entry);
     entry.sourceAccessPauseRequested = false;
     entry.pauseRequested = false;
-    entry.controller.abort();
+    entry.controller.abort(new TaskUserCancelledError());
     this.cancelRunning(entry);
     return true;
   }
@@ -2023,7 +2100,7 @@ export class TaskScheduler {
     ) {
       this.activeDedupeByKey.delete(entry.dedupeKey);
     }
-    entry.reject(new DOMException("Task was cancelled.", "AbortError"));
+    entry.reject(new TaskUserCancelledError());
     if (entry.record.lane === "main") {
       this.releaseActive(entry);
       this.trimHistory();
@@ -2500,6 +2577,7 @@ export class TaskScheduler {
   }
 
   private finishQueuedAsCancelled(entry: TaskEntry): void {
+    this.clearTaskRetry(entry);
     this.setStatus(entry, "cancelled", {
       canCancel: false,
       canRetry: true,
@@ -2512,7 +2590,7 @@ export class TaskScheduler {
     ) {
       this.activeDedupeByKey.delete(entry.dedupeKey);
     }
-    entry.reject(new DOMException("Task was cancelled.", "AbortError"));
+    entry.reject(new TaskUserCancelledError());
   }
 
   private cancelQueuedEntries(
@@ -2534,6 +2612,7 @@ export class TaskScheduler {
     let cancelled = 0;
     for (const entry of queuedEntries) {
       if (entry.record.status !== "queued") continue;
+      this.clearTaskRetry(entry);
       const previousStatus = entry.record.status;
       entry.record = {
         ...entry.record,
@@ -2550,7 +2629,7 @@ export class TaskScheduler {
       ) {
         this.activeDedupeByKey.delete(entry.dedupeKey);
       }
-      entry.reject(new DOMException("Task was cancelled.", "AbortError"));
+      entry.reject(new TaskUserCancelledError());
       if (discardCancelled) {
         discardedEntries.push(entry);
       } else {
@@ -2792,6 +2871,7 @@ export class TaskScheduler {
   }
 
   private deleteEntryRecord(entry: TaskEntry): string | undefined {
+    this.clearTaskRetry(entry);
     this.history.forget(entry.record.id, entry.dedupeKey);
     const sourceId = entry.record.source?.id;
     this.entries.delete(entry.record.id);

@@ -7,6 +7,7 @@ import {
 import { taskScheduler, type TaskRecord } from "./scheduler";
 
 interface AndroidTaskNotificationBridge {
+  isExecutionSuspended?: () => boolean;
   stop: () => void;
   update: (payload: string) => void;
 }
@@ -29,11 +30,21 @@ export function startAndroidTaskNotifications(
   if (!isAndroidRuntime()) return () => undefined;
 
   let lastPayload = "";
+  let executionSuspended = false;
+  const suspendExecution = () => {
+    if (executionSuspended) return;
+    executionSuspended = true;
+    taskScheduler.setBackgroundExecutionSuspended(true, t("tasks.backgroundExecutionSuspended"));
+    window.__NoreaAndroidTasks?.stop();
+    lastPayload = "";
+  };
   let publishTimer: ReturnType<typeof setTimeout> | null = null;
 
   const publish = () => {
     const bridge = window.__NoreaAndroidTasks;
     if (!bridge) return;
+    if (bridge.isExecutionSuspended?.()) suspendExecution();
+    if (executionSuspended) return;
 
     const payload = buildActiveTaskNotificationPayload(
       taskScheduler.getSnapshot(),
@@ -65,11 +76,22 @@ export function startAndroidTaskNotifications(
     }, ANDROID_TASK_NOTIFICATION_PUBLISH_INTERVAL_MS);
   };
 
+  const resumeExecution = () => {
+    if (window.__NoreaAndroidTasks?.isExecutionSuspended?.()) return;
+    if (executionSuspended) taskScheduler.setBackgroundExecutionSuspended(false);
+    executionSuspended = false;
+    lastPayload = "";
+    publish();
+  };
+  window.addEventListener("norea-background-execution-suspended", suspendExecution);
+  window.addEventListener("norea-app-resumed", resumeExecution);
   const unsubscribeSnapshots = taskScheduler.subscribe(schedulePublish);
   const unsubscribeEvents = taskScheduler.subscribeEvents(schedulePublish);
   publish();
 
   return () => {
+    window.removeEventListener("norea-background-execution-suspended", suspendExecution);
+    window.removeEventListener("norea-app-resumed", resumeExecution);
     unsubscribeSnapshots();
     unsubscribeEvents();
     if (publishTimer !== null) clearTimeout(publishTimer);

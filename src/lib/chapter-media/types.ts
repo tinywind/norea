@@ -21,6 +21,8 @@ export interface CacheChapterMediaOptions {
   previousHtml?: string | null;
   requestInit?: ChapterMediaRequestInit;
   repair?: boolean;
+  /** Offline downloads must not publish an archive with missing remote assets. */
+  requireComplete?: boolean;
   scraperExecutor?: ScraperExecutorId;
   shouldYield?: () => boolean;
   signal?: AbortSignal;

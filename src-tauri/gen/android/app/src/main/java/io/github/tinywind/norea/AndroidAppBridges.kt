@@ -72,10 +72,19 @@ internal class AndroidTaskNotificationBridge(
     private set
 
   @JavascriptInterface
+  fun isExecutionSuspended(): Boolean = TaskBackgroundExecution.policy.suspended
+
+  fun suspendExecution() {
+    isForegroundServiceActive = false
+    releaseBackgroundWorkWebViews()
+  }
+
+  @JavascriptInterface
   fun update(payload: String) {
     activity.runOnUiThread {
+      if (TaskBackgroundExecution.policy.suspended) return@runOnUiThread
+      val json = try { JSONObject(payload) } catch (_: RuntimeException) { return@runOnUiThread }
       try {
-        val json = JSONObject(payload)
         val quiet = json.optBoolean("quiet", false)
         if (!quiet) {
           try {
@@ -87,7 +96,6 @@ internal class AndroidTaskNotificationBridge(
         val progress = json.optJSONObject("progress")
         val current = progress?.takeIf { it.has("current") }?.optInt("current")
         val total = progress?.takeIf { it.has("total") }?.optInt("total")
-        isForegroundServiceActive = true
         TaskForegroundService.update(
           activity,
           json.optString("title", "Norea tasks"),
@@ -96,9 +104,11 @@ internal class AndroidTaskNotificationBridge(
           total,
           quiet,
         )
+        isForegroundServiceActive = true
         resumeBackgroundWorkWebViews()
-      } catch (_: Throwable) {
-        // Ignore malformed bridge payloads so task execution is not affected.
+      } catch (error: RuntimeException) {
+        android.util.Log.w("NoreaTasks", "Background service start rejected", error)
+        TaskBackgroundExecution.suspend()
       }
     }
   }

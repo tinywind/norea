@@ -35,6 +35,13 @@ class MainActivity : TauriActivity() {
       ::releaseTaskWebViewsFromBackgroundWork,
     )
   }
+  private val onBackgroundExecutionSuspended: () -> Unit = {
+    mainWebView?.evaluateJavascript(
+      "window.dispatchEvent(new Event('norea-background-execution-suspended'));",
+      null,
+    )
+    taskNotificationBridge.suspendExecution()
+  }
   private val windowVisibilityProbe by lazy {
     WindowVisibilityProbe(this, ::resumeTaskWebViewsForBackgroundWork)
   }
@@ -52,6 +59,7 @@ class MainActivity : TauriActivity() {
     RustlsPlatformVerifierBridge.init(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    TaskBackgroundExecution.attach(onBackgroundExecutionSuspended)
   }
 
   override fun onContentChanged() {
@@ -68,6 +76,7 @@ class MainActivity : TauriActivity() {
 
   override fun onResume() {
     super.onResume()
+    TaskBackgroundExecution.policy.foreground()
     resumeTaskWebViewsForBackgroundWork()
     mainWebView?.post {
       mainWebView?.evaluateJavascript(
@@ -120,6 +129,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    TaskBackgroundExecution.detach(onBackgroundExecutionSuspended)
     resetMainBackEvaluation()
     scraperBackPressedCallback?.remove()
     scraperBackPressedCallback = null

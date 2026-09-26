@@ -115,6 +115,7 @@ import {
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { isTauriRuntime } from "../tauri-runtime";
+import { TaskUserCancelledError } from "./task-errors";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 import {
   cancelChapterDownloadBatches,
@@ -942,6 +943,45 @@ describe("enqueueChapterDownload", () => {
         ([command]) => command === "chapter_download_queue_remove",
       ),
     ).toHaveLength(0);
+  });
+
+  it.each(["visible", "hidden"])("removes explicit user cancellation from persistent storage while %s", async (visibilityState) => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: visibilityState });
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferred = createDeferred<void>();
+    schedulerMocks.enqueueSource.mockReturnValue({ id: "cancel-test", promise: deferred.promise });
+    const handle = enqueueChapterDownload({ id: 71, pluginId: "source-a", chapterPath: "/chapter/71", title: "Cancel test" });
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(71)).toBe(true);
+    const checked = expect(handle.promise).rejects.toMatchObject({ name: "AbortError", cancelledByUser: true });
+    deferred.reject(new TaskUserCancelledError());
+    await checked;
+    await flushMicrotasks();
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(71)).toBe(false);
+  });
+
+  it("retains a genuine hidden lifecycle interruption for restoration", async () => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deferred = createDeferred<void>();
+    schedulerMocks.enqueueSource.mockReturnValue({ id: "suspend-test", promise: deferred.promise });
+    const handle = enqueueChapterDownload({ id: 72, pluginId: "source-a", chapterPath: "/chapter/72", title: "Suspend test" });
+    await waitForChapterDownloadQueueMutations();
+    const checked = expect(handle.promise).rejects.toMatchObject({ name: "AbortError" });
+    deferred.reject(new DOMException("WebView suspended", "AbortError"));
+    await checked;
+    await flushMicrotasks();
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(72)).toBe(true);
+  });
+
+  it("gives downloads a transient-only automatic retry policy", () => {
+    enqueueChapterDownload({ id: 73, pluginId: "source-a", chapterPath: "/chapter/73", title: "Retry test" });
+    if (!capturedSpec) throw new Error("Missing task spec");
+    expect(capturedSpec.retry?.(new TypeError("Failed to fetch"), 1)).toMatchObject({ delayMs: 5000 });
+    expect(capturedSpec.retry?.(new Error("HTTP 404 Not Found"), 1)).toBeNull();
+    expect(capturedSpec.retry?.(new TaskUserCancelledError(), 1)).toBeNull();
   });
 
   it("keeps an unavailable-VPN job resumable instead of discarding it", async () => {
@@ -1999,7 +2039,7 @@ describe("enqueueChapterDownload", () => {
     expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
-  it("records media fallback detail without failing the chapter download", async () => {
+  it("never marks an offline chapter complete when a media result contains failures", async () => {
     const setDetail = vi.fn();
     pluginMocks.getChapterResource.mockResolvedValueOnce(
       contentResource(`<img src="/page.png">`),
@@ -2030,22 +2070,15 @@ describe("enqueueChapterDownload", () => {
     });
 
     if (!capturedSpec) throw new Error("Task spec was not captured.");
-    await capturedSpec.run({
+    await expect(capturedSpec.run({
       setDetail,
       setProgress: vi.fn(),
       signal: new AbortController().signal,
       taskId: "task-1",
-    });
+    })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
 
-    expect(setDetail).toHaveBeenCalledWith(
-      "1 media assets using remote fallback",
-    );
-    expect(saveStoredChapterContent).toHaveBeenCalledWith(
-      7,
-      `<img src="https://source.test/page.png">`,
-      "html",
-      { mediaBytes: 0 },
-    );
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({ requireComplete: true }));
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("fails when the local chapter row is missing", async () => {

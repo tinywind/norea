@@ -11,6 +11,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class TaskForegroundService : Service() {
@@ -26,14 +27,25 @@ class TaskForegroundService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_UPDATE -> {
+        if (TaskBackgroundExecution.policy.suspended) {
+          stopSelf()
+          return START_NOT_STICKY
+        }
         val title = intent.getStringExtra(EXTRA_TITLE) ?: DEFAULT_TITLE
         val body = intent.getStringExtra(EXTRA_BODY) ?: ""
         val current = intent.getIntExtra(EXTRA_CURRENT, -1)
         val total = intent.getIntExtra(EXTRA_TOTAL, -1)
         val quiet = intent.getBooleanExtra(EXTRA_QUIET, false)
-        val notification = buildNotification(title, body, current, total, quiet)
-        acquireWakeLock()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+          val notification = buildNotification(title, body, current, total, quiet)
+          acquireWakeLock()
+          startForeground(NOTIFICATION_ID, notification)
+        } catch (error: RuntimeException) {
+          Log.w("NoreaTasks", "Foreground execution unavailable", error)
+          TaskBackgroundExecution.suspend()
+          releaseWakeLock()
+          stopSelf()
+        }
       }
       ACTION_STOP -> {
         stopForegroundCompat()
@@ -42,6 +54,21 @@ class TaskForegroundService : Service() {
       }
     }
     return START_NOT_STICKY
+  }
+
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    // Android 15+ dataSync quota: preserve tasks and stop promptly, never restart in a loop.
+    Log.w("NoreaTasks", "Android foreground execution quota exhausted; queued work is preserved")
+    try {
+      TaskBackgroundExecution.suspend()
+    } finally {
+      try {
+        stopForegroundCompat()
+        releaseWakeLock()
+      } finally {
+        stopSelf()
+      }
+    }
   }
 
   override fun onDestroy() {
@@ -181,10 +208,8 @@ class TaskForegroundService : Service() {
     }
 
     fun stop(context: Context) {
-      val intent = Intent(context, TaskForegroundService::class.java).apply {
-        action = ACTION_STOP
-      }
-      context.startService(intent)
+      // A stop request must not start a new background service.
+      context.stopService(Intent(context, TaskForegroundService::class.java))
     }
   }
 }

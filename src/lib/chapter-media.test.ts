@@ -1056,6 +1056,62 @@ describe("cacheHtmlChapterMedia", () => {
     }
   });
 
+  describe("strict offline completion", () => {
+    it.each([false, true])("releases captured response streams before automatic retry (cleanup fails: %s)", async cleanupFails => {
+      takeCapturedMediaHandleMock.mockResolvedValueOnce({
+        bodyBytes: 3, bodyHandle: "retry-response", finalUrl: "https://source.test/page.png",
+        headers: { "content-type": "text/plain", "retry-after": "30" }, status: 503, statusText: "Unavailable",
+      });
+      invokeMock.mockImplementation(async command => {
+        if (command === "native_stream_cancel" && cleanupFails) throw new Error("already closed");
+        return null;
+      });
+      await expect(cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/", chapterId: 42, scraperExecutor: "pool:1",
+        html: '<img src="/page.png">', requireComplete: true,
+      })).rejects.toMatchObject({ code: "chapter-media-http-retry", status: 503, retryAfterMs: 30000 });
+      expect(invokeMock.mock.calls.filter(([command]) => command === "native_stream_cancel")).toEqual([
+        ["native_stream_cancel", { handle: "retry-response" }],
+      ]);
+      expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+    });
+
+    it("does not archive or report success when a permanent image is missing", async () => {
+      pluginMediaFetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+      await expect(cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/", chapterId: 42,
+        html: '<img src="./missing.png">', requireComplete: true,
+      })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+    });
+
+    it.each([408, 429, 502, 503, 504])("propagates temporary HTTP %i to the task retry policy", async status => {
+      pluginMediaFetchMock.mockResolvedValue(new Response(null, { status, headers: { "Retry-After": "30" } }));
+      await expect(cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/", chapterId: 42,
+        html: '<img src="./page.png">', requireComplete: true,
+      })).rejects.toMatchObject({ code: "chapter-media-http-retry", status, retryAfterMs: 30000 });
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+    });
+
+    it("hands exhausted fast network retries back to the durable task rather than remote fallback", async () => {
+      vi.useFakeTimers();
+      try {
+        pluginMediaFetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+        const checked = expect(cacheHtmlChapterMedia({
+          baseUrl: "https://source.test/", chapterId: 42,
+          html: '<img src="./page.png">', requireComplete: true,
+        })).rejects.toThrow("Failed to fetch");
+        await vi.advanceTimersByTimeAsync(4000);
+        await checked;
+        expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);
+        expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      } finally { vi.useRealTimers(); }
+    });
+  });
+
   describe("VPN-aware media acquisition", () => {
     let vpnPhase: "connected" | "reconnecting";
 

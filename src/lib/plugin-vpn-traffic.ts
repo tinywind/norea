@@ -9,7 +9,7 @@ const PLUGIN_VPN_STATUS_POLL_MS = 500;
 export class PluginVpnUnavailableError extends Error {
   readonly code = "plugin-vpn-unavailable" as const;
 
-  constructor() {
+  constructor(readonly retryable = true) {
     super("Plugin VPN is unavailable. Reconnect the VPN and retry the download.");
     this.name = "PluginVpnUnavailableError";
   }
@@ -76,7 +76,11 @@ export function waitForPluginVpnReady(
           finish();
           return;
         }
-        if (!status.supported || !status.profile || Date.now() >= deadline) {
+        if (!status.supported || !status.profile) {
+          fail(new PluginVpnUnavailableError(false));
+          return;
+        }
+        if (Date.now() >= deadline) {
           fail(new PluginVpnUnavailableError());
           return;
         }
