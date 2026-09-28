@@ -533,16 +533,26 @@ pub(crate) fn response_is_cloudflare_challenge(
         return false;
     }
 
-    body_text.contains("/cdn-cgi/challenge-platform/")
+    let has_cloudflare_evidence = body_text.contains("/cdn-cgi/challenge-platform/")
         || body_text.contains("cf-chl-")
         || body_text.contains("__cf_chl_")
-        || ["form", "running", "stage"].iter().any(|suffix| {
-            body_text.contains(&format!("id=\"challenge-{suffix}\""))
-                || body_text.contains(&format!("id='challenge-{suffix}'"))
-        })
+        || body_text.contains("cloudflare ray id");
+    let title = body_text
+        .split_once("<title")
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .and_then(|(_, rest)| rest.split_once("</title>"))
+        .map(|(title, _)| title)
+        .unwrap_or_default();
+    // JavaScript Detections also inject challenge-platform scripts into normal pages.
+    let has_challenge_element = ["form", "running", "stage"].iter().any(|suffix| {
+        body_text.contains(&format!("id=\"challenge-{suffix}\""))
+            || body_text.contains(&format!("id='challenge-{suffix}'"))
+    });
+    has_challenge_element
+        || (has_cloudflare_evidence
+            && (title.contains("just a moment") || title.contains("attention required")))
         || (body_text.contains("cloudflare ray id")
-            && (body_text.contains("attention required")
-                || body_text.contains("sorry, you have been blocked")))
+            && body_text.contains("sorry, you have been blocked"))
 }
 
 pub struct CaptureGuard {
@@ -1463,11 +1473,43 @@ mod tests {
         )]);
         assert!(response_is_cloudflare_challenge(
             &headers,
-            b"<html><script src='/cdn-cgi/challenge-platform/x'></script></html>",
+            b"<html><title>Just a moment...</title><script src='/cdn-cgi/challenge-platform/x'></script></html>",
+        ));
+        assert!(response_is_cloudflare_challenge(
+            &headers,
+            b"<html><title>Attention Required! | Cloudflare</title><body>Cloudflare Ray ID: 123</body></html>",
+        ));
+        assert!(response_is_cloudflare_challenge(
+            &headers,
+            b"<html><body><form id='challenge-form'></form></body></html>",
+        ));
+        assert!(response_is_cloudflare_challenge(
+            &headers,
+            b"<html><body>Sorry, you have been blocked. Cloudflare Ray ID: 123</body></html>",
         ));
         assert!(!response_is_cloudflare_challenge(
             &HashMap::from([("content-type".to_string(), "image/png".to_string())]),
             b"cf-chl-not-html",
         ));
+    }
+
+    #[test]
+    fn ignores_cloudflare_background_detection_on_content_pages() {
+        let headers = HashMap::from([("content-type".to_string(), "text/html".to_string())]);
+        for markup in [
+            "<script src='/cdn-cgi/challenge-platform/scripts/jsd/api.js'></script>",
+            "<script src='/cdn-cgi/challenge-platform/h/b/scripts/jsd/main.js'></script>",
+            "<script>window.__cf_chl_data = {};</script>",
+            "<style>.cf-chl-widget { display: none; }</style>",
+        ] {
+            let body = format!(
+                "<html><title>Chapter 1</title><body><article>Just a moment, she said.</article>{markup}</body></html>"
+            );
+            assert!(!response_is_cloudflare_challenge(&headers, body.as_bytes()));
+            assert!(!response_is_cloudflare_challenge(
+                &HashMap::new(),
+                body.as_bytes()
+            ));
+        }
     }
 }

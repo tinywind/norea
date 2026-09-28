@@ -188,7 +188,10 @@ source-dependent promises pending. A chapter task may still reconcile
 authoritative final content locally while blocked; doing so does not verify or
 clear source access. The block survives an application restart. Norea opens the
 source in its session-owning browser so the user can complete the challenge,
-then offers **Keep paused** and **Verify**. Verify runs one queued task as a
+then offers **Keep paused** and **Verify**. Closing the browser keeps the source
+paused in every loading phase; only **Verify** requests a source check. The
+pending task's blocking loading overlay is hidden while the site browser is
+open so it cannot intercept browser controls. Verify runs one queued task as a
 canary and unblocks the source only after that task explicitly confirms
 successful source access and completes. Chapter canaries bypass final-content
 and partial-resume fast paths so verification performs a real source
@@ -218,6 +221,13 @@ detector in `src/lib/plugins/browser-challenge-detector.js`. Source plugins
 should rely on host challenge failures for ordinary CAPTCHA and Cloudflare
 pages. They may add source-specific markers or capture checks for custom gates
 and shadow-root content that the generic detector cannot observe.
+
+HTTP responses and captured resources use `cf-mitigated: challenge` or actual
+challenge-page markup to request manual verification. A generic
+`/cdn-cgi/challenge-platform/` script or `cf-chl` token alone is insufficient:
+Cloudflare also injects
+[JavaScript Detections](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/javascript-detections/)
+into ordinary content pages.
 
 ### Resource plans
 

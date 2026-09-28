@@ -3569,7 +3569,7 @@ mod tests {
     #[test]
     fn captured_resource_challenge_detector_sniffs_html_without_trusting_headers() {
         let body =
-            b"<!DOCTYPE html><html><script src='/cdn-cgi/challenge-platform/h/g'></script></html>";
+            b"<!DOCTYPE html><html><title>Just a moment...</title><script src='/cdn-cgi/challenge-platform/h/g'></script></html>";
 
         assert!(captured_resource_is_cloudflare_challenge(
             &HashMap::new(),
