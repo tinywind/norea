@@ -32,6 +32,16 @@ describe("windowsSiteBrowser", () => {
     });
   });
 
+  it("reads the full redirected address only for the active source profile", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce("https://source.test/chapter/2#part");
+    await expect(windowsSiteBrowser.currentUrl("source-a")).resolves.toBe(
+      "https://source.test/chapter/2#part",
+    );
+    expect(invoke).toHaveBeenCalledWith("scraper_current_url", {
+      sourceId: "source-a",
+    });
+  });
+
   it("does not request a destructive reset for foreground navigation", async () => {
     vi.mocked(invokeDesktopNavigation).mockResolvedValueOnce();
     const controller = new AbortController();

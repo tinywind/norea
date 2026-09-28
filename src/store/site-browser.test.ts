@@ -65,6 +65,37 @@ describe("site browser store", () => {
     });
   });
 
+  it("keeps the task and source context across address changes and reloads", () => {
+    const store = useSiteBrowserStore.getState();
+    store.queueAt("source-a", "https://source.test/novel", "task-1");
+    store.navigateTo("task-1", "https://other.test/");
+    expect(useSiteBrowserStore.getState().phase).toBe("queued");
+    store.startLoading("source-a", "https://source.test/novel", "task-1");
+    store.markReady("task-1");
+    const context = useSiteBrowserStore.getState().context;
+
+    store.navigateTo("stale-task", "https://stale.test/");
+    expect(useSiteBrowserStore.getState().phase).toBe("ready");
+    store.navigateTo("task-1", "https://other.test/");
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      context,
+      sourceId: "source-a",
+      taskId: "task-1",
+      visible: true,
+      currentUrl: "https://other.test/",
+      phase: "loading",
+      openSequence: 2,
+    });
+    store.navigateTo("task-1", "https://ignored.test/");
+    expect(useSiteBrowserStore.getState().currentUrl).toBe("https://other.test/");
+    store.markReady("task-1");
+    store.navigateTo("task-1", "https://other.test/");
+    expect(useSiteBrowserStore.getState().openSequence).toBe(3);
+    store.hide();
+    store.navigateTo("task-1", "https://closed.test/");
+    expect(useSiteBrowserStore.getState().phase).toBe("closed");
+  });
+
   it("completes source access requests only for the owning task", () => {
     const context = {
       mode: "source-access" as const,

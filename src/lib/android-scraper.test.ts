@@ -12,6 +12,7 @@ import {
   androidScraperClearCache,
   androidScraperClearCookies,
   androidScraperCurrentOrigin,
+  androidScraperCurrentUrl,
   androidScraperNavigate,
   androidWebviewExtract,
 } from "./android-scraper";
@@ -36,6 +37,7 @@ function installScraperBridge() {
       clearCache: vi.fn(),
       clearCookies: vi.fn(),
       currentOrigin: vi.fn(),
+      currentUrl: vi.fn(),
       extract: vi.fn(),
       fetch: vi.fn(),
       hide: vi.fn(),
@@ -128,6 +130,21 @@ describe("Android scraper browser state", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("reads the current address from the source-owned native WebView", async () => {
+    const currentUrl = vi.mocked(window.__NoreaAndroidScraper!.currentUrl);
+    const reading = androidScraperCurrentUrl("source-a");
+    const payload = JSON.parse(currentUrl.mock.calls[0][0] as string) as {
+      id: string;
+      sourceId: string;
+    };
+    expect(payload.sourceId).toBe("source-a");
+    window.__noreaAndroidScraperResolve?.(
+      payload.id,
+      JSON.stringify({ ok: true, result: "https://example.com/chapter/2#part" }),
+    );
+    await expect(reading).resolves.toBe("https://example.com/chapter/2#part");
   });
 
   it("reads the current origin from the native WebView", async () => {

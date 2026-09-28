@@ -14,6 +14,7 @@ export interface SiteBrowserPlatformApi {
   name: "android" | "web" | "windows";
   boundsFor(node: HTMLDivElement | null): SiteBrowserBounds | null;
   currentOrigin(sourceId: string): Promise<string | null>;
+  currentUrl(sourceId: string): Promise<string | null>;
   setBounds(
     bounds: SiteBrowserBounds,
     url: string | null,

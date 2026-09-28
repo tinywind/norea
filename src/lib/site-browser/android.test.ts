@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   androidScraperCurrentOrigin,
+  androidScraperCurrentUrl,
   androidScraperNavigate,
 } from "../android-scraper";
 import { androidSiteBrowser } from "./android";
 
 vi.mock("../android-scraper", () => ({
   androidScraperCurrentOrigin: vi.fn(),
+  androidScraperCurrentUrl: vi.fn(),
   androidScraperHide: vi.fn(),
   androidScraperNavigate: vi.fn(),
   androidScraperSetBounds: vi.fn(),
@@ -18,6 +20,7 @@ vi.mock("../../store/user-agent", () => ({
 describe("androidSiteBrowser", () => {
   beforeEach(() => {
     vi.mocked(androidScraperCurrentOrigin).mockReset();
+    vi.mocked(androidScraperCurrentUrl).mockReset();
     vi.mocked(androidScraperNavigate).mockReset();
   });
 
@@ -31,6 +34,16 @@ describe("androidSiteBrowser", () => {
     );
     expect(androidScraperCurrentOrigin).toHaveBeenCalledOnce();
     expect(androidScraperCurrentOrigin).toHaveBeenCalledWith("source-a");
+  });
+
+  it("reads the full redirected address from the same native source profile", async () => {
+    vi.mocked(androidScraperCurrentUrl).mockResolvedValueOnce(
+      "https://source.test/chapter/2#part",
+    );
+    await expect(androidSiteBrowser.currentUrl("source-a")).resolves.toBe(
+      "https://source.test/chapter/2#part",
+    );
+    expect(androidScraperCurrentUrl).toHaveBeenCalledWith("source-a");
   });
 
   it("does not request a destructive reset for foreground navigation", async () => {

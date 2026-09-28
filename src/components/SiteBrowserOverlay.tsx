@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Button, Group, Loader, Text } from "@mantine/core";
 import { CloseGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
+import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
 import { useTranslation } from "../i18n";
 import {
   getSiteBrowserPlatform,
@@ -49,12 +50,13 @@ function sourceAccessOrigin(url: string | null): string | null {
   }
 }
 
-interface SourceAccessOriginObservation {
+interface BrowserLocationObservation {
   openSequence: number;
   origin: string;
-  revision: number;
+  revision: number | null;
   sourceId: string;
   taskId: string;
+  url: string | null;
 }
 
 function syncSiteBrowserBounds(
@@ -108,7 +110,7 @@ export function SiteBrowserOverlay() {
   const deferWindowsBounds = platform.name === "windows";
   const [loading, setLoading] = useState(false);
   const [originObservation, setOriginObservation] =
-    useState<SourceAccessOriginObservation | null>(null);
+    useState<BrowserLocationObservation | null>(null);
 
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   const lastOpenSequence = useRef<number | null>(null);
@@ -216,6 +218,7 @@ export function SiteBrowserOverlay() {
         revision: expectedRevision,
         sourceId: expectedSourceId,
         taskId: expectedTaskId,
+        url: null,
       });
       const currentBlock = taskScheduler
         .getSnapshot()
@@ -403,8 +406,7 @@ export function SiteBrowserOverlay() {
       !visible ||
       phase !== "ready" ||
       !browserTaskId ||
-      !sourceId ||
-      !sourceAccessContext
+      !sourceId
     ) {
       return;
     }
@@ -412,8 +414,8 @@ export function SiteBrowserOverlay() {
     let disposed = false;
     const poll = () => {
       void platform
-        .currentOrigin(sourceId)
-        .then((origin) => {
+        .currentUrl(sourceId)
+        .then((url) => {
           const state = useSiteBrowserStore.getState();
           if (
             disposed ||
@@ -422,28 +424,30 @@ export function SiteBrowserOverlay() {
             state.taskId !== browserTaskId ||
             state.sourceId !== sourceId ||
             state.openSequence !== openSequence ||
-            state.context?.mode !== "source-access" ||
-            state.context.scopeKey !== sourceAccessContext.scopeKey ||
-            state.context.revision !== sourceAccessContext.revision
+            (sourceAccessContext &&
+              (state.context?.mode !== "source-access" ||
+                state.context.scopeKey !== sourceAccessContext.scopeKey ||
+                state.context.revision !== sourceAccessContext.revision))
           ) {
             return;
           }
-          const normalizedOrigin = sourceAccessOrigin(origin);
+          const normalizedOrigin = sourceAccessOrigin(url);
           setOriginObservation(
             normalizedOrigin
               ? {
                   openSequence,
                   origin: normalizedOrigin,
-                  revision: sourceAccessContext.revision,
+                  revision: sourceAccessContext?.revision ?? null,
                   sourceId,
                   taskId: browserTaskId,
+                  url,
                 }
               : null,
           );
         })
         .catch((error) => {
           if (!disposed) setOriginObservation(null);
-          reportScraperError("read current origin", error);
+          reportScraperError("read current address", error);
         });
     };
     poll();
@@ -499,14 +503,15 @@ export function SiteBrowserOverlay() {
 
   if (!visible) return null;
   const browserLoading = phase !== "ready" || loading;
-  const displayedOrigin =
+  const currentObservation =
     originObservation &&
     originObservation.taskId === browserTaskId &&
     originObservation.sourceId === sourceId &&
     originObservation.openSequence === openSequence &&
-    originObservation.revision === sourceAccessContext?.revision
-      ? originObservation.origin
+    originObservation.revision === (sourceAccessContext?.revision ?? null)
+      ? originObservation
       : null;
+  const displayedOrigin = currentObservation?.origin ?? null;
   const expectedOrigin = sourceAccessContext
     ? sourceAccessOrigin(sourceAccessContext.challenge.url)
     : null;
@@ -572,7 +577,7 @@ export function SiteBrowserOverlay() {
             lineClamp={1}
             style={{ flex: 1, minWidth: 0 }}
           >
-            {currentUrl ?? ""}
+            {t("siteBrowser.title")}
           </Text>
         )}
         <IconButton
@@ -583,6 +588,16 @@ export function SiteBrowserOverlay() {
           <CloseGlyph />
         </IconButton>
       </Group>
+      <SiteBrowserAddressBar
+        key={`${browserTaskId}:${openSequence}`}
+        url={currentObservation?.url ?? currentUrl ?? ""}
+        loading={browserLoading}
+        onNavigate={(url) => {
+          if (browserTaskId) {
+            useSiteBrowserStore.getState().navigateTo(browserTaskId, url);
+          }
+        }}
+      />
       <div
         ref={placeholderRef}
         style={{ flex: 1, minHeight: 0, position: "relative" }}

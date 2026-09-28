@@ -101,11 +101,11 @@ function enqueueSiteBrowserTask(
           url: redactUrlForLog(url),
         });
         const handleAbort = () => {
+          cleanup();
           const siteBrowser = useSiteBrowserStore.getState();
           if (
             siteBrowser.visible &&
             siteBrowser.sourceId === plugin.id &&
-            siteBrowser.currentUrl === url &&
             siteBrowser.taskId === taskId
           ) {
             siteBrowser.hide();
@@ -115,7 +115,6 @@ function enqueueSiteBrowserTask(
             taskId,
             url: redactUrlForLog(url),
           });
-          cleanup();
           reject(new DOMException("Task was cancelled.", "AbortError"));
         };
         const cleanup = () => {
@@ -126,7 +125,6 @@ function enqueueSiteBrowserTask(
           if (
             !state.visible ||
             state.sourceId !== plugin.id ||
-            state.currentUrl !== url ||
             state.taskId !== taskId
           ) {
             debugOpenSiteTask("closed", {

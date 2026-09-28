@@ -1,5 +1,6 @@
 import {
   androidScraperCurrentOrigin,
+  androidScraperCurrentUrl,
   androidScraperHide,
   androidScraperNavigate,
   androidScraperSetBounds,
@@ -22,6 +23,7 @@ export const androidSiteBrowser: SiteBrowserPlatformApi = {
   name: "android",
   boundsFor: (node) => rectBounds(node),
   currentOrigin: async (sourceId) => androidScraperCurrentOrigin(sourceId),
+  currentUrl: async (sourceId) => androidScraperCurrentUrl(sourceId),
   setBounds: async (bounds, _url, sourceId) => {
     if (!sourceId) return;
     androidScraperSetBounds(sourceId, bounds, getScraperUserAgent());

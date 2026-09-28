@@ -46,6 +46,8 @@ export const windowsSiteBrowser: SiteBrowserPlatformApi = {
   boundsFor: rectBounds,
   currentOrigin: async (sourceId) =>
     await invoke<string | null>("scraper_current_origin", { sourceId }),
+  currentUrl: async (sourceId) =>
+    await invoke<string | null>("scraper_current_url", { sourceId }),
   setBounds: async (bounds, url, sourceId) => {
     if (!url || !sourceId) {
       debugWindowsSiteBrowser("setBounds skipped: source or url is empty", {

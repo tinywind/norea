@@ -24,7 +24,7 @@ export interface SiteBrowserCompletion {
 interface SiteBrowserState {
   /** Whether the in-app site browser overlay is currently shown. */
   visible: boolean;
-  /** The URL the scraper Webview should be navigated to on open. */
+  /** The requested address for opening or navigating the scraper WebView. */
   currentUrl: string | null;
   /** Source whose isolated browser profile owns the current request. */
   sourceId: string | null;
@@ -32,7 +32,7 @@ interface SiteBrowserState {
   taskId: string | null;
   /** Whether the request is queued, navigating, ready, or closed. */
   phase: SiteBrowserPhase;
-  /** Monotonic sequence for repeated open requests, including the same URL. */
+  /** Monotonic navigation sequence, including reloads of the same URL. */
   openSequence: number;
   /** The interaction represented by the current browser request. */
   context: SiteBrowserContext | null;
@@ -47,6 +47,8 @@ interface SiteBrowserState {
   ) => void;
   /** Start native navigation after the scheduler assigns the executor. */
   startLoading: (sourceId: string, url: string, taskId: string) => void;
+  /** Navigate within the current task and source profile. */
+  navigateTo: (taskId: string, url: string) => void;
   /** Mark the current native page as ready for interaction. */
   markReady: (taskId: string) => void;
   /** Complete the browser request only when the owning task still matches. */
@@ -85,6 +87,16 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
       state.currentUrl === url &&
       state.taskId === taskId
         ? {
+            phase: "loading",
+            openSequence: state.openSequence + 1,
+          }
+        : state,
+    ),
+  navigateTo: (taskId, url) =>
+    set((state) =>
+      state.visible && state.taskId === taskId && state.phase === "ready"
+        ? {
+            currentUrl: url,
             phase: "loading",
             openSequence: state.openSequence + 1,
           }

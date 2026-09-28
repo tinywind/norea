@@ -8,6 +8,7 @@ interface AndroidScraperBridge {
   clearCache(payload: string): void;
   clearCookies(payload: string): void;
   currentOrigin(payload: string): void;
+  currentUrl(payload: string): void;
   fetch(payload: string): void;
   extract(payload: string): void;
   hide(): void;
@@ -98,6 +99,7 @@ function callNative<T>(
     | "clearCache"
     | "clearCookies"
     | "currentOrigin"
+    | "currentUrl"
     | "extract"
     | "fetch"
     | "navigate",
@@ -207,6 +209,10 @@ export function androidScraperCurrentOrigin(
   sourceId: string,
 ): Promise<string | null> {
   return callNative<string | null>("currentOrigin", { sourceId }, 5_000);
+}
+
+export function androidScraperCurrentUrl(sourceId: string): Promise<string | null> {
+  return callNative<string | null>("currentUrl", { sourceId }, 5_000);
 }
 
 export function androidWebviewFetch(

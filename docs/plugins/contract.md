@@ -191,11 +191,15 @@ source in its session-owning browser so the user can complete the challenge,
 then offers **Keep paused** and **Verify**. Closing the browser keeps the source
 paused in every loading phase; only **Verify** requests a source check. The
 pending task's blocking loading overlay is hidden while the site browser is
-open so it cannot intercept browser controls. Verify runs one queued task as a
-canary and unblocks the source only after that task explicitly confirms
-successful source access and completes. Chapter canaries bypass final-content
-and partial-resume fast paths so verification performs a real source
-acquisition. A repeated challenge or an unconfirmed canary leaves the queue
+open so it cannot intercept browser controls. The address bar allows HTTP(S)
+navigation within the same source profile and keeps its scheduler task active.
+It follows native redirects without replacing an unfinished address edit.
+Android's foreground source WebView supports pinch zoom. Manual navigation to
+another hostname does not enable verification for the blocked hostname.
+Verify runs one queued task as a canary and unblocks the source only after that
+task explicitly confirms successful source access and completes. Chapter canaries
+bypass final-content and partial-resume fast paths so verification performs a real
+source acquisition. A repeated challenge or an unconfirmed canary leaves the queue
 blocked.
 
 Restart recovery persists only the challenge URL origin, because paths, query

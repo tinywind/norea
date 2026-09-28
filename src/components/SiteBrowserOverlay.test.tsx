@@ -4,6 +4,7 @@ import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator
 import { useSiteBrowserStore } from "../store/site-browser";
 import { BlockingLoadingOverlay } from "./AppFrame";
 import { SiteBrowserOverlay } from "./SiteBrowserOverlay";
+import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
@@ -103,6 +104,26 @@ describe("source access browser controls", () => {
     const pause = findControl(openBrowser("ready"), "sourceAccess.keepPaused");
     expect(pause).toBeDefined();
     pause!.props.onClick!();
+    expect(useSiteBrowserStore.getState().completion?.outcome).toBe("keep-paused");
+  });
+
+  it("keeps the challenge and close action after a manual address change", () => {
+    const view = openBrowser("ready")!;
+    const bar = Children.toArray(view.props.children).find(
+      (child): child is ReactElement<{ onNavigate: (url: string) => void }> =>
+        isValidElement(child) && child.type === SiteBrowserAddressBar,
+    );
+    expect(bar).toBeDefined();
+    bar!.props.onNavigate("https://other.test/login");
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      visible: true,
+      phase: "loading",
+      currentUrl: "https://other.test/login",
+      taskId: "browser-task",
+      sourceId: "source-a",
+      context: { mode: "source-access", revision: 3, scopeKey: "site:source.test" },
+    });
+    findControl(SiteBrowserOverlay(), "siteBrowser.close")!.props.onClick!();
     expect(useSiteBrowserStore.getState().completion?.outcome).toBe("keep-paused");
   });
 

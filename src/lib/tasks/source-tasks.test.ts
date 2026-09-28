@@ -11,6 +11,7 @@ vi.mock("./scheduler", () => ({
 }));
 
 import {
+  enqueueOpenSiteTask,
   enqueueSourceAccessBrowserTask,
   enqueueSourceTask,
 } from "./source-tasks";
@@ -109,6 +110,41 @@ describe("enqueueSourceTask", () => {
       capturedSpec?.run(runContext(confirmSourceAccess)),
     ).resolves.toBe(1);
     expect(confirmSourceAccess).not.toHaveBeenCalled();
+  });
+});
+
+describe("enqueueOpenSiteTask", () => {
+  it.each([false, true])("retains ownership after navigation (cancel: %s)", async (cancel) => {
+    enqueueOpenSiteTask(
+      { getBaseUrl: () => "https://source.test/", id: "source-a", name: "Source A" },
+      "https://source.test/",
+      "Open site",
+    );
+    const controller = new AbortController();
+    const settled = vi.fn();
+    const running = capturedSpec!.run({
+      ...runContext(vi.fn()),
+      signal: controller.signal,
+    });
+    const observed = running.then(settled, (error: unknown) => {
+      settled(error);
+    });
+    useSiteBrowserStore.getState().markReady("task-1");
+    useSiteBrowserStore.getState().navigateTo("task-1", "https://other.test/login");
+    await Promise.resolve();
+    expect(capturedSpec?.exclusive).toBe(true);
+    expect(settled).not.toHaveBeenCalled();
+
+    if (cancel) controller.abort();
+    else useSiteBrowserStore.getState().hide();
+    await observed;
+    expect(settled).toHaveBeenCalledOnce();
+    expect(useSiteBrowserStore.getState().visible).toBe(false);
+    if (cancel) {
+      expect(settled).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "AbortError" }),
+      );
+    }
   });
 });
 
