@@ -59,19 +59,22 @@ function wireTextBody(result: FetchResultWire): string {
 function isCloudflareChallengeResponse(result: FetchResultWire): boolean {
   if (result.cloudflareChallenge) return true;
   if (
-    wireHeader(result.headers, "cf-mitigated")?.toLowerCase() === "challenge"
+    wireHeader(result.headers, "cf-mitigated")?.trim().toLowerCase() === "challenge"
   ) {
     return true;
   }
   const contentType = wireHeader(result.headers, "content-type")?.toLowerCase();
   if (!contentType?.includes("text/html")) return false;
   const body = wireTextBody(result).slice(0, CLOUDFLARE_BODY_INSPECTION_BYTES);
+  const title = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(body)?.[1] ?? "";
+  const hasCloudflareEvidence =
+    /\/cdn-cgi\/challenge-platform\/|\b(?:cf-chl-|__cf_chl_)|cloudflare ray id/i.test(body);
+  // JavaScript Detections also inject challenge-platform scripts into normal pages.
   return (
-    /\/cdn-cgi\/challenge-platform\//i.test(body) ||
-    /\b(?:cf-chl-|__cf_chl_)/i.test(body) ||
     /id=["']challenge-(?:form|running|stage)["']/i.test(body) ||
+    (hasCloudflareEvidence && /just a moment|attention required/i.test(title)) ||
     (/cloudflare ray id/i.test(body) &&
-      /attention required|sorry, you have been blocked/i.test(body))
+      /sorry, you have been blocked/i.test(body))
   );
 }
 

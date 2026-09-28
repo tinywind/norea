@@ -291,13 +291,54 @@ describe("pluginFetch", () => {
   it("recognizes a Cloudflare browser challenge page without relying on status alone", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk(
-        '<html><script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script></html>',
+        '<html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script></html>',
         {
           status: 503,
           statusText: "Service Unavailable",
           headers: { "content-type": "text/html" },
         },
       ),
+    );
+
+    await expect(pluginFetch("https://ok.test/chapter/1")).rejects.toSatisfy(
+      isSourceAccessRequiredError,
+    );
+  });
+
+  it.each([
+    '<script src="/cdn-cgi/challenge-platform/scripts/jsd/api.js"></script>',
+    '<script src="/cdn-cgi/challenge-platform/h/b/scripts/jsd/main.js"></script>',
+    '<script>window.__cf_chl_data = {};</script>',
+    '<style>.cf-chl-widget { display: none; }</style>',
+  ])("keeps chapter responses containing background detection markup: %s", async (markup) => {
+    const body = `<html><title>Chapter 1</title><body><article>Just a moment, she said.</article>${markup}</body></html>`;
+    invokeMock.mockResolvedValueOnce(
+      wireOk(body, { headers: { "content-type": "text/html" } }),
+    );
+
+    const response = await pluginFetch("https://ok.test/chapter/1");
+
+    expect(response.ok).toBe(true);
+    await expect(response.text()).resolves.toBe(body);
+  });
+
+  it.each([
+    '<html><title>Attention Required! | Cloudflare</title><body>Cloudflare Ray ID: 123</body></html>',
+    '<html><body><form id="challenge-form"></form></body></html>',
+    '<html><body>Sorry, you have been blocked. Cloudflare Ray ID: 123</body></html>',
+  ])("recognizes an actual challenge even with a successful status: %s", async (body) => {
+    invokeMock.mockResolvedValueOnce(
+      wireOk(body, { headers: { "content-type": "text/html" } }),
+    );
+
+    await expect(pluginFetch("https://ok.test/chapter/1")).rejects.toSatisfy(
+      isSourceAccessRequiredError,
+    );
+  });
+
+  it("recognizes the mitigation header independent of casing and whitespace", async () => {
+    invokeMock.mockResolvedValueOnce(
+      wireOk("challenge", { headers: { "CF-Mitigated": " Challenge " } }),
     );
 
     await expect(pluginFetch("https://ok.test/chapter/1")).rejects.toSatisfy(
