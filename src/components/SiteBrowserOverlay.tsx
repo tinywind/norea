@@ -246,13 +246,11 @@ export function SiteBrowserOverlay() {
     const state = useSiteBrowserStore.getState();
     if (!state.visible) return false;
     if (state.context?.mode === "source-access") {
-      // Closing requests a real source check; browser readiness is not proof
-      // of authentication. The explicit Keep paused action remains separate.
       return finishSourceAccess(
         state.taskId,
         state.context.revision,
         state.openSequence,
-        state.phase === "ready" ? "verify" : "keep-paused",
+        "keep-paused",
       );
     }
     navigationController.current?.abort();
@@ -548,6 +546,7 @@ export function SiteBrowserOverlay() {
         h={CHROME_HEIGHT}
         px="md"
         justify="space-between"
+        wrap="nowrap"
         style={{
           borderBottom: "1px solid var(--mantine-color-default-border)",
           backgroundColor: "var(--mantine-color-body)",
@@ -577,13 +576,7 @@ export function SiteBrowserOverlay() {
           </Text>
         )}
         <IconButton
-          label={
-            sourceAccessContext
-              ? phase === "ready"
-                ? verifyLabel
-                : keepPausedLabel
-              : t("siteBrowser.close")
-          }
+          label={t("siteBrowser.close")}
           size="lg"
           onClick={closeBrowser}
         >

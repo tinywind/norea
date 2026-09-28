@@ -2,12 +2,14 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from "rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
 import { useSiteBrowserStore } from "../store/site-browser";
+import { BlockingLoadingOverlay } from "./AppFrame";
 import { SiteBrowserOverlay } from "./SiteBrowserOverlay";
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
   useCallback: (callback: unknown) => callback,
   useEffect: vi.fn(),
+  useId: () => "loading-label",
   useRef: (initial: unknown) => ({ current: initial }),
   useState: (initial: unknown) => [initial, vi.fn()],
 }));
@@ -74,27 +76,27 @@ describe("source access browser controls", () => {
     useSiteBrowserStore.getState().hide();
   });
 
-  it("requests a real verification when closing the ready browser", () => {
-    const overlay = openBrowser("ready");
-    const close = findControl(overlay, "sourceAccess.verifyAndResume");
+  it.each(["queued", "loading", "ready"] as const)("closes a %s browser without requesting verification", (phase) => {
+    const close = findControl(openBrowser(phase), "siteBrowser.close");
     expect(close).toBeDefined();
+    expect(close!.props.disabled).not.toBe(true);
     close!.props.onClick!();
 
     expect(useSiteBrowserStore.getState()).toMatchObject({
-      completion: { outcome: "verify", taskId: "browser-task", revision: 3 },
+      completion: { outcome: "keep-paused", taskId: "browser-task", revision: 3 },
       visible: false,
     });
   });
 
-  it.each(["queued", "loading"] as const)("closes a %s browser without treating it as verified", (phase) => {
-    const close = findControl(openBrowser(phase), "sourceAccess.keepPaused");
-    expect(close).toBeDefined();
-    close!.props.onClick!();
+  it.each(["queued", "loading", "ready"] as const)("removes the pending task's blocking overlay while the browser is %s", (phase) => {
+    const renderLoading = () => BlockingLoadingOverlay({ label: "Loading source" });
+    expect(renderLoading()).not.toBeNull();
 
-    expect(useSiteBrowserStore.getState()).toMatchObject({
-      completion: { outcome: "keep-paused" },
-      visible: false,
-    });
+    const close = findControl(openBrowser(phase), "siteBrowser.close");
+    expect(renderLoading()).toBeNull();
+
+    close!.props.onClick!();
+    expect(renderLoading()).not.toBeNull();
   });
 
   it("keeps the explicit pause action after authentication", () => {

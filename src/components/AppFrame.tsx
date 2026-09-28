@@ -13,6 +13,7 @@ import {
 } from "@mantine/core";
 import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
+import { useSiteBrowserStore } from "../store/site-browser";
 
 interface BlockingLoadingOverlayProps {
   cancelLabel?: string;
@@ -26,6 +27,9 @@ export function BlockingLoadingOverlay({
   onCancel,
 }: BlockingLoadingOverlayProps) {
   const labelId = useId();
+  const siteBrowserVisible = useSiteBrowserStore((state) => state.visible);
+
+  if (siteBrowserVisible) return null;
 
   return (
     <Box
