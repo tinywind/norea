@@ -21,6 +21,7 @@ internal class AndroidScraperState(val key: String) {
   var blankNavigationInProgress = false
   var busy = false
   val concurrentFetches: MutableMap<String, AndroidScraperConcurrentFetch> = mutableMapOf()
+  var contextReady = false
   var currentUrl: String? = null
   var fetchInFlight = false
   var documentStartScriptEnabled = false

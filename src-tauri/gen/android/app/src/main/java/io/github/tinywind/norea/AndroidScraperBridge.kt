@@ -3,6 +3,7 @@ package io.github.tinywind.norea
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -10,6 +11,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -1173,22 +1177,47 @@ class AndroidScraperBridge(
     state: AndroidScraperState,
     onStarted: ((String) -> Unit)? = null,
     onFinished: ((String) -> Unit)? = null,
-  ): WebViewClient {
-    return object : WebViewClient() {
-      override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-        state.currentUrl = url
-        logState(state, "pageStarted url=$url", url)
-        if (!state.documentStartScriptEnabled) {
-          view.evaluateJavascript(scripts.init, null)
-        }
-        onStarted?.invoke(url)
-      }
+  ): WebViewClient = object : WebViewClient() {
+    private var mainFrameFailed = false
 
-      override fun onPageFinished(view: WebView, url: String) {
-        state.currentUrl = url
-        profileCookieManager(view).flush()
-        logState(state, "pageFinished url=$url", url)
-        onFinished?.invoke(url)
+    private fun failNavigation(message: String) {
+      mainFrameFailed = true
+      state.contextReady = false
+      state.pendingDocumentReady = null
+      val id = state.activeFetchId ?: state.activeExtractId
+        ?: state.activeAction?.takeIf { it.browserAction }?.id
+      if (id != null) finishError(state, id, message)
+    }
+
+    override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+      if (state.webView !== view) return
+      mainFrameFailed = false
+      state.contextReady = false
+      state.currentUrl = url
+      logState(state, "pageStarted url=$url", url)
+      if (!state.documentStartScriptEnabled) view.evaluateJavascript(scripts.init, null)
+      onStarted?.invoke(url)
+    }
+
+    override fun onPageFinished(view: WebView, url: String) {
+      if (state.webView !== view || mainFrameFailed) return
+      state.currentUrl = url
+      state.contextReady = isHttpUrl(url)
+      profileCookieManager(view).flush()
+      logState(state, "pageFinished url=$url", url)
+      onFinished?.invoke(url)
+    }
+
+    override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+      if (state.webView !== view || !request.isForMainFrame) return
+      failNavigation("scraper: navigation failed (${error.errorCode}): ${error.description} at ${request.url}")
+    }
+
+    override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+      handler.cancel()
+      if (state.webView !== view) return
+      if (error.url == view.url || error.url == state.currentUrl) {
+        failNavigation("scraper: TLS certificate error ${error.primaryError} at ${error.url}")
       }
     }
   }
@@ -1399,7 +1428,7 @@ class AndroidScraperBridge(
     syntheticContext: Boolean,
     ready: (String?) -> Unit,
   ) {
-    if (contextUrl == null || sameOrigin(state.currentUrl, contextUrl)) {
+    if (contextUrl == null || (state.contextReady && sameOrigin(state.currentUrl, contextUrl))) {
       logState(
         state,
         "prepareContext skipped id=$id contextUrl=$contextUrl sameOrigin=${contextUrl != null}",
@@ -1414,13 +1443,10 @@ class AndroidScraperBridge(
       contextUrl,
     )
 
-    var finished = false
-    var navigationStarted = false
-    var fallbackAttempted = false
-    var activeFallbackUrl: String? = null
+    val navigation = AndroidScraperContextNavigation(contextUrl, fallbackContextUrl)
     val timeout = Runnable {
-      if (finished) return@Runnable
-      finished = true
+      if (navigation.finished) return@Runnable
+      navigation.cancel()
       state.pendingDocumentReady = null
       webView.stopLoading()
       webView.webViewClient = makeClient(state, null)
@@ -1429,57 +1455,43 @@ class AndroidScraperBridge(
     }
     state.activeTimeout = timeout
     mainHandler.postDelayed(timeout, 15_000L)
-    // A browser fetch only needs a same-origin document whose HTML has been
-    // parsed, so the main-frame DOMContentLoaded notification from norea_scraper_init.js
-    // completes the preparation without waiting for images, ads, or trackers.
-    // onPageFinished stays as the fallback for documents that never post it.
+    // DOMContentLoaded prepares the browser session without waiting for ads or images.
+    // onPageFinished is a fallback, but belongs to the navigation that emitted it.
     fun onContextDocument(documentUrl: String, event: String) {
-      if (finished || !navigationStarted) return
-      if (!sameOrigin(documentUrl, contextUrl)) {
-        val fallbackUrl = fallbackContextUrl?.takeIf { it != contextUrl }
-        if (!fallbackAttempted && fallbackUrl != null) {
-          fallbackAttempted = true
-          activeFallbackUrl = fallbackUrl
+      if (state.activeFetchId != id || state.webView !== webView) return
+      when (val action = navigation.onDocumentReady(
+        documentUrl,
+        sameOriginAsContext = sameOrigin(documentUrl, contextUrl),
+        httpDocument = isHttpUrl(documentUrl),
+      )) {
+        AndroidScraperContextAction.Wait -> Unit
+        is AndroidScraperContextAction.Navigate -> {
           logState(
             state,
-            "prepareContext fallback id=$id contextUrl=$contextUrl finishedUrl=$documentUrl fallbackUrl=$fallbackUrl event=$event",
-            fallbackUrl,
+            "prepareContext fallback id=$id contextUrl=$contextUrl finishedUrl=$documentUrl fallbackUrl=${action.url} event=$event",
+            action.url,
           )
-          webView.loadUrl(fallbackUrl)
-          return
+          webView.loadUrl(action.url)
         }
-        if (fallbackAttempted && activeFallbackUrl != null && isHttpUrl(documentUrl)) {
-          finished = true
+        is AndroidScraperContextAction.Ready -> {
+          state.contextReady = true
           state.pendingDocumentReady = null
           clearTimeout(state)
           webView.webViewClient = makeClient(state, null)
           logState(
             state,
-            "prepareContext ready fallback id=$id contextUrl=$contextUrl finishedUrl=$documentUrl event=$event",
+            "prepareContext ready id=$id contextUrl=$contextUrl finishedUrl=$documentUrl event=$event",
             documentUrl,
           )
-          ready(documentUrl)
-          return
+          ready(action.fetchUrl)
         }
-        logState(
-          state,
-          "prepareContext waiting origin id=$id contextUrl=$contextUrl finishedUrl=$documentUrl event=$event",
-          contextUrl,
-        )
-        return
       }
-      finished = true
-      state.pendingDocumentReady = null
-      clearTimeout(state)
-      webView.webViewClient = makeClient(state, null)
-      logState(state, "prepareContext ready id=$id contextUrl=$contextUrl event=$event", contextUrl)
-      ready(null)
     }
     state.pendingDocumentReady = { documentUrl -> onContextDocument(documentUrl, "documentReady") }
     webView.webViewClient = makeClient(
       state,
       onFinished = { finishedUrl -> onContextDocument(finishedUrl, "pageFinished") },
-      onStarted = { navigationStarted = true },
+      onStarted = { navigation.onStarted() },
     )
     if (syntheticContext) {
       val documentUrl = "${contextUrl.trimEnd('/')}/"
