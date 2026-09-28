@@ -1132,6 +1132,17 @@ pub fn scraper_current_origin(
     app: AppHandle,
     source_id: Option<String>,
 ) -> Result<Option<String>, String> {
+    Ok(scraper_current_url(app, source_id)?
+        .and_then(|url| Url::parse(&url).ok())
+        .and_then(|url| browser_http_origin(&url)))
+}
+
+/// Return the visible native WebView's current HTTP(S) address.
+#[tauri::command]
+pub fn scraper_current_url(
+    app: AppHandle,
+    source_id: Option<String>,
+) -> Result<Option<String>, String> {
     let source_id = normalize_source_id(source_id.as_deref())?;
     let state = app.state::<ScraperState>();
     let visible_key = state
@@ -1159,8 +1170,8 @@ pub fn scraper_current_origin(
     };
     let url = scraper
         .url()
-        .map_err(|err| format!("scraper_current_origin: read current url: {err}"))?;
-    Ok(browser_http_origin(&url))
+        .map_err(|err| format!("scraper_current_url: read current url: {err}"))?;
+    Ok(browser_http_origin(&url).map(|_| url.to_string()))
 }
 
 /// Await completion of one WebView2 profile disk-cache clear operation.

@@ -238,6 +238,7 @@ pub fn run() {
             scraper::scraper_set_bounds,
             scraper::scraper_hide,
             scraper::scraper_current_origin,
+            scraper::scraper_current_url,
             scraper::scraper_clear_cache,
             scraper::scraper_clear_cookies,
             scraper::scraper_open_devtools,

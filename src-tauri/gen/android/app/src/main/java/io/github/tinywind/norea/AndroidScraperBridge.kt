@@ -306,6 +306,29 @@ class AndroidScraperBridge(
   }
 
   @JavascriptInterface
+  fun currentUrl(payload: String) {
+    parseCommand(payload, BridgeCapabilities.SCRAPER_CURRENT_URL) { json ->
+      val id = json.getString("id")
+      val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
+      val state = queueState(IMMEDIATE_EXECUTOR)
+      val url = state.webView
+        ?.takeIf { webView ->
+          browserVisible && state.sourceId == sourceId && isForegroundBrowser(webView)
+        }
+        ?.url
+        ?.takeIf { url ->
+          val parsed = Uri.parse(url)
+          parsed.scheme in setOf("http", "https") &&
+            !parsed.host.isNullOrBlank() && parsed.userInfo.isNullOrEmpty()
+        }
+      sendResult(
+        id,
+        JSONObject().put("ok", true).put("result", url ?: JSONObject.NULL),
+      )
+    }
+  }
+
+  @JavascriptInterface
   fun fetch(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_FETCH) { json ->
       val id = json.getString("id")
@@ -950,6 +973,8 @@ class AndroidScraperBridge(
     )
     val container = scraperContainer()
     browserVisible = true
+    webView.settings.setSupportZoom(true)
+    webView.settings.builtInZoomControls = true
     webView.layoutParams = visibleLayoutParams()
     webView.alpha = 1f
     webView.translationX = 0f
@@ -993,6 +1018,9 @@ class AndroidScraperBridge(
     val webView = state.webView
     browserVisible = false
     if (webView == null) return
+    webView.settings.setSupportZoom(false)
+    webView.settings.builtInZoomControls = false
+    webView.settings.useWideViewPort = false
     webView.layoutParams = hiddenLayoutParams()
     webView.alpha = 0f
     webView.translationX = -10000f
@@ -1014,9 +1042,10 @@ class AndroidScraperBridge(
     state: AndroidScraperState,
     webView: WebView,
     onReady: () -> Unit,
+    layoutParams: FrameLayout.LayoutParams = backgroundLayoutParams(),
   ) {
     clearBackgroundScraperLayoutWait(state)
-    webView.layoutParams = backgroundLayoutParams()
+    webView.layoutParams = layoutParams
     webView.alpha = 1f
     webView.translationX = 0f
     webView.translationY = 0f
@@ -1028,7 +1057,11 @@ class AndroidScraperBridge(
     webView.isFocusableInTouchMode = false
     webView.requestLayout()
     webView.invalidate()
-    if (androidBackgroundScraperSurfaceIsReady(webView.width, webView.height)) {
+    fun hasTargetSize(width: Int, height: Int): Boolean =
+      androidBackgroundScraperSurfaceIsReady(width, height) &&
+        width == layoutParams.width && height == layoutParams.height
+
+    if (hasTargetSize(webView.width, webView.height)) {
       onReady()
       return
     }
@@ -1044,7 +1077,7 @@ class AndroidScraperBridge(
         oldRight: Int,
         oldBottom: Int,
       ) {
-        if (!androidBackgroundScraperSurfaceIsReady(right - left, bottom - top)) return
+        if (!hasTargetSize(right - left, bottom - top)) return
         view.removeOnLayoutChangeListener(this)
         if (state.pendingSurfaceLayoutListener === this) {
           state.pendingSurfaceLayoutListener = null
@@ -1323,6 +1356,12 @@ class AndroidScraperBridge(
     )
     hideScraperSurface(state)
     webView.stopLoading()
+    webView.settings.apply {
+      setSupportZoom(true)
+      builtInZoomControls = true
+      useWideViewPort = true
+    }
+    webView.setInitialScale(0)
     webView.webViewClient = makeClient(state) {
       if (state.activeAction?.id != id) return@makeClient
       webView.clearHistory()
@@ -1336,7 +1375,19 @@ class AndroidScraperBridge(
       timeoutMs,
       "scraper: browser navigation to $url timed out after ${timeoutMs}ms",
     )
-    webView.loadUrl(url)
+    // Load offscreen at the visible viewport size so the first page does not
+    // inherit a zoom level calculated for the collapsed 1x1 scraper surface.
+    showBackgroundScraperSurface(
+      state,
+      webView,
+      onReady = {
+        if (state.activeAction?.id == id) webView.loadUrl(url)
+      },
+      layoutParams = visibleLayoutParams().apply {
+        leftMargin = -10000
+        topMargin = -10000
+      },
+    )
   }
 
   private fun prepareContext(

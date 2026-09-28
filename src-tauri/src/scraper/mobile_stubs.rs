@@ -55,6 +55,14 @@ pub fn scraper_current_origin(
 }
 
 #[tauri::command]
+pub fn scraper_current_url(
+    _app: AppHandle,
+    _source_id: Option<String>,
+) -> Result<Option<String>, String> {
+    Err(SCRAPER_UNAVAILABLE.to_string())
+}
+
+#[tauri::command]
 pub async fn scraper_clear_cache(
     _app: AppHandle,
     _state: tauri::State<'_, ScraperState>,
