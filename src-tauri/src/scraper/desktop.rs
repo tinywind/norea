@@ -2282,26 +2282,41 @@ async fn prepare_extract_context(
     ))
 }
 
-fn fetch_context_urls(url: &str, context_url: Option<&str>) -> Result<Vec<String>, String> {
+fn fetch_context_urls(
+    url: &str,
+    context_url: Option<&str>,
+    init: Option<&FetchInit>,
+) -> Result<Vec<String>, String> {
     let url_for_log = scraper_url_for_log(url);
     let request_url: Url = url
         .parse()
         .map_err(|err| format!("scraper: invalid fetch url '{url_for_log}': {err}"))?;
-    let Some(context_url) = context_url else {
-        return Ok(vec![origin_url(&request_url)]);
-    };
-    let parsed_context_url: Url = context_url.parse().map_err(|err| {
-        format!(
-            "scraper: invalid context url '{}': {err}",
-            scraper_url_for_log(context_url)
-        )
-    })?;
-    if same_origin(&request_url, &parsed_context_url) {
-        return Ok(vec![context_url.to_string()]);
+    if let Some(context_url) = context_url {
+        let parsed_context_url: Url = context_url.parse().map_err(|err| {
+            format!(
+                "scraper: invalid context url '{}': {err}",
+                scraper_url_for_log(context_url)
+            )
+        })?;
+        if same_origin(&request_url, &parsed_context_url) {
+            return Ok(vec![context_url.to_string()]);
+        }
     }
     let mut contexts = vec![origin_url(&request_url)];
-    if !contexts.iter().any(|candidate| candidate == context_url) {
-        contexts.push(context_url.to_string());
+    let method = init.and_then(|init| init.method.as_deref()).unwrap_or("GET");
+    // API and image hosts may have no usable root document. Keep the request's
+    // own origin available before falling back to a cross-origin source page.
+    if (method.is_empty()
+        || method.eq_ignore_ascii_case("GET")
+        || method.eq_ignore_ascii_case("HEAD"))
+        && request_url.as_str() != contexts[0]
+    {
+        contexts.push(request_url.to_string());
+    }
+    if let Some(context_url) = context_url {
+        if !contexts.iter().any(|candidate| candidate == context_url) {
+            contexts.push(context_url.to_string());
+        }
     }
     Ok(contexts)
 }
@@ -2524,7 +2539,7 @@ pub async fn webview_fetch(
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
     ensure_executor_generation(&generation, expected_generation, "fetch", &queue)?;
-    let fetch_contexts = fetch_context_urls(&url, context_url.as_deref())?;
+    let fetch_contexts = fetch_context_urls(&url, context_url.as_deref(), init.as_ref())?;
     let init_log = fetch_init_for_log(&init);
     let url_for_log = scraper_url_for_log(&url);
     let context_for_log = context_url.as_deref().map(scraper_url_for_log);
@@ -3829,6 +3844,82 @@ mod tests {
             url: url.to_string(),
             ready,
             time_origin,
+        }
+    }
+
+    #[test]
+    fn fetch_contexts_try_exact_request_before_cross_origin_source_fallback() {
+        let request = "https://api.example/articles/info?titleId=42&page=2";
+        let source = "https://mobile.example/books";
+
+        assert_eq!(
+            fetch_context_urls(request, Some(source), None).unwrap(),
+            vec!["https://api.example/", request, source]
+        );
+    }
+
+    #[test]
+    fn fetch_contexts_without_source_can_recover_from_an_unusable_origin_root() {
+        let request = "https://cdn.example/images/42.png?version=3";
+
+        assert_eq!(
+            fetch_context_urls(request, None, None).unwrap(),
+            vec!["https://cdn.example/", request]
+        );
+    }
+
+    #[test]
+    fn fetch_contexts_only_add_request_navigation_for_safe_methods() {
+        let request = "https://api.example/articles?titleId=42";
+        let source = "https://mobile.example/books";
+        for method in ["", "GET", "get", "HEAD", "head"] {
+            let init = FetchInit {
+                method: Some(method.to_string()),
+                ..FetchInit::default()
+            };
+            assert_eq!(
+                fetch_context_urls(request, Some(source), Some(&init)).unwrap(),
+                vec!["https://api.example/", request, source]
+            );
+        }
+        for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            let init = FetchInit {
+                method: Some(method.to_string()),
+                ..FetchInit::default()
+            };
+            assert_eq!(
+                fetch_context_urls(request, Some(source), Some(&init)).unwrap(),
+                vec!["https://api.example/", source]
+            );
+            assert_eq!(
+                fetch_context_urls(request, None, Some(&init)).unwrap(),
+                vec!["https://api.example/"]
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_contexts_preserve_explicit_same_origin_context() {
+        let source = "https://api.example/session/start?scope=books";
+
+        assert_eq!(
+            fetch_context_urls("https://api.example/articles?titleId=42", Some(source), None)
+                .unwrap(),
+            vec![source]
+        );
+    }
+
+    #[test]
+    fn fetch_contexts_do_not_duplicate_root_requests() {
+        for request in ["https://api.example", "https://api.example/"] {
+            assert_eq!(
+                fetch_context_urls(request, Some("https://mobile.example/books"), None).unwrap(),
+                vec!["https://api.example/", "https://mobile.example/books"]
+            );
+            assert_eq!(
+                fetch_context_urls(request, None, None).unwrap(),
+                vec!["https://api.example/"]
+            );
         }
     }
 
