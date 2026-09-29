@@ -5,6 +5,8 @@ mod finder;
 mod netstack;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod proxy;
+#[cfg(any(target_os = "android", target_os = "windows", test))]
+mod tls_client_hello;
 pub(crate) mod state;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod tunnel_config;

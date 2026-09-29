@@ -238,10 +238,7 @@ async fn handle_connection(mut client: TcpStream, router: Arc<ProxyRouter>) -> i
             client
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await?;
-            if !trailing.is_empty() {
-                upstream.write_all(&trailing).await?;
-            }
-            tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+            super::tls_client_hello::copy_connect(&mut client, &mut upstream, trailing).await?;
         }
         ProxyRequest::Forward {
             request_head, body, ..

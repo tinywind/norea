@@ -69,3 +69,9 @@ network path, or tunnel implementation. The exact cause remains unproven.
 This change fixes silent browser dismissal and permits recovery without
 restarting the app. It does not make the source TLS handshake succeed, and
 successful live source search or chapter retrieval is not claimed.
+
+## Follow-up
+
+The pre-HTTP connection failure was subsequently isolated and corrected; see
+[Android VPN TLS connection recovery](android-vpn-tls-framing-20260929.md).
+The earlier observations above describe the baseline before that transport fix.
