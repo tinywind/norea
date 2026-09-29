@@ -290,6 +290,12 @@ Missing or damaged media does not invalidate final chapter content. An
 inaccessible storage location is an error, not evidence that the file is
 missing.
 
+When reconciling final HTML, the host also restores its media repair flag from
+remote media references. This keeps the explicit media repair action available
+for older downloads without invalidating their readable final content or
+starting network requests. Archive completeness describes the stored media
+files, so it does not imply that all media referenced by the HTML is offline.
+
 The host then:
 
 1. converts text or Markdown to reader HTML and sanitizes captured content;

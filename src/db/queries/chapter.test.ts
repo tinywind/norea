@@ -534,6 +534,17 @@ describe("setChapterBookmark", () => {
 });
 
 describe("saveChapterContentMetadata", () => {
+  it("preserves media repair state when adopting readable final content", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
+
+    await adoptStoredChapterContentMetadata(7, 120, 48, "html", true);
+
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("media_repair_needed = $5");
+    expect(sql).toContain("is_downloaded  = 1");
+    expect(params).toEqual([7, 120, 48, "html", 1]);
+  });
+
   it("updates content metadata + flips is_downloaded=1 + bumps updated_at", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
     const result = await saveChapterContentMetadata(7, "<p>hello</p>");
@@ -600,7 +611,7 @@ describe("stored chapter content metadata", () => {
       "stored_content_type = COALESCE($4, stored_content_type)",
     );
     expect(adoptSql).not.toContain("content_type   = COALESCE");
-    expect(adoptParams).toEqual([7, 12, 4, "pdf"]);
+    expect(adoptParams).toEqual([7, 12, 4, "pdf", 0]);
   });
 
   it("clears the physical type when stored content is missing", async () => {

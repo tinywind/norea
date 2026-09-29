@@ -856,6 +856,7 @@ export async function adoptStoredChapterContentMetadata(
   contentBytes: number,
   mediaBytes: number,
   contentType: ChapterContentType | null,
+  mediaRepairNeeded = false,
 ): Promise<ChapterMutationResult> {
   const db = await getDb();
   const normalizedContentType = contentType
@@ -866,12 +867,18 @@ export async function adoptStoredChapterContentMetadata(
      SET
        content_bytes  = $2,
        media_bytes    = $3,
-       media_repair_needed = 0,
+       media_repair_needed = $5,
        media_bytes_checked_at = unixepoch(),
        stored_content_type = COALESCE($4, stored_content_type),
        is_downloaded  = 1
      WHERE id = $1`,
-    [chapterId, contentBytes, mediaBytes, normalizedContentType],
+    [
+      chapterId,
+      contentBytes,
+      mediaBytes,
+      normalizedContentType,
+      mediaRepairNeeded ? 1 : 0,
+    ],
   );
   return { rowsAffected: result.rowsAffected };
 }

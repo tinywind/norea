@@ -14,6 +14,7 @@ import {
   storedChapterContentType,
   type ChapterContentType,
 } from "./chapter-content";
+import { chapterMediaRepairNeeded } from "./chapter-media-state";
 import {
   chapterContentRelativePath,
   chapterPartialContentRelativePath,
@@ -222,22 +223,43 @@ async function inspectStoredChapterArtifactsForRow(
 
 async function reconcileStoredChapterStorageRow(
   row: ChapterStorageRow,
-): Promise<StoredChapterArtifacts> {
+): Promise<ReconciledStoredChapterContent> {
   const artifacts = await inspectStoredChapterArtifactsForRow(row);
+  let content: string | null = null;
   if (artifacts.status === "present") {
     rememberResolvedChapterStorageDir(row.chapterId, artifacts.contentFile);
     const normalizedContentType = normalizeChapterContentType(
       row.storedContentType ?? row.sourceContentType,
     );
+    const contentType = artifacts.contentFile.endsWith(".pdf")
+      ? "pdf"
+      : normalizedContentType === "pdf"
+        ? "html"
+        : storedChapterContentType(normalizedContentType);
+    if (contentType !== "pdf") {
+      content = await readStoredChapterContentFile(artifacts.contentFile);
+      if (content === null) {
+        forgetResolvedChapterStorageDir(row.chapterId);
+        await markStoredChapterContentMissing(row.chapterId);
+        return {
+          artifacts: {
+            status: "missing",
+            contentFile: null,
+            contentBytes: 0,
+            mediaBytes: 0,
+          },
+          content: null,
+        };
+      }
+    }
+    // Final content stays authoritative even when some of its media is remote.
+    // Restore the repair affordance without invalidating readable legacy files.
     await adoptStoredChapterContentMetadata(
       row.chapterId,
       artifacts.contentBytes,
       artifacts.mediaBytes,
-      artifacts.contentFile.endsWith(".pdf")
-        ? "pdf"
-        : normalizedContentType === "pdf"
-          ? "html"
-          : storedChapterContentType(normalizedContentType),
+      contentType,
+      chapterMediaRepairNeeded(content, contentType),
     );
   } else if (
     sqliteBoolean(row.isDownloaded) ||
@@ -249,30 +271,42 @@ async function reconcileStoredChapterStorageRow(
   } else {
     forgetResolvedChapterStorageDir(row.chapterId);
   }
-  return artifacts;
+  return { artifacts, content };
 }
 
-export async function reconcileStoredChapterContent(
+async function reconcileStoredChapterContentState(
   chapterId: number,
-): Promise<StoredChapterArtifacts> {
+): Promise<ReconciledStoredChapterContent> {
   if (!isTauriRuntime()) {
     return {
-      status: "missing",
-      contentFile: null,
-      contentBytes: 0,
-      mediaBytes: 0,
+      artifacts: {
+        status: "missing",
+        contentFile: null,
+        contentBytes: 0,
+        mediaBytes: 0,
+      },
+      content: null,
     };
   }
   const row = await getChapterStorageRow(chapterId);
   if (!row) {
     return {
-      status: "missing",
-      contentFile: null,
-      contentBytes: 0,
-      mediaBytes: 0,
+      artifacts: {
+        status: "missing",
+        contentFile: null,
+        contentBytes: 0,
+        mediaBytes: 0,
+      },
+      content: null,
     };
   }
   return reconcileStoredChapterStorageRow(row);
+}
+
+export async function reconcileStoredChapterContent(
+  chapterId: number,
+): Promise<StoredChapterArtifacts> {
+  return (await reconcileStoredChapterContentState(chapterId)).artifacts;
 }
 
 export async function readStoredChapterContentMirror(
@@ -284,11 +318,14 @@ export async function readStoredChapterContentMirror(
 export async function reconcileAndReadStoredChapterContent(
   chapterId: number,
 ): Promise<ReconciledStoredChapterContent> {
-  const artifacts = await reconcileStoredChapterContent(chapterId);
+  const reconciled = await reconcileStoredChapterContentState(chapterId);
+  const { artifacts } = reconciled;
   if (artifacts.status !== "present" || !artifacts.contentFile) {
     return { artifacts, content: null };
   }
-  const content = await readStoredChapterContentFile(artifacts.contentFile);
+  const content =
+    reconciled.content ??
+    await readStoredChapterContentFile(artifacts.contentFile);
   if (content !== null) return { artifacts, content };
   forgetResolvedChapterStorageDir(chapterId);
   await markStoredChapterContentMissing(chapterId);
@@ -456,7 +493,7 @@ export async function restoreChapterContentStorageMirror(
   let restoredChapters = 0;
   for (const row of rows) {
     try {
-      const artifacts = await reconcileStoredChapterStorageRow(row);
+      const { artifacts } = await reconcileStoredChapterStorageRow(row);
       if (artifacts.status === "present") restoredChapters += 1;
     } catch (error) {
       // eslint-disable-next-line no-console

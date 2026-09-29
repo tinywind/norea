@@ -185,6 +185,7 @@ describe("chapter content storage", () => {
       13,
       0,
       "html",
+      false,
     );
   });
 
@@ -209,6 +210,7 @@ describe("chapter content storage", () => {
       0,
       0,
       "html",
+      false,
     );
   });
 
@@ -226,6 +228,7 @@ describe("chapter content storage", () => {
       10,
       0,
       "html",
+      false,
     );
   });
 
@@ -250,7 +253,138 @@ describe("chapter content storage", () => {
       10,
       0,
       "html",
+      false,
     );
+  });
+
+  it.each([0, 1])(
+    "restores media repair metadata from final HTML for downloaded flag %s",
+    async (isDownloaded) => {
+      const storedHtml =
+        '<img src="media/local.webp"><img src="https://cdn.example/panel.webp">';
+      selectMock.mockResolvedValueOnce([
+        chapterRow({ isDownloaded, mediaRepairNeeded: 0 }),
+      ]);
+      invokeMock.mockImplementation(async (command) => {
+        if (command === "chapter_content_mirror_inspect") {
+          return {
+            status: "present",
+            contentFile: "contents/demo/renamed/1-Chapter/content.html",
+            contentBytes: 82,
+            mediaBytes: 1024,
+          };
+        }
+        if (command === "chapter_content_mirror_read_file") return storedHtml;
+        return undefined;
+      });
+
+      await expect(readStoredChapterContentMirror(10)).resolves.toBe(storedHtml);
+
+      expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+        10,
+        82,
+        1024,
+        "html",
+        true,
+      );
+      expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
+      expect(invokeMock).toHaveBeenCalledWith(
+        "chapter_content_mirror_read_file",
+        { contentFile: "contents/demo/renamed/1-Chapter/content.html" },
+      );
+      expect(invokeMock.mock.calls.filter(
+        ([command]) => command === "chapter_content_mirror_read_file",
+      )).toHaveLength(1);
+    },
+  );
+
+  it("clears stale repair metadata when final HTML contains only local media", async () => {
+    selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 1 })]);
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          contentFile: "contents/demo/novel/chapter/content.html",
+          contentBytes: 48,
+          mediaBytes: 1024,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") {
+        return '<img src="media/panel.webp"><img src="data:image/png;base64,AAAA">';
+      }
+      return undefined;
+    });
+
+    await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
+      status: "present",
+    });
+
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      10, 48, 1024, "html", false,
+    );
+  });
+
+  it("preserves metadata when a final HTML file cannot be read", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          contentFile: "contents/demo/novel/chapter/content.html",
+          contentBytes: 48,
+          mediaBytes: 1024,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") {
+        throw new Error("Storage access denied.");
+      }
+      return undefined;
+    });
+
+    await expect(reconcileStoredChapterContent(10)).rejects.toThrow(
+      "Storage access denied.",
+    );
+    expect(adoptStoredChapterContentMetadataMock).not.toHaveBeenCalled();
+    expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
+  });
+
+  it("does not load a binary PDF during metadata reconciliation", async () => {
+    invokeMock.mockResolvedValueOnce({
+      status: "present",
+      contentFile: "contents/demo/novel/chapter/content.pdf",
+      contentBytes: 4096,
+      mediaBytes: 0,
+    });
+
+    await reconcileStoredChapterContent(10);
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
+      10, 4096, 0, "pdf", false,
+    );
+  });
+
+  it("marks HTML missing when it disappears after artifact inspection", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          contentFile: "contents/demo/novel/chapter/content.html",
+          contentBytes: 48,
+          mediaBytes: 1024,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") return null;
+      return undefined;
+    });
+
+    await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
+      status: "missing",
+    });
+    expect(adoptStoredChapterContentMetadataMock).not.toHaveBeenCalled();
+    expect(markStoredChapterContentMissingMock).toHaveBeenCalledOnce();
+    expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "chapter_content_mirror_read_file",
+    )).toHaveLength(1);
   });
 
   it("marks non-local metadata missing when no final content file exists", async () => {
@@ -404,6 +538,7 @@ describe("chapter content storage", () => {
       12,
       8,
       "html",
+      false,
     );
     expect(warn).toHaveBeenCalledWith(
       "[storage] failed to reconcile stored chapter",
