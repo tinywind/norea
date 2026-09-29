@@ -1832,13 +1832,6 @@ fn log_scraper_cookies(
 ) {
 }
 
-fn scraper_is_at_origin(scraper: &ScraperWebview, target: &Url) -> bool {
-    scraper
-        .url()
-        .map(|current| same_origin(&current, target))
-        .unwrap_or(false)
-}
-
 async fn document_is_ready(scraper: &ScraperWebview) -> bool {
     let ready = eval_json::<String>(
         scraper,
@@ -1971,69 +1964,6 @@ async fn wait_for_browser_challenge_to_clear(
     Ok(false)
 }
 
-async fn prepare_scraper_context(
-    scraper: &ScraperWebview,
-    context_url: Option<&str>,
-    operation: &str,
-    wait_for_browser_challenge: bool,
-    generation: &AtomicU64,
-    expected_generation: u64,
-    executor: &str,
-) -> Result<(), String> {
-    ensure_executor_generation(generation, expected_generation, operation, executor)?;
-    let Some(context_url) = context_url else {
-        return Ok(());
-    };
-    let context_url_for_log = scraper_url_for_log(context_url);
-    let target: Url = context_url.parse().map_err(|err| {
-        format!("scraper: invalid {operation} context url '{context_url_for_log}': {err}")
-    })?;
-
-    if scraper_is_at_origin(scraper, &target)
-        && document_is_ready(scraper).await
-        && (!wait_for_browser_challenge || !document_has_browser_challenge(scraper).await)
-    {
-        return Ok(());
-    }
-
-    log::debug!("[scraper:{operation}] prepare context navigate url={context_url_for_log}");
-    scraper.navigate(target.clone()).map_err(|err| {
-        format!(
-            "scraper: navigate {operation} context: {}",
-            redact_urls_for_log(&err.to_string())
-        )
-    })?;
-
-    let deadline = Duration::from_secs(15);
-    let mut poll_interval = Duration::from_millis(150);
-    let max_poll_interval = Duration::from_millis(750);
-    let started = Instant::now();
-    let mut challenge_logged = false;
-
-    while started.elapsed() < deadline {
-        ensure_executor_generation(generation, expected_generation, operation, executor)?;
-        tokio::time::sleep(poll_interval).await;
-        poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
-        if scraper_is_at_origin(scraper, &target) && document_is_ready(scraper).await {
-            if wait_for_browser_challenge && document_has_browser_challenge(scraper).await {
-                if !challenge_logged {
-                    log::debug!(
-                        "[scraper:{operation}] prepare context waiting browser challenge url={context_url_for_log}"
-                    );
-                    challenge_logged = true;
-                }
-                continue;
-            }
-            log::debug!("[scraper:{operation}] prepare context ready url={context_url_for_log}");
-            return Ok(());
-        }
-    }
-
-    Err(format!(
-        "scraper: timed out preparing {operation} context {context_url_for_log}"
-    ))
-}
-
 fn origin_url(url: &Url) -> String {
     let host = url.host_str().unwrap_or("local");
     match url.port() {
@@ -2042,39 +1972,25 @@ fn origin_url(url: &Url) -> String {
     }
 }
 
-fn reset_extract_navigation(
-    scraper: &ScraperWebview,
-    target: &Url,
-    operation: &str,
-) -> Result<(), String> {
-    if !matches!(target.scheme(), "http" | "https") {
-        return Ok(());
-    }
-    let context_url = origin_url(target);
-    let context: Url = context_url
-        .parse()
-        .map_err(|err| format!("scraper: invalid {operation} reset url '{context_url}': {err}"))?;
-    log::debug!("[scraper:{operation}] reset context navigate url={context_url}");
-    scraper.navigate(context).map_err(|err| {
-        format!(
-            "scraper: reset {operation} context: {}",
-            redact_urls_for_log(&err.to_string())
-        )
-    })
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FetchContextDocument {
+struct ScraperContextDocument {
     url: String,
     ready: bool,
     time_origin: f64,
 }
 
-impl FetchContextDocument {
+impl ScraperContextDocument {
     fn ready_url(&self) -> Option<Url> {
         let url = Url::parse(&self.url).ok()?;
         (self.ready && matches!(url.scheme(), "http" | "https")).then_some(url)
+    }
+
+    fn ready_url_after_navigation(&self, previous_time_origin: f64) -> Option<Url> {
+        if self.time_origin == previous_time_origin {
+            return None;
+        }
+        self.ready_url()
     }
 }
 
@@ -2093,13 +2009,12 @@ struct FetchContextNavigation {
 }
 
 impl FetchContextNavigation {
-    fn on_document(&mut self, document: &FetchContextDocument) -> FetchContextAction {
+    fn on_document(&mut self, document: &ScraperContextDocument) -> FetchContextAction {
         // Navigate is asynchronous; the previous ready document must not start a fetch
         // that the pending navigation would immediately discard.
-        if document.time_origin == self.previous_document_time_origin {
-            return FetchContextAction::Wait;
-        }
-        let Some(document_url) = document.ready_url() else {
+        let Some(document_url) =
+            document.ready_url_after_navigation(self.previous_document_time_origin)
+        else {
             return FetchContextAction::Wait;
         };
         if same_origin(&document_url, &self.context_url) {
@@ -2114,9 +2029,9 @@ impl FetchContextNavigation {
     }
 }
 
-async fn fetch_context_document(
+async fn scraper_context_document(
     scraper: &ScraperWebview,
-) -> Result<Option<FetchContextDocument>, String> {
+) -> Result<Option<ScraperContextDocument>, String> {
     eval_json(
         scraper,
         r#"(function () {
@@ -2183,7 +2098,7 @@ async fn prepare_fetch_context(
     let mut poll_interval = Duration::from_millis(150);
     let document = loop {
         ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
-        if let Some(document) = fetch_context_document(scraper).await? {
+        if let Some(document) = scraper_context_document(scraper).await? {
             break document;
         }
         if started.elapsed() >= deadline {
@@ -2221,7 +2136,7 @@ async fn prepare_fetch_context(
         ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
         tokio::time::sleep(poll_interval).await;
         poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(750));
-        let Some(document) = fetch_context_document(scraper).await? else {
+        let Some(document) = scraper_context_document(scraper).await? else {
             continue;
         };
         ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
@@ -2253,27 +2168,118 @@ async fn prepare_fetch_context(
     ))
 }
 
+fn same_document_url_without_fragment(current: &str, target: &Url) -> bool {
+    let Ok(mut current) = Url::parse(current) else {
+        return false;
+    };
+    let mut target = target.clone();
+    current.set_fragment(None);
+    target.set_fragment(None);
+    current == target
+}
+
+fn reload_prepared_extract_target(target: &Url) -> bool {
+    matches!(target.scheme(), "http" | "https")
+}
+
+fn navigate_prepared_extract_target(scraper: &ScraperWebview, target: &Url) -> tauri::Result<()> {
+    if reload_prepared_extract_target(target) {
+        scraper.reload()
+    } else {
+        scraper.navigate(target.clone())
+    }
+}
+
 async fn prepare_extract_context(
     scraper: &ScraperWebview,
     target: &Url,
     generation: &AtomicU64,
     expected_generation: u64,
     executor: &str,
-) -> Result<(), String> {
-    if !matches!(target.scheme(), "http" | "https") {
-        return Ok(());
+) -> Result<Url, String> {
+    ensure_executor_generation(generation, expected_generation, "extract", executor)?;
+    clear_webview_extract_result(scraper, None);
+    if !reload_prepared_extract_target(target) {
+        return Ok(target.clone());
     }
-    let context_url = origin_url(target);
-    prepare_scraper_context(
-        scraper,
-        Some(&context_url),
-        "extract",
-        true,
-        generation,
-        expected_generation,
-        executor,
-    )
-    .await
+    let context_url_for_log = scraper_url_for_log(target.as_str());
+    let started = Instant::now();
+    let deadline = Duration::from_secs(15);
+    let mut poll_interval = Duration::from_millis(150);
+    let previous_document = loop {
+        ensure_executor_generation(generation, expected_generation, "extract", executor)?;
+        if let Some(document) = scraper_context_document(scraper).await? {
+            break document;
+        }
+        if started.elapsed() >= deadline {
+            return Err(format!(
+                "scraper: timed out preparing extract context {context_url_for_log}"
+            ));
+        }
+        tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(750));
+    };
+
+    // This extra chapter navigation resolves redirects before installing the hook.
+    // Cross-site redirects can clear window.name, so extraction reloads the final URL.
+    ensure_executor_generation(generation, expected_generation, "extract", executor)?;
+    log::debug!("[scraper:extract] prepare context navigate url={context_url_for_log}");
+    let navigation = if same_document_url_without_fragment(&previous_document.url, target) {
+        if previous_document.url != target.as_str() {
+            let target_json = serde_json::to_string(target.as_str())
+                .map_err(|err| format!("scraper: serialize extract context URL: {err}"))?;
+            let _: bool = eval_json(
+                scraper,
+                format!(
+                    "(function () {{ history.replaceState(history.state, '', {target_json}); return true; }})()"
+                ),
+            )
+            .await?;
+            ensure_executor_generation(generation, expected_generation, "extract", executor)?;
+        }
+        scraper.reload()
+    } else {
+        scraper.navigate(target.clone())
+    };
+    navigation.map_err(|err| {
+        format!(
+            "scraper: navigate extract context: {}",
+            redact_urls_for_log(&err.to_string())
+        )
+    })?;
+
+    let mut challenge_logged = false;
+    poll_interval = Duration::from_millis(150);
+    while started.elapsed() < deadline {
+        ensure_executor_generation(generation, expected_generation, "extract", executor)?;
+        tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(750));
+        let Some(document) = scraper_context_document(scraper).await? else {
+            continue;
+        };
+        let Some(ready_url) = document.ready_url_after_navigation(previous_document.time_origin)
+        else {
+            continue;
+        };
+        if document_has_browser_challenge(scraper).await {
+            if !challenge_logged {
+                log::debug!(
+                    "[scraper:extract] prepare context waiting browser challenge url={context_url_for_log}"
+                );
+                challenge_logged = true;
+            }
+            continue;
+        }
+        ensure_executor_generation(generation, expected_generation, "extract", executor)?;
+        log::debug!(
+            "[scraper:extract] prepare context ready url={}",
+            scraper_url_for_log(ready_url.as_str())
+        );
+        return Ok(ready_url);
+    }
+    Err(format!(
+        "scraper: timed out preparing extract context {context_url_for_log}"
+    ))
 }
 
 fn fetch_context_urls(url: &str, context_url: Option<&str>) -> Result<Vec<String>, String> {
@@ -2372,6 +2378,11 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
   try {
     if ((window.name || "").indexOf("__norea_script__=") === 0) {
       window.name = "";
+    }
+  } catch (error) {}
+  try {
+    if ((location.hash || "").indexOf('#__norea_result__=') === 0) {
+      history.replaceState(null, "", location.pathname + location.search);
     }
   } catch (error) {}
 })()"#
@@ -2868,18 +2879,26 @@ pub async fn webview_extract(
     let mut signaled = false;
 
     for attempt in 1..=max_attempts {
-        let prepare_result =
-            prepare_extract_context(&scraper, &parsed, &generation, expected_generation, &queue)
-                .await;
-        if let Err(error) = prepare_result {
-            if generation.load(Ordering::Acquire) == expected_generation
-                && document_has_browser_challenge(&scraper).await
-            {
-                let challenge_url = browser_challenge_url(&scraper, &url);
-                return Ok(browser_challenge_envelope("cloudflare", &challenge_url));
+        let extract_target = match prepare_extract_context(
+            &scraper,
+            &parsed,
+            &generation,
+            expected_generation,
+            &queue,
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                if generation.load(Ordering::Acquire) == expected_generation
+                    && document_has_browser_challenge(&scraper).await
+                {
+                    let challenge_url = browser_challenge_url(&scraper, &url);
+                    return Ok(browser_challenge_envelope("cloudflare", &challenge_url));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         let _ = wait_for_scraper_bridge_ready(
             &scraper,
             "extract",
@@ -2895,12 +2914,13 @@ pub async fn webview_extract(
             .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
 
         log::trace!(
-            "[scraper:extract] navigate queue={queue} url={url_for_log} target_url={target_url_for_log} attempt={attempt}"
+            "[scraper:extract] reload queue={queue} url={url_for_log} target_url={} attempt={attempt}",
+            scraper_url_for_log(extract_target.as_str())
         );
 
-        scraper.navigate(parsed.clone()).map_err(|err| {
+        navigate_prepared_extract_target(&scraper, &extract_target).map_err(|err| {
             format!(
-                "webview_extract: navigate: {}",
+                "webview_extract: navigate prepared target: {}",
                 redact_urls_for_log(&err.to_string())
             )
         })?;
@@ -2969,8 +2989,7 @@ pub async fn webview_extract(
                             "extract",
                             &queue,
                         )?;
-                        reset_extract_navigation(&scraper, &parsed, "extract")?;
-                        prepare_extract_context(
+                        let extract_target = prepare_extract_context(
                             &scraper,
                             &parsed,
                             &generation,
@@ -2997,12 +3016,14 @@ pub async fn webview_extract(
                         log::debug!(
                             "[scraper:extract] retry after browser challenge queue={queue} url={url_for_log}"
                         );
-                        scraper.navigate(parsed.clone()).map_err(|err| {
-                            format!(
-                                "webview_extract: retry after browser challenge: {}",
-                                redact_urls_for_log(&err.to_string())
-                            )
-                        })?;
+                        navigate_prepared_extract_target(&scraper, &extract_target).map_err(
+                            |err| {
+                                format!(
+                                    "webview_extract: retry after browser challenge: {}",
+                                    redact_urls_for_log(&err.to_string())
+                                )
+                            },
+                        )?;
                         continue;
                     }
                 }
@@ -3051,7 +3072,6 @@ pub async fn webview_extract(
                 "[scraper:extract] timeout before extract result; retrying queue={queue} url={url_for_log} attempt={attempt}"
             );
             ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-            reset_extract_navigation(&scraper, &parsed, "extract")?;
         }
     }
 
@@ -3804,12 +3824,80 @@ mod tests {
         }
     }
 
-    fn fetch_document(url: &str, time_origin: f64, ready: bool) -> FetchContextDocument {
-        FetchContextDocument {
+    fn fetch_document(url: &str, time_origin: f64, ready: bool) -> ScraperContextDocument {
+        ScraperContextDocument {
             url: url.to_string(),
             ready,
             time_origin,
         }
+    }
+
+    #[test]
+    fn extract_context_retains_exact_redirected_chapter_url_for_reload() {
+        let target = "https://new.example/novel/672?stx=chapter%201&book=3#content";
+        let document = fetch_document(target, 2.0, true);
+
+        assert_eq!(
+            document.ready_url_after_navigation(1.0),
+            Some(Url::parse(target).unwrap())
+        );
+    }
+
+    #[test]
+    fn extract_context_reloads_fragment_navigation_without_changing_path_or_query() {
+        let target = Url::parse("https://source.test/novel/672?book=3#chapter").unwrap();
+        for current in [
+            "https://source.test/novel/672?book=3",
+            "https://source.test/novel/672?book=3#previous",
+            "https://source.test/novel/672?book=3#chapter",
+        ] {
+            assert!(same_document_url_without_fragment(current, &target));
+        }
+        for current in [
+            "https://source.test/novel/673?book=3#chapter",
+            "https://source.test/novel/672?book=4#chapter",
+            "https://other.test/novel/672?book=3#chapter",
+            "not a URL",
+        ] {
+            assert!(!same_document_url_without_fragment(current, &target));
+        }
+    }
+
+    #[test]
+    fn extract_reloads_only_prepared_http_targets() {
+        for target in ["http://source.test/1", "https://source.test/1"] {
+            assert!(reload_prepared_extract_target(&Url::parse(target).unwrap()));
+        }
+        for target in [
+            "about:blank",
+            "data:text/html,chapter",
+            "file:///chapter.html",
+        ] {
+            assert!(!reload_prepared_extract_target(
+                &Url::parse(target).unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn extract_context_waits_for_fresh_ready_http_document_on_every_attempt() {
+        for document in [
+            fetch_document("https://old.example/novel/672", 1.0, true),
+            fetch_document("https://new.example/novel/672", 2.0, false),
+            fetch_document("chrome-error://chromewebdata/", 2.0, true),
+            fetch_document("about:blank", 2.0, true),
+        ] {
+            assert_eq!(document.ready_url_after_navigation(1.0), None);
+        }
+
+        let target = "https://new.example/novel/672?book=3";
+        let first_attempt = fetch_document(target, 2.0, true);
+        let retry = fetch_document(target, 3.0, true);
+        assert_eq!(first_attempt.ready_url_after_navigation(2.0), None);
+        assert_eq!(
+            retry.ready_url_after_navigation(2.0),
+            Some(Url::parse(target).unwrap())
+        );
     }
 
     #[test]
