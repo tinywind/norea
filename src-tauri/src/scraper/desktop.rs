@@ -2063,23 +2063,194 @@ fn reset_extract_navigation(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchContextDocument {
+    url: String,
+    ready: bool,
+    time_origin: f64,
+}
+
+impl FetchContextDocument {
+    fn ready_url(&self) -> Option<Url> {
+        let url = Url::parse(&self.url).ok()?;
+        (self.ready && matches!(url.scheme(), "http" | "https")).then_some(url)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum FetchContextAction {
+    Wait,
+    Navigate(Url),
+    Ready(Option<String>),
+}
+
+struct FetchContextNavigation {
+    context_url: Url,
+    request_url: Url,
+    previous_document_time_origin: f64,
+    fallback_attempted: bool,
+}
+
+impl FetchContextNavigation {
+    fn on_document(&mut self, document: &FetchContextDocument) -> FetchContextAction {
+        // Navigate is asynchronous; the previous ready document must not start a fetch
+        // that the pending navigation would immediately discard.
+        if document.time_origin == self.previous_document_time_origin {
+            return FetchContextAction::Wait;
+        }
+        let Some(document_url) = document.ready_url() else {
+            return FetchContextAction::Wait;
+        };
+        if same_origin(&document_url, &self.context_url) {
+            return FetchContextAction::Ready(None);
+        }
+        if !self.fallback_attempted && self.request_url != self.context_url {
+            self.fallback_attempted = true;
+            self.previous_document_time_origin = document.time_origin;
+            return FetchContextAction::Navigate(self.request_url.clone());
+        }
+        FetchContextAction::Ready(Some(document_url.to_string()))
+    }
+}
+
+async fn fetch_context_document(
+    scraper: &ScraperWebview,
+) -> Result<Option<FetchContextDocument>, String> {
+    eval_json(
+        scraper,
+        r#"(function () {
+  return {
+    url: location.href,
+    ready: document.readyState === "interactive" || document.readyState === "complete",
+    timeOrigin: performance.timeOrigin
+  };
+})()"#
+            .to_string(),
+    )
+    .await
+}
+
+fn fetch_url_after_prepared_context<'a>(
+    url: &'a str,
+    prepared_url: Option<&'a str>,
+    init: &FetchInit,
+) -> &'a str {
+    let method = init.method.as_deref().unwrap_or("GET");
+    if method.is_empty()
+        || method.eq_ignore_ascii_case("GET")
+        || method.eq_ignore_ascii_case("HEAD")
+    {
+        prepared_url.unwrap_or(url)
+    } else {
+        url
+    }
+}
+
+fn prepare_fetch_redirect_headers(url: &str, fetch_url: &str, init: &mut FetchInit) {
+    let (Ok(original), Ok(prepared)) = (Url::parse(url), Url::parse(fetch_url)) else {
+        return;
+    };
+    if same_origin(&original, &prepared) {
+        return;
+    }
+    // Match browser fetch redirects when context navigation selected the final URL.
+    if let Some(headers) = init.headers.as_mut() {
+        headers.retain(|name, _| !name.eq_ignore_ascii_case("authorization"));
+    }
+}
+
 async fn prepare_fetch_context(
     scraper: &ScraperWebview,
     context_url: Option<&str>,
+    request_url: &str,
     generation: &AtomicU64,
     expected_generation: u64,
     executor: &str,
-) -> Result<(), String> {
-    prepare_scraper_context(
-        scraper,
-        context_url,
-        "fetch",
-        false,
-        generation,
-        expected_generation,
-        executor,
-    )
-    .await
+) -> Result<Option<String>, String> {
+    ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
+    let Some(context_url) = context_url else {
+        return Ok(None);
+    };
+    let context_url_for_log = scraper_url_for_log(context_url);
+    let context_url = Url::parse(context_url).map_err(|err| {
+        format!("scraper: invalid fetch context url '{context_url_for_log}': {err}")
+    })?;
+    let request_url = Url::parse(request_url)
+        .map_err(|err| format!("scraper: invalid fetch request url: {err}"))?;
+    let started = Instant::now();
+    let deadline = Duration::from_secs(15);
+    let mut poll_interval = Duration::from_millis(150);
+    let document = loop {
+        ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
+        if let Some(document) = fetch_context_document(scraper).await? {
+            break document;
+        }
+        if started.elapsed() >= deadline {
+            return Err(format!(
+                "scraper: timed out preparing fetch context {context_url_for_log}"
+            ));
+        }
+        tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(750));
+    };
+    if document
+        .ready_url()
+        .is_some_and(|url| same_origin(&url, &context_url))
+    {
+        return Ok(None);
+    }
+
+    let mut navigation = FetchContextNavigation {
+        context_url: context_url.clone(),
+        request_url,
+        previous_document_time_origin: document.time_origin,
+        fallback_attempted: false,
+    };
+    ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
+    log::debug!("[scraper:fetch] prepare context navigate url={context_url_for_log}");
+    scraper.navigate(context_url).map_err(|err| {
+        format!(
+            "scraper: navigate fetch context: {}",
+            redact_urls_for_log(&err.to_string())
+        )
+    })?;
+
+    poll_interval = Duration::from_millis(150);
+    while started.elapsed() < deadline {
+        ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
+        tokio::time::sleep(poll_interval).await;
+        poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(750));
+        let Some(document) = fetch_context_document(scraper).await? else {
+            continue;
+        };
+        ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
+        match navigation.on_document(&document) {
+            FetchContextAction::Wait => {}
+            FetchContextAction::Navigate(url) => {
+                log::debug!(
+                    "[scraper:fetch] prepare context fallback url={}",
+                    scraper_url_for_log(url.as_str())
+                );
+                scraper.navigate(url).map_err(|err| {
+                    format!(
+                        "scraper: navigate fetch fallback: {}",
+                        redact_urls_for_log(&err.to_string())
+                    )
+                })?;
+            }
+            FetchContextAction::Ready(fetch_url) => {
+                log::debug!(
+                    "[scraper:fetch] prepare context ready url={}",
+                    scraper_url_for_log(&document.url)
+                );
+                return Ok(fetch_url);
+            }
+        }
+    }
+    Err(format!(
+        "scraper: timed out preparing fetch context {context_url_for_log}"
+    ))
 }
 
 async fn prepare_extract_context(
@@ -2228,9 +2399,10 @@ async fn webview_fetch_with_ready_scraper(
     let _: Url = url
         .parse()
         .map_err(|err| format!("scraper: invalid url '{url_for_log}': {err}"))?;
-    prepare_fetch_context(
+    let prepared_url = prepare_fetch_context(
         scraper,
         context_url.as_deref(),
+        &url,
         generation,
         expected_generation,
         executor,
@@ -2238,9 +2410,11 @@ async fn webview_fetch_with_ready_scraper(
     .await?;
     ensure_executor_generation(generation, expected_generation, "fetch", executor)?;
     let configured_timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000).max(1));
-    let init = init.unwrap_or_default();
+    let mut init = init.unwrap_or_default();
+    let fetch_url = fetch_url_after_prepared_context(&url, prepared_url.as_deref(), &init);
+    prepare_fetch_redirect_headers(&url, fetch_url, &mut init);
     let request_id = format!("fetch-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
-    let start_script = build_webview_fetch_start_script(&request_id, &url, &init)?;
+    let start_script = build_webview_fetch_start_script(&request_id, fetch_url, &init)?;
 
     // Register the completion waiter before starting the fetch so the page's
     // result sentinel (fired from the fetch `finally`) can never beat the
@@ -3619,6 +3793,155 @@ mod tests {
             value["challenge"]["url"],
             "https://source.test/chapter/1?token=quoted%22value"
         );
+    }
+
+    fn fetch_context_navigation(request: &str) -> FetchContextNavigation {
+        FetchContextNavigation {
+            context_url: Url::parse("https://old.example/").unwrap(),
+            request_url: Url::parse(request).unwrap(),
+            previous_document_time_origin: 1.0,
+            fallback_attempted: false,
+        }
+    }
+
+    fn fetch_document(url: &str, time_origin: f64, ready: bool) -> FetchContextDocument {
+        FetchContextDocument {
+            url: url.to_string(),
+            ready,
+            time_origin,
+        }
+    }
+
+    #[test]
+    fn fetch_context_accepts_redirected_root_request() {
+        let mut navigation = fetch_context_navigation("https://old.example");
+
+        assert_eq!(
+            navigation.on_document(&fetch_document("https://new.example/", 2.0, true)),
+            FetchContextAction::Ready(Some("https://new.example/".to_string()))
+        );
+    }
+
+    #[test]
+    fn fetch_context_preserves_request_when_context_stays_on_origin() {
+        let mut navigation = fetch_context_navigation("https://old.example/novel?page=2");
+
+        assert_eq!(
+            navigation.on_document(&fetch_document("https://old.example/", 2.0, true)),
+            FetchContextAction::Ready(None)
+        );
+    }
+
+    #[test]
+    fn fetch_context_fallback_preserves_path_and_query_then_accepts_its_redirect() {
+        let request = "https://old.example/novel?page=2&sort=hot";
+        let mut navigation = fetch_context_navigation(request);
+        let context = fetch_document("https://new.example/", 2.0, true);
+
+        assert_eq!(
+            navigation.on_document(&context),
+            FetchContextAction::Navigate(Url::parse(request).unwrap())
+        );
+        // The previous page remains ready while the fallback navigation is pending.
+        assert_eq!(navigation.on_document(&context), FetchContextAction::Wait);
+        assert_eq!(
+            navigation.on_document(&fetch_document(
+                "https://new.example/novel?page=2&sort=hot",
+                3.0,
+                true
+            )),
+            FetchContextAction::Ready(Some(
+                "https://new.example/novel?page=2&sort=hot".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn fetch_context_rejects_stale_loading_and_non_http_documents() {
+        let mut navigation = fetch_context_navigation("https://old.example/");
+
+        for document in [
+            fetch_document("https://old.example/", 1.0, true),
+            fetch_document("https://unrelated.example/", 1.0, true),
+            fetch_document("https://new.example/", 2.0, false),
+            fetch_document("chrome-error://chromewebdata/", 2.0, true),
+            fetch_document("about:blank", 2.0, true),
+        ] {
+            assert_eq!(navigation.on_document(&document), FetchContextAction::Wait);
+        }
+    }
+
+    #[test]
+    fn fetch_context_accepts_fallback_to_original_origin() {
+        let request = "https://old.example/novel?page=2";
+        let mut navigation = fetch_context_navigation(request);
+        navigation.on_document(&fetch_document("https://new.example/", 2.0, true));
+
+        assert_eq!(
+            navigation.on_document(&fetch_document(request, 3.0, true)),
+            FetchContextAction::Ready(None)
+        );
+    }
+
+    #[test]
+    fn prepared_fetch_url_only_rewrites_safe_methods() {
+        let original = "https://old.example/novel?page=2";
+        let redirected = "https://new.example/novel?page=2";
+        for method in [None, Some(""), Some("GET"), Some("head")] {
+            let init = FetchInit {
+                method: method.map(str::to_string),
+                ..FetchInit::default()
+            };
+            assert_eq!(
+                fetch_url_after_prepared_context(original, Some(redirected), &init),
+                redirected
+            );
+            assert_eq!(
+                fetch_url_after_prepared_context(original, None, &init),
+                original
+            );
+        }
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            let init = FetchInit {
+                method: Some(method.to_string()),
+                ..FetchInit::default()
+            };
+            assert_eq!(
+                fetch_url_after_prepared_context(original, Some(redirected), &init),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_fetch_removes_authorization_only_for_cross_origin_rewrites() {
+        let original = "https://old.example/novel?page=2";
+        for (method, prepared, expect_authorization) in [
+            ("GET", "https://new.example/novel?page=2", false),
+            ("HEAD", "https://new.example/novel?page=2", false),
+            ("GET", "http://old.example/novel?page=2", false),
+            ("GET", "https://old.example:8443/novel?page=2", false),
+            ("GET", "https://old.example:443/novel?page=3", true),
+            ("POST", "https://new.example/novel?page=2", true),
+        ] {
+            let mut init = FetchInit {
+                method: Some(method.to_string()),
+                headers: Some(HashMap::from([
+                    ("Authorization".to_string(), "Bearer first".to_string()),
+                    ("aUtHoRiZaTiOn".to_string(), "Bearer second".to_string()),
+                    ("Accept".to_string(), "text/html".to_string()),
+                ])),
+                body: None,
+            };
+            let fetch_url = fetch_url_after_prepared_context(original, Some(prepared), &init);
+            prepare_fetch_redirect_headers(original, fetch_url, &mut init);
+            let headers = init.headers.unwrap();
+
+            assert_eq!(headers.contains_key("Authorization"), expect_authorization);
+            assert_eq!(headers.contains_key("aUtHoRiZaTiOn"), expect_authorization);
+            assert_eq!(headers.get("Accept").map(String::as_str), Some("text/html"));
+            assert_eq!(init.method.as_deref(), Some(method));
+        }
     }
 
     #[tokio::test]
