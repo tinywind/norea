@@ -41,6 +41,7 @@ import {
 } from "./novel-cover-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import type { Plugin } from "./plugins/types";
+import { runWithScraperExecutor } from "./tasks/scraper-queue";
 
 const invokeMock = vi.mocked(invoke);
 const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
@@ -765,6 +766,7 @@ describe("resolveNovelCoverDisplaySource", () => {
         {
           contextUrl: "https://source.test/books/",
           priority: "deferred",
+          signal: controller.signal,
           sourceId: "demo",
         },
       );
@@ -803,6 +805,7 @@ describe("resolveNovelCoverDisplaySource", () => {
         {
           contextUrl: "https://source.test/books/",
           priority: "deferred",
+          signal: expect.any(AbortSignal),
           sourceId: "demo",
         },
       );
@@ -823,6 +826,20 @@ describe("resolveNovelCoverDisplaySource", () => {
 
     expect(resolved?.src).toBe("https://source.test/covers/cover.jpg");
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps cached display covers independent of the active source task", async () => {
+    const controller = new AbortController();
+    await runWithScraperExecutor("demo", "open-novel", "immediate", controller.signal, async () => {
+      const resolved = await resolveNovelCoverDisplaySource(makePlugin(), {
+        ...novel,
+        cover: "https://source.test/covers/cover.jpg",
+      });
+      const signal = pluginMediaFetchMock.mock.calls[0]?.[1]?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal).not.toBe(controller.signal);
+      resolved?.dispose();
+    });
   });
 
   it("rejects an aborted transient request before creating an object URL", async () => {
@@ -877,6 +894,7 @@ describe("resolveNovelCoverDisplaySource", () => {
         {
           contextUrl: "https://source.test/books/",
           priority: "deferred",
+          signal: controller.signal,
           sourceId: "demo",
         },
       );

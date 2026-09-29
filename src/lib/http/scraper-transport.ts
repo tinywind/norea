@@ -5,7 +5,15 @@ import { REQUEST_CANCELLED_ERROR, requestAbortedError } from "../abort";
 import { cancelAndroidScraperExecutor } from "../android-scraper";
 import { type ScraperExecutorId } from "../tasks/scraper-queue";
 import { isAndroidRuntime } from "../tauri-runtime";
-import { type FetchInitWire, type FetchResultWire } from "./types";
+import {
+  beginDesktopFetchCancellation,
+  enqueueDesktopFetch,
+} from "./desktop-fetch-queue";
+import {
+  type FetchInitWire,
+  type FetchResultWire,
+  type PluginFetchPriority,
+} from "./types";
 
 function headerUserAgent(
   headers: Record<string, string> | undefined,
@@ -36,14 +44,14 @@ export function requestTimeoutMs(timeoutMs: number | undefined): number {
 export async function awaitScraperInvoke<T>(
   request: Promise<T>,
   signal: AbortSignal | undefined,
-  scraperExecutor: ScraperExecutorId,
+  scraperExecutor?: ScraperExecutorId,
 ): Promise<T> {
   if (!signal) return request;
   if (signal.aborted) throw requestAbortedError();
   let abortListener: (() => void) | undefined;
   const abort = new Promise<never>((_resolve, reject) => {
     abortListener = () => {
-      void cancelScraperExecutor(scraperExecutor);
+      if (scraperExecutor) void cancelScraperExecutor(scraperExecutor);
       reject(requestAbortedError());
     };
     signal.addEventListener("abort", abortListener, { once: true });
@@ -63,6 +71,7 @@ export async function cancelScraperExecutor(
   if (isAndroidRuntime()) {
     return cancelAndroidScraperExecutor(REQUEST_CANCELLED_ERROR, executor);
   }
+  const finishCancellation = beginDesktopFetchCancellation(executor);
   try {
     return await invoke<boolean>("scraper_cancel_executor", {
       message: REQUEST_CANCELLED_ERROR,
@@ -74,6 +83,8 @@ export async function cancelScraperExecutor(
       scraperExecutor: executor,
     });
     return false;
+  } finally {
+    finishCancellation();
   }
 }
 
@@ -86,6 +97,7 @@ interface DesktopWebviewFetchRequest {
   readonly scraperExecutor: ScraperExecutorId;
   readonly timeoutMs: number;
   readonly signal: AbortSignal | undefined;
+  readonly priority?: PluginFetchPriority;
 }
 
 export async function desktopWebviewFetch({
@@ -97,39 +109,26 @@ export async function desktopWebviewFetch({
   scraperExecutor,
   timeoutMs,
   signal,
+  priority,
 }: DesktopWebviewFetchRequest): Promise<FetchResultWire> {
   if (signal?.aborted) {
     throw requestAbortedError();
   }
 
-  const request = invoke<FetchResultWire>("webview_fetch", {
-    url,
-    init,
-    contextUrl,
-    userAgent,
-    queue: scraperExecutor,
-    ...(sourceId ? { sourceId } : {}),
-    timeoutMs,
-  });
-  if (!signal) return request;
-
-  let abortListener: (() => void) | undefined;
-  const abort = new Promise<never>((_resolve, reject) => {
-    abortListener = () => {
-      void cancelScraperExecutor(scraperExecutor);
-      reject(requestAbortedError());
-    };
-    signal.addEventListener("abort", abortListener, { once: true });
-    if (signal.aborted) abortListener();
-  });
-
-  try {
-    return await Promise.race([request, abort]);
-  } catch (error) {
-    if (signal.aborted) throw requestAbortedError();
-    throw error;
-  } finally {
-    if (abortListener) signal.removeEventListener("abort", abortListener);
-    request.catch(() => undefined);
-  }
+  return enqueueDesktopFetch(
+    scraperExecutor,
+    priority,
+    signal,
+    () =>
+      invoke<FetchResultWire>("webview_fetch", {
+        url,
+        init,
+        contextUrl,
+        userAgent,
+        queue: scraperExecutor,
+        ...(sourceId ? { sourceId } : {}),
+        timeoutMs,
+      }),
+    () => cancelScraperExecutor(scraperExecutor),
+  );
 }

@@ -12,6 +12,18 @@ const activeExecutorsBySourceId = new Map<
 // to make in-flight site traffic abortable when the owning task is paused or
 // cancelled, freeing the executor for interactive work.
 const activeSignalByExecutor = new Map<ScraperExecutorId, AbortSignal>();
+const executorSignalListeners = new Set<(executor: ScraperExecutorId) => void>();
+
+export function subscribeScraperExecutorSignalChanges(
+  listener: (executor: ScraperExecutorId) => void,
+): () => void {
+  executorSignalListeners.add(listener);
+  return () => executorSignalListeners.delete(listener);
+}
+
+function notifyExecutorSignalChanged(executor: ScraperExecutorId): void {
+  for (const listener of executorSignalListeners) listener(executor);
+}
 
 export function activeScraperExecutor(
   sourceId: string | undefined,
@@ -40,7 +52,10 @@ export async function runWithScraperExecutor<T>(
   active.set(taskId, executorId);
   activeExecutorsBySourceId.set(sourceId, active);
   const previousSignal = activeSignalByExecutor.get(executorId);
-  if (signal) activeSignalByExecutor.set(executorId, signal);
+  if (signal) {
+    activeSignalByExecutor.set(executorId, signal);
+    notifyExecutorSignalChanged(executorId);
+  }
 
   try {
     return await run();
@@ -55,6 +70,7 @@ export async function runWithScraperExecutor<T>(
       } else {
         activeSignalByExecutor.delete(executorId);
       }
+      notifyExecutorSignalChanged(executorId);
     }
   }
 }

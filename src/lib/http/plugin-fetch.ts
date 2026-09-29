@@ -53,6 +53,7 @@ async function pluginFetchInternal(
           scraperExecutor,
           timeoutMs,
           signal,
+          priority: init.priority,
         });
   } catch (error) {
     if (!isAbortError(error)) {

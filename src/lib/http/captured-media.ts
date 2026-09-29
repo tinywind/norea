@@ -77,6 +77,7 @@ export async function takeCapturedMediaResponse(
   const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   if (signal?.aborted) throw requestAbortedError();
   try {
+    // A cached response lookup does not own browser work to cancel.
     const result = await awaitScraperInvoke(
       invoke<FetchResultWire | null>("scraper_take_captured_resource", {
         url,
@@ -85,7 +86,6 @@ export async function takeCapturedMediaResponse(
         ...(init.sourceId ? { sourceId: init.sourceId } : {}),
       }),
       signal,
-      scraperExecutor,
     );
     if (result) {
       console.debug("[plugin-media-fetch] captured response used", {

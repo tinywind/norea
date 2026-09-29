@@ -368,9 +368,13 @@ describe("pluginFetch", () => {
 
   it("cancels the desktop scraper executor when the request signal aborts", async () => {
     const controller = new AbortController();
+    let settleNative!: () => void;
+    const nativeRequest = new Promise<unknown>((resolve) => {
+      settleNative = () => resolve(wireOk("cancelled"));
+    });
     invokeMock.mockImplementation(async (command) => {
       if (command === "webview_fetch") {
-        return await new Promise<never>(() => undefined);
+        return await nativeRequest;
       }
       if (command === "scraper_cancel_executor") return true;
       throw new Error(`Unexpected command: ${String(command)}`);
@@ -380,9 +384,9 @@ describe("pluginFetch", () => {
       scraperExecutor: "pool:0",
       signal: controller.signal,
     });
-    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
-      "webview_fetch", expect.any(Object),
-    ));
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("webview_fetch", expect.any(Object)),
+    );
     controller.abort();
 
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
@@ -390,6 +394,8 @@ describe("pluginFetch", () => {
       message: "Request cancelled",
       queue: "pool:0",
     });
+    settleNative();
+    await nativeRequest;
   });
 
   it("propagates an IPC rejection so the global toast can fire", async () => {
@@ -506,29 +512,69 @@ describe("pluginMediaFetch", () => {
     },
   );
 
-  it("cancels a captured-media wait when its scraper executor aborts", async () => {
+  it("aborts a cover cache lookup without cancelling active or queued novel requests", async () => {
     const controller = new AbortController();
-    invokeMock.mockImplementation(async (command) => {
+    let finishDetail!: () => void;
+    const detailResponse = new Promise<unknown>((resolve) => {
+      finishDetail = () => resolve(wireOk("detail"));
+    });
+    let finishLookup!: () => void;
+    const capturedResponse = new Promise<null>((resolve) => {
+      finishLookup = () => resolve(null);
+    });
+    invokeMock.mockImplementation(async (command, args) => {
       if (command === "scraper_take_captured_resource") {
-        return await new Promise<never>(() => undefined);
+        return capturedResponse;
+      }
+      if (command === "webview_fetch") {
+        return (args as { url: string }).url.endsWith("/detail")
+          ? detailResponse
+          : wireOk("chapters");
       }
       if (command === "scraper_cancel_executor") return true;
       throw new Error(`Unexpected command: ${String(command)}`);
     });
 
+    const detail = pluginFetch("https://source.test/detail", {
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+    });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "webview_fetch", expect.any(Object),
+    ));
+    const chapters = pluginFetch("https://source.test/chapters", {
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+    });
+    const detailResults = Promise.allSettled([detail, chapters]);
     const request = pluginMediaFetch("https://cdn.test/page.png", {
       contextUrl: "https://cdn.test/chapter/1",
+      priority: "deferred",
       scraperExecutor: "pool:1",
       signal: controller.signal,
       sourceId: "source-a",
     });
-    controller.abort();
+    try {
+      controller.abort();
 
-    await expect(request).rejects.toMatchObject({ name: "AbortError" });
-    expect(invokeMock).toHaveBeenCalledWith("scraper_cancel_executor", {
-      message: "Request cancelled",
-      queue: "pool:1",
-    });
+      await expect(request).rejects.toMatchObject({ name: "AbortError" });
+      expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
+        "scraper_cancel_executor",
+      );
+    } finally {
+      finishLookup();
+      finishDetail();
+      await detailResults;
+    }
+    expect((await detailResults).map((result) => result.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+    ]);
+    expect(
+      invokeMock.mock.calls
+        .filter(([command]) => command === "webview_fetch")
+        .map(([, args]) => (args as { url: string }).url),
+    ).toEqual(["https://source.test/detail", "https://source.test/chapters"]);
   });
 
   it("propagates a Cloudflare challenge from captured media without falling back", async () => {

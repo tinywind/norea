@@ -237,6 +237,8 @@ export async function resolveNovelCoverDisplaySource(
     ...(plugin.imageRequestInit ?? {}),
     ...(baseUrl ? { contextUrl: baseUrl } : {}),
     priority: "deferred",
+    // Display work must not inherit a source task's executor ownership.
+    signal: signal ?? new AbortController().signal,
     sourceId: plugin.id,
   });
   throwIfCoverRequestAborted(signal);
