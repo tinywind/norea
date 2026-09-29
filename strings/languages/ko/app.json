@@ -1132,6 +1132,8 @@
   "siteBrowser.close": "사이트 브라우저 닫기",
   "siteBrowser.title": "사이트 브라우저",
   "siteBrowser.address": "웹사이트 주소",
+  "siteBrowser.navigationFailed": "페이지를 불러오지 못했습니다",
+  "siteBrowser.navigationFailedDescription": "네트워크나 VPN 연결을 확인한 뒤 다시 시도하거나 다른 주소를 입력하세요.",
   "siteBrowser.go": "이동",
   "siteBrowser.invalidAddress": "사용자 이름이나 비밀번호가 없는 HTTP 또는 HTTPS 주소를 입력하세요.",
   "sourceAccess.captchaTitle": "CAPTCHA 인증 필요",

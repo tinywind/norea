@@ -1,7 +1,8 @@
 import { create } from "zustand";
+import { redactUrlsForLog } from "../lib/url-log";
 import type { SourceAccessChallenge } from "../lib/plugins/source-access";
 
-export type SiteBrowserPhase = "closed" | "queued" | "loading" | "ready";
+export type SiteBrowserPhase = "closed" | "queued" | "loading" | "ready" | "error";
 export type SiteBrowserOutcome = "keep-paused" | "verify";
 
 export type SiteBrowserContext =
@@ -30,8 +31,10 @@ interface SiteBrowserState {
   sourceId: string | null;
   /** Scheduler task that owns the current browser request. */
   taskId: string | null;
-  /** Whether the request is queued, navigating, ready, or closed. */
+  /** Whether the request is queued, navigating, ready, failed, or closed. */
   phase: SiteBrowserPhase;
+  /** Redacted failure detail retained while the user retries or changes address. */
+  navigationError: string | null;
   /** Monotonic navigation sequence, including reloads of the same URL. */
   openSequence: number;
   /** The interaction represented by the current browser request. */
@@ -51,6 +54,8 @@ interface SiteBrowserState {
   navigateTo: (taskId: string, url: string) => void;
   /** Mark the current native page as ready for interaction. */
   markReady: (taskId: string) => void;
+  /** Fail only the current navigation without releasing browser task ownership. */
+  markNavigationError: (taskId: string, openSequence: number, message: string) => void;
   /** Complete the browser request only when the owning task still matches. */
   complete: (
     taskId: string,
@@ -67,6 +72,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
   sourceId: null,
   taskId: null,
   phase: "closed",
+  navigationError: null,
   openSequence: 0,
   context: null,
   completion: null,
@@ -77,6 +83,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
       sourceId,
       taskId,
       phase: "queued",
+      navigationError: null,
       context,
       completion: null,
     }),
@@ -88,16 +95,19 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
       state.taskId === taskId
         ? {
             phase: "loading",
+            navigationError: null,
             openSequence: state.openSequence + 1,
           }
         : state,
     ),
   navigateTo: (taskId, url) =>
     set((state) =>
-      state.visible && state.taskId === taskId && state.phase === "ready"
+      state.visible && state.taskId === taskId &&
+      (state.phase === "ready" || state.phase === "error")
         ? {
             currentUrl: url,
             phase: "loading",
+            navigationError: null,
             openSequence: state.openSequence + 1,
           }
         : state,
@@ -105,7 +115,14 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
   markReady: (taskId) =>
     set((state) =>
       state.visible && state.taskId === taskId
-        ? { phase: "ready" }
+        ? { phase: "ready", navigationError: null }
+        : state,
+    ),
+  markNavigationError: (taskId, openSequence, message) =>
+    set((state) =>
+      state.visible && state.taskId === taskId &&
+      state.openSequence === openSequence && state.phase === "loading"
+        ? { phase: "error", navigationError: redactUrlsForLog(message) }
         : state,
     ),
   complete: (taskId, revision, outcome) => {
@@ -131,6 +148,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
         },
         context: null,
         phase: "closed",
+        navigationError: null,
         sourceId: null,
         taskId: null,
         visible: false,
@@ -144,6 +162,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
       context: null,
       visible: false,
       phase: "closed",
+      navigationError: null,
       sourceId: null,
       taskId: null,
     }),

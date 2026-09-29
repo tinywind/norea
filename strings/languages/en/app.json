@@ -1132,6 +1132,8 @@
   "siteBrowser.close": "Close site browser",
   "siteBrowser.title": "Site browser",
   "siteBrowser.address": "Website address",
+  "siteBrowser.navigationFailed": "Unable to load this page",
+  "siteBrowser.navigationFailedDescription": "Check your connection or VPN, then retry or enter another address.",
   "siteBrowser.go": "Go",
   "siteBrowser.invalidAddress": "Enter an HTTP or HTTPS address without a username or password.",
   "sourceAccess.captchaTitle": "Complete CAPTCHA",

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Button, Group, Loader, Text } from "@mantine/core";
+import { Box, Button, Group, Loader, Stack, Text } from "@mantine/core";
 import { CloseGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
 import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
@@ -95,6 +95,7 @@ export function SiteBrowserOverlay() {
   const sourceId = useSiteBrowserStore((s) => s.sourceId);
   const browserTaskId = useSiteBrowserStore((s) => s.taskId);
   const phase = useSiteBrowserStore((s) => s.phase);
+  const navigationError = useSiteBrowserStore((s) => s.navigationError);
   const openSequence = useSiteBrowserStore((s) => s.openSequence);
   const context = useSiteBrowserStore((s) => s.context);
   const hide = useSiteBrowserStore((s) => s.hide);
@@ -133,7 +134,7 @@ export function SiteBrowserOverlay() {
       const timer = window.setTimeout(() => {
         const node = placeholderRef.current;
         const state = useSiteBrowserStore.getState();
-        if (!state.visible) return;
+        if (!state.visible || state.phase === "error") return;
         void syncSiteBrowserBounds(
           platform,
           node,
@@ -359,8 +360,20 @@ export function SiteBrowserOverlay() {
               state.phase === "loading" &&
               state.taskId === browserTaskId
             ) {
-              if (browserTaskId) taskScheduler.cancel(browserTaskId);
-              state.hide();
+              clearBoundsResyncTimers();
+              setOriginObservation(null);
+              if (browserTaskId) {
+                state.markNavigationError(
+                  browserTaskId,
+                  openSequence,
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
+              // Collapse only the native surface, not the task-owned browser.
+              // The error screen keeps Retry, address entry, and Close available.
+              void platform.hide().catch((hideError) =>
+                reportScraperError("hide failed page", hideError),
+              );
             }
           }
         }
@@ -468,11 +481,14 @@ export function SiteBrowserOverlay() {
 
   useEffect(() => {
     if (!visible) return;
+    if (phase === "error") return;
     if (deferWindowsBounds && (phase !== "ready" || loading)) return;
     const node = placeholderRef.current;
     if (!node) return;
 
     const sendBounds = () => {
+      const state = useSiteBrowserStore.getState();
+      if (!state.visible || state.phase === "error") return;
       void syncSiteBrowserBounds(platform, node, currentUrl, sourceId).catch(
         (error) => reportScraperError("set bounds", error),
       );
@@ -502,7 +518,7 @@ export function SiteBrowserOverlay() {
   ]);
 
   if (!visible) return null;
-  const browserLoading = phase !== "ready" || loading;
+  const browserLoading = phase === "queued" || phase === "loading" || loading;
   const currentObservation =
     originObservation &&
     originObservation.taskId === browserTaskId &&
@@ -519,6 +535,7 @@ export function SiteBrowserOverlay() {
     ? (expectedOrigin ?? "")
     : (displayedOrigin ?? t("sourceAccess.originUnavailable"));
   const canVerifySourceAccess =
+    phase === "ready" &&
     !browserLoading &&
     sourceId !== null &&
     displayedOrigin !== null &&
@@ -602,7 +619,39 @@ export function SiteBrowserOverlay() {
         ref={placeholderRef}
         style={{ flex: 1, minHeight: 0, position: "relative" }}
       >
-        {browserLoading ? (
+        {phase === "error" ? (
+          <Box
+            role="alert"
+            style={{
+              position: "absolute",
+              inset: 0,
+              overflowY: "auto",
+              backgroundColor: "var(--mantine-color-body)",
+              display: "grid",
+              placeItems: "center",
+              padding: "var(--mantine-spacing-xl)",
+            }}
+          >
+            <Stack gap="md" style={{ width: "100%", maxWidth: "32rem", minWidth: 0 }}>
+              <Text fw={600}>{t("siteBrowser.navigationFailed")}</Text>
+              <Text size="sm" c="dimmed">
+                {t("siteBrowser.navigationFailedDescription")}
+              </Text>
+              <Text size="sm" style={{ overflowWrap: "anywhere" }}>
+                {navigationError}
+              </Text>
+              <Button
+                onClick={() => {
+                  if (browserTaskId && currentUrl) {
+                    useSiteBrowserStore.getState().navigateTo(browserTaskId, currentUrl);
+                  }
+                }}
+              >
+                {t("common.retry")}
+              </Button>
+            </Stack>
+          </Box>
+        ) : browserLoading ? (
           <Box
             aria-busy="true"
             role="status"

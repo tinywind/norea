@@ -1,10 +1,17 @@
-import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { Children, isValidElement, useEffect, type ReactElement, type ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
 import { useSiteBrowserStore } from "../store/site-browser";
 import { BlockingLoadingOverlay } from "./AppFrame";
 import { SiteBrowserOverlay } from "./SiteBrowserOverlay";
 import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
+
+const platformMocks = vi.hoisted(() => ({
+  name: "android" as const,
+  navigate: vi.fn(), hide: vi.fn(), boundsFor: vi.fn(() => null),
+  setBounds: vi.fn(), currentOrigin: vi.fn(), currentUrl: vi.fn(),
+}));
+vi.mock("../lib/site-browser", () => ({ getSiteBrowserPlatform: () => platformMocks }));
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
@@ -54,7 +61,7 @@ function findControl(
   return undefined;
 }
 
-function openBrowser(phase: "queued" | "loading" | "ready") {
+function openBrowser(phase: "queued" | "loading" | "ready" | "error") {
   useSiteBrowserStore.getState().queueAt(
     "source-a",
     "https://source.test/chapter/1",
@@ -77,7 +84,7 @@ describe("source access browser controls", () => {
     useSiteBrowserStore.getState().hide();
   });
 
-  it.each(["queued", "loading", "ready"] as const)("closes a %s browser without requesting verification", (phase) => {
+  it.each(["queued", "loading", "ready", "error"] as const)("closes a %s browser without requesting verification", (phase) => {
     const close = findControl(openBrowser(phase), "siteBrowser.close");
     expect(close).toBeDefined();
     expect(close!.props.disabled).not.toBe(true);
@@ -89,7 +96,7 @@ describe("source access browser controls", () => {
     });
   });
 
-  it.each(["queued", "loading", "ready"] as const)("removes the pending task's blocking overlay while the browser is %s", (phase) => {
+  it.each(["queued", "loading", "ready", "error"] as const)("removes the pending task's blocking overlay while the browser is %s", (phase) => {
     const renderLoading = () => BlockingLoadingOverlay({ label: "Loading source" });
     expect(renderLoading()).not.toBeNull();
 
@@ -127,7 +134,7 @@ describe("source access browser controls", () => {
     expect(useSiteBrowserStore.getState().completion?.outcome).toBe("keep-paused");
   });
 
-  it.each(["queued", "loading", "ready"] as const)("keeps force stop available while %s", (phase) => {
+  it.each(["queued", "loading", "ready", "error"] as const)("keeps force stop available while %s", (phase) => {
     const cancel = vi.spyOn(sourceAccessCoordinator, "cancelSourceAccessWait")
       .mockReturnValue(true);
     const forceStop = findControl(
@@ -139,5 +146,74 @@ describe("source access browser controls", () => {
     expect(forceStop!.props.disabled).not.toBe(true);
     forceStop!.props.onClick!();
     expect(cancel).toHaveBeenCalledWith("site:source.test", 3);
+  });
+});
+
+describe("site browser navigation failure effect", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    platformMocks.navigate.mockReset();
+    platformMocks.hide.mockResolvedValue(undefined);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    useSiteBrowserStore.getState().hide();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useSiteBrowserStore.getState().hide();
+  });
+
+  function runNavigationEffect() {
+    vi.mocked(useEffect).mockClear();
+    SiteBrowserOverlay();
+    const effect = vi.mocked(useEffect).mock.calls.find(
+      ([, deps]) => deps?.length === 9 && deps.includes(platformMocks) && deps.includes("loading"),
+    );
+    expect(effect).toBeDefined();
+    effect![0]();
+  }
+
+  it.each(["browse", "source-access"] as const)("keeps a failed %s browser open with retry", async (mode) => {
+    openBrowser("loading");
+    if (mode === "browse") useSiteBrowserStore.setState({ context: { mode } });
+    platformMocks.navigate.mockRejectedValueOnce(new Error("net::ERR_CONNECTION_CLOSED"));
+    const sequence = useSiteBrowserStore.getState().openSequence;
+    runNavigationEffect();
+    await vi.waitFor(() => expect(useSiteBrowserStore.getState().phase).toBe("error"));
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      visible: true, taskId: "browser-task", sourceId: "source-a",
+      navigationError: "net::ERR_CONNECTION_CLOSED", completion: null,
+    });
+    expect(platformMocks.hide).toHaveBeenCalledOnce();
+    const view = SiteBrowserOverlay();
+    if (mode === "source-access") {
+      expect(findControl(view, "sourceAccess.verifyAndResume")?.props.disabled).toBe(true);
+    }
+    const retry = findControl(view, "common.retry");
+    expect(retry).toBeDefined();
+    retry!.props.onClick!();
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      phase: "loading", navigationError: null, taskId: "browser-task",
+      openSequence: sequence + 1, currentUrl: "https://source.test/chapter/1",
+    });
+  });
+
+  it.each(["replaced", "closed"])("ignores a stale failure after navigation is %s", async (next) => {
+    openBrowser("loading");
+    let reject!: (error: Error) => void;
+    platformMocks.navigate.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    runNavigationEffect();
+    const store = useSiteBrowserStore.getState();
+    if (next === "closed") store.hide();
+    else {
+      store.markReady("browser-task");
+      store.navigateTo("browser-task", "https://other.test/");
+    }
+    reject(new Error("old navigation failed"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(platformMocks.hide).not.toHaveBeenCalled();
+    expect(useSiteBrowserStore.getState()).toMatchObject(next === "closed"
+      ? { visible: false, phase: "closed" }
+      : { visible: true, phase: "loading", currentUrl: "https://other.test/" });
   });
 });

@@ -148,6 +148,33 @@ describe("enqueueOpenSiteTask", () => {
   });
 });
 
+describe("failed site browser task ownership", () => {
+  it.each([false, true])("holds its executor across a failure and retry until close (cancel: %s)", async (cancel) => {
+    enqueueOpenSiteTask(
+      { getBaseUrl: () => "https://source.test/", id: "source-a", name: "Source A" },
+      "https://source.test/", "Open site",
+    );
+    const controller = new AbortController();
+    const settled = vi.fn();
+    const running = capturedSpec!.run({ ...runContext(vi.fn()), signal: controller.signal });
+    const observed = running.then(settled, settled);
+    const state = useSiteBrowserStore.getState();
+    state.markNavigationError("task-1", state.openSequence, "Connection closed");
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(useSiteBrowserStore.getState().phase).toBe("error");
+    state.navigateTo("task-1", "https://source.test/");
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(capturedSpec?.exclusive).toBe(true);
+    if (cancel) controller.abort();
+    else state.hide();
+    await observed;
+    expect(settled).toHaveBeenCalledOnce();
+    expect(useSiteBrowserStore.getState().visible).toBe(false);
+  });
+});
+
 describe("enqueueSourceAccessBrowserTask", () => {
   it("binds the challenge context and browser outcome to its scheduler task", async () => {
     const block = {
