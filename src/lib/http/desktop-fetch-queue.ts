@@ -9,6 +9,7 @@ import type { FetchResultWire, PluginFetchPriority } from "./types";
 interface PendingFetch {
   priority: number;
   signal?: AbortSignal;
+  ownerSignal?: AbortSignal;
   run: () => Promise<FetchResultWire>;
   resolve: (result: FetchResultWire) => void;
   reject: (error: unknown) => void;
@@ -54,7 +55,7 @@ function drain(executor: ScraperExecutorId, queue: ExecutorFetchQueue): void {
     if (
       owner &&
       candidate.priority > priorityRanks.normal &&
-      candidate.signal !== owner
+      candidate.ownerSignal !== owner
     ) {
       continue;
     }
@@ -104,6 +105,7 @@ export function enqueueDesktopFetch(
   signal: AbortSignal | undefined,
   run: () => Promise<FetchResultWire>,
   cancelActive: () => Promise<unknown>,
+  ownerSignal: AbortSignal | undefined = signal,
 ): Promise<FetchResultWire> {
   if (signal?.aborted) return Promise.reject(requestAbortedError());
   const queue = executorQueue(executor);
@@ -112,6 +114,7 @@ export function enqueueDesktopFetch(
     const entry: PendingFetch = {
       priority: priorityRanks[priority ?? "normal"],
       signal,
+      ownerSignal,
       run,
       resolve: (result) => {
         cleanup();

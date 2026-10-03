@@ -1,4 +1,6 @@
 {
+  "network.waiting": "인터넷 연결을 기다리고 있습니다. 연결되면 대기 중인 작업을 재개합니다.",
+  "settings.data.pluginVpn.status.waitingForNetwork": "인터넷 연결 대기 중",
   "common.actionFailed": "작업 실패",
   "common.loadFailed": "불러오기 실패",
   "common.cancel": "취소",

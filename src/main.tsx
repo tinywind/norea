@@ -15,6 +15,8 @@ import { ChapterMediaStorageGate } from "./components/runtime/ChapterMediaStorag
 import { PluginVpnProxyGate } from "./components/runtime/PluginVpnProxyGate";
 import { translate } from "./i18n";
 import { describeError } from "./lib/errors";
+import { initializeNetworkStatus } from "./lib/network";
+import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
 import {
   installRuntimeLogLevelFilter,
   setRuntimeLogLevel,
@@ -283,6 +285,8 @@ function AppProviders() {
 }
 
 initializeSourceAccessCoordinator();
+void initializeNetworkStatus();
+initializeTaskNetworkState();
 createRoot(rootElement).render(
   <StrictMode>
     <AppProviders />

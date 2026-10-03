@@ -20,6 +20,7 @@ import {
   startAndroidBackgroundDownloadRecovery,
   startAndroidTaskNotifications,
 } from "./android-notifications";
+import { useNetworkStore } from "../network";
 
 type BrowserEventTarget = "document" | "window";
 
@@ -57,6 +58,7 @@ function dispatch(target: BrowserEventTarget, type: string): void {
 }
 
 beforeEach(() => {
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-04T00:00:00Z"));
   vi.clearAllMocks();
@@ -77,6 +79,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -111,6 +114,24 @@ describe("startAndroidTaskNotifications", () => {
     const stop = startAndroidTaskNotifications(t, "off");
     expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true, "tasks.backgroundExecutionSuspended");
     expect(update).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("releases the foreground service while work is waiting for internet", async () => {
+    const update = vi.fn();
+    const stopNative = vi.fn();
+    Object.assign(window, { __NoreaAndroidTasks: { update, stop: stopNative } });
+    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop = startAndroidTaskNotifications(t, "off");
+    expect(update).toHaveBeenCalledTimes(1);
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(stopNative).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(update).toHaveBeenCalledTimes(1);
+    useNetworkStore.setState({ connectivity: "online", revision: 3 });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(update).toHaveBeenCalledTimes(2);
     stop();
   });
 

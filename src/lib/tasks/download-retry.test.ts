@@ -9,6 +9,8 @@ describe("download recovery policy", () => {
     "Failed to fetch", "scraper: browser fetch failed: network error", "net::ERR_INTERNET_DISCONNECTED",
     "scraper: browser fetch to https://source.test timed out after 30000ms",
     "scraper: timed out preparing fetch context https://source.test",
+    "scraper: navigation failed (-1): net::ERR_EMPTY_RESPONSE at https://source.test",
+    "webview_extract: timeout after 30000ms",
   ])("retries transport failure: %s", message => {
     expect(isRetryableDownloadError(new Error(message))).toBe(true);
   });

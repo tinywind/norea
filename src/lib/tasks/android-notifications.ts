@@ -1,4 +1,5 @@
 import { isAndroidRuntime } from "../tauri-runtime";
+import { isNetworkOnline, useNetworkStore } from "../network";
 import type { TaskNotificationMode } from "../../store/notifications";
 import {
   buildActiveTaskNotificationPayload,
@@ -46,10 +47,10 @@ export function startAndroidTaskNotifications(
     if (bridge.isExecutionSuspended?.()) suspendExecution();
     if (executionSuspended) return;
 
-    const payload = buildActiveTaskNotificationPayload(
+    const payload = isNetworkOnline() ? buildActiveTaskNotificationPayload(
       taskScheduler.getSnapshot(),
       t,
-    );
+    ) : null;
     if (!payload) {
       if (lastPayload !== "") {
         bridge.stop();
@@ -87,6 +88,7 @@ export function startAndroidTaskNotifications(
   window.addEventListener("norea-app-resumed", resumeExecution);
   const unsubscribeSnapshots = taskScheduler.subscribe(schedulePublish);
   const unsubscribeEvents = taskScheduler.subscribeEvents(schedulePublish);
+  const unsubscribeNetwork = useNetworkStore.subscribe(schedulePublish);
   publish();
 
   return () => {
@@ -94,6 +96,7 @@ export function startAndroidTaskNotifications(
     window.removeEventListener("norea-app-resumed", resumeExecution);
     unsubscribeSnapshots();
     unsubscribeEvents();
+    unsubscribeNetwork();
     if (publishTimer !== null) clearTimeout(publishTimer);
     if (lastPayload !== "") {
       window.__NoreaAndroidTasks?.stop();

@@ -6,6 +6,7 @@ import { getSourceRequestTimeoutMs } from "../../store/browse";
 import { getScraperUserAgent } from "../../store/user-agent";
 import { requestAbortedError } from "../abort";
 import { waitForPluginVpnReady } from "../plugin-vpn-traffic";
+import { withNetworkRequest } from "../network";
 import { androidWebviewExtract } from "../android-scraper";
 import {
   cancelScraperExecutor,
@@ -226,9 +227,21 @@ async function webViewFetchInternal(
     options.scraperExecutor ?? activeScraperExecutor(options.sourceId);
   const timeoutMs = options.timeoutMs ?? getSourceRequestTimeoutMs();
   const signal = options.signal ?? activeScraperExecutorSignal(scraperExecutor);
-  await waitForPluginVpnReady(signal);
-  if (isAndroidRuntime()) {
-    return androidWebviewExtract(
+  return withNetworkRequest(signal, async (signal) => {
+    await waitForPluginVpnReady(signal);
+    if (isAndroidRuntime()) {
+      return androidWebviewExtract(
+        url,
+        options.beforeContentScript ?? null,
+        timeoutMs,
+        userAgent,
+        options.sourceId,
+        scraperExecutor,
+        signal,
+      );
+    }
+
+    return desktopWebViewExtract(
       url,
       options.beforeContentScript ?? null,
       timeoutMs,
@@ -236,19 +249,9 @@ async function webViewFetchInternal(
       options.sourceId,
       scraperExecutor,
       signal,
+      captureResources,
     );
-  }
-
-  return desktopWebViewExtract(
-    url,
-    options.beforeContentScript ?? null,
-    timeoutMs,
-    userAgent,
-    options.sourceId,
-    scraperExecutor,
-    signal,
-    captureResources,
-  );
+  });
 }
 
 /**

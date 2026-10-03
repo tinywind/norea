@@ -97,6 +97,7 @@ export interface TaskRecord {
   queueIndex?: number;
   queueSize?: number;
   detail?: string;
+  waitingForNetwork?: boolean;
   error?: string;
   canCancel: boolean;
   canRetry: boolean;

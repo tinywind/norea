@@ -17,12 +17,14 @@ import {
   takeCapturedMediaHandle,
 } from "./http";
 import { isSourceAccessRequiredError } from "./plugins/source-access";
+import { NetworkUnavailableError, useNetworkStore } from "./network";
 
 const invokeMock = vi.mocked(invoke);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isWindowsRuntimeMock = vi.mocked(isWindowsRuntime);
 
 beforeEach(() => {
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
   invokeMock.mockReset();
   isAndroidRuntimeMock.mockReturnValue(false);
   isWindowsRuntimeMock.mockReturnValue(true);
@@ -72,6 +74,35 @@ function mockAppFetch(
 }
 
 describe("appFetchText", () => {
+  it("does not admit app HTTP while the system has no internet", async () => {
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await expect(appFetchText("https://repo.test/")).rejects.toBeInstanceOf(NetworkUnavailableError);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["send", "body"] as const)("cancels app HTTP during %s on network loss", async phase => {
+    let rejectRequest!: (error: Error) => void;
+    invokeMock.mockImplementation(async command => {
+      if (command === "plugin:http|fetch") return 100;
+      if (command === "plugin:http|fetch_send" && phase === "body") return {
+        status: 200, statusText: "OK", url: "https://repo.test/", headers: {}, rid: 101,
+      };
+      if (command === "plugin:http|fetch_send" || command === "plugin:http|fetch_read_body") {
+        return new Promise((_resolve, reject) => { rejectRequest = reject; });
+      }
+      rejectRequest(new Error("Request cancelled"));
+      return undefined;
+    });
+    const pending = appFetchText("https://repo.test/");
+    const checked = expect(pending).rejects.toBeInstanceOf(NetworkUnavailableError);
+    await vi.waitFor(() => expect(rejectRequest).toBeTypeOf("function"));
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await checked;
+    expect(invokeMock).toHaveBeenCalledWith(
+      phase === "body" ? "plugin:http|fetch_cancel_body" : "plugin:http|fetch_cancel",
+      { rid: phase === "body" ? 101 : 100 },
+    );
+  });
   it("passes credential URLs to low-level app fetch without rewriting them", async () => {
     const url =
       "https://x-access-token:ghp_secret@raw.githubusercontent.com/owner/repo/branch/plugins.json";

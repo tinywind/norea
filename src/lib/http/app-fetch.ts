@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { REQUEST_CANCELLED_ERROR } from "../abort";
+import { requestAbortedError } from "../abort";
+import { withNetworkRequest } from "../network";
 import { redactUrlForLog } from "../url-log";
 import { serializeBody } from "./request";
 import { type HttpInit } from "./types";
@@ -39,9 +40,10 @@ function concatChunks(
   return merged;
 }
 
-async function readAppFetchBody(rid: number): Promise<Uint8Array<ArrayBuffer>> {
+async function readAppFetchBody(rid: number, signal: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
   const chunks: Uint8Array<ArrayBuffer>[] = [];
   while (true) {
+    if (signal.aborted) throw requestAbortedError();
     const data = await invoke<number[]>("plugin:http|fetch_read_body", {
       rid,
     });
@@ -61,46 +63,48 @@ export async function appFetch(
   url: string,
   init: HttpInit = {},
 ): Promise<Response> {
-  if (init.signal?.aborted) {
-    throw new Error(REQUEST_CANCELLED_ERROR);
-  }
-
-  const rid = await invoke<number>("plugin:http|fetch", {
-    clientConfig: {
-      method: init.method ?? "GET",
-      url,
-      headers: appFetchHeaders(init.headers),
-      data: encodeAppFetchBody(init.body),
-    },
-  });
-
-  if (init.signal?.aborted) {
-    await invoke("plugin:http|fetch_cancel", { rid });
-    throw new Error(REQUEST_CANCELLED_ERROR);
-  }
-
-  const result = await invoke<AppFetchSendResult>("plugin:http|fetch_send", {
-    rid,
-  });
-  let body: BodyInit | null = null;
-  if (!EMPTY_BODY_STATUS.has(result.status)) {
+  return withNetworkRequest(init.signal, async (signal) => {
+    let requestRid: number | null = null;
+    let bodyRid: number | null = null;
+    const cancel = () => {
+      const command = bodyRid !== null ? "plugin:http|fetch_cancel_body" : "plugin:http|fetch_cancel";
+      const rid = bodyRid ?? requestRid;
+      bodyRid = null;
+      requestRid = null;
+      if (rid !== null) {
+        void invoke(command, { rid }).catch((error: unknown) => {
+          console.warn("[app-fetch] request cancellation failed", error);
+        });
+      }
+    };
+    signal.addEventListener("abort", cancel, { once: true });
     try {
-      body = new Blob([await readAppFetchBody(result.rid)]);
-    } catch (error) {
-      await invoke("plugin:http|fetch_cancel_body", { rid: result.rid });
-      throw error;
+      requestRid = await invoke<number>("plugin:http|fetch", {
+        clientConfig: {
+          method: init.method ?? "GET", url,
+          headers: appFetchHeaders(init.headers), data: encodeAppFetchBody(init.body),
+        },
+      });
+      if (signal.aborted) { cancel(); throw requestAbortedError(); }
+      const result = await invoke<AppFetchSendResult>("plugin:http|fetch_send", { rid: requestRid });
+      requestRid = null;
+      bodyRid = result.rid;
+      if (signal.aborted) { cancel(); throw requestAbortedError(); }
+      let body: BodyInit | null = null;
+      if (!EMPTY_BODY_STATUS.has(result.status)) {
+        body = new Blob([await readAppFetchBody(result.rid, signal)]);
+        bodyRid = null;
+      }
+      const response = new Response(body, {
+        status: result.status, statusText: result.statusText, headers: result.headers,
+      });
+      Object.defineProperty(response, "url", { value: result.url, configurable: true });
+      return response;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      cancel();
     }
-  }
-  const response = new Response(body, {
-    status: result.status,
-    statusText: result.statusText,
-    headers: result.headers,
   });
-  Object.defineProperty(response, "url", {
-    value: result.url,
-    configurable: true,
-  });
-  return response;
 }
 
 export async function appFetchText(

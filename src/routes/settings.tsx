@@ -106,6 +106,7 @@ import { useBrowseStore } from "../store/browse";
 import { useLibraryStore } from "../store/library";
 import { LOG_LEVELS, type LogLevel, useLoggingStore } from "../store/logging";
 import { usePluginVpnStore } from "../store/plugin-vpn";
+import { useNetworkStore } from "../lib/network";
 import { useReaderStore } from "../store/reader";
 import { useUserAgentStore } from "../store/user-agent";
 import {
@@ -349,6 +350,7 @@ function emptyPluginVpnCredentials(): PluginVpnCredentials {
 }
 
 const PLUGIN_VPN_PHASE_KEYS: Record<PluginVpnPhase, TranslationKey> = {
+  waitingForNetwork: "settings.data.pluginVpn.status.waitingForNetwork",
   connected: "settings.data.pluginVpn.status.connected",
   connecting: "settings.data.pluginVpn.status.connecting",
   disabled: "settings.data.pluginVpn.status.disabled",
@@ -375,6 +377,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const vpnEnabled = usePluginVpnStore((state) => state.enabled);
+  const online = useNetworkStore((state) => state.connectivity === "online");
   const [finderOpen, setFinderOpen] = useState(false);
   const [vpnOperation, setVpnOperation] = useState<PluginVpnOperation | null>(
     null,
@@ -423,7 +426,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
         : vpnOperation?.kind === "finder"
           ? vpnOperation.phase
           : undefined;
-  const displayPhase = localPhase ?? (
+  const displayPhase = vpnEnabled && !online ? "waitingForNetwork" : localPhase ?? (
     vpnEnabled && status?.phase === "disabled" && status.error
       ? "error"
       : status?.phase
@@ -467,7 +470,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
     status?.phase === "connecting" ||
     status?.phase === "reconnecting";
   const visibleStatusError =
-    vpnOperation === null ? status?.error ?? null : null;
+    vpnEnabled && online && vpnOperation === null ? status?.error ?? null : null;
 
   function updateStatus(nextStatus: PluginVpnStatus): void {
     queryClient.setQueryData(PLUGIN_VPN_QUERY_KEY, nextStatus);

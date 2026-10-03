@@ -1,4 +1,6 @@
 {
+  "network.waiting": "Waiting for an internet connection. Queued work will resume when it is available.",
+  "settings.data.pluginVpn.status.waitingForNetwork": "Waiting for internet",
   "common.actionFailed": "Action failed",
   "common.loadFailed": "Load failed",
   "common.cancel": "Cancel",

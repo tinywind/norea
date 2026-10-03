@@ -1,4 +1,5 @@
 import { isAbortError } from "../abort";
+import { withNetworkRequest } from "../network";
 import { waitForPluginVpnReady } from "../plugin-vpn-traffic";
 import { androidWebviewFetch } from "../android-scraper";
 import {
@@ -21,6 +22,7 @@ import { type FetchResultWire, type PluginHttpInit } from "./types";
 async function pluginFetchInternal(
   url: string,
   init: PluginHttpInit = {},
+  ownerSignal?: AbortSignal,
 ): Promise<Response> {
   const wireInit = toWireInit(init);
   const contextUrl = init.contextUrl ?? null;
@@ -54,6 +56,7 @@ async function pluginFetchInternal(
           timeoutMs,
           signal,
           priority: init.priority,
+          ownerSignal,
         });
   } catch (error) {
     if (!isAbortError(error)) {
@@ -78,7 +81,11 @@ export async function pluginFetch(
   url: string,
   init: PluginHttpInit = {},
 ): Promise<Response> {
-  return pluginFetchInternal(url, init);
+  const signal = init.signal ?? activeScraperExecutorSignal(
+    init.scraperExecutor ?? activeScraperExecutor(init.sourceId),
+  );
+  return withNetworkRequest(signal, (networkSignal) =>
+    pluginFetchInternal(url, { ...init, signal: networkSignal }, signal));
 }
 
 export async function pluginMediaFetch(
@@ -93,7 +100,7 @@ export async function pluginMediaFetch(
     scraperExecutor,
   );
   if (capturedResponse) return capturedResponse;
-  return pluginFetchInternal(url, init);
+  return pluginFetch(url, init);
 }
 
 export async function pluginFetchText(

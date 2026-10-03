@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
-vi.mock("./plugin-vpn", () => ({
+vi.mock("./plugin-vpn", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./plugin-vpn")>(),
   restorePluginVpnConnection: vi.fn(),
   startPluginVpnStatusListener: vi.fn(),
 }));
@@ -12,6 +13,8 @@ import {
   type PluginVpnStatusEvent,
 } from "./plugin-vpn";
 import { requestPluginVpnRecovery, startPluginVpnLifecycle } from "./plugin-vpn-lifecycle";
+import { useNetworkStore } from "./network";
+import { usePluginVpnStore } from "../store/plugin-vpn";
 
 const restoreMock = vi.mocked(restorePluginVpnConnection);
 const statusListenerMock = vi.mocked(startPluginVpnStatusListener);
@@ -36,6 +39,8 @@ describe("plugin VPN app lifecycle", () => {
   let unlisten: Mock<() => void>;
 
   beforeEach(() => {
+    useNetworkStore.setState({ connectivity: "online", revision: 1 });
+    usePluginVpnStore.getState().setEnabled(true);
     visibility = "visible";
     const documentTarget = new EventTarget();
     Object.defineProperty(documentTarget, "visibilityState", { get: () => visibility });
@@ -92,7 +97,7 @@ describe("plugin VPN app lifecycle", () => {
     expect(onRestored).toHaveBeenCalledExactlyOnceWith(CONNECTED_STATUS);
   });
 
-  it("reports a recovery failure and allows the next resume to retry", async () => {
+  it("keeps the recovery backoff when a foreground event arrives", async () => {
     const error = new Error("network unavailable");
     restoreMock.mockRejectedValueOnce(error);
     const onError = vi.fn();
@@ -102,12 +107,12 @@ describe("plugin VPN app lifecycle", () => {
 
     window.dispatchEvent(new Event("focus"));
     await Promise.resolve();
-    expect(restoreMock).toHaveBeenCalledTimes(2);
+    expect(restoreMock).toHaveBeenCalledTimes(1);
   });
 
   it("retries a failed recovery with backoff and reports the failure once", async () => {
     vi.useFakeTimers();
-    const error = new Error("OpenVPN authentication failed");
+    const error = new Error("OpenVPN connection failed (CONNECTION_TIMEOUT)");
     restoreMock
       .mockRejectedValueOnce(error)
       .mockRejectedValueOnce(error)
@@ -190,15 +195,40 @@ describe("plugin VPN app lifecycle", () => {
     expect(restoreMock).toHaveBeenCalledTimes(3);
   });
 
-  it("responds to an online event while hidden", async () => {
+  it("responds only to effective native connectivity while hidden", async () => {
     visibility = "hidden";
     stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
     await Promise.resolve();
     window.dispatchEvent(new Event("online"));
+    expect(restoreMock).toHaveBeenCalledTimes(1);
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    useNetworkStore.setState({ connectivity: "online", revision: 3 });
     expect(restoreMock).toHaveBeenCalledTimes(2);
     stop();
     window.dispatchEvent(new Event("online"));
     expect(restoreMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops recovery timers offline and reconnects once when internet returns", async () => {
+    vi.useFakeTimers();
+    restoreMock.mockRejectedValueOnce(new Error("CONNECTION_TIMEOUT")).mockResolvedValue(CONNECTED_STATUS);
+    stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
+    await vi.advanceTimersByTimeAsync(0);
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await vi.advanceTimersByTimeAsync(600_000);
+    requestPluginVpnRecovery();
+    expect(restoreMock).toHaveBeenCalledTimes(1);
+    useNetworkStore.setState({ connectivity: "online", revision: 3 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restoreMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not schedule retries for authentication failures", async () => {
+    vi.useFakeTimers();
+    restoreMock.mockRejectedValue(new Error("AUTH_FAILED"));
+    stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(restoreMock).toHaveBeenCalledTimes(1);
   });
 
   it("removes resume listeners and ignores completion after teardown", async () => {

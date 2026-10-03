@@ -97,6 +97,7 @@ interface DesktopWebviewFetchRequest {
   readonly scraperExecutor: ScraperExecutorId;
   readonly timeoutMs: number;
   readonly signal: AbortSignal | undefined;
+  readonly ownerSignal?: AbortSignal;
   readonly priority?: PluginFetchPriority;
 }
 
@@ -110,6 +111,7 @@ export async function desktopWebviewFetch({
   timeoutMs,
   signal,
   priority,
+  ownerSignal,
 }: DesktopWebviewFetchRequest): Promise<FetchResultWire> {
   if (signal?.aborted) {
     throw requestAbortedError();
@@ -130,5 +132,6 @@ export async function desktopWebviewFetch({
         timeoutMs,
       }),
     () => cancelScraperExecutor(scraperExecutor),
+    ownerSignal,
   );
 }

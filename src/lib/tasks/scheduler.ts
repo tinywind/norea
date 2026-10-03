@@ -42,6 +42,7 @@ import {
   type ScraperExecutorId,
 } from "./scraper-queue";
 import { isAbortError } from "../abort";
+import { isNetworkUnavailableError } from "../network";
 import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
 import { recordPerformanceObservation } from "../observability";
@@ -248,6 +249,8 @@ export class TaskScheduler {
   private sourceQueuesPaused: boolean;
   private backgroundExecutionSuspended = false;
   private backgroundExecutionDetail: string | undefined;
+  private networkAvailable = true;
+  private networkWaitingDetail: string | undefined;
   private activeMainTaskId: string | null = null;
   private batchDepth = 0;
   private drainAfterBatch = false;
@@ -416,6 +419,10 @@ export class TaskScheduler {
     };
 
     this.entries.set(id, entry);
+    if (!this.networkAvailable && this.requiresNetwork(entry)) {
+      entry.record.waitingForNetwork = true;
+      entry.record.detail = this.networkWaitingDetail;
+    }
     this.registerSourceAccessScopeEntry(entry);
     if (spec.dedupeKey) {
       this.activeDedupeByKey.set(spec.dedupeKey, id);
@@ -1190,6 +1197,38 @@ export class TaskScheduler {
     return failedEntries.length;
   }
 
+  private requiresNetwork(entry: TaskEntry): boolean {
+    return entry.record.lane === "source" &&
+      entry.record.kind !== "source.clearCookies" &&
+      entry.record.kind !== "chapter.deleteDownload";
+  }
+
+  setNetworkAvailable(available: boolean, detail?: string): void {
+    if (this.networkAvailable === available) return;
+    this.networkAvailable = available;
+    const previousDetail = this.networkWaitingDetail;
+    this.networkWaitingDetail = available ? undefined : detail;
+    for (const entry of this.entries.values()) {
+      if (!this.requiresNetwork(entry) ||
+          (entry.record.status !== "queued" && entry.record.status !== "running")) continue;
+      if (available) {
+        delete entry.record.waitingForNetwork;
+        if (entry.record.detail === previousDetail) delete entry.record.detail;
+      } else {
+        this.clearTaskRetry(entry);
+        entry.record.waitingForNetwork = true;
+        entry.record.detail = detail;
+        if (entry.record.status === "running" &&
+            !(entry.spec.canCompleteWithoutSourceAccess && !entry.sourceAccessStarted)) {
+          entry.pauseRequested = true;
+          entry.controller.abort(new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError"));
+        }
+      }
+    }
+    this.publishSnapshot();
+    if (available) this.requestDrain();
+  }
+
   setBackgroundExecutionSuspended(suspended: boolean, detail?: string): void {
     if (this.backgroundExecutionSuspended === suspended) return;
     this.backgroundExecutionSuspended = suspended;
@@ -1786,6 +1825,7 @@ export class TaskScheduler {
     options: { allowActiveSource?: boolean } = {},
   ): boolean {
     if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
+    if (!this.networkAvailable && this.requiresNetwork(entry)) return false;
     if (options.allowActiveSource) return true;
     const sourceId = entry.record.source?.id;
     if (!sourceId) return true;
@@ -1825,6 +1865,7 @@ export class TaskScheduler {
     if (
       entry.record.status !== "running" ||
       entry.controller.signal.aborted ||
+      !this.networkAvailable ||
       entry.pauseRequested
     ) {
       entry.sourceAccessDeferred = true;
@@ -1944,6 +1985,11 @@ export class TaskScheduler {
         const sourceAccessError = normalizeSourceAccessRequiredError(error);
         if (cancelled && entry.record.status === "cancelled") {
           this.finishCancelledRunningAfterSettlement(entry);
+          return;
+        }
+        if (this.requiresNetwork(entry) && entry.record.status === "running" &&
+            (!this.networkAvailable || isNetworkUnavailableError(error))) {
+          this.requeuePausedRunningAfterSettlement(entry);
           return;
         }
         if (
@@ -2266,6 +2312,10 @@ export class TaskScheduler {
       ...patch,
       status,
     };
+    if (status !== "queued" && status !== "running") {
+      delete entry.record.waitingForNetwork;
+      if (entry.record.detail === this.networkWaitingDetail) delete entry.record.detail;
+    }
     this.entries.set(entry.record.id, entry);
     this.publish(entry, previousStatus);
     this.scheduleTerminalCleanup(entry);

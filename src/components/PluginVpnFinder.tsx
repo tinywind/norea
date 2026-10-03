@@ -15,6 +15,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { useTranslation } from "../i18n";
+import { useNetworkStore } from "../lib/network";
 import {
   loadPluginVpnFinderServers,
   type PluginVpnFinderServer,
@@ -177,6 +178,7 @@ export function PluginVpnFinder({
   verdicts,
 }: PluginVpnFinderProps) {
   const { locale, t } = useTranslation();
+  const online = useNetworkStore((state) => state.connectivity === "online");
   const queryClient = useQueryClient();
   const [countryCode, setCountryCode] = useState("");
   const [catalogStopped, setCatalogStopped] = useState(false);
@@ -187,11 +189,11 @@ export function PluginVpnFinder({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<PluginVpnFinderSort>("score");
   const serversQuery = useQuery({
-    enabled: opened && !catalogStopped,
+    enabled: opened && !catalogStopped && online,
     queryFn: ({ signal }) => loadPluginVpnFinderServers(true, signal),
     queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
     refetchInterval:
-      opened && !catalogStopped
+      opened && !catalogStopped && online
         ? PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS
         : false,
     retry: false,
@@ -279,6 +281,7 @@ export function PluginVpnFinder({
   }
 
   function refreshCatalog(): void {
+    if (!online) return;
     queryClient.setQueryData<PluginVpnFinderServer[]>(
       PLUGIN_VPN_FINDER_QUERY_KEY,
       [],
@@ -355,9 +358,9 @@ export function PluginVpnFinder({
         <Text size="sm">
           {t("settings.data.pluginVpn.finder.description")}
         </Text>
-        {pendingCandidateId !== null ||
+        {connectionPhase !== "waitingForNetwork" && (pendingCandidateId !== null ||
         connectionPhase === "connecting" ||
-        connectionPhase === "reconnecting" ? (
+        connectionPhase === "reconnecting") ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Group aria-live="polite" gap="xs" role="status">
               <Loader size="sm" />
@@ -373,6 +376,19 @@ export function PluginVpnFinder({
                       })}
               </Text>
             </Group>
+            <TextButton
+              onClick={() => void onCancelConnection()}
+              size="sm"
+              variant="default"
+            >
+              {t("settings.data.pluginVpn.connection.cancel")}
+            </TextButton>
+          </Stack>
+        ) : connectionPhase === "waitingForNetwork" ? (
+          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
+            <Text role="status" size="sm">
+              {t("settings.data.pluginVpn.status.waitingForNetwork")}
+            </Text>
             <TextButton
               onClick={() => void onCancelConnection()}
               size="sm"
@@ -405,7 +421,7 @@ export function PluginVpnFinder({
           <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
             {connectionError ?? t("settings.data.pluginVpn.status.error")}
           </Text>
-        ) : connectionError ? (
+        ) : connectionPhase !== "disabled" && connectionError ? (
           <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
             {connectionError}
           </Text>
@@ -480,6 +496,7 @@ export function PluginVpnFinder({
           </Text>
           <TextButton
             active={catalogRefreshing}
+            disabled={!online}
             onClick={catalogRefreshing ? cancelCatalogQuery : refreshCatalog}
             size="sm"
             variant="default"
@@ -490,7 +507,11 @@ export function PluginVpnFinder({
           </TextButton>
         </Group>
 
-        {catalogStopped ? (
+        {!online ? (
+          <Text className="norea-plugin-vpn-finder-state" role="status" size="sm">
+            {t("network.waiting")}
+          </Text>
+        ) : catalogStopped ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Text role="status" size="sm">
               {t("settings.data.pluginVpn.finder.stopped")}

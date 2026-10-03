@@ -73,7 +73,7 @@ function mediaFailureMessage(error: unknown): string {
 }
 
 // Chromium reports dropped or reset connections with these fetch messages.
-const TRANSIENT_MEDIA_NETWORK_ERROR = /\b(?:failed to fetch|network error|ERR_(?:CONNECTION_(?:CLOSED|RESET|ABORTED)|NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|TIMED_OUT))\b|(?:scraper: (?:browser (?:fetch|navigation).*timed out|timed out preparing fetch context)|webview_fetch:.*(?:timeout|timed out))/i;
+const TRANSIENT_MEDIA_NETWORK_ERROR = /\b(?:failed to fetch|network error|ERR_(?:CONNECTION_(?:CLOSED|RESET|ABORTED)|NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|TIMED_OUT|EMPTY_RESPONSE))\b|(?:scraper: (?:browser (?:fetch|navigation).*timed out|timed out preparing fetch context)|webview_(?:fetch|extract):.*(?:timeout|timed out))/i;
 
 export function isTransientMediaNetworkError(error: unknown): boolean {
   return TRANSIENT_MEDIA_NETWORK_ERROR.test(mediaFailureMessage(error));

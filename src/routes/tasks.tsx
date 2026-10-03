@@ -481,6 +481,10 @@ const TaskRow = memo(function TaskRow({
               ? t("tasks.allSourcesPaused")
               : t("tasks.sourcePaused")}
           </Text>
+        ) : currentTask.waitingForNetwork ? (
+          <Text className="norea-task-row-detail" lineClamp={1}>
+            {t("network.waiting")}
+          </Text>
         ) : blockingSourceTask ? (
           <Text className="norea-task-row-detail" lineClamp={1}>
             {t("tasks.downloadWaiting")}

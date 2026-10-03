@@ -1,6 +1,7 @@
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { requestAbortedError } from "./abort";
-import { getPluginVpnStatus } from "./plugin-vpn";
+import { requireNetworkOnline, isNetworkOnline, NetworkUnavailableError, useNetworkStore } from "./network";
+import { getPluginVpnStatus, isRetryablePluginVpnError } from "./plugin-vpn";
 import { requestPluginVpnRecovery } from "./plugin-vpn-lifecycle";
 
 export const PLUGIN_VPN_READY_TIMEOUT_MS = 120_000;
@@ -30,6 +31,7 @@ export function waitForPluginVpnReady(
   deadline = Date.now() + PLUGIN_VPN_READY_TIMEOUT_MS,
 ): Promise<boolean> {
   if (signal?.aborted) return Promise.reject(requestAbortedError());
+  try { requireNetworkOnline(); } catch (error) { return Promise.reject(error); }
   if (!usePluginVpnStore.getState().enabled) return Promise.resolve(false);
 
   return new Promise<boolean>((resolve, reject) => {
@@ -37,12 +39,14 @@ export function waitForPluginVpnReady(
     let waited = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let unsubscribe: (() => void) | undefined;
+    let unsubscribeNetwork: (() => void) | undefined;
     const cleanup = () => {
       active = false;
       clearTimeout(timeoutTimer);
       clearTimeout(pollTimer);
       signal?.removeEventListener("abort", abort);
       unsubscribe?.();
+      unsubscribeNetwork?.();
     };
     const finish = () => {
       if (!active) return;
@@ -62,6 +66,9 @@ export function waitForPluginVpnReady(
     unsubscribe = usePluginVpnStore.subscribe((state) => {
       if (!state.enabled) finish();
     });
+    unsubscribeNetwork = useNetworkStore.subscribe(() => {
+      if (!isNetworkOnline()) fail(new NetworkUnavailableError());
+    });
     signal?.addEventListener("abort", abort, { once: true });
 
     const poll = async () => {
@@ -77,6 +84,10 @@ export function waitForPluginVpnReady(
           return;
         }
         if (!status.supported || !status.profile) {
+          fail(new PluginVpnUnavailableError(false));
+          return;
+        }
+        if (status.error && !isRetryablePluginVpnError(status.error)) {
           fail(new PluginVpnUnavailableError(false));
           return;
         }

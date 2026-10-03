@@ -61,6 +61,12 @@ beforeEach(() => {
 });
 
 describe("desktop scraper fetch admission", () => {
+  it("preserves executor ownership when network cancellation wraps the task signal", async () => {
+    const controller = new AbortController();
+    await runWithScraperExecutor("source", "network-owned", "immediate", controller.signal, () =>
+      pluginFetch("https://source.test/owned", { sourceId: "source", priority: "deferred" }));
+    expect(fetchUrls()).toEqual(["https://source.test/owned"]);
+  });
   it("preserves plugin fetch priority at the desktop boundary", async () => {
     const active = deferred<FetchResultWire>();
     invokeMock.mockImplementationOnce(() => active.promise);

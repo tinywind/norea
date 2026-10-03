@@ -9,6 +9,7 @@ import {
 import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
+import { isNetworkOnline, withNetworkRequest } from "./network";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
 const PLUGIN_VPN_STATUS_EVENT = "plugin-vpn-status";
@@ -22,6 +23,7 @@ export type PluginVpnPhase =
   | "connected"
   | "reconnecting"
   | "disconnecting"
+  | "waitingForNetwork"
   | "error";
 
 export interface PluginVpnProfile {
@@ -45,7 +47,7 @@ export function pluginVpnFinderProfileIp(
 }
 
 export interface PluginVpnStatusEvent {
-  kind: "error" | "reconnected" | "reconnecting";
+  kind: "error" | "reconnected" | "reconnecting" | "networkChanged";
   status: PluginVpnStatus;
 }
 
@@ -174,6 +176,13 @@ export function startPluginVpnStatusListener(
 export function loadPluginVpnFinderServers(
   forceRefresh = false,
   signal?: AbortSignal,
+): Promise<PluginVpnFinderServer[]> {
+  return withNetworkRequest(signal, (signal) => loadPluginVpnFinderServersOnline(forceRefresh, signal));
+}
+
+function loadPluginVpnFinderServersOnline(
+  forceRefresh: boolean,
+  signal: AbortSignal,
 ): Promise<PluginVpnFinderServer[]> {
   if (signal?.aborted) {
     return Promise.reject(
@@ -386,6 +395,10 @@ async function establishPluginVpnConnection(
 ): Promise<PluginVpnStatus | null> {
   await ensureAndroidPluginVpnProxy();
   if (!isCurrent()) return null;
+  if (!isNetworkOnline()) {
+    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
+    if (!isCurrent() || !isNetworkOnline()) return null;
+  }
 
   let status: PluginVpnStatus;
   try {
@@ -394,11 +407,13 @@ async function establishPluginVpnConnection(
     });
   } catch (error) {
     if (isCurrent()) await cancelFailedPluginVpnConnection();
+    if (!isNetworkOnline()) return null;
     throw error;
   }
   if (!isCurrent()) return null;
   if (status.phase !== "connected") {
     await cancelFailedPluginVpnConnection();
+    if (!isCurrent() || !isNetworkOnline()) return null;
     if (status.error) throw new Error(status.error);
     throw new PluginVpnConnectionNotEstablishedError();
   }
@@ -433,11 +448,13 @@ export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {
 }
 
 export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
-  if (!usePluginVpnStore.getState().enabled || activeProfileSwitches > 0) {
+  if (!isNetworkOnline() || !usePluginVpnStore.getState().enabled || activeProfileSwitches > 0) {
     return Promise.resolve(null);
   }
   if (recoveryAttempt) return recoveryAttempt;
-  if (connectionAttempt) return Promise.resolve(null);
+  if (connectionAttempt) {
+    return connectionAttempt.then(() => restorePluginVpnConnection(), () => null);
+  }
   const generation = connectionGeneration;
   const current = () =>
     generation === connectionGeneration && usePluginVpnStore.getState().enabled;
@@ -447,10 +464,11 @@ export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
       !current() ||
       !status.supported ||
       !status.profile ||
-      (status.phase !== "disabled" && status.phase !== "error")
+      (status.phase !== "disabled" && status.phase !== "error" && status.phase !== "waitingForNetwork")
     ) {
       return null;
     }
+    if (status.error && !isRetryablePluginVpnError(status.error)) return null;
     if (status.phase === "error") {
       await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
       if (!current()) return null;
@@ -470,4 +488,9 @@ export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
   });
   recoveryAttempt = attempt;
   return trackPluginVpnConnection(attempt);
+}
+
+export function isRetryablePluginVpnError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return !/AUTH_FAILED|CERT_VERIFY_FAIL|authentication failed|credentials|username.*required|password|private.key|static challenge|certificate|OpenVPN profiles?|invalid.*profile|unsupported directive/i.test(message);
 }

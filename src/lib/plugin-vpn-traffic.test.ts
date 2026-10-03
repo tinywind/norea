@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./plugin-vpn", () => ({ getPluginVpnStatus: vi.fn() }));
+vi.mock("./plugin-vpn", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./plugin-vpn")>(), getPluginVpnStatus: vi.fn(),
+}));
 vi.mock("./plugin-vpn-lifecycle", () => ({ requestPluginVpnRecovery: vi.fn() }));
 
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { getPluginVpnStatus, type PluginVpnStatus } from "./plugin-vpn";
 import { requestPluginVpnRecovery } from "./plugin-vpn-lifecycle";
+import { useNetworkStore, NetworkUnavailableError } from "./network";
 import {
   isPluginVpnUnavailableError,
   PLUGIN_VPN_READY_TIMEOUT_MS,
@@ -21,6 +24,7 @@ const CONNECTED: PluginVpnStatus = {
 const RECONNECTING: PluginVpnStatus = { ...CONNECTED, phase: "reconnecting" };
 
 beforeEach(() => {
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
   vi.useFakeTimers();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   usePluginVpnStore.getState().setEnabled(true);
@@ -28,12 +32,35 @@ beforeEach(() => {
   recoveryMock.mockReset();
 });
 afterEach(() => {
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
   usePluginVpnStore.getState().setEnabled(false);
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("plugin VPN traffic readiness", () => {
+  it.each([true, false])("blocks offline traffic with VPN enabled=%s", async enabled => {
+    usePluginVpnStore.getState().setEnabled(enabled);
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await expect(waitForPluginVpnReady()).rejects.toBeInstanceOf(NetworkUnavailableError);
+    expect(statusMock).not.toHaveBeenCalled();
+    expect(recoveryMock).not.toHaveBeenCalled();
+  });
+
+  it("ends a readiness wait immediately on network loss", async () => {
+    const waiting = waitForPluginVpnReady();
+    const checked = expect(waiting).rejects.toBeInstanceOf(NetworkUnavailableError);
+    await vi.advanceTimersByTimeAsync(0);
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await checked;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("treats authentication errors as requiring user action", async () => {
+    statusMock.mockResolvedValue({ ...CONNECTED, phase: "error", error: "AUTH_FAILED" });
+    await expect(waitForPluginVpnReady()).rejects.toMatchObject({ retryable: false });
+    expect(recoveryMock).not.toHaveBeenCalled();
+  });
   it("leaves explicitly disabled traffic alone without native IPC", async () => {
     usePluginVpnStore.getState().setEnabled(false);
     await expect(waitForPluginVpnReady()).resolves.toBe(false);

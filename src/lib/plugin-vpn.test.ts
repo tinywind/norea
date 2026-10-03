@@ -30,6 +30,7 @@ import {
 } from "./android-storage";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
+import { useNetworkStore, NetworkUnavailableError } from "./network";
 import {
   applyPluginVpnFinderProfile,
   canStartPluginVpnConnection,
@@ -107,6 +108,7 @@ const SESSION_CREDENTIALS: PluginVpnCredentials = {
 
 describe("plugin VPN", () => {
   beforeEach(async () => {
+    useNetworkStore.setState({ connectivity: "online", revision: 1 });
     invokeMock.mockResolvedValue(STATUS);
     await disconnectPluginVpn();
     vi.clearAllMocks();
@@ -192,13 +194,58 @@ describe("plugin VPN", () => {
   });
 
   it("does not restore over a pending manual connection", async () => {
-    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+    invokeMock.mockResolvedValue(CONNECTED_STATUS);
     const connection = connectPluginVpn(SESSION_CREDENTIALS);
     await expect(restorePluginVpnConnection()).resolves.toBeNull();
     await expect(connection).resolves.toEqual(CONNECTED_STATUS);
     expect(invokeMock.mock.calls).toEqual([
       ["plugin_vpn_connect", { credentials: SESSION_CREDENTIALS }],
+      ["plugin_vpn_status"],
     ]);
+  });
+
+  it("keeps On and credentials while offline, and honors Off before restoration", async () => {
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await expect(connectPluginVpn(SESSION_CREDENTIALS)).resolves.toBeNull();
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual(["plugin_vpn_disconnect"]);
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    await disconnectPluginVpn();
+    invokeMock.mockClear();
+    useNetworkStore.setState({ connectivity: "online", revision: 3 });
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "AUTH_FAILED",
+    "The OpenVPN username is required",
+    "The OpenVPN static challenge response is required",
+    "OpenVPN profile evaluation failed: invalid option",
+    "OpenVPN profiles that require external PKI are not supported",
+  ])("does not retry a stored configuration failure: %s", async error => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockResolvedValue({ ...STATUS, error });
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock.mock.calls).toEqual([["plugin_vpn_status"]]);
+  });
+
+  it("does not start VPN Gate HTTP while offline", async () => {
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await expect(loadPluginVpnFinderServers(true)).rejects.toBeInstanceOf(NetworkUnavailableError);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("cancels an active VPN Gate query when the system route disappears", async () => {
+    invokeMock.mockImplementation(command => command === "plugin_vpn_load_finder_servers"
+      ? new Promise(() => undefined) : Promise.resolve(undefined));
+    const pending = loadPluginVpnFinderServers(true);
+    const checked = expect(pending).rejects.toBeInstanceOf(NetworkUnavailableError);
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+    await checked;
+    expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_cancel_finder_query", {
+      queryId: expect.any(String),
+    });
   });
 
   it("lets a manual connection supersede a pending recovery status check", async () => {
