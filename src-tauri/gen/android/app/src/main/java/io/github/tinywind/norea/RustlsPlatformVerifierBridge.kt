@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -13,6 +14,38 @@ import javax.net.ssl.HttpsURLConnection
 
 @Keep
 object RustlsPlatformVerifierBridge {
+  private class HttpsRequest {
+    private var cancelled = false
+    private var connection: HttpsURLConnection? = null
+
+    @Synchronized
+    fun attach(value: HttpsURLConnection) {
+      if (cancelled) throw IOException("VPN Gate server query was cancelled.")
+      connection = value
+    }
+
+    @Synchronized
+    fun checkActive() {
+      if (cancelled) throw IOException("VPN Gate server query was cancelled.")
+    }
+
+    fun cancel() {
+      val current = synchronized(this) {
+        cancelled = true
+        connection.also { connection = null }
+      }
+      current?.disconnect()
+    }
+  }
+
+  private val httpsRequests = ConcurrentHashMap<Long, HttpsRequest>()
+
+  @Keep
+  @JvmStatic
+  fun httpsRequestLifecycle(id: Long, cancel: Boolean) {
+    if (cancel) httpsRequests.remove(id)?.cancel()
+    else httpsRequests[id] = HttpsRequest()
+  }
   init {
     System.loadLibrary("app_lib")
   }
@@ -23,6 +56,7 @@ object RustlsPlatformVerifierBridge {
   @Keep
   @JvmStatic
   fun httpsGet(
+    requestId: Long,
     url: String,
     connectTimeoutMs: Int,
     requestTimeoutMs: Int,
@@ -32,8 +66,11 @@ object RustlsPlatformVerifierBridge {
     require(requestTimeoutMs > 0) { "HTTPS request timeout must be positive." }
     require(maxBytes > 0) { "HTTPS response limit must be positive." }
 
+    val request = httpsRequests[requestId]
+      ?: throw IOException("VPN Gate server query was cancelled.")
     val connection = URL(url).openConnection() as? HttpsURLConnection
       ?: throw IOException("VPN Gate server list URL must use HTTPS.")
+    request.attach(connection)
     val timedOut = AtomicBoolean(false)
     val timeoutExecutor = Executors.newSingleThreadScheduledExecutor()
     val timeoutTask = timeoutExecutor.schedule({
@@ -48,7 +85,9 @@ object RustlsPlatformVerifierBridge {
       connection.useCaches = false
       connection.setRequestProperty("User-Agent", "Norea")
 
+      request.checkActive()
       val status = connection.responseCode
+      request.checkActive()
       if (status !in 200..299) {
         throw IOException("VPN Gate server list returned HTTP $status.")
       }
@@ -66,6 +105,7 @@ object RustlsPlatformVerifierBridge {
       connection.inputStream.use { input ->
         val buffer = ByteArray(8192)
         while (true) {
+          request.checkActive()
           val read = input.read(buffer)
           if (read < 0) break
           if (read > maxBytes - output.size()) {
@@ -77,6 +117,7 @@ object RustlsPlatformVerifierBridge {
       if (timedOut.get()) {
         throw SocketTimeoutException("VPN Gate server list request timed out.")
       }
+      request.checkActive()
       output.toByteArray()
     } catch (error: IOException) {
       if (timedOut.get() && error !is SocketTimeoutException) {

@@ -5,7 +5,7 @@ use jni::{
     refs::Global,
     EnvUnowned, JValue, JavaVM,
 };
-use std::sync::OnceLock;
+use std::sync::{OnceLock, atomic::{AtomicI64, Ordering}};
 
 struct AndroidTlsBridge {
     class: Global<JClass<'static>>,
@@ -13,6 +13,41 @@ struct AndroidTlsBridge {
 }
 
 static ANDROID_TLS_BRIDGE: OnceLock<AndroidTlsBridge> = OnceLock::new();
+static HTTPS_REQUEST_SEQUENCE: AtomicI64 = AtomicI64::new(1);
+
+pub(crate) struct HttpsRequest(i64);
+
+impl HttpsRequest {
+    pub(crate) fn prepare() -> Result<Self, String> {
+        let id = HTTPS_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        https_request_lifecycle(id, false)?;
+        Ok(Self(id))
+    }
+
+    pub(crate) fn id(&self) -> i64 { self.0 }
+}
+
+impl Drop for HttpsRequest {
+    fn drop(&mut self) {
+        if let Err(error) = https_request_lifecycle(self.0, true) {
+            log::warn!("could not close Android HTTPS request: {error}");
+        }
+    }
+}
+
+fn https_request_lifecycle(id: i64, cancel: bool) -> Result<(), String> {
+    let bridge = ANDROID_TLS_BRIDGE.get()
+        .ok_or_else(|| "Android TLS bridge is not initialized".to_string())?;
+    bridge.java_vm.attach_current_thread_for_scope(|env| {
+        env.call_static_method(
+            &bridge.class,
+            jni_str!("httpsRequestLifecycle"),
+            jni_sig!("(JZ)V"),
+            &[JValue::Long(id), JValue::from(cancel)],
+        )?;
+        Ok(())
+    }).map_err(jni_error_message)
+}
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinywind_norea_RustlsPlatformVerifierBridge_init(
@@ -33,6 +68,7 @@ pub extern "system" fn Java_io_github_tinywind_norea_RustlsPlatformVerifierBridg
 }
 
 pub(crate) fn https_get(
+    request_id: i64,
     url: &str,
     connect_timeout_ms: i32,
     read_timeout_ms: i32,
@@ -49,8 +85,9 @@ pub(crate) fn https_get(
                 .call_static_method(
                     &bridge.class,
                     jni_str!("httpsGet"),
-                    jni_sig!("(Ljava/lang/String;III)[B"),
+                    jni_sig!("(JLjava/lang/String;III)[B"),
                     &[
+                        JValue::Long(request_id),
                         JValue::from(&url),
                         JValue::Int(connect_timeout_ms),
                         JValue::Int(read_timeout_ms),

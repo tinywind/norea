@@ -8,6 +8,7 @@ mod desktop_file_open;
 mod download_cache;
 mod download_queue;
 mod native_stream;
+mod network;
 mod plugin_host;
 mod plugin_vpn;
 mod scraper;
@@ -219,6 +220,7 @@ pub fn run() {
             native_stream::native_stream_info,
             native_stream::native_stream_read_chunk,
             native_stream::native_stream_write_chunk,
+            network::network_status,
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
             plugin_vpn::state::plugin_vpn_apply_finder_profile,
@@ -260,6 +262,8 @@ pub fn run() {
             plugin_vpn_for_setup
                 .initialize(app.handle())
                 .map_err(|err| format!("plugin VPN init: {err}"))?;
+            network::initialize(app.handle());
+            plugin_vpn_for_setup.watch_network(app.handle());
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;

@@ -180,6 +180,8 @@ pub(super) async fn connect(
     credentials: EngineCredentials,
     mut cancellation: watch::Receiver<bool>,
 ) -> Result<EngineConnection, String> {
+    let mut network = crate::network::subscribe();
+    crate::network::require_online()?;
     let runtime = Handle::current();
     let (events, mut event_receiver) = mpsc::unbounded_channel();
     let connector = Arc::new(SwitchingConnector::new());
@@ -281,6 +283,11 @@ pub(super) async fn connect(
     loop {
         tokio::select! {
             biased;
+            _ = network.changed() => {
+                control.cancel();
+                let _ = session.await;
+                return Err("Internet connection changed while connecting OpenVPN".to_string());
+            }
             event = event_receiver.recv() => match event {
                 Some(EngineEvent::CoreConnected) if readiness.mark_core_connected() => break,
                 Some(EngineEvent::Reconnecting) => {
@@ -329,6 +336,11 @@ pub(super) async fn connect(
         loop {
             tokio::select! {
                 biased;
+                _ = network.changed() => {
+                    completion_control.cancel();
+                    let _ = session.await;
+                    break Err("Internet connection changed while OpenVPN was active".to_string());
+                }
                 event = event_receiver.recv() => match event {
                     Some(EngineEvent::Failure(error)) => {
                         completion_control.cancel();

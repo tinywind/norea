@@ -194,6 +194,9 @@ async fn serve(listener: StdTcpListener, router: Arc<ProxyRouter>) -> io::Result
         tokio::spawn(async move {
             let _permit = permit;
             let mut route_changes = router.subscribe();
+            let mut network = crate::network::subscribe();
+            // Tests exercise local proxy routing without an OS network monitor.
+            if !cfg!(test) && crate::network::require_online().is_err() { return; }
             tokio::select! {
                 result = handle_connection(stream, router) => {
                     if let Err(error) = result {
@@ -201,6 +204,7 @@ async fn serve(listener: StdTcpListener, router: Arc<ProxyRouter>) -> io::Result
                     }
                 }
                 _ = route_changes.changed() => {}
+                _ = network.changed(), if !cfg!(test) => {}
             }
         });
     }

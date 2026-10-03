@@ -135,12 +135,17 @@ async fn download_update_to_temp_file(
     metadata: &UpdateInstallMetadata,
 ) -> Result<PathBuf, String> {
     validate_update_metadata(metadata)?;
-    let response = reqwest::Client::new()
+    let mut network = crate::network::subscribe();
+    crate::network::require_online()?;
+    let request = reqwest::Client::new()
         .get(url)
         .header(reqwest::header::USER_AGENT, "Norea")
-        .send()
-        .await
-        .map_err(|err| format!("download request failed: {err}"))?;
+        .send();
+    let response = tokio::select! {
+        biased;
+        _ = network.changed() => return Err("Internet connection changed; retry the download".to_string()),
+        result = request => result.map_err(|err| format!("download request failed: {err}"))?,
+    };
 
     if !response.status().is_success() {
         return Err(format!(
@@ -155,7 +160,11 @@ async fn download_update_to_temp_file(
     }
 
     let (mut temp_file, temp_path) = create_temp_download_file(updates_dir, file_name)?;
-    let result = stream_response_to_file(response, &mut temp_file, metadata).await;
+    let result = tokio::select! {
+        biased;
+        _ = network.changed() => Err("Internet connection changed; retry the download".to_string()),
+        result = stream_response_to_file(response, &mut temp_file, metadata) => result,
+    };
     match result {
         Ok(()) => Ok(temp_path),
         Err(err) => {

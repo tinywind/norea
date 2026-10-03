@@ -57,6 +57,7 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     RustlsPlatformVerifierBridge.init(applicationContext)
+    AndroidNetworkState.start(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     TaskBackgroundExecution.attach(onBackgroundExecutionSuspended)

@@ -121,13 +121,19 @@ impl VpnGateFinder {
         force_refresh: bool,
         query_id: &str,
     ) -> Result<Vec<VpnGateServer>, String> {
+        let mut network = crate::network::subscribe();
+        crate::network::require_online()?;
         let (cancellation, _query_guard) = self.begin_query(query_id)?;
-        await_finder_query(
+        let query = await_finder_query(
             self.load_servers_inner(force_refresh),
             cancellation,
             FINDER_QUERY_TIMEOUT,
-        )
-        .await
+        );
+        tokio::select! {
+            biased;
+            _ = network.changed() => Err("Internet connection changed; retry the server list".to_string()),
+            result = query => result,
+        }
     }
 
     pub(super) fn cancel_query(&self, query_id: &str) -> Result<(), String> {
@@ -273,8 +279,11 @@ impl VpnGateFinder {
 
     #[cfg(target_os = "android")]
     async fn fetch_response(&self) -> Result<Vec<u8>, String> {
-        tauri::async_runtime::spawn_blocking(|| {
+        let request = crate::android_tls::HttpsRequest::prepare()?;
+        let request_id = request.id();
+        tauri::async_runtime::spawn_blocking(move || {
             crate::android_tls::https_get(
+                request_id,
                 VPN_GATE_API_URL,
                 CONNECT_TIMEOUT.as_millis() as i32,
                 REQUEST_TIMEOUT.as_millis() as i32,
@@ -288,8 +297,10 @@ impl VpnGateFinder {
 
     #[cfg(target_os = "windows")]
     async fn fetch_response(&self) -> Result<Vec<u8>, String> {
-        tauri::async_runtime::spawn_blocking(|| {
-            winhttp::fetch_vpn_gate_response(CONNECT_TIMEOUT, REQUEST_TIMEOUT, MAX_RESPONSE_BYTES)
+        let cancellation = winhttp::RequestCancellation::new();
+        let cancelled = cancellation.flag();
+        tauri::async_runtime::spawn_blocking(move || {
+            winhttp::fetch_vpn_gate_response(CONNECT_TIMEOUT, REQUEST_TIMEOUT, MAX_RESPONSE_BYTES, cancelled)
         })
         .await
         .map_err(|error| format!("VPN Gate Windows HTTP task failed: {error}"))?

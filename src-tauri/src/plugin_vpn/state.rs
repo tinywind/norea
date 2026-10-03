@@ -46,6 +46,7 @@ struct PluginVpnShared {
 
 struct PluginVpnRuntime {
     generation: u64,
+    network_revision: u64,
     connection_requested: bool,
     phase: PluginVpnPhase,
     profile: Option<PluginVpnProfile>,
@@ -65,6 +66,7 @@ pub(crate) enum PluginVpnPhase {
     Connected,
     Reconnecting,
     Disconnecting,
+    WaitingForNetwork,
     Error,
 }
 
@@ -93,6 +95,7 @@ enum PluginVpnStatusEventKind {
     Error,
     Reconnected,
     Reconnecting,
+    NetworkChanged,
 }
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -127,6 +130,29 @@ impl PluginVpnCredentials {
 }
 
 impl PluginVpnState {
+    pub(crate) fn watch_network(&self, app: &AppHandle) {
+        #[cfg(any(target_os = "android", target_os = "windows"))]
+        {
+            let state = self.clone();
+            let app = app.clone();
+            let mut network = crate::network::subscribe();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    network.borrow_and_update();
+                    match disconnect(&state, None).await {
+                        Ok(status) => emit_status_event(
+                            &app, status, PluginVpnStatusEventKind::NetworkChanged,
+                        ),
+                        Err(error) => log::warn!("could not suspend plugin VPN: {error}"),
+                    }
+                    if network.changed().await.is_err() { break; }
+                }
+            });
+        }
+        #[cfg(not(any(target_os = "android", target_os = "windows")))]
+        let _ = app;
+    }
+
     pub(crate) fn bind() -> Result<Self, String> {
         #[cfg(any(target_os = "android", target_os = "windows", test))]
         let proxy = LocalProxy::bind()?;
@@ -139,6 +165,7 @@ impl PluginVpnState {
                 operation: tokio::sync::Mutex::new(()),
                 state: Mutex::new(PluginVpnRuntime {
                     generation: 0,
+                    network_revision: 0,
                     connection_requested: false,
                     phase: PluginVpnPhase::Disabled,
                     profile: None,
@@ -210,7 +237,9 @@ impl PluginVpnState {
         PluginVpnStatus {
             supported: plugin_vpn_supported(),
             proxy_port: self.proxy_port(),
-            phase: state.phase,
+            phase: if !cfg!(test) && state.connection_requested && crate::network::require_online().is_err() {
+                PluginVpnPhase::WaitingForNetwork
+            } else { state.phase },
             profile: state.profile.clone(),
             error: state.error.clone(),
         }
@@ -259,6 +288,7 @@ impl PluginVpnState {
             .proxy
             .block("The plugin VPN connection is starting");
         state.phase = PluginVpnPhase::Connecting;
+        state.network_revision = crate::network::network_status().revision;
         state.error = None;
         state.connecting_cancellation = Some(cancellation);
         let generation = state.generation;
@@ -375,6 +405,7 @@ pub(crate) async fn plugin_vpn_load_finder_servers(
     state: State<'_, PluginVpnState>,
 ) -> Result<Vec<VpnGateServer>, String> {
     ensure_supported()?;
+    crate::network::require_online()?;
     state
         .shared
         .finder
@@ -438,6 +469,7 @@ pub(crate) async fn plugin_vpn_connect(
     ensure_supported()?;
     let request_generation = state.request_connection();
     let _operation = state.shared.operation.lock().await;
+    crate::network::require_online()?;
     let profile_path = state.profile_path()?;
     let (generation, cancellation) = state.begin_connection(request_generation)?;
     let profile =
@@ -584,17 +616,38 @@ pub(crate) async fn plugin_vpn_disconnect(
     state: State<'_, PluginVpnState>,
 ) -> Result<PluginVpnStatus, String> {
     ensure_supported()?;
+    disconnect(state.inner(), Some(preserve_block)).await
+}
+
+async fn disconnect(
+    state: &PluginVpnState,
+    preserve_block: Option<bool>,
+) -> Result<PluginVpnStatus, String> {
     #[cfg(not(any(target_os = "android", target_os = "windows")))]
     let _ = preserve_block;
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
     let (request_generation, cancellation) = {
         let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        if preserve_block.is_none() {
+            let network = crate::network::network_status();
+            // A delayed network event must not stop a connection already using the new route.
+            if runtime.phase == PluginVpnPhase::Disabled ||
+                (network.connectivity == crate::network::Connectivity::Online &&
+                 runtime.network_revision == network.revision) {
+                return Ok(state.status_from_runtime(&runtime));
+            }
+        }
         runtime.generation = runtime.generation.wrapping_add(1);
-        runtime.connection_requested = preserve_block;
+        if let Some(preserve_block) = preserve_block {
+            runtime.connection_requested = preserve_block;
+        }
+        if !runtime.connection_requested {
+            runtime.error = None;
+        }
         if runtime.phase == PluginVpnPhase::Disabled {
             runtime.connecting_cancellation = None;
-            state.set_disconnected_proxy(preserve_block);
+            state.set_disconnected_proxy(runtime.connection_requested);
             drop(runtime);
             return Ok(state.status());
         }
@@ -624,7 +677,7 @@ pub(crate) async fn plugin_vpn_disconnect(
             return Ok(state.status_from_runtime(&runtime));
         }
         if runtime.phase == PluginVpnPhase::Disabled {
-            state.set_disconnected_proxy(preserve_block);
+            state.set_disconnected_proxy(runtime.connection_requested);
             drop(runtime);
             return Ok(state.status());
         }
@@ -893,6 +946,27 @@ mod tests {
     use crate::plugin_vpn::proxy::{ConnectFuture, ProxyConnector, ProxyTarget};
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
+
+    #[cfg(any(target_os = "android", target_os = "windows"))]
+    #[test]
+    fn explicit_off_clears_an_error_after_failed_connection_cleanup() {
+        tauri::async_runtime::block_on(async {
+            let state = PluginVpnState::bind().expect("plugin VPN state");
+            {
+                let mut runtime = state.shared.state.lock().expect("VPN state");
+                runtime.phase = PluginVpnPhase::Disabled;
+                runtime.connection_requested = true;
+                runtime.error = Some("AUTH_FAILED".to_string());
+            }
+            let waiting = disconnect(&state, None).await.expect("network suspension");
+            assert_eq!(waiting.error.as_deref(), Some("AUTH_FAILED"));
+            assert!(state.shared.state.lock().expect("VPN state").connection_requested);
+            let off = disconnect(&state, Some(false)).await.expect("explicit off");
+            assert_eq!(off.phase, PluginVpnPhase::Disabled);
+            assert_eq!(off.error, None);
+            assert!(!state.shared.state.lock().expect("VPN state").connection_requested);
+        });
+    }
 
     struct RejectingConnector;
 
