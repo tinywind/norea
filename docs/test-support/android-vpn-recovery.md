@@ -24,25 +24,31 @@ sessions, library rows, or download folders. Keep terminal HTTP errors such as
 2. Select notification mode Off, connect the plugin VPN, and start fixture media
    downloads through the regular task scheduler.
 3. Press HOME. Confirm the quiet task foreground service remains active.
-4. Disable Wi-Fi on the test device for 50 seconds, then restore it in a cleanup
-   path even if the test fails. Do not disrupt the development host's network.
+4. Disable Wi-Fi and mobile data on the test device for 50 seconds, then restore
+   them in a cleanup path even if the test fails. Do not disrupt the development
+   host's network.
 5. Observe the VPN and task states without returning the app to the foreground.
-6. Confirm the VPN reconnects and media requests resume. The ordinary 1-second
-   and 3-second network retries must not be exhausted by the VPN recovery wait.
+6. Confirm the VPN and source tasks wait for internet without retrying during the
+   outage. The task foreground service should stop while waiting. When Android
+   permits background execution, confirm the VPN reconnects and media requests
+   resume. The ordinary 1-second and 3-second network retries must not be exhausted
+   by the VPN recovery wait.
 7. Inspect the fixture's final content, media manifest, and database flags.
    Previously uncached images must be stored, not merely retained as remote URLs.
 
 ## Failure and Cancellation
 
-- Keep the VPN unavailable past the shared 120-second media-readiness deadline.
+- With system internet available, keep the VPN unavailable past the shared
+  120-second media-readiness deadline.
   The current acquisition run must release its executor and return to the same
   queued task with automatic backoff, without publishing a completed remote-fallback
   download or settling the batch. Partial files and the backend queue entry remain;
   the task foreground service must stay active while recovery is pending.
 - Cancel a waiting task. It must stop promptly without creating a completed
   content file or leaving readiness timers and listeners attached.
-- Restore connectivity without opening the app or pressing Retry. Confirm the
-  same task resumes automatically, reuses partial media, and completes normally.
+- Restore connectivity without pressing Retry. Confirm the same task resumes,
+  reuses partial media, and completes normally. If Android blocks background
+  execution, open the app and confirm it resumes then without a service restart loop.
 - Cancel both running and retry-waiting tasks while hidden. Confirm their backend
   queue entries are removed and do not reappear after an app restart.
 - Test temporary HTTP failures separately from permanent 404 responses. Temporary
@@ -77,6 +83,30 @@ After bringing the app back or starting new source work, verify that recovery
 runs and source requests wait for a confirmed tunnel instead of using direct
 routing. Continuous VPN execution while Android suspends an idle application is
 not a guarantee of the task foreground service.
+
+## Effective Connectivity and Catalog Cases
+
+- Repeat an outage with Norea VPN Off and On, including a cold offline start.
+  New source, catalog, repository, and update HTTP must not start. Existing source
+  requests and catalog transports must cancel; queued chapters remain queued.
+- Disable Wi-Fi while cellular internet remains available. Work must continue
+  over the effective default network. Norea must never enable either radio.
+- Connect to Wi-Fi without internet or with a captive portal. Confirm a waiting
+  state rather than a connected VPN indication or recurring connection attempts.
+- Test an external VPN alone and together with Norea VPN, including external VPN
+  reconnection, lockdown, and an app-blocked route. Catalog retrieval follows the
+  system route; an inner tunnel failure must not become a catalog failure.
+- During downloads, switch between usable networks. Confirm obsolete requests
+  stop and only one VPN recovery runs before source work resumes.
+- Pause or cancel work, or select VPN Off during an outage. Restoring connectivity
+  must preserve those decisions. Explicit Off must clear the previous tunnel error.
+- Exercise authentication/profile failures separately from connection timeouts.
+  Authentication failures require user action; transient failures back off online.
+- Repeat the applicable cases in the Windows app, including an external VPN and
+  a system proxy. Observe actual catalog cancellation and downloads, not only an
+  independent HTTP request to the API. Close and reopen the finder after cancelling.
+- Fail one endpoint while the OS still reports internet. Keep that failure scoped
+  to the endpoint; it must not set the shared network state to Offline.
 
 ## Cleanup
 
