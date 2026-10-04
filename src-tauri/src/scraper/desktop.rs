@@ -573,6 +573,7 @@ fn scraper_handle_for_key(
         label.clone(),
         WebviewUrl::App(PathBuf::from(SCRAPER_HOMEPAGE_PATH)),
     )
+    .focused(false)
     .on_navigation(move |url| {
         if let Some(request_id) = scraper_result_request_id(url) {
             let state = app_for_navigation.state::<ScraperState>();
@@ -1251,6 +1252,7 @@ fn temporary_cache_clear_webview(
     let vpn = app.state::<crate::plugin_vpn::PluginVpnState>();
     let browser_args = crate::plugin_vpn::windows_webview_browser_args(None, vpn.proxy_port())?;
     let builder = WebviewBuilder::new(label, WebviewUrl::External(blank_url))
+        .focused(false)
         .data_directory(data_directory.to_path_buf())
         .additional_browser_args(&browser_args);
     let webview = main_window

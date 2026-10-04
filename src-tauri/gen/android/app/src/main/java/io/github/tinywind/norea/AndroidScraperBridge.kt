@@ -900,6 +900,9 @@ class AndroidScraperBridge(
     }
     webView.webViewClient = makeClient(state, null)
     webView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    webView.isClickable = false
+    webView.isFocusable = false
+    webView.isFocusableInTouchMode = false
 
     scraperContainer().addView(webView, hiddenLayoutParams())
     if (backgroundWorkActive) {
