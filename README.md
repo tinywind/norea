@@ -176,13 +176,22 @@ while the app is visible, and later syncs use recorded content changes. Chapters
 are uploaded as ZIPs only after their body and assets are complete. Deleting a
 local download leaves the server copy intact.
 
+Work metadata and covers sync independently of chapter downloads. Each work's
+`novel.json` stores its details and complete known chapter list beside its cover.
+These files are authoritative; the app keeps metadata in SQLite for browsing and
+search, including works with no downloaded chapters. Opening saved works does not
+require fetching their metadata from the source site again.
+
 The web console manages devices, content revisions, scan jobs, connected folders,
 and multiple plugin repository indexes. To reuse an existing Norea content
-folder, mount it and its metadata database read-only into the container, then
-register their container paths under Folders. Scanning uses saved metadata or a
+folder, mount it read-only into the container, then register its path under
+Folders. Current folders use `novel.json`; older folders can use an optional
+read-only metadata database. Scanning uses saved metadata or a
 complete ZIP manifest without contacting source sites or requiring installed
 plugins. Unsupported or incomplete files and raw chapters without exact identity
-metadata are skipped; original files are preserved.
+metadata are skipped; original files are preserved. Works and their covers remain
+available even when none of their chapters can be imported. The console offers
+cover grids, a list view, and full metadata inspection.
 
 See [content-server integration](docs/content-sync.md) for sync behavior and
 current limits, and the [server's administration guide](https://github.com/tinywind/norea-content-server#administration-console)

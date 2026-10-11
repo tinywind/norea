@@ -48,16 +48,30 @@ and shows a blocked-device message; it never creates another key to bypass a
 block. Ask the administrator to unblock the device before retrying.
 
 The app checks `/api/v1/capabilities` before registration or content transfer. It
-requires API version 2, package version 1, `authentication: "device-key"`, and
+requires API version 1, package version 1, `authentication: "device-key"`, and
 `personalStateSync: false`. Registration uses `/api/v1/devices/register`;
 subsequent requests carry the key in the authorization header. Change waiting
-uses only `catalogAfter` and `waitSeconds` and receives a `catalogCursor`.
+uses `catalogAfter`, `workAfter`, and `waitSeconds` and receives chapter and work
+cursor hints.
 
 ## Storage and compatibility
 
 Plugin ID, novel path, and chapter path identify content across devices. Existing
 numeric database IDs remain device-local. Downloaded chapters use the existing
 readable directory rules; synchronization does not rename existing folders.
+
+Each work folder stores an authoritative `novel.json`, its cover image and
+`cover.json`. The document includes all known chapters, including those that
+have not been downloaded. SQLite keeps a queryable metadata cache and local
+reading state. Startup reads the files into the cache; metadata changes write
+back to the work folder. The [v1 file contract](filesystem-metadata-v1.md) defines
+the fields and validation rules. Existing folders are not automatically rewritten
+from an older database during startup.
+
+Work metadata and covers transfer separately from chapter ZIPs. Sync records a
+work cursor and per-work fingerprints, preserves pending local edits, and retries
+failed transfers. Saved metadata supports offline browsing without refetching the
+source site. Reading progress and library membership stay on each device.
 
 Only complete bodies and media are packaged. Native code transfers ZIP files and
 verifies their inventory, sizes and SHA-256 before installation. Interrupted
@@ -73,12 +87,11 @@ check only affected complete chapters. The server's change-wait endpoint returns
 cursor hints; the app then fetches the corresponding deltas. Existing
 fingerprints remain valid when upgrading to device access.
 
-Sync metadata uses additive SQLite tables and is excluded from portable backups.
-Existing release migrations, reader data, and downloaded folder names are
-unchanged. Legacy account caches, personal-state journal rows, and position-cache
-rows remain stored but are no longer read or written by synchronization. Their
-old triggers are retired without deleting the data. No account, session, or
-personal-state endpoint is called.
+The current development schema has one v1 bootstrap; it does not migrate older
+application databases. Use a fresh development database when testing this
+baseline, keeping existing user databases and folders intact. Sync cursors and
+device keys remain outside portable backups. Downloaded folder names are
+unchanged. No account, session, or personal-state endpoint is called.
 
 Backup restoration and content synchronization share a storage-operation queue.
 Sync waits until restored files and reading settings are ready. If file
@@ -87,7 +100,7 @@ as needing repair and are excluded from upload.
 
 ## Current limits
 
-Cover transfer and automatic per-work download policies are not implemented.
+Automatic per-work download policies are not implemented.
 Downloads restart after interruption; the server supports Range but the app does
 not yet resume partial ZIPs. Local imports and completed downloads enter the
 local change record and follow the selected sync mode.

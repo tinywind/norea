@@ -24,6 +24,17 @@ release-line compatibility scope.
 
 ## Schema Versioning
 
+- Filesystem metadata development uses one fresh SQLite bootstrap at version 1,
+  matching the metadata document, content-server API, and chapter package
+  version. `src-tauri/src/schema.sql` contains the current app tables and
+  columns. Runtime initialization installs the current synchronization and
+  metadata triggers.
+- This baseline replaces the earlier development migration sequence. Existing
+  development databases are not automatically upgraded or reset. A fresh app
+  database can rebuild work metadata from `novel.json`; reading state and other
+  device preferences remain in the existing local database and are not recovered
+  from those files. Keep that database when preserving local state matters.
+- Source plugins continue to use their independent API version 0.2.
 - During pre-release schema churn, Norea does not keep one migration file for
   every schema edit.
 - Before a release boundary, the current SQLite schema may replace prior
