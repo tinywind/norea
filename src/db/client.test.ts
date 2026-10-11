@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CONTENT_SYNC_JOURNAL_SCHEMA } from "./content-sync-journal";
 
 const sqlPluginMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -131,6 +132,7 @@ describe("runDatabaseTransaction", () => {
     cache_key text PRIMARY KEY NOT NULL,
     payload text NOT NULL
   )`,
+      ...CONTENT_SYNC_JOURNAL_SCHEMA,
       "BEGIN IMMEDIATE",
       "UPDATE chapter SET name = $1",
       "COMMIT",
@@ -182,6 +184,7 @@ describe("runDatabaseTransaction", () => {
     cache_key text PRIMARY KEY NOT NULL,
     payload text NOT NULL
   )`,
+      ...CONTENT_SYNC_JOURNAL_SCHEMA,
       "BEGIN IMMEDIATE",
       "UPDATE chapter SET name = $1",
       "ROLLBACK",

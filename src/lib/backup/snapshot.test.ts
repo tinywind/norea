@@ -16,6 +16,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../chapter-content-storage", () => ({
   writeStoredChapterContentMirror: vi.fn(),
 }));
+vi.mock("../../store/reader", () => ({ useReaderStore: {
+  getState: () => ({ lastReadChapterByNovel: {} }), persist: { rehydrate: vi.fn() },
+} }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db/client";
@@ -27,6 +30,7 @@ import {
 } from "./format";
 import { applyBackupSnapshot, gatherBackupSnapshot } from "./snapshot";
 import { attachBackupChapterMediaFiles } from "./unpack";
+import { runContentStorageOperation } from "../content-sync/storage-operation";
 
 const mockedGetDb = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
@@ -293,6 +297,7 @@ describe("gatherBackupSnapshot", () => {
       "plugin-v2:demo:token": "secret",
       "source-filters:demo": "{\"filters\":{}}",
       unrelated: "skip",
+      "norea-content-device:http://server": "device-key",
     });
     primeSelect();
 
@@ -314,6 +319,27 @@ describe("applyBackupSnapshot", () => {
     primeSelect();
     return gatherBackupSnapshot();
   }
+
+  it("keeps sync waiting for every body write and excludes an incomplete restore from upload", async () => {
+    const gathered = await gatherForTest();
+    const first = { ...gathered.chapters[0]!, isDownloaded: true, content: "<p>restored</p>" };
+    const manifest = { ...gathered, chapters: [first, { ...first, id: 11, path: "/chapter-2" }] };
+    let release: () => void = () => undefined;
+    writeStoredChapterContentMirrorMock.mockRejectedValueOnce(new Error("body write failed"));
+    writeStoredChapterContentMirrorMock.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const restore = applyBackupSnapshot(manifest).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(writeStoredChapterContentMirrorMock).toHaveBeenCalledTimes(2));
+    const synchronize = vi.fn(async () => undefined);
+    const sync = runContentStorageOperation(synchronize);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(synchronize).not.toHaveBeenCalled();
+    release();
+    expect(await restore).toEqual(new Error("body write failed"));
+    await sync;
+    expect(mockExecute).toHaveBeenCalledWith("UPDATE chapter SET media_repair_needed=1 WHERE is_downloaded=1");
+    expect(synchronize).toHaveBeenCalledOnce();
+  });
 
   it("delegates database restore to the native transaction command", async () => {
     const manifest = parseBackupManifest(
@@ -376,6 +402,7 @@ describe("applyBackupSnapshot", () => {
     const storage = installLocalStorage({
       "app-appearance-settings": "old",
       "plugin:demo:token": "old-token",
+      "norea-content-device:http://server": "device-key",
       unrelated: "keep",
     });
     const manifest = parseBackupManifest(
@@ -384,6 +411,7 @@ describe("applyBackupSnapshot", () => {
         settings: [
           { key: "app-appearance-settings", value: "new" },
           { key: "plugin:demo:token", value: "new-token" },
+          { key: "norea-content-device:http://server", value: "foreign-device-key" },
         ],
       }),
     );
@@ -392,6 +420,7 @@ describe("applyBackupSnapshot", () => {
 
     expect(storage.getItem("app-appearance-settings")).toBe("new");
     expect(storage.getItem("plugin:demo:token")).toBe("new-token");
+    expect(storage.getItem("norea-content-device:http://server")).toBe("device-key");
     expect(storage.getItem("unrelated")).toBe("keep");
   });
 

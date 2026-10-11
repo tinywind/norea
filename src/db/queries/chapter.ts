@@ -871,7 +871,12 @@ export async function adoptStoredChapterContentMetadata(
        media_bytes_checked_at = unixepoch(),
        stored_content_type = COALESCE($4, stored_content_type),
        is_downloaded  = 1
-     WHERE id = $1`,
+     WHERE id = $1
+       AND (content_bytes IS NOT $2
+         OR media_bytes IS NOT $3
+         OR media_repair_needed IS NOT $5
+         OR ($4 IS NOT NULL AND stored_content_type IS NOT $4)
+         OR is_downloaded IS NOT 1)`,
     [
       chapterId,
       contentBytes,
@@ -880,6 +885,13 @@ export async function adoptStoredChapterContentMetadata(
       mediaRepairNeeded ? 1 : 0,
     ],
   );
+  if (result.rowsAffected === 0) {
+    const checked = await db.execute(
+      "UPDATE chapter SET media_bytes_checked_at = unixepoch() WHERE id = $1",
+      [chapterId],
+    );
+    return { rowsAffected: checked.rowsAffected };
+  }
   return { rowsAffected: result.rowsAffected };
 }
 

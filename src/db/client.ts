@@ -1,6 +1,7 @@
 import Database from "@tauri-apps/plugin-sql";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
+import { ensureContentSyncJournal, notifyContentSyncChanges } from "./content-sync-journal";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
@@ -149,6 +150,7 @@ async function configureDb(db: Database): Promise<Database> {
     cache_key text PRIMARY KEY NOT NULL,
     payload text NOT NULL
   )`);
+  await ensureContentSyncJournal(db);
   return db;
 }
 
@@ -180,6 +182,7 @@ function serializedDb(rawDb: Database): Database {
       return queueDbOperation(async () => {
         try {
           const result = await rawDb.execute(query, bindValues);
+          if (/\b(novel|chapter|content_sync_position|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
           finish({ rowsAffected: result.rowsAffected });
           return result;
         } catch (error) {
@@ -236,18 +239,26 @@ export async function runExclusiveDatabaseOperation<T>(
   run: (db: Database) => Promise<T>,
 ): Promise<T> {
   const rawDb = await getRawDb();
-  return queueDbOperation(() => run(rawDb));
+  return queueDbOperation(async () => {
+    const result = await run(rawDb);
+    await notifyContentSyncChanges(rawDb);
+    return result;
+  });
 }
 
 export async function runDatabaseTransaction<T>(
   run: (db: Database) => Promise<T>,
+  remoteContentSync = false,
 ): Promise<T> {
   const rawDb = await getRawDb();
   return queueDbOperation(async () => {
     await rawDb.execute("BEGIN IMMEDIATE");
     try {
+      if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");
       const result = await run(rawDb);
+      if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=0 WHERE id=1");
       await rawDb.execute("COMMIT");
+      await notifyContentSyncChanges(rawDb);
       return result;
     } catch (error) {
       await rawDb.execute("ROLLBACK").catch((rollbackError: unknown) => {

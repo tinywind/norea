@@ -46,6 +46,8 @@ webtoons or read manga and comics page by page.
 - Change themes, font size, text color, tap zones, and keyboard navigation.
 - Track reading progress, history, unread chapters, and downloaded chapters.
 - Download chapters for later reading.
+- Share complete chapters through an optional [content server](docs/content-sync.md).
+  Devices register automatically; reading state stays on each device.
 - Export and import local backups for your library, progress, categories,
   source settings, and chapter download status.
 

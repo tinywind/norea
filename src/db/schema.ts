@@ -308,6 +308,19 @@ export const vpnGateServerVerdictTable = sqliteTable(
 );
 
 export type Novel = typeof novelTable.$inferSelect;
+export const contentSyncOriginTable = sqliteTable("content_sync_origin", {
+  id: integer("id").primaryKey(),
+  remote: integer("remote").notNull().default(0),
+});
+export const contentSyncJournalTable = sqliteTable("content_sync_journal", {
+  sequence: integer("sequence").primaryKey({ autoIncrement: true }),
+  stateKey: text("state_key").notNull(),
+  payload: text("payload").notNull(),
+}, (t) => ({ keyIdx: index("content_sync_journal_key_idx").on(t.stateKey, t.sequence) }));
+export const contentSyncPositionTable = sqliteTable("content_sync_position", {
+  novelId: integer("novel_id").primaryKey(),
+  chapterId: integer("chapter_id").notNull(),
+});
 export type NovelInsert = typeof novelTable.$inferInsert;
 export type Chapter = typeof chapterTable.$inferSelect;
 export type ChapterInsert = typeof chapterTable.$inferInsert;

@@ -1,7 +1,6 @@
 import { getDb, runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import type { PackageManifest } from "../../lib/content-sync/native";
-import type { ContentStateValue } from "../../lib/content-sync/client";
 
 export async function readContentSyncCache(key: string): Promise<string | null> {
   const db = await getDb();
@@ -24,7 +23,6 @@ export interface ContentSyncChapter {
   author: string | null;
   summary: string | null;
   isLocal: boolean;
-  inLibrary: boolean;
   chapterName: string;
   chapterNumber: string | null;
   position: number;
@@ -34,27 +32,30 @@ export interface ContentSyncChapter {
   mediaRepairNeeded: boolean;
   contentBytes: number;
   mediaBytes: number;
-  unread: boolean;
-  bookmark: boolean;
-  progress: number;
-  readAt: number | null;
 }
 
-export async function listContentSyncChapters(): Promise<ContentSyncChapter[]> {
+export async function listContentSyncChapters(identities?: string[]): Promise<ContentSyncChapter[]> {
+  if (identities?.length === 0) return [];
+  if (identities && identities.length > 100) {
+    const rows: ContentSyncChapter[] = [];
+    for (let offset = 0; offset < identities.length; offset += 100) rows.push(...await listContentSyncChapters(identities.slice(offset, offset + 100)));
+    return rows;
+  }
   const db = await getDb();
-  const rows = await db.select<ContentSyncChapter[]>(`SELECT
+  const targets = identities?.flatMap((identity) => JSON.parse(identity) as string[]);
+  const prefix = identities ? `WITH targets(plugin_id,novel_path,chapter_path) AS (VALUES ${identities.map((_, i) => `($${i * 3 + 1},$${i * 3 + 2},$${i * 3 + 3})`).join(",")})` : "";
+  const from = identities ? "targets t JOIN novel n ON n.plugin_id=t.plugin_id AND n.path=t.novel_path JOIN chapter c ON c.novel_id=n.id AND c.path=t.chapter_path" : "chapter c JOIN novel n ON n.id=c.novel_id";
+  const rows = await db.select<ContentSyncChapter[]>(`${prefix} SELECT
     c.id AS chapterId, n.id AS novelId, n.plugin_id AS pluginId, n.path AS novelPath,
     c.path AS chapterPath, n.name AS novelName, n.author, n.summary,
-    n.is_local AS isLocal, n.in_library AS inLibrary,
+    n.is_local AS isLocal,
     c.name AS chapterName, c.chapter_number AS chapterNumber, c.position, c.page,
     COALESCE(c.stored_content_type,c.content_type) AS contentType,
     c.is_downloaded AS isDownloaded, c.media_repair_needed AS mediaRepairNeeded,
-    c.content_bytes AS contentBytes, c.media_bytes AS mediaBytes,
-    c.unread, c.bookmark, c.progress, c.read_at AS readAt
-    FROM chapter c JOIN novel n ON n.id=c.novel_id ORDER BY n.id,c.position,c.id`);
-  return rows.map((row) => ({ ...row, isLocal: sqliteBoolean(row.isLocal), inLibrary: sqliteBoolean(row.inLibrary),
-    isDownloaded: sqliteBoolean(row.isDownloaded), mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
-    unread: sqliteBoolean(row.unread), bookmark: sqliteBoolean(row.bookmark) }));
+    c.content_bytes AS contentBytes, c.media_bytes AS mediaBytes
+    FROM ${from} ORDER BY n.id,c.position,c.id`, targets);
+  return rows.map((row) => ({ ...row, isLocal: sqliteBoolean(row.isLocal),
+    isDownloaded: sqliteBoolean(row.isDownloaded), mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded) }));
 }
 
 export async function importContentMetadata(manifest: PackageManifest): Promise<{ novelId: number; chapterId: number }> {
@@ -70,63 +71,34 @@ export async function importContentMetadata(manifest: PackageManifest): Promise<
     [novelId, identity.chapterPath, chapter.name, chapter.chapterNumber ?? null, chapter.position, chapter.page, chapter.contentType]);
     const chapters = await db.select<{ id: number }[]>("SELECT id FROM chapter WHERE novel_id=$1 AND path=$2", [novelId, identity.chapterPath]);
     return { novelId, chapterId: chapters[0]!.id };
-  });
+  }, true);
 }
 
 export async function markContentInstalled(chapterId: number, contentType: string, contentBytes: number, mediaBytes: number): Promise<void> {
-  const db = await getDb();
-  const result = await db.execute(`UPDATE chapter SET is_downloaded=1,stored_content_type=$2,content_bytes=$3,
-    media_bytes=$4,media_repair_needed=0,media_bytes_checked_at=unixepoch(),updated_at=unixepoch() WHERE id=$1`,
-  [chapterId, contentType, contentBytes, mediaBytes]);
-  if (result.rowsAffected !== 1) throw new Error("Downloaded chapter no longer exists locally.");
+  await runDatabaseTransaction(async (db) => {
+    const result = await db.execute(`UPDATE chapter SET is_downloaded=1,stored_content_type=$2,content_bytes=$3,
+      media_bytes=$4,media_repair_needed=0,media_bytes_checked_at=unixepoch(),updated_at=unixepoch() WHERE id=$1`,
+    [chapterId, contentType, contentBytes, mediaBytes]);
+    if (result.rowsAffected !== 1) throw new Error("Downloaded chapter no longer exists locally.");
+  }, true);
 }
 
 export function contentIdentity(pluginId: string, novelPath: string, chapterPath = ""): string {
   return JSON.stringify([pluginId, novelPath, chapterPath]);
 }
 
-export async function readContentState(lastReadChapterByNovel: Readonly<Record<number, number>> = {}): Promise<Record<string, ContentStateValue>> {
+export interface ContentJournalEntry { sequence: number; key: string; value: null }
+
+export async function contentJournalHead(): Promise<number> {
   const db = await getDb();
-  const novels = await db.select<{ pluginId: string; path: string; inLibrary: unknown }[]>("SELECT plugin_id AS pluginId,path,in_library AS inLibrary FROM novel");
-  const state: Record<string, ContentStateValue> = {};
-  for (const novel of novels) state[`library:${contentIdentity(novel.pluginId, novel.path)}`] = { deleted: !sqliteBoolean(novel.inLibrary) };
-  const positions = new Map<string, ContentSyncChapter>();
-  const selectedPositions = new Map<string, ContentSyncChapter>();
-  for (const row of await listContentSyncChapters()) {
-    const identity = contentIdentity(row.pluginId, row.novelPath, row.chapterPath);
-    state[`read:${identity}`] = { unread: row.unread, progress: row.progress };
-    state[`bookmark:${identity}`] = { deleted: !row.bookmark };
-    const work = contentIdentity(row.pluginId, row.novelPath);
-    if (row.chapterId === lastReadChapterByNovel[row.novelId] && row.readAt !== null) selectedPositions.set(work, row);
-    if (row.readAt && row.readAt >= (positions.get(work)?.readAt ?? 0)) positions.set(work, row);
-  }
-  for (const [identity, row] of selectedPositions) positions.set(identity, row);
-  for (const [identity, row] of positions) state[`position:${identity}`] = { chapterPath: row.chapterPath, progress: row.progress, readAt: row.readAt };
-  return state;
+  const rows = await db.select<{ sequence: number }[]>("SELECT COALESCE(MAX(sequence),0) AS sequence FROM content_sync_journal");
+  return rows[0]?.sequence ?? 0;
 }
 
-export async function applyContentState(key: string, value: ContentStateValue): Promise<{ novelId: number; chapterId?: number } | null> {
-  const separator = key.indexOf(":");
-  const kind = key.slice(0, separator);
-  const [pluginId, novelPath, chapterPath] = JSON.parse(key.slice(separator + 1)) as string[];
+export async function readContentJournal(after: number, through: number): Promise<ContentJournalEntry[]> {
   const db = await getDb();
-  const novels = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [pluginId, novelPath]);
-  const novelId = novels[0]?.id;
-  if (!novelId) return null;
-  if (kind === "library" && "deleted" in value) {
-    await db.execute("UPDATE novel SET in_library=$2,library_added_at=CASE WHEN $2=1 THEN COALESCE(library_added_at,unixepoch()) ELSE NULL END WHERE id=$1", [novelId, value.deleted ? 0 : 1]);
-    return { novelId };
-  }
-  const targetPath = kind === "position" && "chapterPath" in value ? value.chapterPath : chapterPath;
-  const chapters = await db.select<{ id: number }[]>("SELECT id FROM chapter WHERE novel_id=$1 AND path=$2", [novelId, targetPath]);
-  const chapterId = chapters[0]?.id;
-  if (!chapterId) return null;
-  if (kind === "bookmark" && "deleted" in value) await db.execute("UPDATE chapter SET bookmark=$2 WHERE id=$1", [chapterId, value.deleted ? 0 : 1]);
-  if (kind === "read" && "unread" in value) await db.execute("UPDATE chapter SET unread=$2,progress=$3 WHERE id=$1", [chapterId, value.unread ? 1 : 0, value.progress]);
-  if (kind === "position" && "chapterPath" in value) {
-    if (value.readAt === null) await db.execute("UPDATE chapter SET read_at=NULL WHERE novel_id=$1", [novelId]);
-    await db.execute("UPDATE chapter SET progress=$2,read_at=$3 WHERE id=$1", [chapterId, value.progress, value.readAt]);
-    await db.execute("UPDATE novel SET last_read_at=$2 WHERE id=$1", [novelId, value.readAt]);
-  }
-  return { novelId, chapterId };
+  const rows = await db.select<{ sequence: number; key: string; payload: string }[]>(`SELECT j.sequence,j.state_key AS key,j.payload
+    FROM content_sync_journal j JOIN (SELECT MAX(sequence) AS sequence FROM content_sync_journal
+    WHERE sequence>$1 AND sequence<=$2 AND state_key LIKE 'content:%' GROUP BY state_key) latest ON latest.sequence=j.sequence ORDER BY j.sequence`, [after, through]);
+  return rows.map((row) => ({ sequence: row.sequence, key: row.key, value: null }));
 }

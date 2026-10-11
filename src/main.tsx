@@ -15,7 +15,7 @@ import { ChapterMediaStorageGate } from "./components/runtime/ChapterMediaStorag
 import { PluginVpnProxyGate } from "./components/runtime/PluginVpnProxyGate";
 import { translate } from "./i18n";
 import { describeError } from "./lib/errors";
-import { startContentServerSync } from "./lib/content-sync/sync";
+import { startContentServerSync } from "./lib/content-sync/scheduler";
 import { initializeNetworkStatus } from "./lib/network";
 import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
 import {

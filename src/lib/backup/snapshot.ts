@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getDb, runExclusiveDatabaseOperation } from "../../db/client";
 import { sqliteBoolean } from "../../db/sqlite-value";
+import { useReaderStore } from "../../store/reader";
+import { runContentStorageOperation } from "../content-sync/storage-operation";
 import {
   beginAndroidStorageRestore,
   commitAndroidStorageRestore,
@@ -515,12 +517,14 @@ async function cleanupBackupChapterMediaStaging(
 async function restoreBackupChapterContentFiles(
   manifest: BackupManifest,
 ): Promise<void> {
-  await Promise.all(
+  const results = await Promise.allSettled(
     manifest.chapters.map(async (chapter) => {
       if (!chapter.isDownloaded || chapter.content === null) return;
       await writeStoredChapterContentMirror(chapter.id, chapter.content);
     }),
   );
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
 }
 
 /**
@@ -572,11 +576,16 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
  * confirmed restore. Database changes are wrapped in a transaction,
  * then browser settings are replaced after the commit succeeds.
  */
-export async function applyBackupSnapshot(
+export function applyBackupSnapshot(
   manifest: BackupManifest,
 ): Promise<void> {
+  return runContentStorageOperation(() => restoreBackupSnapshot(manifest));
+}
+
+async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
   clearResolvedChapterStorageDirs();
   await getDb();
+  let restoredDatabase = false;
   let mediaRestoreToken: string | null = null;
   let mediaBytesByChapterId = new Map<number, number>();
   const shouldRestoreChapterMedia =
@@ -599,6 +608,7 @@ export async function applyBackupSnapshot(
         mediaBytesByChapterId: Object.fromEntries(mediaBytesByChapterId),
       }),
     );
+    restoredDatabase = true;
     await restoreBackupChapterContentFiles(manifest);
   } catch (error) {
     if (mediaRestoreToken) {
@@ -616,6 +626,10 @@ export async function applyBackupSnapshot(
       );
     }
     clearResolvedChapterStorageDirs();
+    if (restoredDatabase) {
+      const db = await getDb();
+      await db.execute("UPDATE chapter SET media_repair_needed=1 WHERE is_downloaded=1");
+    }
     throw error;
   }
 
@@ -634,5 +648,6 @@ export async function applyBackupSnapshot(
 
   if (manifest.settings !== undefined) {
     writeBackupSettings(manifest.settings);
+    await useReaderStore.persist.rehydrate();
   }
 }

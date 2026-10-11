@@ -1,17 +1,14 @@
 import { useState } from "react";
-import { Alert, Group, PasswordInput, Select, Stack, Switch, Text, TextInput } from "@mantine/core";
+import { Alert, Group, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
-import type { ContentStateValue } from "../lib/content-sync/client";
+import { ContentServerError } from "../lib/content-sync/client";
 import {
   deleteServerChapter,
   downloadServerChapter,
-  loginContentServer,
-  logoutContentServer,
   restoreServerChapter,
-  resolveContentState,
   syncContentServer,
 } from "../lib/content-sync/sync";
 import { useContentSyncStore } from "../store/content-sync";
@@ -24,19 +21,17 @@ export function ContentServerSettings() {
   const navigate = useNavigate();
   const serverUrl = useContentSyncStore((state) => state.serverUrl);
   const deviceName = useContentSyncStore((state) => state.deviceName);
-  const autoSync = useContentSyncStore((state) => state.autoSync);
+  const syncMode = useContentSyncStore((state) => state.syncMode);
+  const syncIntervalMinutes = useContentSyncStore((state) => state.syncIntervalMinutes);
   const status = useContentSyncStore((state) => state.status);
   const error = useContentSyncStore((state) => state.error);
-  const user = useContentSyncStore((state) => state.user);
+  const blocked = useContentSyncStore((state) => state.blocked);
   const catalog = useContentSyncStore((state) => state.catalog);
-  const conflicts = useContentSyncStore((state) => state.conflicts);
   const setServerUrl = useContentSyncStore((state) => state.setServerUrl);
   const setDeviceName = useContentSyncStore((state) => state.setDeviceName);
-  const setAutoSync = useContentSyncStore((state) => state.setAutoSync);
+  const setSyncMode = useContentSyncStore((state) => state.setSyncMode);
+  const setSyncIntervalMinutes = useContentSyncStore((state) => state.setSyncIntervalMinutes);
   const [urlDraft, setUrlDraft] = useState(serverUrl);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [mergeMode, setMergeMode] = useState<"merge" | "server">("merge");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -49,7 +44,7 @@ export function ContentServerSettings() {
       await action();
       await queryClient.invalidateQueries();
     } catch (cause) {
-      setActionError(describeError(cause));
+      setActionError(cause instanceof ContentServerError && cause.status === 403 ? t("contentSync.blocked") : describeError(cause));
     } finally {
       setBusy(false);
     }
@@ -59,25 +54,6 @@ export function ContentServerSettings() {
     `${entry.manifest.novel.name} ${entry.manifest.chapter.name}`
       .toLocaleLowerCase().includes(search.toLocaleLowerCase()),
   );
-
-  function stateDescription(value: ContentStateValue): string {
-    if ("deleted" in value) return t(value.deleted ? "contentSync.removed" : "contentSync.added");
-    if ("unread" in value) return t(value.unread ? "contentSync.unread" : "contentSync.read");
-    return t("contentSync.position", { chapter: value.chapterPath, progress: Math.round(value.progress) });
-  }
-
-  function conflictTitle(key: string): string {
-    const identity = key.slice(key.indexOf(":") + 1);
-    try {
-      const [pluginId, novelPath, chapterPath] = JSON.parse(identity) as string[];
-      const entry = catalog.find((item) => item.manifest.identity.pluginId === pluginId
-        && item.manifest.identity.novelPath === novelPath
-        && (!chapterPath || item.manifest.identity.chapterPath === chapterPath));
-      return entry ? `${entry.manifest.novel.name} · ${entry.manifest.chapter.name}` : novelPath;
-    } catch {
-      return t("contentSync.conflicts");
-    }
-  }
 
   return (
     <SettingsSection title={t("contentSync.title")}>
@@ -100,65 +76,32 @@ export function ContentServerSettings() {
         <TextInput aria-label={t("contentSync.deviceName")} value={deviceName}
           disabled={disabled} onChange={(event) => setDeviceName(event.currentTarget.value)} />
       </SettingsFieldRow>
-      <SettingsFieldRow label={t("contentSync.autoSync")} description={t("contentSync.autoSyncDescription")}>
-        <Switch aria-label={t("contentSync.autoSync")} checked={autoSync}
-          disabled={disabled || !serverUrl} onChange={(event) => setAutoSync(event.currentTarget.checked)} />
+      <SettingsFieldRow label={t("contentSync.mode")} description={t("contentSync.modeDescription")}>
+        <Select aria-label={t("contentSync.mode")} value={syncMode}
+          data={[
+            { value: "manual", label: t("contentSync.manual") },
+            { value: "periodic", label: t("contentSync.periodic") },
+            { value: "changes", label: t("contentSync.onChange") },
+          ]}
+          onChange={(value) => { if (value === "manual" || value === "periodic" || value === "changes") setSyncMode(value); }} />
       </SettingsFieldRow>
-      {user ? (
-        <SettingsFieldRow label={t("contentSync.signedIn", { username: user.username })}>
-          <TextButton disabled={disabled} onClick={() => { void run(logoutContentServer); }}>
-            {t("contentSync.logout")}
-          </TextButton>
+      {syncMode === "periodic" ? (
+        <SettingsFieldRow label={t("contentSync.interval")}>
+          <NumberInput aria-label={t("contentSync.interval")} value={syncIntervalMinutes}
+            min={1} max={1440} allowDecimal={false} allowNegative={false}
+            onChange={(value) => { if (typeof value === "number") setSyncIntervalMinutes(value); }} />
         </SettingsFieldRow>
-      ) : (
-        <SettingsFieldRow label={t("contentSync.account")} description={t("contentSync.sessionDescription")} layout="stacked">
-          <Stack gap="xs">
-            <TextInput label={t("contentSync.username")} value={username} autoComplete="username"
-              disabled={disabled} onChange={(event) => setUsername(event.currentTarget.value)} />
-            <PasswordInput label={t("contentSync.password")} value={password} autoComplete="current-password"
-              disabled={disabled} onChange={(event) => setPassword(event.currentTarget.value)} />
-            <Select label={t("contentSync.loginMode")} value={mergeMode} disabled={disabled}
-              data={[{ value: "merge", label: t("contentSync.merge") }, { value: "server", label: t("contentSync.serverState") }]}
-              onChange={(value) => { if (value === "merge" || value === "server") setMergeMode(value); }} />
-            <Text size="sm" c="dimmed">{t("contentSync.mergeDescription")}</Text>
-            <TextButton disabled={disabled || !serverUrl || !username.trim() || !password} onClick={() => {
-              void run(async () => {
-                await loginContentServer(username.trim(), password, mergeMode);
-                setPassword("");
-              });
-            }}>{t("contentSync.login")}</TextButton>
-          </Stack>
-        </SettingsFieldRow>
-      )}
+      ) : null}
       <Group>
         <TextButton loading={disabled} disabled={!serverUrl} onClick={() => { void run(syncContentServer); }}>
           {t("contentSync.syncNow")}
         </TextButton>
+        <TextButton disabled={disabled || !serverUrl} onClick={() => { void run(() => syncContentServer(true, true)); }}>
+          {t("contentSync.rescan")}
+        </TextButton>
       </Group>
-      {actionError || error ? <Alert color="red" role="alert">{actionError || error}</Alert> : null}
-      {conflicts.length ? (
-        <SettingsFieldRow label={t("contentSync.conflicts")} description={t("contentSync.conflictsDescription")} layout="stacked">
-          <Stack gap="sm">
-            {conflicts.map((entry) => (
-              <Stack key={entry.key} gap="xs">
-                <Text fw={500}>{conflictTitle(entry.key)}</Text>
-                <Text size="sm">{stateDescription(entry.value)}</Text>
-                <TextButton disabled={disabled} onClick={() => { void run(() => resolveContentState(entry.key, entry.value)); }}>
-                  {t("contentSync.keepCurrent")}
-                </TextButton>
-                {entry.conflicts.map((candidate) => (
-                  <Stack key={candidate.operationId} gap="xs">
-                    <Text size="sm">{candidate.deviceName}: {stateDescription(candidate.value)}</Text>
-                    <TextButton disabled={disabled} onClick={() => { void run(() => resolveContentState(entry.key, candidate.value)); }}>
-                      {t("contentSync.useCandidate")}
-                    </TextButton>
-                  </Stack>
-                ))}
-              </Stack>
-            ))}
-          </Stack>
-        </SettingsFieldRow>
-      ) : null}
+      <Text size="sm" c="dimmed">{t("contentSync.rescanDescription")}</Text>
+      {actionError || error ? <Alert color="red" role="alert">{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
       <SettingsFieldRow label={t("contentSync.catalog")} layout="stacked">
         <Stack gap="sm">
           <TextInput label={t("contentSync.search")} value={search} onChange={(event) => setSearch(event.currentTarget.value)} />
@@ -176,7 +119,7 @@ export function ContentServerSettings() {
                     {t("contentSync.download")}
                   </TextButton>
                 )}
-                {user?.role === "admin" ? entry.deleted ? (
+                {entry.deleted ? (
                   <TextButton size="sm" disabled={disabled} onClick={() => { void run(() => restoreServerChapter(entry)); }}>
                     {t("contentSync.restore")}
                   </TextButton>
@@ -186,7 +129,7 @@ export function ContentServerSettings() {
                       void run(() => deleteServerChapter(entry));
                     }
                   }}>{t("contentSync.deleteServer")}</TextButton>
-                ) : null}
+                )}
               </Group>
             </Stack>
           ))}

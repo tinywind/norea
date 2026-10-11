@@ -4,7 +4,9 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
-import { importContentMetadata, listContentSyncChapters, readContentState, applyContentState, readContentSyncCache, writeContentSyncCache } from "./content-sync";
+import { CONTENT_SYNC_JOURNAL_SCHEMA } from "../content-sync-journal";
+import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
+import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, writeContentSyncCache } from "./content-sync";
 
 let sqlite: DatabaseSync;
 beforeEach(() => {
@@ -12,6 +14,7 @@ beforeEach(() => {
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
   sqlite.exec("ALTER TABLE chapter ADD COLUMN stored_content_type text");
   sqlite.exec("CREATE TABLE content_sync_cache(cache_key text PRIMARY KEY NOT NULL,payload text NOT NULL)");
+  for (const sql of CONTENT_SYNC_JOURNAL_SCHEMA) sqlite.exec(sql);
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),
     execute: async (sql: string, params: unknown[] = []) => {
@@ -20,7 +23,16 @@ beforeEach(() => {
     },
   };
   vi.mocked(getDb).mockResolvedValue(db as never);
-  vi.mocked(runDatabaseTransaction).mockImplementation(async (run) => run(db as never));
+  vi.mocked(runDatabaseTransaction).mockImplementation(async (run, remote) => {
+    sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      if (remote) sqlite.exec("UPDATE content_sync_origin SET remote=1");
+      const result = await run(db as never);
+      if (remote) sqlite.exec("UPDATE content_sync_origin SET remote=0");
+      sqlite.exec("COMMIT");
+      return result;
+    } catch(error) { sqlite.exec("ROLLBACK"); throw error; }
+  });
 });
 afterEach(() => sqlite.close());
 
@@ -40,39 +52,8 @@ it("imports by source identity with new local IDs and preserves existing reading
   const second = await importContentMetadata({ ...manifest, chapter: { ...manifest.chapter, name: "New title" } });
   expect(second).toEqual(imported);
   const [row] = await listContentSyncChapters();
-  expect(row).toMatchObject({ chapterId: imported.chapterId, progress: 73, bookmark: true, isDownloaded: true });
-  expect(sqlite.prepare("SELECT name FROM chapter").get()).toEqual({ name: "Opening" });
-});
-
-it("applies account state without deleting files or changing numeric identity", async () => {
-  const { chapterId } = await importContentMetadata(manifest);
-  sqlite.exec(`UPDATE chapter SET is_downloaded=1 WHERE id=${chapterId}`);
-  await applyContentState('library:["source","/work",""]', { deleted: false });
-  await applyContentState('read:["source","/work","/chapter"]', { unread: false, progress: 100 });
-  await applyContentState('bookmark:["source","/work","/chapter"]', { deleted: false });
-  const state = await readContentState();
-  expect(state['library:["source","/work",""]']).toEqual({ deleted: false });
-  expect(state['read:["source","/work","/chapter"]']).toEqual({ unread: false, progress: 100 });
-  expect(state['bookmark:["source","/work","/chapter"]']).toEqual({ deleted: false });
-  expect(sqlite.prepare("SELECT id,is_downloaded FROM chapter").get()).toEqual({ id: chapterId, is_downloaded: 1 });
-});
-
-it("keeps an intentional older server position while preserving chapter history", async () => {
-  const first = await importContentMetadata(manifest);
-  await importContentMetadata({ ...manifest, identity: { ...manifest.identity, chapterPath: "/later" }, chapter: { ...manifest.chapter, position: 2 } });
-  sqlite.exec("UPDATE chapter SET read_at=200,progress=90 WHERE path='/later'");
-  await applyContentState('position:["source","/work",""]', { chapterPath: "/chapter", progress: 20, readAt: 150 });
-  const state = await readContentState({ [first.novelId]: first.chapterId });
-  expect(state['position:["source","/work",""]']).toEqual({ chapterPath: "/chapter", progress: 20, readAt: 150 });
-  expect(sqlite.prepare("SELECT read_at FROM chapter WHERE path='/later'").get()).toEqual({ read_at: 200 });
-});
-
-it("clears all previous-account reading history for an empty server position", async () => {
-  await importContentMetadata(manifest);
-  await importContentMetadata({ ...manifest, identity: { ...manifest.identity, chapterPath: "/later" }, chapter: { ...manifest.chapter, position: 2 } });
-  sqlite.exec("UPDATE chapter SET read_at=200");
-  await applyContentState('position:["source","/work",""]', { chapterPath: "/later", progress: 0, readAt: null });
-  expect((await readContentState())['position:["source","/work",""]']).toBeUndefined();
+  expect(row).toMatchObject({ chapterId: imported.chapterId, isDownloaded: true });
+  expect(sqlite.prepare("SELECT name,progress,bookmark FROM chapter").get()).toEqual({ name: "Opening", progress: 73, bookmark: 1 });
 });
 
 it("stores catalog data larger than WebView localStorage without crossing account keys", async () => {
@@ -80,4 +61,87 @@ it("stores catalog data larger than WebView localStorage without crossing accoun
   await writeContentSyncCache("catalog:one", payload);
   expect(await readContentSyncCache("catalog:one")).toBe(payload);
   expect(await readContentSyncCache("catalog:two")).toBeNull();
+});
+
+
+it("records equal-size completed replacements, repairs and metadata edits without progress-only content work", async () => {
+  await importContentMetadata(manifest);
+  sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=10,media_repair_needed=0");
+  let head = await contentJournalHead();
+  sqlite.exec("UPDATE chapter SET progress=10");
+  expect((await readContentJournal(head, await contentJournalHead())).some((entry) => entry.key.startsWith("content:"))).toBe(false);
+  head = await contentJournalHead();
+  sqlite.exec("UPDATE chapter SET content_bytes=10,media_repair_needed=0");
+  expect((await readContentJournal(head, await contentJournalHead())).some((entry) => entry.key.startsWith("content:"))).toBe(true);
+  head = await contentJournalHead();
+  sqlite.exec("UPDATE novel SET name='Changed title'");
+  expect((await readContentJournal(head, await contentJournalHead())).some((entry) => entry.key.startsWith("content:"))).toBe(true);
+});
+
+it("selects only requested identities through indexed novel and chapter lookup", async () => {
+  await importContentMetadata(manifest);
+  await importContentMetadata({ ...manifest, identity: { ...manifest.identity, chapterPath: "/other" } });
+  expect(await listContentSyncChapters([])).toEqual([]);
+  const rows = await listContentSyncChapters(['["source","/work","/other"]']);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.chapterPath).toBe("/other");
+});
+
+
+it("rechecking unchanged downloaded files does not journal content but equal-size saves do", async () => {
+  const { chapterId } = await importContentMetadata(manifest);
+  expect(await adoptStoredChapterContentMetadata(chapterId, 10, 0, "html")).toEqual({ rowsAffected: 1 });
+  const head = await contentJournalHead();
+  sqlite.exec("UPDATE chapter SET media_bytes_checked_at=0");
+  expect(await adoptStoredChapterContentMetadata(chapterId, 10, 0, "html")).toEqual({ rowsAffected: 1 });
+  expect(await adoptStoredChapterContentMetadata(chapterId, 10, 0, null)).toEqual({ rowsAffected: 1 });
+  expect(await contentJournalHead()).toBe(head);
+  expect(sqlite.prepare("SELECT media_bytes_checked_at AS checked FROM chapter").get()?.checked).toBeGreaterThan(0);
+  await saveChapterContentMetadata(chapterId, "0123456789", "html", { mediaBytes: 0 });
+  const changed = await readContentJournal(head, await contentJournalHead());
+  expect(changed).toHaveLength(1);
+  expect(changed[0]?.key).toBe('content:["source","/work","/chapter"]');
+  const savedHead = await contentJournalHead();
+  await adoptStoredChapterContentMetadata(chapterId, 10, 4, "html", true);
+  expect(await contentJournalHead()).toBeGreaterThan(savedHead);
+  expect(await adoptStoredChapterContentMetadata(chapterId + 999, 10, 0, "html")).toEqual({ rowsAffected: 0 });
+});
+
+it("keeps personal state local and only journals content changes", async () => {
+  const { chapterId } = await importContentMetadata(manifest);
+  await writeContentSyncCache("norea-content-account:legacy", "preserved");
+  sqlite.exec(`UPDATE novel SET in_library=1,last_read_at=123; UPDATE chapter SET unread=0,progress=60,bookmark=1,read_at=123 WHERE id=${chapterId}`);
+  expect(await contentJournalHead()).toBe(0);
+  await importContentMetadata(manifest);
+  expect(sqlite.prepare("SELECT unread,progress,bookmark,read_at FROM chapter").get()).toEqual({ unread: 0, progress: 60, bookmark: 1, read_at: 123 });
+  expect(sqlite.prepare("SELECT in_library,last_read_at FROM novel").get()).toEqual({ in_library: 1, last_read_at: 123 });
+  expect(await readContentSyncCache("norea-content-account:legacy")).toBe("preserved");
+  sqlite.exec("UPDATE chapter SET is_downloaded=1");
+  const changes = await readContentJournal(0, await contentJournalHead());
+  expect(changes).toHaveLength(1);
+  expect(changes[0]?.key).toBe('content:["source","/work","/chapter"]');
+});
+
+it("retires legacy personal-state triggers while preserving their rows and selected position", async () => {
+  const { novelId, chapterId } = await importContentMetadata(manifest);
+  sqlite.exec(`INSERT INTO content_sync_position VALUES(${novelId},${chapterId});
+    INSERT INTO content_sync_journal(state_key,payload) VALUES('position:legacy','{}');
+    CREATE TRIGGER content_sync_chapter_read AFTER UPDATE OF progress ON chapter BEGIN
+      INSERT INTO content_sync_journal(state_key,payload) VALUES('read:legacy','{}'); END;`);
+  for (const sql of CONTENT_SYNC_JOURNAL_SCHEMA) sqlite.exec(sql);
+  const head = await contentJournalHead();
+  sqlite.exec("UPDATE chapter SET progress=77");
+  expect(await contentJournalHead()).toBe(head);
+  expect(sqlite.prepare("SELECT * FROM content_sync_position").get()).toEqual({ novel_id: novelId, chapter_id: chapterId });
+  expect(sqlite.prepare("SELECT count(*) AS count FROM content_sync_journal").get()).toEqual({ count: 1 });
+  expect(await readContentJournal(0, head)).toEqual([]);
+});
+
+it("retains content deletion events without personal-state tombstones", async () => {
+  const { novelId } = await importContentMetadata(manifest);
+  sqlite.exec("PRAGMA foreign_keys=ON");
+  sqlite.exec(`DELETE FROM novel WHERE id=${novelId}`);
+  const changes = await readContentJournal(0, await contentJournalHead());
+  expect(changes).toHaveLength(1);
+  expect(changes[0]?.key).toBe('content:["source","/work","/chapter"]');
 });
