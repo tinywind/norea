@@ -1,4 +1,8 @@
 {
+  "contentSync.lookupTimeout": "Server lookup timeout (seconds)",
+  "contentSync.workRefreshFailed": "Server refresh failed. Saved work information is still available.",
+  "contentSync.sourceRefreshFailed": "Source refresh failed. Server and saved chapters are still available.",
+  "contentSync.lookupTimeoutDescription": "Check the server before a source download. If lookup fails or times out, use the source plugin. Default: 3 seconds. Package downloads have a separate timeout.",
   "contentSync.blocked": "This device is blocked on the content server. Ask the server administrator to unblock it.",
   "contentSync.title": "Content server",
   "contentSync.browse": "Browse server content",

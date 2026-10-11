@@ -18,6 +18,7 @@ export function ContentServerSettings() {
   const deviceName = useContentSyncStore((state) => state.deviceName);
   const syncMode = useContentSyncStore((state) => state.syncMode);
   const syncIntervalMinutes = useContentSyncStore((state) => state.syncIntervalMinutes);
+  const lookupTimeoutSeconds = useContentSyncStore((state) => state.lookupTimeoutSeconds);
   const status = useContentSyncStore((state) => state.status);
   const error = useContentSyncStore((state) => state.error);
   const blocked = useContentSyncStore((state) => state.blocked);
@@ -25,6 +26,7 @@ export function ContentServerSettings() {
   const setDeviceName = useContentSyncStore((state) => state.setDeviceName);
   const setSyncMode = useContentSyncStore((state) => state.setSyncMode);
   const setSyncIntervalMinutes = useContentSyncStore((state) => state.setSyncIntervalMinutes);
+  const setLookupTimeoutSeconds = useContentSyncStore((state) => state.setLookupTimeoutSeconds);
   const [urlDraft, setUrlDraft] = useState(serverUrl);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -77,6 +79,11 @@ export function ContentServerSettings() {
             { value: "changes", label: t("contentSync.onChange") },
           ]}
           onChange={(value) => { if (value === "manual" || value === "periodic" || value === "changes") setSyncMode(value); }} />
+      </SettingsFieldRow>
+      <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
+        <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
+          min={1} max={120} allowDecimal={false} allowNegative={false}
+          onChange={(value) => { if (typeof value === "number") setLookupTimeoutSeconds(value); }} />
       </SettingsFieldRow>
       {syncMode === "periodic" ? (
         <SettingsFieldRow label={t("contentSync.interval")}>

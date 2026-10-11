@@ -547,7 +547,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
     scheduledBackfillRef.current = true;
     scheduleDownloadCacheMediaBytesBackfill(undefined, {
       onComplete: (result) => {
-        if (result.updatedChapters === 0) return;
+        if (result.processedChapters === 0) return;
         void queryClient.invalidateQueries({
           queryKey: DOWNLOAD_CACHE_QUERY_KEY,
         });

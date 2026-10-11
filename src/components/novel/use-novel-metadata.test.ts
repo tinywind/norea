@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   mutations: [] as { mutationFn: () => Promise<unknown>; onSuccess: (result: never) => Promise<void> | void }[],
   queryClient: { setQueryData: vi.fn(), invalidateQueries: vi.fn() },
-  source: vi.fn(), refresh: vi.fn(), cover: vi.fn(), plugin: vi.fn(), library: vi.fn(),
+  source: vi.fn(), refresh: vi.fn(), refreshSource: vi.fn(), cover: vi.fn(), plugin: vi.fn(), library: vi.fn(),
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => mocks.queryClient,
@@ -13,7 +13,7 @@ vi.mock("react", () => ({ useState: (value: () => unknown) => [value(), vi.fn()]
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../db/queries/novel", () => ({ setNovelInLibrary: mocks.library }));
 vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.source }));
-vi.mock("../../lib/content-sync/browse", () => ({ refreshServerNovel: mocks.refresh }));
+vi.mock("../../lib/content-sync/work-refresh", () => ({ syncServerNovelOnOpen: mocks.refresh, refreshServerNovelFromSource: mocks.refreshSource }));
 vi.mock("../../lib/novel-cover-storage", () => ({ saveNovelCoverFromSource: mocks.cover }));
 vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: mocks.plugin } }));
 vi.mock("../../lib/plugins/sync-novel", () => ({ getSourceDuplicateChapterInfo: () => [], syncNovelFromSource: vi.fn() }));
@@ -28,6 +28,7 @@ beforeEach(() => {
   mocks.mutations.length = 0;
   mocks.source.mockResolvedValue({ serverUrl: "http://original", workId: "work-a" });
   mocks.refresh.mockResolvedValue(3);
+  mocks.refreshSource.mockResolvedValue(false);
   mocks.cover.mockResolvedValue(undefined);
   mocks.plugin.mockReturnValue(undefined);
 });
@@ -35,14 +36,15 @@ beforeEach(() => {
 it("refreshes a bound work on its server without requiring an installed source plugin", async () => {
   useNovelMetadata(3, novel);
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith({ serverUrl: "http://original", workId: "work-a" });
+  expect(mocks.refresh).toHaveBeenCalledWith(3);
+  expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull");
   expect(mocks.plugin).not.toHaveBeenCalled();
 });
 
 it("refreshes server-published local metadata through its server binding", async () => {
   useNovelMetadata(3, { ...novel, isLocal: true });
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith({ serverUrl: "http://original", workId: "work-a" });
+  expect(mocks.refresh).toHaveBeenCalledWith(3);
   expect(mocks.plugin).not.toHaveBeenCalled();
 });
 
@@ -67,9 +69,10 @@ it("keeps source cover storage for unbound source-site novels", async () => {
   expect(mocks.cover).toHaveBeenCalledOnce();
 });
 
-it("reports a server refresh failure without falling back to the source plugin", async () => {
+it("attempts source metadata even when the server refresh fails", async () => {
   mocks.refresh.mockRejectedValueOnce(new Error("Server offline"));
   useNovelMetadata(3, novel);
   await expect(mocks.mutations[2]!.mutationFn()).rejects.toThrow("Server offline");
+  expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull");
   expect(mocks.plugin).not.toHaveBeenCalled();
 });

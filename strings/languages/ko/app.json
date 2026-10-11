@@ -1,4 +1,8 @@
 {
+  "contentSync.lookupTimeout": "서버 조회 제한 시간(초)",
+  "contentSync.workRefreshFailed": "서버 정보를 갱신하지 못했습니다. 저장된 작품 정보는 계속 볼 수 있습니다.",
+  "contentSync.sourceRefreshFailed": "사이트 정보를 갱신하지 못했습니다. 서버 및 저장된 회차는 계속 볼 수 있습니다.",
+  "contentSync.lookupTimeoutDescription": "소스에서 다운로드하기 전에 서버를 확인합니다. 조회가 실패하거나 제한 시간을 넘으면 소스 플러그인을 사용합니다. 기본 3초이며, 파일 다운로드 제한 시간과는 별개입니다.",
   "contentSync.blocked": "콘텐츠 서버에서 이 기기를 차단했습니다. 서버 관리자에게 차단 해제를 요청하세요.",
   "contentSync.title": "콘텐츠 서버",
   "contentSync.browse": "서버 콘텐츠 탐색",

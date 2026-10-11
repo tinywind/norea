@@ -100,9 +100,16 @@ export function useNovelMetadata(
     if (!novel) return null;
     const serverSource = await readServerNovelSource(novel.id);
     if (serverSource) {
-      const { refreshServerNovel } = await import("../../lib/content-sync/browse");
-      await refreshServerNovel(serverSource);
-      return { duplicateChapters: [] as readonly SourceDuplicateChapterInfo[] };
+      const { syncServerNovelOnOpen, refreshServerNovelFromSource } = await import("../../lib/content-sync/work-refresh");
+      const errors: unknown[] = [];
+      try { await syncServerNovelOnOpen(novel.id); }
+      catch (error) { errors.push(error); }
+      try { await refreshServerNovelFromSource(novel.id, t("tasks.task.refreshNovelMetadataFull", { name: novel.name })); }
+      catch (error) { errors.push(error); }
+      invalidateNovelMetadataRefresh();
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Server and source metadata refresh failed.");
+      return { duplicateChapters: getSourceDuplicateChapterInfo(novel.id) };
     }
     if (novel.isLocal) return null;
     const plugin = pluginManager.getPlugin(novel.pluginId);
@@ -144,6 +151,7 @@ export function useNovelMetadata(
             chapterRefreshMode: mode,
             novelId: novel.id,
             preserveMissingMetadata: true,
+            signal: context.signal,
           },
         ),
     }).promise;

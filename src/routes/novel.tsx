@@ -39,6 +39,7 @@ import { useLocalNovelEditor } from "../components/novel/use-local-novel-editor"
 import { useNovelChapterActions } from "../components/novel/use-novel-chapter-actions";
 import { useNovelDownloadStatuses } from "../components/novel/use-novel-download-statuses";
 import { useNovelMetadata } from "../components/novel/use-novel-metadata";
+import { useServerNovelSync } from "../components/novel/use-server-novel-sync";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import {
   listChaptersByNovel,
@@ -46,7 +47,7 @@ import {
 } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
-import { listServerChapterPaths, readServerNovelSource } from "../lib/content-sync/novel-source";
+import { listServerChapterAvailability, readServerNovelSource } from "../lib/content-sync/novel-source";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   findPreviousAppHistoryEntry,
@@ -67,6 +68,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const currentHref = useRouterState({
     select: (state) => state.location.href,
   });
+  const activeLocation = new URL(currentHref, "http://norea.local");
+  const active = activeLocation.pathname === "/novel" && Number(activeLocation.searchParams.get("id")) === id;
   const defaultChapterSort = useLibraryStore((s) => s.defaultChapterSort);
   const setDefaultChapterSort = useLibraryStore((s) => s.setDefaultChapterSort);
   const lastReadChapterId = useReaderStore(
@@ -108,18 +111,23 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const serverChaptersQuery = useQuery({
     queryKey: ["content-server", "novel-chapters", serverSourceQuery.data?.serverUrl, serverSourceQuery.data?.workId],
     queryFn: ({ signal }) => serverSourceQuery.data
-      ? listServerChapterPaths(serverSourceQuery.data, signal)
-      : Promise.resolve(new Set<string>()),
-    enabled: Boolean(serverSourceQuery.data),
+      ? listServerChapterAvailability(serverSourceQuery.data, signal)
+      : Promise.resolve({ paths: new Set<string>(), numbers: new Set<number>() }),
+    enabled: active && Boolean(serverSourceQuery.data),
     staleTime: 30_000,
   });
+  const { serverError, sourceError } = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
+  const hasSourcePlugin = Boolean(novelQuery.data && !novelQuery.data.isLocal &&
+    !novelQuery.data.path.startsWith("norea-folder:") && pluginManager.getPlugin(novelQuery.data.pluginId));
 
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
-    return serverSourceQuery.data
-      ? storedRows.filter((chapter) => chapter.isDownloaded || serverChaptersQuery.data?.has(chapter.path))
+    return serverSourceQuery.data && !hasSourcePlugin && serverChaptersQuery.data
+      ? storedRows.filter((chapter) => chapter.isDownloaded || serverChaptersQuery.data?.paths.has(chapter.path)
+        || (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
+          && serverChaptersQuery.data?.numbers.has(Number(chapter.chapterNumber))))
       : storedRows;
-  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data]);
+  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data, hasSourcePlugin]);
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
@@ -386,7 +394,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  const allowSourceAccess = !serverSourceQuery.data;
+  const allowSourceAccess = !serverSourceQuery.data || hasSourcePlugin;
   const sourceUrl = allowSourceAccess ? resolveNovelSourceUrl(novel) : null;
   const sourcePlugin = novel.isLocal || !allowSourceAccess
     ? null
@@ -627,8 +635,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   : String(serverChaptersQuery.error)}
               </Text>
             ) : null}
+            {serverError ? <Text c="dimmed" size="sm">{t("contentSync.workRefreshFailed")}</Text> : null}
+            {sourceError ? <Text c="dimmed" size="sm">{t("contentSync.sourceRefreshFailed")}</Text> : null}
 
-            {chaptersQuery.isLoading || (serverChaptersQuery.isLoading && chapters.length === 0) ? (
+            {chaptersQuery.isLoading ? (
               <StateView
                 color="blue"
                 title={t("novel.loadingChapters")}
