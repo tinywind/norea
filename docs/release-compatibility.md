@@ -29,11 +29,20 @@ release-line compatibility scope.
   version. `src-tauri/src/schema.sql` contains the current app tables and
   columns. Runtime initialization installs the current synchronization and
   metadata triggers.
-- This baseline replaces the earlier development migration sequence. Existing
-  development databases are not automatically upgraded or reset. A fresh app
-  database can rebuild work metadata from `novel.json`; reading state and other
-  device preferences remain in the existing local database and are not recovered
-  from those files. Keep that database when preserving local state matters.
+- Before the SQL plugin opens the database, startup compares the applied
+  migration versions and SQLx SHA-384 checksums with the migrations bundled in
+  the app. An exact matching prefix preserves existing data and applies only
+  the remaining migrations. Matching complete histories reopen unchanged.
+- Any checksum mismatch, removed version, downgrade, gap in applied history,
+  or unsuccessful migration resets the entire SQLite database. An existing
+  database with application tables but no migration history is also reset.
+  Ordinary database access errors propagate without triggering a reset.
+- Reset deletes `norea.db` and its WAL, shared-memory, and rollback-journal
+  files before the SQL plugin creates the current schema. It does not delete
+  chapter files, covers, `novel.json`, or other app files. DB-backed library
+  membership, reading state, and preferences are lost; work metadata can be
+  rebuilt from `novel.json`. This also handles incompatible databases restored
+  by Android backup after reinstalling the app.
 - Source plugins continue to use their independent API version 0.2.
 - During pre-release schema churn, Norea does not keep one migration file for
   every schema edit.
