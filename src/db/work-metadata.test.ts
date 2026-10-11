@@ -163,6 +163,37 @@ it("does not export old DB records on startup or when only reading state changes
   await db.execute("UPDATE novel SET last_read_at=100 WHERE id=5"); await flushWorkMetadata(db);
   expect(storage.files.size).toBe(0);
 });
+
+it.each(["source", "server"])("replaces same-work legacy metadata from fresh %s metadata without touching chapter files", async (origin) => {
+  const metadata = fixture();
+  const directory = novelStorageRelativeDir({ pluginId: "source", path: "/book", name: metadata.novel.name });
+  const legacy = { ...metadata, novel: { ...metadata.novel, rating: undefined, summary: "Old summary" }, chapters: [{ path: "/old", name: "Old chapter" }], updatedAt: 1 };
+  storage.files.set(`${directory}/novel.json`, [...new TextEncoder().encode(JSON.stringify(legacy))]);
+  const contentPath = `${directory}/1-Opening/content.html`;
+  const mediaPath = `${directory}/1-Opening/media.zip`;
+  storage.files.set(contentPath, [1, 2, 3]);
+  storage.files.set(mediaPath, [4, 5, 6]);
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM novel").get()).toEqual({ count: 0 });
+  if (origin === "source") {
+    await applyNovelMetadataToCache(db, metadata);
+    await flushWorkMetadata(db);
+  } else {
+    await installStoredNovelMetadata(metadata);
+  }
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(`${directory}/novel.json`)!)))).toEqual(metadata);
+  expect(storage.files.get(contentPath)).toEqual([1, 2, 3]);
+  expect(storage.files.get(mediaPath)).toEqual([4, 5, 6]);
+  expect([...storage.files.keys()].filter(file => file.endsWith("/novel.json"))).toEqual([`${directory}/novel.json`]);
+});
+
+it("does not overwrite another work when replacing an obsolete metadata document", async () => {
+  const legacy = { ...fixture(), identity: { pluginId: "other", novelPath: "/other" }, chapters: [], updatedAt: 1 };
+  const bytes = [...new TextEncoder().encode(JSON.stringify(legacy))];
+  storage.files.set(path, bytes);
+  await expect(writeStoredNovelMetadata("contents/source/Original-book", fixture())).rejects.toThrow("identity");
+  expect(storage.files.get(path)).toEqual(bytes);
+});
 it("keeps plugin chapter lists in the DB while retaining directories on rename", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   await db.execute("UPDATE novel SET name='Renamed' WHERE id=1");

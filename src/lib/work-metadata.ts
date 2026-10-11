@@ -32,12 +32,28 @@ export async function availableNovelMetadataDirectory(metadata: Pick<NovelMetada
   const preferred = novelStorageRelativeDir({ pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath, name: metadata.novel.name });
   const { body } = await workMetadataOperation({ operation: "read", path: `${preferred}/novel.json` });
   if (!body) return preferred;
-  const existing = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
-  if (existing.identity.pluginId === metadata.identity.pluginId && existing.identity.novelPath === metadata.identity.novelPath) return preferred;
+  const existing: unknown = JSON.parse(new TextDecoder().decode(base64ToBytes(body)));
+  if (hasWorkIdentity(existing, metadata.identity)) return preferred;
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([metadata.identity.pluginId, metadata.identity.novelPath])));
   const segments = preferred.split("/");
   segments[2] = `${segments[2]!.slice(0, 150)}-${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   return segments.join("/");
+}
+
+function hasWorkIdentity(value: unknown, expected: NovelMetadataV1["identity"]): boolean {
+  if (!value || typeof value !== "object" || !("identity" in value)) return false;
+  const identity = value.identity;
+  return Boolean(identity && typeof identity === "object" && "pluginId" in identity && "novelPath" in identity &&
+    identity.pluginId === expected.pluginId && identity.novelPath === expected.novelPath);
+}
+
+async function readNovelMetadataForReplacement(directory: string, identity: NovelMetadataV1["identity"]): Promise<StoredNovelMetadata | null> {
+  const { body } = await workMetadataOperation({ operation: "read", path: `${directory}/novel.json` });
+  if (!body) return null;
+  const value: unknown = JSON.parse(new TextDecoder().decode(base64ToBytes(body)));
+  if (!hasWorkIdentity(value, identity)) throw new Error("work metadata: replacement identity does not match the existing file");
+  try { return { directory, metadata: parseNovelMetadata(value) }; }
+  catch { return null; }
 }
 
 export async function workMetadataOperation(input: WorkMetadataOperation): Promise<WorkMetadataOperationResult> {
@@ -140,7 +156,7 @@ export async function readStoredNovelMetadata(directory: string): Promise<Stored
 
 export async function writeStoredNovelMetadata(directory: string, input: NovelMetadataV1, notifyChanges = true): Promise<void> {
   const metadata = parseNovelMetadata(input);
-  const current = await readStoredNovelMetadata(directory);
+  const current = await readNovelMetadataForReplacement(directory, metadata.identity);
   if (current && JSON.stringify(current.metadata) === JSON.stringify(metadata)) return;
   await workMetadataOperation({ operation: "write", path: `${directory}/novel.json`, body: bytesToBase64(new TextEncoder().encode(JSON.stringify(metadata, null, 2))) });
   if (notifyChanges) notifyWorkMetadataChanges();
@@ -176,7 +192,7 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
     const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
     const installed = await runDatabaseTransaction(async (db) => {
       const directory = knownNovelMetadataDirectory(metadata.identity) ?? preferred;
-      const existing = await readStoredNovelMetadata(directory);
+      const existing = await readNovelMetadataForReplacement(directory, metadata.identity);
       await beforeInstall?.(existing);
       return withWorkMetadataRollback(async () => {
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);

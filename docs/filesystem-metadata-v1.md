@@ -68,7 +68,10 @@ The metadata document has no timestamp or chapter list.
 Cache writes must not silently overwrite newer files during startup/rebuild.
 Invalid local metadata is skipped with a path-only warning during scans; valid
 works still load. Storage access errors and duplicate valid work identities
-remain errors. Invalid metadata is never converted into an empty work. Identity,
+remain errors. Fresh validated metadata from a source or server can replace an
+obsolete document when its stored plugin ID and work path match exactly. This
+replaces only work metadata; existing chapter bodies and media remain untouched.
+Invalid metadata is never converted into an empty work. Identity,
 directory traversal, and size limits are
 validated at both import boundaries. Renaming a title retains the existing work
 directory when its identity already exists.
