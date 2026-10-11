@@ -126,6 +126,68 @@ To add the sample source list:
 Only install and use sources you are allowed to access in your country and under
 the source site's terms.
 
+## Optional Content Server
+
+[Norea Content Server](https://github.com/tinywind/norea-content-server) stores
+complete chapter packages so you can upload content from one device and download
+it on another. An archived copy remains available when the original source site
+is offline or removes a work. The server is optional: locally downloaded content
+remains readable without a server connection.
+
+### Start with Docker
+
+The public [Docker image](https://hub.docker.com/r/tinywind0/norea-content-server)
+supports `linux/amd64` and `linux/arm64`, including Linux containers on Docker
+Desktop. To start a server with persistent storage:
+
+```sh
+docker volume create norea-content-data
+docker run -d --name norea-content-server --restart unless-stopped -p 0.0.0.0:8080:8787 -v norea-content-data:/data tinywind0/norea-content-server:0.1.0
+```
+
+Open `http://localhost:8080/admin/` on the host. The administration console and
+content API share port 8080; there is no separate console port. First startup
+creates the console password in the data volume. Read it privately with:
+
+```sh
+docker exec norea-content-server cat /data/admin-password.hash
+```
+
+Keep the data volume across container replacements: it contains the catalog,
+chapter packages, and console password. The command publishes port 8080 on all
+host interfaces. Devices on your network can use `http://<server-LAN-IP>:8080`
+when the host firewall permits access. New devices register automatically and
+downloads are anonymous by default, so anyone who can reach the server can
+register a device. Use a trusted network or configure restricted remote access
+as described in the [server documentation](https://github.com/tinywind/norea-content-server#run-locally).
+
+### Connect Norea
+
+1. Open Settings -> Data -> Content server.
+2. Save the server URL and a device name. On a phone or tablet, use the server's
+   LAN address; `localhost` refers to that phone or tablet.
+3. Choose Sync now to register the device and upload complete local chapters.
+4. Choose Download to this device for content in the server catalog.
+
+No account or password is needed in the app. Each device uses its own key;
+reading positions, read flags, bookmarks, and library membership stay local.
+Choose Manual only, Periodically, or When changes occur. Automatic sync runs
+while the app is visible, and later syncs use recorded content changes. Chapters
+are uploaded as ZIPs only after their body and assets are complete. Deleting a
+local download leaves the server copy intact.
+
+The web console manages devices, content revisions, scan jobs, connected folders,
+and multiple plugin repository indexes. To reuse an existing Norea content
+folder, mount it and its metadata database read-only into the container, then
+register their container paths under Folders. Scanning uses saved metadata or a
+complete ZIP manifest without contacting source sites or requiring installed
+plugins. Unsupported or incomplete files and raw chapters without exact identity
+metadata are skipped; original files are preserved.
+
+See [content-server integration](docs/content-sync.md) for sync behavior and
+current limits, and the [server's administration guide](https://github.com/tinywind/norea-content-server#administration-console)
+for folder import and server configuration.
+
 ## Backup
 
 Use Settings -> Backup to export or import your local library data. Backups
