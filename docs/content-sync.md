@@ -9,10 +9,12 @@ membership stay local. Reading continues when the server is unavailable.
 
 1. Start the server using its README.
 2. Save the server URL and a device name in Norea.
-3. Run Sync now. The device registers automatically and uploads complete local
-   chapters. No account or password is required.
-4. Select Download to this device for a server chapter. Downloads open the local
-   novel page after verified installation.
+3. Open Browse > Content server to search titles or filter by source. Results
+   load one page at a time, without waiting for a full sync. The device registers
+   automatically; no account or password is required.
+4. Open a work to view its cover and available chapters. Use the usual library
+   and download buttons. Downloads use the server package without contacting
+   the original site or requiring its plugin.
 5. Choose a sync mode. Sync now remains available in every mode.
 
 | Mode | When synchronization runs |
@@ -26,6 +28,12 @@ recovery; it does not require the app to remain connected for reading. Android
 suspension stops the foreground scheduler. Changing to Manual only stops scheduled
 work and cancels the server change wait; a transfer already started may finish.
 Reading, bookmarking, and library changes do not trigger content sync.
+
+Sync runs in the background without locking navigation or refreshing plugin
+repositories. A work becomes visible after its metadata and cover are installed.
+Sync preserves existing library membership; add a server work to the library
+from its detail page. Sync now uploads complete local chapters and updates the
+remote catalog independently of browsing or selected chapter downloads.
 
 The previous automatic-sync switch migrates to When changes occur when enabled,
 or Manual only when disabled.
@@ -87,14 +95,21 @@ check only affected complete chapters. The server's change-wait endpoint returns
 cursor hints; the app then fetches the corresponding deltas. Existing
 fingerprints remain valid when upgrading to device access.
 
+Chapter deltas contain identities and deletion state, without package file
+inventories. The app retains cursors and tombstones instead of a full remote
+catalog snapshot. Legacy snapshots are compacted inside SQLite before crossing
+the WebView bridge. Browsing retrieves summaries in pages; a selected download
+fetches its package manifest separately.
+
 The current development schema has one v1 bootstrap; it does not migrate older
 application databases. Use a fresh development database when testing this
 baseline, keeping existing user databases and folders intact. Sync cursors and
 device keys remain outside portable backups. Downloaded folder names are
 unchanged. No account, session, or personal-state endpoint is called.
 
-Backup restoration and content synchronization share a storage-operation queue.
-Sync waits until restored files and reading settings are ready. If file
+Content changes are serialized per work. Backup restoration waits for active
+work operations and holds exclusive storage access until files and settings are
+ready. If file
 restoration fails after the database was replaced, restored downloads are marked
 as needing repair and are excluded from upload.
 

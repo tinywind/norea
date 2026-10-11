@@ -47,7 +47,9 @@ webtoons or read manga and comics page by page.
 - Track reading progress, history, unread chapters, and downloaded chapters.
 - Download chapters for later reading.
 - Share complete chapters through an optional [content server](docs/content-sync.md).
-  Devices register automatically; reading state stays on each device.
+  Browse its works under Browse -> Content server, add them to your library, and
+  download chapters without waiting for a full sync. Devices register
+  automatically; reading state stays on each device.
 - Export and import local backups for your library, progress, categories,
   source settings, and chapter download status.
 

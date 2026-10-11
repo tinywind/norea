@@ -144,7 +144,11 @@ function withAlpha(color: string, alpha: number): string {
 function AppProviders() {
   useEffect(() => startContentServerSync(), []);
   useEffect(() => {
-    const refresh = () => { void queryClient.invalidateQueries(); };
+    const refresh = () => {
+      for (const key of ["novel", "chapter", "download-cache"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    };
     window.addEventListener("norea-content-state-changed", refresh);
     return () => window.removeEventListener("norea-content-state-changed", refresh);
   }, []);

@@ -35,7 +35,7 @@ export const browseRoute = createRoute({
     search: Record<string, unknown>,
   ): { q: string; tab: BrowseTab } => ({
     q: typeof search.q === "string" ? search.q : "",
-    tab: search.tab === "sources" ? "sources" : "search",
+    tab: search.tab === "server" ? "server" : search.tab === "sources" ? "sources" : "search",
   }),
   component: BrowseRoutePage,
 });

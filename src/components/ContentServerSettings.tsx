@@ -1,25 +1,18 @@
 import { useState } from "react";
 import { Alert, Group, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
-import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
 import { ContentServerError } from "../lib/content-sync/client";
 import {
-  deleteServerChapter,
-  downloadServerChapter,
-  restoreServerChapter,
   syncContentServer,
 } from "../lib/content-sync/sync";
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
-import { ContentServerCover } from "./ContentServerCover";
-import { groupServerCatalog } from "./content-server-catalog";
 
 export function ContentServerSettings() {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const serverUrl = useContentSyncStore((state) => state.serverUrl);
   const deviceName = useContentSyncStore((state) => state.deviceName);
@@ -28,24 +21,25 @@ export function ContentServerSettings() {
   const status = useContentSyncStore((state) => state.status);
   const error = useContentSyncStore((state) => state.error);
   const blocked = useContentSyncStore((state) => state.blocked);
-  const catalog = useContentSyncStore((state) => state.catalog);
-  const works = useContentSyncStore((state) => state.works);
   const setServerUrl = useContentSyncStore((state) => state.setServerUrl);
   const setDeviceName = useContentSyncStore((state) => state.setDeviceName);
   const setSyncMode = useContentSyncStore((state) => state.setSyncMode);
   const setSyncIntervalMinutes = useContentSyncStore((state) => state.setSyncIntervalMinutes);
   const [urlDraft, setUrlDraft] = useState(serverUrl);
-  const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const disabled = busy || status === "syncing";
+  const disabled = busy;
+
+  function startSync(rescan = false) {
+    setActionError(null);
+    void syncContentServer(true, rescan).catch(cause => setActionError(describeError(cause)));
+  }
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
     setActionError(null);
     try {
       await action();
-      await queryClient.invalidateQueries();
     } catch (cause) {
       setActionError(cause instanceof ContentServerError && cause.status === 403 ? t("contentSync.blocked") : describeError(cause));
     } finally {
@@ -53,7 +47,6 @@ export function ContentServerSettings() {
     }
   }
 
-  const matches = groupServerCatalog(works, catalog, search);
 
   return (
     <SettingsSection title={t("contentSync.title")}>
@@ -93,61 +86,17 @@ export function ContentServerSettings() {
         </SettingsFieldRow>
       ) : null}
       <Group>
-        <TextButton loading={disabled} disabled={!serverUrl} onClick={() => { void run(syncContentServer); }}>
+        <TextButton loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
           {t("contentSync.syncNow")}
         </TextButton>
-        <TextButton disabled={disabled || !serverUrl} onClick={() => { void run(() => syncContentServer(true, true)); }}>
+        <TextButton disabled={disabled || status === "syncing" || !serverUrl} onClick={() => startSync(true)}>
           {t("contentSync.rescan")}
         </TextButton>
       </Group>
+      {status === "syncing" ? <Text size="sm" c="dimmed" role="status">{t("contentSync.background")}</Text> : null}
       <Text size="sm" c="dimmed">{t("contentSync.rescanDescription")}</Text>
       {actionError || error ? <Alert color="red" role="alert">{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
-      <SettingsFieldRow label={t("contentSync.catalog")} layout="stacked">
-        <Stack gap="sm">
-          <TextInput label={t("contentSync.search")} value={search} onChange={(event) => setSearch(event.currentTarget.value)} />
-          <Text size="sm" c="dimmed">{t("contentSync.workCount", { count: matches.length })}</Text>
-          {matches.slice(0, 50).map((work) => (
-            <Stack key={work.key} gap="sm">
-              <Group align="flex-start" wrap="nowrap">
-                <ContentServerCover work={work} />
-                <Stack gap="xs" style={{ minWidth: 0 }}>
-                  <Text fw={500} style={{ overflowWrap: "anywhere" }}>{work.name}</Text>
-                  <Text size="sm" c="dimmed">{t("contentSync.catalogCount", { count: work.chapters.length })}</Text>
-                </Stack>
-              </Group>
-              {work.chapters.length === 0 ? <Text size="sm" c="dimmed">{t("contentSync.metadataOnly")}</Text> : null}
-              {work.chapters.slice(0, 50).map((entry) => (
-                <Stack key={entry.id} gap="xs">
-                  <Text size="sm">{entry.manifest.chapter.name}</Text>
-                  <Group gap="xs">
-                    {entry.deleted ? <Text size="sm" c="dimmed">{t("contentSync.deleted")}</Text> : (
-                      <TextButton size="sm" disabled={disabled} onClick={() => { void run(async () => {
-                        const local = await downloadServerChapter(entry);
-                        await navigate({ to: "/novel", search: { id: local.novelId } });
-                      }); }}>
-                        {t("contentSync.download")}
-                      </TextButton>
-                    )}
-                    {entry.deleted ? (
-                      <TextButton size="sm" disabled={disabled} onClick={() => { void run(() => restoreServerChapter(entry)); }}>
-                        {t("contentSync.restore")}
-                      </TextButton>
-                    ) : (
-                      <TextButton size="sm" tone="danger" disabled={disabled} onClick={() => {
-                        if (window.confirm(t("contentSync.deleteConfirm", { chapter: entry.manifest.chapter.name }))) {
-                          void run(() => deleteServerChapter(entry));
-                        }
-                      }}>{t("contentSync.deleteServer")}</TextButton>
-                    )}
-                  </Group>
-                </Stack>
-              ))}
-              {work.chapters.length > 50 ? <Text size="sm">{t("contentSync.refineSearch")}</Text> : null}
-            </Stack>
-          ))}
-          {matches.length > 50 ? <Text size="sm">{t("contentSync.refineSearch")}</Text> : null}
-        </Stack>
-      </SettingsFieldRow>
+      <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>{t("contentSync.browse")}</TextButton>
     </SettingsSection>
   );
 }

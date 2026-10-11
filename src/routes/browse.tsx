@@ -29,6 +29,7 @@ import {
   TrashGlyph,
 } from "../components/ActionGlyphs";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
+import { ContentServerBrowse } from "../components/ContentServerBrowse";
 import {
   ConsoleChip,
   ConsolePanel,
@@ -72,7 +73,7 @@ const INSTALLED_QUERY_KEY = ["plugin", "installed"] as const;
 const MAX_PLUGIN_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_PLUGIN_SOURCE_FILE_SIZE_LABEL = "5 MiB";
 
-export type BrowseTab = "search" | "sources";
+export type BrowseTab = "search" | "sources" | "server";
 
 interface SourceInstanceForm {
   workTitle: string;
@@ -300,6 +301,7 @@ export function BrowsePage({
   const repos = useQuery({
     queryKey: REPO_QUERY_KEY,
     queryFn: listRepositories,
+    enabled: active && tab === "sources",
   });
 
   const installed = useQuery({
@@ -311,6 +313,7 @@ export function BrowsePage({
       return pluginManager.list();
     },
     staleTime: 0,
+    enabled: active && tab !== "server",
   });
 
   const forceRefreshNextRef = useRef(false);
@@ -327,7 +330,7 @@ export function BrowsePage({
         run: () => fetchAllAvailable(repos.data ?? [], force),
       }).promise;
     },
-    enabled: !!repos.data && repos.data.length > 0,
+    enabled: active && tab === "sources" && !!repos.data && repos.data.length > 0,
   });
 
   const pendingRepoUrl = useBrowseStore((s) => s.pendingRepoUrl);
@@ -639,7 +642,7 @@ export function BrowsePage({
       <Tabs
         value={tab}
         onChange={(value) => {
-          const nextTab: BrowseTab = value === "sources" ? "sources" : "search";
+          const nextTab: BrowseTab = value === "server" ? "server" : value === "sources" ? "sources" : "search";
           void navigate({
             to: "/browse",
             search: { q, tab: nextTab },
@@ -666,12 +669,17 @@ export function BrowsePage({
           >
             {t("browse.tab.sources")}
           </Tabs.Tab>
+          <Tabs.Tab value="server">{t("contentSync.title")}</Tabs.Tab>
         </Tabs.List>
+
+        <Tabs.Panel value="server" className="norea-browse-tab-panel">
+          {active && tab === "server" ? <ContentServerBrowse active /> : null}
+        </Tabs.Panel>
 
         <Tabs.Panel value="search" className="norea-browse-tab-panel">
           <div className="norea-browse-tab-stack">
             <ConsolePanel className="norea-browse-search-panel">
-              <PluginSearchSection
+              {active && tab === "search" ? <PluginSearchSection
                 installedPlugins={installedPlugins}
                 query={q}
                 onSearch={(nextQuery) => {
@@ -680,7 +688,7 @@ export function BrowsePage({
                     search: { q: nextQuery, tab: "search" },
                   });
                 }}
-              />
+              /> : null}
             </ConsolePanel>
           </div>
         </Tabs.Panel>

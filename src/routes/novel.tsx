@@ -46,6 +46,7 @@ import {
 } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
+import { listServerChapterPaths, readServerNovelSource } from "../lib/content-sync/novel-source";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   findPreviousAppHistoryEntry,
@@ -91,8 +92,34 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     enabled: id > 0,
     staleTime: Infinity,
   });
+  const serverSourceQuery = useQuery({
+    queryKey: ["content-server", "novel-source", id],
+    queryFn: () => readServerNovelSource(id),
+    enabled: id > 0,
+    networkMode: "always",
+    staleTime: Infinity,
+  });
+  const displayNovel = useMemo(
+    () => serverSourceQuery.data && novelQuery.data
+      ? { ...novelQuery.data, isLocal: false }
+      : novelQuery.data,
+    [novelQuery.data, serverSourceQuery.data],
+  );
+  const serverChaptersQuery = useQuery({
+    queryKey: ["content-server", "novel-chapters", serverSourceQuery.data?.serverUrl, serverSourceQuery.data?.workId],
+    queryFn: ({ signal }) => serverSourceQuery.data
+      ? listServerChapterPaths(serverSourceQuery.data, signal)
+      : Promise.resolve(new Set<string>()),
+    enabled: Boolean(serverSourceQuery.data),
+    staleTime: 30_000,
+  });
 
-  const rows = chaptersQuery.data ?? EMPTY_CHAPTERS;
+  const rows = useMemo(() => {
+    const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
+    return serverSourceQuery.data
+      ? storedRows.filter((chapter) => chapter.isDownloaded || serverChaptersQuery.data?.has(chapter.path))
+      : storedRows;
+  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data]);
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
@@ -111,7 +138,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     repairMedia,
     downloadChapter,
     downloadChapters,
-  } = useNovelChapterActions(id, novelQuery.data, chapters);
+  } = useNovelChapterActions(id, displayNovel, chapters);
   const statuses = useNovelDownloadStatuses(id, rows);
   const {
     addLocalChapters,
@@ -121,7 +148,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     openLocalMetadataEditor,
     reorderLocalChapter,
     editor: localNovelEditor,
-  } = useLocalNovelEditor(id, novelQuery.data, chapters, defaultChapterSort);
+  } = useLocalNovelEditor(id, displayNovel, chapters, defaultChapterSort);
   const sourceDuplicateChapterCounts = useMemo(
     () => sourceDuplicateChapterCountsById(chapters, sourceDuplicateChapters),
     [chapters, sourceDuplicateChapters],
@@ -316,7 +343,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  if (novelQuery.isLoading) {
+  if (novelQuery.isLoading || serverSourceQuery.isPending
+    || (serverSourceQuery.isFetching && !serverSourceQuery.data)) {
     return (
       <PageFrame>
         <StateView
@@ -328,23 +356,24 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  if (novelQuery.error) {
+  const loadError = novelQuery.error ?? serverSourceQuery.error;
+  if (loadError) {
     return (
       <PageFrame>
         <StateView
           color="red"
           title={t("novel.loadFailed")}
           message={
-            novelQuery.error instanceof Error
-              ? novelQuery.error.message
-              : String(novelQuery.error)
+            loadError instanceof Error
+              ? loadError.message
+              : String(loadError)
           }
         />
       </PageFrame>
     );
   }
 
-  const novel = novelQuery.data;
+  const novel = displayNovel;
   if (!novel) {
     return (
       <PageFrame>
@@ -357,8 +386,9 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  const sourceUrl = resolveNovelSourceUrl(novel);
-  const sourcePlugin = novel.isLocal
+  const allowSourceAccess = !serverSourceQuery.data;
+  const sourceUrl = allowSourceAccess ? resolveNovelSourceUrl(novel) : null;
+  const sourcePlugin = novel.isLocal || !allowSourceAccess
     ? null
     : pluginManager.getPlugin(novel.pluginId);
   const sourceName = novel.isLocal
@@ -374,6 +404,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           <NovelWorkspace
             key={novel.id}
             novel={novel}
+            allowSourceAccess={allowSourceAccess}
             chapters={chapters}
             downloadStatuses={statuses}
             lastReadChapterId={lastReadChapterId}
@@ -589,7 +620,15 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
               </Text>
             ) : null}
 
-            {chaptersQuery.isLoading ? (
+            {serverChaptersQuery.error ? (
+              <Text c="red" className="norea-novel-local-error" size="sm">
+                {serverChaptersQuery.error instanceof Error
+                  ? serverChaptersQuery.error.message
+                  : String(serverChaptersQuery.error)}
+              </Text>
+            ) : null}
+
+            {chaptersQuery.isLoading || (serverChaptersQuery.isLoading && chapters.length === 0) ? (
               <StateView
                 color="blue"
                 title={t("novel.loadingChapters")}

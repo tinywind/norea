@@ -5,6 +5,7 @@ import {
   type NovelDetailRecord,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { saveNovelCoverFromSource } from "../../lib/novel-cover-storage";
 import { pluginManager } from "../../lib/plugins/manager";
 import {
@@ -42,8 +43,9 @@ export function useNovelMetadata(
     mutationFn: async () => {
       if (!novel) return;
       const inLibrary = !novel.inLibrary;
+      const serverSource = inLibrary ? await readServerNovelSource(novel.id) : null;
       await setNovelInLibrary(novel.id, inLibrary);
-      return { inLibrary, novel };
+      return { inLibrary, novel, serverSource };
     },
     onSuccess: (result) => {
       if (!result) return;
@@ -63,7 +65,7 @@ export function useNovelMetadata(
         refetchType: "none",
       });
 
-      if (!result.inLibrary || result.novel.isLocal || !result.novel.cover) {
+      if (!result.inLibrary || result.serverSource || result.novel.isLocal || !result.novel.cover) {
         return;
       }
       const plugin = pluginManager.getPlugin(result.novel.pluginId);
@@ -91,10 +93,18 @@ export function useNovelMetadata(
     void queryClient.invalidateQueries({ queryKey: novelKey(id) });
     void queryClient.invalidateQueries({ queryKey: chaptersKey(id) });
     void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+    void queryClient.invalidateQueries({ queryKey: ["content-server", "novel-chapters"] });
   }
 
-  function enqueueNovelMetadataRefresh(mode: NovelMetadataRefreshMode) {
-    if (!novel || novel.isLocal) return Promise.resolve(null);
+  async function enqueueNovelMetadataRefresh(mode: NovelMetadataRefreshMode) {
+    if (!novel) return null;
+    const serverSource = await readServerNovelSource(novel.id);
+    if (serverSource) {
+      const { refreshServerNovel } = await import("../../lib/content-sync/browse");
+      await refreshServerNovel(serverSource);
+      return { duplicateChapters: [] as readonly SourceDuplicateChapterInfo[] };
+    }
+    if (novel.isLocal) return null;
     const plugin = pluginManager.getPlugin(novel.pluginId);
     if (!plugin) {
       throw new Error(t("source.pluginNotLoaded"));

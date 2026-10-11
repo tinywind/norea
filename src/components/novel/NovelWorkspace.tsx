@@ -122,6 +122,7 @@ function useAutoFitNovelTitle(title: string, enabled: boolean) {
 }
 
 interface NovelWorkspaceProps {
+  allowSourceAccess: boolean;
   chapters: ChapterListRow[];
   downloadStatuses: ReadonlyMap<number, ChapterDownloadStatus>;
   lastReadChapterId: number | undefined;
@@ -145,6 +146,7 @@ interface NovelWorkspaceProps {
 }
 
 export function NovelWorkspace({
+  allowSourceAccess,
   chapters,
   downloadStatuses,
   lastReadChapterId,
@@ -176,7 +178,7 @@ export function NovelWorkspace({
     isDesktopLayout,
   );
   const coverPlugin =
-    novel.isLocal || novel.inLibrary
+    !allowSourceAccess || novel.isLocal || novel.inLibrary
       ? null
       : pluginManager.getPlugin(novel.pluginId);
   const coverSource = useNovelCoverSource(novel, {
@@ -298,7 +300,7 @@ export function NovelWorkspace({
             onRefresh={onRefreshMetadata}
             refreshing={metadataRefreshing}
           />
-          {novel.inLibrary ? (
+          {novel.inLibrary && allowSourceAccess ? (
             <NovelActionButton
               label={t("novel.mergeSource")}
               onClick={() =>
@@ -330,7 +332,7 @@ export function NovelWorkspace({
       >
         {novel.inLibrary ? <LibraryAddedGlyph /> : <LibraryAddGlyph />}
       </NovelActionButton>
-      {novel.isLocal ? null : (
+      {novel.isLocal || !allowSourceAccess ? null : (
         <NovelActionButton
           disabled={!sourceUrl}
           label={t("novel.openSource")}
