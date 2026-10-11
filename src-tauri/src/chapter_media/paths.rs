@@ -66,7 +66,7 @@ fn configured_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBu
     }
 }
 
-pub(super) fn media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     configured_media_root(app)?.map_or_else(|| legacy_media_root(app), Ok)
 }
 

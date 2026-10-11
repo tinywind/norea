@@ -200,7 +200,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
    * storage provider uses path-shaped document ids, so its children resolve
    * with a single existence query; other providers fall back to one listing.
    */
-  fun findStorageChild(parent: DocumentFile, name: String): DocumentFile? {
+  private fun findStorageChildWithoutRecovery(parent: DocumentFile, name: String): DocumentFile? {
     if (parent.uri.scheme == ContentResolver.SCHEME_FILE) return parent.findFile(name)
     if (isExternalStorageTreeDocument(parent.uri)) {
       return treeChildDocument(parent, "${DocumentsContract.getDocumentId(parent.uri)}/$name")
@@ -210,14 +210,24 @@ internal class AndroidStorageDocuments(private val context: Context) {
     return storageChildDocumentFile(child)
   }
 
+  @Synchronized
+  fun findStorageChild(parent: DocumentFile, name: String): DocumentFile? {
+    findStorageChildWithoutRecovery(parent, name)?.let { return it }
+    if (name.startsWith('.')) return null
+    val backup = findStorageChildWithoutRecovery(parent, ".$name.norea-sync-backup") ?: return null
+    require(backup.isDirectory) { "Invalid chapter recovery directory." }
+    check(backup.renameTo(name)) { "Cannot recover interrupted chapter installation." }
+    return backup
+  }
+
   fun storageDocumentAt(rootUri: String, relativePath: String): DocumentFile? {
     val root = storageRoot(rootUri)
     val segments = safeStorageSegments(relativePath)
     if (isExternalStorageTreeDocument(root.uri)) {
-      return treeChildDocument(
+      treeChildDocument(
         root,
         "${DocumentsContract.getDocumentId(root.uri)}/${segments.joinToString("/")}",
-      )?.takeIf { it.exists() }
+      )?.takeIf { it.exists() }?.let { return it }
     }
     var current = root
     for (segment in segments) {

@@ -14,6 +14,8 @@ import type {
 } from "./chapter-storage-transfer";
 
 interface AndroidStorageBridge {
+  snapshotContentChapter: (requestId: string, rootUri: string, storageDir: string, stagePath: string) => void;
+  installContentChapter: (requestId: string, rootUri: string, storageDir: string, stagePath: string) => void;
   archiveDirectory: (
     requestId: string,
     rootUri: string,
@@ -343,6 +345,18 @@ function androidStorageBridge(): AndroidStorageBridge {
     throw new Error("Android storage bridge is unavailable.");
   }
   return bridge;
+}
+
+export async function snapshotAndroidContentChapter(storageDir: string, stagePath: string): Promise<void> {
+  const root = await androidStorageRoot();
+  await runAndroidStorageOperation((requestId) =>
+    androidStorageBridge().snapshotContentChapter(requestId, root, storageDir, stagePath));
+}
+
+export async function installAndroidContentChapter(storageDir: string, stagePath: string): Promise<void> {
+  const root = await androidStorageRoot();
+  await runAndroidStorageOperation((requestId) =>
+    androidStorageBridge().installContentChapter(requestId, root, storageDir, stagePath));
 }
 
 function parseStorageResponse<T extends AndroidStorageResponse>(raw: string): T {

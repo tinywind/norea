@@ -24,6 +24,7 @@ internal class AndroidStorageBridge(
   private val zipFiles = AndroidStorageZipFiles(contentResolver, storage)
   private val mediaStore = AndroidChapterMediaStore(contentResolver, storage)
   private val chapterTransfer = AndroidChapterStorageTransfer(contentResolver, storage)
+  private val contentSync = AndroidContentSyncStorage(context, storage)
   private val coverInspector = AndroidNovelCoverInspector(storage)
   private val chapterInspector = AndroidChapterArtifactInspector(storage, mediaStore)
   private val storageExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -31,6 +32,22 @@ internal class AndroidStorageBridge(
   }
 
   fun destroy() = storageExecutor.shutdownNow()
+
+  @JavascriptInterface
+  fun snapshotContentChapter(requestId: String, rootUri: String, storageDir: String, stagePath: String) {
+    submitStorageOperation(requestId) {
+      contentSync.snapshot(rootUri, storageDir, stagePath)
+      JSONObject().put("ok", true)
+    }
+  }
+
+  @JavascriptInterface
+  fun installContentChapter(requestId: String, rootUri: String, storageDir: String, stagePath: String) {
+    submitStorageOperation(requestId) {
+      contentSync.install(rootUri, storageDir, stagePath)
+      JSONObject().put("ok", true)
+    }
+  }
 
   private fun submitStorageOperation(
     requestId: String,

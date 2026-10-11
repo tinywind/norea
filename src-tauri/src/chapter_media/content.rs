@@ -23,6 +23,7 @@ fn stored_content_path_in_dir(
     chapter_dir: &Path,
     preferred_file_name: &str,
 ) -> Result<Option<PathBuf>, String> {
+    crate::content_sync::recover_content_directory(chapter_dir)?;
     let mut file_names = vec![preferred_file_name.to_string()];
     for file_name in ["content.html", "content.pdf"] {
         if !file_names.iter().any(|candidate| candidate == file_name) {
@@ -510,6 +511,9 @@ pub async fn chapter_content_mirror_read_file(
         let media_root = media_root(&app)?;
         let relative_path = safe_relative_storage_path(&content_file)?;
         let content_path = media_root.join(relative_path);
+        if let Some(chapter_dir) = content_path.parent() {
+            crate::content_sync::recover_content_directory(chapter_dir)?;
+        }
         match fs::read_to_string(&content_path) {
             Ok(content) => Ok(Some(content)),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),

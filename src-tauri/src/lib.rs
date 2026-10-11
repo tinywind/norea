@@ -3,6 +3,7 @@ mod android_file_open;
 mod android_tls;
 mod backup;
 mod chapter_media;
+mod content_sync;
 mod database;
 mod desktop_file_open;
 mod download_cache;
@@ -156,6 +157,11 @@ pub fn run() {
             chapter_media::norea_media_protocol_response(ctx.app_handle(), request)
         })
         .invoke_handler(tauri::generate_handler![
+            content_sync::content_sync_create_stage,
+            content_sync::content_sync_fingerprint,
+            content_sync::content_sync_remove_stage,
+            content_sync::content_sync_upload,
+            content_sync::content_sync_download,
             android_file_open::android_open_file_temp_read,
             android_file_open::android_open_file_url_take,
             backup::backup_cleanup_staged_unpack,
