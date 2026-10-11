@@ -14,6 +14,8 @@ import {
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { ContentServerCover } from "./ContentServerCover";
+import { groupServerCatalog } from "./content-server-catalog";
 
 export function ContentServerSettings() {
   const { t } = useTranslation();
@@ -27,6 +29,7 @@ export function ContentServerSettings() {
   const error = useContentSyncStore((state) => state.error);
   const blocked = useContentSyncStore((state) => state.blocked);
   const catalog = useContentSyncStore((state) => state.catalog);
+  const works = useContentSyncStore((state) => state.works);
   const setServerUrl = useContentSyncStore((state) => state.setServerUrl);
   const setDeviceName = useContentSyncStore((state) => state.setDeviceName);
   const setSyncMode = useContentSyncStore((state) => state.setSyncMode);
@@ -50,10 +53,7 @@ export function ContentServerSettings() {
     }
   }
 
-  const matches = catalog.filter((entry) =>
-    `${entry.manifest.novel.name} ${entry.manifest.chapter.name}`
-      .toLocaleLowerCase().includes(search.toLocaleLowerCase()),
-  );
+  const matches = groupServerCatalog(works, catalog, search);
 
   return (
     <SettingsSection title={t("contentSync.title")}>
@@ -105,32 +105,44 @@ export function ContentServerSettings() {
       <SettingsFieldRow label={t("contentSync.catalog")} layout="stacked">
         <Stack gap="sm">
           <TextInput label={t("contentSync.search")} value={search} onChange={(event) => setSearch(event.currentTarget.value)} />
-          <Text size="sm" c="dimmed">{t("contentSync.catalogCount", { count: matches.length })}</Text>
-          {matches.slice(0, 50).map((entry) => (
-            <Stack key={entry.id} gap="xs">
-              <Text fw={500}>{entry.manifest.novel.name}</Text>
-              <Text size="sm">{entry.manifest.chapter.name}</Text>
-              <Group gap="xs">
-                {entry.deleted ? <Text size="sm" c="dimmed">{t("contentSync.deleted")}</Text> : (
-                  <TextButton size="sm" disabled={disabled} onClick={() => { void run(async () => {
-                    const local = await downloadServerChapter(entry);
-                    await navigate({ to: "/novel", search: { id: local.novelId } });
-                  }); }}>
-                    {t("contentSync.download")}
-                  </TextButton>
-                )}
-                {entry.deleted ? (
-                  <TextButton size="sm" disabled={disabled} onClick={() => { void run(() => restoreServerChapter(entry)); }}>
-                    {t("contentSync.restore")}
-                  </TextButton>
-                ) : (
-                  <TextButton size="sm" tone="danger" disabled={disabled} onClick={() => {
-                    if (window.confirm(t("contentSync.deleteConfirm", { chapter: entry.manifest.chapter.name }))) {
-                      void run(() => deleteServerChapter(entry));
-                    }
-                  }}>{t("contentSync.deleteServer")}</TextButton>
-                )}
+          <Text size="sm" c="dimmed">{t("contentSync.workCount", { count: matches.length })}</Text>
+          {matches.slice(0, 50).map((work) => (
+            <Stack key={work.key} gap="sm">
+              <Group align="flex-start" wrap="nowrap">
+                <ContentServerCover work={work} />
+                <Stack gap="xs" style={{ minWidth: 0 }}>
+                  <Text fw={500} style={{ overflowWrap: "anywhere" }}>{work.name}</Text>
+                  <Text size="sm" c="dimmed">{t("contentSync.catalogCount", { count: work.chapters.length })}</Text>
+                </Stack>
               </Group>
+              {work.chapters.length === 0 ? <Text size="sm" c="dimmed">{t("contentSync.metadataOnly")}</Text> : null}
+              {work.chapters.slice(0, 50).map((entry) => (
+                <Stack key={entry.id} gap="xs">
+                  <Text size="sm">{entry.manifest.chapter.name}</Text>
+                  <Group gap="xs">
+                    {entry.deleted ? <Text size="sm" c="dimmed">{t("contentSync.deleted")}</Text> : (
+                      <TextButton size="sm" disabled={disabled} onClick={() => { void run(async () => {
+                        const local = await downloadServerChapter(entry);
+                        await navigate({ to: "/novel", search: { id: local.novelId } });
+                      }); }}>
+                        {t("contentSync.download")}
+                      </TextButton>
+                    )}
+                    {entry.deleted ? (
+                      <TextButton size="sm" disabled={disabled} onClick={() => { void run(() => restoreServerChapter(entry)); }}>
+                        {t("contentSync.restore")}
+                      </TextButton>
+                    ) : (
+                      <TextButton size="sm" tone="danger" disabled={disabled} onClick={() => {
+                        if (window.confirm(t("contentSync.deleteConfirm", { chapter: entry.manifest.chapter.name }))) {
+                          void run(() => deleteServerChapter(entry));
+                        }
+                      }}>{t("contentSync.deleteServer")}</TextButton>
+                    )}
+                  </Group>
+                </Stack>
+              ))}
+              {work.chapters.length > 50 ? <Text size="sm">{t("contentSync.refineSearch")}</Text> : null}
             </Stack>
           ))}
           {matches.length > 50 ? <Text size="sm">{t("contentSync.refineSearch")}</Text> : null}
