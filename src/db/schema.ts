@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -12,6 +13,21 @@ export const contentSyncCacheTable = sqliteTable("content_sync_cache", {
   cacheKey: text("cache_key").primaryKey().notNull(),
   payload: text("payload").notNull(),
 });
+
+export const workMetadataDirtyTable = sqliteTable("work_metadata_dirty", {
+  pluginId: text("plugin_id").notNull(),
+  path: text("path").notNull(),
+}, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.path] }) }));
+
+export const workMetadataReadingStateTable = sqliteTable("work_metadata_reading_state", {
+  pluginId: text("plugin_id").notNull(),
+  novelPath: text("novel_path").notNull(),
+  chapterPath: text("chapter_path").notNull(),
+  progress: integer("progress").notNull(),
+  bookmark: integer("bookmark", { mode: "boolean" }).notNull(),
+  unread: integer("unread", { mode: "boolean" }).notNull(),
+  readAt: integer("read_at"),
+}, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.novelPath, table.chapterPath] }) }));
 
 // Novel: a title in the user's library or browsable from a source plugin.
 export const novelTable = sqliteTable(

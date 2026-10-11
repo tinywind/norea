@@ -30,7 +30,7 @@ export function registerContentDevice(serverUrl: string, deviceName: string): Pr
   if (pending) return pending;
   const registration = (async () => {
     const capabilities = await contentServerRequest<ContentCapabilities>(server, "/capabilities");
-    if (capabilities.apiVersion !== 2 || capabilities.packageVersion !== 1
+    if (capabilities.apiVersion !== 1 || capabilities.packageVersion !== 1
       || capabilities.authentication !== "device-key" || capabilities.personalStateSync !== false) {
       throw new Error("This content server uses an incompatible authentication or package protocol.");
     }

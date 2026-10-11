@@ -2,6 +2,7 @@ import { subscribeContentSyncChanges } from "../../db/content-sync-journal";
 import { useContentSyncStore } from "../../store/content-sync";
 import { contentServerRequest } from "./client";
 import { getContentSyncCursors, syncContentServer } from "./sync";
+import { subscribeWorkMetadataChanges } from "../work-metadata";
 
 export function startContentServerSync(): () => void {
   let disposed = false;
@@ -46,14 +47,14 @@ export function startContentServerSync(): () => void {
     try {
       const cursor = await getContentSyncCursors();
       if (controller.signal.aborted || current !== generation) return;
-      const hint = await contentServerRequest<{ catalogCursor: number }>(
-        serverUrl, `/changes?catalogAfter=${cursor.catalogCursor}&waitSeconds=20`,
+      const hint = await contentServerRequest<{ catalogCursor: number; workCursor: number }>(
+        serverUrl, `/changes?catalogAfter=${cursor.catalogCursor}&workAfter=${cursor.workCursor}&waitSeconds=20`,
         deviceKey ?? undefined, "GET", undefined, controller.signal,
       );
       if (controller.signal.aborted || current !== generation || !active()) return;
       poll = undefined;
       pollFailures = 0;
-      if (hint.catalogCursor !== cursor.catalogCursor) requestSync(0);
+      if (hint.catalogCursor !== cursor.catalogCursor || hint.workCursor !== cursor.workCursor) requestSync(0);
       else timer = setTimeout(() => { timer = undefined; void waitForChanges(); }, 250);
     } catch {
       if (controller.signal.aborted || current !== generation || !active()) return;
@@ -104,6 +105,9 @@ export function startContentServerSync(): () => void {
   const unsubscribeChanges = subscribeContentSyncChanges(() => {
     if (useContentSyncStore.getState().syncMode === "changes") requestSync();
   });
+  const unsubscribeMetadata = subscribeWorkMetadataChanges(() => {
+    if (useContentSyncStore.getState().syncMode === "changes") requestSync();
+  });
   window.addEventListener("online", restart);
   window.addEventListener("offline", restart);
   document.addEventListener("visibilitychange", restart);
@@ -114,6 +118,7 @@ export function startContentServerSync(): () => void {
     cancelWait();
     unsubscribe();
     unsubscribeChanges();
+    unsubscribeMetadata();
     window.removeEventListener("online", restart);
     window.removeEventListener("offline", restart);
     document.removeEventListener("visibilitychange", restart);

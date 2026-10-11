@@ -120,7 +120,7 @@ export async function writeChapterContentFile(
   await invoke("chapter_content_mirror_store", {
     chapterId,
     content,
-    metadata,
+    metadata: { ...metadata, storageDir: chapterStorageRelativeDir(metadata.novel, metadata.chapter) },
   });
 }
 export async function writeChapterPartialContentFile(
@@ -136,7 +136,7 @@ export async function writeChapterPartialContentFile(
   }
   await invoke("chapter_content_mirror_store_partial", {
     content,
-    metadata,
+    metadata: { ...metadata, storageDir: chapterStorageRelativeDir(metadata.novel, metadata.chapter) },
   });
 }
 export async function clearChapterContentFiles(

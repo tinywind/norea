@@ -374,7 +374,9 @@ pub async fn chapter_content_mirror_store(
             position,
             extension,
         )?;
-        let content_path = media_root.join(&content_file);
+        let content_path = if let Some(directory) = metadata.get("storageDir").and_then(serde_json::Value::as_str) {
+            media_root.join(safe_relative_storage_path(directory)?).join(format!("content.{extension}"))
+        } else { media_root.join(&content_file) };
 
         if let Some(parent) = content_path.parent() {
             fs::create_dir_all(parent)
@@ -444,6 +446,9 @@ pub async fn chapter_content_mirror_store_partial(
             chapter.get("name").and_then(serde_json::Value::as_str),
             chapter.get("position").and_then(serde_json::Value::as_i64),
         )?;
+        let chapter_dir = if let Some(directory) = metadata.get("storageDir").and_then(serde_json::Value::as_str) {
+            media_root.join(safe_relative_storage_path(directory)?)
+        } else { chapter_dir };
         fs::create_dir_all(&chapter_dir)
             .map_err(|err| format!("chapter media: create partial content dir: {err}"))?;
         let partial_path = chapter_dir.join(CHAPTER_PARTIAL_CONTENT_FILE);

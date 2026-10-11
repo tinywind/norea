@@ -12,8 +12,6 @@ let sqlite: DatabaseSync;
 beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
-  sqlite.exec("ALTER TABLE chapter ADD COLUMN stored_content_type text");
-  sqlite.exec("CREATE TABLE content_sync_cache(cache_key text PRIMARY KEY NOT NULL,payload text NOT NULL)");
   for (const sql of CONTENT_SYNC_JOURNAL_SCHEMA) sqlite.exec(sql);
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),

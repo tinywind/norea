@@ -1,3 +1,20 @@
+CREATE TABLE `work_metadata_dirty` (
+  `plugin_id` text NOT NULL,
+  `path` text NOT NULL,
+  PRIMARY KEY (`plugin_id`, `path`)
+);
+--> statement-breakpoint
+CREATE TABLE `work_metadata_reading_state` (
+  `plugin_id` text NOT NULL,
+  `novel_path` text NOT NULL,
+  `chapter_path` text NOT NULL,
+  `progress` integer NOT NULL,
+  `bookmark` integer NOT NULL,
+  `unread` integer NOT NULL,
+  `read_at` integer,
+  PRIMARY KEY (`plugin_id`, `novel_path`, `chapter_path`)
+);
+--> statement-breakpoint
 CREATE TABLE `novel` (
   `id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
   `plugin_id` text NOT NULL,
@@ -34,6 +51,7 @@ CREATE TABLE `chapter` (
   `progress` integer DEFAULT 0 NOT NULL,
   `is_downloaded` integer DEFAULT false NOT NULL,
   `content_type` text DEFAULT 'html' NOT NULL,
+  `stored_content_type` text,
   `content_bytes` integer DEFAULT 0 NOT NULL,
   `media_bytes` integer DEFAULT 0 NOT NULL,
   `media_repair_needed` integer DEFAULT false NOT NULL,
@@ -125,6 +143,71 @@ CREATE TABLE `repository_index_cache` (
   `repo_url` text PRIMARY KEY NOT NULL,
   `fetched_at` integer DEFAULT (unixepoch()) NOT NULL,
   `items_json` text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `chapter_download_queue` (
+  `chapter_id` integer PRIMARY KEY NOT NULL,
+  `job_json` text NOT NULL,
+  `created_at_ms` integer NOT NULL,
+  `updated_at_ms` integer NOT NULL,
+  `leased_at_ms` integer,
+  `attempt_count` integer DEFAULT 0 NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `chapter_download_queue_created_idx`
+ON `chapter_download_queue` (`created_at_ms`, `chapter_id`);
+--> statement-breakpoint
+CREATE TABLE `download_cache_work` (
+  `id` text PRIMARY KEY NOT NULL,
+  `scope` text NOT NULL,
+  `target_ids_json` text NOT NULL,
+  `title` text,
+  `status` text DEFAULT 'queued' NOT NULL,
+  `total` integer DEFAULT 0 NOT NULL,
+  `completed` integer DEFAULT 0 NOT NULL,
+  `failed` integer DEFAULT 0 NOT NULL,
+  `error` text,
+  `cancel_requested` integer DEFAULT 0 NOT NULL,
+  `created_at_ms` integer NOT NULL,
+  `updated_at_ms` integer NOT NULL,
+  `started_at_ms` integer,
+  `finished_at_ms` integer
+);
+--> statement-breakpoint
+CREATE INDEX `download_cache_work_status_idx`
+ON `download_cache_work` (`status`, `updated_at_ms`);
+--> statement-breakpoint
+CREATE TABLE `vpn_gate_server_verdict` (
+  `ip` text PRIMARY KEY NOT NULL,
+  `verdict` text NOT NULL,
+  `updated_at` integer DEFAULT (unixepoch()) NOT NULL,
+  CONSTRAINT `vpn_gate_server_verdict_verdict_check`
+    CHECK (`verdict` IN ('works', 'fails'))
+);
+--> statement-breakpoint
+CREATE TABLE `content_sync_cache` (
+  `cache_key` text PRIMARY KEY NOT NULL,
+  `payload` text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `content_sync_origin` (
+  `id` integer PRIMARY KEY NOT NULL,
+  `remote` integer DEFAULT 0 NOT NULL
+);
+--> statement-breakpoint
+INSERT INTO `content_sync_origin` (`id`, `remote`) VALUES (1, 0);
+--> statement-breakpoint
+CREATE TABLE `content_sync_journal` (
+  `sequence` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+  `state_key` text NOT NULL,
+  `payload` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `content_sync_journal_key_idx` ON `content_sync_journal` (`state_key`, `sequence`);
+--> statement-breakpoint
+CREATE TABLE `content_sync_position` (
+  `novel_id` integer PRIMARY KEY NOT NULL,
+  `chapter_id` integer NOT NULL
 );
 --> statement-breakpoint
 CREATE TRIGGER `chapter_stats_after_insert`

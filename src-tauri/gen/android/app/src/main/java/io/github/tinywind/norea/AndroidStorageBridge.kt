@@ -25,6 +25,7 @@ internal class AndroidStorageBridge(
   private val mediaStore = AndroidChapterMediaStore(contentResolver, storage)
   private val chapterTransfer = AndroidChapterStorageTransfer(contentResolver, storage)
   private val contentSync = AndroidContentSyncStorage(context, storage)
+  private val workMetadata = AndroidWorkMetadataStorage(contentResolver, storage)
   private val coverInspector = AndroidNovelCoverInspector(storage)
   private val chapterInspector = AndroidChapterArtifactInspector(storage, mediaStore)
   private val storageExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -32,6 +33,11 @@ internal class AndroidStorageBridge(
   }
 
   fun destroy() = storageExecutor.shutdownNow()
+
+  @JavascriptInterface
+  fun workMetadataOperation(requestId: String, rootUri: String, input: String) {
+    submitStorageOperation(requestId) { workMetadata.operate(rootUri, JSONObject(input)) }
+  }
 
   @JavascriptInterface
   fun snapshotContentChapter(requestId: String, rootUri: String, storageDir: String, stagePath: String) {

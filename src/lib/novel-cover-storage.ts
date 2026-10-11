@@ -15,6 +15,7 @@ import { pluginMediaFetch } from "./http";
 import { getPluginBaseUrl } from "./plugins/base-url";
 import type { Plugin } from "./plugins/types";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
 
 const NOVEL_COVER_MANIFEST_FILE = "cover.json";
 const NOVEL_COVER_BASENAME = "cover";
@@ -453,6 +454,15 @@ async function readStoredNovelCover(
   novel: NovelCoverStorageInput,
   expectedSourceUrl: string | null,
 ): Promise<StoredNovelCover | null> {
+  const metadataDirectory = resolvedNovelStorageDir(novel.id);
+  if (metadataDirectory) {
+    const { workMetadataOperation } = await import("./work-metadata");
+    const { base64ToBytes } = await import("./base64");
+    const { body } = await workMetadataOperation({ operation: "read", path: `${metadataDirectory}/cover.json` });
+    const manifest = parseNovelCoverManifest(body ? new TextDecoder().decode(base64ToBytes(body)) : null);
+    if (!manifest || manifest.sourceId !== novel.pluginId || manifest.novelPath !== novel.path) return null;
+    return { manifest, relativePath: `${metadataDirectory}/${manifest.fileName}` };
+  }
   if (isAndroidRuntime()) {
     const result = await inspectAndroidNovelCover({
       expectedSourceUrl,
@@ -489,6 +499,12 @@ async function storeNovelCover(
   },
   previous: StoredNovelCover | null,
 ): Promise<void> {
+  const metadataDirectory = resolvedNovelStorageDir(novel.id);
+  if (metadataDirectory) {
+    const { persistNovelCover } = await import("./work-metadata");
+    await persistNovelCover(metadataDirectory, input);
+    return;
+  }
   const manifest = serializeNovelCoverManifest({
     contentType: input.contentType,
     fileName: input.fileName,

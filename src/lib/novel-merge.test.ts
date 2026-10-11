@@ -62,6 +62,8 @@ vi.mock("./updates/update-index-events", () => ({
 }));
 
 vi.mock("./chapter-storage-resolution", () => ({
+  resolvedChapterStorageDir: vi.fn(() => null),
+  resolvedNovelStorageDir: vi.fn(() => null),
   clearResolvedChapterStorageDirs: vi.fn(),
 }));
 

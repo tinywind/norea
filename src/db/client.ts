@@ -2,13 +2,11 @@ import Database from "@tauri-apps/plugin-sql";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
 import { ensureContentSyncJournal, notifyContentSyncChanges } from "./content-sync-journal";
+import { flushWorkMetadata, initializeWorkMetadata } from "./work-metadata";
+import { isTauriRuntime } from "../lib/tauri-runtime";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
-const CHAPTER_CONTENT_COLUMN = "content";
-const MEDIA_REPAIR_NEEDED_COLUMN = "media_repair_needed";
-const MEDIA_BYTES_CHECKED_AT_COLUMN = "media_bytes_checked_at";
-const STORED_CONTENT_TYPE_COLUMN = "stored_content_type";
 
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
@@ -18,139 +16,10 @@ function observationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function loadChapterColumnNames(
-  db: Database,
-): Promise<ReadonlySet<string>> {
-  const columns = await db.select<Array<{ name: string }>>(
-    "PRAGMA table_info(chapter)",
-  );
-  return new Set(columns.map((column) => column.name));
-}
-
-async function ensureMediaRepairNeededColumn(
-  db: Database,
-  chapterColumnNames: ReadonlySet<string>,
-): Promise<void> {
-  if (chapterColumnNames.has(MEDIA_REPAIR_NEEDED_COLUMN)) {
-    return;
-  }
-
-  await db.execute(
-    `ALTER TABLE chapter
-     ADD COLUMN media_repair_needed integer DEFAULT false NOT NULL`,
-  );
-}
-
-async function ensureMediaBytesCheckedAtColumn(
-  db: Database,
-  chapterColumnNames: ReadonlySet<string>,
-): Promise<void> {
-  if (chapterColumnNames.has(MEDIA_BYTES_CHECKED_AT_COLUMN)) {
-    return;
-  }
-
-  await db.execute(
-    `ALTER TABLE chapter
-     ADD COLUMN media_bytes_checked_at integer`,
-  );
-  await db.execute(
-    `UPDATE chapter
-     SET media_bytes_checked_at = unixepoch()
-     WHERE media_bytes > 0`,
-  );
-}
-
-async function ensureStoredContentTypeColumn(
-  db: Database,
-  chapterColumnNames: ReadonlySet<string>,
-): Promise<void> {
-  if (chapterColumnNames.has(STORED_CONTENT_TYPE_COLUMN)) {
-    return;
-  }
-
-  await db.execute(
-    `ALTER TABLE chapter
-     ADD COLUMN stored_content_type text`,
-  );
-  await db.execute(
-    `UPDATE chapter
-     SET stored_content_type =
-       CASE content_type
-         WHEN 'text' THEN 'html'
-         WHEN 'markdown' THEN 'html'
-         ELSE content_type
-       END
-     WHERE is_downloaded = 1`,
-  );
-}
-
-async function ensureNoChapterContentColumn(
-  db: Database,
-  chapterColumnNames: ReadonlySet<string>,
-): Promise<void> {
-  if (!chapterColumnNames.has(CHAPTER_CONTENT_COLUMN)) {
-    return;
-  }
-
-  await db.execute("ALTER TABLE chapter DROP COLUMN content");
-}
-
-async function ensureChapterDownloadQueueTable(db: Database): Promise<void> {
-  await db.execute(
-    `CREATE TABLE IF NOT EXISTS chapter_download_queue (
-       chapter_id integer PRIMARY KEY NOT NULL,
-       job_json text NOT NULL,
-       created_at_ms integer NOT NULL,
-       updated_at_ms integer NOT NULL,
-       leased_at_ms integer,
-       attempt_count integer DEFAULT 0 NOT NULL
-     )`,
-  );
-  await db.execute(
-    `CREATE INDEX IF NOT EXISTS chapter_download_queue_created_idx
-     ON chapter_download_queue (created_at_ms, chapter_id)`,
-  );
-}
-
-async function ensureDownloadCacheWorkTable(db: Database): Promise<void> {
-  await db.execute(
-    `CREATE TABLE IF NOT EXISTS download_cache_work (
-       id text PRIMARY KEY NOT NULL,
-       scope text NOT NULL,
-       target_ids_json text NOT NULL,
-       title text,
-       status text DEFAULT 'queued' NOT NULL,
-       total integer DEFAULT 0 NOT NULL,
-       completed integer DEFAULT 0 NOT NULL,
-       failed integer DEFAULT 0 NOT NULL,
-       error text,
-       cancel_requested integer DEFAULT 0 NOT NULL,
-       created_at_ms integer NOT NULL,
-       updated_at_ms integer NOT NULL,
-       started_at_ms integer,
-       finished_at_ms integer
-     )`,
-  );
-  await db.execute(
-    `CREATE INDEX IF NOT EXISTS download_cache_work_status_idx
-     ON download_cache_work (status, updated_at_ms)`,
-  );
-}
-
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
-  const chapterColumnNames = await loadChapterColumnNames(db);
-  await ensureMediaRepairNeededColumn(db, chapterColumnNames);
-  await ensureMediaBytesCheckedAtColumn(db, chapterColumnNames);
-  await ensureStoredContentTypeColumn(db, chapterColumnNames);
-  await ensureNoChapterContentColumn(db, chapterColumnNames);
-  await ensureChapterDownloadQueueTable(db);
-  await ensureDownloadCacheWorkTable(db);
-  await db.execute(`CREATE TABLE IF NOT EXISTS content_sync_cache (
-    cache_key text PRIMARY KEY NOT NULL,
-    payload text NOT NULL
-  )`);
   await ensureContentSyncJournal(db);
+  await initializeWorkMetadata(db);
   return db;
 }
 
@@ -180,12 +49,22 @@ function serializedDb(rawDb: Database): Database {
         bindValueCount: bindValues?.length ?? 0,
       });
       return queueDbOperation(async () => {
+        const metadataMutation = isTauriRuntime() && /\b(novel|chapter)\b/i.test(query) && /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
         try {
+          if (metadataMutation) await rawDb.execute("BEGIN IMMEDIATE");
           const result = await rawDb.execute(query, bindValues);
+          if (metadataMutation) {
+            await flushWorkMetadata(rawDb);
+            await rawDb.execute("COMMIT");
+          }
           if (/\b(novel|chapter|content_sync_position|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
           finish({ rowsAffected: result.rowsAffected });
           return result;
         } catch (error) {
+          if (metadataMutation) {
+            await rawDb.execute("ROLLBACK").catch(() => undefined);
+            await initializeWorkMetadata(rawDb);
+          }
           finish({ error: observationError(error), failed: true });
           throw error;
         }
@@ -235,14 +114,25 @@ export function getDb(): Promise<Database> {
   return dbPromise;
 }
 
+export async function reloadWorkMetadataCache(): Promise<void> {
+  const db = await getRawDb();
+  await queueDbOperation(() => initializeWorkMetadata(db));
+}
+
 export async function runExclusiveDatabaseOperation<T>(
   run: (db: Database) => Promise<T>,
 ): Promise<T> {
   const rawDb = await getRawDb();
   return queueDbOperation(async () => {
-    const result = await run(rawDb);
-    await notifyContentSyncChanges(rawDb);
-    return result;
+    try {
+      const result = await run(rawDb);
+      await flushWorkMetadata(rawDb);
+      await notifyContentSyncChanges(rawDb);
+      return result;
+    } catch (error) {
+      await initializeWorkMetadata(rawDb);
+      throw error;
+    }
   });
 }
 
@@ -256,6 +146,7 @@ export async function runDatabaseTransaction<T>(
     try {
       if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");
       const result = await run(rawDb);
+      await flushWorkMetadata(rawDb);
       if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=0 WHERE id=1");
       await rawDb.execute("COMMIT");
       await notifyContentSyncChanges(rawDb);
@@ -265,6 +156,7 @@ export async function runDatabaseTransaction<T>(
         // eslint-disable-next-line no-console
         console.warn("[db] transaction rollback failed", rollbackError);
       });
+      await initializeWorkMetadata(rawDb);
       throw error;
     }
   });

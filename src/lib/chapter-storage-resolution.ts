@@ -1,4 +1,24 @@
 const resolvedChapterStorageDirs = new Map<number, string>();
+const authoritativeChapterStorageDirs = new Map<number, string>();
+const resolvedNovelStorageDirs = new Map<number, string>();
+
+export function rememberAuthoritativeChapterStorageDir(chapterId: number, directory: string): void {
+  authoritativeChapterStorageDirs.set(chapterId, directory);
+}
+
+export function clearAuthoritativeStorageDirs(): void {
+  authoritativeChapterStorageDirs.clear();
+  resolvedNovelStorageDirs.clear();
+  resolvedChapterStorageDirs.clear();
+}
+
+export function rememberResolvedNovelStorageDir(novelId: number, directory: string): void {
+  resolvedNovelStorageDirs.set(novelId, directory);
+}
+
+export function resolvedNovelStorageDir(novelId?: number | null): string | null {
+  return novelId ? resolvedNovelStorageDirs.get(novelId) ?? null : null;
+}
 
 function chapterDirectoryFromContentFile(contentFile: string): string | null {
   const segments = contentFile.split("/").filter(Boolean);
@@ -29,5 +49,5 @@ export function resolvedChapterStorageDir(
   chapterId: number | null | undefined,
 ): string | null {
   if (!chapterId || chapterId <= 0) return null;
-  return resolvedChapterStorageDirs.get(chapterId) ?? null;
+  return authoritativeChapterStorageDirs.get(chapterId) ?? resolvedChapterStorageDirs.get(chapterId) ?? null;
 }

@@ -2,14 +2,19 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({
   localChange: undefined as (() => void) | undefined,
+  metadataChange: undefined as (() => void) | undefined,
 }));
+vi.mock("../work-metadata", () => ({ subscribeWorkMetadataChanges: (listener: () => void) => {
+  harness.metadataChange = listener;
+  return () => { harness.metadataChange = undefined; };
+} }));
 vi.mock("../../db/content-sync-journal", () => ({ subscribeContentSyncChanges: (listener: () => void) => {
   harness.localChange = listener;
   return () => { harness.localChange = undefined; };
 } }));
 vi.mock("./sync", () => ({
   syncContentServer: vi.fn(),
-  getContentSyncCursors: vi.fn(async () => ({ catalogCursor: 3 })),
+  getContentSyncCursors: vi.fn(async () => ({ catalogCursor: 3, workCursor: 2 })),
 }));
 vi.mock("./client", () => ({ contentServerRequest: vi.fn() }));
 import { useContentSyncStore } from "../../store/content-sync";
@@ -80,11 +85,22 @@ it("coalesces local changes and queues a second pass for changes during a transf
 
 it("syncs a server notification using the saved cursors", async () => {
   useContentSyncStore.setState({ syncMode: "changes", deviceKey: "device-key" });
-  vi.mocked(contentServerRequest).mockResolvedValueOnce({ catalogCursor: 4 });
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ catalogCursor: 4, workCursor: 2 });
   cleanup = startContentServerSync();
   await vi.advanceTimersByTimeAsync(10);
-  expect(contentServerRequest).toHaveBeenCalledWith("http://server", "/changes?catalogAfter=3&waitSeconds=20", "device-key", "GET", undefined, expect.any(AbortSignal));
+  expect(contentServerRequest).toHaveBeenCalledWith("http://server", "/changes?catalogAfter=3&workAfter=2&waitSeconds=20", "device-key", "GET", undefined, expect.any(AbortSignal));
   expect(syncContentServer).toHaveBeenCalledTimes(2);
+});
+
+it("syncs work-only server changes and local metadata changes", async () => {
+  useContentSyncStore.setState({ syncMode: "changes", deviceKey: "device-key" });
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ catalogCursor: 3, workCursor: 3 });
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(10);
+  expect(syncContentServer).toHaveBeenCalledTimes(2);
+  harness.metadataChange?.();
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(syncContentServer).toHaveBeenCalledTimes(3);
 });
 
 it("cancels change waiting on manual mode, hiding, and disposal", async () => {

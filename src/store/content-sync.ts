@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { CatalogEntry } from "../lib/content-sync/native";
+import type { WorkCatalogEntry } from "../lib/content-sync/works";
 import { normalizeContentServerUrl } from "../lib/content-sync/client";
 
 export type ContentSyncMode = "manual" | "periodic" | "changes";
@@ -14,6 +15,7 @@ interface ContentSyncStore {
   error: string | null;
   blocked: boolean;
   catalog: CatalogEntry[];
+  works: WorkCatalogEntry[];
   deviceKey: string | null;
   setServerUrl: (url: string) => void;
   setDeviceName: (name: string) => void;
@@ -23,11 +25,11 @@ interface ContentSyncStore {
 
 export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => ({
   serverUrl: "", deviceName: "Norea", syncMode: "manual", syncIntervalMinutes: 15, status: "idle", error: null, blocked: false,
-  catalog: [], deviceKey: null,
+  catalog: [], works: [], deviceKey: null,
   setServerUrl: (value) => {
     const serverUrl = value.trim() ? normalizeContentServerUrl(value) : "";
     set((state) => serverUrl === state.serverUrl ? {} : ({
-      serverUrl, deviceKey: null, catalog: [], error: null, blocked: false, status: "idle",
+      serverUrl, deviceKey: null, catalog: [], works: [], error: null, blocked: false, status: "idle",
     }));
   },
   setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() || "Norea" }),

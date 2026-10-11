@@ -1,3 +1,5 @@
+import { resolvedChapterStorageDir, resolvedNovelStorageDir } from "./chapter-storage-resolution";
+
 export const CONTENTS_ROOT_DIR = "contents";
 
 export interface ChapterStorageNovelPathInput {
@@ -80,6 +82,8 @@ export function chapterStorageRelativeDir(
   novel: ChapterStorageNovelPathInput,
   chapter: ChapterStorageChapterPathInput,
 ): string {
+  const resolved = resolvedChapterStorageDir(chapter.id);
+  if (resolved) return resolved;
   const chapterSegment = `${chapterNumberSegment(chapter)}-${safeLabelSegment(
     chapter.name,
     "chapter",
@@ -90,6 +94,8 @@ export function chapterStorageRelativeDir(
 export function novelStorageRelativeDir(
   novel: ChapterStorageNovelPathInput,
 ): string {
+  const resolved = resolvedNovelStorageDir(novel.id);
+  if (resolved) return resolved;
   const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
   const novelSegment = `${safeLabelSegment(novel.name, "novel")}-${novelAddress}`;
   return `${sourceStorageRelativeDir(novel)}/${novelSegment}`;

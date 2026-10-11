@@ -60,30 +60,6 @@ fn application_migrations() -> Vec<Migration> {
             sql: include_str!("schema.sql"),
             kind: MigrationKind::Up,
         },
-        Migration {
-            version: 2,
-            description: "create chapter download queue",
-            sql: include_str!("schema_download_queue.sql"),
-            kind: MigrationKind::Up,
-        },
-        Migration {
-            version: 3,
-            description: "create download cache work queue",
-            sql: include_str!("schema_download_cache_work.sql"),
-            kind: MigrationKind::Up,
-        },
-        Migration {
-            version: 4,
-            description: "separate stored chapter content type",
-            sql: include_str!("schema_chapter_stored_content_type.sql"),
-            kind: MigrationKind::Up,
-        },
-        Migration {
-            version: 5,
-            description: "create VPN Gate server verdicts",
-            sql: include_str!("schema_vpn_gate_server_verdict.sql"),
-            kind: MigrationKind::Up,
-        },
     ]
 }
 
@@ -208,6 +184,7 @@ pub fn run() {
             chapter_media::chapter_storage_rollback_transfer,
             chapter_media::novel_cover_read_manifest,
             chapter_media::novel_cover_store,
+            chapter_media::work_metadata_operation,
             desktop_file_open::desktop_open_file_discard,
             desktop_file_open::desktop_open_file_list,
             desktop_file_open::desktop_open_file_take,
@@ -297,16 +274,6 @@ mod tests {
         sqlite::SqlitePoolOptions,
     };
 
-    const RELEASED_MIGRATION_5_SQL: &str = concat!(
-        "CREATE TABLE IF NOT EXISTS vpn_gate_server_verdict (\n",
-        "  ip text PRIMARY KEY NOT NULL,\n",
-        "  verdict text NOT NULL,\n",
-        "  updated_at integer DEFAULT (unixepoch()) NOT NULL,\n",
-        "  CONSTRAINT vpn_gate_server_verdict_verdict_check\n",
-        "    CHECK (verdict IN ('works', 'fails'))\n",
-        ");\n",
-    );
-
     fn sqlx_migrator(migrations: Vec<Migration>) -> Migrator {
         let migrations = migrations
             .into_iter()
@@ -328,32 +295,18 @@ mod tests {
         }
     }
 
-    fn released_migrations_through_v5() -> Vec<Migration> {
-        let mut migrations = application_migrations()
-            .into_iter()
-            .filter(|migration| migration.version <= 4)
-            .collect::<Vec<_>>();
-        migrations.push(Migration {
-            version: 5,
-            description: "create VPN Gate server verdicts",
-            sql: RELEASED_MIGRATION_5_SQL,
-            kind: MigrationKind::Up,
-        });
-        migrations
-    }
-
     #[test]
-    fn current_migrations_accept_released_v5_database() {
+    fn fresh_v1_bootstrap_reopens_without_changing_local_data() {
         tauri::async_runtime::block_on(async {
             let pool = SqlitePoolOptions::new()
                 .max_connections(1)
                 .connect("sqlite::memory:")
                 .await
                 .expect("open in-memory database");
-            sqlx_migrator(released_migrations_through_v5())
+            sqlx_migrator(application_migrations())
                 .run(&pool)
                 .await
-                .expect("apply released migrations");
+                .expect("apply fresh v1 bootstrap");
 
             sqlx::query(
                 "INSERT INTO novel (id, plugin_id, path, name, in_library) \
@@ -379,12 +332,12 @@ mod tests {
             )
             .execute(&pool)
             .await
-            .expect("seed released migration data");
+            .expect("seed VPN verdict");
 
             sqlx_migrator(application_migrations())
                 .run(&pool)
                 .await
-                .expect("current migrations should accept released migration 5");
+                .expect("reopening v1 should retain existing data");
 
             let versions = sqlx::query_scalar::<_, i64>(
                 "SELECT version FROM _sqlx_migrations ORDER BY version",
@@ -392,7 +345,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .expect("read applied migrations");
-            assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+            assert_eq!(versions, vec![1]);
 
             let chapter = sqlx::query_as::<_, (String, i64, String)>(
                 "SELECT name, progress, stored_content_type FROM chapter WHERE id = 11",
@@ -407,7 +360,7 @@ mod tests {
             )
             .fetch_one(&pool)
             .await
-            .expect("read preserved migration data");
+            .expect("read preserved VPN verdict");
             assert_eq!(verdict, ("198.51.100.7".to_string(), "works".to_string()));
         });
     }

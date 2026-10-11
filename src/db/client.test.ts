@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CONTENT_SYNC_JOURNAL_SCHEMA } from "./content-sync-journal";
 
 const sqlPluginMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -26,13 +25,7 @@ function makeRawDb(): RawDbMock {
     close: vi.fn(),
     execute: vi.fn().mockResolvedValue({ rowsAffected: 0 }),
     path: "sqlite:norea.db",
-    select: vi
-      .fn()
-      .mockResolvedValue([
-        { name: "media_repair_needed" },
-        { name: "media_bytes_checked_at" },
-        { name: "stored_content_type" },
-      ]),
+    select: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -57,39 +50,24 @@ describe("getDb", () => {
     expect(sqlPluginMock.load).not.toHaveBeenCalled();
   });
 
-  it("loads the chapter columns once for all compatibility checks", async () => {
+  it("initializes a current database without rewriting the chapter schema", async () => {
     const rawDb = makeRawDb();
     const { getDb } = await loadClient(rawDb);
 
     await getDb();
 
-    expect(rawDb.select).toHaveBeenCalledTimes(1);
-    expect(rawDb.select).toHaveBeenCalledWith("PRAGMA table_info(chapter)");
-  });
-
-  it("backfills the stored content type when the column is missing", async () => {
-    const rawDb = makeRawDb();
-    rawDb.select.mockResolvedValue([
-      { name: "media_repair_needed" },
-      { name: "media_bytes_checked_at" },
-    ]);
-    const { getDb } = await loadClient(rawDb);
-
-    await getDb();
-
-    expect(rawDb.execute).toHaveBeenCalledWith(
-      expect.stringContaining("ADD COLUMN stored_content_type text"),
-    );
-    expect(rawDb.execute).toHaveBeenCalledWith(
-      expect.stringContaining("SET stored_content_type ="),
-    );
+    expect(rawDb.execute).toHaveBeenCalledWith("PRAGMA busy_timeout = 5000");
+    expect(rawDb.execute.mock.calls.some(([sql]) => /ALTER TABLE|SET stored_content_type/.test(sql))).toBe(false);
+    expect(rawDb.select).not.toHaveBeenCalledWith("PRAGMA table_info(chapter)");
   });
 });
 
 describe("runDatabaseTransaction", () => {
   it("commits successful work inside one queued transaction", async () => {
     const rawDb = makeRawDb();
-    const { runDatabaseTransaction } = await loadClient(rawDb);
+    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
+    await getDb();
+    rawDb.execute.mockClear();
 
     await expect(
       runDatabaseTransaction(async (db) => {
@@ -99,40 +77,6 @@ describe("runDatabaseTransaction", () => {
     ).resolves.toBe(42);
 
     expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
-      "PRAGMA busy_timeout = 5000",
-      `CREATE TABLE IF NOT EXISTS chapter_download_queue (
-       chapter_id integer PRIMARY KEY NOT NULL,
-       job_json text NOT NULL,
-       created_at_ms integer NOT NULL,
-       updated_at_ms integer NOT NULL,
-       leased_at_ms integer,
-       attempt_count integer DEFAULT 0 NOT NULL
-     )`,
-      `CREATE INDEX IF NOT EXISTS chapter_download_queue_created_idx
-     ON chapter_download_queue (created_at_ms, chapter_id)`,
-      `CREATE TABLE IF NOT EXISTS download_cache_work (
-       id text PRIMARY KEY NOT NULL,
-       scope text NOT NULL,
-       target_ids_json text NOT NULL,
-       title text,
-       status text DEFAULT 'queued' NOT NULL,
-       total integer DEFAULT 0 NOT NULL,
-       completed integer DEFAULT 0 NOT NULL,
-       failed integer DEFAULT 0 NOT NULL,
-       error text,
-       cancel_requested integer DEFAULT 0 NOT NULL,
-       created_at_ms integer NOT NULL,
-       updated_at_ms integer NOT NULL,
-       started_at_ms integer,
-       finished_at_ms integer
-     )`,
-      `CREATE INDEX IF NOT EXISTS download_cache_work_status_idx
-     ON download_cache_work (status, updated_at_ms)`,
-      `CREATE TABLE IF NOT EXISTS content_sync_cache (
-    cache_key text PRIMARY KEY NOT NULL,
-    payload text NOT NULL
-  )`,
-      ...CONTENT_SYNC_JOURNAL_SCHEMA,
       "BEGIN IMMEDIATE",
       "UPDATE chapter SET name = $1",
       "COMMIT",
@@ -141,7 +85,9 @@ describe("runDatabaseTransaction", () => {
 
   it("rolls back when transactional work fails", async () => {
     const rawDb = makeRawDb();
-    const { runDatabaseTransaction } = await loadClient(rawDb);
+    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
+    await getDb();
+    rawDb.execute.mockClear();
 
     await expect(
       runDatabaseTransaction(async (db) => {
@@ -151,40 +97,6 @@ describe("runDatabaseTransaction", () => {
     ).rejects.toThrow("chapter failed");
 
     expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
-      "PRAGMA busy_timeout = 5000",
-      `CREATE TABLE IF NOT EXISTS chapter_download_queue (
-       chapter_id integer PRIMARY KEY NOT NULL,
-       job_json text NOT NULL,
-       created_at_ms integer NOT NULL,
-       updated_at_ms integer NOT NULL,
-       leased_at_ms integer,
-       attempt_count integer DEFAULT 0 NOT NULL
-     )`,
-      `CREATE INDEX IF NOT EXISTS chapter_download_queue_created_idx
-     ON chapter_download_queue (created_at_ms, chapter_id)`,
-      `CREATE TABLE IF NOT EXISTS download_cache_work (
-       id text PRIMARY KEY NOT NULL,
-       scope text NOT NULL,
-       target_ids_json text NOT NULL,
-       title text,
-       status text DEFAULT 'queued' NOT NULL,
-       total integer DEFAULT 0 NOT NULL,
-       completed integer DEFAULT 0 NOT NULL,
-       failed integer DEFAULT 0 NOT NULL,
-       error text,
-       cancel_requested integer DEFAULT 0 NOT NULL,
-       created_at_ms integer NOT NULL,
-       updated_at_ms integer NOT NULL,
-       started_at_ms integer,
-       finished_at_ms integer
-     )`,
-      `CREATE INDEX IF NOT EXISTS download_cache_work_status_idx
-     ON download_cache_work (status, updated_at_ms)`,
-      `CREATE TABLE IF NOT EXISTS content_sync_cache (
-    cache_key text PRIMARY KEY NOT NULL,
-    payload text NOT NULL
-  )`,
-      ...CONTENT_SYNC_JOURNAL_SCHEMA,
       "BEGIN IMMEDIATE",
       "UPDATE chapter SET name = $1",
       "ROLLBACK",

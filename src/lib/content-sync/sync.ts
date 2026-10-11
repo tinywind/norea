@@ -12,6 +12,7 @@ import {
 import { downloadContentChapter, fingerprintContentChapter, uploadContentChapter, type CatalogEntry } from "./native";
 import { registerContentDevice } from "./device";
 import { runContentStorageOperation } from "./storage-operation";
+import { getWorkSyncCursor, syncWorkMetadata } from "./works";
 
 interface CatalogCache {
   cursor: number;
@@ -62,7 +63,6 @@ async function pullCatalog(server: string, token: string | null, cache: CatalogC
     assertDevice(server, token);
     if (page.hasMore && page.cursor <= cache.cursor) throw new Error("Content catalog cursor did not advance.");
     for (const entry of page.items) {
-      if (!entry.deleted) await importContentMetadata(entry.manifest);
       cache.entries[entry.id] = entry;
     }
     cache.cursor = page.cursor;
@@ -139,6 +139,7 @@ async function performSyncWithStorage(uploadContent = true, rescan = false): Pro
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
     useContentSyncStore.setState({ catalog: Object.values(cache.entries) });
+    await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token));
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
       await uploadLocalContent(serverUrl, token, cache, rescan);
@@ -167,6 +168,7 @@ async function downloadServerChapterWithStorage(entry: CatalogEntry): Promise<{ 
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
   const { serverUrl } = useContentSyncStore.getState();
   const token = await initializeDevice(serverUrl);
+  await syncWorkMetadata(serverUrl, token, false, () => assertDevice(serverUrl, token));
   const mapping = await importContentMetadata(entry.manifest);
   const row = (await listContentSyncChapters([entryIdentity(entry)])).find((item) => item.chapterId === mapping.chapterId);
   if (!row) throw new Error("Downloaded chapter metadata is missing.");
@@ -191,7 +193,7 @@ async function mutateServerChapter(entry: CatalogEntry, restore: boolean): Promi
 export function deleteServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, false); }
 export function restoreServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, true); }
 
-export async function getContentSyncCursors(): Promise<{ catalogCursor: number }> {
+export async function getContentSyncCursors(): Promise<{ catalogCursor: number; workCursor: number }> {
   const { serverUrl } = useContentSyncStore.getState();
-  return { catalogCursor: (await catalogCache(serverUrl)).cursor };
+  return { catalogCursor: (await catalogCache(serverUrl)).cursor, workCursor: await getWorkSyncCursor(serverUrl) };
 }

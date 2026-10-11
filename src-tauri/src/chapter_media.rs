@@ -12,6 +12,7 @@ mod publication;
 mod restore;
 mod transfer;
 mod types;
+mod work_metadata;
 
 // Command glob exports retain Tauri-generated __cmd__ wrapper macros.
 pub use archives::*;
@@ -24,6 +25,7 @@ pub use protocol::*;
 pub use restore::*;
 pub use transfer::*;
 pub use types::*;
+pub use work_metadata::*;
 
 async fn chapter_media_blocking<T, F>(context: &'static str, task: F) -> Result<T, String>
 where

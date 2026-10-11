@@ -14,6 +14,7 @@ import type {
 } from "./chapter-storage-transfer";
 
 interface AndroidStorageBridge {
+  workMetadataOperation: (requestId: string, rootUri: string, input: string) => void;
   snapshotContentChapter: (requestId: string, rootUri: string, storageDir: string, stagePath: string) => void;
   installContentChapter: (requestId: string, rootUri: string, storageDir: string, stagePath: string) => void;
   archiveDirectory: (
@@ -173,6 +174,18 @@ interface AndroidStorageBridge {
     archiveRelativePath: string,
     entryName: string,
   ) => void;
+}
+
+export async function androidWorkMetadataOperation(
+  input: import("./work-metadata").WorkMetadataOperation,
+): Promise<import("./work-metadata").WorkMetadataOperationResult> {
+  const root = (await invoke<string | null>("chapter_media_get_storage_root"))?.trim();
+  if (!root && input.operation === "list") return { paths: [] };
+  if (!root) throw new Error(ANDROID_STORAGE_NOT_SELECTED);
+  const bridge = androidStorageBridge();
+  const result = await runAndroidStorageOperation<AndroidStorageResponse & import("./work-metadata").WorkMetadataOperationResult>((requestId) => bridge.workMetadataOperation(requestId, root, JSON.stringify(input)));
+  if (input.operation !== "read" && input.operation !== "list" && input.path && isNovelCoverStoragePath(input.path)) clearNovelCoverInspectionCache(bridge);
+  return result;
 }
 
 interface AndroidStoragePickPayload {

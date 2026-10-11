@@ -4,7 +4,7 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { registerContentDevice } from "./device";
 
 const storage = new Map<string, string>();
-const capabilities = { apiVersion: 2, packageVersion: 1, authentication: "device-key", personalStateSync: false };
+const capabilities = { apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: false };
 beforeEach(() => {
   storage.clear();
   vi.clearAllMocks();
@@ -51,7 +51,7 @@ it.each([401, 403])("retains the key after status %i and never generates a repla
 });
 
 it.each([
-  { ...capabilities, apiVersion: 1 },
+  { ...capabilities, apiVersion: 2 },
   { ...capabilities, authentication: "account" },
   { ...capabilities, personalStateSync: true },
   { ...capabilities, packageVersion: 2 },

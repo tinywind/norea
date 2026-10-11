@@ -7,6 +7,7 @@ vi.mock("../../db/queries/content-sync", () => ({
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
 vi.mock("./native", () => ({ uploadContentChapter: vi.fn(), downloadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn() }));
+vi.mock("./works", () => ({ syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0) }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled } from "../../db/queries/content-sync";
@@ -31,7 +32,7 @@ beforeEach(() => {
   vi.mocked(fingerprintContentChapter).mockResolvedValue("fingerprint-a");
   vi.mocked(appFetch).mockImplementation(async (input) => {
     const url = String(input);
-    if (url.endsWith("/capabilities")) return Response.json({ apiVersion: 2, packageVersion: 1, authentication: "device-key", personalStateSync: false });
+    if (url.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: false });
     if (url.endsWith("/devices/register")) return Response.json({ id: "one", deviceName: "Norea" });
     if (url.includes("/chapters?")) return Response.json({ items: [], cursor: 0, hasMore: false });
     if (/\/chapters\//.test(url)) return new Response(null, { status: 204 });
@@ -46,6 +47,16 @@ it("does not upload local content when the catalog contains a server tombstone",
   await syncContentServer();
   expect(uploadContentChapter).not.toHaveBeenCalled();
   expect(useContentSyncStore.getState().catalog[0]?.deleted).toBe(true);
+});
+
+it("keeps chapter catalogs from replacing full work metadata with per-chapter files", async () => {
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  const entry = { id: "chapter", deleted: false, sequence: 1, manifest: { identity: { pluginId: "p", novelPath: "n", chapterPath: "c" } } };
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/chapters?")
+    ? Promise.resolve(Response.json({ items: [entry], cursor: 1, hasMore: false })) : original(url, init));
+  await syncContentServer();
+  expect(useContentSyncStore.getState().catalog).toEqual([entry]);
+  expect(importContentMetadata).not.toHaveBeenCalled();
 });
 
 it("detects equal-size content changes without uploading unchanged content again", async () => {

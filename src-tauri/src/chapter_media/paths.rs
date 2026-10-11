@@ -318,6 +318,9 @@ pub(super) fn content_chapter_dir_at(
     chapter_name: Option<&str>,
     chapter_position: Option<i64>,
 ) -> Result<PathBuf, String> {
+    if let Some(directory) = super::work_metadata::registered_chapter_directory(root, chapter_id) {
+        return Ok(directory);
+    }
     if novel_id <= 0 {
         return Err("chapter media: invalid novel id".to_string());
     }

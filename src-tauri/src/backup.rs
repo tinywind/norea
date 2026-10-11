@@ -1527,18 +1527,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("connect");
-        for sql in [
-            include_str!("schema.sql"),
-            include_str!("schema_download_queue.sql"),
-            include_str!("schema_download_cache_work.sql"),
-            include_str!("schema_chapter_stored_content_type.sql"),
-            include_str!("schema_vpn_gate_server_verdict.sql"),
-        ] {
-            sqlx::raw_sql(sql)
-                .execute(&pool)
-                .await
-                .expect("apply schema");
-        }
+        sqlx::raw_sql(include_str!("schema.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply schema");
         pool
     }
 
