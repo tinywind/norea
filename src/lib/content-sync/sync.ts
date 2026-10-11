@@ -1,36 +1,35 @@
 import {
   contentIdentity, importContentMetadata, listContentSyncChapters,
-  markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
+  markContentInstalled, readContentSyncStateCache, writeContentSyncCache, type ContentSyncChapter,
   contentJournalHead, readContentJournal,
 } from "../../db/queries/content-sync";
 import { useContentSyncStore } from "../../store/content-sync";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
 import {
-  contentServerRequest, normalizeContentServerUrl, ContentServerError, type ContentCatalogPage,
+  contentServerRequest, normalizeContentServerUrl, ContentServerError,
 } from "./client";
-import { downloadContentChapter, fingerprintContentChapter, uploadContentChapter, type CatalogEntry } from "./native";
+import { downloadContentChapter, fingerprintContentChapter, uploadContentChapter, type CatalogEntry, type ContentIdentity } from "./native";
 import { registerContentDevice } from "./device";
-import { runContentStorageOperation } from "./storage-operation";
+import { runWorkContentStorageOperation } from "./storage-operation";
 import { getWorkSyncCursor, syncWorkMetadata } from "./works";
 
 interface CatalogCache {
   cursor: number;
-  entries: Record<string, CatalogEntry>;
+  tombstones: Record<string, boolean>;
   uploaded: Record<string, string>;
   downloads: Record<string, boolean>;
   excluded: string[];
   pendingUploads: string[];
   localCursor?: number;
 }
-async function readCache<T>(key: string, fallback: T): Promise<T> {
-  const value = await readContentSyncCache(key);
-  if (!value) return fallback;
-  try { return JSON.parse(value) as T; } catch { return fallback; }
-}
+interface CatalogChangesPage { items: { identity: ContentIdentity; deleted: boolean; sequence: number }[]; cursor: number; hasMore: boolean }
 function saveCache(key: string, value: unknown): Promise<void> { return writeContentSyncCache(key, JSON.stringify(value)); }
-function catalogCache(server: string): Promise<CatalogCache> {
-  return readCache(`norea-content-catalog:${server}`, { cursor: 0, entries: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] });
+async function catalogCache(server: string): Promise<CatalogCache> {
+  const saved = await readContentSyncStateCache(`norea-content-catalog:${server}`, "catalog");
+  const parsed = saved ? JSON.parse(saved) as Partial<CatalogCache> : {};
+  return { cursor: parsed.cursor ?? 0, tombstones: parsed.tombstones ?? {}, uploaded: parsed.uploaded ?? {},
+    downloads: parsed.downloads ?? {}, excluded: parsed.excluded ?? [], pendingUploads: parsed.pendingUploads ?? [], localCursor: parsed.localCursor ?? undefined };
 }
 function saveCatalog(server: string, cache: CatalogCache): Promise<void> { return saveCache(`norea-content-catalog:${server}`, cache); }
 function identity(row: ContentSyncChapter): string { return contentIdentity(row.pluginId, row.novelPath, row.chapterPath); }
@@ -52,22 +51,28 @@ function assertDevice(server: string, token: string | null): void {
   const current = useContentSyncStore.getState();
   if (current.serverUrl !== server || current.deviceKey !== token) throw new Error("Content server changed during synchronization.");
 }
-async function publishCatalog(server: string, cache: CatalogCache): Promise<void> {
-  await saveCatalog(server, cache);
-  if (useContentSyncStore.getState().serverUrl === server) useContentSyncStore.setState({ catalog: Object.values(cache.entries) });
-}
 async function pullCatalog(server: string, token: string | null, cache: CatalogCache): Promise<void> {
   let more = true;
-  while (more) {
-    const page = await contentServerRequest<ContentCatalogPage>(server, `/chapters?after=${cache.cursor}&limit=100`, token ?? undefined);
-    assertDevice(server, token);
-    if (page.hasMore && page.cursor <= cache.cursor) throw new Error("Content catalog cursor did not advance.");
-    for (const entry of page.items) {
-      cache.entries[entry.id] = entry;
+  let pending = 0;
+  let changed = false;
+  try {
+    while (more) {
+      const page = await contentServerRequest<CatalogChangesPage>(server, `/catalog/changes?after=${cache.cursor}&limit=100`, token ?? undefined);
+      assertDevice(server, token);
+      if (page.hasMore && page.cursor <= cache.cursor) throw new Error("Content catalog cursor did not advance.");
+      changed ||= page.items.length > 0 || cache.cursor !== page.cursor;
+      for (const entry of page.items) {
+        const id = contentIdentity(entry.identity.pluginId, entry.identity.novelPath, entry.identity.chapterPath);
+        if (entry.deleted) cache.tombstones[id] = true;
+        else delete cache.tombstones[id];
+      }
+      cache.cursor = page.cursor;
+      pending += page.items.length;
+      if (pending >= 5000) { await saveCatalog(server, cache); pending = 0; }
+      more = page.hasMore;
     }
-    cache.cursor = page.cursor;
-    await publishCatalog(server, cache);
-    more = page.hasMore;
+  } finally {
+    if (changed) await saveCatalog(server, cache);
   }
 }
 
@@ -77,45 +82,55 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     : await readContentJournal(cache.localCursor, head);
   const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
   const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
-  const rows = await listContentSyncChapters(requested);
-  const remoteByIdentity = new Map(Object.values(cache.entries).map((entry) => [entryIdentity(entry), entry]));
-  for (const id of requested ?? rows.map(identity)) {
-    if (!cache.pendingUploads.includes(id)) cache.pendingUploads.push(id);
-  }
+  const rows = await listContentSyncChapters(requested, requested === undefined);
+  const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
+  const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys())]);
+  if (!pending.size && cache.localCursor === head) return;
+  cache.pendingUploads = [...pending];
   cache.localCursor = head;
   await saveCatalog(server, cache);
-  for (const id of [...cache.pendingUploads]) {
-    assertDevice(server, token);
-    const row = rows.find((item) => identity(item) === id);
-    if (!row || !row.isDownloaded || row.mediaRepairNeeded || remoteByIdentity.get(id)?.deleted) {
-      if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
-      delete cache.downloads[id];
-      cache.pendingUploads = cache.pendingUploads.filter((item) => item !== id);
-      continue;
-    }
-    const fingerprint = await contentFingerprint(row);
-    assertDevice(server, token);
-    if (cache.uploaded[id] !== fingerprint) {
-      await uploadContentChapter({
-        serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row),
-        manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath },
-          novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
-          chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
-      });
+  let processed = 0;
+  try {
+    for (const id of pending) {
       assertDevice(server, token);
-      cache.uploaded[id] = fingerprint;
+      const row = rowsByIdentity.get(id);
+      if (!row || !row.isDownloaded || row.mediaRepairNeeded || cache.tombstones[id]) {
+        if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
+        delete cache.downloads[id];
+        pending.delete(id);
+        continue;
+      }
+      await runWorkContentStorageOperation(row.pluginId, row.novelPath, async () => {
+        const fingerprint = await contentFingerprint(row);
+        assertDevice(server, token);
+        if (cache.uploaded[id] !== fingerprint) {
+          await uploadContentChapter({
+            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row),
+            manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath },
+              novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
+              chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
+          });
+          assertDevice(server, token);
+          cache.uploaded[id] = fingerprint;
+        }
+        cache.downloads[id] = true;
+        pending.delete(id);
+      });
+      if (++processed % 5000 === 0) {
+        cache.pendingUploads = [...pending];
+        await saveCatalog(server, cache);
+      }
     }
-    cache.downloads[id] = true;
-    cache.pendingUploads = cache.pendingUploads.filter((item) => item !== id);
+  } finally {
+    cache.pendingUploads = [...pending];
     await saveCatalog(server, cache);
   }
-  await saveCatalog(server, cache);
 }
 
 let running: Promise<void> | null = null;
 function reserveContentSync(operation: () => Promise<void>): Promise<void> {
   const previous = running ?? Promise.resolve();
-  const reserved = previous.catch(() => undefined).then(() => runContentStorageOperation(operation)).finally(() => {
+  const reserved = previous.catch(() => undefined).then(operation).finally(() => {
     if (running === reserved) running = null;
   });
   running = reserved;
@@ -129,7 +144,7 @@ async function initializeDevice(serverUrl: string): Promise<string> {
   return deviceKey;
 }
 
-async function performSyncWithStorage(uploadContent = true, rescan = false): Promise<void> {
+async function performSync(uploadContent = true, rescan = false): Promise<void> {
   const { serverUrl } = useContentSyncStore.getState();
   if (!serverUrl) return;
   useContentSyncStore.setState({ status: "syncing", error: null, blocked: false });
@@ -138,7 +153,6 @@ async function performSyncWithStorage(uploadContent = true, rescan = false): Pro
     const token = await initializeDevice(serverUrl);
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
-    useContentSyncStore.setState({ catalog: Object.values(cache.entries) });
     await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token));
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
@@ -157,31 +171,25 @@ async function performSyncWithStorage(uploadContent = true, rescan = false): Pro
 
 export function syncContentServer(uploadContent = true, rescan = false): Promise<void> {
   if (running) return running;
-  return reserveContentSync(() => performSyncWithStorage(uploadContent, rescan));
+  return reserveContentSync(() => performSync(uploadContent, rescan));
 }
 
 export async function downloadServerChapter(entry: CatalogEntry): Promise<{ novelId: number; chapterId: number }> {
-  return runContentStorageOperation(() => downloadServerChapterWithStorage(entry));
+  return downloadServerChapterFromServer(entry, useContentSyncStore.getState().serverUrl);
 }
 
-async function downloadServerChapterWithStorage(entry: CatalogEntry): Promise<{ novelId: number; chapterId: number }> {
+export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string): Promise<{ novelId: number; chapterId: number }> {
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
-  const { serverUrl } = useContentSyncStore.getState();
-  const token = await initializeDevice(serverUrl);
-  await syncWorkMetadata(serverUrl, token, false, () => assertDevice(serverUrl, token));
-  const mapping = await importContentMetadata(entry.manifest);
-  const row = (await listContentSyncChapters([entryIdentity(entry)])).find((item) => item.chapterId === mapping.chapterId);
-  if (!row) throw new Error("Downloaded chapter metadata is missing.");
-  const result = await downloadContentChapter({ serverUrl, token: token ?? undefined, entry, storageDir: storageDir(row), chapterId: mapping.chapterId });
-  await markContentInstalled(mapping.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
-  const cache = await catalogCache(serverUrl);
-  const id = entryIdentity(entry);
-  cache.excluded = cache.excluded.filter((item) => item !== id);
-  cache.downloads[id] = true;
-  cache.uploaded[id] = await contentFingerprint({ ...row, contentType: entry.manifest.chapter.contentType });
-  await saveCatalog(serverUrl, cache);
-  window.dispatchEvent(new Event("norea-content-state-changed"));
-  return mapping;
+  const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
+  return runWorkContentStorageOperation(entry.manifest.identity.pluginId, entry.manifest.identity.novelPath, async () => {
+    const mapping = await importContentMetadata(entry.manifest);
+    const row = (await listContentSyncChapters([entryIdentity(entry)])).find((item) => item.chapterId === mapping.chapterId);
+    if (!row) throw new Error("Downloaded chapter metadata is missing.");
+    const result = await downloadContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: mapping.chapterId });
+    await markContentInstalled(mapping.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
+    window.dispatchEvent(new Event("norea-content-state-changed"));
+    return mapping;
+  });
 }
 
 async function mutateServerChapter(entry: CatalogEntry, restore: boolean): Promise<void> {

@@ -2,14 +2,14 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { NovelMetadataV1 } from "../work-metadata";
 
 vi.mock("../work-metadata", () => ({
-  listStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(),
+  listStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(),
   installStoredNovelMetadata: vi.fn(), parseNovelMetadata: (value: unknown) => value,
 }));
-vi.mock("../../db/queries/content-sync", () => ({ readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ readContentSyncStateCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
-import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
+import { readContentSyncStateCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { syncWorkMetadata, contentWorkId } from "./works";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
@@ -19,19 +19,28 @@ const metadata = (name = "Book"): NovelMetadataV1 => ({
   cover: { fileName: "cover.png", contentType: "image/png", sourceUrl: "https://example.com/cover.png" }, updatedAt: 10,
 });
 const memory = new Map<string, string>();
+const localCovers = new Map<string, Uint8Array | null>();
 let local: { directory: string; metadata: NovelMetadataV1 }[];
 let remote: NovelMetadataV1 | undefined;
 let remoteCover: Uint8Array | undefined;
 let sequence: number;
 let puts: number;
 beforeEach(() => {
-  vi.clearAllMocks(); memory.clear(); local = []; remote = undefined; remoteCover = undefined; sequence = 0; puts = 0;
+  vi.clearAllMocks(); memory.clear(); localCovers.clear(); local = []; remote = undefined; remoteCover = undefined; sequence = 0; puts = 0;
   vi.stubGlobal("window", new EventTarget());
-  vi.mocked(readContentSyncCache).mockImplementation(async key => memory.get(key) ?? null);
+  vi.mocked(readContentSyncStateCache).mockImplementation(async key => memory.get(key) ?? null);
   vi.mocked(writeContentSyncCache).mockImplementation(async (key, value) => { memory.set(key, value); });
   vi.mocked(listStoredNovelMetadata).mockImplementation(async () => structuredClone(local));
-  vi.mocked(readStoredNovelCover).mockResolvedValue(new Uint8Array([1, 2, 3]));
-  vi.mocked(installStoredNovelMetadata).mockImplementation(async (value, _cover, beforeInstall) => { await beforeInstall?.(); local = [{ directory: "contents/example/Book-book", metadata: structuredClone(value) }]; });
+  vi.mocked(readStoredNovelMetadata).mockImplementation(async directory => structuredClone(local.find(entry => entry.directory === directory) ?? null));
+  vi.mocked(readStoredNovelCover).mockImplementation(async directory => localCovers.has(directory) ? localCovers.get(directory)! : new Uint8Array([1, 2, 3]));
+  vi.mocked(installStoredNovelMetadata).mockImplementation(async (value, cover, beforeInstall) => {
+    const current = local.find(entry => entry.metadata.identity.pluginId === value.identity.pluginId && entry.metadata.identity.novelPath === value.identity.novelPath);
+    await beforeInstall?.(current ?? null);
+    const installed = { directory: current?.directory ?? `contents/example/${value.novel.name}-book`, metadata: structuredClone(value) };
+    local = [...local.filter(entry => entry !== current), installed];
+    localCovers.set(installed.directory, cover ?? null);
+    return installed;
+  });
   vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname.endsWith("/cover")) {
@@ -114,4 +123,47 @@ it("saves each installed baseline before a later item in the page fails", async 
   expect(saved.cursor).toBe(0);
   expect(saved.fingerprints[firstId]).toEqual(expect.any(String));
   expect(local[0].metadata).toEqual(first);
+});
+
+it("indexes local files once and checkpoints a work page instead of every installed work", async () => {
+  const entries = await Promise.all(Array.from({ length: 100 }, async (_, index) => {
+    const value = metadata(`Book ${index}`); value.identity.novelPath = `/book-${index}`;
+    return { id: await contentWorkId(value.identity), sequence: index + 1, metadata: value, hasCover: false };
+  }));
+  vi.mocked(nativeFetch).mockResolvedValue(Response.json({ items: entries, cursor: 100, hasMore: false }));
+  await syncWorkMetadata("http://server", "device", false);
+  expect(listStoredNovelMetadata).toHaveBeenCalledTimes(1);
+  expect(installStoredNovelMetadata).toHaveBeenCalledTimes(100);
+  expect(writeContentSyncCache).toHaveBeenCalledTimes(1);
+  const saved = JSON.parse([...memory.values()][0]);
+  expect(Object.keys(saved).sort()).toEqual(["cursor", "fingerprints"]);
+  expect(Object.keys(saved.fingerprints)).toHaveLength(100);
+});
+
+it.each([false, true])("installs successive metadata and cover revisions of the same work (separate pages: %s)", async (separatePages) => {
+  const first = metadata();
+  const latest = metadata("Latest revision"); latest.updatedAt = 20;
+  const id = await contentWorkId(first.identity);
+  const entries = [
+    { id, sequence: 1, metadata: first, hasCover: false },
+    { id, sequence: 2, metadata: first, hasCover: true },
+    { id, sequence: 3, metadata: latest, hasCover: true },
+  ];
+  const cover = new Uint8Array([8, 9]);
+  vi.mocked(nativeFetch).mockImplementation(async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/cover")) return new Response(cover);
+    const after = Number(url.searchParams.get("after"));
+    const items = entries.filter(entry => entry.sequence > after).slice(0, separatePages ? 1 : 3);
+    const cursor = items.at(-1)?.sequence ?? after;
+    return Response.json({ items, cursor, hasMore: cursor < 3 });
+  });
+  await syncWorkMetadata("http://server", "device", false);
+  expect(local).toHaveLength(1);
+  expect(local[0].metadata).toEqual(latest);
+  expect(localCovers.get(local[0].directory)).toEqual(cover);
+  expect(listStoredNovelMetadata).toHaveBeenCalledTimes(1);
+  expect(JSON.parse([...memory.values()][0]).cursor).toBe(3);
+  await syncWorkMetadata("http://server", "device", true);
+  expect(vi.mocked(nativeFetch).mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });

@@ -228,7 +228,7 @@ export async function resolveNovelCoverDisplaySource(
   if (existing) {
     return {
       dispose: () => undefined,
-      src: storedNovelCoverSrc(existing),
+      src: storedNovelCoverSrc(existing, novel.id),
     };
   }
   if (!sourceUrl) return null;
@@ -436,16 +436,17 @@ export async function resolveStoredNovelCoverSrc(
   );
   if (!stored) return null;
 
-  return storedNovelCoverSrc(stored);
+  return storedNovelCoverSrc(stored, novel.id);
 }
 
-function storedNovelCoverSrc(stored: StoredNovelCover): string {
+function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string {
   const src = isAndroidRuntime()
     ? androidLocalMediaSrc(stored.relativePath)
     : noreaMediaSrc(stored.relativePath);
   const updatedAt = Math.max(0, Math.trunc(stored.manifest.updatedAt));
-  const storageVersion = novelCoverStorageEpoch
-    ? `${updatedAt}-${novelCoverStorageEpoch}`
+  const snapshot = getNovelCoverSnapshot(novelId);
+  const storageVersion = snapshot
+    ? `${updatedAt}-${snapshot}`
     : String(updatedAt);
   return `${src}?v=${storageVersion}`;
 }
@@ -568,7 +569,7 @@ function storedNovelCoverRelativeDir(
     : novelStorageRelativeDir(novel);
 }
 
-function notifyNovelCoverChanged(novelId: number): void {
+export function notifyNovelCoverChanged(novelId: number): void {
   if (novelId <= 0) return;
   clearNovelCoverDisplayCache(novelId);
   novelCoverSnapshots.set(novelId, (novelCoverSnapshots.get(novelId) ?? 0) + 1);

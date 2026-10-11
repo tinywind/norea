@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
+import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { useBrowseStore } from "../../store/browse";
 import {
   CHAPTER_BINARY_RESOURCE_MEDIA_TYPES,
@@ -897,6 +898,16 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
+        if (await tryDownloadServerChapter(job)) {
+          if (signal.aborted) throw abortReason(signal);
+          settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+          reportProgress(
+            { current: progressTotal, total: progressTotal },
+            { force: true },
+          );
+          return;
+        }
+        if (signal.aborted) throw abortReason(signal);
         if (tryStartSourceAccess && !tryStartSourceAccess()) return;
         if (isTauriRuntime()) {
           await abortableStep(signal, pluginManager.loadInstalledFromDb());
@@ -1250,6 +1261,7 @@ export function enqueueChapterMediaRepair(
       pluginId: job.pluginId,
     },
     dedupeKey: chapterMediaRepairDedupeKey(job.id),
+    canCompleteWithoutSourceAccess: true,
     ...(sourceAccessScope
       ? { sourceAccessScopeKey: sourceAccessScope }
       : {}),
@@ -1263,12 +1275,24 @@ export function enqueueChapterMediaRepair(
       setSourceAccessUrl,
       shouldYield,
       signal,
+      tryStartSourceAccess,
     }) => {
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
       await waitForChapterStorageOperation(job.pluginId, signal);
       if (signal.aborted) throw abortReason(signal);
+      const chapter = await getChapterById(job.id);
+      if (!chapter) {
+        throw missingRepairChapterError(job);
+      }
+      if (await tryDownloadServerChapter({ ...job, novelId: chapter.novelId, chapterPath: chapter.path })) {
+        if (signal.aborted) throw abortReason(signal);
+        reportProgress({ current: progressTotal, total: progressTotal }, { force: true });
+        return;
+      }
+      if (signal.aborted) throw abortReason(signal);
+      if (tryStartSourceAccess && !tryStartSourceAccess()) return;
       if (isTauriRuntime()) {
         await abortableStep(signal, pluginManager.loadInstalledFromDb());
       }
@@ -1276,10 +1300,6 @@ export function enqueueChapterMediaRepair(
         job.pluginId,
         executor ?? "immediate",
       );
-      const chapter = await getChapterById(job.id);
-      if (!chapter) {
-        throw missingRepairChapterError(job);
-      }
       const sourceContentType = normalizeChapterContentType(
         chapter.sourceContentType ?? chapter.contentType,
       );

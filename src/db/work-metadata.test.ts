@@ -3,12 +3,12 @@ import { DatabaseSync } from "node:sqlite";
 import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const storage = vi.hoisted(() => ({ files: new Map<string, number[]>(), fail: false, failOncePath: "" }));
+const storage = vi.hoisted(() => ({ files: new Map<string, number[]>(), fail: false, failOncePath: "", lists: 0 }));
 const databaseClient = vi.hoisted(() => ({ transaction: vi.fn(), get: vi.fn() }));
 vi.mock("./client", () => ({ runDatabaseTransaction: databaseClient.transaction, getDb: databaseClient.get }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { input }: { input: { operation: string; path: string; body: number[] } }) => {
-  if (input.operation === "list") return { paths: [...storage.files.keys()].filter((path) => path.endsWith("/novel.json")) };
+  if (input.operation === "list") { storage.lists++; return { paths: [...storage.files.keys()].filter((path) => path.endsWith("/novel.json")) }; }
   if (input.operation === "read") return { body: storage.files.get(input.path) ?? null };
   if (input.operation === "write") {
     if (storage.fail || storage.failOncePath === input.path) { storage.failOncePath = ""; throw new Error("disk full"); }
@@ -19,7 +19,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
 } }));
 
 import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata } from "./work-metadata";
-import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, writeStoredNovelCover, type NovelMetadataV1 } from "../lib/work-metadata";
+import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, type NovelMetadataV1 } from "../lib/work-metadata";
+import { getNovelCoverSnapshot, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "../lib/chapter-storage-path";
 import { clearResolvedChapterStorageDirs } from "../lib/chapter-storage-resolution";
 
@@ -35,7 +36,7 @@ function fixture(): NovelMetadataV1 { return {
 function save(metadata: NovelMetadataV1) { storage.files.set(path, [...new TextEncoder().encode(JSON.stringify(metadata))]); }
 
 beforeEach(() => {
-  storage.files.clear(); storage.fail = false; storage.failOncePath = "";
+  storage.files.clear(); storage.fail = false; storage.failOncePath = ""; storage.lists = 0;
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
   db = {
@@ -168,4 +169,46 @@ it("checks the caller conflict guard inside the installation transaction before 
   const previous = storage.files.get(path);
   await expect(installStoredNovelMetadata(fixture(), undefined, async () => { throw new Error("local edit"); })).rejects.toThrow("local edit");
   expect(storage.files.get(path)).toEqual(previous);
+});
+
+it("publishes a complete remote work without scanning unrelated work files or changing library ownership", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  await db.execute("UPDATE novel SET in_library=1 WHERE id=1");
+  storage.lists = 0;
+  const incoming = fixture(); incoming.novel.name = "Updated remote title";
+  const guard = vi.fn(async (current) => {
+    expect(current?.directory).toBe("contents/source/Original-book");
+    expect(current?.metadata.novel.name).toBe("Disk title");
+  });
+  await installStoredNovelMetadata(incoming, undefined, guard);
+  expect(storage.lists).toBe(0);
+  expect(guard).toHaveBeenCalledOnce();
+  expect(sqlite.prepare("SELECT name,in_library FROM novel").get()).toEqual({ name: "Updated remote title", in_library: 1 });
+});
+
+it.each([true, false])("invalidates only the committed remote cover without scheduling another metadata sync (cover: %s)", async (hasCover) => {
+  const metadata = fixture();
+  metadata.cover = { fileName: "cover.png", sourceUrl: "https://source/cover", contentType: "image/png" };
+  save(metadata); await initializeWorkMetadata(db);
+  const otherSnapshot = getNovelCoverSnapshot(999);
+  let transactionOpen = false;
+  const transaction = databaseClient.transaction.getMockImplementation()!;
+  databaseClient.transaction.mockImplementation(async (...args) => {
+    transactionOpen = true;
+    try { return await transaction(...args); }
+    finally { transactionOpen = false; }
+  });
+  const coverChanged = vi.fn(() => { expect(transactionOpen).toBe(false); });
+  const metadataChanged = vi.fn();
+  const unsubscribeCover = subscribeNovelCoverChanges(coverChanged);
+  const unsubscribeMetadata = subscribeWorkMetadataChanges(metadataChanged);
+  try {
+    await installStoredNovelMetadata(metadata, hasCover ? new Uint8Array([7, 8]) : undefined);
+    expect(coverChanged).toHaveBeenCalledExactlyOnceWith(1);
+    expect(getNovelCoverSnapshot(999)).toBe(otherSnapshot);
+    expect(metadataChanged).not.toHaveBeenCalled();
+  } finally {
+    unsubscribeCover();
+    unsubscribeMetadata();
+  }
 });

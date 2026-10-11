@@ -93,6 +93,10 @@ export function rememberStoredNovelMetadata(directory: string, metadata: NovelMe
   knownFiles.set(keyFor(metadata.identity.pluginId, metadata.identity.novelPath), { directory, serialized: JSON.stringify(metadata) });
 }
 
+export function knownNovelMetadataDirectory(identity: NovelMetadataV1["identity"]): string | undefined {
+  return knownFiles.get(keyFor(identity.pluginId, identity.novelPath))?.directory;
+}
+
 interface CachedNovel {
   id: number; pluginId: string; path: string; name: string; cover: string | null;
   author: string | null; artist: string | null; summary: string | null; status: string | null; genres: string | null; isLocal: number;

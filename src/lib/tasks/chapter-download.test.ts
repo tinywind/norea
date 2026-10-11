@@ -81,6 +81,9 @@ vi.mock("../plugins/chapter-acquisition", () => acquisitionMocks);
 vi.mock("../tauri-runtime", () => ({
   isTauriRuntime: vi.fn(() => false),
 }));
+vi.mock("../content-sync/novel-source", () => ({
+  tryDownloadServerChapter: vi.fn(async () => false),
+}));
 vi.mock("./scheduler", () => ({
   sourceBaseDomainKey: vi.fn((baseUrl?: string) =>
     baseUrl ? "source.test" : null,
@@ -115,6 +118,7 @@ import {
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { isTauriRuntime } from "../tauri-runtime";
+import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { TaskUserCancelledError } from "./task-errors";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 import {
@@ -183,6 +187,7 @@ beforeEach(() => {
   installBrowserHarness();
   capturedSpec = null;
   vi.mocked(isTauriRuntime).mockReturnValue(false);
+  vi.mocked(tryDownloadServerChapter).mockResolvedValue(false);
   schedulerMocks.enqueueSource.mockImplementation(
     (spec: SourceTaskSpec<void>) => {
       capturedSpec = spec;
@@ -880,6 +885,31 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
+  it("completes a server download without starting plugin source access", async () => {
+    vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
+    pluginMocks.getPlugin.mockReturnValue(undefined);
+    pluginMocks.getPluginForExecutor.mockImplementation(() => { throw new Error("Plugin is not installed"); });
+    enqueueChapterDownload({ id: 7, novelId: 3, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const tryStartSourceAccess = vi.fn(() => false);
+    const setProgress = vi.fn();
+    await capturedSpec.run({ setDetail: vi.fn(), setProgress, signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
+    expect(setProgress).toHaveBeenLastCalledWith({ current: 1, total: 1 });
+    expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a server failure without trying plugin source access", async () => {
+    vi.mocked(tryDownloadServerChapter).mockRejectedValueOnce(new Error("Content server unavailable"));
+    enqueueChapterDownload({ id: 7, novelId: 3, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const tryStartSourceAccess = vi.fn(() => true);
+    await expect(capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess })).rejects.toThrow("Content server unavailable");
+    expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+  });
+
   it("removes the backend queue job when the scheduler rejects source verification", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const accessError = new SourceAccessRequiredError(
@@ -2134,6 +2164,20 @@ describe("enqueueChapterDownload", () => {
 });
 
 describe("enqueueChapterMediaRepair", () => {
+  it("repairs a server-bound chapter by replacing its package before source access", async () => {
+    vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
+    vi.mocked(getChapterById).mockResolvedValueOnce({ id: 7, novelId: 3, path: "/chapter/7" } as never);
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const setProgress = vi.fn();
+    const tryStartSourceAccess = vi.fn(() => false);
+    await capturedSpec.run({ setDetail: vi.fn(), setProgress, signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
+    expect(capturedSpec.canCompleteWithoutSourceAccess).toBe(true);
+    expect(setProgress).toHaveBeenLastCalledWith({ current: 1, total: 1 });
+    expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+  });
+
   it("uses the source type for acquisition and the effective type for stored HTML", async () => {
     const storedHtml = `<img src="https://cdn.test/page.png">`;
     vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);

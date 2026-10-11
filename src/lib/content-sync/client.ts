@@ -1,5 +1,4 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import type { CatalogEntry } from "./native";
 
 export class ContentServerError extends Error {
   constructor(public status: number) {
@@ -29,5 +28,3 @@ export async function contentServerRequest<T>(serverUrl: string, path: string, t
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
-
-export interface ContentCatalogPage { items: CatalogEntry[]; cursor: number; hasMore: boolean }

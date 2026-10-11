@@ -6,7 +6,7 @@ vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() })
 import { getDb, runDatabaseTransaction } from "../client";
 import { CONTENT_SYNC_JOURNAL_SCHEMA } from "../content-sync-journal";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
-import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, writeContentSyncCache } from "./content-sync";
+import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, readContentSyncStateCache, writeContentSyncCache } from "./content-sync";
 
 let sqlite: DatabaseSync;
 beforeEach(() => {
@@ -59,6 +59,45 @@ it("stores catalog data larger than WebView localStorage without crossing accoun
   await writeContentSyncCache("catalog:one", payload);
   expect(await readContentSyncCache("catalog:one")).toBe(payload);
   expect(await readContentSyncCache("catalog:two")).toBeNull();
+});
+
+it("projects legacy work snapshots before returning them across the database bridge", async () => {
+  await writeContentSyncCache("works", JSON.stringify({ cursor: 45, fingerprints: { work: "hash" }, entries: { work: { metadata: "a".repeat(6 * 1024 * 1024) } } }));
+  const compact = await readContentSyncStateCache("works", "works");
+  expect(JSON.parse(compact!)).toEqual({ cursor: 45, fingerprints: { work: "hash" } });
+  expect(await readContentSyncCache("works")).toBe(compact);
+  expect(compact!.length).toBeLessThan(100);
+});
+
+it("compacts legacy chapter inventories while retaining tombstones and local checkpoints", async () => {
+  await writeContentSyncCache("catalog", JSON.stringify({ cursor: 72, localCursor: 9,
+    entries: { deleted: { deleted: true, manifest }, active: { deleted: false, manifest: { ...manifest, identity: { ...manifest.identity, chapterPath: "/active" } } } },
+    uploaded: { local: "hash" }, downloads: { local: true }, excluded: ["excluded"], pendingUploads: ["pending"],
+  }));
+  const compact = await readContentSyncStateCache("catalog", "catalog");
+  expect(JSON.parse(compact!)).toEqual({ cursor: 72, localCursor: 9,
+    tombstones: { '["source","/work","/chapter"]': true },
+    uploaded: { local: "hash" }, downloads: { local: true }, excluded: ["excluded"], pendingUploads: ["pending"],
+  });
+  expect(await readContentSyncCache("catalog")).toBe(compact);
+});
+
+it("preserves compact tombstones without introducing an initial local checkpoint", async () => {
+  await writeContentSyncCache("catalog", JSON.stringify({ cursor: 12, tombstones: { removed: true } }));
+  expect(JSON.parse((await readContentSyncStateCache("catalog", "catalog"))!)).toEqual({
+    cursor: 12, tombstones: { removed: true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [],
+  });
+  await writeContentSyncCache("broken", "invalid-json");
+  expect(await readContentSyncStateCache("broken", "catalog")).toBeNull();
+  expect(await readContentSyncStateCache("missing", "works")).toBeNull();
+});
+
+it("limits initial upload discovery to downloaded chapters", async () => {
+  const { chapterId } = await importContentMetadata(manifest);
+  await importContentMetadata({ ...manifest, identity: { ...manifest.identity, chapterPath: "/metadata-only" } });
+  sqlite.exec(`UPDATE chapter SET is_downloaded=1 WHERE id=${chapterId}`);
+  expect((await listContentSyncChapters(undefined, true)).map(row => row.chapterPath)).toEqual(["/chapter"]);
+  expect(await listContentSyncChapters(['["source","/work","/metadata-only"]'])).toHaveLength(1);
 });
 
 

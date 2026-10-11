@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../../db/queries/content-sync", () => ({
   listContentSyncChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
-  readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn(),
+  readContentSyncStateCache: vi.fn(), writeContentSyncCache: vi.fn(),
   contentJournalHead: vi.fn(), readContentJournal: vi.fn(),
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
@@ -10,10 +10,11 @@ vi.mock("./native", () => ({ uploadContentChapter: vi.fn(), downloadContentChapt
 vi.mock("./works", () => ({ syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0) }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
-import { contentJournalHead, readContentJournal, listContentSyncChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled } from "../../db/queries/content-sync";
+import { contentJournalHead, readContentJournal, listContentSyncChapters, importContentMetadata, readContentSyncStateCache, writeContentSyncCache, markContentInstalled } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter, downloadContentChapter } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
-import { syncContentServer, downloadServerChapter, deleteServerChapter, restoreServerChapter } from "./sync";
+import { syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
+import { syncWorkMetadata } from "./works";
 
 const memory = new Map<string, string>();
 let journal: { sequence: number; key: string; value: null }[];
@@ -24,7 +25,7 @@ beforeEach(() => {
   vi.mocked(readContentJournal).mockImplementation(async (after, through) => journal.filter((entry) => entry.sequence > after && entry.sequence <= through));
   vi.stubGlobal("localStorage", { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) });
   vi.stubGlobal("window", new EventTarget());
-  vi.mocked(readContentSyncCache).mockImplementation(async (key) => memory.get(key) ?? null);
+  vi.mocked(readContentSyncStateCache).mockImplementation(async (key) => memory.get(key) ?? null);
   vi.mocked(writeContentSyncCache).mockImplementation(async (key, payload) => { memory.set(key, payload); });
   useContentSyncStore.setState({ ...useContentSyncStore.getInitialState(), serverUrl: "http://localhost:7788" });
   vi.mocked(listContentSyncChapters).mockResolvedValue([]);
@@ -34,7 +35,7 @@ beforeEach(() => {
     const url = String(input);
     if (url.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: false });
     if (url.endsWith("/devices/register")) return Response.json({ id: "one", deviceName: "Norea" });
-    if (url.includes("/chapters?")) return Response.json({ items: [], cursor: 0, hasMore: false });
+    if (url.includes("/catalog/changes?")) return Response.json({ items: [], cursor: 0, hasMore: false });
     if (/\/chapters\//.test(url)) return new Response(null, { status: 204 });
     throw new Error(`Unexpected endpoint: ${url}`);
   });
@@ -43,19 +44,19 @@ beforeEach(() => {
 it("does not upload local content when the catalog contains a server tombstone", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 10, mediaBytes: 0 }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
-  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/chapters?") ? Promise.resolve(Response.json({ items: [{ id: "deleted", revision: "r", deleted: true, sequence: 1, manifest: { identity: { pluginId: "p", novelPath: "n", chapterPath: "c" } } }], cursor: 1, hasMore: false })) : original(url, init));
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/changes?") ? Promise.resolve(Response.json({ items: [{ deleted: true, sequence: 1, identity: { pluginId: "p", novelPath: "n", chapterPath: "c" } }], cursor: 1, hasMore: false })) : original(url, init));
   await syncContentServer();
   expect(uploadContentChapter).not.toHaveBeenCalled();
-  expect(useContentSyncStore.getState().catalog[0]?.deleted).toBe(true);
+  expect(JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!).tombstones).toEqual({ '["p","n","c"]': true });
 });
 
 it("keeps chapter catalogs from replacing full work metadata with per-chapter files", async () => {
   const original = vi.mocked(appFetch).getMockImplementation()!;
-  const entry = { id: "chapter", deleted: false, sequence: 1, manifest: { identity: { pluginId: "p", novelPath: "n", chapterPath: "c" } } };
-  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/chapters?")
+  const entry = { deleted: false, sequence: 1, identity: { pluginId: "p", novelPath: "n", chapterPath: "c" } };
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/changes?")
     ? Promise.resolve(Response.json({ items: [entry], cursor: 1, hasMore: false })) : original(url, init));
   await syncContentServer();
-  expect(useContentSyncStore.getState().catalog).toEqual([entry]);
+  expect(JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!)).toMatchObject({ cursor: 1, tombstones: {} });
   expect(importContentMetadata).not.toHaveBeenCalled();
 });
 
@@ -87,7 +88,7 @@ it("ignores legacy account caches and sends only content requests", async () => 
   memory.set(key, legacy);
   await syncContentServer();
   expect(memory.get(key)).toBe(legacy);
-  expect(vi.mocked(readContentSyncCache).mock.calls.every(([cacheKey]) => !cacheKey.includes("content-account"))).toBe(true);
+  expect(vi.mocked(readContentSyncStateCache).mock.calls.every(([cacheKey]) => !cacheKey.includes("content-account"))).toBe(true);
   expect(vi.mocked(appFetch).mock.calls.every(([url]) => !String(url).includes("/state") && !String(url).includes("/sessions"))).toBe(true);
 });
 
@@ -127,4 +128,73 @@ it("does not transfer to a newly selected server when registration completes for
   await expect(syncContentServer()).rejects.toThrow("changed during device registration");
   expect(vi.mocked(appFetch).mock.calls.some(([url]) => String(url).includes("/chapters"))).toBe(false);
   expect(useContentSyncStore.getState().deviceKey).toBeNull();
+});
+
+it("downloads a selected origin chapter without full catalogs or foreground sync state changes", async () => {
+  useContentSyncStore.setState({ status: "syncing" });
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
+  vi.mocked(downloadContentChapter).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  const entry = { id: "one", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
+  await expect(downloadServerChapterFromServer(entry, "http://origin-server")).resolves.toEqual({ novelId: 90, chapterId: 91 });
+  expect(downloadContentChapter).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: "http://origin-server" }));
+  expect(syncWorkMetadata).not.toHaveBeenCalled();
+  expect(readContentSyncStateCache).not.toHaveBeenCalled();
+  expect(writeContentSyncCache).not.toHaveBeenCalled();
+  expect(useContentSyncStore.getState().status).toBe("syncing");
+  expect(useContentSyncStore.getState().deviceKey).toBeNull();
+});
+
+it("checkpoints a large catalog instead of persisting its growing snapshot on every page", async () => {
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => {
+    if (!String(url).includes("/catalog/changes?")) return original(url, init);
+    const cursor = Number(new URL(String(url)).searchParams.get("after"));
+    return Promise.resolve(Response.json({ items: Array.from({ length: 100 }, (_, index) => ({ identity: { pluginId: "source", novelPath: "/book", chapterPath: `/chapter-${cursor + index}` }, deleted: false, sequence: cursor + index + 1 })), cursor: cursor + 100, hasMore: cursor < 900 }));
+  });
+  await syncContentServer(false);
+  expect(writeContentSyncCache).toHaveBeenCalledTimes(1);
+  const saved = memory.get("norea-content-catalog:http://localhost:7788")!;
+  expect(JSON.parse(saved)).toMatchObject({ cursor: 1000, tombstones: {} });
+  expect(saved).not.toContain("entries");
+  expect(saved.length).toBeLessThan(200);
+  expect(useContentSyncStore.getState()).not.toHaveProperty("catalog");
+  expect(useContentSyncStore.getState()).not.toHaveProperty("works");
+});
+
+it("keeps selected downloads usable while the background work catalog is still transferring", async () => {
+  let release!: () => void;
+  vi.mocked(syncWorkMetadata).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+  const background = syncContentServer(false);
+  await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
+  vi.mocked(downloadContentChapter).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  const entry = { id: "one", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
+  try {
+    await downloadServerChapter(entry);
+    expect(markContentInstalled).toHaveBeenCalledWith(91, "html", 10, 0);
+    expect(useContentSyncStore.getState().status).toBe("syncing");
+  } finally {
+    release();
+    await background;
+  }
+});
+
+it("does not rewrite unchanged catalog snapshots on subsequent background polls", async () => {
+  await syncContentServer();
+  vi.mocked(writeContentSyncCache).mockClear();
+  await syncContentServer();
+  expect(writeContentSyncCache).not.toHaveBeenCalled();
+});
+
+it("removes a compact tombstone on restore and only scans downloaded content initially", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  memory.set(key, JSON.stringify({ cursor: 1, tombstones: { '["p","n","c"]': true } }));
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", novelPath: "n", chapterPath: "c", novelName: "Novel", chapterName: "Chapter", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/changes?")
+    ? Promise.resolve(Response.json({ items: [{ identity: { pluginId: "p", novelPath: "n", chapterPath: "c" }, deleted: false, sequence: 2 }], cursor: 2, hasMore: false })) : original(url, init));
+  await syncContentServer();
+  expect(listContentSyncChapters).toHaveBeenCalledWith(undefined, true);
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+  expect(JSON.parse(memory.get(key)!).tombstones).toEqual({});
 });

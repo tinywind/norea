@@ -32,6 +32,7 @@ import {
   clearNovelCoverDisplayCache,
   getNovelCoverSnapshot,
   invalidateAllNovelCoverSources,
+  notifyNovelCoverChanged,
   peekCachedNovelCoverSrc,
   resolveCachedNovelCoverSrc,
   resolveNovelCoverDisplaySource,
@@ -58,6 +59,11 @@ const novel = {
   path: "/novel",
   pluginId: "demo",
 };
+
+function coverVersion(): string {
+  const snapshot = getNovelCoverSnapshot(novel.id);
+  return snapshot ? `1-${snapshot}` : "1";
+}
 
 function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   return {
@@ -411,7 +417,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(repeatedSeparatorNovel),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-foo--bar/cover.jpg?v=1",
+      `http://norea-media.localhost/contents/demo/Sample-Novel-foo--bar/cover.jpg?v=${coverVersion()}`,
     );
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -437,7 +443,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(novel),
     ).resolves.toBe(
-      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIud2VicA?v=1",
+      `/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIud2VicA?v=${coverVersion()}`,
     );
   });
 
@@ -475,7 +481,7 @@ describe("saveNovelCoverFromSource", () => {
         name: "New Title",
       }),
     ).resolves.toBe(
-      "/__norea_android_media__/file/Y29udGVudHMvZGVtby9PbGQtVGl0bGUtbm92ZWwvY292ZXIuanBn?v=1",
+      `/__norea_android_media__/file/Y29udGVudHMvZGVtby9PbGQtVGl0bGUtbm92ZWwvY292ZXIuanBn?v=${coverVersion()}`,
     );
     expect(inspectAndroidNovelCoverMock).toHaveBeenCalledWith({
       expectedSourceUrl: "https://source.test/covers/cover.jpg",
@@ -496,7 +502,7 @@ describe("saveNovelCoverFromSource", () => {
     await expect(
       resolveStoredNovelCoverSrc(novel),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
+      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
     );
   });
 
@@ -511,7 +517,7 @@ describe("saveNovelCoverFromSource", () => {
         makePlugin(),
       ),
     ).resolves.toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
+      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
     );
     expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
       expectedSourceUrl: "https://source.test/covers/cover.jpg",
@@ -587,7 +593,7 @@ describe("cached novel cover display sources", () => {
     const second = await resolveCachedNovelCoverSrc(displayNovel, { plugin });
 
     expect(first).toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
+      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
     );
     expect(cached).toBe(first);
     expect(second).toBe(first);
@@ -735,7 +741,7 @@ describe("resolveNovelCoverDisplaySource", () => {
     );
 
     expect(resolved?.src).toBe(
-      "http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=1",
+      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
     );
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
     expect(
@@ -952,4 +958,18 @@ describe("invalidateAllNovelCoverSources", () => {
       revokeObjectUrl.mockRestore();
     }
   });
+});
+
+it("changes only the affected stored cover URL when its bytes change without a new metadata timestamp", async () => {
+  const current = { ...novel, id: 401 };
+  const other = { ...novel, id: 402 };
+  invokeMock.mockResolvedValue({
+    relativePath: "contents/demo/Novel/cover.png",
+    manifest: JSON.stringify({ version: 1, fileName: "cover.png", sourceUrl: "https://source.test/cover.png", sourceId: "demo", novelPath: "/novel", updatedAt: 100 }),
+  });
+  const before = await resolveStoredNovelCoverSrc(current);
+  const otherBefore = await resolveStoredNovelCoverSrc(other);
+  notifyNovelCoverChanged(current.id);
+  expect(await resolveStoredNovelCoverSrc(current)).not.toBe(before);
+  expect(await resolveStoredNovelCoverSrc(other)).toBe(otherBefore);
 });
