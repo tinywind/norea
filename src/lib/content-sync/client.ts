@@ -14,6 +14,24 @@ export function normalizeContentServerUrl(value: string): string {
   return url.toString().replace(/\/+$/, "");
 }
 
+export async function withContentServerLookup<T>(run: (signal: AbortSignal) => Promise<T>, seconds: number, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  const timeout = new AbortController();
+  const deadline = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
+  const timer = setTimeout(() => timeout.abort(new Error("Content server lookup timed out.")), seconds * 1000);
+  let abort: () => void = () => undefined;
+  try {
+    const interrupted = new Promise<never>((_, reject) => {
+      abort = () => reject(deadline.reason);
+      deadline.addEventListener("abort", abort, { once: true });
+    });
+    return await Promise.race([run(deadline), interrupted]);
+  } finally {
+    clearTimeout(timer);
+    deadline.removeEventListener("abort", abort);
+  }
+}
+
 export async function contentServerRequest<T>(serverUrl: string, path: string, token?: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await nativeFetch(`${normalizeContentServerUrl(serverUrl)}/api/v1${path}`, {
     method,

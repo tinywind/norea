@@ -23,6 +23,23 @@ it("defaults to manual sync and persists the selected mode and interval", async 
   expect(useContentSyncStore.getState()).toMatchObject({ syncMode: "periodic", syncIntervalMinutes: 30 });
 });
 
+it("defaults chapter lookup to three seconds and persists a bounded timeout", async () => {
+  expect(useContentSyncStore.getState().lookupTimeoutSeconds).toBe(3);
+  useContentSyncStore.getState().setLookupTimeoutSeconds(8);
+  await useContentSyncStore.persist.rehydrate();
+  expect(useContentSyncStore.getState().lookupTimeoutSeconds).toBe(8);
+  useContentSyncStore.getState().setLookupTimeoutSeconds(0);
+  expect(useContentSyncStore.getState().lookupTimeoutSeconds).toBe(1);
+  useContentSyncStore.getState().setLookupTimeoutSeconds(Number.NaN);
+  expect(useContentSyncStore.getState().lookupTimeoutSeconds).toBe(3);
+});
+
+it("uses the three-second default for existing settings saved before the timeout option", async () => {
+  storage.set("norea-content-server", JSON.stringify({ state: { serverUrl: "http://server", deviceName: "Tablet", syncMode: "periodic", syncIntervalMinutes: 30 }, version: 1 }));
+  await useContentSyncStore.persist.rehydrate();
+  expect(useContentSyncStore.getState()).toMatchObject({ lookupTimeoutSeconds: 3, syncMode: "periodic", syncIntervalMinutes: 30 });
+});
+
 it.each([[true, "changes"], [false, "manual"]])("migrates legacy automatic sync %s to %s", async (autoSync, syncMode) => {
   storage.set("norea-content-server", JSON.stringify({ state: { serverUrl: "http://server", deviceName: "Tablet", autoSync }, version: 0 }));
   await useContentSyncStore.persist.rehydrate();

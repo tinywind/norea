@@ -26,6 +26,7 @@ CREATE TABLE `novel` (
   `artist` text,
   `status` text,
   `genres` text,
+  `rating` real,
   `in_library` integer DEFAULT false NOT NULL,
   `is_local` integer DEFAULT false NOT NULL,
   `created_at` integer DEFAULT (unixepoch()) NOT NULL,

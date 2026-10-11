@@ -3,7 +3,8 @@
 ## Contract
 
 `contents/<source>/<work>/novel.json` is the authoritative, portable description
-of a work and its complete known chapter list, including undownloaded chapters.
+of a work. Chapter lists remain in the app database; completed chapter files
+can rebuild downloaded chapter entries.
 The app database retains queryable metadata as a rebuildable cache. Files win
 when cache and disk differ. Reading progress, bookmarks, library membership,
 and other device preferences stay local and are not sent to the content server.
@@ -12,6 +13,26 @@ part of this change. Both applications use a single database schema v1 baseline,
 metadata schema v1, and API/package version 1. Existing databases must be retained
 separately when preparing a fresh development database. The independent
 source-plugin API remains 0.2.
+
+The work identity uses the plugin ID and its source path without the base URL,
+for example `/novel/123456`. Absolute HTTP URLs, protocol-relative URLs, and
+`norea-folder:` work identities are invalid. Existing folders without valid
+`novel.json` are skipped by the content server; no title or work URL is guessed.
+Chapter folders named `<number>-<title>` are discovered from completed
+`content.html` or `content.pdf` files. A nonempty final body remains readable
+even when a media manifest is incomplete or malformed, or a partial artifact
+remains. Server package completeness is checked separately. A matching cached
+chapter keeps its exact
+source path, ID, source title, and reading state. Without a cached match, the
+chapter receives a local `norea-folder:<number>` path; source refresh can resolve
+that chapter path by an unambiguous chapter number. Work metadata refresh does
+not delete source chapters that have not been downloaded.
+
+SQLite also stores rebuildable metadata fingerprints and chapter directory
+mappings. Normal startup loads these mappings without rereading all work files.
+An uninitialized cache, explicit rescan, or failed-write recovery reads the
+authoritative files. Changes made outside the app require a rescan; writes check
+the previous file fingerprint to avoid overwriting external edits.
 
 ```typescript
 interface NovelMetadataV1 {
@@ -25,35 +46,30 @@ interface NovelMetadataV1 {
     summary: string | null;
     status: string | null;
     genres: string | null;
+    rating: number | null;
     isLocal: boolean;
   };
-  chapters: {
-    path: string;
-    name: string;
-    chapterNumber: string | null;
-    position: number;
-    page: string;
-    contentType: 'html' | 'text' | 'markdown' | 'pdf' | 'epub';
-    releaseTime: string | null;
-    directory: string;
-  }[];
   cover: { fileName: string; contentType: string | null; sourceUrl: string } | null;
-  updatedAt: number;
 }
 ```
 
-Chapter directories are single safe child names, not absolute paths or paths
-inferred back into source URLs. Source paths are preserved verbatim. Numeric
-database IDs are local cache details and do not occur in this document.
+`rating` preserves the plugin rating on a zero-to-five scale; it is null when
+absent. `status` preserves source text. `totalPages` controls chapter pagination
+and is not work metadata. Chapter directories are safe child names and are never
+interpreted as source URLs. Numeric database IDs stay in the local cache.
 `cover.fileName` is a safe work-local `cover.<extension>` filename. Cover bytes
 and the existing `cover.json` sidecar live beside `novel.json`.
 Media `manifest.json` remains a separate chapter-media inventory.
 Text-only chapters do not require that media inventory.
 
 Metadata is written atomically through a temporary sibling file and rename.
+Identical metadata, cover bytes, and cover sidecars do not trigger file writes.
+The metadata document has no timestamp or chapter list.
 Cache writes must not silently overwrite newer files during startup/rebuild.
-Malformed metadata is reported, never converted into an empty work. Identity,
-directory traversal, duplicate chapter paths/directories, and size limits are
+Invalid local metadata is skipped with a path-only warning during scans; valid
+works still load. Storage access errors and duplicate valid work identities
+remain errors. Invalid metadata is never converted into an empty work. Identity,
+directory traversal, and size limits are
 validated at both import boundaries. Renaming a title retains the existing work
 directory when its identity already exists.
 
@@ -82,14 +98,14 @@ The sync client records local metadata/cover fingerprints and its remote work
 cursor. It never sends personal reading state. Conflict handling preserves
 pending local edits instead of overwriting them with an earlier remote snapshot.
 Chapter catalog pages update the package index without rewriting work files.
-Full work metadata comes from the work catalog; an individual chapter download
-can still import its package identity when full metadata is unavailable.
+Full work metadata comes from the work catalog. A work must be installed before
+its chapter packages; a package cannot reconstruct missing work metadata.
 
-Folder scanning prefers novel.json and requires no app database when it exists.
+Folder scanning requires novel.json and does not consult an app database.
 It registers the work and cover even when no complete chapter is present. It
-uses exact chapter paths and directories from the file. Invalid present metadata
-is not replaced by database guesses. Optional legacy DB-assisted scanning may
-remain for existing folders, without writing into those folders.
+scans completed chapter folders independently of the work document. Invalid or
+missing metadata is not replaced by database guesses. Existing user folders
+remain read-only scan inputs.
 
 ## Console
 

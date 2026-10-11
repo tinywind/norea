@@ -1,9 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { NovelMetadataV1 } from "../work-metadata";
 
-vi.mock("../work-metadata", () => ({
+vi.mock("../work-metadata", async original => ({
+  ...await original<typeof import("../work-metadata")>(),
   listStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(),
-  installStoredNovelMetadata: vi.fn(), parseNovelMetadata: (value: unknown) => value,
+  installStoredNovelMetadata: vi.fn(),
 }));
 vi.mock("../../db/queries/content-sync", () => ({ readContentSyncStateCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
@@ -14,9 +15,8 @@ import { syncWorkMetadata, contentWorkId } from "./works";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
   schemaVersion: 1, identity: { pluginId: "example", novelPath: "/book" },
-  novel: { name, cover: "https://example.com/cover.png", author: "Author", artist: null, summary: "Summary", status: "Ongoing", genres: "Fantasy", isLocal: false },
-  chapters: [{ path: "/first", name: "First", chapterNumber: "1", position: 1, page: "1", contentType: "html", releaseTime: null, directory: "1-First" }],
-  cover: { fileName: "cover.png", contentType: "image/png", sourceUrl: "https://example.com/cover.png" }, updatedAt: 10,
+  novel: { name, cover: "https://example.com/cover.png", author: "Author", artist: null, summary: "Summary", status: "Ongoing", rating: 4.5, genres: "Fantasy", isLocal: false },
+  cover: { fileName: "cover.png", contentType: "image/png", sourceUrl: "https://example.com/cover.png" },
 });
 const memory = new Map<string, string>();
 const localCovers = new Map<string, Uint8Array | null>();
@@ -56,7 +56,9 @@ beforeEach(() => {
 it("uploads metadata and cover without any downloaded chapter and skips unchanged uploads", async () => {
   local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
-  expect(remote?.chapters[0].path).toBe("/first");
+  expect(remote).not.toHaveProperty("chapters");
+  expect(remote).not.toHaveProperty("updatedAt");
+  expect(remote?.novel.rating).toBe(4.5);
   expect(remoteCover).toEqual(new Uint8Array([1, 2, 3]));
   expect(remote?.novel.author).toBe("Author");
   await syncWorkMetadata("http://server", "device", true);
@@ -71,6 +73,13 @@ it("installs a server work and cover before any chapter download", async () => {
   expect(installStoredNovelMetadata).toHaveBeenCalledWith(remote, remoteCover, expect.any(Function));
   expect(puts).toBe(0);
   expect(changed).toHaveBeenCalledTimes(1);
+});
+
+it("rejects inferred work identities instead of merging folder-name aliases", async () => {
+  remote = { ...metadata(), identity: { pluginId: "example", novelPath: "norea-folder:Book-book" } };
+  sequence = 1;
+  await expect(syncWorkMetadata("http://server", "device", false)).rejects.toThrow();
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
 
 it("preserves a local metadata edit when an older remote update arrives", async () => {
@@ -142,7 +151,7 @@ it("indexes local files once and checkpoints a work page instead of every instal
 
 it.each([false, true])("installs successive metadata and cover revisions of the same work (separate pages: %s)", async (separatePages) => {
   const first = metadata();
-  const latest = metadata("Latest revision"); latest.updatedAt = 20;
+  const latest = metadata("Latest revision");
   const id = await contentWorkId(first.identity);
   const entries = [
     { id, sequence: 1, metadata: first, hasCover: false },

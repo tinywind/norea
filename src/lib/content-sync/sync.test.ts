@@ -144,6 +144,18 @@ it("downloads a selected origin chapter without full catalogs or foreground sync
   expect(useContentSyncStore.getState().deviceKey).toBeNull();
 });
 
+it("installs a legacy server package into the existing source chapter without creating another work", async () => {
+  const target = { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, ...target, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
+  vi.mocked(downloadContentChapter).mockResolvedValue({ contentBytes: 10, mediaBytes: 20 });
+  const entry = { id: "legacy", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "norea-folder:Book-work", chapterPath: "norea-folder:1" }, chapter: { contentType: "html" } } } as never;
+  expect(await downloadServerChapterFromServer(entry, "http://origin", { token: "registered", target })).toEqual({ novelId: 3, chapterId: 7 });
+  expect(importContentMetadata).not.toHaveBeenCalled();
+  expect(appFetch).not.toHaveBeenCalled();
+  expect(downloadContentChapter).toHaveBeenCalledWith({ serverUrl: "http://origin", token: "registered", entry, storageDir: "contents/source/Book-work/1-One", chapterId: 7 });
+  expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 20);
+});
+
 it("checkpoints a large catalog instead of persisting its growing snapshot on every page", async () => {
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => {

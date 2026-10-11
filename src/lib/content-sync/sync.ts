@@ -33,10 +33,6 @@ async function catalogCache(server: string): Promise<CatalogCache> {
 }
 function saveCatalog(server: string, cache: CatalogCache): Promise<void> { return saveCache(`norea-content-catalog:${server}`, cache); }
 function identity(row: ContentSyncChapter): string { return contentIdentity(row.pluginId, row.novelPath, row.chapterPath); }
-function entryIdentity(entry: CatalogEntry): string {
-  const { pluginId, novelPath, chapterPath } = entry.manifest.identity;
-  return contentIdentity(pluginId, novelPath, chapterPath);
-}
 function storageDir(row: ContentSyncChapter): string {
   return resolvedChapterStorageDir(row.chapterId) ?? chapterStorageRelativeDir(
     { id: row.novelId, pluginId: row.pluginId, path: row.novelPath, name: row.novelName },
@@ -178,13 +174,16 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
   return downloadServerChapterFromServer(entry, useContentSyncStore.getState().serverUrl);
 }
 
-export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string): Promise<{ novelId: number; chapterId: number }> {
+export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity }): Promise<{ novelId: number; chapterId: number }> {
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
-  const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
-  return runWorkContentStorageOperation(entry.manifest.identity.pluginId, entry.manifest.identity.novelPath, async () => {
-    const mapping = await importContentMetadata(entry.manifest);
-    const row = (await listContentSyncChapters([entryIdentity(entry)])).find((item) => item.chapterId === mapping.chapterId);
+  const token = options?.token ?? await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
+  const target = options?.target ?? entry.manifest.identity;
+  return runWorkContentStorageOperation(target.pluginId, target.novelPath, async () => {
+    const imported = options ? undefined : await importContentMetadata(entry.manifest);
+    const row = (await listContentSyncChapters([contentIdentity(target.pluginId, target.novelPath, target.chapterPath)]))
+      .find((item) => !imported || item.chapterId === imported.chapterId);
     if (!row) throw new Error("Downloaded chapter metadata is missing.");
+    const mapping = { novelId: row.novelId, chapterId: row.chapterId };
     const result = await downloadContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: mapping.chapterId });
     await markContentInstalled(mapping.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
     window.dispatchEvent(new Event("norea-content-state-changed"));

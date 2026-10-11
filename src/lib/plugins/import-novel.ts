@@ -20,7 +20,7 @@ export async function importNovelFromSource(
 ): Promise<number> {
   if (!options.forceRefresh) {
     const cached = await findNovelBySource(plugin.id, item.path);
-    if (cached) return cached.id;
+    if (cached?.path === item.path) return cached.id;
   }
 
   const result = await syncNovelFromSource(plugin, item);

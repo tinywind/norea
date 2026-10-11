@@ -1,4 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
+vi.mock("./chapters", () => ({ fetchServerChapters: vi.fn(async () => []) }));
+vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));
@@ -15,8 +17,8 @@ import { findNovelBySource } from "../../db/queries/novel";
 
 const metadata: NovelMetadataV1 = {
   schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
-  novel: { name: "Book", cover: null, author: null, artist: null, summary: null, status: null, genres: null, isLocal: false },
-  chapters: [], cover: null, updatedAt: 1,
+  novel: { name: "Book", cover: null, author: null, artist: null, summary: null, status: null, rating: null, genres: null, isLocal: false },
+  cover: null,
 };
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget()); });
 

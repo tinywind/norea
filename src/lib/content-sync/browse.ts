@@ -7,6 +7,8 @@ import { ContentServerError, contentServerRequest, normalizeContentServerUrl } f
 import { registerContentDevice } from "./device";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { contentWorkId, type WorkCatalogEntry } from "./works";
+import { fetchServerChapters } from "./chapters";
+import { cacheServerChapters } from "../../db/queries/content-sync";
 
 export interface ServerWorkSummary {
   id: string;
@@ -25,7 +27,7 @@ export function listServerWorks(server: string, token: string, query: string, so
   return contentServerRequest(server, `/catalog/works?${params}`, token, "GET", undefined, signal);
 }
 
-async function readServerCover(server: string, token: string, id: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {
+export async function readServerCover(server: string, token: string, id: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {
   const response = await nativeFetch(`${normalizeContentServerUrl(server)}/api/v1/works/${encodeURIComponent(id)}/cover`, {
     headers: { Authorization: `Bearer ${token}` }, maxRedirections: 0, connectTimeout: 10_000,
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
@@ -60,11 +62,13 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
   const metadata = parseNovelMetadata(entry.metadata);
   if (entry.id !== source.workId || await contentWorkId(metadata.identity) !== source.workId) throw new Error("Server work identity does not match its metadata.");
   const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
+  const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
   await installStoredNovelMetadata(metadata, cover?.bytes, requireNewWork ? async current => {
     if (current) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
   } : undefined);
   const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
   if (!novel) throw new Error("Installed server work is missing from the local index.");
+  await cacheServerChapters(novel.id, chapters);
   await rememberServerNovelSource(novel.id, { serverUrl: server, workId: source.workId });
   window.dispatchEvent(new Event("norea-content-state-changed"));
   return novel.id;

@@ -560,6 +560,23 @@ novel. `ChapterItem.path` may be an absolute URL, relative path, or opaque
 encoded payload. Secrets must remain in private plugin inputs or request init
 objects and must not be written into paths or stored content.
 
+`NovelItem.path` identifies a work within its plugin. The plugin must provide
+a source-relative path such as `/novel/123456` or
+`/webtoon/list?titleId=650305`, or an opaque plugin identifier. It must exclude
+the source base URL. The app copies this value unchanged into work identity,
+lookup, parsing, and storage, preserving query strings, fragments, and encoding.
+Plugins accept that same identifier in `parseNovel`, `parseNovelSince`, and
+`parsePage`, and resolve source requests against their current `getBaseUrl()`.
+Changing the source domain therefore keeps the work identity.
+The requested item's path remains the stored identity; the `SourceNovel.path`
+returned by parsing does not rename it.
+
+`SourceNovel.status` is an optional source-provided string. `SourceNovel.rating`
+is an optional finite number from 0 to 5. The host stores both with the work
+metadata and rejects ratings outside that range. A partial metadata refresh
+preserves an existing rating when the source omits it; a full replacement
+clears an omitted rating.
+
 ## Example
 
 ```ts

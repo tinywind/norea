@@ -3,24 +3,31 @@ import { parseNovelMetadata } from "./work-metadata";
 
 export function metadataFixture() {
   return { schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
-    novel: { name: "Book", cover: null, author: null, artist: null, summary: null, status: null, genres: null, isLocal: false },
-    chapters: [{ path: "/chapter?exact=2", name: "First", chapterNumber: "1", position: 1, page: "1", contentType: "html", releaseTime: null, directory: "1-First" }],
-    cover: null, updatedAt: 1000 };
+    novel: { name: "Book", cover: null, author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+    cover: null };
 }
 
 describe("portable work metadata", () => {
-  it("retains exact source identities and undownloaded chapters", () => {
+  it("retains exact source identities without chapter or timestamp fields", () => {
     expect(parseNovelMetadata(metadataFixture())).toEqual(metadataFixture());
   });
-  it.each(["../escape", "C:\\escape", "nested/chapter", ".", "CON", "bad.", "novel.json", "cover.png", "cover"])("rejects unsafe directory %s", (directory) => {
-    const input = metadataFixture(); input.chapters[0]!.directory = directory;
+  it("rejects chapter lists, timestamps, and folder-derived work identities", () => {
+    expect(() => parseNovelMetadata({ ...metadataFixture(), chapters: [] })).toThrow();
+    expect(() => parseNovelMetadata({ ...metadataFixture(), updatedAt: 1 })).toThrow();
+    const input = metadataFixture(); input.identity.novelPath = "norea-folder:Book";
     expect(() => parseNovelMetadata(input)).toThrow();
   });
-  it("rejects duplicate chapter identities and directory aliases", () => {
-    const input = metadataFixture(); input.chapters.push({ ...input.chapters[0]! });
-    expect(() => parseNovelMetadata(input)).toThrow();
-    input.chapters[1]!.path = "/other"; input.chapters[1]!.directory = "1-FIRST";
-    expect(() => parseNovelMetadata(input)).toThrow();
+  it.each(["https://example.com/novel/1", "http://example.com/novel/1", "//example.com/novel/1"])("rejects base URLs in work identity %s", (novelPath) => {
+    expect(() => parseNovelMetadata({ ...metadataFixture(), identity: { pluginId: "source", novelPath } })).toThrow();
+  });
+  it.each([-1, 5.1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid rating %s", (rating) => {
+    const input = metadataFixture();
+    expect(() => parseNovelMetadata({ ...input, novel: { ...input.novel, rating } })).toThrow();
+  });
+  it("retains fractional source rating and source status", () => {
+    const input = metadataFixture();
+    const novel = { ...input.novel, rating: 4.25, status: "Source-specific status" };
+    expect(parseNovelMetadata({ ...input, novel }).novel).toEqual(novel);
   });
   it("rejects personal fields rather than transporting them", () => {
     expect(() => parseNovelMetadata({ ...metadataFixture(), inLibrary: true })).toThrow();

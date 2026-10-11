@@ -29,6 +29,16 @@ it("registers once under concurrent initialization and persists the key before s
   expect(JSON.parse(calls[1]![1]!.body as string)).toEqual({ deviceKey: key, deviceName: "Tablet" });
 });
 
+it("does not register after a cancelled capability lookup completes late", async () => {
+  const controller = new AbortController();
+  vi.mocked(nativeFetch).mockImplementationOnce(async () => {
+    controller.abort(new Error("Lookup expired"));
+    return Response.json(capabilities);
+  });
+  await expect(registerContentDevice("http://server", "Tablet", controller.signal)).rejects.toThrow("Lookup expired");
+  expect(nativeFetch).toHaveBeenCalledOnce();
+});
+
 it("reuses the persisted key after a module restart and isolates different servers", async () => {
   const first = await registerContentDevice("http://server:80/", "Tablet");
   vi.resetModules();

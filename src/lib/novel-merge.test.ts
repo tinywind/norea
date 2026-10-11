@@ -121,6 +121,7 @@ const sourceNovel = {
   artist: null,
   status: null,
   genres: null,
+  rating: null,
   inLibrary: true,
   isLocal: false,
   createdAt: 1,

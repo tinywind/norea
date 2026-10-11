@@ -28,7 +28,13 @@ release-line compatibility scope.
   matching the metadata document, content-server API, and chapter package
   version. `src-tauri/src/schema.sql` contains the current app tables and
   columns. Runtime initialization installs the current synchronization and
-  metadata triggers.
+  metadata triggers and rebuildable metadata fingerprint/directory cache tables.
+  These derived caches do not change the v1 bootstrap checksum or portable
+  metadata format. An absent cache is rebuilt from valid work files and completed
+  chapter folders. Work metadata v1 has no chapter list or timestamp; source
+  chapter lists stay in SQLite. The current fresh bootstrap includes nullable
+  source ratings. Discarded development metadata with folder-derived work
+  identities, chapter arrays, or timestamps is not migrated or guessed.
 - Before the SQL plugin opens the database, startup compares the applied
   migration versions and SQLx SHA-384 checksums with the migrations bundled in
   the app. An exact matching prefix preserves existing data and applies only

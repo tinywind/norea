@@ -9,7 +9,7 @@ export { parseNovelMetadata, type NovelMetadataV1 } from "./work-metadata/schema
 
 export interface StoredNovelMetadata { directory: string; metadata: NovelMetadataV1 }
 export interface WorkMetadataOperation {
-  operation: "list" | "read" | "write" | "remove" | "register";
+  operation: "list" | "chapters" | "read" | "write" | "remove" | "register";
   path?: string;
   body?: string;
   chapterDirectories?: Record<string, string>;
@@ -44,6 +44,10 @@ export async function workMetadataOperation(input: WorkMetadataOperation): Promi
   if (input.path) {
     const segments = input.path.split("/");
     if (segments.length !== 4 || segments[0] !== "contents" || !segments.every(safeMetadataChild)) throw new Error("work metadata: invalid storage path");
+  }
+  if (input.operation === "write" && input.path) {
+    const current = await rawWorkMetadataOperation({ operation: "read", path: input.path });
+    if (current.body === input.body) return {};
   }
   if (publicationSnapshots && input.path && (input.operation === "write" || input.operation === "remove") && !publicationSnapshots.has(input.path)) {
     const previous = await rawWorkMetadataOperation({ operation: "read", path: input.path });
@@ -91,13 +95,41 @@ export async function listStoredNovelMetadata(): Promise<StoredNovelMetadata[]> 
     if (!body) throw new Error(`work metadata: missing listed file ${path}`);
     let metadata: NovelMetadataV1;
     try { metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body)))); }
-    catch (error) { throw new Error(`work metadata: invalid ${path}`, { cause: error }); }
+    catch {
+      // eslint-disable-next-line no-console -- Report skipped input paths without logging document contents.
+      console.warn("[work-metadata] skipped invalid metadata", path);
+      continue;
+    }
     const identity = JSON.stringify(metadata.identity);
     if (identities.has(identity)) throw new Error(`work metadata: duplicate work ${path}`);
     identities.add(identity);
     entries.push({ directory: path.slice(0, -"/novel.json".length), metadata });
   }
   return entries;
+}
+
+export interface StoredNovelChapter {
+  directory: string;
+  chapterNumber: string;
+  name: string;
+  contentType: "html" | "pdf";
+}
+
+export async function listStoredNovelChapters(directory: string): Promise<StoredNovelChapter[]> {
+  const { paths = [] } = await workMetadataOperation({ operation: "chapters", path: `${directory}/novel.json` });
+  const chapters: StoredNovelChapter[] = [];
+  const seen = new Set<string>();
+  for (const path of paths) {
+    if (!path.startsWith(`${directory}/`)) throw new Error("work metadata: invalid chapter location");
+    const parts = path.slice(directory.length + 1).split("/");
+    const [child, fileName] = parts;
+    if (parts.length !== 2 || !safeMetadataChild(child!) || !["content.html", "content.pdf"].includes(fileName!)) throw new Error("work metadata: invalid chapter file");
+    const match = /^(\d+(?:\.\d+)?)-(.+)$/.exec(child!);
+    if (!match || seen.has(child!)) continue;
+    seen.add(child!);
+    chapters.push({ directory: child!, chapterNumber: match[1]!, name: match[2]!, contentType: fileName === "content.pdf" ? "pdf" : "html" });
+  }
+  return chapters.sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber) || a.directory.localeCompare(b.directory));
 }
 
 export async function readStoredNovelMetadata(directory: string): Promise<StoredNovelMetadata | null> {
@@ -108,6 +140,8 @@ export async function readStoredNovelMetadata(directory: string): Promise<Stored
 
 export async function writeStoredNovelMetadata(directory: string, input: NovelMetadataV1, notifyChanges = true): Promise<void> {
   const metadata = parseNovelMetadata(input);
+  const current = await readStoredNovelMetadata(directory);
+  if (current && JSON.stringify(current.metadata) === JSON.stringify(metadata)) return;
   await workMetadataOperation({ operation: "write", path: `${directory}/novel.json`, body: bytesToBase64(new TextEncoder().encode(JSON.stringify(metadata, null, 2))) });
   if (notifyChanges) notifyWorkMetadataChanges();
 }
@@ -125,7 +159,7 @@ export async function writeStoredNovelCover(directory: string, metadata: NovelMe
   parseNovelMetadata(metadata);
   if (!metadata.cover || !bytes.length || bytes.length > MAX_NOVEL_COVER_BYTES) throw new Error("work metadata: invalid cover bytes");
   await workMetadataOperation({ operation: "write", path: `${directory}/${metadata.cover.fileName}`, body: bytesToBase64(bytes) });
-  const manifest = { ...metadata.cover, version: 1, sourceId: metadata.identity.pluginId, novelPath: metadata.identity.novelPath, updatedAt: metadata.updatedAt };
+  const manifest = { ...metadata.cover, version: 1, sourceId: metadata.identity.pluginId, novelPath: metadata.identity.novelPath };
   await workMetadataOperation({ operation: "write", path: `${directory}/cover.json`, body: bytesToBase64(new TextEncoder().encode(JSON.stringify(manifest))) });
   if (notifyChanges) {
     const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
@@ -150,7 +184,7 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
         await writeStoredNovelMetadata(directory, metadata, false);
         const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory);
         await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
-        rememberStoredNovelMetadata(directory, metadata);
+        await rememberStoredNovelMetadata(db, directory, metadata);
         return { novelId: installedNovelId, directory };
       });
     }, true);
@@ -173,14 +207,13 @@ export async function removeStoredNovelCover(directory: string, cover: NovelMeta
 export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; sourceUrl: string; contentType: string }): Promise<void> {
   const { runDatabaseTransaction } = await import("../db/client");
   const { rememberStoredNovelMetadata } = await import("../db/work-metadata");
-  await runDatabaseTransaction(() => withWorkMetadataRollback(async () => {
+  await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
     const { body } = await workMetadataOperation({ operation: "read", path: `${directory}/novel.json` });
     if (!body) throw new Error("work metadata: missing work for cover");
     const metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
     metadata.cover = { fileName: cover.fileName, sourceUrl: cover.sourceUrl, contentType: cover.contentType };
-    metadata.updatedAt = Date.now();
     await writeStoredNovelCover(directory, metadata, cover.body);
     await writeStoredNovelMetadata(directory, metadata);
-    rememberStoredNovelMetadata(directory, metadata);
+    await rememberStoredNovelMetadata(db, directory, metadata);
   }));
 }

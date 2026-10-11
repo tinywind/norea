@@ -2,6 +2,7 @@ import { getDb, runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import { upsertDownloadedChaptersInDb } from "./chapter";
+import { reconcileImportedNovelIdentityInDb } from "./novel-identity";
 import {
   normalizeChapterContentType,
   type ChapterContentType,
@@ -606,6 +607,7 @@ export interface NovelDetailRecord {
   artist: string | null;
   status: string | null;
   genres: string | null;
+  rating: number | null;
   inLibrary: boolean;
   isLocal: boolean;
   createdAt: number;
@@ -632,6 +634,7 @@ const SELECT_NOVEL_DETAIL_FIELDS = `
     n.artist,
     n.status,
     n.genres,
+    n.rating,
     n.in_library     AS inLibrary,
     n.is_local       AS isLocal,
     n.created_at     AS createdAt,
@@ -743,20 +746,23 @@ export interface InsertNovelInput {
 export async function insertNovelIfAbsent(
   input: InsertNovelInput,
 ): Promise<void> {
-  const db = await getDb();
-  const inLibrary = (input.inLibrary ?? true) ? 1 : 0;
-  await db.execute(
-    `INSERT OR IGNORE INTO novel
+  return runDatabaseTransaction(async (db) => {
+    const existing = await reconcileImportedNovelIdentityInDb(db, input);
+    if (existing) return;
+    const inLibrary = (input.inLibrary ?? true) ? 1 : 0;
+    await db.execute(
+      `INSERT OR IGNORE INTO novel
        (plugin_id, path, name, cover, in_library, library_added_at)
      VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 1 THEN unixepoch() ELSE NULL END)`,
-    [
-      input.pluginId,
-      input.path,
-      input.name,
-      input.cover ?? null,
-      inLibrary,
-    ],
-  );
+      [
+        input.pluginId,
+        input.path,
+        input.name,
+        input.cover ?? null,
+        inLibrary,
+      ],
+    );
+  });
 }
 
 export interface LocalNovelImportChapterInput {

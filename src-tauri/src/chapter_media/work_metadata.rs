@@ -112,8 +112,37 @@ fn list_files(root: &Path) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
+fn list_chapter_files(root: &Path, relative: &str) -> Result<Vec<String>, String> {
+    let metadata = checked_path(root, relative)?;
+    if !relative.ends_with("/novel.json") { return Err("work metadata: chapter scan requires a work path".into()); }
+    let work = metadata.parent().ok_or("work metadata: missing work directory")?;
+    let mut paths = Vec::new();
+    let children = match fs::read_dir(work) {
+        Ok(children) => children,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(paths),
+        Err(error) => return Err(format!("work metadata: list chapters: {error}")),
+    };
+    for child in children {
+        let child = child.map_err(|error| format!("work metadata: chapter entry: {error}"))?;
+        if !child.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+        let name = child.file_name().to_string_lossy().into_owned();
+        let Some((number, title)) = name.split_once('-') else { continue; };
+        if !safe_child(&name) || title.is_empty() || number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.parse::<f64>().is_err() { continue; }
+        let directory = child.path();
+        for filename in ["content.pdf", "content.html"] {
+            if fs::symlink_metadata(directory.join(filename)).is_ok_and(|metadata| metadata.file_type().is_file() && metadata.len() > 0) {
+                paths.push(format!("{}/{name}/{filename}", relative.trim_end_matches("/novel.json")));
+                break;
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
 fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResult, String> {
     if input.operation == "list" { return Ok(WorkMetadataResult { paths: Some(list_files(root)?), body: None }); }
+    if input.operation == "chapters" { return Ok(WorkMetadataResult { paths: Some(list_chapter_files(root, input.path.as_deref().ok_or("work metadata: missing path")?)?), body: None }); }
     if input.operation == "register" {
         let mut directories = CHAPTER_DIRECTORIES.lock().map_err(|_| "work metadata: path registry unavailable")?;
         let incoming = input.chapter_directories.unwrap_or_default();
@@ -188,6 +217,33 @@ mod tests {
         publish(&path, br#"{"schemaVersion":1,"updatedAt":2}"#).unwrap();
         assert!(!path.with_file_name("novel.json.bak").exists());
         assert!(read_file(&path, 1).is_err());
+    }
+    #[test]
+    fn discovers_final_bodies_despite_incomplete_media_or_partial_artifacts() {
+        let root = fixture();
+        let work = root.path().join("contents/source/Book");
+        for name in ["1-Opening", "2-Pdf", "3-Incomplete", "4-Empty", "5-Partial", "6-Final-with-partial", "7-Invalid-manifest", "cover"] {
+            fs::create_dir_all(work.join(name)).unwrap();
+        }
+        fs::write(work.join("1-Opening/content.html"), b"body").unwrap();
+        fs::write(work.join("2-Pdf/content.pdf"), b"%PDF-body").unwrap();
+        fs::write(work.join("3-Incomplete/content.html"), b"body").unwrap();
+        fs::write(work.join("3-Incomplete/manifest.json"), br#"{"complete":false}"#).unwrap();
+        fs::write(work.join("4-Empty/content.html"), b"").unwrap();
+        fs::write(work.join("5-Partial/content.partial.html"), b"body").unwrap();
+        fs::write(work.join("6-Final-with-partial/content.html"), b"body").unwrap();
+        fs::write(work.join("6-Final-with-partial/.chapter-content.partial"), b"partial").unwrap();
+        fs::write(work.join("7-Invalid-manifest/content.html"), b"body").unwrap();
+        fs::write(work.join("7-Invalid-manifest/manifest.json"), b"invalid").unwrap();
+        fs::write(work.join("cover/content.html"), b"body").unwrap();
+        let result = operate(root.path(), WorkMetadataOperation { operation: "chapters".into(), path: Some("contents/source/Book/novel.json".into()), body: None, chapter_directories: None, reset: None }).unwrap();
+        assert_eq!(result.paths.unwrap(), [
+            "contents/source/Book/1-Opening/content.html",
+            "contents/source/Book/2-Pdf/content.pdf",
+            "contents/source/Book/3-Incomplete/content.html",
+            "contents/source/Book/6-Final-with-partial/content.html",
+            "contents/source/Book/7-Invalid-manifest/content.html",
+        ]);
     }
     #[test]
     fn rejects_escape_and_non_metadata_files() {

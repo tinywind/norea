@@ -4,6 +4,7 @@ vi.mock("../client", () => ({
   getDb: vi.fn(),
   runDatabaseTransaction: vi.fn(),
 }));
+vi.mock("./novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null), findMatchingNovelIdentityInDb: vi.fn(async () => null) }));
 
 import { getDb, runDatabaseTransaction } from "../client";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
@@ -11,6 +12,7 @@ import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import {
   countNovels,
   findLocalNovelByPath,
+  findNovelBySource,
   getLibraryNovelSummary,
   getNovelById,
   insertNovelIfAbsent,
@@ -47,6 +49,20 @@ function stubDb(): MockedDb {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("looks up the exact plugin identity %s", async path => {
+  const db = stubDb();
+  db.select.mockResolvedValue([]);
+  expect(await findNovelBySource("source", path)).toBeNull();
+  expect(db.select).toHaveBeenCalledWith(expect.any(String), ["source", path]);
+});
+
+it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("inserts the exact plugin identity %s", async path => {
+  const db = stubDb();
+  db.execute.mockResolvedValue({ rowsAffected: 1 });
+  await insertNovelIfAbsent({ pluginId: "source", path, name: "Novel" });
+  expect(db.execute).toHaveBeenCalledWith(expect.any(String), ["source", path, "Novel", null, 1]);
 });
 
 describe("listLibraryNovelIdentities", () => {

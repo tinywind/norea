@@ -4,6 +4,7 @@ vi.mock("../../db/client", () => ({
   getDb: vi.fn(),
   runDatabaseTransaction: vi.fn(),
 }));
+vi.mock("../../db/queries/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null) }));
 
 vi.mock("../../db/queries/chapter", () => ({
   getLatestSourceChapterAnchor: vi.fn(),
@@ -99,6 +100,69 @@ beforeEach(() => {
 });
 
 describe("syncNovelFromSource", () => {
+  it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("preserves the requested plugin identity %s through parsing and storage", async path => {
+    const plugin = makePlugin({
+      parseNovel: vi.fn(async () => ({ ...makeDetail([1]), rating: 4.5, status: "On break" })),
+    });
+    await syncNovelFromSource(plugin, {
+      name: "Novel", path,
+    });
+    expect(plugin.parseNovel).toHaveBeenCalledWith(path);
+    const [sql, values] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("genres, rating");
+    expect(values).toEqual([
+      "demo", path, "Novel", null, null,
+      null, null, "On break", null, 4.5,
+    ]);
+    expect(mockSelect).toHaveBeenCalledWith(expect.any(String), ["demo", path]);
+  });
+
+  it("preserves an omitted rating during partial metadata refresh", async () => {
+    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, {
+      preserveMissingMetadata: true,
+    });
+    expect(mockExecute.mock.calls[0]?.[0]).toContain("rating = COALESCE(excluded.rating, rating)");
+    expect(mockExecute.mock.calls[0]?.[1]?.[9]).toBeNull();
+  });
+
+  it.each([0, 5])("stores the valid rating boundary %s", async (rating) => {
+    await syncNovelFromSource(makePlugin({
+      parseNovel: async () => ({ ...makeDetail([1]), rating }),
+    }), { name: "Novel", path: "/novel" });
+    expect(mockExecute.mock.calls[0]?.[1]?.[9]).toBe(rating);
+  });
+
+  it.each([-1, 5.1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid source rating %s", async (rating) => {
+    await expect(syncNovelFromSource(makePlugin({
+      parseNovel: async () => ({ ...makeDetail([1]), rating }),
+    }), { name: "Novel", path: "/novel" })).rejects.toThrow("rating outside 0 to 5");
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("does not parse or mutate an aborted refresh", async () => {
+    const plugin = makePlugin();
+    await expect(syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { signal: AbortSignal.abort() })).rejects.toThrow();
+    expect(plugin.parseNovel).not.toHaveBeenCalled();
+    expect(mockedRunDatabaseTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate when cancellation arrives during source parsing", async () => {
+    const controller = new AbortController();
+    const plugin = makePlugin({ parseNovel: async () => { controller.abort(); return makeDetail([1]); } });
+    await expect(syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { signal: controller.signal })).rejects.toThrow();
+    expect(mockedRunDatabaseTransaction).not.toHaveBeenCalled();
+  });
+
+  it("checks cancellation again when the queued transaction starts", async () => {
+    const controller = new AbortController();
+    mockedRunDatabaseTransaction.mockImplementationOnce(async run => {
+      controller.abort();
+      return run({ execute: mockExecute, select: mockSelect } as never);
+    });
+    await expect(syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { signal: controller.signal })).rejects.toThrow();
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
   it("rejects chapters without finite numeric chapterNumber", async () => {
     const plugin = makePlugin({
       parseNovel: vi.fn(() =>

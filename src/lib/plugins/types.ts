@@ -145,7 +145,7 @@ export interface NovelItem {
   /** Reserved by upstream; host assigns the local DB id. */
   id?: undefined;
   name: string;
-  /** Plugin-specific identifier (URL path or opaque string). */
+  /** Plugin-provided source-relative path or opaque identifier, stored unchanged. */
   path: string;
   cover?: string;
 }
@@ -169,7 +169,9 @@ export interface SourceNovel extends NovelItem {
   summary?: string;
   author?: string;
   artist?: string;
-  status?: NovelStatus;
+  status?: string;
+  /** Source rating from 0 to 5. */
+  rating?: number;
   chapters: ChapterItem[];
   totalPages?: number;
 }

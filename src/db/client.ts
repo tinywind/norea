@@ -63,7 +63,7 @@ function serializedDb(rawDb: Database): Database {
         } catch (error) {
           if (metadataMutation) {
             await rawDb.execute("ROLLBACK").catch(() => undefined);
-            await initializeWorkMetadata(rawDb);
+            await initializeWorkMetadata(rawDb, { rebuild: true });
           }
           finish({ error: observationError(error), failed: true });
           throw error;
@@ -116,7 +116,7 @@ export function getDb(): Promise<Database> {
 
 export async function reloadWorkMetadataCache(): Promise<void> {
   const db = await getRawDb();
-  await queueDbOperation(() => initializeWorkMetadata(db));
+  await queueDbOperation(() => initializeWorkMetadata(db, { rebuild: true }));
 }
 
 export async function runExclusiveDatabaseOperation<T>(
@@ -130,7 +130,7 @@ export async function runExclusiveDatabaseOperation<T>(
       await notifyContentSyncChanges(rawDb);
       return result;
     } catch (error) {
-      await initializeWorkMetadata(rawDb);
+      await initializeWorkMetadata(rawDb, { rebuild: true });
       throw error;
     }
   });
@@ -156,7 +156,7 @@ export async function runDatabaseTransaction<T>(
         // eslint-disable-next-line no-console
         console.warn("[db] transaction rollback failed", rollbackError);
       });
-      await initializeWorkMetadata(rawDb);
+      await initializeWorkMetadata(rawDb, { rebuild: true });
       throw error;
     }
   });

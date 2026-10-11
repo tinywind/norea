@@ -1,5 +1,6 @@
 import { getDb, runDatabaseTransaction } from "../../db/client";
 import { sqliteBoolean } from "../../db/sqlite-value";
+import { reconcileImportedNovelIdentityInDb } from "../../db/queries/novel-identity";
 import {
   getLatestSourceChapterAnchor,
   upsertSourceChaptersInDb,
@@ -16,6 +17,7 @@ import { normalizeSourceAccessRequiredError } from "./source-access";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 
 export interface SyncNovelFromSourceOptions {
+  signal?: AbortSignal;
   chapterRefreshMode?: "full" | "since";
   novelId?: number;
   notifyUpdatesIndex?: boolean;
@@ -156,6 +158,11 @@ function assertSourceNovel(
   method: string,
   detail: SourceNovel,
 ): { detail: SourceNovel; duplicateChapters: SourceDuplicateChapterInfo[] } {
+  if (detail.rating !== undefined && (
+    !Number.isFinite(detail.rating) || detail.rating < 0 || detail.rating > 5
+  )) {
+    throw new Error(`Plugin '${pluginId}' ${method} returned a rating outside 0 to 5.`);
+  }
   if (!Array.isArray(detail.chapters)) {
     throw new Error(
       `Plugin '${pluginId}' ${method} did not return a chapter list.`,
@@ -187,7 +194,9 @@ async function resolveExistingNovelId(
 async function parseFullNovel(
   plugin: Plugin,
   path: string,
+  signal?: AbortSignal,
 ): Promise<ParsedSourceNovelResult> {
+  signal?.throwIfAborted();
   const parsed = assertSourceNovel(
     plugin.id,
     "parseNovel",
@@ -205,20 +214,21 @@ async function parseNovelForSync(
   options: SyncNovelFromSourceOptions,
 ): Promise<ParsedSourceNovelResult> {
   if (options.chapterRefreshMode !== "since") {
-    return parseFullNovel(plugin, item.path);
+    return parseFullNovel(plugin, item.path, options.signal);
   }
 
   const existingNovelId =
     options.novelId ?? (await resolveExistingNovelId(plugin.id, item.path));
   if (!existingNovelId) {
-    return parseFullNovel(plugin, item.path);
+    return parseFullNovel(plugin, item.path, options.signal);
   }
 
   const anchor = await getLatestSourceChapterAnchor(existingNovelId);
   if (!anchor) {
-    return parseFullNovel(plugin, item.path);
+    return parseFullNovel(plugin, item.path, options.signal);
   }
 
+  options.signal?.throwIfAborted();
   const sinceResult = assertSourceNovel(
     plugin.id,
     "parseNovelSince",
@@ -226,7 +236,7 @@ async function parseNovelForSync(
   );
   const firstChapter = sinceResult.detail.chapters[0];
   if (!firstChapter) {
-    return parseFullNovel(plugin, item.path);
+    return parseFullNovel(plugin, item.path, options.signal);
   }
   if (firstChapter.chapterNumber < anchor.chapterNumber) {
     return { ...sinceResult, startPosition: 1 };
@@ -235,7 +245,7 @@ async function parseNovelForSync(
     return { ...sinceResult, startPosition: anchor.position };
   }
 
-  return parseFullNovel(plugin, item.path);
+  return parseFullNovel(plugin, item.path, options.signal);
 }
 
 export async function syncNovelFromSource(
@@ -243,11 +253,13 @@ export async function syncNovelFromSource(
   item: NovelItem,
   options: SyncNovelFromSourceOptions = {},
 ): Promise<SyncNovelFromSourceResult> {
+  options.signal?.throwIfAborted();
   const { detail, duplicateChapters, startPosition } = await parseNovelForSync(
     plugin,
     item,
     options,
   );
+  options.signal?.throwIfAborted();
   const preserveMissingMetadata = options.preserveMissingMetadata ?? false;
   const cover = optionalText(detail.cover) ?? optionalText(item.cover);
   const novelName = detail.name || item.name;
@@ -265,9 +277,14 @@ export async function syncNovelFromSource(
   );
 
   const result = await runDatabaseTransaction(async (db) => {
+    options.signal?.throwIfAborted();
+    const reconciled = await reconcileImportedNovelIdentityInDb(db, {
+      pluginId: plugin.id, path: item.path, name: item.name,
+    }, chapterInputs);
+    options.signal?.throwIfAborted();
     const novelResult = await db.execute(
-      `INSERT INTO novel (plugin_id, path, name, cover, summary, author, artist, status, genres)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO novel (plugin_id, path, name, cover, summary, author, artist, status, genres, rating)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT(plugin_id, path) DO UPDATE SET
          name = excluded.name,
          ${metadataAssignment("cover", preserveMissingMetadata)},
@@ -276,6 +293,7 @@ export async function syncNovelFromSource(
          ${metadataAssignment("artist", preserveMissingMetadata)},
          ${metadataAssignment("status", preserveMissingMetadata)},
          ${metadataAssignment("genres", preserveMissingMetadata)},
+         ${metadataAssignment("rating", preserveMissingMetadata)},
          updated_at = unixepoch()
         WHERE
           name IS NOT excluded.name
@@ -284,7 +302,8 @@ export async function syncNovelFromSource(
           OR ${metadataChangedClause("author", preserveMissingMetadata)}
           OR ${metadataChangedClause("artist", preserveMissingMetadata)}
           OR ${metadataChangedClause("status", preserveMissingMetadata)}
-          OR ${metadataChangedClause("genres", preserveMissingMetadata)}`,
+          OR ${metadataChangedClause("genres", preserveMissingMetadata)}
+          OR ${metadataChangedClause("rating", preserveMissingMetadata)}`,
       [
         plugin.id,
         item.path,
@@ -295,6 +314,7 @@ export async function syncNovelFromSource(
         optionalText(detail.artist),
         detail.status ? String(detail.status) : null,
         optionalText(detail.genres),
+        detail.rating ?? null,
       ],
     );
 
@@ -322,7 +342,7 @@ export async function syncNovelFromSource(
     return {
       changedChapters: chapterMutation.rowsAffected,
       cover: optionalText(novelRow.cover) ?? cover,
-      novelChanged: novelResult.rowsAffected > 0,
+      novelChanged: novelResult.rowsAffected > 0 || (reconciled?.changed ?? false),
       inLibrary: sqliteBoolean(novelRow.inLibrary),
       novelId,
     };

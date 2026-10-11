@@ -35,6 +35,28 @@ Sync preserves existing library membership; add a server work to the library
 from its detail page. Sync now uploads complete local chapters and updates the
 remote catalog independently of browsing or selected chapter downloads.
 
+All works are synchronization targets; library membership does not select the
+sync scope. Opening any work refreshes that work from the connected server in
+the background, independently of the scheduled sync mode. Saved information is
+shown immediately. This request retrieves only the selected work's metadata,
+cover, and chapter summaries, without waiting for the full catalog or downloading chapter bodies.
+Locally known chapters remain available when absent from the server response.
+
+For a work opened from the server catalog, an installed source plugin also
+refreshes its current metadata and chapter list when the original novel path is
+known. It uses the normal source task and scraper path. Missing source metadata
+does not clear stored fields, and chapters removed from the site remain stored.
+A failed server or site request leaves the saved work usable. A work must have
+original source identity metadata; folder names cannot establish work identity.
+
+Before a chapter download, Norea asks the server for that chapter. A matching
+package installs into the existing local chapter; otherwise an available source
+plugin handles the download. The server lookup timeout defaults to 3 seconds
+and can be set from 1 to 120 seconds. This deadline includes device registration
+and metadata lookup, and also applies to work-home server refreshes. Chapter ZIP
+transfers have their own timeout. Server-only chapters report unavailable-server
+errors instead of sending their folder identities to a source plugin.
+
 The previous automatic-sync switch migrates to When changes occur when enabled,
 or Manual only when disabled.
 
@@ -69,10 +91,16 @@ numeric database IDs remain device-local. Downloaded chapters use the existing
 readable directory rules; synchronization does not rename existing folders.
 
 Each work folder stores an authoritative `novel.json`, its cover image and
-`cover.json`. The document includes all known chapters, including those that
-have not been downloaded. SQLite keeps a queryable metadata cache and local
-reading state. Startup reads the files into the cache; metadata changes write
-back to the work folder. The [v1 file contract](filesystem-metadata-v1.md) defines
+`cover.json`. The document stores work information, including source rating,
+without chapter lists or update timestamps. Work paths exclude the source base URL
+and retain identity query parameters. Chapter folders supply downloaded chapter
+numbers and titles. Source and server chapter lists are cached separately.
+SQLite keeps a queryable metadata cache and local
+reading state. Normal startup reuses this cache and restores directory mappings
+without reading every metadata file or rewriting chapter rows. The first cache
+initialization, explicit local rescan, and recovery rebuild it from the files.
+Metadata changes check the saved file fingerprint before writing back to the work
+folder. The [v1 file contract](filesystem-metadata-v1.md) defines
 the fields and validation rules. Existing folders are not automatically rewritten
 from an older database during startup.
 

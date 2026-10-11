@@ -4,6 +4,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -43,6 +44,7 @@ export const novelTable = sqliteTable(
     artist: text("artist"),
     status: text("status"),
     genres: text("genres"),
+    rating: real("rating"),
     inLibrary: integer("in_library", { mode: "boolean" })
       .notNull()
       .default(false),

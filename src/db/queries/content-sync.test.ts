@@ -7,11 +7,13 @@ import { getDb, runDatabaseTransaction } from "../client";
 import { CONTENT_SYNC_JOURNAL_SCHEMA } from "../content-sync-journal";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
 import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, readContentSyncStateCache, writeContentSyncCache } from "./content-sync";
+import { cacheServerChapters } from "./content-sync";
 
 let sqlite: DatabaseSync;
 beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(42,'source','/work','A work')");
   for (const sql of CONTENT_SYNC_JOURNAL_SCHEMA) sqlite.exec(sql);
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),
@@ -41,6 +43,24 @@ const manifest = {
   chapter: { name: "Opening", position: 1, contentType: "html" as const, page: "1" },
   bodyPath: "content.html", files: [],
 };
+
+it("caches a server chapter list without duplicating a source chapter or changing reading state", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/cache-work','Book')");
+  sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,is_downloaded) VALUES(1,'/chapter/1','Source title','1',1,75,1)");
+  const one = { id: "one", chapterPath: "norea-folder:1", name: "Folder-title", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const };
+  await cacheServerChapters(1, [one, { ...one, id: "two", chapterPath: "norea-folder:2", name: "Two", chapterNumber: "2", position: 2 }]);
+  expect(sqlite.prepare("SELECT path,name,progress,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
+    { path: "/chapter/1", name: "Source title", progress: 75, is_downloaded: 1 },
+    { path: "norea-folder:2", name: "Two", progress: 0, is_downloaded: 0 },
+  ]);
+  await cacheServerChapters(1, []);
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()?.count).toBe(2);
+});
+
+it("refuses to reconstruct a missing work from a chapter package", async () => {
+  await expect(importContentMetadata({ ...manifest, identity: { ...manifest.identity, novelPath: "/unknown" } })).rejects.toThrow("work metadata");
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM novel").get()?.count).toBe(1);
+});
 
 it("imports by source identity with new local IDs and preserves existing reading and downloads", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(41,'other','/other','Other')");

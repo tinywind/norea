@@ -1,6 +1,43 @@
 import { getDb, runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import type { PackageManifest } from "../../lib/content-sync/native";
+import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
+
+export async function cacheServerChapters(novelId: number, chapters: readonly ServerChapterSummary[], signal?: AbortSignal): Promise<void> {
+  await runDatabaseTransaction(async db => {
+    signal?.throwIfAborted();
+    const existing = await db.select<{ path: string; chapterNumber: string | null }[]>(
+      "SELECT path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [novelId]);
+    const paths = new Set(existing.map(chapter => chapter.path));
+    const numbers = new Map<string, string[]>();
+    for (const chapter of existing) {
+      if (!chapter.chapterNumber?.trim() || !Number.isFinite(Number(chapter.chapterNumber))) continue;
+      const number = String(Number(chapter.chapterNumber));
+      numbers.set(number, [...(numbers.get(number) ?? []), chapter.path]);
+    }
+    const incoming: ServerChapterSummary[] = [];
+    for (const chapter of chapters) {
+      if (paths.has(chapter.chapterPath)) continue;
+      const number = chapter.chapterNumber?.trim() && Number.isFinite(Number(chapter.chapterNumber)) ? String(Number(chapter.chapterNumber)) : null;
+      const matches = number === null ? [] : numbers.get(number) ?? [];
+      if (matches.length) {
+        if (matches.length > 1) throw new Error("Server chapter number matches multiple local chapters.");
+        continue;
+      }
+      incoming.push(chapter);
+      paths.add(chapter.chapterPath);
+      if (number !== null) numbers.set(number, [chapter.chapterPath]);
+    }
+    for (let offset = 0; offset < incoming.length; offset += 100) {
+      signal?.throwIfAborted();
+      const batch = incoming.slice(offset, offset + 100);
+      await db.execute(`INSERT INTO chapter(novel_id,path,name,chapter_number,position,page,content_type)
+        VALUES ${batch.map((_, index) => `(${Array.from({ length: 7 }, (_, column) => `$${index * 7 + column + 1}`).join(",")})`).join(",")}
+        ON CONFLICT(novel_id,path) DO NOTHING`, batch.flatMap(chapter => [novelId, chapter.chapterPath, chapter.name, chapter.chapterNumber ?? null, chapter.position, chapter.page, chapter.contentType]));
+    }
+    signal?.throwIfAborted();
+  }, true);
+}
 
 export async function readContentSyncCache(key: string): Promise<string | null> {
   const db = await getDb();
@@ -88,11 +125,9 @@ export async function listContentSyncChapters(identities?: string[], downloadedO
 
 export async function importContentMetadata(manifest: PackageManifest): Promise<{ novelId: number; chapterId: number }> {
   return runDatabaseTransaction(async (db) => {
-    const { identity, novel, chapter } = manifest;
-    await db.execute(`INSERT INTO novel(plugin_id,path,name,author,summary,is_local)
-      VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(plugin_id,path) DO NOTHING`,
-    [identity.pluginId, identity.novelPath, novel.name, novel.author ?? null, novel.summary ?? null, novel.isLocal ? 1 : 0]);
+    const { identity, chapter } = manifest;
     const novels = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [identity.pluginId, identity.novelPath]);
+    if (!novels.length) throw new Error("Install the work metadata before downloading its chapters.");
     const novelId = novels[0]!.id;
     await db.execute(`INSERT INTO chapter(novel_id,path,name,chapter_number,position,page,content_type)
       VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(novel_id,path) DO NOTHING`,

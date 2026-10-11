@@ -33,6 +33,25 @@ internal class AndroidWorkMetadataStorage(
       it.isNotEmpty() && it != "." && it != ".." && !it.endsWith('.') && !it.endsWith(' ') &&
         it.none { c -> c.code < 32 || c in "<>:\"/\\|?*" }
     }) { "Work metadata path is invalid." }
+    if (input.getString("operation") == "chapters") {
+      require(parts.last() == "novel.json") { "Chapter scan requires a work path." }
+      val paths = JSONArray()
+      val workPath = parts.dropLast(1).joinToString("/")
+      val work = storage.storageDocumentAt(root, workPath) ?: return result.put("paths", paths)
+      for (child in storage.listStorageChildren(work).filter { it.isDirectory }) {
+        if (!Regex("[0-9]+(?:\\.[0-9]+)?-.+").matches(child.name)) continue
+        val chapter = storage.storageChildDocumentFile(child) ?: continue
+        val files = storage.listStorageChildren(chapter).associateBy { it.name }
+        for (name in listOf("content.pdf", "content.html")) {
+          val file = files[name]?.let { storage.storageChildDocumentFile(it) } ?: continue
+          if (file.isFile && file.length() > 0) {
+            paths.put("$workPath/${child.name}/$name")
+            break
+          }
+        }
+      }
+      return result.put("paths", paths)
+    }
     val name = parts.last()
     require(name == "novel.json" || name == "cover.json" || Regex("cover\\.[a-z0-9]{1,8}").matches(name)) {
       "Work metadata filename is invalid."

@@ -898,7 +898,7 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
-        if (await tryDownloadServerChapter(job)) {
+        if (await tryDownloadServerChapter(job, signal)) {
           if (signal.aborted) throw abortReason(signal);
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
           reportProgress(
@@ -1286,7 +1286,7 @@ export function enqueueChapterMediaRepair(
       if (!chapter) {
         throw missingRepairChapterError(job);
       }
-      if (await tryDownloadServerChapter({ ...job, novelId: chapter.novelId, chapterPath: chapter.path })) {
+      if (await tryDownloadServerChapter({ ...job, novelId: chapter.novelId, chapterPath: chapter.path }, signal)) {
         if (signal.aborted) throw abortReason(signal);
         reportProgress({ current: progressTotal, total: progressTotal }, { force: true });
         return;

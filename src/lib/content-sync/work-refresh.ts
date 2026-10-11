@@ -1,0 +1,87 @@
+import { getNovelById } from "../../db/queries/novel";
+import { knownNovelMetadataDirectory } from "../../db/work-metadata";
+import { useContentSyncStore } from "../../store/content-sync";
+import { pluginManager } from "../plugins/manager";
+import { syncNovelFromSource } from "../plugins/sync-novel";
+import { taskScheduler } from "../tasks/scheduler";
+import { enqueueSourceTask } from "../tasks/source-tasks";
+import { isTauriRuntime } from "../tauri-runtime";
+import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovelMetadata, readStoredNovelCover, readStoredNovelMetadata } from "../work-metadata";
+import { readServerCover } from "./browse";
+import { ContentServerError, contentServerRequest, withContentServerLookup } from "./client";
+import { registerContentDevice } from "./device";
+import { readServerNovelSource } from "./novel-source";
+import { contentWorkId, type WorkCatalogEntry } from "./works";
+import { cacheServerChapters } from "../../db/queries/content-sync";
+import { fetchServerChapters } from "./chapters";
+
+export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
+  const settings = useContentSyncStore.getState();
+  const source = await readServerNovelSource(novelId);
+  const server = source?.serverUrl ?? settings.serverUrl;
+  if (!server) return false;
+  const novel = await getNovelById(novelId);
+  if (!novel) return false;
+  const identity = { pluginId: novel.pluginId, novelPath: novel.path };
+  const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
+  const stored = await readStoredNovelMetadata(directory);
+  if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");
+  const expected = JSON.stringify(stored.metadata);
+  const result = await withContentServerLookup(async deadline => {
+    const token = await registerContentDevice(server, settings.deviceName, deadline);
+    deadline.throwIfAborted();
+    const ids = [source?.workId ?? await contentWorkId(identity)];
+    for (const id of ids) {
+      let entry: WorkCatalogEntry;
+      try { entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}`, token, "GET", undefined, deadline); }
+      catch (error) { if (error instanceof ContentServerError && error.status === 404) continue; throw error; }
+      deadline.throwIfAborted();
+      const metadata = parseNovelMetadata(entry.metadata);
+      if (entry.id !== id || await contentWorkId(metadata.identity) !== id || metadata.identity.pluginId !== identity.pluginId ||
+        metadata.identity.novelPath !== identity.novelPath) {
+        throw new Error("Server work identity does not match the local work.");
+      }
+      const cover = entry.hasCover ? await readServerCover(server, token, id, deadline) : null;
+      deadline.throwIfAborted();
+      const chapters = await fetchServerChapters({ serverUrl: server, workId: id }, token, deadline);
+      return { metadata, cover, chapters };
+    }
+    return null;
+  }, settings.lookupTimeoutSeconds, signal);
+  if (!result) return false;
+  signal?.throwIfAborted();
+  const local = stored.metadata;
+  const remote = result.metadata;
+  const metadata = { ...remote, novel: { ...remote.novel, cover: result.cover ? remote.novel.cover : local.novel.cover }, cover: result.cover ? remote.cover : local.cover };
+  const coverBytes = result.cover?.bytes ?? await readStoredNovelCover(directory, local) ?? undefined;
+  await installStoredNovelMetadata(metadata, coverBytes, async current => {
+    signal?.throwIfAborted();
+    if (JSON.stringify(current?.metadata) !== expected) throw new Error("Local work metadata changed during server refresh. Reopen the work to retry.");
+  });
+  await cacheServerChapters(novelId, result.chapters, signal);
+  return true;
+}
+
+export async function refreshServerNovelFromSource(novelId: number, title: string, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
+  if (!await readServerNovelSource(novelId)) return false;
+  const novel = await getNovelById(novelId);
+  if (!novel || novel.isLocal || novel.path.startsWith("norea-folder:")) return false;
+  if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
+  const plugin = pluginManager.getPlugin(novel.pluginId);
+  if (!plugin) return false;
+  signal?.throwIfAborted();
+  const task = enqueueSourceTask({
+    plugin, kind: "source.refreshNovel", priority: "normal", title,
+    subject: { novelId, novelName: novel.name, path: novel.path },
+    dedupeKey: `source.refreshNovel:on-open:${novel.pluginId}:${novel.path}`,
+    run: context => syncNovelFromSource(pluginManager.getPluginForExecutor(novel.pluginId, context.executor ?? "immediate"),
+      { name: novel.name, path: novel.path, cover: novel.cover ?? undefined },
+      { novelId, chapterRefreshMode: "full", preserveMissingMetadata: true, signal: context.signal }),
+  });
+  const abort = () => { taskScheduler.cancel(task.id); };
+  signal?.addEventListener("abort", abort, { once: true });
+  try { await task.promise; return true; }
+  finally { signal?.removeEventListener("abort", abort); }
+}

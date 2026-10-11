@@ -24,21 +24,24 @@ function deviceKeyForServer(server: string): string {
 
 const registrations = new Map<string, Promise<string>>();
 
-export function registerContentDevice(serverUrl: string, deviceName: string): Promise<string> {
+export function registerContentDevice(serverUrl: string, deviceName: string, signal?: AbortSignal): Promise<string> {
   const server = normalizeContentServerUrl(serverUrl);
-  const pending = registrations.get(server);
+  const pending = signal ? undefined : registrations.get(server);
   if (pending) return pending;
   const registration = (async () => {
-    const capabilities = await contentServerRequest<ContentCapabilities>(server, "/capabilities");
+    signal?.throwIfAborted();
+    const capabilities = await contentServerRequest<ContentCapabilities>(server, "/capabilities", undefined, "GET", undefined, signal);
+    signal?.throwIfAborted();
     if (capabilities.apiVersion !== 1 || capabilities.packageVersion !== 1
       || capabilities.authentication !== "device-key" || capabilities.personalStateSync !== false) {
       throw new Error("This content server uses an incompatible authentication or package protocol.");
     }
     // Persist before registration so a failed response cannot create a second device.
     const deviceKey = deviceKeyForServer(server);
-    await contentServerRequest<RegisteredDevice>(server, "/devices/register", undefined, "POST", { deviceKey, deviceName });
+    await contentServerRequest<RegisteredDevice>(server, "/devices/register", undefined, "POST", { deviceKey, deviceName }, signal);
+    signal?.throwIfAborted();
     return deviceKey;
-  })().finally(() => { registrations.delete(server); });
-  registrations.set(server, registration);
+  })().finally(() => { if (!signal) registrations.delete(server); });
+  if (!signal) registrations.set(server, registration);
   return registration;
 }

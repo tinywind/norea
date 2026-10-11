@@ -79,20 +79,21 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
           if (cache.fingerprints[entry.id] !== expectedFingerprint) continue;
         }
         const cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null;
+        const installedMetadata = metadata;
         assertCurrent();
         try {
-          const stored = await installStoredNovelMetadata(metadata, cover ?? undefined, async (latest) => {
+          const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest) => {
             assertCurrent();
             const latestFingerprint = latest ? await fingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
             if (latestFingerprint !== expectedFingerprint) throw new LocalMetadataChanged();
           });
-          byIdentity.set(identity, stored);
+          byIdentity.set(JSON.stringify([stored.metadata.identity.pluginId, stored.metadata.identity.novelPath]), stored);
           installed = true;
         } catch (error) {
           if (error instanceof LocalMetadataChanged) continue;
           throw error;
         }
-        cache.fingerprints[entry.id] = await fingerprint(metadata, cover);
+        cache.fingerprints[entry.id] = await fingerprint(installedMetadata, cover);
       }
       dirty ||= cache.cursor !== page.cursor;
       cache.cursor = page.cursor;

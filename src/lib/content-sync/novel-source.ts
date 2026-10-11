@@ -3,9 +3,11 @@ import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/co
 import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
 import type { ChapterDownloadJob } from "../tasks/chapter-download";
-import { contentServerRequest, normalizeContentServerUrl } from "./client";
+import { pluginManager } from "../plugins/manager";
+import { contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import type { CatalogEntry } from "./native";
+import { fetchServerChapters } from "./chapters";
 
 export interface ServerNovelSource {
   serverUrl: string;
@@ -31,50 +33,67 @@ export async function rememberServerNovelSource(novelId: number, source: ServerN
   }));
 }
 
-interface ServerChapterPage {
-  items: { id: string; chapterPath: string; position: number; name: string }[];
-  total: number;
-  hasMore: boolean;
-}
-
-export async function listServerChapterPaths(source: ServerNovelSource, signal?: AbortSignal): Promise<Set<string>> {
-  const token = await registerContentDevice(source.serverUrl, useContentSyncStore.getState().deviceName);
-  const paths = new Set<string>();
-  let offset = 0;
-  for (;;) {
-    const page = await contentServerRequest<ServerChapterPage>(source.serverUrl,
-      `/catalog/works/${encodeURIComponent(source.workId)}/chapters?offset=${offset}&limit=100`,
-      token, "GET", undefined, signal);
-    for (const entry of page.items) {
-      paths.add(entry.chapterPath);
+export async function listServerChapterAvailability(source: ServerNovelSource, signal?: AbortSignal): Promise<{ paths: Set<string>; numbers: Set<number> }> {
+  const settings = useContentSyncStore.getState();
+  return withContentServerLookup(async deadline => {
+    const token = await registerContentDevice(source.serverUrl, settings.deviceName, deadline);
+    const chapters = await fetchServerChapters(source, token, deadline);
+    const paths = new Set(chapters.map(chapter => chapter.chapterPath));
+    const counts = new Map<number, number>();
+    for (const chapter of chapters) {
+      if (chapter.chapterNumber == null || !/^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)) continue;
+      const number = Number(chapter.chapterNumber);
+      counts.set(number, (counts.get(number) ?? 0) + 1);
     }
-    if (!page.hasMore) return paths;
-    if (page.items.length === 0) throw new Error("Server chapter catalog did not advance.");
-    offset += page.items.length;
-  }
+    return { paths, numbers: new Set([...counts].filter(([, count]) => count === 1).map(([number]) => number)) };
+  }, settings.lookupTimeoutSeconds, signal);
 }
 
 export async function tryDownloadServerChapter(
   job: Pick<ChapterDownloadJob, "id" | "novelId" | "pluginId" | "chapterPath">,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   const chapter = await getChapterById(job.id);
   const novelId = chapter?.novelId ?? job.novelId;
   if (!novelId) return false;
   const source = await readServerNovelSource(novelId);
-  if (!source) return false;
+  const settings = useContentSyncStore.getState();
+  const serverUrl = source?.serverUrl ?? settings.serverUrl;
+  if (!serverUrl) return false;
   const novel = await getNovelById(novelId);
   if (!chapter || !novel) throw new Error("Content server chapter no longer exists locally.");
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
   }
-  const token = await registerContentDevice(source.serverUrl, useContentSyncStore.getState().deviceName);
-  const query = new URLSearchParams({ pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path });
-  const entry = await contentServerRequest<CatalogEntry>(source.serverUrl, `/catalog/chapter?${query}`, token);
+  const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };
+  const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
+  const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
+  const query = new URLSearchParams({ ...target, ...(chapterNumber ? { chapterNumber } : {}) });
+  let result: { entry: CatalogEntry; token: string };
+  try {
+    result = await withContentServerLookup(async deadline => {
+      const token = await registerContentDevice(serverUrl, settings.deviceName, deadline);
+      deadline.throwIfAborted();
+      const entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
+      deadline.throwIfAborted();
+      return { entry, token };
+    }, settings.lookupTimeoutSeconds ?? 3, signal);
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (chapter.path.startsWith("norea-folder:") || (source && (novel.isLocal || novel.path.startsWith("norea-folder:") || !pluginManager.getPlugin(novel.pluginId)))) throw error;
+    return false;
+  }
+  const { entry, token } = result;
   const identity = entry.manifest.identity;
-  if (identity.pluginId !== novel.pluginId || identity.novelPath !== novel.path || identity.chapterPath !== chapter.path) {
+  const sameWork = identity.novelPath === novel.path;
+  const sameChapter = identity.chapterPath === chapter.path || (chapterNumber && entry.manifest.chapter?.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+  if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
     throw new Error("Content server download identity does not match the requested chapter.");
   }
+  signal?.throwIfAborted();
   const { downloadServerChapterFromServer } = await import("./sync");
-  await downloadServerChapterFromServer(entry, source.serverUrl);
+  signal?.throwIfAborted();
+  await downloadServerChapterFromServer(entry, serverUrl, { token, target });
   return true;
 }
