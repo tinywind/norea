@@ -15,6 +15,7 @@ import { ChapterMediaStorageGate } from "./components/runtime/ChapterMediaStorag
 import { PluginVpnProxyGate } from "./components/runtime/PluginVpnProxyGate";
 import { translate } from "./i18n";
 import { describeError } from "./lib/errors";
+import { startContentServerSync } from "./lib/content-sync/sync";
 import { initializeNetworkStatus } from "./lib/network";
 import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
 import {
@@ -141,6 +142,12 @@ function withAlpha(color: string, alpha: number): string {
 }
 
 function AppProviders() {
+  useEffect(() => startContentServerSync(), []);
+  useEffect(() => {
+    const refresh = () => { void queryClient.invalidateQueries(); };
+    window.addEventListener("norea-content-state-changed", refresh);
+    return () => window.removeEventListener("norea-content-state-changed", refresh);
+  }, []);
   const appLocale = useAppearanceStore((state) => state.appLocale);
   const appThemeId = useAppearanceStore((state) => state.appThemeId);
   const androidViewScalePercent = useAppearanceStore(

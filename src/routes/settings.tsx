@@ -22,6 +22,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { PageFrame } from "../components/AppFrame";
 import { BrowseSettingsPanel } from "../components/BrowseSettingsPanel";
+import { ContentServerSettings } from "../components/ContentServerSettings";
 import { ConsoleChip } from "../components/ConsolePrimitives";
 import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
 import { PluginVpnFinder } from "../components/PluginVpnFinder";
@@ -2083,38 +2084,41 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       id: "data",
       title: t("settings.category.data.title"),
       content: (
-        <DataSettingsSection
-          isBusy={isBusy}
-          onClearDownloadedContent={() => {
-            void clearDownloadedContent();
-          }}
-          onClearWebViewCache={() => {
-            void handleClearWebViewCache();
-          }}
-          onExport={() => {
-            void handleExport();
-          }}
-          onImport={() => {
-            void handleImport();
-          }}
-          onRunMaintenance={(
-            kind,
-            title,
-            message,
-            warning,
-            action,
-            successMessage,
-          ) => {
-            void runMaintenance(
+        <Stack gap="md">
+          <ContentServerSettings />
+          <DataSettingsSection
+            isBusy={isBusy}
+            onClearDownloadedContent={() => {
+              void clearDownloadedContent();
+            }}
+            onClearWebViewCache={() => {
+              void handleClearWebViewCache();
+            }}
+            onExport={() => {
+              void handleExport();
+            }}
+            onImport={() => {
+              void handleImport();
+            }}
+            onRunMaintenance={(
               kind,
               title,
               message,
               warning,
               action,
               successMessage,
-            );
-          }}
-        />
+            ) => {
+              void runMaintenance(
+                kind,
+                title,
+                message,
+                warning,
+                action,
+                successMessage,
+              );
+            }}
+          />
+        </Stack>
       ),
     },
     {

@@ -158,6 +158,9 @@ Maintainer details live in
 Developer setup, local plugin testing, release artifact details, and
 contribution rules live in [docs/development.md](./docs/development.md).
 
+Optional content-server setup and current integration limits are documented in
+[docs/content-sync.md](./docs/content-sync.md).
+
 ## License
 
 MIT. Upstream assets and translation seeds remain MIT-compatible and are

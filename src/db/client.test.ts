@@ -127,6 +127,10 @@ describe("runDatabaseTransaction", () => {
      )`,
       `CREATE INDEX IF NOT EXISTS download_cache_work_status_idx
      ON download_cache_work (status, updated_at_ms)`,
+      `CREATE TABLE IF NOT EXISTS content_sync_cache (
+    cache_key text PRIMARY KEY NOT NULL,
+    payload text NOT NULL
+  )`,
       "BEGIN IMMEDIATE",
       "UPDATE chapter SET name = $1",
       "COMMIT",
@@ -174,6 +178,10 @@ describe("runDatabaseTransaction", () => {
      )`,
       `CREATE INDEX IF NOT EXISTS download_cache_work_status_idx
      ON download_cache_work (status, updated_at_ms)`,
+      `CREATE TABLE IF NOT EXISTS content_sync_cache (
+    cache_key text PRIMARY KEY NOT NULL,
+    payload text NOT NULL
+  )`,
       "BEGIN IMMEDIATE",
       "UPDATE chapter SET name = $1",
       "ROLLBACK",

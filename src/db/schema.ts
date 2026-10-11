@@ -8,6 +8,11 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
+export const contentSyncCacheTable = sqliteTable("content_sync_cache", {
+  cacheKey: text("cache_key").primaryKey().notNull(),
+  payload: text("payload").notNull(),
+});
+
 // Novel: a title in the user's library or browsable from a source plugin.
 export const novelTable = sqliteTable(
   "novel",

@@ -145,6 +145,10 @@ async function configureDb(db: Database): Promise<Database> {
   await ensureNoChapterContentColumn(db, chapterColumnNames);
   await ensureChapterDownloadQueueTable(db);
   await ensureDownloadCacheWorkTable(db);
+  await db.execute(`CREATE TABLE IF NOT EXISTS content_sync_cache (
+    cache_key text PRIMARY KEY NOT NULL,
+    payload text NOT NULL
+  )`);
   return db;
 }
 
