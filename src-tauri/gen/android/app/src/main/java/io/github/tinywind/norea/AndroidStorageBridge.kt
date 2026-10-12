@@ -7,7 +7,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.Executors
+import java.util.concurrent.Executor
 import java.util.zip.ZipInputStream
 
 private const val TAG = "NoreaStorage"
@@ -28,11 +28,9 @@ internal class AndroidStorageBridge(
   private val workMetadata = AndroidWorkMetadataStorage(contentResolver, storage)
   private val coverInspector = AndroidNovelCoverInspector(storage)
   private val chapterInspector = AndroidChapterArtifactInspector(storage, mediaStore)
-  private val storageExecutor = Executors.newSingleThreadExecutor { runnable ->
-    Thread(runnable, "NoreaStorageBridge").apply { isDaemon = true }
-  }
+  private val storageExecutors = AndroidStorageExecutors()
 
-  fun destroy() = storageExecutor.shutdownNow()
+  fun destroy() = storageExecutors.destroy()
 
   @JavascriptInterface
   fun workMetadataOperation(requestId: String, rootUri: String, input: String) {
@@ -41,7 +39,7 @@ internal class AndroidStorageBridge(
 
   @JavascriptInterface
   fun snapshotContentChapter(requestId: String, rootUri: String, storageDir: String, stagePath: String) {
-    submitStorageOperation(requestId) {
+    submitStorageOperation(requestId, storageExecutors.snapshots) {
       contentSync.snapshot(rootUri, storageDir, stagePath)
       JSONObject().put("ok", true)
     }
@@ -57,10 +55,11 @@ internal class AndroidStorageBridge(
 
   private fun submitStorageOperation(
     requestId: String,
+    executor: Executor = storageExecutors.foreground,
     operation: () -> JSONObject,
   ) {
     runCatching {
-      storageExecutor.execute {
+      executor.execute {
         resolveStorageOperation(requestId, storageResponse(operation))
       }
     }.onFailure { error ->
@@ -256,7 +255,7 @@ internal class AndroidStorageBridge(
     novelPath: String,
     expectedSourceUrl: String,
   ) {
-    storageExecutor.execute {
+    storageExecutors.foreground.execute {
       resolveNovelCoverInspection(
         requestId,
         inspectNovelCoverResponse(
@@ -302,7 +301,7 @@ internal class AndroidStorageBridge(
     chapterIdentityPrefix: String,
     preferredContentFileName: String,
   ) {
-    storageExecutor.execute {
+    storageExecutors.foreground.execute {
       resolveChapterArtifactInspection(
         requestId,
         inspectChapterArtifactsResponse(
@@ -341,7 +340,7 @@ internal class AndroidStorageBridge(
     rootUri: String,
     entriesJson: String,
   ) {
-    storageExecutor.execute {
+    storageExecutors.foreground.execute {
       val response = storageResponse {
         JSONObject()
           .put("ok", true)
@@ -360,7 +359,7 @@ internal class AndroidStorageBridge(
     rootUri: String,
     preparationJson: String,
   ) {
-    storageExecutor.execute {
+    storageExecutors.foreground.execute {
       val response = storageResponse {
         chapterTransfer.finalizeChapterStorageTransfer(rootUri, preparationJson)
         JSONObject().put("ok", true)
@@ -375,7 +374,7 @@ internal class AndroidStorageBridge(
     rootUri: String,
     preparationJson: String,
   ) {
-    storageExecutor.execute {
+    storageExecutors.foreground.execute {
       val response = storageResponse {
         chapterTransfer.rollbackChapterStorageTransfer(rootUri, preparationJson)
         JSONObject().put("ok", true)
@@ -390,7 +389,7 @@ internal class AndroidStorageBridge(
     rootUri: String,
     relativeDir: String,
   ) {
-    storageExecutor.execute {
+    storageExecutors.foreground.execute {
       val response = storageResponse {
         chapterTransfer.removeChapterStorageDirectory(rootUri, relativeDir)
         JSONObject().put("ok", true)

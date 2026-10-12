@@ -533,7 +533,7 @@ fn import_package(archive: &Path, stage: &Path, expected: &Value) -> Result<Valu
     )
 }
 
-fn storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
+fn checked_storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
     safe_path(relative)?;
     let segments: Vec<_> = relative.split('/').collect();
     if segments.len() != 4 || segments[0] != "contents" {
@@ -551,6 +551,11 @@ fn storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
             Err(error) => return Err(failure(error)),
         }
     }
+    Ok(path)
+}
+
+fn storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let path = checked_storage_directory(root, relative)?;
     recover_content_directory(&path)?;
     Ok(path)
 }
@@ -665,11 +670,20 @@ fn stage_token() -> String {
     )
 }
 
-fn fingerprint_directory(source: &Path) -> Result<String, String> {
+fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
+    let metadata = fs::symlink_metadata(source).map_err(failure)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(failure("invalid chapter directory"));
+    }
     let mut paths = Vec::new();
     for name in ["content.html", "content.pdf", "manifest.json", "media.zip"] {
-        if source.join(name).is_file() {
-            paths.push(name.to_string());
+        match fs::symlink_metadata(source.join(name)) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                paths.push(name.to_string());
+            }
+            Ok(_) => return Err(failure("invalid chapter artifact")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(failure(error)),
         }
     }
     if !paths
@@ -678,28 +692,132 @@ fn fingerprint_directory(source: &Path) -> Result<String, String> {
     {
         return Err(failure("chapter body is missing"));
     }
-    if source.join("media").is_dir() {
-        for entry in fs::read_dir(source.join("media")).map_err(failure)? {
-            let entry = entry.map_err(failure)?;
-            if !entry.file_type().map_err(failure)?.is_file() {
-                return Err(failure("invalid chapter media artifact"));
+    match fs::symlink_metadata(source.join("media")) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            for entry in fs::read_dir(source.join("media")).map_err(failure)? {
+                let entry = entry.map_err(failure)?;
+                if !entry.file_type().map_err(failure)?.is_file() {
+                    return Err(failure("invalid chapter media artifact"));
+                }
+                let name = entry.file_name();
+                let name = name.to_str().ok_or_else(|| failure("invalid media filename"))?;
+                safe_path(name)?;
+                paths.push(format!("media/{name}"));
             }
-            paths.push(format!(
-                "media/{}",
-                entry
-                    .file_name()
-                    .to_str()
-                    .ok_or_else(|| failure("invalid media filename"))?
-            ));
         }
+        Ok(_) => return Err(failure("invalid chapter media directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(failure(error)),
+    }
+    if paths.len() > MAX_FILES {
+        return Err(failure("too many chapter files"));
+    }
+    let mut total = 0;
+    for path in &paths {
+        let size = fs::metadata(source.join(path)).map_err(failure)?.len();
+        let limit = match path.as_str() {
+            "media.zip" => MAX_ZIP_BYTES,
+            "manifest.json" => 16 * 1024 * 1024,
+            _ => MAX_EXPANDED_BYTES,
+        };
+        if size > limit || size > MAX_EXPANDED_BYTES - total {
+            return Err(failure("chapter snapshot exceeds byte limit"));
+        }
+        total += size;
     }
     paths.sort();
+    Ok(paths)
+}
+
+fn fingerprint_directory(source: &Path) -> Result<String, String> {
     let mut fingerprint = Sha256::new();
-    for path in paths {
+    for path in chapter_files(source)? {
         let (size, hash) = file_hash(&source.join(&path))?;
         fingerprint.update(serde_json::to_vec(&json!([path, size, hash])).map_err(failure)?);
     }
     Ok(format!("{:x}", fingerprint.finalize()))
+}
+
+fn snapshot_directory(source: &Path, stage: &Path) -> Result<(), String> {
+    let files = chapter_files(source)?;
+    let destination = stage.join("source");
+    fs::create_dir(&destination).map_err(failure)?;
+    let copied = (|| {
+        let mut total = 0;
+        for path in files {
+            let input = source.join(&path);
+            let target = destination.join(&path);
+            fs::create_dir_all(target.parent().unwrap()).map_err(failure)?;
+            let metadata = fs::symlink_metadata(&input).map_err(failure)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(failure("invalid chapter artifact"));
+            }
+            let size = metadata.len();
+            if size > MAX_EXPANDED_BYTES - total {
+                return Err(failure("chapter snapshot exceeds byte limit"));
+            }
+            let bytes = copy_limited(
+                &mut File::open(input).map_err(failure)?,
+                &mut File::create(target).map_err(failure)?,
+                size,
+            )?;
+            if bytes != size {
+                return Err(failure("chapter changed during snapshot"));
+            }
+            total += bytes;
+        }
+        if destination.join("manifest.json").is_file() {
+            let media = media_files(&read_json(&destination.join("manifest.json"))?)?;
+            if media.len() + 2 > MAX_FILES {
+                return Err(failure("too many chapter media files"));
+            }
+            let mut archive = if destination.join("media.zip").is_file() {
+                Some(ZipArchive::new(File::open(destination.join("media.zip")).map_err(failure)?).map_err(failure)?)
+            } else {
+                None
+            };
+            let mut media_bytes = 0;
+            for (name, size) in media {
+                if size > MAX_EXPANDED_BYTES - media_bytes {
+                    return Err(failure("chapter media exceeds byte limit"));
+                }
+                media_bytes += size;
+                let actual = if let Some(archive) = archive.as_mut() {
+                    let file = archive.by_name(&name).map_err(failure)?;
+                    if file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+                        return Err(failure("invalid chapter media artifact"));
+                    }
+                    file.size()
+                } else {
+                    fs::metadata(destination.join("media").join(name)).map_err(failure)?.len()
+                };
+                if actual != size {
+                    return Err(failure("incomplete media file"));
+                }
+            }
+        }
+        if fingerprint_directory(source)? != fingerprint_directory(&destination)? {
+            return Err(failure("chapter changed during snapshot"));
+        }
+        Ok(())
+    })();
+    if copied.is_err() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    copied
+}
+
+#[tauri::command]
+pub async fn content_sync_snapshot(
+    app: AppHandle,
+    storage_dir: String,
+    stage_path: String,
+) -> Result<(), String> {
+    let stage = checked_stage(&app, &stage_path)?;
+    let source = checked_storage_directory(&crate::chapter_media::media_root(&app)?, &storage_dir)?;
+    tauri::async_runtime::spawn_blocking(move || snapshot_directory(&source, &stage))
+        .await
+        .map_err(failure)?
 }
 
 #[tauri::command]
@@ -709,11 +827,8 @@ pub async fn content_sync_fingerprint(
     stage_path: String,
 ) -> Result<String, String> {
     let stage = checked_stage(&app, &stage_path)?;
-    let source = if cfg!(target_os = "android") {
-        stage.join("source")
-    } else {
-        storage_directory(&crate::chapter_media::media_root(&app)?, &storage_dir)?
-    };
+    safe_path(&storage_dir)?;
+    let source = stage.join("source");
     tauri::async_runtime::spawn_blocking(move || fingerprint_directory(&source))
         .await
         .map_err(failure)?
@@ -788,12 +903,10 @@ pub async fn content_sync_upload(
     manifest: Value,
 ) -> Result<Value, String> {
     let stage = checked_stage(&app, &stage_path)?;
-    let source = if cfg!(target_os = "android") {
-        stage.join("source")
-    } else {
-        storage_directory(&crate::chapter_media::media_root(&app)?, &storage_dir)?
-    };
+    safe_path(&storage_dir)?;
+    let source = stage.join("source");
     tauri::async_runtime::spawn_blocking(move || {
+        chapter_files(&source)?;
         export_package(&source, &stage, manifest)?;
         let archive = stage.join("package.zip");
         let bytes = fs::metadata(&archive).map_err(failure)?.len();
@@ -823,14 +936,7 @@ pub async fn content_sync_download(
     entry: Value,
 ) -> Result<Value, String> {
     let stage = checked_stage(&app, &stage_path)?;
-    let destination = if cfg!(target_os = "android") {
-        None
-    } else {
-        Some(storage_directory(
-            &crate::chapter_media::media_root(&app)?,
-            &storage_dir,
-        )?)
-    };
+    safe_path(&storage_dir)?;
     tauri::async_runtime::spawn_blocking(move || {
         if entry["deleted"] != false {
             return Err(failure("server chapter is deleted"));
@@ -873,14 +979,28 @@ pub async fn content_sync_download(
         }
         let installed = stage.join("install");
         fs::create_dir(&installed).map_err(failure)?;
-        let sizes = import_package(&archive, &installed, &entry["manifest"])?;
-        if let Some(destination) = destination {
-            install_directory(&installed, &destination)?;
-        }
-        Ok(sizes)
+        import_package(&archive, &installed, &entry["manifest"])
     })
     .await
     .map_err(failure)?
+}
+
+#[tauri::command]
+pub async fn content_sync_install(
+    app: AppHandle,
+    storage_dir: String,
+    stage_path: String,
+) -> Result<(), String> {
+    let stage = checked_stage(&app, &stage_path)?;
+    let source = stage.join("install");
+    let metadata = fs::symlink_metadata(&source).map_err(failure)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(failure("invalid staged chapter directory"));
+    }
+    let destination = storage_directory(&crate::chapter_media::media_root(&app)?, &storage_dir)?;
+    tauri::async_runtime::spawn_blocking(move || install_directory(&source, &destination))
+        .await
+        .map_err(failure)?
 }
 
 #[cfg(test)]
@@ -897,6 +1017,90 @@ mod tests {
 
     fn metadata() -> Value {
         json!({"packageVersion":1,"identity":{"pluginId":"fixture","novelPath":"/novel","chapterPath":"/chapter"},"novel":{"name":"Work","isLocal":false},"chapter":{"name":"Chapter","position":1,"contentType":"html","page":"/chapter"}})
+    }
+
+    #[test]
+    fn snapshot_keeps_upload_generation_after_original_files_change() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir_all(source.join("media")).unwrap();
+        fs::create_dir(&stage).unwrap();
+        let body = "<p>Original</p><img src=\"norea-media://reader-asset/page.png\">";
+        fs::write(source.join("content.html"), body).unwrap();
+        fs::write(source.join("media/page.png"), b"picture").unwrap();
+        fs::write(source.join("ignored.txt"), b"keep original").unwrap();
+        fs::write(source.join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":[{"fileName":"page.png","path":"media/page.png","bytes":7,"status":"stored"}]}}).to_string()).unwrap();
+
+        snapshot_directory(&source, &stage).unwrap();
+        let snapshot = stage.join("source");
+        let original_fingerprint = fingerprint_directory(&snapshot).unwrap();
+        assert_eq!(fs::read_to_string(source.join("content.html")).unwrap(), body);
+        assert_eq!(fs::read(source.join("media/page.png")).unwrap(), b"picture");
+        assert_eq!(fs::read(source.join("ignored.txt")).unwrap(), b"keep original");
+        assert!(!snapshot.join("ignored.txt").exists());
+
+        fs::write(source.join("content.html"), "<p>Replacement</p>").unwrap();
+        fs::write(source.join("media/page.png"), b"changed").unwrap();
+        assert_eq!(fingerprint_directory(&snapshot).unwrap(), original_fingerprint);
+        assert_ne!(fingerprint_directory(&source).unwrap(), original_fingerprint);
+        let manifest = export_package(&snapshot, &stage, metadata()).unwrap();
+        let restored = root.path().join("restored");
+        fs::create_dir(&restored).unwrap();
+        import_package(&stage.join("package.zip"), &restored, &manifest).unwrap();
+        assert_eq!(fs::read_to_string(restored.join("content.html")).unwrap(), body);
+        let mut archive = ZipArchive::new(File::open(restored.join("media.zip")).unwrap()).unwrap();
+        let mut media = Vec::new();
+        archive.by_name("page.png").unwrap().read_to_end(&mut media).unwrap();
+        assert_eq!(media, b"picture");
+    }
+
+    #[test]
+    fn incomplete_snapshot_is_discarded_without_changing_original_files() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(source.join("content.html"), "original").unwrap();
+        let manifest = json!({"version":1,"complete":false,"media":{"files":[]}}).to_string();
+        fs::write(source.join("manifest.json"), &manifest).unwrap();
+        assert!(snapshot_directory(&source, &stage).is_err());
+        assert!(!stage.join("source").exists());
+        assert_eq!(fs::read_to_string(source.join("content.html")).unwrap(), "original");
+        assert_eq!(fs::read_to_string(source.join("manifest.json")).unwrap(), manifest);
+    }
+
+    #[test]
+    fn snapshot_rejects_non_file_artifacts_and_never_replaces_an_existing_snapshot() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir_all(source.join("manifest.json")).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(source.join("content.html"), "original").unwrap();
+        assert!(snapshot_directory(&source, &stage).is_err());
+        assert!(!stage.join("source").exists());
+        fs::remove_dir(source.join("manifest.json")).unwrap();
+        snapshot_directory(&source, &stage).unwrap();
+        fs::write(source.join("content.html"), "replacement").unwrap();
+        assert!(snapshot_directory(&source, &stage).is_err());
+        assert_eq!(fs::read_to_string(stage.join("source/content.html")).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_rejects_symbolic_chapter_artifacts() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(root.path().join("external.html"), "external").unwrap();
+        std::os::unix::fs::symlink(root.path().join("external.html"), source.join("content.html")).unwrap();
+        assert!(snapshot_directory(&source, &stage).is_err());
+        assert!(!stage.join("source").exists());
+        assert_eq!(fs::read_to_string(root.path().join("external.html")).unwrap(), "external");
     }
 
     #[test]
@@ -923,6 +1127,17 @@ mod tests {
         );
         assert!(installed.join("media.zip").is_file());
         assert!(sizes["mediaBytes"].as_u64().unwrap() > 0);
+        let snapshot = root.path().join("snapshot");
+        fs::create_dir(&snapshot).unwrap();
+        snapshot_directory(&installed, &snapshot).unwrap();
+        assert_eq!(
+            fs::read(snapshot.join("source/media.zip")).unwrap(),
+            fs::read(installed.join("media.zip")).unwrap()
+        );
+        assert_eq!(
+            export_package(&snapshot.join("source"), &snapshot, metadata()).unwrap(),
+            manifest
+        );
     }
 
     #[test]
@@ -947,6 +1162,22 @@ mod tests {
         fs::write(source.join("content.html"), "<p>New chapter</p>").unwrap();
         let manifest = export_package(&source, &stage, metadata()).unwrap();
         (stage, manifest)
+    }
+
+    #[test]
+    fn staged_download_preserves_original_until_explicit_install() {
+        let root = workspace();
+        let (stage, manifest) = plain_package(root.path());
+        let destination = root.path().join("contents/fixture/Work/1-Chapter");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("content.html"), "original").unwrap();
+        let installed = stage.join("install");
+        fs::create_dir(&installed).unwrap();
+        import_package(&stage.join("package.zip"), &installed, &manifest).unwrap();
+        assert_eq!(fs::read_to_string(destination.join("content.html")).unwrap(), "original");
+        assert_eq!(fs::read_to_string(installed.join("content.html")).unwrap(), "<p>New chapter</p>");
+        install_directory(&installed, &destination).unwrap();
+        assert_eq!(fs::read_to_string(destination.join("content.html")).unwrap(), "<p>New chapter</p>");
     }
 
     #[test]

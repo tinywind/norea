@@ -373,6 +373,14 @@ fn chapter_media_clear_sync<R: Runtime>(
     Ok(())
 }
 
+fn remove_downloaded_chapter_dir(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("chapter media: remove chapter dir: {err}")),
+    }
+}
+
 pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
     app: &AppHandle<R>,
     context: &ChapterMediaClearContext,
@@ -421,8 +429,7 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
 
         for chapter_dir in chapter_dirs {
             match fs::metadata(&chapter_dir) {
-                Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&chapter_dir)
-                    .map_err(|err| format!("chapter media: remove chapter dir: {err}"))?,
+                Ok(metadata) if metadata.is_dir() => remove_downloaded_chapter_dir(&chapter_dir)?,
                 Ok(_) => {
                     return Err(format!(
                         "chapter media: chapter storage path is not a directory: {}",
@@ -437,10 +444,7 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
         delete_legacy_storage_manifest(&root)?;
 
         let legacy_dir = chapter_dir_at(&root, context.chapter_id)?;
-        if legacy_dir.exists() {
-            fs::remove_dir_all(legacy_dir)
-                .map_err(|err| format!("chapter media: remove chapter dir: {err}"))?;
-        }
+        remove_downloaded_chapter_dir(&legacy_dir)?;
     }
     Ok(())
 }
@@ -457,4 +461,29 @@ fn chapter_media_clear_all_sync(app: AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_chapter_deletion_accepts_an_already_removed_directory() {
+        let temp = tempfile::tempdir().expect("temporary storage");
+        let chapter = temp.path().join("chapter");
+        fs::create_dir_all(chapter.join("media")).expect("create media");
+        fs::write(chapter.join("content.html"), "<p>Chapter</p>").expect("write body");
+        remove_downloaded_chapter_dir(&chapter).expect("first deletion");
+        remove_downloaded_chapter_dir(&chapter).expect("concurrent deletion already finished");
+        assert!(!chapter.exists());
+    }
+
+    #[test]
+    fn chapter_deletion_preserves_a_file_at_the_directory_path() {
+        let temp = tempfile::tempdir().expect("temporary storage");
+        let chapter = temp.path().join("chapter");
+        fs::write(&chapter, "unexpected file").expect("write file");
+        assert!(remove_downloaded_chapter_dir(&chapter).is_err());
+        assert_eq!(fs::read_to_string(&chapter).expect("read file"), "unexpected file");
+    }
 }

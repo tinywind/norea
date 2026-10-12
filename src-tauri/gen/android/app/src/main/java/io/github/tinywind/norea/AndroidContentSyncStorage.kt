@@ -1,6 +1,7 @@
 package io.github.tinywind.norea
 
 import android.content.Context
+import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.security.MessageDigest
@@ -9,6 +10,15 @@ internal class AndroidContentSyncStorage(
   private val context: Context,
   private val storage: AndroidStorageDocuments,
 ) {
+  private val snapshotGuard = AndroidContentSnapshotGuard()
+
+  private data class SnapshotFile(
+    val relativePath: String,
+    val uri: Uri,
+    val bytes: Long,
+    val lastModified: Long,
+  )
+
   private fun stageDirectory(stagePath: String): File {
     val root = File(context.cacheDir, "content-sync").canonicalFile
     val stage = File(stagePath).canonicalFile
@@ -17,46 +27,74 @@ internal class AndroidContentSyncStorage(
   }
 
   fun snapshot(rootUri: String, storageDir: String, stagePath: String) {
-    validateAndroidChapterStorageRelativeDir(storageDir)
+    val segments = validateAndroidChapterStorageRelativeDir(storageDir)
     val destination = File(stageDirectory(stagePath), "source")
     check(destination.mkdir()) { "Cannot create content snapshot." }
-    val source = storage.storageDocumentAt(rootUri, storageDir)
-      ?: error("Stored chapter is missing.")
-    var count = 0
-    var total = 0L
-    fun copy(directory: DocumentFile, target: File, relative: String) {
-      for (child in storage.listStorageChildren(directory)) {
-        require(child.name.isNotEmpty() && child.name != "." && child.name != ".." && !child.name.contains('/') && !child.name.contains('\\')) { "Unsafe chapter file." }
-        val childRelative = "$relative/${child.name}"
-        val document = storage.storageChildDocumentFile(child) ?: error("Chapter file disappeared.")
-        if (child.isDirectory) {
-          if (relative == storageDir && child.name == "media") {
-            val nested = File(target, child.name)
-            check(nested.mkdir()) { "Cannot create media snapshot." }
-            copy(document, nested, childRelative)
-          }
-        } else if (relative != storageDir || child.name in setOf("content.html", "content.pdf", "manifest.json", "media.zip")) {
-          check(++count <= 10_000) { "Too many chapter files." }
-          storage.openStorageInputStream(rootUri, childRelative, document)?.use { input ->
-            File(target, child.name).outputStream().use { output ->
+    try {
+      snapshotGuard.snapshot(rootUri, storageDir) {
+        var source = storage.storageRoot(rootUri)
+        // Snapshot lookup must not recover or rename chapters changed by foreground storage.
+        for (segment in segments) {
+          check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
+          val child = storage.listStorageChildren(source)
+            .firstOrNull { it.name == segment && it.isDirectory }
+            ?: error("Stored chapter is missing.")
+          source = storage.storageChildDocumentFile(child) ?: error("Stored chapter is missing.")
+        }
+        val files = snapshotFiles(source)
+        if (files.any { it.relativePath.startsWith("media/") }) {
+          check(File(destination, "media").mkdir()) { "Cannot create media snapshot." }
+        }
+        var total = 0L
+        for (file in files) {
+          context.contentResolver.openInputStream(file.uri)?.use { input ->
+            File(destination, file.relativePath).outputStream().use { output ->
               val buffer = ByteArray(DEFAULT_STORAGE_COPY_BUFFER_BYTES)
               while (true) {
+                check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
                 val length = input.read(buffer)
                 if (length < 0) break
                 total += length
                 check(total <= MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) { "Chapter snapshot exceeds byte limit." }
                 output.write(buffer, 0, length)
               }
-              output.fd.sync()
             }
           } ?: error("Cannot read chapter file.")
         }
+        check(files == snapshotFiles(source)) { "Chapter changed during content snapshot." }
       }
+    } catch (error: Exception) {
+      destination.deleteRecursively()
+      throw error
     }
-    copy(source, destination, storageDir)
   }
 
-  fun install(rootUri: String, storageDir: String, stagePath: String) = synchronized(storage) {
+  private fun snapshotFiles(source: DocumentFile): List<SnapshotFile> {
+    val files = mutableListOf<SnapshotFile>()
+    fun collect(directory: DocumentFile, relative: String) {
+      check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
+      for (child in storage.listStorageChildren(directory)) {
+        require(child.name.isNotEmpty() && child.name != "." && child.name != ".." && !child.name.contains('/') && !child.name.contains('\\')) { "Unsafe chapter file." }
+        val document = storage.storageChildDocumentFile(child) ?: error("Chapter file disappeared.")
+        if (child.isDirectory) {
+          if (relative.isEmpty() && child.name == "media") {
+            collect(document, "media/")
+          }
+        } else if (relative.isNotEmpty() || child.name in setOf("content.html", "content.pdf", "manifest.json", "media.zip")) {
+          check(files.size < 10_000) { "Too many chapter files." }
+          files.add(SnapshotFile("$relative${child.name}", document.uri, document.length(), document.lastModified()))
+        }
+      }
+    }
+    collect(source, "")
+    return files.sortedBy { it.relativePath }
+  }
+
+  fun install(rootUri: String, storageDir: String, stagePath: String) = snapshotGuard.install(rootUri, storageDir) {
+    installVerifiedContent(rootUri, storageDir, stagePath)
+  }
+
+  private fun installVerifiedContent(rootUri: String, storageDir: String, stagePath: String) = synchronized(storage) {
     val segments = validateAndroidChapterStorageRelativeDir(storageDir)
     val cache = File(stageDirectory(stagePath), "install")
     check(cache.isDirectory) { "Verified content is missing." }
