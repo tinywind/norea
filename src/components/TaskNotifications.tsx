@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
+import { describeError } from "../lib/errors";
 import {
   applyNovelChapterDownloadCompletion,
   applyNovelChapterDownloadCompletions,
@@ -261,7 +262,13 @@ export function TaskNotifications() {
   useEffect(() => {
     void startDownloadCacheDeleteWorkExecutor(
       t("tasks.task.deleteDownloadCache"),
-    );
+    ).catch((error) => {
+      notifications.show({
+        color: "red",
+        title: t("tasks.task.deleteDownloadCache"),
+        message: describeError(error),
+      });
+    });
   }, [t]);
 
   useEffect(() => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { registerContentDevice } from "./device";
+import { contentServerRequest } from "./client";
 
 const storage = new Map<string, string>();
 const capabilities = { apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: false };
@@ -27,6 +28,51 @@ it("registers once under concurrent initialization and persists the key before s
   const calls = vi.mocked(nativeFetch).mock.calls;
   expect(calls).toHaveLength(2);
   expect(JSON.parse(calls[1]![1]!.body as string)).toEqual({ deviceKey: key, deviceName: "Tablet" });
+});
+
+it("reuses completed registration for subsequent requests with independent lookup signals", async () => {
+  const key = await registerContentDevice("http://server/", "Tablet", new AbortController().signal);
+  expect(await registerContentDevice("http://server", "Tablet", new AbortController().signal)).toBe(key);
+  expect(await registerContentDevice("http://server", "Tablet")).toBe(key);
+  expect(nativeFetch).toHaveBeenCalledTimes(2);
+});
+
+it("updates a changed device name using the saved key before caching it again", async () => {
+  const key = await registerContentDevice("http://server", "Tablet");
+  expect(await registerContentDevice("http://server", "Renamed tablet")).toBe(key);
+  expect(await registerContentDevice("http://server", "Renamed tablet")).toBe(key);
+  const registrations = vi.mocked(nativeFetch).mock.calls.filter(([url]) => String(url).endsWith("/devices/register"));
+  expect(registrations.map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+    { deviceKey: key, deviceName: "Tablet" },
+    { deviceKey: key, deviceName: "Renamed tablet" },
+  ]);
+});
+
+it("rejects an already cancelled lookup even when the device is registered", async () => {
+  await registerContentDevice("http://server", "Tablet");
+  const controller = new AbortController();
+  controller.abort(new Error("Lookup expired"));
+  await expect(registerContentDevice("http://server", "Tablet", controller.signal)).rejects.toThrow("Lookup expired");
+  expect(nativeFetch).toHaveBeenCalledTimes(2);
+});
+
+it("preserves a cached device key when an authenticated API request reports revocation", async () => {
+  const key = await registerContentDevice("http://server", "Tablet");
+  vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(null, { status: 403 }));
+  await expect(contentServerRequest("http://server", "/catalog?after=0", key)).rejects.toThrow("403");
+  expect(await registerContentDevice("http://server", "Tablet")).toBe(key);
+  expect(storage.get("norea-content-device:http://server")).toBe(key);
+  expect(nativeFetch).toHaveBeenCalledTimes(3);
+});
+
+it("registers the saved key again if the server loses its device record", async () => {
+  const key = await registerContentDevice("http://server", "Tablet");
+  vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(null, { status: 401 }));
+  await expect(contentServerRequest("http://server", "/catalog?after=0", key)).rejects.toThrow("401");
+  expect(await registerContentDevice("http://server", "Tablet")).toBe(key);
+  expect(nativeFetch).toHaveBeenCalledTimes(5);
+  const registrations = vi.mocked(nativeFetch).mock.calls.filter(([url]) => String(url).endsWith("/devices/register"));
+  expect(registrations.map(([, init]) => JSON.parse(init!.body as string).deviceKey)).toEqual([key, key]);
 });
 
 it("does not register after a cancelled capability lookup completes late", async () => {

@@ -101,14 +101,17 @@ export function useNovelMetadata(
     const serverSource = await readServerNovelSource(novel.id);
     if (serverSource) {
       const { syncServerNovelOnOpen, refreshServerNovelFromSource } = await import("../../lib/content-sync/work-refresh");
-      const errors: unknown[] = [];
-      try { await syncServerNovelOnOpen(novel.id); }
-      catch (error) { errors.push(error); }
-      try { await refreshServerNovelFromSource(novel.id, t("tasks.task.refreshNovelMetadataFull", { name: novel.name })); }
-      catch (error) { errors.push(error); }
-      invalidateNovelMetadataRefresh();
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) throw new AggregateError(errors, "Server and source metadata refresh failed.");
+      let sourceRefreshed = false;
+      const serverRefresh = syncServerNovelOnOpen(novel.id, undefined, () => !sourceRefreshed).then(changed => {
+        if (changed) invalidateNovelMetadataRefresh();
+        return null;
+      }, error => ({ error }));
+      try { sourceRefreshed = await refreshServerNovelFromSource(novel.id, t("tasks.task.refreshNovelMetadataFull", { name: novel.name }), undefined, "user"); }
+      finally { invalidateNovelMetadataRefresh(); }
+      if (!sourceRefreshed) {
+        const failure = await serverRefresh;
+        if (failure) throw failure.error;
+      }
       return { duplicateChapters: getSourceDuplicateChapterInfo(novel.id) };
     }
     if (novel.isLocal) return null;

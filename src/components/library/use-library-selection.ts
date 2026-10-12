@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useState } from "react";
 import { addNovelsToCategory } from "../../db/queries/category";
 import {
@@ -12,8 +13,9 @@ import {
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { describeError } from "../../lib/errors";
 import { enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
-import { enqueueDownloadCacheDelete } from "../../lib/tasks/download-cache-delete";
+import { deleteDownloadCache } from "../../lib/tasks/download-cache-delete";
 import { type LibrarySortOrder } from "../../store/library";
 import { useReaderStore } from "../../store/reader";
 import {
@@ -121,26 +123,23 @@ export function useLibrarySelection(
   });
 
   const deleteSelectedDownloadsMutation = useMutation({
-    mutationFn: async (novelIds: readonly number[]) => {
-      const handle = enqueueDownloadCacheDelete({
+    mutationFn: (novelIds: readonly number[]) =>
+      deleteDownloadCache({
         scope: "novel",
         targetIds: novelIds,
         title: t("tasks.task.deleteDownloadCache"),
-        progressLabel: (current, total) =>
-          t("tasks.progress.deleteDownloadCache", { current, total }),
+      }),
+    onSuccess: () => setSelectedIds(new Set()),
+    onSettled: () => {
+      invalidateLibraryCategories();
+      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+    },
+    onError: (error) => {
+      notifications.show({
+        color: "red",
+        title: t("tasks.task.deleteDownloadCache"),
+        message: describeError(error),
       });
-      void handle.promise.then(
-        () => {
-          setSelectedIds(new Set());
-          invalidateLibraryCategories();
-          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-        },
-        () => {
-          invalidateLibraryCategories();
-          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-        },
-      );
-      return { queued: true };
     },
   });
 

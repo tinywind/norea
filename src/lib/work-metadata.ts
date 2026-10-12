@@ -15,7 +15,7 @@ export interface WorkMetadataOperation {
   chapterDirectories?: Record<string, string>;
   reset?: boolean;
 }
-export interface WorkMetadataOperationResult { paths?: string[]; body?: string | null }
+export interface WorkMetadataOperationResult { paths?: string[]; body?: string | null; changed?: boolean }
 const listeners = new Set<() => void>();
 let publicationSnapshots: Map<string, string | null> | null = null;
 export function subscribeWorkMetadataChanges(listener: () => void): () => void {
@@ -63,13 +63,14 @@ export async function workMetadataOperation(input: WorkMetadataOperation): Promi
   }
   if (input.operation === "write" && input.path) {
     const current = await rawWorkMetadataOperation({ operation: "read", path: input.path });
-    if (current.body === input.body) return {};
+    if (current.body === input.body) return { changed: false };
   }
   if (publicationSnapshots && input.path && (input.operation === "write" || input.operation === "remove") && !publicationSnapshots.has(input.path)) {
     const previous = await rawWorkMetadataOperation({ operation: "read", path: input.path });
     publicationSnapshots.set(input.path, previous.body ?? null);
   }
-  return rawWorkMetadataOperation(input);
+  const result = await rawWorkMetadataOperation(input);
+  return input.operation === "write" ? { ...result, changed: true } : result;
 }
 
 async function rawWorkMetadataOperation(input: WorkMetadataOperation): Promise<WorkMetadataOperationResult> {
@@ -171,20 +172,22 @@ export async function readStoredNovelCover(directory: string, metadata: NovelMet
   return bytes;
 }
 
-export async function writeStoredNovelCover(directory: string, metadata: NovelMetadataV1, bytes: Uint8Array, notifyChanges = true): Promise<void> {
+export async function writeStoredNovelCover(directory: string, metadata: NovelMetadataV1, bytes: Uint8Array, notifyChanges = true): Promise<boolean> {
   parseNovelMetadata(metadata);
   if (!metadata.cover || !bytes.length || bytes.length > MAX_NOVEL_COVER_BYTES) throw new Error("work metadata: invalid cover bytes");
-  await workMetadataOperation({ operation: "write", path: `${directory}/${metadata.cover.fileName}`, body: bytesToBase64(bytes) });
+  const cover = await workMetadataOperation({ operation: "write", path: `${directory}/${metadata.cover.fileName}`, body: bytesToBase64(bytes) });
   const manifest = { ...metadata.cover, version: 1, sourceId: metadata.identity.pluginId, novelPath: metadata.identity.novelPath };
-  await workMetadataOperation({ operation: "write", path: `${directory}/cover.json`, body: bytesToBase64(new TextEncoder().encode(JSON.stringify(manifest))) });
-  if (notifyChanges) {
+  const sidecar = await workMetadataOperation({ operation: "write", path: `${directory}/cover.json`, body: bytesToBase64(new TextEncoder().encode(JSON.stringify(manifest))) });
+  const changed = Boolean(cover.changed || sidecar.changed);
+  if (notifyChanges && changed) {
     const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
     invalidateAllNovelCoverSources();
     notifyWorkMetadataChanges();
   }
+  return changed;
 }
 
-export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null) => Promise<void>): Promise<StoredNovelMetadata> {
+export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null) => Promise<void | false>): Promise<StoredNovelMetadata | null> {
   const metadata = parseNovelMetadata(input);
   const { runDatabaseTransaction } = await import("../db/client");
   const { applyNovelMetadataToCache, knownNovelMetadataDirectory, rememberStoredNovelMetadata } = await import("../db/work-metadata");
@@ -193,17 +196,18 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
     const installed = await runDatabaseTransaction(async (db) => {
       const directory = knownNovelMetadataDirectory(metadata.identity) ?? preferred;
       const existing = await readNovelMetadataForReplacement(directory, metadata.identity);
-      await beforeInstall?.(existing);
+      if (await beforeInstall?.(existing) === false) return null;
       return withWorkMetadataRollback(async () => {
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
         else await removeStoredNovelCover(directory, existing?.metadata.cover ?? metadata.cover, false);
         await writeStoredNovelMetadata(directory, metadata, false);
         const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory);
         await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
-        await rememberStoredNovelMetadata(db, directory, metadata);
+        await rememberStoredNovelMetadata(db, directory, metadata, true);
         return { novelId: installedNovelId, directory };
       });
     }, true);
+    if (!installed) return null;
     const { notifyNovelCoverChanged } = await import("./novel-cover-storage");
     notifyNovelCoverChanged(installed.novelId);
     return { directory: installed.directory, metadata };
@@ -228,8 +232,8 @@ export async function persistNovelCover(directory: string, cover: { body: Uint8A
     if (!body) throw new Error("work metadata: missing work for cover");
     const metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
     metadata.cover = { fileName: cover.fileName, sourceUrl: cover.sourceUrl, contentType: cover.contentType };
-    await writeStoredNovelCover(directory, metadata, cover.body);
+    const coverChanged = await writeStoredNovelCover(directory, metadata, cover.body);
     await writeStoredNovelMetadata(directory, metadata);
-    await rememberStoredNovelMetadata(db, directory, metadata);
+    await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);
   }));
 }

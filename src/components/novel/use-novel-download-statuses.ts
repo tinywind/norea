@@ -32,8 +32,17 @@ export function useNovelDownloadStatuses(
             next.delete(chapterId);
           } else {
             const current = (next ?? prev).get(chapterId);
+            const currentPhase =
+              current?.kind === "queued" || current?.kind === "running"
+                ? current.phase
+                : undefined;
+            const nextPhase =
+              status.kind === "queued" || status.kind === "running"
+                ? status.phase
+                : undefined;
             if (
               current?.kind === status.kind &&
+              currentPhase === nextPhase &&
               (current.kind !== "failed" ||
                 (status.kind === "failed" && current.error === status.error))
             ) {

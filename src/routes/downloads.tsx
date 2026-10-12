@@ -6,6 +6,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { notifications } from "@mantine/notifications";
 import {
   Badge,
   Box,
@@ -34,8 +35,8 @@ import {
   loadDownloadCacheNovels,
 } from "../lib/download-cache-loaders";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
-import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
-import { useTaskSnapshot } from "../lib/tasks/hooks";
+import { deleteDownloadCache } from "../lib/tasks/download-cache-delete";
+import { describeError } from "../lib/errors";
 import { pluginManager } from "../lib/plugins/manager";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import {
@@ -53,40 +54,8 @@ function invalidateDownloadCache(queryClient: QueryClient): void {
   void queryClient.invalidateQueries({ queryKey: ["novel"] });
 }
 
-interface DownloadCacheDeleteActivity {
-  all: boolean;
-  novelIds: ReadonlySet<number>;
-  chapterIds: ReadonlySet<number>;
-}
-
-/**
- * Cache deletion runs as a background scheduler task, so the enqueue mutation
- * settles immediately. Derive the in-flight scopes from the scheduler snapshot
- * instead so the UI can stay blocked until the deletion actually finishes.
- */
-function useDownloadCacheDeleteActivity(
-  active: boolean,
-): DownloadCacheDeleteActivity {
-  const snapshot = useTaskSnapshot(active);
-  return useMemo(() => {
-    const novelIds = new Set<number>();
-    const chapterIds = new Set<number>();
-    let all = false;
-    for (const task of snapshot.records) {
-      if (task.kind !== "maintenance.clearDownloadedContent") continue;
-      if (task.status !== "queued" && task.status !== "running") continue;
-      const chapterId = task.subject?.chapterId;
-      const novelId = task.subject?.novelId;
-      if (chapterId !== undefined) {
-        chapterIds.add(chapterId);
-      } else if (novelId !== undefined) {
-        novelIds.add(novelId);
-      } else {
-        all = true;
-      }
-    }
-    return { all, chapterIds, novelIds };
-  }, [snapshot]);
+function showDownloadCacheDeleteError(error: Error, title: string): void {
+  notifications.show({ color: "red", title, message: describeError(error) });
 }
 
 function formatBytes(bytes: number, locale: AppLocale): string {
@@ -244,38 +213,30 @@ function DownloadCacheChapterRow({
 }
 
 function DownloadCacheChapters({
-  activity,
   novel,
   novelDeleting,
 }: {
-  activity: DownloadCacheDeleteActivity;
   novel: DownloadCacheNovel;
   novelDeleting: boolean;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const progressLabel = (current: number, total: number) =>
-    t("tasks.progress.deleteDownloadCache", { current, total });
   const chapters = useQuery({
     queryKey: [...DOWNLOAD_CACHE_QUERY_KEY, "chapters", novel.novelId] as const,
     queryFn: () => loadDownloadCacheChapters(novel.novelId),
   });
   const deleteChapter = useMutation({
-    mutationFn: async (chapter: DownloadCacheChapter) => {
-      const handle = enqueueDownloadCacheDelete({
+    mutationFn: (chapter: DownloadCacheChapter) =>
+      deleteDownloadCache({
         scope: "chapter",
         targetIds: [chapter.id],
         title: t("tasks.task.deleteDownloadCacheChapter", {
           name: chapter.name,
         }),
-        progressLabel,
-      });
-      void handle.promise.then(
-        () => invalidateDownloadCache(queryClient),
-        () => invalidateDownloadCache(queryClient),
-      );
-      return { queued: true };
-    },
+      }),
+    onSettled: () => invalidateDownloadCache(queryClient),
+    onError: (error) =>
+      showDownloadCacheDeleteError(error, t("tasks.task.deleteDownloadCache")),
   });
   const repairChapter = useMutation({
     mutationFn: async (chapter: DownloadCacheChapter) => {
@@ -324,7 +285,10 @@ function DownloadCacheChapters({
         <DownloadCacheChapterRow
           key={chapter.id}
           chapter={chapter}
-          deleting={novelDeleting || activity.chapterIds.has(chapter.id)}
+          deleting={
+            novelDeleting ||
+            (deleteChapter.isPending && deleteChapter.variables?.id === chapter.id)
+          }
           repairing={
             repairChapter.isPending &&
             repairChapter.variables?.id === chapter.id
@@ -345,11 +309,11 @@ function DownloadCacheChapters({
 }
 
 function DownloadCacheNovelCard({
-  activity,
+  allDeleting,
   novel,
   onOpenNovel,
 }: {
-  activity: DownloadCacheDeleteActivity;
+  allDeleting: boolean;
   novel: DownloadCacheNovel;
   onOpenNovel: () => void;
 }) {
@@ -373,24 +337,18 @@ function DownloadCacheNovelCard({
       plugin,
     },
   );
-  const progressLabel = (current: number, total: number) =>
-    t("tasks.progress.deleteDownloadCache", { current, total });
   const deleteNovel = useMutation({
-    mutationFn: async (novelId: number) => {
-      const handle = enqueueDownloadCacheDelete({
+    mutationFn: (novelId: number) =>
+      deleteDownloadCache({
         scope: "novel",
         targetIds: [novelId],
         title: t("tasks.task.deleteDownloadCacheNovel", {
           name: novel.novelName,
         }),
-        progressLabel,
-      });
-      void handle.promise.then(
-        () => invalidateDownloadCache(queryClient),
-        () => invalidateDownloadCache(queryClient),
-      );
-      return { queued: true };
-    },
+      }),
+    onSettled: () => invalidateDownloadCache(queryClient),
+    onError: (error) =>
+      showDownloadCacheDeleteError(error, t("tasks.task.deleteDownloadCache")),
   });
   const size = formatBytes(novel.totalBytes, locale);
   const libraryLabel = novel.inLibrary
@@ -417,7 +375,7 @@ function DownloadCacheNovelCard({
     updatedLabel,
     sourceName,
   ].join(" / ");
-  const novelDeleting = activity.all || activity.novelIds.has(novel.novelId);
+  const novelDeleting = allDeleting || deleteNovel.isPending;
   const toggleLabel = expanded ? t("downloads.collapse") : t("downloads.expand");
 
   return (
@@ -518,7 +476,6 @@ function DownloadCacheNovelCard({
       </div>
       {expanded ? (
         <DownloadCacheChapters
-          activity={activity}
           novel={novel}
           novelDeleting={novelDeleting}
         />
@@ -536,7 +493,6 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const scheduledBackfillRef = useRef(false);
-  const deleteActivity = useDownloadCacheDeleteActivity(active);
   const query = useQuery({
     queryKey: DOWNLOAD_CACHE_QUERY_KEY,
     queryFn: loadDownloadCacheNovels,
@@ -558,21 +514,15 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
     });
   }, [active, query.data, queryClient]);
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
-  const progressLabel = (current: number, total: number) =>
-    t("tasks.progress.deleteDownloadCache", { current, total });
   const deleteAll = useMutation({
-    mutationFn: async () => {
-      const handle = enqueueDownloadCacheDelete({
+    mutationFn: () =>
+      deleteDownloadCache({
         scope: "all",
         title: t("tasks.task.deleteDownloadCache"),
-        progressLabel,
-      });
-      void handle.promise.then(
-        () => invalidateDownloadCache(queryClient),
-        () => invalidateDownloadCache(queryClient),
-      );
-      return { queued: true };
-    },
+      }),
+    onSettled: () => invalidateDownloadCache(queryClient),
+    onError: (error) =>
+      showDownloadCacheDeleteError(error, t("tasks.task.deleteDownloadCache")),
   });
   const rows = query.data ?? [];
   const visibleRows = mediaFallbackOnly
@@ -637,7 +587,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
             </IconButton>
             <IconButton
               className="norea-downloads-header-button"
-              disabled={rows.length === 0 || deleteActivity.all}
+              disabled={rows.length === 0 || deleteAll.isPending}
               label={t("downloads.deleteAll")}
               onClick={() => {
                 if (!window.confirm(t("downloads.deleteAllConfirm", {
@@ -652,7 +602,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               title={t("downloads.deleteAll")}
               tone="danger"
             >
-              {deleteActivity.all ? <Loader size={14} /> : <TrashGlyph />}
+              {deleteAll.isPending ? <Loader size={14} /> : <TrashGlyph />}
             </IconButton>
           </>
         }
@@ -685,7 +635,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
             {visibleRows.map((novel) => (
               <DownloadCacheNovelCard
                 key={novel.novelId}
-                activity={deleteActivity}
+                allDeleting={deleteAll.isPending}
                 novel={novel}
                 onOpenNovel={() => {
                   void navigate({

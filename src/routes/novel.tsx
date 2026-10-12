@@ -108,17 +108,17 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       : novelQuery.data,
     [novelQuery.data, serverSourceQuery.data],
   );
+  const hasSourcePlugin = Boolean(novelQuery.data && !novelQuery.data.isLocal &&
+    !novelQuery.data.path.startsWith("norea-folder:") && pluginManager.getPlugin(novelQuery.data.pluginId));
   const serverChaptersQuery = useQuery({
     queryKey: ["content-server", "novel-chapters", serverSourceQuery.data?.serverUrl, serverSourceQuery.data?.workId],
     queryFn: ({ signal }) => serverSourceQuery.data
       ? listServerChapterAvailability(serverSourceQuery.data, signal)
       : Promise.resolve({ paths: new Set<string>(), numbers: new Set<number>() }),
-    enabled: active && Boolean(serverSourceQuery.data),
+    enabled: active && Boolean(serverSourceQuery.data && novelQuery.data) && !hasSourcePlugin,
     staleTime: 30_000,
   });
   const { serverError, sourceError } = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
-  const hasSourcePlugin = Boolean(novelQuery.data && !novelQuery.data.isLocal &&
-    !novelQuery.data.path.startsWith("norea-folder:") && pluginManager.getPlugin(novelQuery.data.pluginId));
 
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;

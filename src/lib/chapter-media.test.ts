@@ -53,6 +53,7 @@ import { pluginMediaFetch, takeCapturedMediaHandle } from "./http";
 import { SourceAccessRequiredError } from "./plugins/source-access";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { PLUGIN_VPN_READY_TIMEOUT_MS } from "./plugin-vpn-traffic";
+import { waitForChapterDownloadWrites } from "./chapter-download-writes";
 
 const invokeMock = vi.mocked(invoke);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
@@ -190,6 +191,122 @@ describe("ChapterMediaFinalizationError", () => {
 });
 
 describe("cacheHtmlChapterMedia", () => {
+  it("allows deletion while a media response body is still downloading", async () => {
+    const body = createDeferred<ArrayBuffer>();
+    const bodyStarted = createDeferred<void>();
+    const controller = new AbortController();
+    const response = new Response();
+    vi.spyOn(response, "arrayBuffer").mockImplementation(() => {
+      bodyStarted.resolve();
+      return body.promise;
+    });
+    pluginMediaFetchMock.mockResolvedValue(response);
+    invokeMock.mockResolvedValue(null);
+    const download = cacheHtmlChapterMedia({
+      chapterId: 42,
+      html: `<img src="https://source.test/page.png">`,
+      signal: controller.signal,
+    });
+    const cancelled = expect(download).rejects.toMatchObject({ name: "AbortError" });
+
+    await bodyStarted.promise;
+    controller.abort();
+    await waitForChapterDownloadWrites([42]);
+    const callsAtDeletion = invokeMock.mock.calls.length;
+    body.resolve(new Uint8Array([1, 2, 3]).buffer);
+
+    await cancelled;
+    expect(invokeMock.mock.calls).toHaveLength(callsAtDeletion);
+  });
+
+  it("drains an active media store before deletion and skips later publication", async () => {
+    const localWrite = createDeferred<string>();
+    const writeStarted = createDeferred<void>();
+    const controller = new AbortController();
+    const events: string[] = [];
+    pluginMediaFetchMock.mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_media_store") {
+        writeStarted.resolve();
+        const src = await localWrite.promise;
+        events.push("write");
+        return src;
+      }
+      return null;
+    });
+    const download = cacheHtmlChapterMedia({
+      chapterId: 42,
+      html: `<img src="https://source.test/page.png">`,
+      signal: controller.signal,
+    });
+    const cancelled = expect(download).rejects.toMatchObject({ name: "AbortError" });
+
+    await writeStarted.promise;
+    controller.abort();
+    const deletion = waitForChapterDownloadWrites([42]).then(() => {
+      events.push("delete");
+    });
+    await waitForChapterDownloadWrites([43]);
+    expect(events).toEqual([]);
+    const callsAtCancellation = invokeMock.mock.calls.length;
+    localWrite.resolve("norea-media://reader-asset/page.png");
+
+    await Promise.all([cancelled, deletion]);
+    expect(events).toEqual(["write", "delete"]);
+    expect(invokeMock.mock.calls).toHaveLength(callsAtCancellation);
+  });
+
+  it("does not prepare a workspace for an already cancelled download", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(cacheHtmlChapterMedia({
+      chapterId: 42,
+      html: `<img src="https://source.test/page.png">`,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "chapter_media_prepare_workspace",
+      expect.anything(),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "chapter_media_write_manifest",
+      expect.anything(),
+    );
+  });
+
+  it.each(["chapter_media_write_manifest", "chapter_media_archive_cache"])(
+    "preserves cancellation during %s finalization",
+    async (cancelCommand) => {
+      const controller = new AbortController();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      invokeMock.mockImplementation(async (command) => {
+        if (command === cancelCommand) controller.abort();
+        return command === "chapter_media_archive_cache" ? 0 : null;
+      });
+
+      try {
+        await expect(cacheHtmlChapterMedia({
+          chapterId: 42,
+          html: "<p>Chapter</p>",
+          repair: true,
+          signal: controller.signal,
+        })).rejects.toMatchObject({ name: "AbortError" });
+
+        expect(warnSpy).not.toHaveBeenCalled();
+        if (cancelCommand === "chapter_media_write_manifest") {
+          expect(invokeMock).not.toHaveBeenCalledWith(
+            "chapter_media_archive_cache",
+            expect.anything(),
+          );
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
   it("finishes the current resource without starting another after yield", async () => {
     const activeResponse = createDeferred<Response>();
     let shouldYield = false;
@@ -2343,7 +2460,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).toContain("0002-page-2.png");
   });
 
-  it("writes a resumable manifest before aborted chapter downloads stop", async () => {
+  it("does not save a manifest after cancellation during media storage", async () => {
     const controller = new AbortController();
     pluginMediaFetchMock.mockResolvedValue(
       new Response(new Uint8Array([1, 2, 3]), {
@@ -2383,7 +2500,7 @@ describe("cacheHtmlChapterMedia", () => {
     const manifestWrites = invokeMock.mock.calls.filter(
       ([command]) => command === "chapter_media_write_manifest",
     );
-    expect(manifestWrites).toHaveLength(2);
+    expect(manifestWrites).toHaveLength(1);
     expect(manifestWrites[0]?.[1]).toEqual(
       expect.objectContaining({
         complete: false,
@@ -2391,22 +2508,6 @@ describe("cacheHtmlChapterMedia", () => {
           expect.objectContaining({
             fileName: "0001-page-1.png",
             status: "remote",
-          }),
-          expect.objectContaining({
-            fileName: "0002-page-2.png",
-            status: "remote",
-          }),
-        ]),
-      }),
-    );
-    expect(manifestWrites[1]?.[1]).toEqual(
-      expect.objectContaining({
-        complete: false,
-        files: expect.arrayContaining([
-          expect.objectContaining({
-            bytes: 3,
-            fileName: "0001-page-1.png",
-            status: "stored",
           }),
           expect.objectContaining({
             fileName: "0002-page-2.png",
@@ -2855,6 +2956,48 @@ describe("clearChapterMedia", () => {
 });
 
 describe("storeEmbeddedChapterMedia", () => {
+  it.each(["chapter_media_store", "chapter_media_write_manifest"])(
+    "stops embedded media publication when cancelled during %s",
+    async (cancelCommand) => {
+      const controller = new AbortController();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      invokeMock.mockImplementation(async (command) => {
+        if (command === cancelCommand) controller.abort();
+        if (command === "chapter_media_store") {
+          return "norea-media://reader-asset/page.png";
+        }
+        return null;
+      });
+
+      try {
+        await expect(storeEmbeddedChapterMedia({
+          chapterId: 42,
+          html: `<img src="norea-epub-resource://page.png">`,
+          resources: [{
+            bytes: new Uint8Array([1, 2, 3]),
+            fileName: "page.png",
+            placeholder: "norea-epub-resource://page.png",
+          }],
+          signal: controller.signal,
+        })).rejects.toMatchObject({ name: "AbortError" });
+
+        expect(warnSpy).not.toHaveBeenCalled();
+        expect(invokeMock).not.toHaveBeenCalledWith(
+          "chapter_media_archive_cache",
+          expect.anything(),
+        );
+        if (cancelCommand === "chapter_media_store") {
+          expect(invokeMock).not.toHaveBeenCalledWith(
+            "chapter_media_write_manifest",
+            expect.anything(),
+          );
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
   it("keeps the manifest incomplete when archive finalization fails", async () => {
     const archiveError = new Error("archive validation failed");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);

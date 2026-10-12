@@ -27,8 +27,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.mutations.length = 0;
   mocks.source.mockResolvedValue({ serverUrl: "http://original", workId: "work-a" });
-  mocks.refresh.mockResolvedValue(3);
-  mocks.refreshSource.mockResolvedValue(false);
+  mocks.refresh.mockReset().mockResolvedValue(true);
+  mocks.refreshSource.mockReset().mockResolvedValue(false);
   mocks.cover.mockResolvedValue(undefined);
   mocks.plugin.mockReturnValue(undefined);
 });
@@ -36,15 +36,15 @@ beforeEach(() => {
 it("refreshes a bound work on its server without requiring an installed source plugin", async () => {
   useNovelMetadata(3, novel);
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith(3);
-  expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull");
+  expect(mocks.refresh).toHaveBeenCalledWith(3, undefined, expect.any(Function));
+  expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull", undefined, "user");
   expect(mocks.plugin).not.toHaveBeenCalled();
 });
 
 it("refreshes server-published local metadata through its server binding", async () => {
   useNovelMetadata(3, { ...novel, isLocal: true });
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith(3);
+  expect(mocks.refresh).toHaveBeenCalledWith(3, undefined, expect.any(Function));
   expect(mocks.plugin).not.toHaveBeenCalled();
 });
 
@@ -73,6 +73,41 @@ it("attempts source metadata even when the server refresh fails", async () => {
   mocks.refresh.mockRejectedValueOnce(new Error("Server offline"));
   useNovelMetadata(3, novel);
   await expect(mocks.mutations[2]!.mutationFn()).rejects.toThrow("Server offline");
-  expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull");
+  expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull", undefined, "user");
   expect(mocks.plugin).not.toHaveBeenCalled();
+});
+
+it("finishes a source refresh before a delayed optional server refresh", async () => {
+  let complete!: (value: boolean) => void;
+  mocks.refresh.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  mocks.refreshSource.mockResolvedValue(true);
+  useNovelMetadata(3, novel);
+  const finished = vi.fn();
+  const pending = mocks.mutations[1]!.mutationFn().then(finished);
+  await vi.waitFor(() => expect(finished).toHaveBeenCalledWith({ duplicateChapters: [] }));
+  expect(mocks.refreshSource).toHaveBeenCalledOnce();
+  expect((mocks.refresh.mock.calls[0]![2] as () => boolean)()).toBe(false);
+  complete(true);
+  await pending;
+  await vi.waitFor(() => expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["novel", "detail", 3] }));
+});
+
+it("reports a source failure before a delayed optional server refresh", async () => {
+  let complete!: (value: boolean) => void;
+  const failure = new Error("Source unavailable");
+  mocks.refresh.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  mocks.refreshSource.mockRejectedValue(failure);
+  useNovelMetadata(3, novel);
+  const rejected = vi.fn();
+  const pending = mocks.mutations[1]!.mutationFn().catch(rejected);
+  await vi.waitFor(() => expect(rejected).toHaveBeenCalledWith(failure));
+  complete(false);
+  await pending;
+});
+
+it("keeps a successful source refresh successful when the optional server fails", async () => {
+  mocks.refresh.mockRejectedValue(new Error("Server offline"));
+  mocks.refreshSource.mockResolvedValue(true);
+  useNovelMetadata(3, novel);
+  await expect(mocks.mutations[1]!.mutationFn()).resolves.toEqual({ duplicateChapters: [] });
 });

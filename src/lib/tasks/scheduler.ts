@@ -1935,6 +1935,11 @@ export class TaskScheduler {
       sourceAccessVerification:
         sourceAccessVerificationRevision !== undefined,
       taskId: entry.record.id,
+      setChapterDownloadPhase: (chapterDownloadPhase) => {
+        if (entry.controller.signal.aborted) return;
+        entry.record = { ...entry.record, chapterDownloadPhase };
+        this.publishTaskEvent(entry, entry.record.status);
+      },
       setDetail: (detail) => {
         entry.record = { ...entry.record, detail };
         this.publishTaskEvent(entry, entry.record.status);

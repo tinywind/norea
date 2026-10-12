@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
   return {};
 } }));
 
-import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata } from "./work-metadata";
+import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, readWorkMetadataSyncFiles } from "./work-metadata";
 import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
 import { getNovelCoverSnapshot, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "../lib/chapter-storage-path";
@@ -76,6 +76,63 @@ it("reopens the persisted cache without reading work files or rewriting chapters
   expect(novelStorageRelativeDir({ id: 1 })).toBe("contents/source/Original-book");
   expect(chapterStorageRelativeDir({ id: 1 }, { id: 1 })).toBe("contents/source/Original-book/1-Opening");
   expect(storage.directories).toEqual({ "1": "contents/source/Original-book/1-Opening" });
+});
+
+it("keeps work sync revisions across restart without reading unchanged files", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const before = await readWorkMetadataSyncFiles();
+  await initializeWorkMetadata(db);
+  storage.lists = 0; storage.reads = 0;
+  expect(await readWorkMetadataSyncFiles()).toEqual(before);
+  expect(storage.lists).toBe(0);
+  expect(storage.reads).toBe(0);
+});
+
+it("tracks changed cover bytes even when the metadata descriptor is unchanged", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const cover = { fileName: "cover.png", sourceUrl: "https://source/cover", contentType: "image/png", body: new Uint8Array([1, 2]) };
+  await persistNovelCover("contents/source/Original-book", cover);
+  const [before] = await readWorkMetadataSyncFiles();
+  await persistNovelCover("contents/source/Original-book", { ...cover, body: new Uint8Array([3, 4]) });
+  const [after] = await readWorkMetadataSyncFiles();
+  expect(after.fingerprint).toBe(before.fingerprint);
+  expect(after.revision).toBeGreaterThan(before.revision);
+  await persistNovelCover("contents/source/Original-book", { ...cover, body: new Uint8Array([3, 4]) });
+  expect(await readWorkMetadataSyncFiles()).toEqual([after]);
+});
+
+it("invalidates only file checkpoints when the derived work journal is recreated", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const checkpoint = { cursor: 45, fingerprints: { work: "uploaded" }, fileVersions: { work: "old-revision" } };
+  await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", ["norea-content-works:http://server", JSON.stringify(checkpoint)]);
+  sqlite.exec("DROP TABLE work_metadata_sync_journal");
+  storage.lists = 0;
+  await initializeWorkMetadata(db);
+  const saved = sqlite.prepare("SELECT payload FROM content_sync_cache").get()!.payload as string;
+  expect(JSON.parse(saved)).toEqual({ cursor: 45, fingerprints: { work: "uploaded" } });
+  expect(storage.lists).toBe(0);
+  expect(storage.writes).toBe(0);
+});
+
+it("advances work revisions when rebuilding from authoritative files", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const [before] = await readWorkMetadataSyncFiles();
+  await initializeWorkMetadata(db, { rebuild: true });
+  const [after] = await readWorkMetadataSyncFiles();
+  expect(after.fingerprint).toBe(before.fingerprint);
+  expect(after.revision).toBeGreaterThan(before.revision);
+});
+
+it("discovers external work files and metadata changes only on an explicit sync rescan", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const changed = fixture(); changed.novel.name = "External edit"; save(changed);
+  const other = fixture(); other.identity.novelPath = "/other";
+  storage.files.set("contents/source/Other/novel.json", [...new TextEncoder().encode(JSON.stringify(other))]);
+  expect(await readWorkMetadataSyncFiles()).toHaveLength(1);
+  const files = await readWorkMetadataSyncFiles(true);
+  expect(files).toHaveLength(2);
+  expect(sqlite.prepare("SELECT name FROM novel WHERE path='/book'").get()).toEqual({ name: "External edit" });
+  expect(storage.writes).toBe(0);
 });
 
 it("does not repeatedly scan an initialized empty library", async () => {
@@ -304,6 +361,21 @@ it("checks the caller conflict guard inside the installation transaction before 
   const previous = storage.files.get(path);
   await expect(installStoredNovelMetadata(fixture(), undefined, async () => { throw new Error("local edit"); })).rejects.toThrow("local edit");
   expect(storage.files.get(path)).toEqual(previous);
+});
+
+it("skips a stale remote work without rolling back the transaction or reading unrelated files", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const previous = storage.files.get(path);
+  storage.lists = 0;
+  const changed = vi.fn();
+  const unsubscribe = subscribeWorkMetadataChanges(changed);
+  try {
+    expect(await installStoredNovelMetadata(fixture(), undefined, async () => false)).toBeNull();
+    expect(storage.files.get(path)).toEqual(previous);
+    expect(storage.writes).toBe(0);
+    expect(storage.lists).toBe(0);
+    expect(changed).not.toHaveBeenCalled();
+  } finally { unsubscribe(); }
 });
 
 it("publishes a complete remote work without scanning unrelated work files or changing library ownership", async () => {

@@ -27,11 +27,16 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
     };
     setServerError(null);
     setSourceError(null);
+    let sourceRefreshed = false;
     void (async () => {
-      try { if (await syncServerNovelOnOpen(id, controller.signal)) await invalidate(); }
+      try { if (await syncServerNovelOnOpen(id, controller.signal, () => !sourceRefreshed)) await invalidate(); }
       catch (error) { if (!controller.signal.aborted) setServerError(error); }
-      if (controller.signal.aborted) return;
-      try { if (await refreshServerNovelFromSource(id, title.current, controller.signal)) await invalidate(); }
+    })();
+    void (async () => {
+      try {
+        sourceRefreshed = await refreshServerNovelFromSource(id, title.current, controller.signal);
+        if (sourceRefreshed) await invalidate();
+      }
       catch (error) { if (!controller.signal.aborted) setSourceError(error); }
     })();
     return () => controller.abort();

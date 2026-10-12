@@ -81,6 +81,12 @@ export interface TaskProgress {
   total?: number;
 }
 
+export type ChapterDownloadPhase =
+  | "local"
+  | "server-lookup"
+  | "server-download"
+  | "source-download";
+
 export interface TaskRecord {
   id: string;
   lane: TaskLane;
@@ -97,6 +103,7 @@ export interface TaskRecord {
   queueIndex?: number;
   queueSize?: number;
   detail?: string;
+  chapterDownloadPhase?: ChapterDownloadPhase;
   waitingForNetwork?: boolean;
   error?: string;
   canCancel: boolean;
@@ -146,6 +153,7 @@ export interface TaskRunContext {
   sourceAccessVerification?: boolean;
   taskId: string;
   setDetail: (detail: string) => void;
+  setChapterDownloadPhase?: (phase: ChapterDownloadPhase) => void;
   setProgress: (progress: TaskProgress | undefined) => void;
   /** Returns false when the task must return so the scheduler can requeue it behind source gates. */
   tryStartSourceAccess?: () => boolean;

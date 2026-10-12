@@ -1,42 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { MainTaskSpec, TaskRunContext } from "./scheduler";
 
-const tauriMocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-  listen: vi.fn(),
-}));
-
-const downloadQueueMocks = vi.hoisted(() => ({
+const native = vi.hoisted(() => ({ invoke: vi.fn() }));
+const downloadQueue = vi.hoisted(() => ({
+  discardQueuedChapterDownloads: vi.fn(),
   waitForChapterDownloadQueueMutations: vi.fn(),
 }));
-
-const queryMocks = vi.hoisted(() => ({
-  listNonLocalDownloadCacheDeleteChapters: vi.fn(),
-}));
-
-const schedulerMocks = vi.hoisted(() => ({
+const queries = vi.hoisted(() => ({ listNonLocalDownloadCacheDeleteChapters: vi.fn() }));
+const scheduler = vi.hoisted(() => ({
   cancel: vi.fn(),
-  enqueueMain: vi.fn(),
   getSnapshot: vi.fn(),
   waitForSourceTaskSettlement: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: tauriMocks.invoke,
-}));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: tauriMocks.listen,
-}));
-vi.mock("../../db/queries/chapter", () => ({
-  getChapterById: vi.fn(),
-}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("../../db/queries/chapter", () => ({ getChapterById: vi.fn() }));
 vi.mock("../../db/queries/download-cache", () => ({
-  listNonLocalDownloadCacheDeleteChapters:
-    queryMocks.listNonLocalDownloadCacheDeleteChapters,
+  listNonLocalDownloadCacheDeleteChapters: queries.listNonLocalDownloadCacheDeleteChapters,
 }));
-vi.mock("../../db/queries/novel", () => ({
-  getNovelById: vi.fn(),
-}));
+vi.mock("../../db/queries/novel", () => ({ getNovelById: vi.fn() }));
 vi.mock("../android-storage", () => ({
   deleteAndroidStoragePath: vi.fn(),
   listAndroidChapterStorageDirs: vi.fn(),
@@ -46,15 +27,13 @@ vi.mock("../tauri-runtime", () => ({
   isTauriRuntime: vi.fn(() => true),
 }));
 vi.mock("./chapter-download", () => ({
-  waitForChapterDownloadQueueMutations:
-    downloadQueueMocks.waitForChapterDownloadQueueMutations,
+  discardQueuedChapterDownloads: downloadQueue.discardQueuedChapterDownloads,
+  waitForChapterDownloadQueueMutations: downloadQueue.waitForChapterDownloadQueueMutations,
 }));
-vi.mock("./scheduler", () => ({
-  taskScheduler: schedulerMocks,
-}));
+vi.mock("./scheduler", () => ({ taskScheduler: scheduler }));
 
 import {
-  enqueueDownloadCacheDelete,
+  deleteDownloadCache,
   type DownloadCacheDeleteResult,
   type DownloadCacheDeleteWork,
 } from "./download-cache-delete";
@@ -63,436 +42,212 @@ import { getNovelById } from "../../db/queries/novel";
 import { deleteAndroidStoragePath, listAndroidChapterStorageDirs } from "../android-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir } from "../chapter-storage-resolution";
-import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-}
-
-function deferred<T>(): Deferred<T> {
+function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
+  const promise = new Promise<T>((complete) => { resolve = complete; });
   return { promise, resolve };
 }
 
-function flushMicrotasks(count = 20): Promise<void> {
-  return Array.from({ length: count }).reduce<Promise<void>>(
-    (pending) => pending.then(() => Promise.resolve()),
-    Promise.resolve(),
-  );
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 20; index += 1) await Promise.resolve();
 }
 
 function createWork(id: string): DownloadCacheDeleteWork {
   return {
-    id,
-    scope: "all",
-    targetIds: [],
-    status: "queued",
-    total: 0,
-    completed: 0,
-    failed: 0,
-    cancelRequested: false,
+    id, scope: "chapter", targetIds: [7], status: "queued",
+    total: 1, completed: 0, failed: 0, cancelRequested: false,
   };
 }
 
-function createContext(controller: AbortController): TaskRunContext {
-  return {
-    signal: controller.signal,
-    taskId: "task-1",
-    setDetail: vi.fn(),
-    setProgress: vi.fn(),
-  };
-}
-
-let capturedSpec: MainTaskSpec<DownloadCacheDeleteResult> | null = null;
+const deleted: DownloadCacheDeleteResult = {
+  workId: "work-1", total: 1, deleted: 1, failed: 0, cancelled: false,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
-  capturedSpec = null;
-  queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([]);
+  clearAuthoritativeStorageDirs();
+  queries.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([{
+    id: 7, contentBytes: 128, isDownloaded: true, path: "/chapter/7",
+    pluginId: "source-a", sourceContentType: "html",
+  }]);
   vi.mocked(getChapterById).mockResolvedValue(null);
   vi.mocked(getNovelById).mockResolvedValue(null);
-  downloadQueueMocks.waitForChapterDownloadQueueMutations.mockResolvedValue(
-    undefined,
-  );
-  schedulerMocks.getSnapshot.mockReturnValue({ records: [] });
-  schedulerMocks.waitForSourceTaskSettlement.mockResolvedValue(undefined);
-  schedulerMocks.enqueueMain.mockImplementation(
-    (spec: MainTaskSpec<DownloadCacheDeleteResult>) => {
-      capturedSpec = spec;
-      return { id: "task-1", promise: new Promise(() => {}) };
-    },
-  );
-  tauriMocks.listen.mockResolvedValue(vi.fn());
-  tauriMocks.invoke.mockImplementation((command: string) => {
-    if (command === "chapter_download_queue_remove") {
-      return Promise.resolve(undefined);
-    }
-    if (command === "download_cache_delete_work_enqueue") {
-      return Promise.resolve(createWork("work-1"));
-    }
-    if (command === "download_cache_delete_work_cancel") {
-      return Promise.resolve(undefined);
-    }
-    if (command === "download_cache_delete_work_run") {
-      return Promise.resolve({
-        workId: "work-1",
-        total: 0,
-        deleted: 0,
-        failed: 0,
-        cancelled: false,
-      });
-    }
-    return Promise.reject(new Error(`Unexpected invoke command: ${command}`));
+  vi.mocked(isAndroidRuntime).mockReturnValue(false);
+  downloadQueue.waitForChapterDownloadQueueMutations.mockResolvedValue(undefined);
+  scheduler.getSnapshot.mockReturnValue({ records: [] });
+  scheduler.waitForSourceTaskSettlement.mockResolvedValue(undefined);
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === "chapter_download_queue_remove") return;
+    if (command === "download_cache_delete_work_enqueue") return createWork("work-1");
+    if (command === "download_cache_delete_work_cancel") return;
+    if (command === "download_cache_delete_work_run") return deleted;
+    throw new Error(`Unexpected invoke command: ${command}`);
   });
 });
 
-describe("enqueueDownloadCacheDelete", () => {
-  it("waits only for the deleted chapter writer before removing files", async () => {
-    const targetWriter = deferred<void>();
-    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([{ id: 7, pluginId: "source" }]);
-    schedulerMocks.getSnapshot.mockReturnValue({ records: [
+describe("deleteDownloadCache", () => {
+  it("does not run restored deletion work twice while its first execution is active", async () => {
+    const finished = deferred<DownloadCacheDeleteResult>();
+    const invoke = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === "download_cache_delete_work_run") return finished.promise;
+      return invoke(...args);
+    });
+    const options = { existingWork: createWork("work-1"), scope: "chapter" as const, title: "Delete chapter" };
+    const first = deleteDownloadCache(options);
+    const second = deleteDownloadCache(options);
+    await flushMicrotasks();
+    try {
+      expect(native.invoke.mock.calls.filter(([command]) => command === "download_cache_delete_work_run")).toHaveLength(1);
+    } finally {
+      finished.resolve(deleted);
+      await Promise.all([first, second]);
+    }
+  });
+
+  it("cancels only target downloads without waiting for network settlement or the download queue", async () => {
+    const pending = new Promise<void>(() => {});
+    scheduler.getSnapshot.mockReturnValue({ records: [
       { id: "target", kind: "chapter.download", subject: { chapterId: 7 } },
       { id: "other", kind: "chapter.download", subject: { chapterId: 8 } },
     ] });
-    schedulerMocks.cancel.mockReturnValue(true);
-    schedulerMocks.waitForSourceTaskSettlement.mockImplementation((id: string) => {
-      if (id !== "target") throw new Error("Unrelated downloads must not delay deletion");
-      return targetWriter.promise;
-    });
-    enqueueDownloadCacheDelete({ scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1" });
-    const running = capturedSpec!.run(createContext(new AbortController()));
-    await flushMicrotasks();
-    expect(schedulerMocks.cancel).toHaveBeenCalledExactlyOnceWith("target");
-    expect(tauriMocks.invoke).not.toHaveBeenCalledWith("download_cache_delete_work_run", expect.anything());
-    targetWriter.resolve();
-    await running;
-    expect(schedulerMocks.waitForSourceTaskSettlement).toHaveBeenCalledExactlyOnceWith("target");
-    expect(tauriMocks.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: true });
+    scheduler.cancel.mockReturnValue(true);
+    scheduler.waitForSourceTaskSettlement.mockReturnValue(pending);
+    downloadQueue.waitForChapterDownloadQueueMutations.mockReturnValue(pending);
+
+    await expect(deleteDownloadCache({
+      scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1",
+    })).resolves.toEqual(deleted);
+
+    expect(scheduler.cancel).toHaveBeenCalledExactlyOnceWith("target");
+    expect(downloadQueue.discardQueuedChapterDownloads).toHaveBeenCalledExactlyOnceWith([7]);
+    expect(scheduler.waitForSourceTaskSettlement).not.toHaveBeenCalled();
+    expect(downloadQueue.waitForChapterDownloadQueueMutations).not.toHaveBeenCalled();
+    expect(native.invoke).toHaveBeenCalledWith("chapter_download_queue_remove", { chapterIds: [7] });
+    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: true });
   });
 
-  it("clears the download record for a missing known folder without searching other works", async () => {
+  it("clears the record for a missing known folder without searching other works", async () => {
     vi.mocked(isAndroidRuntime).mockReturnValue(true);
     const directory = "contents/source/Original-work/1-Opening";
     rememberAuthoritativeChapterStorageDir(7, directory);
-    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([{ id: 7, pluginId: "source" }]);
     vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, name: "Opening", position: 1 } as never);
     vi.mocked(getNovelById).mockResolvedValue({ id: 3, pluginId: "source", path: "/work", name: "Renamed", isLocal: false } as never);
     vi.mocked(deleteAndroidStoragePath).mockResolvedValue(undefined);
     vi.mocked(listAndroidChapterStorageDirs).mockRejectedValue(new Error("Unrelated folder search must not run"));
-    try {
-      enqueueDownloadCacheDelete({ scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1" });
-      await expect(capturedSpec!.run(createContext(new AbortController()))).resolves.toMatchObject({ cancelled: false });
-      expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
-      expect(deleteAndroidStoragePath).toHaveBeenCalledWith(directory);
-      expect(tauriMocks.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: false });
-    } finally {
-      clearAuthoritativeStorageDirs();
-      vi.mocked(isAndroidRuntime).mockReturnValue(false);
-    }
+
+    await expect(deleteDownloadCache({
+      scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1",
+    })).resolves.toEqual(deleted);
+
+    expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
+    expect(deleteAndroidStoragePath).toHaveBeenCalledWith(directory);
+    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: false });
   });
 
-  it("deletes local chapter artifacts without mutating WebView cache state", async () => {
-    const events: string[] = [];
-    const chapterCandidate = {
-      id: 7,
-      contentBytes: 256,
-      isDownloaded: false,
-      path: "/chapter/7",
-      pluginId: "source-a",
-      sourceContentType: "html",
-    };
-    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([
-      chapterCandidate,
-      {
-        contentBytes: 0,
-        id: 8,
-        isDownloaded: false,
-        path: "/chapter/8",
-        pluginId: "source-a",
-        sourceContentType: "html",
-      },
+  it("deletes stored content when its source plugin is unavailable", async () => {
+    queries.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([{
+      id: 7, contentBytes: 128, isDownloaded: true, path: "/chapter/7",
+      pluginId: "missing-source", sourceContentType: "html",
+    }]);
+    await expect(deleteDownloadCache({
+      scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1",
+    })).resolves.toEqual(deleted);
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "chapter_download_queue_remove", "download_cache_delete_work_enqueue", "download_cache_delete_work_run",
     ]);
-    tauriMocks.invoke.mockImplementation((command: string) => {
-      if (command === "chapter_download_queue_remove") {
-        return Promise.resolve(undefined);
-      }
-      if (command === "download_cache_delete_work_enqueue") {
-        events.push("enqueue");
-        return Promise.resolve({
-          ...createWork("work-1"),
-          scope: "novel",
-          targetIds: [3],
-          total: 2,
-        });
-      }
-      if (command === "download_cache_delete_work_run") {
-        events.push("run");
-        return Promise.resolve({
-          workId: "work-1",
-          total: 2,
-          deleted: 2,
-          failed: 0,
-          cancelled: false,
-        });
-      }
-      return Promise.reject(new Error(`Unexpected invoke command: ${command}`));
-    });
-    enqueueDownloadCacheDelete({
-      scope: "novel",
-      targetIds: [3],
-      title: "Delete chapter",
-      workId: "work-1",
-    });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-
-    await capturedSpec.run(createContext(new AbortController()));
-
-    expect(events).toEqual(["enqueue", "run"]);
-  });
-
-  it("continues deletion when source metadata is unavailable", async () => {
-    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([
-      {
-        contentBytes: 0,
-        id: 7,
-        isDownloaded: true,
-        path: "/chapter/7",
-        pluginId: "missing-source",
-        sourceContentType: "html",
-      },
-    ]);
-    enqueueDownloadCacheDelete({
-      scope: "chapter",
-      targetIds: [7],
-      title: "Delete chapter",
-      workId: "work-1",
-    });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-
-    await expect(
-      capturedSpec.run(createContext(new AbortController())),
-    ).resolves.toMatchObject({ cancelled: false });
-    expect(tauriMocks.invoke).toHaveBeenCalledWith(
-      "download_cache_delete_work_run",
-      expect.objectContaining({ workId: "work-1" }),
-    );
   });
 
   it("preserves native deletion failures", async () => {
-    const deletionError = new Error("native deletion failed");
-    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([
-      {
-        contentBytes: 0,
-        id: 7,
-        isDownloaded: true,
-        path: "/chapter/7",
-        pluginId: "source-a",
-        sourceContentType: "html",
-      },
-    ]);
-    tauriMocks.invoke.mockImplementation((command: string) => {
-      if (command === "chapter_download_queue_remove") {
-        return Promise.resolve(undefined);
-      }
-      if (command === "download_cache_delete_work_enqueue") {
-        return Promise.resolve(createWork("work-1"));
-      }
+    const failure = new Error("Native deletion failed");
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "chapter_download_queue_remove") return;
+      if (command === "download_cache_delete_work_enqueue") return createWork("work-1");
+      if (command === "download_cache_delete_work_run") throw failure;
+      throw new Error(`Unexpected invoke command: ${command}`);
+    });
+    await expect(deleteDownloadCache({
+      scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1",
+    })).rejects.toBe(failure);
+  });
+
+  it("cancels restored native work when deletion was already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(deleteDownloadCache({
+      existingWork: createWork("work-1"), scope: "all", title: "Clear downloaded content", signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith("download_cache_delete_work_cancel", { workId: "work-1" });
+  });
+
+  it("does not create deletion work after cancellation during target queue removal", async () => {
+    const removed = deferred<void>();
+    native.invoke.mockImplementation((command: string) => {
+      if (command === "chapter_download_queue_remove") return removed.promise;
+      throw new Error(`Unexpected invoke command: ${command}`);
+    });
+    const controller = new AbortController();
+    const running = deleteDownloadCache({
+      scope: "all", title: "Clear downloaded content", workId: "work-1", signal: controller.signal,
+    });
+    const rejected = expect(running).rejects.toMatchObject({ name: "AbortError" });
+    await flushMicrotasks();
+    controller.abort();
+    removed.resolve();
+    await rejected;
+    expect(native.invoke).not.toHaveBeenCalledWith("download_cache_delete_work_enqueue", expect.anything());
+  });
+
+  it("cancels native work created after the deletion was aborted", async () => {
+    const created = deferred<DownloadCacheDeleteWork>();
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "chapter_download_queue_remove") return;
+      if (command === "download_cache_delete_work_enqueue") return created.promise;
+      if (command === "download_cache_delete_work_cancel") return;
+      throw new Error(`Unexpected invoke command: ${command}`);
+    });
+    const controller = new AbortController();
+    const running = deleteDownloadCache({
+      scope: "all", title: "Clear downloaded content", workId: "work-1", signal: controller.signal,
+    });
+    const rejected = expect(running).rejects.toMatchObject({ name: "AbortError" });
+    await flushMicrotasks();
+    controller.abort();
+    created.resolve(createWork("work-1"));
+    await rejected;
+    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_cancel", { workId: "work-1" });
+    expect(native.invoke).not.toHaveBeenCalledWith("download_cache_delete_work_run", expect.anything());
+  });
+
+  it("waits for native cancellation before settling an aborted deletion", async () => {
+    const run = deferred<DownloadCacheDeleteResult>();
+    const started = deferred<void>();
+    const cancelled = deferred<void>();
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "chapter_download_queue_remove") return;
+      if (command === "download_cache_delete_work_enqueue") return createWork("work-1");
+      if (command === "download_cache_delete_work_cancel") return cancelled.promise;
       if (command === "download_cache_delete_work_run") {
-        return Promise.reject(deletionError);
+        started.resolve();
+        return run.promise;
       }
-      return Promise.reject(new Error(`Unexpected invoke command: ${command}`));
-    });
-
-    enqueueDownloadCacheDelete({
-      scope: "chapter",
-      targetIds: [7],
-      title: "Delete chapter",
-      workId: "work-1",
-    });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-
-    const result = capturedSpec.run(createContext(new AbortController()));
-    await expect(result).rejects.toBe(deletionError);
-  });
-
-  it("cancels restored native work while waiting for the storage gate", async () => {
-    const storageOperationStarted = deferred<void>();
-    const releaseStorageOperation = deferred<void>();
-    const storageOperation = runExclusiveChapterStorageOperation(
-      { kind: "all" },
-      undefined,
-      async () => {
-        storageOperationStarted.resolve();
-        await releaseStorageOperation.promise;
-      },
-    );
-    await storageOperationStarted.promise;
-    const controller = new AbortController();
-
-    enqueueDownloadCacheDelete({
-      existingWork: createWork("work-1"),
-      scope: "all",
-      title: "Clear downloaded content",
-    });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    const running = capturedSpec.run(createContext(controller));
-    const rejected = expect(running).rejects.toMatchObject({
-      name: "AbortError",
-    });
-    await flushMicrotasks();
-
-    controller.abort(new DOMException("Task was cancelled.", "AbortError"));
-
-    await rejected;
-    releaseStorageOperation.resolve();
-    await storageOperation;
-    expect(tauriMocks.invoke).toHaveBeenCalledWith(
-      "download_cache_delete_work_cancel",
-      { workId: "work-1" },
-    );
-    expect(tauriMocks.invoke).not.toHaveBeenCalledWith(
-      "download_cache_delete_work_run",
-      expect.anything(),
-    );
-  });
-
-  it("does not enqueue native deletion after cancellation while downloads settle", async () => {
-    const downloadsSettled = deferred<void>();
-    downloadQueueMocks.waitForChapterDownloadQueueMutations.mockImplementationOnce(
-      () => downloadsSettled.promise,
-    );
-    const controller = new AbortController();
-
-    enqueueDownloadCacheDelete({
-      scope: "all",
-      title: "Clear downloaded content",
-      workId: "work-1",
-    });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    const running = capturedSpec.run(createContext(controller));
-    const rejected = expect(running).rejects.toMatchObject({
-      name: "AbortError",
-    });
-    await flushMicrotasks();
-
-    controller.abort(new DOMException("Task was cancelled.", "AbortError"));
-    downloadsSettled.resolve();
-
-    await rejected;
-    expect(tauriMocks.invoke).not.toHaveBeenCalledWith(
-      "download_cache_delete_work_enqueue",
-      expect.anything(),
-    );
-  });
-
-  it("cancels native deletion when cancellation occurs while work is enqueued", async () => {
-    const workEnqueued = deferred<DownloadCacheDeleteWork>();
-    tauriMocks.invoke.mockImplementation((command: string) => {
-      if (command === "download_cache_delete_work_enqueue") {
-        return workEnqueued.promise;
-      }
-      if (command === "download_cache_delete_work_cancel") {
-        return Promise.resolve(undefined);
-      }
-      if (command === "download_cache_delete_work_run") {
-        return Promise.resolve({
-          workId: "work-1",
-          total: 0,
-          deleted: 0,
-          failed: 0,
-          cancelled: false,
-        });
-      }
-      return Promise.reject(new Error(`Unexpected invoke command: ${command}`));
+      throw new Error(`Unexpected invoke command: ${command}`);
     });
     const controller = new AbortController();
-
-    enqueueDownloadCacheDelete({
-      scope: "all",
-      title: "Clear downloaded content",
-      workId: "work-1",
+    const running = deleteDownloadCache({
+      scope: "all", title: "Clear downloaded content", workId: "work-1", signal: controller.signal,
     });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    const running = capturedSpec.run(createContext(controller));
-    const rejected = expect(running).rejects.toMatchObject({
-      name: "AbortError",
-    });
+    const rejected = expect(running).rejects.toMatchObject({ name: "AbortError" });
+    const settled = vi.fn();
+    void running.then(settled, settled);
+    await started.promise;
+    controller.abort();
+    run.resolve({ ...deleted, cancelled: true });
     await flushMicrotasks();
-
-    controller.abort(new DOMException("Task was cancelled.", "AbortError"));
-    workEnqueued.resolve(createWork("work-1"));
-
+    expect(settled).not.toHaveBeenCalled();
+    cancelled.resolve();
     await rejected;
-    expect(tauriMocks.invoke).toHaveBeenCalledWith(
-      "download_cache_delete_work_cancel",
-      { workId: "work-1" },
-    );
-    expect(tauriMocks.invoke).not.toHaveBeenCalledWith(
-      "download_cache_delete_work_run",
-      expect.anything(),
-    );
-  });
-
-  it("waits for native cancellation before releasing a running deletion", async () => {
-    const nativeRun = deferred<DownloadCacheDeleteResult>();
-    const nativeRunStarted = deferred<void>();
-    const nativeCancellation = deferred<void>();
-    tauriMocks.invoke.mockImplementation((command: string) => {
-      if (command === "download_cache_delete_work_enqueue") {
-        return Promise.resolve(createWork("work-1"));
-      }
-      if (command === "download_cache_delete_work_cancel") {
-        return nativeCancellation.promise;
-      }
-      if (command === "download_cache_delete_work_run") {
-        nativeRunStarted.resolve();
-        return nativeRun.promise;
-      }
-      return Promise.reject(new Error(`Unexpected invoke command: ${command}`));
-    });
-    const controller = new AbortController();
-
-    enqueueDownloadCacheDelete({
-      scope: "all",
-      title: "Clear downloaded content",
-      workId: "work-1",
-    });
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    const running = capturedSpec.run(createContext(controller));
-    const rejected = expect(running).rejects.toMatchObject({
-      name: "AbortError",
-    });
-    let settled = false;
-    void running.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
-    await nativeRunStarted.promise;
-
-    controller.abort(new DOMException("Task was cancelled.", "AbortError"));
-    nativeRun.resolve({
-      workId: "work-1",
-      total: 0,
-      deleted: 0,
-      failed: 0,
-      cancelled: true,
-    });
-    await flushMicrotasks();
-
-    expect(settled).toBe(false);
-    nativeCancellation.resolve();
-    await rejected;
-    expect(tauriMocks.invoke).toHaveBeenCalledWith(
-      "download_cache_delete_work_cancel",
-      { workId: "work-1" },
-    );
+    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_cancel", { workId: "work-1" });
   });
 });

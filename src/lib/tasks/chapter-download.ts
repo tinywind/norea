@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
+import { withChapterDownloadWrite } from "../chapter-download-writes";
+import type { ChapterDownloadPhase } from "./task-types";
 import { useBrowseStore } from "../../store/browse";
 import {
   CHAPTER_BINARY_RESOURCE_MEDIA_TYPES,
@@ -102,8 +104,8 @@ export interface ChapterMediaRepairJob {
 }
 
 export type ChapterDownloadStatus =
-  | { kind: "queued" }
-  | { kind: "running" }
+  | { kind: "queued"; phase?: ChapterDownloadPhase }
+  | { kind: "running"; phase?: ChapterDownloadPhase }
   | { kind: "done" }
   | { kind: "cancelled" }
   | { kind: "failed"; error: string };
@@ -148,6 +150,7 @@ export interface ChapterDownloadBatchProgress {
 
 interface ChapterDownloadBatchState extends ChapterDownloadBatchResult {
   cancelRequested: boolean;
+  cancelledChapterIds: Set<number>;
   cancelledUnmaterialized: number;
   materializedChapterIds: Set<number>;
   queuedChapterIds: Set<number>;
@@ -188,6 +191,8 @@ let chapterDownloadQueueExecutorStarted = false;
 let chapterDownloadLifecycleSuspending = false;
 let chapterDownloadLifecycleListenersInstalled = false;
 let backendChapterDownloadQueueMutation: Promise<void> = Promise.resolve();
+const pendingBackendChapterDownloadJobsById = new Map<number, ChapterDownloadJob>();
+const backendChapterDownloadRestorations = new Set<Set<number>>();
 
 function createChapterDownloadProgressReporter(
   setProgress: (progress: TaskProgress) => void,
@@ -569,6 +574,7 @@ function removeQueuedChapterDownloadJobs(chapterIds: Iterable<number>): void {
   if (!isTauriRuntime()) return;
   const uniqueChapterIds = [...new Set(chapterIds)];
   if (uniqueChapterIds.length === 0) return;
+  for (const id of uniqueChapterIds) pendingBackendChapterDownloadJobsById.delete(id);
   queueBackendChapterDownloadMutation("remove queued chapter download", () =>
     removeBackendChapterDownloadJobs(uniqueChapterIds),
   );
@@ -623,9 +629,29 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
     if (queuedJob) jobsById.set(queuedJob.id, queuedJob);
   }
   const queuedJobs = [...jobsById.values()];
-  queueBackendChapterDownloadMutation("queue chapter downloads", () =>
-    enqueueBackendChapterDownloadJobs(queuedJobs),
-  );
+  for (const job of queuedJobs) pendingBackendChapterDownloadJobsById.set(job.id, job);
+  queueBackendChapterDownloadMutation("queue chapter downloads", async () => {
+    const pending = queuedJobs.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) === job);
+    try {
+      await enqueueBackendChapterDownloadJobs(pending);
+      const discarded = pending.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) !== job);
+      await removeBackendChapterDownloadJobs(discarded.map((job) => job.id));
+    } finally {
+      for (const job of pending) {
+        if (pendingBackendChapterDownloadJobsById.get(job.id) === job) pendingBackendChapterDownloadJobsById.delete(job.id);
+      }
+    }
+  });
+}
+
+export function discardQueuedChapterDownloads(chapterIds: readonly number[]): void {
+  for (const cancelledChapterIds of backendChapterDownloadRestorations) {
+    for (const id of chapterIds) cancelledChapterIds.add(id);
+  }
+  for (const state of chapterDownloadBatchStates.values()) {
+    for (const id of chapterIds) state.cancelledChapterIds.add(id);
+  }
+  removeQueuedChapterDownloadJobs(chapterIds);
 }
 
 function installChapterDownloadLifecycleListeners(): void {
@@ -753,9 +779,9 @@ function emitChapterDownloadBatchSettled(batchId: string): void {
 function statusFromTask(task: TaskRecord): ChapterDownloadStatus | null {
   switch (task.status) {
     case "queued":
-      return { kind: "queued" };
+      return { kind: "queued", ...(task.chapterDownloadPhase ? { phase: task.chapterDownloadPhase } : {}) };
     case "running":
-      return { kind: "running" };
+      return { kind: "running", ...(task.chapterDownloadPhase ? { phase: task.chapterDownloadPhase } : {}) };
     case "succeeded":
       return { kind: "done" };
     case "cancelled":
@@ -867,6 +893,7 @@ function enqueueChapterDownloadForExecutor(
     run: async ({
       confirmSourceAccess,
       executor,
+      setChapterDownloadPhase,
       setProgress,
       setSourceAccessUrl,
       shouldYield,
@@ -874,6 +901,7 @@ function enqueueChapterDownloadForExecutor(
       sourceAccessVerification,
       tryStartSourceAccess,
     }) => {
+      setChapterDownloadPhase?.("local");
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       const liveReaderUpdates = shouldEmitLiveChapterDownloadUpdates(job);
       let progressTotal = 1;
@@ -888,7 +916,7 @@ function enqueueChapterDownloadForExecutor(
         if (signal.aborted) throw abortReason(signal);
         await waitForChapterStorageOperation(job.pluginId, signal);
         if (signal.aborted) throw abortReason(signal);
-        const storedArtifacts = await reconcileStoredChapterContent(job.id);
+        const storedArtifacts = await withChapterDownloadWrite(job.id, signal, () => reconcileStoredChapterContent(job.id));
         if (signal.aborted) throw abortReason(signal);
         if (!sourceAccessVerification && storedArtifacts.status === "present") {
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
@@ -898,7 +926,7 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
-        if (await tryDownloadServerChapter(job, signal)) {
+        if (await tryDownloadServerChapter(job, signal, setChapterDownloadPhase)) {
           if (signal.aborted) throw abortReason(signal);
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
           reportProgress(
@@ -908,6 +936,7 @@ function enqueueChapterDownloadForExecutor(
           return;
         }
         if (signal.aborted) throw abortReason(signal);
+        setChapterDownloadPhase?.("source-download");
         if (tryStartSourceAccess && !tryStartSourceAccess()) return;
         if (isTauriRuntime()) {
           await abortableStep(signal, pluginManager.loadInstalledFromDb());
@@ -967,10 +996,8 @@ function enqueueChapterDownloadForExecutor(
         const persistPartialHtml = async (
           partialHtml: string,
         ): Promise<void> => {
-          const partialSaveResult = await saveStoredChapterPartialContent(
-            job.id,
-            partialHtml,
-            savedContentType,
+          const partialSaveResult = await withChapterDownloadWrite(job.id, signal, () =>
+            saveStoredChapterPartialContent(job.id, partialHtml, savedContentType),
           );
           if (partialSaveResult.rowsAffected <= 0) {
             throw missingLocalChapterError(job);
@@ -1001,16 +1028,13 @@ function enqueueChapterDownloadForExecutor(
           }
           if (contentType === "pdf") {
             const dataUrl = `data:${CHAPTER_BINARY_RESOURCE_MEDIA_TYPES.pdf};base64,${bytesToBase64(bytes)}`;
-            const saveResult = await saveStoredChapterContent(
-              job.id,
-              dataUrl,
-              contentType,
-              { mediaBytes: 0 },
+            const saveResult = await withChapterDownloadWrite(job.id, signal, () =>
+              saveStoredChapterContent(job.id, dataUrl, contentType, { mediaBytes: 0 }),
             );
             if (saveResult.rowsAffected <= 0) {
               throw missingLocalChapterError(job);
             }
-            await clearChapterMedia(job.id, storageContext);
+            await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
             settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
             reportProgress(
               { current: progressTotal, total: progressTotal },
@@ -1029,6 +1053,7 @@ function enqueueChapterDownloadForExecutor(
           const embedded = await storeEmbeddedChapterMedia({
             ...storageContext,
             html,
+            signal,
             resources: epub.sections.flatMap((section) =>
               section.resources.map((resource) => ({
                 bytes: resource.bytes,
@@ -1039,19 +1064,14 @@ function enqueueChapterDownloadForExecutor(
               })),
             ),
           });
-          const saveResult = await saveStoredChapterContent(
-            job.id,
-            embedded.html,
-            contentType,
-            {
-              mediaBytes: embedded.mediaBytes,
-            },
+          const saveResult = await withChapterDownloadWrite(job.id, signal, () =>
+            saveStoredChapterContent(job.id, embedded.html, contentType, { mediaBytes: embedded.mediaBytes }),
           );
           if (saveResult.rowsAffected <= 0) {
             throw missingLocalChapterError(job);
           }
           if (embedded.storedMediaCount === 0) {
-            await clearChapterMedia(job.id, storageContext);
+            await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
           }
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
           reportProgress(
@@ -1178,19 +1198,14 @@ function enqueueChapterDownloadForExecutor(
             }
           }
         }
-        const saveResult = await saveStoredChapterContent(
-          job.id,
-          html,
-          savedContentType,
-          {
-            mediaBytes,
-          },
+        const saveResult = await withChapterDownloadWrite(job.id, signal, () =>
+          saveStoredChapterContent(job.id, html, savedContentType, { mediaBytes }),
         );
         if (saveResult.rowsAffected <= 0) {
           throw missingLocalChapterError(job);
         }
         if (shouldClearMedia) {
-          await clearChapterMedia(job.id, {
+          await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, {
             chapterId: job.id,
             chapterName: chapter.name,
             chapterNumber: chapter.chapterNumber,
@@ -1199,7 +1214,7 @@ function enqueueChapterDownloadForExecutor(
             novelName: novel?.name ?? job.novelName,
             novelPath: novel?.path ?? job.novelPath,
             sourceId: job.pluginId,
-          });
+          }));
         }
         settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
         reportProgress(
@@ -1271,12 +1286,14 @@ export function enqueueChapterMediaRepair(
       confirmSourceAccess,
       executor,
       setDetail,
+      setChapterDownloadPhase,
       setProgress,
       setSourceAccessUrl,
       shouldYield,
       signal,
       tryStartSourceAccess,
     }) => {
+      setChapterDownloadPhase?.("local");
       const reportProgress = createChapterDownloadProgressReporter(setProgress);
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
@@ -1286,12 +1303,13 @@ export function enqueueChapterMediaRepair(
       if (!chapter) {
         throw missingRepairChapterError(job);
       }
-      if (await tryDownloadServerChapter({ ...job, novelId: chapter.novelId, chapterPath: chapter.path }, signal)) {
+      if (await tryDownloadServerChapter({ ...job, novelId: chapter.novelId, chapterPath: chapter.path }, signal, setChapterDownloadPhase)) {
         if (signal.aborted) throw abortReason(signal);
         reportProgress({ current: progressTotal, total: progressTotal }, { force: true });
         return;
       }
       if (signal.aborted) throw abortReason(signal);
+      setChapterDownloadPhase?.("source-download");
       if (tryStartSourceAccess && !tryStartSourceAccess()) return;
       if (isTauriRuntime()) {
         await abortableStep(signal, pluginManager.loadInstalledFromDb());
@@ -1421,16 +1439,13 @@ export function enqueueChapterMediaRepair(
         localChapterMediaSources(repairHtml, repairProbeContext).length ===
           0
       ) {
-        const saveResult = await saveStoredChapterContent(
-          chapter.id,
-          repairHtml,
-          storedContentType,
-          { mediaBytes: 0 },
+        const saveResult = await withChapterDownloadWrite(chapter.id, signal, () =>
+          saveStoredChapterContent(chapter.id, repairHtml, storedContentType, { mediaBytes: 0 }),
         );
         if (saveResult.rowsAffected <= 0) {
           throw missingRepairChapterError(job);
         }
-        await clearChapterMedia(chapter.id, storageContext);
+        await withChapterDownloadWrite(chapter.id, signal, () => clearChapterMedia(chapter.id, storageContext));
         setDetail("Chapter body refreshed");
         reportProgress(
           { current: progressTotal, total: progressTotal },
@@ -1456,10 +1471,8 @@ export function enqueueChapterMediaRepair(
             partialHtml,
             baseUrl,
           );
-          const partialSaveResult = await saveStoredChapterPartialContent(
-            chapter.id,
-            protectedPartialHtml,
-            storedContentType,
+          const partialSaveResult = await withChapterDownloadWrite(chapter.id, signal, () =>
+            saveStoredChapterPartialContent(chapter.id, protectedPartialHtml, storedContentType),
           );
           if (partialSaveResult.rowsAffected <= 0) {
             throw missingRepairChapterError(job);
@@ -1500,13 +1513,8 @@ export function enqueueChapterMediaRepair(
         media.html,
         storageContext,
       );
-      const saveResult = await saveStoredChapterContent(
-        chapter.id,
-        media.html,
-        storedContentType,
-        {
-          mediaBytes,
-        },
+      const saveResult = await withChapterDownloadWrite(chapter.id, signal, () =>
+        saveStoredChapterContent(chapter.id, media.html, storedContentType, { mediaBytes }),
       );
       if (saveResult.rowsAffected <= 0) {
         throw missingRepairChapterError(job);
@@ -1548,6 +1556,7 @@ export function enqueueChapterDownloadBatch({
   const waitForBatchQueue = persist && Boolean(batchJobs);
   chapterDownloadBatchStates.set(batchId, {
     cancelRequested: false,
+    cancelledChapterIds: new Set(),
     cancelled: 0,
     cancelledUnmaterialized: 0,
     failed: 0,
@@ -1577,6 +1586,10 @@ export function enqueueChapterDownloadBatch({
       chapterDownloadBatchStates
         .get(batchId)
         ?.materializedChapterIds.add(job.id);
+      if (chapterDownloadBatchStates.get(batchId)?.cancelledChapterIds.has(job.id)) {
+        settleChapterDownloadBatchJob(batchId, job.id, "cancelled");
+        return;
+      }
       try {
         const handle = enqueueChapterDownloadForExecutor(
           {
@@ -1755,26 +1768,29 @@ async function runBackendChapterDownloadExecutor(): Promise<void> {
         { kind: "all" },
         undefined,
         async () => {
-          const { leased, pendingJobs } =
-            await pendingBackendChapterDownloadJobs();
-          if (pendingJobs.length === 0) {
-            return { leased, restoreHandle: null };
+          const cancelledChapterIds = new Set<number>();
+          backendChapterDownloadRestorations.add(cancelledChapterIds);
+          try {
+            const { leased, pendingJobs } = await pendingBackendChapterDownloadJobs();
+            const jobs = pendingJobs.filter((job) => !cancelledChapterIds.has(job.id));
+            if (jobs.length === 0) {
+              return { leased, restoreHandle: null };
+            }
+            return {
+              leased,
+              restoreHandle: enqueueChapterDownloadBatch({
+                jobs: jobs.map((job) => ({ ...job, priority: "background" })),
+                materializeAllTasks: true,
+                persist: false,
+                removeBackendQueuedJobsOnCancel: true,
+                title: "Queued chapter downloads",
+                total: jobs.length,
+                windowSize: RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
+              }),
+            };
+          } finally {
+            backendChapterDownloadRestorations.delete(cancelledChapterIds);
           }
-          return {
-            leased,
-            restoreHandle: enqueueChapterDownloadBatch({
-              jobs: pendingJobs.map((job) => ({
-                ...job,
-                priority: "background",
-              })),
-              materializeAllTasks: true,
-              persist: false,
-              removeBackendQueuedJobsOnCancel: true,
-              title: "Queued chapter downloads",
-              total: pendingJobs.length,
-              windowSize: RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
-            }),
-          };
         },
       );
     if (!restoreHandle) {

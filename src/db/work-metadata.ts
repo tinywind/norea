@@ -3,10 +3,12 @@ import { base64ToBytes, bytesToBase64 } from "../lib/base64";
 import { chapterStorageRelativeDir } from "../lib/chapter-storage-path";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir, rememberResolvedNovelStorageDir } from "../lib/chapter-storage-resolution";
-import { availableNovelMetadataDirectory, listStoredNovelChapters, listStoredNovelMetadata, parseNovelMetadata, registerNativeWorkChapterDirectories, removeStoredNovelCover, withWorkMetadataRollback, workMetadataOperation, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
+import { availableNovelMetadataDirectory, listStoredNovelChapters, listStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, registerNativeWorkChapterDirectories, removeStoredNovelCover, withWorkMetadataRollback, workMetadataOperation, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
 import { isLocalCoverSource } from "../lib/local-cover";
+import { runWorkContentStorageOperation } from "../lib/content-sync/storage-operation";
 
 interface KnownMetadataFile { directory: string; fingerprint: string }
+export interface WorkMetadataSyncFile extends KnownMetadataFile { pluginId: string; path: string; revision: number }
 const knownFiles = new Map<string, KnownMetadataFile>();
 const novelColumns = ["plugin_id", "path", "name", "cover", "author", "artist", "summary", "status", "genres", "rating", "is_local"];
 const chapterColumns = ["novel_id", "path", "name", "chapter_number", "position", "page", "content_type", "release_time"];
@@ -80,6 +82,12 @@ export async function initializeWorkMetadata(db: Database, options: { rebuild?: 
   await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_file_cache (
     plugin_id text NOT NULL, path text NOT NULL, novel_id integer NOT NULL,
     directory text NOT NULL, fingerprint text NOT NULL, PRIMARY KEY(plugin_id,path))`);
+  const [journal] = await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='work_metadata_sync_journal'");
+  if (!journal) {
+    await db.execute("UPDATE content_sync_cache SET payload=json_remove(payload,'$.fileVersions') WHERE cache_key GLOB 'norea-content-works:*' AND json_valid(payload)");
+  }
+  await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_sync_journal (
+    plugin_id text NOT NULL, path text NOT NULL, revision integer NOT NULL, PRIMARY KEY(plugin_id,path))`);
   await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_directory_cache (
     chapter_id integer PRIMARY KEY, novel_id integer NOT NULL, directory text NOT NULL)`);
   await db.execute("CREATE INDEX IF NOT EXISTS work_metadata_directory_novel ON work_metadata_directory_cache(novel_id)");
@@ -130,7 +138,7 @@ export async function initializeWorkMetadata(db: Database, options: { rebuild?: 
   }
 }
 
-async function metadataFingerprint(metadata: NovelMetadataV1): Promise<string> {
+export async function storedNovelMetadataFingerprint(metadata: NovelMetadataV1): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(parseNovelMetadata(metadata))));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -156,14 +164,40 @@ async function restoreWorkMetadataDirectories(db: Database): Promise<void> {
   }
 }
 
-export async function rememberStoredNovelMetadata(db: Database, directory: string, metadata: NovelMetadataV1): Promise<void> {
+export async function rememberStoredNovelMetadata(db: Database, directory: string, metadata: NovelMetadataV1, coverChanged = false): Promise<void> {
   const [novel] = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
   if (!novel) throw new Error("work metadata: cache identity missing");
-  const fingerprint = await metadataFingerprint(metadata);
+  const fingerprint = await storedNovelMetadataFingerprint(metadata);
+  const key = keyFor(metadata.identity.pluginId, metadata.identity.novelPath);
+  const previous = knownFiles.get(key);
   await db.execute(`INSERT INTO work_metadata_file_cache(plugin_id,path,novel_id,directory,fingerprint) VALUES($1,$2,$3,$4,$5)
     ON CONFLICT(plugin_id,path) DO UPDATE SET novel_id=excluded.novel_id,directory=excluded.directory,fingerprint=excluded.fingerprint`,
   [metadata.identity.pluginId, metadata.identity.novelPath, novel.id, directory, fingerprint]);
-  knownFiles.set(keyFor(metadata.identity.pluginId, metadata.identity.novelPath), { directory, fingerprint });
+  if (coverChanged || previous?.directory !== directory || previous.fingerprint !== fingerprint) {
+    await db.execute(`INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES($1,$2,1)
+      ON CONFLICT(plugin_id,path) DO UPDATE SET revision=revision+1`, [metadata.identity.pluginId, metadata.identity.novelPath]);
+  }
+  knownFiles.set(key, { directory, fingerprint });
+}
+
+export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMetadataSyncFile[]> {
+  if (!isTauriRuntime()) return [];
+  const { getDb, runDatabaseTransaction } = await import("./client");
+  const db = await getDb();
+  if (rescan) {
+    const entries = await listStoredNovelMetadata();
+    for (const entry of entries) {
+      await runWorkContentStorageOperation(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath, () => runDatabaseTransaction(async transaction => {
+        const current = await readStoredNovelMetadata(entry.directory);
+        if (!current) return;
+        await applyNovelMetadataToCache(transaction, current.metadata, current.directory);
+        await rememberStoredNovelMetadata(transaction, current.directory, current.metadata, true);
+        await transaction.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [current.metadata.identity.pluginId, current.metadata.identity.novelPath]);
+      }, true));
+    }
+  }
+  return db.select<WorkMetadataSyncFile[]>(`SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
+    FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path`);
 }
 
 async function persistWorkChapterDirectories(db: Database, novelId: number, chapters: { id: number; directory: string }[]): Promise<void> {
@@ -215,7 +249,7 @@ async function flushDirtyWorkMetadata(db: Database): Promise<void> {
       const { body } = await workMetadataOperation({ operation: "read", path: `${known.directory}/novel.json` });
       if (!body) throw new Error("work metadata: authoritative file disappeared; reload before editing");
       previous = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
-      if (await metadataFingerprint(previous) !== known.fingerprint) throw new Error("work metadata: file changed outside the cache; reload before editing");
+      if (await storedNovelMetadataFingerprint(previous) !== known.fingerprint) throw new Error("work metadata: file changed outside the cache; reload before editing");
     }
     const [novel] = await db.select<CachedNovel[]>(`SELECT id,plugin_id AS pluginId,path,name,cover,author,artist,summary,status,genres,rating,is_local AS isLocal FROM novel WHERE plugin_id=$1 AND path=$2`, [identity.pluginId, identity.path]);
     if (!novel) {
@@ -266,12 +300,12 @@ async function flushDirtyWorkMetadata(db: Database): Promise<void> {
     const metadata = parseNovelMetadata({ schemaVersion: 1, identity: { pluginId: novel.pluginId, novelPath: novel.path },
       novel: { name: novel.name, cover: novel.cover, author: novel.author, artist: novel.artist, summary: novel.summary, status: novel.status, genres: novel.genres, rating: novel.rating, isLocal: Boolean(novel.isLocal) },
       cover });
-    if (localCoverBytes) await writeStoredNovelCover(directory, metadata, localCoverBytes);
+    const coverChanged = localCoverBytes ? await writeStoredNovelCover(directory, metadata, localCoverBytes) : false;
     await writeStoredNovelMetadata(directory, metadata);
     if (!cover && previous?.cover) await removeStoredNovelCover(directory, previous.cover);
     rememberResolvedNovelStorageDir(novel.id, directory);
     await persistWorkChapterDirectories(db, novel.id, mapped);
-    await rememberStoredNovelMetadata(db, directory, metadata);
+    await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);
   }
   if (dirty.length) await db.execute("DELETE FROM work_metadata_dirty");
 }

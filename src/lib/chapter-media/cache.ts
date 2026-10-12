@@ -1,4 +1,5 @@
 import { throwIfAborted } from "../abort";
+import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "../http";
 import { cancelNativeStream } from "../native-stream";
 import {
@@ -208,7 +209,9 @@ export async function cacheHtmlChapterMedia({
       (file) => !fetchedSourceUrls.has(file.sourceUrl),
     );
   if (repair || resetChangedMedia) {
-    await prepareChapterMediaWorkspace(storageContext, repair);
+    await withChapterDownloadWrite(chapterId, signal, () =>
+      prepareChapterMediaWorkspace(storageContext, repair),
+    );
   }
   if (resetChangedMedia) {
     previousManifest = emptyChapterMediaManifest();
@@ -329,15 +332,19 @@ export async function cacheHtmlChapterMedia({
     await emitMediaPatchUpdate(onMediaPatch, template, reusableChangedElements);
   }
   if (!repair && !resetChangedMedia) {
-    await prepareChapterMediaWorkspace(storageContext, repair, {
-      preserveExisting: true,
-    });
+    await withChapterDownloadWrite(chapterId, signal, () =>
+      prepareChapterMediaWorkspace(storageContext, repair, {
+        preserveExisting: true,
+      }),
+    );
   }
   if (downloadUrls.length > 0) {
-    await writeChapterMediaManifest({
-      context: storageContext,
-      files: [...mediaFilesBySourceUrl.values()],
-    });
+    await withChapterDownloadWrite(chapterId, signal, () =>
+      writeChapterMediaManifest({
+        context: storageContext,
+        files: [...mediaFilesBySourceUrl.values()],
+      }),
+    );
   }
 
   const materializeMedia = async (
@@ -438,9 +445,31 @@ export async function cacheHtmlChapterMedia({
           storedBytes = capturedHandle.bodyBytes;
           const bodyHandle = capturedHandle.bodyHandle;
           capturedHandle = null;
-          src = await storeCapturedChapterMediaHandle(
-            {
+          src = await withChapterDownloadWrite(chapterId, signal, () =>
+            storeCapturedChapterMediaHandle(
+              {
+                chapterId,
+                fileName,
+                chapterName,
+                chapterNumber,
+                chapterPosition,
+                novelId,
+                novelName,
+                novelPath,
+                sourceId,
+              },
+              bodyHandle,
+            ),
+          );
+        } else {
+          const body = bytesFromArrayBuffer(await response!.arrayBuffer());
+          throwIfAborted(signal, CHAPTER_MEDIA_CANCELLED_MESSAGE);
+          storedBytes = chapterMediaByteLength(body);
+          src = await withChapterDownloadWrite(chapterId, signal, () =>
+            storeChapterMedia({
+              body,
               chapterId,
+              contentType,
               fileName,
               chapterName,
               chapterNumber,
@@ -449,26 +478,8 @@ export async function cacheHtmlChapterMedia({
               novelName,
               novelPath,
               sourceId,
-            },
-            bodyHandle,
+            }),
           );
-        } else {
-          const body = bytesFromArrayBuffer(await response!.arrayBuffer());
-          throwIfAborted(signal, CHAPTER_MEDIA_CANCELLED_MESSAGE);
-          storedBytes = chapterMediaByteLength(body);
-          src = await storeChapterMedia({
-            body,
-            chapterId,
-            contentType,
-            fileName,
-            chapterName,
-            chapterNumber,
-            chapterPosition,
-            novelId,
-            novelName,
-            novelPath,
-            sourceId,
-          });
         }
         await session.runUpdate(async () => {
           localSources.set(url, src);
@@ -482,10 +493,12 @@ export async function cacheHtmlChapterMedia({
             status: "stored",
             updatedAt: Date.now(),
           });
-          await writeChapterMediaManifest({
-            context: storageContext,
-            files: [...mediaFilesBySourceUrl.values()],
-          });
+          await withChapterDownloadWrite(chapterId, signal, () =>
+            writeChapterMediaManifest({
+              context: storageContext,
+              files: [...mediaFilesBySourceUrl.values()],
+            }),
+          );
           storedMediaCount += 1;
           const changedElements = applyResolvedMediaSource({
             baseUrl,
@@ -569,21 +582,27 @@ export async function cacheHtmlChapterMedia({
 
   let mediaBytes: number;
   try {
-    await writeChapterMediaManifest({
-      context: storageContext,
-      files: [...mediaFilesBySourceUrl.values()],
-    });
-    mediaBytes = await archiveChapterMediaCache({
-      chapterId,
-      chapterName,
-      chapterNumber,
-      chapterPosition,
-      novelId,
-      novelName,
-      novelPath,
-      sourceId,
-    });
+    await withChapterDownloadWrite(chapterId, signal, () =>
+      writeChapterMediaManifest({
+        context: storageContext,
+        files: [...mediaFilesBySourceUrl.values()],
+      }),
+    );
+    mediaBytes = await withChapterDownloadWrite(chapterId, signal, () =>
+      archiveChapterMediaCache({
+        chapterId,
+        chapterName,
+        chapterNumber,
+        chapterPosition,
+        novelId,
+        novelName,
+        novelPath,
+        sourceId,
+      }),
+    );
   } catch (error) {
+    throwIfAborted(signal, CHAPTER_MEDIA_CANCELLED_MESSAGE);
+    if (isMediaAbortError(error)) throw error;
     const finalizationError = new ChapterMediaFinalizationError(error);
     console.warn("[chapter-media] media finalization failed", {
       error: finalizationError.message,
@@ -611,6 +630,7 @@ export async function storeEmbeddedChapterMedia({
   novelName,
   novelPath,
   resources,
+  signal,
   sourceId,
 }: {
   chapterId: number;
@@ -622,6 +642,7 @@ export async function storeEmbeddedChapterMedia({
   novelName?: string | null;
   novelPath?: string | null;
   resources: EmbeddedChapterMediaResource[];
+  signal?: AbortSignal;
   sourceId?: string | null;
 }): Promise<
   Pick<CacheChapterMediaResult, "html" | "mediaBytes" | "storedMediaCount">
@@ -652,7 +673,9 @@ export async function storeEmbeddedChapterMedia({
     novelPath,
     sourceId,
   };
-  await prepareChapterMediaWorkspace(storageContext, false);
+  await withChapterDownloadWrite(chapterId, signal, () =>
+    prepareChapterMediaWorkspace(storageContext, false),
+  );
 
   let rewrittenHtml = html;
   const files: ChapterMediaManifestFile[] = [];
@@ -660,19 +683,21 @@ export async function storeEmbeddedChapterMedia({
   let storedMediaCount = 0;
   for (const resource of uniqueResources) {
     const fileName = uniqueFileName(resource.fileName, usedFileNames);
-    const src = await storeChapterMedia({
-      body: resource.bytes,
-      chapterId,
-      chapterName,
-      chapterNumber,
-      chapterPosition,
-      contentType: resource.contentType,
-      fileName,
-      novelId: novelId ?? undefined,
-      novelName,
-      novelPath,
-      sourceId: sourceId ?? undefined,
-    });
+    const src = await withChapterDownloadWrite(chapterId, signal, () =>
+      storeChapterMedia({
+        body: resource.bytes,
+        chapterId,
+        chapterName,
+        chapterNumber,
+        chapterPosition,
+        contentType: resource.contentType,
+        fileName,
+        novelId: novelId ?? undefined,
+        novelName,
+        novelPath,
+        sourceId: sourceId ?? undefined,
+      }),
+    );
     rewrittenHtml = rewrittenHtml.split(resource.placeholder).join(src);
     files.push({
       bytes: chapterMediaByteLength(resource.bytes),
@@ -688,18 +713,24 @@ export async function storeEmbeddedChapterMedia({
 
   let mediaBytes: number;
   try {
-    await writeChapterMediaManifest({ context: storageContext, files });
-    mediaBytes = await archiveChapterMediaCache({
-      chapterId,
-      chapterName,
-      chapterNumber,
-      chapterPosition,
-      novelId: novelId ?? undefined,
-      novelName,
-      novelPath,
-      sourceId: sourceId ?? undefined,
-    });
+    await withChapterDownloadWrite(chapterId, signal, () =>
+      writeChapterMediaManifest({ context: storageContext, files }),
+    );
+    mediaBytes = await withChapterDownloadWrite(chapterId, signal, () =>
+      archiveChapterMediaCache({
+        chapterId,
+        chapterName,
+        chapterNumber,
+        chapterPosition,
+        novelId: novelId ?? undefined,
+        novelName,
+        novelPath,
+        sourceId: sourceId ?? undefined,
+      }),
+    );
   } catch (error) {
+    throwIfAborted(signal, CHAPTER_MEDIA_CANCELLED_MESSAGE);
+    if (isMediaAbortError(error)) throw error;
     const finalizationError = new ChapterMediaFinalizationError(error);
     console.warn("[chapter-media] embedded media finalization failed", {
       error: finalizationError.message,

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { snapshotAndroidContentChapter, installAndroidContentChapter } from "../android-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
+import { runWorkContentStorageOperation } from "./storage-operation";
 
 export interface ContentIdentity {
   pluginId: string;
@@ -27,14 +28,20 @@ export interface CatalogEntry {
   sequence: number;
 }
 
-export async function fingerprintContentChapter(input: { storageDir: string }): Promise<string> {
+export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath"> }, run: (stagePath: string) => Promise<T>): Promise<T> {
   const stagePath = await invoke<string>("content_sync_create_stage");
   try {
     if (isAndroidRuntime()) await snapshotAndroidContentChapter(input.storageDir, stagePath);
-    return await invoke<string>("content_sync_fingerprint", { storageDir: input.storageDir, stagePath });
+    else await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath,
+      () => invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath }));
+    return await run(stagePath);
   } finally {
     await invoke("content_sync_remove_stage", { stagePath });
   }
+}
+
+export function fingerprintContentChapter(input: { storageDir: string; stagePath: string }): Promise<string> {
+  return invoke<string>("content_sync_fingerprint", input);
 }
 
 export async function uploadContentChapter(input: {
@@ -43,35 +50,52 @@ export async function uploadContentChapter(input: {
   chapterId: number;
   manifest: Omit<PackageManifest, "files" | "bodyPath">;
   storageDir: string;
+  stagePath: string;
 }): Promise<CatalogEntry> {
-  const stagePath = await invoke<string>("content_sync_create_stage");
-  try {
-    if (isAndroidRuntime()) await snapshotAndroidContentChapter(input.storageDir, stagePath);
-    return await invoke<CatalogEntry>("content_sync_upload", {
-      serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
-      storageDir: input.storageDir, stagePath,
-    });
-  } finally {
-    await invoke("content_sync_remove_stage", { stagePath });
-  }
+  return invoke<CatalogEntry>("content_sync_upload", {
+    serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
+    storageDir: input.storageDir, stagePath: input.stagePath,
+  });
 }
 
-export async function downloadContentChapter(input: {
+export async function withDownloadedContentChapter<T>(input: {
   serverUrl: string;
   token?: string;
   entry: CatalogEntry;
   storageDir: string;
   chapterId: number;
-}): Promise<{ contentBytes: number; mediaBytes: number }> {
+  signal?: AbortSignal;
+}, apply: (sizes: { contentBytes: number; mediaBytes: number }, install: (storageDir: string) => Promise<void>) => Promise<T>): Promise<T> {
+  input.signal?.throwIfAborted();
   const stagePath = await invoke<string>("content_sync_create_stage");
+  const removeStage = () => invoke<void>("content_sync_remove_stage", { stagePath });
+  let transfer: Promise<{ contentBytes: number; mediaBytes: number }> | undefined;
+  let settled = false;
+  let onAbort: (() => void) | undefined;
   try {
-    const result = await invoke<{ contentBytes: number; mediaBytes: number }>("content_sync_download", {
+    input.signal?.throwIfAborted();
+    const interrupted = input.signal ? new Promise<never>((_, reject) => {
+      onAbort = () => reject(input.signal!.reason);
+      input.signal!.addEventListener("abort", onAbort, { once: true });
+    }) : undefined;
+    transfer = invoke<{ contentBytes: number; mediaBytes: number }>("content_sync_download", {
       serverUrl: input.serverUrl, token: input.token ?? null, entry: input.entry,
       storageDir: input.storageDir, stagePath,
+    }).finally(() => { settled = true; });
+    const result = await (interrupted ? Promise.race([transfer, interrupted]) : transfer);
+    input.signal?.throwIfAborted();
+    return await apply(result, async storageDir => {
+      if (isAndroidRuntime()) await installAndroidContentChapter(storageDir, stagePath);
+      else await invoke("content_sync_install", { storageDir, stagePath });
     });
-    if (isAndroidRuntime()) await installAndroidContentChapter(input.storageDir, stagePath);
-    return result;
   } finally {
-    await invoke("content_sync_remove_stage", { stagePath });
+    if (onAbort) input.signal?.removeEventListener("abort", onAbort);
+    if (transfer && !settled) {
+      // Native HTTP may still be writing; a cancelled transfer only owns its private stage.
+      void transfer.then(removeStage, removeStage).catch(error => {
+        // eslint-disable-next-line no-console
+        console.warn("[content-sync] cancelled download cleanup failed", error);
+      });
+    } else await removeStage();
   }
 }

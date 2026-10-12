@@ -26,6 +26,7 @@ beforeEach(() => {
 it("keeps rendering independent of pending work refresh and cancels on exit", async () => {
   let complete!: (value: boolean) => void;
   mocks.server.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  mocks.source.mockImplementation(() => new Promise(() => undefined));
   expect(useServerNovelSync(42, true, "Book")).toEqual({ serverError: null, sourceError: null });
   const cleanup = mocks.effects[0]!()!;
   const signal = mocks.server.mock.calls[0]![1] as AbortSignal;
@@ -33,8 +34,22 @@ it("keeps rendering independent of pending work refresh and cancels on exit", as
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
   cleanup(); complete(true);
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
-  expect(mocks.source).not.toHaveBeenCalled();
+  expect(mocks.source).toHaveBeenCalledWith(42, "tasks.task.refreshNovelMetadata", signal);
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+});
+
+it("refreshes source metadata and the visible cache while the server is still pending", async () => {
+  let complete!: (value: boolean) => void;
+  mocks.server.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  useServerNovelSync(42, true, "Book");
+  const cleanup = mocks.effects[0]!()!;
+  const canApplyServerMetadata = mocks.server.mock.calls[0]![2] as () => boolean;
+  expect(canApplyServerMetadata()).toBe(true);
+  await vi.waitFor(() => expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["novel", 42], exact: true }));
+  expect(mocks.source).toHaveBeenCalledOnce();
+  expect(canApplyServerMetadata()).toBe(false);
+  cleanup();
+  complete(false);
 });
 
 it("refreshes again on entry but does not refresh an inactive cached page", async () => {

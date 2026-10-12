@@ -126,6 +126,7 @@ import {
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
+  discardQueuedChapterDownloads,
   getActiveChapterDownloadBatchProgress,
   startChapterDownloadQueueExecutor,
   subscribeChapterDownloadBatchesSettled,
@@ -289,6 +290,19 @@ beforeEach(() => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
+  it("does not materialize a deleted chapter from a pending batch window", async () => {
+    const first = createDeferred<void>();
+    schedulerMocks.enqueueSource.mockImplementation(() => ({ id: "first", promise: first.promise }));
+    const jobs = [7, 8].map((id) => ({ id, pluginId: "source-a", chapterPath: `/chapter/${id}`, title: `Chapter ${id}` }));
+    const handle = enqueueChapterDownloadBatch({ jobs, title: "Batch", windowSize: 1 });
+    await flushMicrotasks();
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(1);
+    discardQueuedChapterDownloads([8]);
+    first.resolve();
+    await expect(handle.promise).resolves.toMatchObject({ cancelled: 1, succeeded: 1, total: 2 });
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(1);
+  });
+
   it("notifies listeners once after a batch settles", async () => {
     schedulerMocks.enqueueSource.mockImplementation(() => ({
       id: "task-1",
@@ -796,7 +810,7 @@ describe("enqueueChapterDownloadBatch", () => {
 });
 
 describe("startChapterDownloadQueueExecutor", () => {
-  it("restores every pending job after waiting for storage operations", async () => {
+  it("waits for storage operations and skips jobs deleted during restore inspection", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const deferreds: Deferred<void>[] = [];
     const storageOperationStarted = createDeferred<void>();
@@ -840,6 +854,7 @@ describe("startChapterDownloadQueueExecutor", () => {
       if (chapterId === 2) {
         return null as never;
       }
+      if (chapterId === 3) discardQueuedChapterDownloads([3]);
       return { isDownloaded: chapterId === 3 } as never;
     });
     await startChapterDownloadQueueExecutor();
@@ -856,7 +871,7 @@ describe("startChapterDownloadQueueExecutor", () => {
     try {
       await vi.waitFor(() => {
         expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
-          restoredJobCount - 2,
+          restoredJobCount - 3,
         );
       });
       expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
@@ -865,13 +880,13 @@ describe("startChapterDownloadQueueExecutor", () => {
         ([spec]) => spec as SourceTaskSpec<void>,
       );
       expect(restoredSpecs.map((spec) => spec.subject?.chapterId)).toEqual(
-        jobs.slice(2).map((job) => job.id),
+        jobs.slice(3).map((job) => job.id),
       );
       expect(restoredSpecs.every((spec) => spec.priority === "background")).toBe(
         true,
       );
       expect([...backendQueueValues.keys()]).toEqual(
-        jobs.slice(2).map((job) => job.id),
+        jobs.slice(3).map((job) => job.id),
       );
       expect(capturedSpec?.kind).toBe("chapter.download");
       expect(capturedSpec?.subject?.batchTitle).toBe("Queued chapter downloads");
@@ -885,15 +900,56 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
+  it("removes a deleted job even when its native queue insertion finishes late", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const inserting = createDeferred<void>();
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "chapter_download_queue_enqueue") await inserting.promise;
+      return original(command, args);
+    });
+    enqueueChapterDownload({ id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
+    await flushMicrotasks();
+    try {
+      discardQueuedChapterDownloads([7]);
+      expect(backendQueueValues.has(7)).toBe(false);
+    } finally {
+      inserting.resolve();
+    }
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(7)).toBe(false);
+  });
+
+  it("does not save a late media result after the chapter was cancelled", async () => {
+    const controller = new AbortController();
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, contentType: "html" } as never);
+    pluginMocks.getChapterResource.mockResolvedValue(contentResource('<img src="https://cdn.test/page.png">'));
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async () => {
+      controller.abort();
+      return { html: "<p>Late</p>", mediaBytes: 0, mediaFailures: [], storedMediaCount: 0 };
+    });
+    vi.mocked(hasRemoteChapterMedia).mockReturnValue(true);
+    enqueueChapterDownload({ id: 7, novelId: 3, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: controller.signal, taskId: "task-1" })).rejects.toMatchObject({ name: "AbortError" });
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+  });
+
   it("completes a server download without starting plugin source access", async () => {
-    vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
+    vi.mocked(tryDownloadServerChapter).mockImplementationOnce(async (_job, _signal, onPhase) => {
+      onPhase?.("server-lookup");
+      onPhase?.("server-download");
+      return true;
+    });
     pluginMocks.getPlugin.mockReturnValue(undefined);
     pluginMocks.getPluginForExecutor.mockImplementation(() => { throw new Error("Plugin is not installed"); });
     enqueueChapterDownload({ id: 7, novelId: 3, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
     if (!capturedSpec) throw new Error("Task spec was not captured.");
     const tryStartSourceAccess = vi.fn(() => false);
     const setProgress = vi.fn();
-    await capturedSpec.run({ setDetail: vi.fn(), setProgress, signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
+    const setChapterDownloadPhase = vi.fn();
+    await capturedSpec.run({ setChapterDownloadPhase, setDetail: vi.fn(), setProgress, signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
+    expect(setChapterDownloadPhase.mock.calls).toEqual([["local"], ["server-lookup"], ["server-download"]]);
     expect(setProgress).toHaveBeenLastCalledWith({ current: 1, total: 1 });
     expect(tryStartSourceAccess).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
@@ -1141,6 +1197,11 @@ describe("enqueueChapterDownload", () => {
 
   it("returns to the scheduler before plugin work when source access is deferred", async () => {
     const tryStartSourceAccess = vi.fn(() => false);
+    const setChapterDownloadPhase = vi.fn();
+    vi.mocked(tryDownloadServerChapter).mockImplementationOnce(async (_job, _signal, onPhase) => {
+      onPhase?.("server-lookup");
+      return false;
+    });
 
     enqueueChapterDownload({
       id: 7,
@@ -1152,6 +1213,7 @@ describe("enqueueChapterDownload", () => {
     if (!capturedSpec) throw new Error("Task spec was not captured.");
     await capturedSpec.run({
       executor: "pool:1",
+      setChapterDownloadPhase,
       setDetail: vi.fn(),
       setProgress: vi.fn(),
       signal: new AbortController().signal,
@@ -1161,6 +1223,7 @@ describe("enqueueChapterDownload", () => {
 
     expect(reconcileStoredChapterContent).toHaveBeenCalledWith(7);
     expect(tryStartSourceAccess).toHaveBeenCalledOnce();
+    expect(setChapterDownloadPhase.mock.calls).toEqual([["local"], ["server-lookup"], ["source-download"]]);
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
     expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();

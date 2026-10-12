@@ -48,13 +48,45 @@ it("caches a server chapter list without duplicating a source chapter or changin
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/cache-work','Book')");
   sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,is_downloaded) VALUES(1,'/chapter/1','Source title','1',1,75,1)");
   const one = { id: "one", chapterPath: "norea-folder:1", name: "Folder-title", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const };
-  await cacheServerChapters(1, [one, { ...one, id: "two", chapterPath: "norea-folder:2", name: "Two", chapterNumber: "2", position: 2 }]);
+  expect(await cacheServerChapters(1, [one, { ...one, id: "two", chapterPath: "norea-folder:2", name: "Two", chapterNumber: "2", position: 2 }])).toBe(true);
   expect(sqlite.prepare("SELECT path,name,progress,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
     { path: "/chapter/1", name: "Source title", progress: 75, is_downloaded: 1 },
     { path: "norea-folder:2", name: "Two", progress: 0, is_downloaded: 0 },
   ]);
-  await cacheServerChapters(1, []);
+  expect(await cacheServerChapters(1, [one])).toBe(false);
+  expect(await cacheServerChapters(1, [])).toBe(false);
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()?.count).toBe(2);
+});
+
+it("stops future chapter batches on navigation cancellation without rejecting the database transaction", async () => {
+  const controller = new AbortController();
+  const db = await getDb();
+  const execute = db.execute;
+  db.execute = async (...args) => {
+    const result = await execute(...args);
+    if (args[0].includes("INSERT INTO chapter(")) controller.abort();
+    return result;
+  };
+  let transactionFailed = false;
+  const transaction = vi.mocked(runDatabaseTransaction).getMockImplementation()!;
+  vi.mocked(runDatabaseTransaction).mockImplementation(async (...args) => {
+    try { return await transaction(...args); }
+    catch (error) { transactionFailed = true; throw error; }
+  });
+  const chapters = Array.from({ length: 150 }, (_, index) => ({
+    id: String(index), chapterPath: `/chapter/${index}`, name: `Chapter ${index}`, chapterNumber: String(index + 1),
+    position: index + 1, page: "1", contentType: "html" as const,
+  }));
+  await expect(cacheServerChapters(42, chapters, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(transactionFailed).toBe(false);
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()?.count).toBe(100);
+});
+
+it("rejects an already cancelled chapter refresh before opening a transaction", async () => {
+  const controller = new AbortController(); controller.abort();
+  vi.mocked(runDatabaseTransaction).mockClear();
+  await expect(cacheServerChapters(42, [], controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(runDatabaseTransaction).not.toHaveBeenCalled();
 });
 
 it("refuses to reconstruct a missing work from a chapter package", async () => {
@@ -84,9 +116,15 @@ it("stores catalog data larger than WebView localStorage without crossing accoun
 it("projects legacy work snapshots before returning them across the database bridge", async () => {
   await writeContentSyncCache("works", JSON.stringify({ cursor: 45, fingerprints: { work: "hash" }, entries: { work: { metadata: "a".repeat(6 * 1024 * 1024) } } }));
   const compact = await readContentSyncStateCache("works", "works");
-  expect(JSON.parse(compact!)).toEqual({ cursor: 45, fingerprints: { work: "hash" } });
+  expect(JSON.parse(compact!)).toEqual({ cursor: 45, fingerprints: { work: "hash" }, fileVersions: {} });
   expect(await readContentSyncCache("works")).toBe(compact);
   expect(compact!.length).toBeLessThan(100);
+});
+
+it("retains work file revisions when reopening the compact sync cache", async () => {
+  const value = { cursor: 45, fingerprints: { work: "content-hash" }, fileVersions: { '["source","/book"]': "file-revision" } };
+  await writeContentSyncCache("works", JSON.stringify(value));
+  expect(JSON.parse((await readContentSyncStateCache("works", "works"))!)).toEqual(value);
 });
 
 it("compacts legacy chapter inventories while retaining tombstones and local checkpoints", async () => {

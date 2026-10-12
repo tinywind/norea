@@ -63,9 +63,10 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
   if (entry.id !== source.workId || await contentWorkId(metadata.identity) !== source.workId) throw new Error("Server work identity does not match its metadata.");
   const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
   const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
-  await installStoredNovelMetadata(metadata, cover?.bytes, requireNewWork ? async current => {
-    if (current) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
+  const installed = await installStoredNovelMetadata(metadata, cover?.bytes, requireNewWork ? async current => {
+    if (current) return false;
   } : undefined);
+  if (installed === null) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
   const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
   if (!novel) throw new Error("Installed server work is missing from the local index.");
   await cacheServerChapters(novel.id, chapters);

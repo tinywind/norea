@@ -6,12 +6,16 @@ const mocks = vi.hoisted(() => ({
   source: { data: null as null | { serverUrl: string; workId: string }, isPending: false, error: null },
   available: { data: { paths: new Set<string>(), numbers: new Set<number>() } as { paths: Set<string>; numbers: Set<number> } | undefined, isLoading: false, error: null },
   installed: false,
+  queries: [] as { queryKey: unknown[]; enabled?: boolean }[],
   chapters: [] as { id: number; name: string; path: string; chapterNumber?: string; isDownloaded: boolean }[],
   novel: { id: 3, name: "Novel", path: "/novel", pluginId: "source-a", isLocal: true, inLibrary: false },
 }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknown[] }) => options.queryKey[0] === "content-server"
+vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknown[]; enabled?: boolean }) => {
+  mocks.queries.push(options);
+  return options.queryKey[0] === "content-server"
   ? options.queryKey[1] === "novel-chapters" ? mocks.available : mocks.source
-  : { data: options.queryKey.includes("chapters") ? mocks.chapters : mocks.novel, isLoading: false } }));
+  : { data: options.queryKey.includes("chapters") ? mocks.chapters : mocks.novel, isLoading: false };
+} }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useRouterState: () => "/novel?id=3" }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.fn() }));
@@ -36,6 +40,7 @@ vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.f
 import { NovelDetailPage } from "./novel";
 
 beforeEach(() => {
+  mocks.queries.length = 0;
   mocks.source.data = null;
   mocks.source.isPending = false;
   mocks.novel.isLocal = true;
@@ -103,4 +108,11 @@ it("shows source-only chapters and source controls for a bound work with its ori
   const html = renderToStaticMarkup(<NovelDetailPage id={3} />);
   expect(html).toContain("New source chapter");
   expect(html).toContain('data-source-access="true"');
+  expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(false);
+});
+
+it("still queries server availability when the source plugin cannot provide chapters", () => {
+  mocks.source.data = { serverUrl: "http://server", workId: "work" };
+  renderToStaticMarkup(<NovelDetailPage id={3} />);
+  expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });

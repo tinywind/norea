@@ -3,11 +3,13 @@ import { sqliteBoolean } from "../sqlite-value";
 import type { PackageManifest } from "../../lib/content-sync/native";
 import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
 
-export async function cacheServerChapters(novelId: number, chapters: readonly ServerChapterSummary[], signal?: AbortSignal): Promise<void> {
-  await runDatabaseTransaction(async db => {
-    signal?.throwIfAborted();
+export async function cacheServerChapters(novelId: number, chapters: readonly ServerChapterSummary[], signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
+  const changed = await runDatabaseTransaction(async db => {
+    if (signal?.aborted) return false;
     const existing = await db.select<{ path: string; chapterNumber: string | null }[]>(
       "SELECT path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [novelId]);
+    if (signal?.aborted) return false;
     const paths = new Set(existing.map(chapter => chapter.path));
     const numbers = new Map<string, string[]>();
     for (const chapter of existing) {
@@ -28,15 +30,20 @@ export async function cacheServerChapters(novelId: number, chapters: readonly Se
       paths.add(chapter.chapterPath);
       if (number !== null) numbers.set(number, [chapter.chapterPath]);
     }
+    let inserted = false;
     for (let offset = 0; offset < incoming.length; offset += 100) {
-      signal?.throwIfAborted();
+      if (signal?.aborted) break;
       const batch = incoming.slice(offset, offset + 100);
-      await db.execute(`INSERT INTO chapter(novel_id,path,name,chapter_number,position,page,content_type)
+      const result = await db.execute(`INSERT INTO chapter(novel_id,path,name,chapter_number,position,page,content_type)
         VALUES ${batch.map((_, index) => `(${Array.from({ length: 7 }, (_, column) => `$${index * 7 + column + 1}`).join(",")})`).join(",")}
         ON CONFLICT(novel_id,path) DO NOTHING`, batch.flatMap(chapter => [novelId, chapter.chapterPath, chapter.name, chapter.chapterNumber ?? null, chapter.position, chapter.page, chapter.contentType]));
+      inserted ||= result.rowsAffected > 0;
     }
-    signal?.throwIfAborted();
+    return inserted;
   }, true);
+  // Report navigation cancellation after committing already cached chapters.
+  signal?.throwIfAborted();
+  return changed;
 }
 
 export async function readContentSyncCache(key: string): Promise<string | null> {
@@ -54,7 +61,8 @@ export async function readContentSyncStateCache(key: string, kind: "catalog" | "
   const db = await getDb();
   const fields = kind === "works" ? `json_object(
     'cursor',COALESCE(json_extract(payload,'$.cursor'),0),
-    'fingerprints',json(COALESCE(json_extract(payload,'$.fingerprints'),'{}')))` : `json_patch(json_object(
+    'fingerprints',json(COALESCE(json_extract(payload,'$.fingerprints'),'{}')),
+    'fileVersions',json(COALESCE(json_extract(payload,'$.fileVersions'),'{}')))` : `json_patch(json_object(
     'cursor',COALESCE(json_extract(payload,'$.cursor'),0),
     'tombstones',json(COALESCE(json_extract(payload,'$.tombstones'),(
       SELECT json_group_object(json_array(

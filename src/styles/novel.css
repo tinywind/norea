@@ -535,6 +535,15 @@
   min-width: 0;
 }
 
+.norea-novel-chapter-download-status {
+  color: var(--norea-design-accent);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .norea-novel-chapter-percent {
   color: var(--norea-design-ink-muted);
   font-weight: 700;

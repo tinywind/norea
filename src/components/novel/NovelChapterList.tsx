@@ -17,6 +17,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Text, Tooltip } from "@mantine/core";
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -24,8 +25,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
-import { useTranslation } from "../../i18n";
+import { useTranslation, type TranslationKey } from "../../i18n";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
+import { type ChapterDownloadPhase } from "../../lib/tasks/task-types";
 import {
   normalizeFontScalePercent,
   useAppearanceStore,
@@ -56,6 +58,24 @@ const CHAPTER_ROW_HEIGHT = 54;
 const CHAPTER_LIST_OVERSCAN = 8;
 
 const CHAPTER_LIST_FALLBACK_ROWS = 14;
+
+const CHAPTER_DOWNLOAD_LABELS: Record<
+  "queued" | "running",
+  Record<ChapterDownloadPhase, TranslationKey>
+> = {
+  queued: {
+    local: "novel.downloadQueued.local",
+    "server-lookup": "novel.downloadQueued.serverLookup",
+    "server-download": "novel.downloadQueued.serverDownload",
+    "source-download": "novel.downloadQueued.sourceDownload",
+  },
+  running: {
+    local: "novel.downloadPhase.local",
+    "server-lookup": "novel.downloadPhase.serverLookup",
+    "server-download": "novel.downloadPhase.serverDownload",
+    "source-download": "novel.downloadPhase.sourceDownload",
+  },
+};
 
 interface ChapterListItemProps {
   chapter: ChapterListRow;
@@ -97,6 +117,7 @@ function ChapterListItem({
   onToggleSelected,
 }: ChapterListItemProps) {
   const { t } = useTranslation();
+  const downloadStatusId = useId();
   const canDrag = (canMoveUp || canMoveDown) && !reorderBusy;
   const hasReorderControls = canMoveUp || canMoveDown;
   const {
@@ -116,6 +137,16 @@ function ChapterListItem({
   };
   const isQueued = status?.kind === "queued";
   const isRunning = status?.kind === "running";
+  const downloadStatusLabel =
+    status?.kind === "queued" || status?.kind === "running"
+      ? t(
+          status.phase
+            ? CHAPTER_DOWNLOAD_LABELS[status.kind][status.phase]
+            : status.kind === "queued"
+              ? "common.queued"
+              : "common.downloading",
+        )
+      : null;
   const failedMessage = status?.kind === "failed" ? status.error : null;
   const downloadActionLabel = failedMessage
     ? t("novel.retryDownload")
@@ -173,7 +204,9 @@ function ChapterListItem({
           <AlertIcon />
         </ChapterFlag>
       ) : null}
-      {status ? <ChapterDownloadStatusIcon status={status} /> : null}
+      {status ? (
+        <ChapterDownloadStatusIcon status={status} label={downloadStatusLabel} />
+      ) : null}
     </>
   );
   const clearLongPressTimer = () => {
@@ -238,6 +271,7 @@ function ChapterListItem({
       ) : null}
       <button
         aria-busy={isRunning}
+        aria-describedby={downloadStatusLabel ? downloadStatusId : undefined}
         aria-label={
           selectionMode
             ? t("novel.toggleChapterSelection", { name: chapter.name })
@@ -290,22 +324,34 @@ function ChapterListItem({
             </Text>
           </span>
           <span className="norea-novel-chapter-meta-row">
-            {releaseTime ? (
-              <Text component="span" className="norea-novel-chapter-meta">
-                {releaseTime}
-              </Text>
-            ) : null}
-            <span className="norea-novel-chapter-percent norea-novel-chapter-percent--inline">
-              {progress}%
-            </span>
-            {hasChapterFlags ? (
+            {downloadStatusLabel ? (
               <span
-                className="norea-novel-chapter-flags norea-novel-chapter-flags--inline"
-                aria-label={t("novel.chapterStatus")}
+                className="norea-novel-chapter-download-status"
+                id={downloadStatusId}
+                title={downloadStatusLabel}
               >
-                {renderChapterFlags()}
+                {downloadStatusLabel}
               </span>
-            ) : null}
+            ) : (
+              <>
+                {releaseTime ? (
+                  <Text component="span" className="norea-novel-chapter-meta">
+                    {releaseTime}
+                  </Text>
+                ) : null}
+                <span className="norea-novel-chapter-percent norea-novel-chapter-percent--inline">
+                  {progress}%
+                </span>
+                {hasChapterFlags ? (
+                  <span
+                    className="norea-novel-chapter-flags norea-novel-chapter-flags--inline"
+                    aria-label={t("novel.chapterStatus")}
+                  >
+                    {renderChapterFlags()}
+                  </span>
+                ) : null}
+              </>
+            )}
           </span>
         </span>
 
@@ -328,6 +374,7 @@ function ChapterListItem({
         {showDownloadButton ? (
           <IconButton
             className="norea-novel-icon-button"
+            disabled={deleteBusy}
             label={downloadActionLabel}
             size="lg"
             title={failedMessage ?? downloadActionLabel}
@@ -344,7 +391,7 @@ function ChapterListItem({
           <IconButton
             className="norea-novel-icon-button"
             data-busy={repairBusy ? "true" : undefined}
-            disabled={repairBusy}
+            disabled={repairBusy || deleteBusy}
             label={t("novel.repairChapterMedia")}
             size="lg"
             onClick={(event) => {
@@ -596,12 +643,12 @@ function ChapterFlag({ children, label, tone = "default" }: ChapterFlagProps) {
 }
 
 function ChapterDownloadStatusIcon({
+  label,
   status,
 }: {
+  label: string | null;
   status: ChapterDownloadStatus;
 }) {
-  const { t } = useTranslation();
-
   if (status.kind === "done" || status.kind === "cancelled") return null;
 
   if (status.kind === "failed") {
@@ -612,17 +659,15 @@ function ChapterDownloadStatusIcon({
     );
   }
 
-  if (status.kind === "running") {
-    return (
-      <ChapterFlag label={t("common.downloading")}>
-        <SpinnerGlyph className="norea-novel-spin-icon" />
-      </ChapterFlag>
-    );
-  }
+  if (!label) return null;
 
   return (
-    <ChapterFlag label={t("common.queued")}>
-      <ClockGlyph />
+    <ChapterFlag label={label}>
+      {status.kind === "running" ? (
+        <SpinnerGlyph className="norea-novel-spin-icon" />
+      ) : (
+        <ClockGlyph />
+      )}
     </ChapterFlag>
   );
 }

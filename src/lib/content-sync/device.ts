@@ -23,10 +23,22 @@ function deviceKeyForServer(server: string): string {
 }
 
 const registrations = new Map<string, Promise<string>>();
+const registeredDevices = new Map<string, { deviceName: string; deviceKey: string }>();
+
+export function forgetContentDeviceRegistration(serverUrl: string, deviceKey: string): void {
+  const server = normalizeContentServerUrl(serverUrl);
+  if (registeredDevices.get(server)?.deviceKey === deviceKey) registeredDevices.delete(server);
+}
 
 export function registerContentDevice(serverUrl: string, deviceName: string, signal?: AbortSignal): Promise<string> {
   const server = normalizeContentServerUrl(serverUrl);
-  const pending = signal ? undefined : registrations.get(server);
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const registered = registeredDevices.get(server);
+  if (registered?.deviceName === deviceName && localStorage.getItem(`norea-content-device:${server}`) === registered.deviceKey) {
+    return Promise.resolve(registered.deviceKey).then(key => { signal?.throwIfAborted(); return key; });
+  }
+  const registrationKey = JSON.stringify([server, deviceName]);
+  const pending = signal ? undefined : registrations.get(registrationKey);
   if (pending) return pending;
   const registration = (async () => {
     signal?.throwIfAborted();
@@ -40,8 +52,9 @@ export function registerContentDevice(serverUrl: string, deviceName: string, sig
     const deviceKey = deviceKeyForServer(server);
     await contentServerRequest<RegisteredDevice>(server, "/devices/register", undefined, "POST", { deviceKey, deviceName }, signal);
     signal?.throwIfAborted();
+    registeredDevices.set(server, { deviceName, deviceKey });
     return deviceKey;
-  })().finally(() => { if (!signal) registrations.delete(server); });
-  if (!signal) registrations.set(server, registration);
+  })().finally(() => { if (!signal) registrations.delete(registrationKey); });
+  if (!signal) registrations.set(registrationKey, registration);
   return registration;
 }

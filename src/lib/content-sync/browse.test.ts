@@ -74,7 +74,7 @@ it("protects metadata installed concurrently while opening a new server work", a
   vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
   vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
     const current = { directory: "contents/source/Book", metadata };
-    await guard!(current);
+    if (await guard!(current) === false) return null;
     return current;
   });
   await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).rejects.toThrow("installed while opening");

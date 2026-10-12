@@ -73,7 +73,7 @@ import {
 } from "../lib/plugin-vpn";
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
-import { enqueueDownloadCacheDelete } from "../lib/tasks/download-cache-delete";
+import { deleteDownloadCache } from "../lib/tasks/download-cache-delete";
 import type { MainTaskKind } from "../lib/tasks/scheduler";
 import {
   checkDevUpdate,
@@ -1976,12 +1976,10 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       t("settings.data.downloadedContent.busy"),
     );
     try {
-      const result = await enqueueDownloadCacheDelete({
+      const result = await deleteDownloadCache({
         scope: "all",
         title: t("tasks.task.deleteDownloadCache"),
-        progressLabel: (current, total) =>
-          t("tasks.progress.deleteDownloadCache", { current, total }),
-      }).promise;
+      });
       void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
       void queryClient.invalidateQueries({ queryKey: ["chapter"] });
       void queryClient.invalidateQueries({ queryKey: ["novel"] });

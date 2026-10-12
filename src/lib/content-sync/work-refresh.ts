@@ -11,11 +11,11 @@ import { readServerCover } from "./browse";
 import { ContentServerError, contentServerRequest, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import { readServerNovelSource } from "./novel-source";
-import { contentWorkId, type WorkCatalogEntry } from "./works";
+import { contentWorkId, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
 import { cacheServerChapters } from "../../db/queries/content-sync";
 import { fetchServerChapters } from "./chapters";
 
-export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSignal): Promise<boolean> {
+export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSignal, canApplyMetadata: () => boolean = () => true): Promise<boolean> {
   signal?.throwIfAborted();
   const settings = useContentSyncStore.getState();
   const source = await readServerNovelSource(novelId);
@@ -27,7 +27,8 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
   const stored = await readStoredNovelMetadata(directory);
   if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");
-  const expected = JSON.stringify(stored.metadata);
+  const localCover = await readStoredNovelCover(directory, stored.metadata);
+  const expected = await workMetadataFingerprint(stored.metadata, localCover);
   const result = await withContentServerLookup(async deadline => {
     const token = await registerContentDevice(server, settings.deviceName, deadline);
     deadline.throwIfAborted();
@@ -54,16 +55,21 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   const local = stored.metadata;
   const remote = result.metadata;
   const metadata = { ...remote, novel: { ...remote.novel, cover: result.cover ? remote.novel.cover : local.novel.cover }, cover: result.cover ? remote.cover : local.cover };
-  const coverBytes = result.cover?.bytes ?? await readStoredNovelCover(directory, local) ?? undefined;
-  await installStoredNovelMetadata(metadata, coverBytes, async current => {
-    signal?.throwIfAborted();
-    if (JSON.stringify(current?.metadata) !== expected) throw new Error("Local work metadata changed during server refresh. Reopen the work to retry.");
-  });
-  await cacheServerChapters(novelId, result.chapters, signal);
-  return true;
+  const coverBytes = result.cover?.bytes ?? localCover;
+  let installed = false;
+  if (await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
+    installed = await installStoredNovelMetadata(metadata, coverBytes ?? undefined, async current => {
+      if (signal?.aborted || !canApplyMetadata()) return false;
+      const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
+      if (signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
+    }) !== null;
+  }
+  signal?.throwIfAborted();
+  const chaptersChanged = await cacheServerChapters(novelId, result.chapters, signal);
+  return installed || chaptersChanged;
 }
 
-export async function refreshServerNovelFromSource(novelId: number, title: string, signal?: AbortSignal): Promise<boolean> {
+export async function refreshServerNovelFromSource(novelId: number, title: string, signal?: AbortSignal, priority: "deferred" | "user" = "deferred"): Promise<boolean> {
   signal?.throwIfAborted();
   if (!await readServerNovelSource(novelId)) return false;
   const novel = await getNovelById(novelId);
@@ -73,7 +79,7 @@ export async function refreshServerNovelFromSource(novelId: number, title: strin
   if (!plugin) return false;
   signal?.throwIfAborted();
   const task = enqueueSourceTask({
-    plugin, kind: "source.refreshNovel", priority: "normal", title,
+    plugin, kind: "source.refreshNovel", priority, title,
     subject: { novelId, novelName: novel.name, path: novel.path },
     dedupeKey: `source.refreshNovel:on-open:${novel.pluginId}:${novel.path}`,
     run: context => syncNovelFromSource(pluginManager.getPluginForExecutor(novel.pluginId, context.executor ?? "immediate"),

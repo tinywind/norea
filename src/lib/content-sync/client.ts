@@ -42,6 +42,10 @@ export async function contentServerRequest<T>(serverUrl: string, path: string, t
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
   if (!response.ok) {
+    if (response.status === 401 && token) {
+      const { forgetContentDeviceRegistration } = await import("./device");
+      forgetContentDeviceRegistration(serverUrl, token);
+    }
     throw new ContentServerError(response.status);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;

@@ -3962,7 +3962,7 @@ describe("TaskScheduler", () => {
     expect(snapshots).toBe(1);
   });
 
-  it("publishes progress and detail updates as task events without rebuilding the snapshot", async () => {
+  it("publishes progress, phase, and detail updates without rebuilding the snapshot", async () => {
     const scheduler = new TaskScheduler();
     let snapshots = 0;
     const events: Array<{ previousStatus: string | null; task: string }> = [];
@@ -3997,9 +3997,11 @@ describe("TaskScheduler", () => {
     const eventsAfterStart = events.length;
     context.setProgress({ current: 1, total: 4 });
     context.setDetail("Downloading media");
+    context.setChapterDownloadPhase?.("server-download");
 
     expect(snapshots).toBe(snapshotsAfterStart);
     expect(events.slice(eventsAfterStart)).toEqual([
+      { previousStatus: "running", task: task.id },
       { previousStatus: "running", task: task.id },
       { previousStatus: "running", task: task.id },
     ]);
@@ -4007,6 +4009,7 @@ describe("TaskScheduler", () => {
       scheduler.getSnapshot().records.find((record) => record.id === task.id),
     ).toMatchObject({
       detail: "Downloading media",
+      chapterDownloadPhase: "server-download",
       progress: { current: 1, total: 4 },
     });
 

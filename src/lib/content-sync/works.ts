@@ -1,14 +1,16 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { readContentSyncStateCache, writeContentSyncCache } from "../../db/queries/content-sync";
-import { installStoredNovelMetadata, listStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type NovelMetadataV1 } from "../work-metadata";
+import { readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
+import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
 
 export interface WorkCatalogEntry { id: string; sequence: number; metadata: NovelMetadataV1; hasCover: boolean }
 interface WorkCatalogPage { items: WorkCatalogEntry[]; cursor: number; hasMore: boolean }
-interface WorkSyncCache { cursor: number; fingerprints: Record<string, string> }
+interface WorkSyncCache { cursor: number; fingerprints: Record<string, string>; fileVersions: Record<string, string> }
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const cacheKey = (server: string) => `norea-content-works:${server}`;
-class LocalMetadataChanged extends Error {}
+const identityKey = (identity: NovelMetadataV1["identity"]) => JSON.stringify([identity.pluginId, identity.novelPath]);
+const fileVersion = (file: WorkMetadataSyncFile) => JSON.stringify([file.directory, file.fingerprint, file.revision]);
 
 async function hash(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer)), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -21,13 +23,13 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, entry]) => [key, canonical(entry)]));
   return value;
 }
-async function fingerprint(metadata: NovelMetadataV1, cover: Uint8Array | null): Promise<string> {
+export async function workMetadataFingerprint(metadata: NovelMetadataV1, cover: Uint8Array | null): Promise<string> {
   return hash(new TextEncoder().encode(JSON.stringify([canonical(metadata), cover ? await hash(cover) : null])));
 }
 async function readCache(server: string): Promise<WorkSyncCache> {
   const saved = await readContentSyncStateCache(cacheKey(server), "works");
   const parsed = saved ? JSON.parse(saved) as Partial<WorkSyncCache> : {};
-  return { cursor: parsed.cursor ?? 0, fingerprints: parsed.fingerprints ?? {} };
+  return { cursor: parsed.cursor ?? 0, fingerprints: parsed.fingerprints ?? {}, fileVersions: parsed.fileVersions ?? {} };
 }
 async function saveCache(server: string, cache: WorkSyncCache): Promise<void> {
   await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));
@@ -50,7 +52,7 @@ async function coverRequest(server: string, id: string, token: string, body?: Ui
   return bytes;
 }
 
-export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined): Promise<void> {
+export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<void> {
   let installed = false;
   const cache = await readCache(server);
   let dirty = false;
@@ -59,9 +61,13 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
     await saveCache(server, cache);
     dirty = false;
   };
+  const isCurrent = () => {
+    try { assertCurrent(); return true; }
+    catch { return false; }
+  };
   try {
-    const local = await listStoredNovelMetadata();
-    const byIdentity = new Map(local.map(entry => [JSON.stringify([entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]), entry]));
+    const local = await readWorkMetadataSyncFiles(rescan);
+    const byIdentity = new Map(local.map(entry => [JSON.stringify([entry.pluginId, entry.path]), entry]));
     let more = true;
     while (more) {
       const page = await contentServerRequest<WorkCatalogPage>(server, `/works?after=${cache.cursor}&limit=100`, token);
@@ -71,30 +77,35 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
         const metadata = parseNovelMetadata(entry.metadata);
         if (await contentWorkId(metadata.identity) !== entry.id) throw new Error("Server work identity does not match its metadata.");
         dirty = true;
-        const identity = JSON.stringify([metadata.identity.pluginId, metadata.identity.novelPath]);
-        const current = byIdentity.get(identity);
+        const identity = identityKey(metadata.identity);
+        const file = byIdentity.get(identity);
+        const current = file ? await readStoredNovelMetadata(file.directory) : null;
         let expectedFingerprint: string | null = null;
         if (current) {
-          expectedFingerprint = await fingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
+          expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
           if (cache.fingerprints[entry.id] !== expectedFingerprint) continue;
         }
         const cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null;
         const installedMetadata = metadata;
         assertCurrent();
-        const incomingFingerprint = await fingerprint(installedMetadata, cover);
-        if (incomingFingerprint === expectedFingerprint) continue;
-        try {
-          const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest) => {
-            assertCurrent();
-            const latestFingerprint = latest ? await fingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
-            if (latestFingerprint !== expectedFingerprint) throw new LocalMetadataChanged();
-          });
-          byIdentity.set(JSON.stringify([stored.metadata.identity.pluginId, stored.metadata.identity.novelPath]), stored);
-          installed = true;
-        } catch (error) {
-          if (error instanceof LocalMetadataChanged) continue;
-          throw error;
+        const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
+        if (incomingFingerprint === expectedFingerprint) {
+          if (file) cache.fileVersions[identity] = fileVersion(file);
+          continue;
         }
+        const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest) => {
+          if (!isCurrent()) return false;
+          const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
+          if (!isCurrent() || latestFingerprint !== expectedFingerprint) return false;
+        });
+        assertCurrent();
+        if (!stored) continue;
+        // Installation advances this revision once; a concurrent local write remains newer.
+        const installedFile = { pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath, directory: stored.directory,
+          fingerprint: await storedNovelMetadataFingerprint(stored.metadata), revision: (file?.revision ?? 0) + 1 };
+        byIdentity.set(identity, installedFile);
+        cache.fileVersions[identity] = fileVersion(installedFile);
+        installed = true;
         cache.fingerprints[entry.id] = incomingFingerprint;
       }
       dirty ||= cache.cursor !== page.cursor;
@@ -104,20 +115,23 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
     }
     if (!upload) return;
     let uploaded = 0;
-    for (const { directory } of local) {
-      const latest = await readStoredNovelMetadata(directory);
-      if (!latest) continue;
+    for (const [identity, file] of byIdentity) {
+      const version = fileVersion(file);
+      if (cache.fileVersions[identity] === version) continue;
+      const latest = await readStoredNovelMetadata(file.directory);
+      if (!latest) { cache.fileVersions[identity] = version; dirty = true; continue; }
       const { metadata } = latest;
       const id = await contentWorkId(metadata.identity);
-      const cover = await readStoredNovelCover(directory, metadata);
-      const current = await fingerprint(metadata, cover);
-      if (cache.fingerprints[id] === current) continue;
+      const cover = await readStoredNovelCover(file.directory, metadata);
+      const current = await workMetadataFingerprint(metadata, cover);
+      if (cache.fingerprints[id] === current) { cache.fileVersions[identity] = version; dirty = true; continue; }
       assertCurrent();
       await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}`, token, "PUT", metadata);
       assertCurrent();
       if (cover) await coverRequest(server, id, token, cover, metadata.cover?.contentType);
       assertCurrent();
       cache.fingerprints[id] = current;
+      cache.fileVersions[identity] = version;
       dirty = true;
       if (++uploaded % 25 === 0) await checkpoint();
     }

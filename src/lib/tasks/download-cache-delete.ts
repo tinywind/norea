@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getChapterById } from "../../db/queries/chapter";
 import {
   listNonLocalDownloadCacheDeleteChapters,
@@ -17,18 +16,14 @@ import {
   sourceStorageRelativeDir,
 } from "../chapter-storage-path";
 import { forgetResolvedChapterStorageDir, resolvedChapterStorageDir } from "../chapter-storage-resolution";
+import { waitForChapterDownloadWrites, withChapterDownloadDeletion } from "../chapter-download-writes";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
-import { waitForChapterDownloadQueueMutations } from "./chapter-download";
 import {
-  taskScheduler,
-  type TaskHandle,
-  type TaskRecord,
-  type TaskRunContext,
-} from "./scheduler";
-import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
+  discardQueuedChapterDownloads,
+  waitForChapterDownloadQueueMutations,
+} from "./chapter-download";
+import { taskScheduler, type TaskRecord } from "./scheduler";
 
-const DOWNLOAD_CACHE_DELETE_PROGRESS_EVENT =
-  "download-cache-delete-progress";
 const ANDROID_DELETE_YIELD_INTERVAL = 10;
 
 export type DownloadCacheDeleteScope = "chapter" | "novel" | "all";
@@ -54,22 +49,15 @@ export interface DownloadCacheDeleteResult {
   cancelled: boolean;
 }
 
-interface DownloadCacheDeleteProgressEvent {
-  workId: string;
-  status: string;
-  total: number;
-  completed: number;
-  failed: number;
-  error?: string | null;
-}
+const activeDeletions = new Map<string, Promise<DownloadCacheDeleteResult>>();
 
-export interface EnqueueDownloadCacheDeleteOptions {
+export interface DownloadCacheDeleteOptions {
   scope: DownloadCacheDeleteScope;
   targetIds?: readonly number[];
   title: string;
-  progressLabel?: (completed: number, total: number) => string;
   workId?: string;
   existingWork?: DownloadCacheDeleteWork;
+  signal?: AbortSignal;
 }
 
 function makeDownloadCacheDeleteWorkId(): string {
@@ -87,19 +75,6 @@ function normalizeTargetIds(
     .filter((id) => Number.isInteger(id) && id > 0)
     .sort((left, right) => left - right);
   return [...new Set(ids)];
-}
-
-function taskSubjectForScope(
-  scope: DownloadCacheDeleteScope,
-  targetIds: readonly number[],
-) {
-  if (scope === "novel" && targetIds.length === 1) {
-    return { novelId: targetIds[0] };
-  }
-  if (scope === "chapter" && targetIds.length === 1) {
-    return { chapterId: targetIds[0] };
-  }
-  return undefined;
 }
 
 function isDownloadOrRepairTask(task: TaskRecord): boolean {
@@ -201,34 +176,6 @@ async function runNativeWork(
   });
 }
 
-function progressFromEvent(
-  event: DownloadCacheDeleteProgressEvent,
-): { current: number; total: number } | undefined {
-  if (event.total <= 0) return undefined;
-  return {
-    current: Math.min(event.completed, event.total),
-    total: event.total,
-  };
-}
-
-async function listenForNativeProgress(
-  workId: string,
-  context: TaskRunContext,
-  progressLabel?: (completed: number, total: number) => string,
-): Promise<() => void> {
-  return listen<DownloadCacheDeleteProgressEvent>(
-    DOWNLOAD_CACHE_DELETE_PROGRESS_EVENT,
-    (event) => {
-      if (event.payload.workId !== workId) return;
-      const progress = progressFromEvent(event.payload);
-      context.setProgress(progress);
-      if (progress && progressLabel) {
-        context.setDetail(progressLabel(progress.current, progress.total));
-      }
-    },
-  );
-}
-
 async function yieldAndroidDeletion(): Promise<void> {
   await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
@@ -287,26 +234,15 @@ async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
 async function clearAndroidDownloadArtifacts(
   scope: DownloadCacheDeleteScope,
   targetIds: readonly number[],
-  context: TaskRunContext,
-  progressLabel?: (completed: number, total: number) => string,
+  signal: AbortSignal,
 ): Promise<void> {
   const chapters = await chaptersForDownloadCacheScope(scope, targetIds);
   const chapterIds = chapters.map((chapter) => chapter.id);
-  context.setProgress({ current: 0, total: chapterIds.length });
   for (let index = 0; index < chapterIds.length; index += 1) {
-    if (context.signal.aborted) {
-      throw new DOMException(
-        "Download cache deletion was cancelled.",
-        "AbortError",
-      );
-    }
+    throwIfDownloadCacheDeleteAborted(signal);
     const chapterId = chapterIds[index]!;
     await clearAndroidChapterArtifacts(chapterId);
     const current = index + 1;
-    context.setProgress({ current, total: chapterIds.length });
-    if (progressLabel) {
-      context.setDetail(progressLabel(current, chapterIds.length));
-    }
     if (current % ANDROID_DELETE_YIELD_INTERVAL === 0) {
       await yieldAndroidDeletion();
     }
@@ -315,8 +251,7 @@ async function clearAndroidDownloadArtifacts(
 
 async function runDownloadCacheDelete(
   work: DownloadCacheDeleteWork,
-  context: TaskRunContext,
-  progressLabel?: (completed: number, total: number) => string,
+  signal: AbortSignal,
 ): Promise<DownloadCacheDeleteResult> {
   let cancellation: Promise<void> | undefined;
   const requestCancellation = () => {
@@ -329,99 +264,94 @@ async function runDownloadCacheDelete(
   const abortListener = () => {
     void requestCancellation();
   };
-  context.signal.addEventListener("abort", abortListener, { once: true });
-  let unlisten: (() => void) | undefined;
+  signal.addEventListener("abort", abortListener, { once: true });
   try {
-    if (context.signal.aborted) {
+    if (signal.aborted) {
       await requestCancellation();
-      throwIfDownloadCacheDeleteAborted(context.signal);
-    }
-    unlisten = await listenForNativeProgress(
-      work.id,
-      context,
-      progressLabel,
-    );
-    if (context.signal.aborted) {
-      await requestCancellation();
-      throwIfDownloadCacheDeleteAborted(context.signal);
+      throwIfDownloadCacheDeleteAborted(signal);
     }
     if (isAndroidRuntime()) {
       await clearAndroidDownloadArtifacts(
         work.scope,
         work.targetIds,
-        context,
-        progressLabel,
+        signal,
       );
+      throwIfDownloadCacheDeleteAborted(signal);
       const result = await runNativeWork(work.id, false);
-      throwIfDownloadCacheDeleteAborted(context.signal);
+      throwIfDownloadCacheDeleteAborted(signal);
       return result;
     }
     const result = await runNativeWork(work.id, true);
-    throwIfDownloadCacheDeleteAborted(context.signal);
+    throwIfDownloadCacheDeleteAborted(signal);
     return result;
   } finally {
-    context.signal.removeEventListener("abort", abortListener);
-    unlisten?.();
+    signal.removeEventListener("abort", abortListener);
     if (cancellation) await cancellation;
   }
 }
 
-export function enqueueDownloadCacheDelete({
+export async function deleteDownloadCache({
   existingWork,
-  progressLabel,
   scope,
   targetIds: requestedTargetIds = [],
   title,
   workId,
-}: EnqueueDownloadCacheDeleteOptions): TaskHandle<DownloadCacheDeleteResult> {
+  signal = new AbortController().signal,
+}: DownloadCacheDeleteOptions): Promise<DownloadCacheDeleteResult> {
   const targetIds = existingWork
     ? existingWork.targetIds
     : normalizeTargetIds(scope, requestedTargetIds);
   const id = existingWork?.id ?? workId ?? makeDownloadCacheDeleteWorkId();
   const resolvedScope = existingWork?.scope ?? scope;
   const resolvedTitle = existingWork?.title ?? title;
+  const active = activeDeletions.get(id);
+  if (active) return active;
 
-  return taskScheduler.enqueueMain<DownloadCacheDeleteResult>({
-    kind: "maintenance.clearDownloadedContent",
-    priority: "user",
-    title: resolvedTitle,
-    subject: taskSubjectForScope(resolvedScope, targetIds),
-    dedupeKey: `download-cache-delete:${id}`,
-    run: async (context) => {
-      let enteredStorageOperation = false;
-      try {
-        return await runExclusiveChapterStorageOperation(
-          { kind: "all" },
-          context.signal,
-          async () => {
-            enteredStorageOperation = true;
-            await cancelConflictingDownloads(
-              resolvedScope,
-              targetIds,
-            );
-            if (context.signal.aborted && existingWork) {
-              await cancelNativeWork(existingWork.id);
-            }
-            throwIfDownloadCacheDeleteAborted(context.signal);
-            const work =
-              existingWork ??
-              (await enqueueNativeWork(
-                id,
-                resolvedScope,
-                targetIds,
-                resolvedTitle,
-              ));
-            return runDownloadCacheDelete(work, context, progressLabel);
-          },
-        );
-      } catch (error) {
-        if (!enteredStorageOperation && context.signal.aborted && existingWork) {
-          await cancelNativeWork(existingWork.id);
-        }
-        throw error;
+  const deletion = (async () => {
+    let runningWork = false;
+    try {
+      throwIfDownloadCacheDeleteAborted(signal);
+      const chapters = await chaptersForDownloadCacheScope(resolvedScope, targetIds);
+      throwIfDownloadCacheDeleteAborted(signal);
+      const targetIdSet = new Set(targetIds);
+      const chapterIds = new Set(chapters.map((chapter) => chapter.id));
+      if (resolvedScope === "chapter") {
+        for (const chapterId of targetIds) chapterIds.add(chapterId);
       }
-    },
-  });
+      const tasks = taskScheduler.getSnapshot().records.filter((task) =>
+        isTaskInDeleteScope(task, resolvedScope, targetIdSet, chapterIds),
+      );
+      for (const task of tasks) {
+        if (task.subject?.chapterId) chapterIds.add(task.subject.chapterId);
+      }
+      return await withChapterDownloadDeletion([...chapterIds], async () => {
+        discardQueuedChapterDownloads([...chapterIds]);
+        for (const task of tasks) taskScheduler.cancel(task.id);
+        await waitForChapterDownloadWrites([...chapterIds]);
+        await removeBackendQueuedDownloads([...chapterIds]);
+        throwIfDownloadCacheDeleteAborted(signal);
+        const work = existingWork ?? await enqueueNativeWork(
+          id,
+          resolvedScope,
+          targetIds,
+          resolvedTitle,
+        );
+        runningWork = true;
+        return await runDownloadCacheDelete(work, signal);
+      });
+    } catch (error) {
+      if (!runningWork && signal.aborted && existingWork) {
+        await cancelNativeWork(existingWork.id);
+      }
+      throw error;
+    }
+  })();
+  activeDeletions.set(id, deletion);
+  try {
+    return await deletion;
+  } finally {
+    activeDeletions.delete(id);
+  }
 }
 
 export async function startDownloadCacheDeleteWorkExecutor(
@@ -431,11 +361,11 @@ export async function startDownloadCacheDeleteWorkExecutor(
   const works = await invoke<DownloadCacheDeleteWork[]>(
     "download_cache_delete_work_list_resumable",
   );
-  for (const work of works) {
-    enqueueDownloadCacheDelete({
+  await Promise.all(works.map((work) =>
+    deleteDownloadCache({
       existingWork: work,
       scope: work.scope,
       title: work.title ?? title,
-    });
-  }
+    }),
+  ));
 }

@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+const native = vi.hoisted(() => ({ download: vi.fn(), install: vi.fn() }));
 
 vi.mock("../../db/queries/content-sync", () => ({
   listContentSyncChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
@@ -6,15 +7,20 @@ vi.mock("../../db/queries/content-sync", () => ({
   contentJournalHead: vi.fn(), readContentJournal: vi.fn(),
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
-vi.mock("./native", () => ({ uploadContentChapter: vi.fn(), downloadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn() }));
+vi.mock("./native", () => ({
+  uploadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn(),
+  withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
+  withContentChapterStage: (_input: unknown, run: (stagePath: string) => Promise<unknown>) => run("snapshot"),
+}));
 vi.mock("./works", () => ({ syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0) }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, importContentMetadata, readContentSyncStateCache, writeContentSyncCache, markContentInstalled } from "../../db/queries/content-sync";
-import { uploadContentChapter, fingerprintContentChapter, downloadContentChapter } from "./native";
+import { uploadContentChapter, fingerprintContentChapter } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
 import { syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { syncWorkMetadata } from "./works";
+import { runWorkContentStorageOperation } from "./storage-operation";
 
 const memory = new Map<string, string>();
 let journal: { sequence: number; key: string; value: null }[];
@@ -30,6 +36,8 @@ beforeEach(() => {
   useContentSyncStore.setState({ ...useContentSyncStore.getInitialState(), serverUrl: "http://localhost:7788" });
   vi.mocked(listContentSyncChapters).mockResolvedValue([]);
   vi.mocked(uploadContentChapter).mockReset();
+  native.download.mockReset();
+  native.install.mockReset();
   vi.mocked(importContentMetadata).mockResolvedValue({ novelId: 90, chapterId: 91 });
   vi.mocked(fingerprintContentChapter).mockResolvedValue("fingerprint-a");
   vi.mocked(appFetch).mockImplementation(async (input) => {
@@ -98,10 +106,10 @@ it("uploads later chapters after a local package failure and retries only the fa
 
 it("does not mark a failed native import downloaded and preserves readable directory names", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
-  vi.mocked(downloadContentChapter).mockRejectedValueOnce(new Error("invalid checksum"));
+  vi.mocked(native.download).mockRejectedValueOnce(new Error("invalid checksum"));
   await expect(downloadServerChapter({ id: "server-id", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" } } } as never)).rejects.toThrow("invalid checksum");
   expect(markContentInstalled).not.toHaveBeenCalled();
-  expect(vi.mocked(downloadContentChapter).mock.calls[0]![0]).toMatchObject({ chapterId: 91, storageDir: "contents/source/A-work-work/1-Opening" });
+  expect(vi.mocked(native.download).mock.calls[0]![0]).toMatchObject({ chapterId: 91, storageDir: "contents/source/A-work-work/1-Opening" });
 });
 
 it("uploads a recovered chapter using the existing exact-work server identity", async () => {
@@ -209,10 +217,10 @@ it("does not transfer to a newly selected server when registration completes for
 it("downloads a selected origin chapter without full catalogs or foreground sync state changes", async () => {
   useContentSyncStore.setState({ status: "syncing" });
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
-  vi.mocked(downloadContentChapter).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
   const entry = { id: "one", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://origin-server")).resolves.toEqual({ novelId: 90, chapterId: 91 });
-  expect(downloadContentChapter).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: "http://origin-server" }));
+  expect(native.download).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: "http://origin-server" }));
   expect(syncWorkMetadata).not.toHaveBeenCalled();
   expect(readContentSyncStateCache).not.toHaveBeenCalled();
   expect(writeContentSyncCache).not.toHaveBeenCalled();
@@ -223,12 +231,12 @@ it("downloads a selected origin chapter without full catalogs or foreground sync
 it("installs a legacy server package into the existing source chapter without creating another work", async () => {
   const target = { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" };
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, ...target, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
-  vi.mocked(downloadContentChapter).mockResolvedValue({ contentBytes: 10, mediaBytes: 20 });
+  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 20 });
   const entry = { id: "legacy", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "norea-folder:Book-work", chapterPath: "norea-folder:1" }, chapter: { contentType: "html" } } } as never;
   expect(await downloadServerChapterFromServer(entry, "http://origin", { token: "registered", target })).toEqual({ novelId: 3, chapterId: 7 });
   expect(importContentMetadata).not.toHaveBeenCalled();
   expect(appFetch).not.toHaveBeenCalled();
-  expect(downloadContentChapter).toHaveBeenCalledWith({ serverUrl: "http://origin", token: "registered", entry, storageDir: "contents/source/Book-work/1-One", chapterId: 7 });
+  expect(native.download).toHaveBeenCalledWith({ serverUrl: "http://origin", token: "registered", entry, storageDir: "contents/source/Book-work/1-One", chapterId: 7 });
   expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 20);
 });
 
@@ -257,7 +265,7 @@ it("keeps selected downloads usable while the background work catalog is still t
   const background = syncContentServer(false);
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
-  vi.mocked(downloadContentChapter).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
   const entry = { id: "one", deleted: false, manifest: { identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
   try {
     await downloadServerChapter(entry);
@@ -275,6 +283,71 @@ it("does not rewrite unchanged catalog snapshots on subsequent background polls"
   vi.mocked(writeContentSyncCache).mockClear();
   await syncContentServer();
   expect(writeContentSyncCache).not.toHaveBeenCalled();
+});
+
+it("allows a work operation to finish while its background upload waits for the server", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", novelPath: "n", chapterPath: "c", novelName: "Novel", chapterName: "Chapter", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  let release!: () => void;
+  vi.mocked(uploadContentChapter).mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({} as never); }));
+  const background = syncContentServer();
+  await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
+  let completed = false;
+  const foreground = runWorkContentStorageOperation("p", "n", async () => { completed = true; });
+  try {
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 100 });
+    expect(useContentSyncStore.getState().status).toBe("syncing");
+  } finally {
+    release();
+    await Promise.all([background, foreground]);
+  }
+});
+
+it("keeps work metadata usable while a selected package download waits for the server", async () => {
+  const target = { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, ...target, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
+  let release!: () => void;
+  vi.mocked(native.download).mockImplementationOnce(() => new Promise(resolve => {
+    release = () => resolve({ contentBytes: 10, mediaBytes: 0 });
+  }));
+  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const downloading = downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
+  await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
+  let completed = false;
+  const foreground = runWorkContentStorageOperation("source", "/work", async () => { completed = true; });
+  try {
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 100 });
+    expect(markContentInstalled).not.toHaveBeenCalled();
+  } finally {
+    release();
+    await Promise.all([downloading, foreground]);
+  }
+});
+
+it("uses the current chapter folder when metadata changes during the transfer", async () => {
+  const target = { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" };
+  const row = { chapterId: 7, novelId: 3, ...target, novelName: "Before", chapterName: "One", position: 1, page: "1" };
+  vi.mocked(listContentSyncChapters).mockResolvedValueOnce([row] as never)
+    .mockResolvedValue([{ ...row, novelName: "After" }] as never);
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  await downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
+  expect(native.install).toHaveBeenCalledExactlyOnceWith("contents/source/After-work/1-One");
+  expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 0);
+});
+
+it("does not publish a cancelled package after its transfer finishes", async () => {
+  const target = { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" };
+  const controller = new AbortController();
+  const reason = new DOMException("Deleted", "AbortError");
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, ...target, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
+  native.download.mockImplementationOnce(async () => {
+    controller.abort(reason);
+    return { contentBytes: 10, mediaBytes: 0 };
+  });
+  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target, signal: controller.signal })).rejects.toBe(reason);
+  expect(native.install).not.toHaveBeenCalled();
+  expect(markContentInstalled).not.toHaveBeenCalled();
 });
 
 it("removes a compact tombstone on restore and only scans downloaded content initially", async () => {

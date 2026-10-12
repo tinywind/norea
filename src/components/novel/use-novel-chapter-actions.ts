@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { notifications } from "@mantine/notifications";
 import {
   setChaptersReadState,
   setRelativeChaptersReadState,
@@ -7,12 +8,13 @@ import {
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
+import { describeError } from "../../lib/errors";
 import {
   enqueueChapterDownload,
   enqueueChapterDownloadBatch,
   enqueueChapterMediaRepair,
 } from "../../lib/tasks/chapter-download";
-import { enqueueDownloadCacheDelete } from "../../lib/tasks/download-cache-delete";
+import { deleteDownloadCache } from "../../lib/tasks/download-cache-delete";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { chaptersKey } from "./novel-detail-model";
 
@@ -28,40 +30,32 @@ export function useNovelChapterActions(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const invalidateDeletedChapters = () => {
+    void queryClient.invalidateQueries({ queryKey: chaptersKey(id) });
+    void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+    void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+    void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+  };
+  const showDeleteError = (error: Error) => {
+    notifications.show({
+      color: "red",
+      title: t("tasks.task.deleteDownloadCache"),
+      message: describeError(error),
+    });
+  };
   const clearDownload = useMutation({
     mutationFn: async (chapterId: number) => {
       const chapter = chapters.find((row) => row.id === chapterId);
-      const handle = enqueueDownloadCacheDelete({
+      return deleteDownloadCache({
         scope: "chapter",
         targetIds: [chapterId],
         title: t("tasks.task.deleteDownloadCacheChapter", {
           name: chapter?.name ?? String(chapterId),
         }),
-        progressLabel: (current, total) =>
-          t("tasks.progress.deleteDownloadCache", { current, total }),
       });
-      void handle.promise.then(
-        () => {
-          void queryClient.invalidateQueries({
-            queryKey: chaptersKey(id),
-          });
-          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-          void queryClient.invalidateQueries({
-            queryKey: ["novel", "library"],
-          });
-        },
-        () => {
-          void queryClient.invalidateQueries({
-            queryKey: chaptersKey(id),
-          });
-          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-          void queryClient.invalidateQueries({
-            queryKey: ["novel", "library"],
-          });
-        },
-      );
-      return { queued: true };
     },
+    onSettled: invalidateDeletedChapters,
+    onError: showDeleteError,
   });
 
   const clearSelectedDownloads = useMutation({
@@ -69,35 +63,14 @@ export function useNovelChapterActions(
       const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
         (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
       );
-      const handle = enqueueDownloadCacheDelete({
+      return deleteDownloadCache({
         scope: "chapter",
         targetIds: uniqueChapterIds,
         title: t("tasks.task.deleteDownloadCache"),
-        progressLabel: (current, total) =>
-          t("tasks.progress.deleteDownloadCache", { current, total }),
       });
-      void handle.promise.then(
-        () => {
-          void queryClient.invalidateQueries({
-            queryKey: chaptersKey(id),
-          });
-          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-          void queryClient.invalidateQueries({
-            queryKey: ["novel", "library"],
-          });
-        },
-        () => {
-          void queryClient.invalidateQueries({
-            queryKey: chaptersKey(id),
-          });
-          void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-          void queryClient.invalidateQueries({
-            queryKey: ["novel", "library"],
-          });
-        },
-      );
-      return { queued: true };
     },
+    onSettled: invalidateDeletedChapters,
+    onError: showDeleteError,
   });
 
   const setSelectedChapterReadState = useMutation({

@@ -9,7 +9,8 @@ import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
 import {
   contentServerRequest, normalizeContentServerUrl, ContentServerError,
 } from "./client";
-import { downloadContentChapter, fingerprintContentChapter, uploadContentChapter, type CatalogEntry, type ContentIdentity } from "./native";
+import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity } from "./native";
+import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { getWorkSyncCursor, syncWorkMetadata } from "./works";
@@ -39,8 +40,8 @@ function storageDir(row: ContentSyncChapter): string {
     { id: row.chapterId, name: row.chapterName, chapterNumber: row.chapterNumber, position: row.position },
   );
 }
-async function contentFingerprint(row: ContentSyncChapter): Promise<string> {
-  return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row) }),
+async function contentFingerprint(row: ContentSyncChapter, stagePath: string): Promise<string> {
+  return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
 async function uploadIdentity(server: string, token: string, row: ContentSyncChapter): Promise<ContentIdentity> {
@@ -121,14 +122,14 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         continue;
       }
       try {
-        await runWorkContentStorageOperation(row.pluginId, row.novelPath, async () => {
-          const target = await uploadIdentity(server, token, row);
-          assertDevice(server, token);
-          const fingerprint = await contentFingerprint(row);
+        await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath } }, async stagePath => {
+          const fingerprint = await contentFingerprint(row, stagePath);
           assertDevice(server, token);
           if (cache.uploaded[id] !== fingerprint) {
+            const target = await uploadIdentity(server, token, row);
+            assertDevice(server, token);
             await uploadContentChapter({
-              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row),
+              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath,
               manifest: { packageVersion: 1, identity: target,
                 novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
                 chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
@@ -182,7 +183,7 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     const token = await initializeDevice(serverUrl);
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
-    await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token));
+    await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
       await uploadLocalContent(serverUrl, token, cache, rescan);
@@ -207,20 +208,30 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
   return downloadServerChapterFromServer(entry, useContentSyncStore.getState().serverUrl);
 }
 
-export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity }): Promise<{ novelId: number; chapterId: number }> {
+export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
+  options?.signal?.throwIfAborted();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
   const token = options?.token ?? await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
   const target = options?.target ?? entry.manifest.identity;
-  return runWorkContentStorageOperation(target.pluginId, target.novelPath, async () => {
-    const imported = options ? undefined : await importContentMetadata(entry.manifest);
+  const imported = options ? undefined : await importContentMetadata(entry.manifest);
+  const findTarget = async () => {
     const row = (await listContentSyncChapters([contentIdentity(target.pluginId, target.novelPath, target.chapterPath)]))
       .find((item) => !imported || item.chapterId === imported.chapterId);
     if (!row) throw new Error("Downloaded chapter metadata is missing.");
-    const mapping = { novelId: row.novelId, chapterId: row.chapterId };
-    const result = await downloadContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: mapping.chapterId });
-    await markContentInstalled(mapping.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
-    return mapping;
-  });
+    return row;
+  };
+  const row = await findTarget();
+  return withDownloadedContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: row.chapterId, ...(options?.signal ? { signal: options.signal } : {}) }, (result, install) =>
+    runWorkContentStorageOperation(target.pluginId, target.novelPath, async () => {
+      options?.signal?.throwIfAborted();
+      const current = await findTarget();
+      options?.signal?.throwIfAborted();
+      await withChapterDownloadWrite(current.chapterId, options?.signal, async () => {
+        await install(storageDir(current));
+        await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
+      });
+      return { novelId: current.novelId, chapterId: current.chapterId };
+    }));
 }
 
 async function mutateServerChapter(entry: CatalogEntry, restore: boolean): Promise<void> {
