@@ -46,16 +46,31 @@ For a work opened from the server catalog, an installed source plugin also
 refreshes its current metadata and chapter list when the original novel path is
 known. It uses the normal source task and scraper path. Missing source metadata
 does not clear stored fields, and chapters removed from the site remain stored.
+Source refresh starts independently of the server request, with automatic refresh
+behind user tasks in the source queue. A late server response cannot replace a
+completed source refresh. Unchanged server metadata and covers are not reinstalled.
 A failed server or site request leaves the saved work usable. A work must have
 original source identity metadata; folder names cannot establish work identity.
 
-Before a chapter download, Norea asks the server for that chapter. A matching
+Before a chapter download, Norea first checks for a complete local copy, then
+asks the server for that chapter. A matching
 package installs into the existing local chapter; otherwise an available source
 plugin handles the download. The server lookup timeout defaults to 3 seconds
 and can be set from 1 to 120 seconds. This deadline includes device registration
 and metadata lookup, and also applies to work-home server refreshes. Chapter ZIP
 transfers have their own timeout. Server-only chapters report unavailable-server
 errors instead of sending their folder identities to a source plugin.
+After a server failure, source-capable chapters skip server attempts for 30 seconds;
+a missing chapter does not trigger this delay. A failed package transfer also falls
+back to the source plugin. Cancelling a transfer releases the download task without
+publishing late results. Native HTTP may finish in its private staging directory,
+which is removed after the request ends.
+
+Chapter rows show the current step below the title: checking local files,
+checking the content server, downloading from the content server, or downloading
+from the original site. The label changes when a server attempt falls back to
+the source. Queued rows show the known pending step; an unstarted download has
+no selected source yet.
 
 The previous automatic-sync switch migrates to When changes occur when enabled,
 or Manual only when disabled.
@@ -64,6 +79,12 @@ Registered devices can delete and restore server chapters. Server deletion
 preserves local files. Removing a local download does not delete the server copy
 or automatically download it again. A server tombstone prevents a stale local
 upload from restoring deleted content.
+Local deletion runs directly and cancels only the selected chapter downloads.
+It does not enter the task queue or wait for network requests or unrelated jobs.
+An in-progress local write for a selected chapter settles before its files are
+removed; cancelled downloads cannot write files afterward. Pending batch entries
+and late download-queue inserts are discarded for those chapters. A new download
+for the same chapter waits for that deletion before accessing its local files.
 
 ## Device access
 
@@ -77,10 +98,13 @@ unblock a device in the server console. The app keeps the same key after rejecti
 and shows a blocked-device message; it never creates another key to bypass a
 block. Ask the administrator to unblock the device before retrying.
 
-The app checks `/api/v1/capabilities` before registration or content transfer. It
+The app checks `/api/v1/capabilities` before device registration. It
 requires API version 1, package version 1, `authentication: "device-key"`, and
 `personalStateSync: false`. Registration uses `/api/v1/devices/register`;
-subsequent requests carry the key in the authorization header. Change waiting
+successful registration is reused during the app session. A changed device name
+or key requires registration again. HTTP 401 clears only this in-memory result so
+the next request registers the same saved key. Subsequent requests carry the key
+in the authorization header. Change waiting
 uses `catalogAfter`, `workAfter`, and `waitSeconds` and receives chapter and work
 cursor hints.
 
@@ -105,8 +129,10 @@ the fields and validation rules. Existing folders are not automatically rewritte
 from an older database during startup.
 
 Work metadata and covers transfer separately from chapter ZIPs. Sync records a
-work cursor and per-work fingerprints, preserves pending local edits, and retries
-failed transfers. Saved metadata supports offline browsing without refetching the
+work cursor, per-work fingerprints, and local metadata/cover change revisions.
+Normal sync reads only changed work files; external edits require an explicit
+rescan. Pending local edits and failed transfers remain eligible for retry.
+Saved metadata supports offline browsing without refetching the
 source site. Reading progress and library membership stay on each device.
 
 Only complete bodies and media are packaged. Native code transfers ZIP files and
@@ -135,9 +161,13 @@ baseline, keeping existing user databases and folders intact. Sync cursors and
 device keys remain outside portable backups. Downloaded folder names are
 unchanged. No account, session, or personal-state endpoint is called.
 
-Content changes are serialized per work. Backup restoration waits for active
-work operations and holds exclusive storage access until files and settings are
-ready. If file
+Local content installation is serialized per work. Network transfers use private
+staging directories and do not hold a work lock. Upload fingerprinting and packaging
+use one snapshot. Android copies snapshots on a separate, bounded worker so that
+the foreground storage queue can process metadata, downloads, and deletion.
+Conflicting changes during copying discard the snapshot and leave the upload pending.
+Backup restoration waits for active work operations and holds exclusive storage
+access until files and settings are ready. If file
 restoration fails after the database was replaced, restored downloads are marked
 as needing repair and are excluded from upload.
 
