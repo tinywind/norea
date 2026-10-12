@@ -81,6 +81,8 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
         const cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null;
         const installedMetadata = metadata;
         assertCurrent();
+        const incomingFingerprint = await fingerprint(installedMetadata, cover);
+        if (incomingFingerprint === expectedFingerprint) continue;
         try {
           const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest) => {
             assertCurrent();
@@ -93,7 +95,7 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
           if (error instanceof LocalMetadataChanged) continue;
           throw error;
         }
-        cache.fingerprints[entry.id] = await fingerprint(installedMetadata, cover);
+        cache.fingerprints[entry.id] = incomingFingerprint;
       }
       dirty ||= cache.cursor !== page.cursor;
       cache.cursor = page.cursor;

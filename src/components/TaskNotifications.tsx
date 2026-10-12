@@ -134,21 +134,10 @@ export function TaskNotifications() {
       } else {
         void invalidateCompletionWithoutNovel();
       }
-      void queryClient.invalidateQueries({
-        queryKey: ["novel"],
-        refetchType: "active",
-      });
     });
     const unsubscribeChapterDownloadBatches =
       subscribeChapterDownloadBatchesSettled(() => {
-        void flushBatchCompletions()
-          .finally(() =>
-            queryClient.invalidateQueries({
-              queryKey: ["novel"],
-              refetchType: "active",
-            }),
-          )
-          .catch(() => undefined);
+        void flushBatchCompletions().catch(() => undefined);
       });
     void startChapterDownloadQueueExecutor();
     return () => {

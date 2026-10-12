@@ -61,8 +61,12 @@ it("uploads metadata and cover without any downloaded chapter and skips unchange
   expect(remote?.novel.rating).toBe(4.5);
   expect(remoteCover).toEqual(new Uint8Array([1, 2, 3]));
   expect(remote?.novel.author).toBe("Author");
+  const changed = vi.fn();
+  window.addEventListener("norea-content-state-changed", changed);
   await syncWorkMetadata("http://server", "device", true);
   expect(puts).toBe(1);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(changed).not.toHaveBeenCalled();
 });
 
 it("installs a server work and cover before any chapter download", async () => {

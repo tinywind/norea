@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import * as chapterDownloads from "../lib/tasks/chapter-download";
 import { notifications, notificationsStore } from "@mantine/notifications";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { taskScheduler } from "../lib/tasks/scheduler";
@@ -23,6 +25,35 @@ vi.mock("../i18n", () => ({
 vi.mock("../store/notifications", () => ({
   useNotificationStore: () => "none",
 }));
+
+describe("download completion notifications", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
+
+  it.each([false, true])("keeps work metadata cached after completion (batch: %s)", async (batch) => {
+    const client = new QueryClient();
+    const metadataKey = ["novel", "detail", 7];
+    client.setQueryData(metadataKey, { name: "Book", cover: "cover.webp" });
+    client.setQueryData([...metadataKey, "chapters"], [{ id: 11, isDownloaded: false }]);
+    vi.mocked(useQueryClient).mockReturnValue(client);
+    let completion!: Parameters<typeof chapterDownloads.subscribeChapterDownloads>[0];
+    let batchSettled!: () => void;
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloads").mockImplementation(listener => { completion = listener; return () => {}; });
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloadBatchesSettled").mockImplementation(listener => { batchSettled = () => listener("batch"); return () => {}; });
+    vi.spyOn(chapterDownloads, "startChapterDownloadQueueExecutor").mockImplementation(() => {});
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    TaskNotifications();
+    const dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
+    try {
+      completion({ job: { id: 11, novelId: 7, ...(batch ? { batchId: "batch" } : {}) }, status: { kind: "done" } } as Parameters<typeof completion>[0]);
+      if (batch) batchSettled();
+      await vi.waitFor(() => expect(client.getQueryData([...metadataKey, "chapters"])).toEqual([{ id: 11, isDownloaded: true }]));
+      expect(client.getQueryState(metadataKey)?.isInvalidated).toBe(false);
+    } finally {
+      dispose(); client.clear(); vi.unstubAllGlobals();
+    }
+  });
+});
 
 function accessBlock(): SourceAccessBlock {
   return {
