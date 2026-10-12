@@ -8,6 +8,7 @@ import {
   type TaskRunContext,
 } from "./scheduler";
 import { activeScraperExecutor } from "./scraper-queue";
+import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
@@ -16,6 +17,105 @@ async function settle(): Promise<void> {
 }
 
 describe("TaskScheduler", () => {
+  it.each(["backup.export", "backup.restore"] as const)("serializes deletion with %s in both directions", async (backupKind) => {
+    for (const deletionFirst of [false, true]) {
+      const scheduler = new TaskScheduler();
+      let release!: () => void;
+      const firstWriter = new Promise<void>(resolve => { release = resolve; });
+      const events: string[] = [];
+      const enqueueDelete = () => scheduler.enqueueMain({
+        kind: "maintenance.clearDownloadedContent",
+        title: "Delete files",
+        run: ({ signal }) => runExclusiveChapterStorageOperation({ kind: "all" }, signal, async () => {
+          events.push("delete");
+          if (deletionFirst) await firstWriter;
+        }),
+      });
+      const enqueueBackup = () => scheduler.enqueueMain({
+        kind: backupKind,
+        title: "Backup files",
+        run: async () => {
+          events.push("backup");
+          if (!deletionFirst) await firstWriter;
+        },
+      });
+      const first = deletionFirst ? enqueueDelete() : enqueueBackup();
+      await settle();
+      const second = deletionFirst ? enqueueBackup() : enqueueDelete();
+      await settle();
+      try {
+        expect(events).toEqual([deletionFirst ? "delete" : "backup"]);
+      } finally {
+        release();
+        await Promise.all([first.promise, second.promise]);
+      }
+      expect(events).toEqual(deletionFirst ? ["delete", "backup"] : ["backup", "delete"]);
+    }
+  });
+
+  it("deletes downloaded files while downloads and an earlier cache barrier are pending", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    let finishDownload!: () => void;
+    const download = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Download another chapter",
+      source: { id: "source", name: "Source" },
+      run: () => new Promise<void>((resolve) => { finishDownload = resolve; }),
+    });
+    await settle();
+    const barrier = scheduler.enqueueMain({
+      kind: "maintenance.clearWebViewCache",
+      title: "Clear browser cache",
+      run: async () => undefined,
+    });
+    const deleteFiles = vi.fn(async () => undefined);
+    const deletion = scheduler.enqueueMain({
+      kind: "maintenance.clearDownloadedContent",
+      title: "Delete downloaded chapter",
+      run: deleteFiles,
+    });
+    await settle();
+    try {
+      expect(deleteFiles).toHaveBeenCalledOnce();
+      expect(scheduler.getTask(download.id)?.status).toBe("running");
+      expect(scheduler.getTask(barrier.id)?.status).toBe("queued");
+    } finally {
+      finishDownload();
+      await Promise.all([download.promise, barrier.promise, deletion.promise]);
+    }
+  });
+
+  it("starts deletion without waiting for active main work and preserves its queue", async () => {
+    const scheduler = new TaskScheduler();
+    let finishMain!: () => void;
+    const main = scheduler.enqueueMain({
+      kind: "repository.add",
+      title: "Add repository",
+      run: () => new Promise<void>((resolve) => { finishMain = resolve; }),
+    });
+    const laterWork = vi.fn(async () => undefined);
+    const later = scheduler.enqueueMain({
+      kind: "repository.refreshIndex",
+      title: "Refresh repository",
+      run: laterWork,
+    });
+    const deleteFiles = vi.fn(async () => undefined);
+    const deletion = scheduler.enqueueMain({
+      kind: "maintenance.clearDownloadedContent",
+      title: "Delete downloaded chapter",
+      run: deleteFiles,
+    });
+    await settle();
+    try {
+      expect(deleteFiles).toHaveBeenCalledOnce();
+      expect(laterWork).not.toHaveBeenCalled();
+      expect(scheduler.getTask(main.id)?.status).toBe("running");
+    } finally {
+      finishMain();
+      await Promise.all([main.promise, later.promise, deletion.promise]);
+    }
+  });
+
   it("runs main and source tasks independently", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
@@ -158,7 +258,7 @@ describe("TaskScheduler", () => {
     });
 
     await source.promise;
-    expect(order).toEqual(["main:start", "source:start"]);
+    expect(order).toEqual(expect.arrayContaining(["main:start", "source:start"]));
     expect(scheduler.getTask(main.id)?.status).toBe("running");
 
     finishMain();

@@ -60,6 +60,9 @@ import {
 } from "./download-cache-delete";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
+import { deleteAndroidStoragePath, listAndroidChapterStorageDirs } from "../android-storage";
+import { isAndroidRuntime } from "../tauri-runtime";
+import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir } from "../chapter-storage-resolution";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 
 interface Deferred<T> {
@@ -148,6 +151,50 @@ beforeEach(() => {
 });
 
 describe("enqueueDownloadCacheDelete", () => {
+  it("waits only for the deleted chapter writer before removing files", async () => {
+    const targetWriter = deferred<void>();
+    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([{ id: 7, pluginId: "source" }]);
+    schedulerMocks.getSnapshot.mockReturnValue({ records: [
+      { id: "target", kind: "chapter.download", subject: { chapterId: 7 } },
+      { id: "other", kind: "chapter.download", subject: { chapterId: 8 } },
+    ] });
+    schedulerMocks.cancel.mockReturnValue(true);
+    schedulerMocks.waitForSourceTaskSettlement.mockImplementation((id: string) => {
+      if (id !== "target") throw new Error("Unrelated downloads must not delay deletion");
+      return targetWriter.promise;
+    });
+    enqueueDownloadCacheDelete({ scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1" });
+    const running = capturedSpec!.run(createContext(new AbortController()));
+    await flushMicrotasks();
+    expect(schedulerMocks.cancel).toHaveBeenCalledExactlyOnceWith("target");
+    expect(tauriMocks.invoke).not.toHaveBeenCalledWith("download_cache_delete_work_run", expect.anything());
+    targetWriter.resolve();
+    await running;
+    expect(schedulerMocks.waitForSourceTaskSettlement).toHaveBeenCalledExactlyOnceWith("target");
+    expect(tauriMocks.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: true });
+  });
+
+  it("clears the download record for a missing known folder without searching other works", async () => {
+    vi.mocked(isAndroidRuntime).mockReturnValue(true);
+    const directory = "contents/source/Original-work/1-Opening";
+    rememberAuthoritativeChapterStorageDir(7, directory);
+    queryMocks.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([{ id: 7, pluginId: "source" }]);
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, name: "Opening", position: 1 } as never);
+    vi.mocked(getNovelById).mockResolvedValue({ id: 3, pluginId: "source", path: "/work", name: "Renamed", isLocal: false } as never);
+    vi.mocked(deleteAndroidStoragePath).mockResolvedValue(undefined);
+    vi.mocked(listAndroidChapterStorageDirs).mockRejectedValue(new Error("Unrelated folder search must not run"));
+    try {
+      enqueueDownloadCacheDelete({ scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1" });
+      await expect(capturedSpec!.run(createContext(new AbortController()))).resolves.toMatchObject({ cancelled: false });
+      expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
+      expect(deleteAndroidStoragePath).toHaveBeenCalledWith(directory);
+      expect(tauriMocks.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: false });
+    } finally {
+      clearAuthoritativeStorageDirs();
+      vi.mocked(isAndroidRuntime).mockReturnValue(false);
+    }
+  });
+
   it("deletes local chapter artifacts without mutating WebView cache state", async () => {
     const events: string[] = [];
     const chapterCandidate = {

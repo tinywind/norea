@@ -54,6 +54,7 @@ import {
 import { redactUrlsForLog } from "../url-log";
 import { SourceExecutorLeases } from "./source-executor-leases";
 import { TaskHistory } from "./task-history";
+import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 import { SourceCooldowns } from "./source-cooldown";
 import {
   SourceAccessGate,
@@ -1560,6 +1561,17 @@ export class TaskScheduler {
   }
 
   private drainMain(): void {
+    // File deletion must not wait behind network work or a WebView cache barrier.
+    // Its storage gate and targeted download cancellation protect the files.
+    for (const id of [...this.mainQueue]) {
+      const entry = this.entries.get(id);
+      if (
+        entry?.record.status !== "queued" ||
+        entry.record.kind !== "maintenance.clearDownloadedContent"
+      ) continue;
+      this.removeQueuedId(this.mainQueue, id);
+      this.start(entry);
+    }
     if (this.activeMainTaskId || this.mainQueue.length === 0) return;
     const next = this.nextQueuedMainEntry();
     if (!next) return;
@@ -2092,6 +2104,11 @@ export class TaskScheduler {
     context: TaskRunContext,
   ): Promise<unknown> {
     if (entry.record.lane !== "source" || !entry.record.source) {
+      if (entry.record.kind === "backup.export" || entry.record.kind === "backup.restore") {
+        return runExclusiveChapterStorageOperation(
+          { kind: "all" }, context.signal, () => entry.spec.run(context),
+        );
+      }
       return entry.spec.run(context);
     }
 

@@ -16,7 +16,7 @@ import {
   novelStorageIdentitySuffix,
   sourceStorageRelativeDir,
 } from "../chapter-storage-path";
-import { forgetResolvedChapterStorageDir } from "../chapter-storage-resolution";
+import { forgetResolvedChapterStorageDir, resolvedChapterStorageDir } from "../chapter-storage-resolution";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import { waitForChapterDownloadQueueMutations } from "./chapter-download";
 import {
@@ -261,7 +261,8 @@ async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
   const novel = chapter ? await getNovelById(chapter.novelId) : null;
   if (chapter && novel && !novel.isLocal) {
     const preferredChapterDir = chapterStorageRelativeDir(novel, chapter);
-    const chapterDirs = await listAndroidChapterStorageDirs({
+    const knownDirectory = resolvedChapterStorageDir(chapterId);
+    const chapterDirs = knownDirectory ? [knownDirectory] : await listAndroidChapterStorageDirs({
       preferredChapterDir,
       sourceDir: sourceStorageRelativeDir(novel),
       novelIdentitySuffix: novelStorageIdentitySuffix(novel),
