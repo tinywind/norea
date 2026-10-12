@@ -324,6 +324,21 @@ describe("chapter content storage", () => {
     );
   });
 
+  it("marks local image references for repair when the chapter has no stored media", async () => {
+    selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 0 })]);
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") return {
+        status: "present", contentFile: "contents/demo/novel/chapter/content.html", contentBytes: 48, mediaBytes: 0,
+      };
+      if (command === "chapter_content_mirror_read_file") return '<img src="norea-media://reader-asset/panel.png">';
+      return undefined;
+    });
+    await reconcileStoredChapterContent(10);
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(10, 48, 0, "html", true);
+    expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.every(([command]) => !String(command).includes("write") && !String(command).includes("delete"))).toBe(true);
+  });
+
   it("preserves metadata when a final HTML file cannot be read", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {

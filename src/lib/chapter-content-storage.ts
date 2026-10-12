@@ -259,7 +259,7 @@ async function reconcileStoredChapterStorageRow(
       artifacts.contentBytes,
       artifacts.mediaBytes,
       contentType,
-      chapterMediaRepairNeeded(content, contentType),
+      chapterMediaRepairNeeded(content, contentType, artifacts.mediaBytes),
     );
   } else if (
     sqliteBoolean(row.isDownloaded) ||

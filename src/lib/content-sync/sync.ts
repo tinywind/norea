@@ -43,6 +43,29 @@ async function contentFingerprint(row: ContentSyncChapter): Promise<string> {
   return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row) }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
+async function uploadIdentity(server: string, token: string, row: ContentSyncChapter): Promise<ContentIdentity> {
+  const local = { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath };
+  const recovered = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(row.chapterPath);
+  const chapterNumber = row.chapterNumber ?? recovered?.[1];
+  if (!chapterNumber || !/^\d+(?:\.\d+)?$/.test(chapterNumber)) return local;
+  let entry: CatalogEntry;
+  try {
+    const query = new URLSearchParams({ ...local, chapterNumber });
+    entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token);
+  } catch (error) {
+    if (error instanceof ContentServerError && error.status === 404) return local;
+    throw error;
+  }
+  const remote = entry.manifest.identity;
+  const sameChapter = remote.chapterPath === row.chapterPath ||
+    ((recovered || /^norea-folder:\d+(?:\.\d+)?$/.test(remote.chapterPath)) &&
+      entry.manifest.chapter.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+  if (entry.deleted || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath ||
+    !remote.chapterPath || !sameChapter) {
+    throw new Error("Content server upload identity does not match the requested chapter.");
+  }
+  return remote;
+}
 function assertDevice(server: string, token: string | null): void {
   const current = useContentSyncStore.getState();
   if (current.serverUrl !== server || current.deviceKey !== token) throw new Error("Content server changed during synchronization.");
@@ -86,6 +109,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
   cache.localCursor = head;
   await saveCatalog(server, cache);
   let processed = 0;
+  const failures: string[] = [];
   try {
     for (const id of pending) {
       assertDevice(server, token);
@@ -96,22 +120,30 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         pending.delete(id);
         continue;
       }
-      await runWorkContentStorageOperation(row.pluginId, row.novelPath, async () => {
-        const fingerprint = await contentFingerprint(row);
-        assertDevice(server, token);
-        if (cache.uploaded[id] !== fingerprint) {
-          await uploadContentChapter({
-            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row),
-            manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath },
-              novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
-              chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
-          });
+      try {
+        await runWorkContentStorageOperation(row.pluginId, row.novelPath, async () => {
+          const target = await uploadIdentity(server, token, row);
           assertDevice(server, token);
-          cache.uploaded[id] = fingerprint;
-        }
-        cache.downloads[id] = true;
-        pending.delete(id);
-      });
+          const fingerprint = await contentFingerprint(row);
+          assertDevice(server, token);
+          if (cache.uploaded[id] !== fingerprint) {
+            await uploadContentChapter({
+              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row),
+              manifest: { packageVersion: 1, identity: target,
+                novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
+                chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
+            });
+            assertDevice(server, token);
+            cache.uploaded[id] = fingerprint;
+          }
+          cache.downloads[id] = true;
+          pending.delete(id);
+        });
+      } catch (error) {
+        assertDevice(server, token);
+        if (error instanceof ContentServerError && (error.status === 401 || error.status === 403)) throw error;
+        failures.push(`${row.novelName} / ${row.chapterName}: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (++processed % 5000 === 0) {
         cache.pendingUploads = [...pending];
         await saveCatalog(server, cache);
@@ -121,6 +153,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     cache.pendingUploads = [...pending];
     await saveCatalog(server, cache);
   }
+  if (failures.length) throw new Error(failures.join("\n"));
 }
 
 let running: Promise<void> | null = null;
@@ -186,7 +219,6 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
     const mapping = { novelId: row.novelId, chapterId: row.chapterId };
     const result = await downloadContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: mapping.chapterId });
     await markContentInstalled(mapping.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
-    window.dispatchEvent(new Event("norea-content-state-changed"));
     return mapping;
   });
 }
