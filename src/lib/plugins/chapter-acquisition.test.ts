@@ -48,12 +48,16 @@ function executeChapterCaptureScript(
   script: string,
   {
     manualAction,
+    visiblePuzzle = false,
+    linkTargetUrl,
     settleImageAfterFirstPoll = false,
   }: {
     manualAction?: "captcha" | "cloudflare" | "legacy";
+    visiblePuzzle?: boolean;
+    linkTargetUrl?: string;
     settleImageAfterFirstPoll?: boolean;
   } = {},
-): { message: string; postedBeforeImageSettled: boolean } {
+): { activeObservers: number; message: string; postedBeforeImageSettled: boolean } {
   const sourceImage = captureImage({
     "data-src": "/assets/page.jpg?accessKey=asset",
   }, !settleImageAfterFirstPoll);
@@ -90,11 +94,20 @@ function executeChapterCaptureScript(
     tagName: "ARTICLE",
   };
   let postedMessage: string | undefined;
+  let activeObservers = 0;
   const scheduledCallbacks: Array<() => void> = [];
 
   runInNewContext(script, {
+    PerformanceObserver: class {
+      observe() { activeObservers += 1; }
+      disconnect() { activeObservers -= 1; }
+    },
     URL,
     document: {
+      querySelectorAll: (selector: string) => visiblePuzzle && selector === "button[aria-label], [role='slider'][aria-label]" ? [{
+        getAttribute: (name: string) => name === "aria-label" ? "Puzzle slider" : null,
+        getClientRects: () => [{ width: 44, height: 44 }],
+      }] : [],
       querySelector: (selector: string) => {
         if (selector !== "[data-norea-manual-action]") return sourceRoot;
         if (!manualAction) return null;
@@ -114,6 +127,7 @@ function executeChapterCaptureScript(
       scheduledCallbacks.push(callback);
     },
     window: {
+      __noreaChapterLinkTargetUrl: linkTargetUrl,
       ReactNativeWebView: {
         postMessage: (message: string) => {
           postedMessage = message;
@@ -130,7 +144,7 @@ function executeChapterCaptureScript(
     }
   }
   if (!postedMessage) throw new Error("Capture script did not post a result.");
-  return { message: postedMessage, postedBeforeImageSettled };
+  return { activeObservers, message: postedMessage, postedBeforeImageSettled };
 }
 
 beforeEach(() => {
@@ -142,6 +156,12 @@ afterEach(() => {
 });
 
 describe("validateChapterAcquisitionPlan", () => {
+  it("accepts optional adjacent chapter links and rejects empty selectors", () => {
+    const plan = { type: "page", url: "https://source.test/chapter/15", contentSelector: "article" };
+    expect(validateChapterAcquisitionPlan({ ...plan, chapterLinkSelector: " a.next, a.prev " }))
+      .toMatchObject({ chapterLinkSelector: "a.next, a.prev" });
+    expect(() => validateChapterAcquisitionPlan({ ...plan, chapterLinkSelector: " " })).toThrow("chapterLinkSelector");
+  });
   it("accepts explicit resources without page fields", () => {
     expect(validateChapterAcquisitionPlan({ type: "resource" })).toEqual({
       type: "resource",
@@ -188,6 +208,18 @@ describe("validateChapterAcquisitionPlan", () => {
 });
 
 describe("captureChapterPage", () => {
+  it("disconnects capture observers before another chapter reuses the document", async () => {
+    mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
+      const result = executeChapterCaptureScript(options?.beforeContentScript ?? "");
+      expect(result.activeObservers).toBe(0);
+      return result.message;
+    });
+    await captureChapterPage({
+      type: "page", url: "https://source.test/chapter/1", contentSelector: "article",
+      loadStrategy: "selector", timeoutMs: 1000,
+    }, { contentType: "html", executor: "pool:0", sourceId: "source-a" });
+  });
+
   it("loads a lazy-only image in the WebView before capture", async () => {
     let postedBeforeImageSettled = true;
     mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
@@ -342,13 +374,15 @@ describe("captureChapterPage", () => {
     ).rejects.toThrow("manual-action-required");
   });
 
-  it("turns a CAPTCHA marker into a typed source access error", async () => {
+  it.each(["marker", "visible-control", "blocked-navigation"])("turns a CAPTCHA %s into a typed source access error", async (evidence) => {
     mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
       if (!options?.beforeContentScript) {
         throw new Error("Expected chapter capture script.");
       }
       return executeChapterCaptureScript(options.beforeContentScript, {
-        manualAction: "captcha",
+        manualAction: evidence === "marker" ? "captcha" : undefined,
+        visiblePuzzle: evidence !== "marker",
+        linkTargetUrl: evidence === "blocked-navigation" ? "https://source.test/chapter/2" : undefined,
       }).message;
     });
     const plan = validateChapterAcquisitionPlan({
@@ -416,6 +450,7 @@ function executeInteractiveCaptureScript(
     },
     URL,
     document: {
+      querySelectorAll: () => [],
       querySelector: (selector: string) => {
         if (selector === "[data-norea-manual-action]") {
           return page.manualActionAfterClick && clicks > 0

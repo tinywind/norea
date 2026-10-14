@@ -251,12 +251,14 @@ export function androidWebviewExtract(
   sourceId: string | undefined,
   executor: ScraperExecutorId,
   signal?: AbortSignal,
+  chapterNavigationScript?: string,
 ): Promise<string> {
   return callNative<string>(
     "extract",
     {
       url,
       beforeScript,
+      ...(chapterNavigationScript ? { chapterNavigationScript } : {}),
       timeoutMs,
       userAgent,
       ...(sourceId ? { sourceId } : {}),

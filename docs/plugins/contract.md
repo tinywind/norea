@@ -41,6 +41,7 @@ type ChapterAcquisitionPlan =
       readySelector?: string;
       excludeSelectors?: string[];
       documentStartScript?: string;
+      chapterLinkSelector?: string;
       interactions?: WebViewInteraction[];
       loadStrategy?: "selector" | "network-idle" | "scroll-to-end";
       cacheBust?: boolean;
@@ -150,7 +151,33 @@ an element with `data-norea-manual-action`. The host fails the acquisition with
 triggered only when the user has enabled an explicit plugin input for that
 action.
 
+### Adjacent chapter navigation
+
+`chapterLinkSelector` is an optional CSS selector for a source's previous/next
+chapter anchors. When the executor still has a chapter page open, the host clicks
+one visible, enabled anchor only if its HTTP(S) destination exactly matches the
+requested chapter, including source query parameters. The host-owned
+`_norea_capture` parameter is ignored for this comparison. Cross-origin links,
+new-window links, downloads, missing links, and non-adjacent requests use normal
+URL navigation. The host never clicks an unrelated next button to reach a target.
+
+The host arms the new capture before clicking. This supports full document
+navigation and pages that update their URL and content without reloading. For
+these client-side navigations, `documentStartScript` runs in the existing document
+before the click; it runs again at document start if the click loads a new one.
+Plugins opting in must make that script repeatable, dispose earlier hooks, and
+make `readySelector` identify content for the requested chapter. Old chapter
+content must never satisfy readiness. The host waits for the requested URL and
+ignores results from superseded captures. It uses the same executor and browser
+session throughout, without driving another foreground source browser.
+
 ### Access challenges
+
+The host also checks visible CAPTCHA and Cloudflare controls independently of
+plugin markers, both while capturing a chapter and while Windows waits for an
+extract result. A detected challenge immediately enters the manual verification
+flow below. It must not become a network/VPN retry or trigger an automatic
+challenge reload.
 
 Use the exact marker `data-norea-manual-action="captcha"` for a CAPTCHA and
 `data-norea-manual-action="cloudflare"` for a Cloudflare browser challenge.

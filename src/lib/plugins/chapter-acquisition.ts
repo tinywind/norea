@@ -2,6 +2,7 @@ import type { ChapterContentType } from "../chapter-content";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import { captureChapterWebView } from "./shims";
 import { sourceAccessErrorFromEnvelope } from "./source-access";
+import browserChallengeDetectorSource from "./browser-challenge-detector.js?raw";
 import type {
   ChapterAcquisitionPlan,
   ChapterCaptureLoadStrategy,
@@ -142,6 +143,9 @@ function validatePagePlan(
         }
       : {}),
     ...(documentStartScript ? { documentStartScript } : {}),
+    ...(value.chapterLinkSelector !== undefined
+      ? { chapterLinkSelector: validSelector(value.chapterLinkSelector, "chapterLinkSelector") }
+      : {}),
     ...(interactions.length > 0 ? { interactions } : {}),
     loadStrategy: captureLoadStrategy(value.loadStrategy),
     ...(value.cacheBust === true ? { cacheBust: true } : {}),
@@ -220,16 +224,23 @@ function chapterCaptureScript(
   var plan = ${serializedPlan};
   var contentType = ${serializedContentType};
   var interactionRunId = ${JSON.stringify(interactionRunId)};
+  if (window.__noreaChapterCaptureObserver) window.__noreaChapterCaptureObserver.disconnect();
+  window.__noreaChapterCaptureObserver = null;
+  window.__noreaChapterCaptureRunId = interactionRunId;
+  var linkTargetUrl = window.__noreaChapterLinkTargetUrl;
   var interactionsState = "pending";
   var finished = false;
+  var detectChallenge = ${browserChallengeDetectorSource};
   var lastActivityAt = Date.now();
   var lastHeight = -1;
   var stableHeightRounds = 0;
   var lastScrollAt = 0;
   var imageWaitStartedAt = 0;
   function post(payload) {
-    if (finished) return;
+    if (finished || window.__noreaChapterCaptureRunId !== interactionRunId) return;
     finished = true;
+    if (window.__noreaChapterCaptureObserver) window.__noreaChapterCaptureObserver.disconnect();
+    window.__noreaChapterCaptureObserver = null;
     window.ReactNativeWebView.postMessage(JSON.stringify(payload));
   }
   function message(error) {
@@ -279,7 +290,8 @@ function chapterCaptureScript(
   }
   try {
     if (typeof PerformanceObserver === "function") {
-      new PerformanceObserver(markActivity).observe({ type: "resource", buffered: true });
+      window.__noreaChapterCaptureObserver = new PerformanceObserver(markActivity);
+      window.__noreaChapterCaptureObserver.observe({ type: "resource", buffered: true });
     }
   } catch (_) {}
   try {
@@ -334,7 +346,7 @@ function chapterCaptureScript(
     post({ ok: true, result: { content: content, url: location.href } });
   }
   function hasManualActionMarker() {
-    return !!document.querySelector("[data-norea-manual-action]");
+    return !!document.querySelector("[data-norea-manual-action]") || !!detectChallenge();
   }
   function runInteractions() {
     interactionsState = "running";
@@ -344,6 +356,7 @@ function chapterCaptureScript(
       shouldAbort: hasManualActionMarker
     }, function (error) {
       if (error) {
+        if (hasManualActionMarker()) { poll(); return; }
         fail("interaction-failed", error);
         return;
       }
@@ -353,15 +366,21 @@ function chapterCaptureScript(
     });
   }
   function poll() {
-    if (finished) return;
+    if (finished || window.__noreaChapterCaptureRunId !== interactionRunId) return;
     var manualAction = document.querySelector("[data-norea-manual-action]");
-    if (manualAction) {
-      var kind = manualAction.getAttribute("data-norea-manual-action");
+    var detectedKind = detectChallenge();
+    if (manualAction || detectedKind) {
+      var kind = detectedKind || manualAction.getAttribute("data-norea-manual-action");
       var challenge = kind === "captcha" || kind === "cloudflare"
         ? { kind: kind, url: location.href }
         : null;
       fail("manual-action-required", "The source page requires manual action.", challenge);
       return;
+    }
+    if (linkTargetUrl) {
+      var currentUrl = new URL(location.href);
+      currentUrl.searchParams.delete("_norea_capture");
+      if (currentUrl.href !== linkTargetUrl) { setTimeout(poll, 100); return; }
     }
     if (document.readyState === "loading") {
       setTimeout(poll, 100);
@@ -465,6 +484,7 @@ export async function captureChapterPage(
     signal: options.signal,
     sourceId: options.sourceId,
     timeoutMs: plan.timeoutMs,
+    chapterLinkSelector: plan.chapterLinkSelector,
   });
   return parseCaptureResult(raw, plan.url, navigation);
 }

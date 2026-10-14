@@ -86,6 +86,15 @@ describe("isUrlAbsolute", () => {
 });
 
 describe("captureChapterWebView", () => {
+  it("forwards optional chapter link navigation to the native executor", async () => {
+    invokeMock.mockResolvedValueOnce("captured");
+    await captureChapterWebView("https://source.test/chapter/15", {
+      chapterLinkSelector: "a.next, a.prev", sourceId: "source-a", scraperExecutor: "pool:1",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("webview_extract", expect.objectContaining({
+      chapterNavigationScript: expect.stringContaining("a.next, a.prev"), queue: "pool:1",
+    }));
+  });
   it("enables native response capture for chapter navigation", async () => {
     invokeMock.mockResolvedValueOnce("captured");
 

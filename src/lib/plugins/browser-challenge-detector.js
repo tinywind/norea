@@ -95,5 +95,23 @@
   if (hasVisibleSelector(CAPTCHA_SELECTORS)) {
     return "captcha";
   }
+  var controls = document.querySelectorAll(
+    "button[aria-label], [role='slider'][aria-label]",
+  );
+  for (
+    var controlIndex = 0;
+    controlIndex < controls.length;
+    controlIndex += 1
+  ) {
+    var control = controls[controlIndex];
+    if (
+      /captcha|puzzle\s+slider|\uD37C\uC990\s+\uC2AC\uB77C\uC774\uB354/i.test(
+        control.getAttribute("aria-label") || "",
+      ) &&
+      isVisible(control)
+    ) {
+      return "captcha";
+    }
+  }
   return null;
 });

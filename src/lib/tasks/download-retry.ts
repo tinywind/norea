@@ -3,12 +3,13 @@ import { useAppearanceStore } from "../../store/appearance";
 import { isAbortError } from "../abort";
 import { isTransientMediaNetworkError } from "../chapter-media/errors";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import type { TaskRetryDecision } from "./task-types";
 
 const DOWNLOAD_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
 
 export function isRetryableDownloadError(error: unknown): boolean {
-  if (isAbortError(error)) return false;
+  if (isAbortError(error) || normalizeSourceAccessRequiredError(error)) return false;
   if (isPluginVpnUnavailableError(error)) {
     return (error as { retryable?: boolean }).retryable !== false;
   }

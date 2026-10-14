@@ -25,6 +25,7 @@ import {
 } from "../tasks/scraper-queue";
 import { isAndroidRuntime } from "../tauri-runtime";
 import browserChallengeDetectorSource from "./browser-challenge-detector.js?raw";
+import { chapterNavigationScript } from "./chapter-navigation";
 import {
   createPluginInputsApi,
   deletePluginInputValue,
@@ -48,6 +49,7 @@ const SNAPSHOT_CHALLENGE_CHECK_INTERVAL_MS = 1_000;
 
 export interface WebViewFetchOptions {
   beforeContentScript?: string;
+  chapterLinkSelector?: string;
   /**
    * `webViewLoad` and `webViewNavigate` run it after the document is ready and
    * every interaction finished. A returned promise is awaited before the
@@ -227,6 +229,9 @@ async function webViewFetchInternal(
     options.scraperExecutor ?? activeScraperExecutor(options.sourceId);
   const timeoutMs = options.timeoutMs ?? getSourceRequestTimeoutMs();
   const signal = options.signal ?? activeScraperExecutorSignal(scraperExecutor);
+  const navigationScript = options.chapterLinkSelector
+    ? chapterNavigationScript(url, options.chapterLinkSelector)
+    : undefined;
   return withNetworkRequest(signal, async (signal) => {
     await waitForPluginVpnReady(signal);
     if (isAndroidRuntime()) {
@@ -238,6 +243,7 @@ async function webViewFetchInternal(
         options.sourceId,
         scraperExecutor,
         signal,
+        navigationScript,
       );
     }
 
@@ -250,6 +256,7 @@ async function webViewFetchInternal(
       scraperExecutor,
       signal,
       captureResources,
+      navigationScript,
     );
   });
 }
@@ -269,6 +276,7 @@ async function desktopWebViewExtract(
   scraperExecutor: ScraperExecutorId,
   signal: AbortSignal | undefined,
   captureResources: boolean,
+  chapterNavigationScript?: string,
 ): Promise<string> {
   if (signal?.aborted) {
     void cancelScraperExecutor(scraperExecutor);
@@ -282,6 +290,7 @@ async function desktopWebViewExtract(
     queue: scraperExecutor,
     ...(sourceId ? { sourceId } : {}),
     ...(captureResources ? { captureResources: true } : {}),
+    ...(chapterNavigationScript ? { chapterNavigationScript } : {}),
   });
   if (!signal) return request;
 

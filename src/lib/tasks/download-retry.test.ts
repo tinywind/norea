@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { downloadRetryDecision, isRetryableDownloadError } from "./download-retry";
 import { TaskUserCancelledError } from "./task-errors";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { SourceAccessRequiredError } from "../plugins/source-access";
 import { ChapterMediaHttpRetryError, ChapterMediaIncompleteError, mediaRetryAfterMs } from "../chapter-media/errors";
 
 describe("download recovery policy", () => {
@@ -25,6 +26,11 @@ describe("download recovery policy", () => {
   it("caps recovery backoff rather than giving up after a short outage", () => {
     const delays = Array.from({ length: 7 }, (_, i) => downloadRetryDecision(new PluginVpnUnavailableError(), i+1)?.delayMs);
     expect(delays).toEqual([5000, 15000, 30000, 60000, 60000, 60000, 60000]);
+  });
+  it("never schedules network retries for a CAPTCHA even if its message mentions a timeout", () => {
+    expect(downloadRetryDecision(new SourceAccessRequiredError("webview_extract: timeout", {
+      kind: "captcha", url: "https://source.test/chapter/15",
+    }), 1)).toBeNull();
   });
   it("respects a server Retry-After longer than the default backoff", () => {
     expect(downloadRetryDecision(new ChapterMediaHttpRetryError(429, 120_000), 1)?.delayMs).toBe(120_000);
