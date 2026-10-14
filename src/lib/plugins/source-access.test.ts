@@ -93,9 +93,12 @@ describe("source access challenges", () => {
     });
   });
 
-  it("uses a normalized hostname as the access scope", () => {
-    expect(sourceAccessScopeKey("https://Source.Test:8443/chapter/1")).toBe(
-      "site:source.test",
+  it("scopes access to a plugin and normalized hostname", () => {
+    expect(sourceAccessScopeKey("https://Source.Test:8443/chapter/1", "source-a")).toBe(
+      "plugin:source-a:site:source.test",
+    );
+    expect(sourceAccessScopeKey("https://Source.Test:8443/chapter/1", "source-b")).toBe(
+      "plugin:source-b:site:source.test",
     );
   });
 });

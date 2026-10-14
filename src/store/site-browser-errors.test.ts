@@ -58,7 +58,7 @@ describe("site browser navigation error recovery", () => {
     const context = {
       mode: "source-access" as const,
       challenge: { kind: "cloudflare" as const, url: URL },
-      revision: 2, scopeKey: "site:source.test", sourceName: "Source A",
+      revision: 2, scopeKey: "plugin:source-a:site:source.test", sourceName: "Source A",
     };
     store.queueAt("source-a", URL, "task-1", context);
     store.startLoading("source-a", URL, "task-1");

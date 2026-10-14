@@ -137,8 +137,9 @@ export function normalizeSourceAccessRequiredError(
   return isSourceAccessRequiredError(normalized) ? normalized : null;
 }
 
-export function sourceAccessScopeKey(url: string): string {
+export function sourceAccessScopeKey(url: string, sourceId: string): string {
   const parsed = safeHttpUrl(url);
   if (!parsed) throw new Error("Source access URL must be an absolute HTTP URL.");
-  return `site:${normalizeHostname(parsed)}`;
+  if (!sourceId.trim()) throw new Error("Source access requires a plugin id.");
+  return `plugin:${encodeURIComponent(sourceId)}:site:${normalizeHostname(parsed)}`;
 }

@@ -46,7 +46,7 @@ export function enqueueSourceTask<T>({
   title,
 }: SourceTaskOptions<T>): TaskHandle<T> {
   const sourceAccessUrl = getPluginBaseUrl(plugin);
-  const sourceAccessScope = sourceAccessScopeKey(sourceAccessUrl);
+  const sourceAccessScope = sourceAccessScopeKey(sourceAccessUrl, plugin.id);
   return taskScheduler.enqueueSource<T>({
     kind,
     priority,

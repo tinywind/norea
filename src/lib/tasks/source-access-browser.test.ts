@@ -17,7 +17,7 @@ describe("source access browser profile", () => {
   });
 
   it.each([false, true])("opens and retries the challenged profile on a shared hostname (restored: %s)", async (restored) => {
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:newtoki-webtoon:site:source.test";
     let verified = false;
     let webtoonAttempts = 0;
     if (restored) {
@@ -27,7 +27,6 @@ describe("source access browser profile", () => {
         revision: 1,
         scopeKey,
         sourceId: "newtoki-webtoon",
-        sourceIds: ["newtoki-novel", "newtoki-webtoon"],
         verificationRequested: false,
       }]);
     }
@@ -35,7 +34,7 @@ describe("source access browser profile", () => {
       kind: "source.refreshNovel",
       title: "Refresh novel",
       source: { id: "newtoki-novel", name: "Novel" },
-      sourceAccessScopeKey: scopeKey,
+      sourceAccessScopeKey: "plugin:newtoki-novel:site:source.test",
       run: ({ signal }) => {
         if (verified) return Promise.resolve();
         return new Promise<void>((_resolve, reject) => {
@@ -65,12 +64,12 @@ describe("source access browser profile", () => {
     const [block] = taskScheduler.getSnapshot().sourceAccessBlocks;
     expect(block).toMatchObject({
       sourceId: "newtoki-webtoon",
-      sourceIds: ["newtoki-novel", "newtoki-webtoon"],
     });
     if (!restored) expect(block!.originTaskId).toBe(webtoon.id);
+    expect(taskScheduler.getTask(novel.id)?.status).toBe("running");
 
     expect(await openSourceAccessBrowser(block!, {
-      sourceName: "Novel, Webtoon",
+      sourceName: "Webtoon",
       title: "Verify access",
     })).toBe(true);
     try {

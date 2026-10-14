@@ -211,7 +211,11 @@ embedded in a URL are rejected.
 
 A typed CAPTCHA or Cloudflare challenge blocks source access for the source's
 full task queue, including individual and batch chapter downloads, and keeps
-source-dependent promises pending. A chapter task may still reconcile
+source-dependent promises pending. Download queues, cooldowns, and challenge
+blocks belong to a plugin id, even when multiple plugins use the same hostname.
+Pausing, cancelling, or verifying one plugin does not affect another plugin's
+queue. The configured concurrency limit still bounds active worker WebViews.
+A chapter task may still reconcile
 authoritative final content locally while blocked; doing so does not verify or
 clear source access. The block survives an application restart. Norea opens the
 source in its session-owning browser so the user can complete the challenge,

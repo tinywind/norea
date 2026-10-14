@@ -104,7 +104,7 @@ describe("site browser store", () => {
         url: "https://source.test/chapter/1",
       },
       revision: 3,
-      scopeKey: "site:source.test",
+      scopeKey: "plugin:source-a:site:source.test",
       sourceName: "Source",
     };
     useSiteBrowserStore
@@ -130,7 +130,7 @@ describe("site browser store", () => {
       completion: {
         outcome: "keep-paused",
         revision: 3,
-        scopeKey: "site:source.test",
+        scopeKey: "plugin:source-a:site:source.test",
         taskId: "task-1",
       },
       context: null,
@@ -152,7 +152,7 @@ describe("site browser store", () => {
           url: "https://source.test/chapter/1",
         },
         revision: 4,
-        scopeKey: "site:source.test",
+        scopeKey: "plugin:source-a:site:source.test",
         sourceName: "Source",
       },
     );
@@ -166,7 +166,7 @@ describe("site browser store", () => {
     expect(useSiteBrowserStore.getState().completion).toEqual({
       outcome: "verify",
       revision: 4,
-      scopeKey: "site:source.test",
+      scopeKey: "plugin:source-a:site:source.test",
       taskId: "task-2",
     });
   });

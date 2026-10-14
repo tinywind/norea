@@ -85,7 +85,6 @@ import type {
 
 export type { SourceAccessBlock } from "./source-access-gate";
 export type * from "./task-types";
-export { sourceBaseDomainKey } from "./source-cooldown";
 
 const TASK_BULK_EVENT_CHUNK_SIZE = 250;
 
@@ -428,7 +427,6 @@ export class TaskScheduler {
       entry.record.waitingForNetwork = true;
       entry.record.detail = this.networkWaitingDetail;
     }
-    this.registerSourceAccessScopeEntry(entry);
     if (spec.dedupeKey) {
       this.activeDedupeByKey.set(spec.dedupeKey, id);
       this.history.rememberLatest(spec.dedupeKey, id);
@@ -704,32 +702,20 @@ export class TaskScheduler {
     entry: TaskEntry,
     block: SourceAccessBlockState,
   ): boolean {
-    const sourceId = entry.record.source?.id;
-    return (
-      entry.spec.sourceAccessScopeKey === block.scopeKey ||
-      Boolean(sourceId && block.sourceIds.has(sourceId))
-    );
+    return entry.record.source?.id === block.sourceId;
   }
 
   private isSourceAccessBlocked(entry: TaskEntry): boolean {
-    return this.sourceAccess.isBlocked(
-      entry.spec.sourceAccessScopeKey,
-      entry.record.source?.id,
-    );
-  }
-
-  private registerSourceAccessScopeEntry(entry: TaskEntry): void {
-    this.sourceAccess.registerSource(
-      entry.spec.sourceAccessScopeKey,
-      entry.record.source?.id,
-    );
+    return this.sourceAccess.isBlocked(entry.record.source?.id);
   }
 
   private setSourceAccessUrlForEntry(entry: TaskEntry, url: string): boolean {
     if (entry.record.status !== "running" || entry.pauseRequested) return false;
+    const sourceId = entry.record.source?.id;
+    if (!sourceId) return false;
     let scopeKey: string;
     try {
-      scopeKey = sourceAccessScopeKey(url);
+      scopeKey = sourceAccessScopeKey(url, sourceId);
     } catch {
       return false;
     }
@@ -750,8 +736,6 @@ export class TaskScheduler {
     if (!block || entry.sourceAccessVerificationRevision !== undefined) {
       return true;
     }
-    const sourceId = entry.record.source?.id;
-    this.sourceAccess.registerSource(scopeKey, sourceId);
     entry.sourceAccessPauseRequested = true;
     entry.pauseRequested = true;
     entry.controller.abort(
@@ -765,27 +749,14 @@ export class TaskScheduler {
     entry: TaskEntry,
     error: SourceAccessRequiredErrorShape,
   ): boolean {
-    const challengeScopeKey = sourceAccessScopeKey(error.challenge.url);
+    const sourceId = entry.record.source?.id;
+    if (!sourceId) return false;
+    const challengeScopeKey = sourceAccessScopeKey(error.challenge.url, sourceId);
     const configuredScopeKey = entry.spec.sourceAccessScopeKey?.trim();
     if (!configuredScopeKey || configuredScopeKey !== challengeScopeKey) {
       return false;
     }
     const scopeKey = configuredScopeKey;
-
-    const sourceId = entry.record.source?.id;
-    if (!sourceId) return false;
-    const sourceIds = new Set<string>();
-    for (const candidate of this.entries.values()) {
-      const candidateSourceId = candidate.record.source?.id;
-      if (
-        candidate.spec.sourceAccessScopeKey !== scopeKey &&
-        (!sourceId || candidateSourceId !== sourceId)
-      ) {
-        continue;
-      }
-      if (candidateSourceId) sourceIds.add(candidateSourceId);
-    }
-    if (sourceId) sourceIds.add(sourceId);
 
     const { block, revokedVerificationTaskId } = this.sourceAccess.recordChallenge(
       scopeKey,
@@ -794,7 +765,6 @@ export class TaskScheduler {
         sourceId,
         taskId: entry.record.id,
         taskKey: entry.spec.sourceAccessVerificationKey,
-        sourceIds,
       },
       describeTaskError(error),
     );
@@ -1281,7 +1251,6 @@ export class TaskScheduler {
     this.sourceAccess.hydrate(blocks);
     for (const entry of this.entries.values()) {
       entry.sourceAccessVerificationRevision = undefined;
-      this.registerSourceAccessScopeEntry(entry);
     }
     this.pauseRunningSourceTasks(
       undefined,
@@ -1319,6 +1288,7 @@ export class TaskScheduler {
     const fallbackUrl = normalizedSourceAccessUrl(
       block.challenge.url,
       scopeKey,
+      block.sourceId,
     );
 
     const entry = this.preferredSourceAccessVerificationCandidate(
@@ -1338,8 +1308,8 @@ export class TaskScheduler {
     try {
       const value = await entry.spec.resolveSourceAccessUrl?.();
       if (typeof value === "string") {
-        const resolvedScopeKey = candidateScopeKey ?? sourceAccessScopeKey(value);
-        rebuiltUrl = normalizedSourceAccessUrl(value, resolvedScopeKey);
+        const resolvedScopeKey = candidateScopeKey ?? sourceAccessScopeKey(value, sourceId);
+        rebuiltUrl = normalizedSourceAccessUrl(value, resolvedScopeKey, sourceId);
         if (rebuiltUrl && !candidateScopeKey) {
           candidateScopeKey = resolvedScopeKey;
         }
@@ -1364,7 +1334,6 @@ export class TaskScheduler {
     if (candidateScopeKey !== scopeKey) {
       if (!entry.spec.sourceAccessScopeKey) {
         entry.spec = { ...entry.spec, sourceAccessScopeKey: candidateScopeKey };
-        this.registerSourceAccessScopeEntry(entry);
         this.publishSnapshot();
       }
       return null;

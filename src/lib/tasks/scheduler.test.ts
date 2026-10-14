@@ -1373,12 +1373,12 @@ describe("TaskScheduler", () => {
     expect(scheduler.getTask(download.id)?.status).toBe("succeeded");
   });
 
-  it("blocks and requeues every running task in the challenged access scope", async () => {
+  it("blocks downloads and UI work only for the challenged plugin", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 3,
       sourceQueuesPaused: false,
     });
-    const challengedScope = "site:source.test";
+    const challengedScope = "plugin:source-a:site:source.test";
     let sameScopeAborted = false;
     let finishOtherScope!: () => void;
     let challengedSettled = false;
@@ -1398,10 +1398,10 @@ describe("TaskScheduler", () => {
       },
     });
     const sibling = scheduler.enqueueSource({
-      kind: "chapter.download",
-      title: "Sibling download",
-      priority: "background",
-      source: { id: "source-b", name: "Source B" },
+      kind: "source.search",
+      title: "Sibling search",
+      priority: "user",
+      source: { id: "source-a", name: "Source A" },
       sourceAccessScopeKey: challengedScope,
       run: (context) =>
         new Promise<void>((_resolve, reject) => {
@@ -1420,7 +1420,7 @@ describe("TaskScheduler", () => {
       title: "Other download",
       priority: "background",
       source: { id: "source-c", name: "Source C" },
-      sourceAccessScopeKey: "site:other.test",
+      sourceAccessScopeKey: "plugin:source-c:site:source.test",
       run: () =>
         new Promise<void>((resolve) => {
           finishOtherScope = resolve;
@@ -1463,7 +1463,6 @@ describe("TaskScheduler", () => {
         revision: 1,
         scopeKey: challengedScope,
         sourceId: "source-a",
-        sourceIds: ["source-a", "source-b"],
         verificationRequested: false,
       },
     ]);
@@ -1480,7 +1479,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 2,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let rejectFirst!: (error: unknown) => void;
     let rejectSecond!: (error: unknown) => void;
 
@@ -1496,10 +1495,10 @@ describe("TaskScheduler", () => {
         }),
     });
     const second = scheduler.enqueueSource({
-      kind: "chapter.download",
+      kind: "source.search",
       title: "Second challenged download",
-      priority: "normal",
-      source: { id: "source-b", name: "Source B" },
+      priority: "user",
+      source: { id: "source-a", name: "Source A" },
       sourceAccessScopeKey: scopeKey,
       run: () =>
         new Promise<void>((_resolve, reject) => {
@@ -1546,7 +1545,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 2,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let mergeAborted = false;
     let mergeRunCount = 0;
     let rejectFirstMerge!: (error: unknown) => void;
@@ -1555,7 +1554,7 @@ describe("TaskScheduler", () => {
       kind: "source.mergeNovel",
       title: "Merge novel",
       priority: "interactive",
-      source: { id: "source-b", name: "Source B" },
+      source: { id: "source-a", name: "Source A" },
       sourceAccessScopeKey: scopeKey,
       canCancel: false,
       run: (context) => {
@@ -1623,7 +1622,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 2,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let finishMerge!: () => void;
     let mergeAborted = false;
     let mergeRunCount = 0;
@@ -1632,7 +1631,7 @@ describe("TaskScheduler", () => {
       kind: "source.mergeNovel",
       title: "Atomic merge",
       priority: "interactive",
-      source: { id: "source-b", name: "Source B" },
+      source: { id: "source-a", name: "Source A" },
       sourceAccessScopeKey: scopeKey,
       canCancel: false,
       run: (context) => {
@@ -1728,9 +1727,8 @@ describe("TaskScheduler", () => {
     expect(scheduler.getTask(queued.id)?.status).toBe("queued");
     expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
       {
-        scopeKey: "site:source.test",
+        scopeKey: "plugin:source-a:site:source.test",
         sourceId: "source-a",
-        sourceIds: ["source-a"],
       },
     ]);
 
@@ -1775,7 +1773,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let settled = false;
     const task = scheduler.enqueueSource({
       kind: "chapter.download",
@@ -1827,7 +1825,7 @@ describe("TaskScheduler", () => {
       title: "Mismatched challenge",
       priority: "background",
       source: { id: "source-a", name: "Source A" },
-      sourceAccessScopeKey: "site:source.test",
+      sourceAccessScopeKey: "plugin:source-a:site:source.test",
       run: async () => {
         throw new SourceAccessRequiredError("Untrusted challenge URL.", {
           kind: "captcha",
@@ -1847,7 +1845,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     const observations: string[] = [];
     let runCount = 0;
 
@@ -1874,7 +1872,7 @@ describe("TaskScheduler", () => {
       kind: "chapter.download",
       title: "Sibling download",
       priority: "background",
-      source: { id: "source-b", name: "Source B" },
+      source: { id: "source-a", name: "Source A" },
       sourceAccessScopeKey: scopeKey,
       run: async (context) => {
         observations.push(`sibling:${context.executor}`);
@@ -1903,7 +1901,7 @@ describe("TaskScheduler", () => {
 
   it("clears verified access before storage finishes and preserves a later storage error", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
     let failStorage!: (error: Error) => void;
     const siblingRun = vi.fn(async () => undefined);
@@ -1959,7 +1957,7 @@ describe("TaskScheduler", () => {
 
   it("blocks again when a verified task encounters a new challenge", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
     const challenged = scheduler.enqueueSource({
       kind: "chapter.download",
@@ -1998,7 +1996,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
     let settled = false;
 
@@ -2047,7 +2045,7 @@ describe("TaskScheduler", () => {
 
   it("keeps a verified canary pinned to its trusted hostname", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     const rebindResults: Array<boolean | undefined> = [];
     let runCount = 0;
 
@@ -2083,7 +2081,7 @@ describe("TaskScheduler", () => {
 
   it("keeps the scope blocked when a canary reports an untrusted challenge", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
     let settled = false;
 
@@ -2142,7 +2140,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let currentConfirm!: () => boolean;
     let finishCurrentVerification!: () => void;
     let staleConfirm!: () => boolean;
@@ -2217,7 +2215,7 @@ describe("TaskScheduler", () => {
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
     });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     const observations: string[] = [];
 
     scheduler.hydrateSourceAccessBlocks([
@@ -2230,7 +2228,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: true,
         verificationTaskId: "stale-task",
       },
@@ -2268,7 +2265,7 @@ describe("TaskScheduler", () => {
 
   it("does not request source access verification without a queued canary", () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -2280,7 +2277,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2295,7 +2291,7 @@ describe("TaskScheduler", () => {
 
   it("rebuilds a redacted challenge URL from its queued canary", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     const freshUrl =
       "https://source.test/chapter/1?signed=fresh-proof#challenge";
 
@@ -2310,7 +2306,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2341,8 +2336,8 @@ describe("TaskScheduler", () => {
 
   it("keeps a restored block when a configured task uses another host", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const oldScopeKey = "site:old-source.test";
-    const newScopeKey = "site:new-source.test";
+    const oldScopeKey = "plugin:source-a:site:old-source.test";
+    const newScopeKey = "plugin:source-a:site:new-source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -2355,7 +2350,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2380,7 +2374,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
       },
     ]);
 
@@ -2390,7 +2383,7 @@ describe("TaskScheduler", () => {
 
   it("keeps a restored chapter block when its exact URL changes host", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const oldScopeKey = "site:old-source.test";
+    const oldScopeKey = "plugin:source-a:site:old-source.test";
     const freshUrl =
       "https://new-source.test/chapter/1?signed=fresh-proof#challenge";
 
@@ -2406,7 +2399,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2434,7 +2426,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
       },
     ]);
 
@@ -2444,7 +2435,7 @@ describe("TaskScheduler", () => {
 
   it("tries another queued canary after the persisted origin changes host", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const oldScopeKey = "site:old-source.test";
+    const oldScopeKey = "plugin:source-a:site:old-source.test";
     const sameHostUrl =
       "https://old-source.test/chapter/2?signed=fresh-proof#challenge";
 
@@ -2460,7 +2451,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2509,7 +2499,7 @@ describe("TaskScheduler", () => {
 
   it("uses persisted origin proof among multiple acquisition hosts", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source-a.test";
+    const scopeKey = "plugin:source-a:site:source-a.test";
     const freshUrl = "https://source-a.test/chapter/1?signed=fresh-proof";
 
     scheduler.hydrateSourceAccessBlocks([
@@ -2524,7 +2514,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2563,7 +2552,7 @@ describe("TaskScheduler", () => {
 
   it("does not migrate a restored block without matching origin proof", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const oldScopeKey = "site:source-a.test";
+    const oldScopeKey = "plugin:source-a:site:source-a.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -2577,7 +2566,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2606,10 +2594,10 @@ describe("TaskScheduler", () => {
     await Promise.allSettled([otherHost.promise]);
   });
 
-  it("keeps every source in a shared block when one task changes host", async () => {
+  it("keeps a plugin blocked when one task changes host", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const oldScopeKey = "site:old-source.test";
-    const newScopeKey = "site:new-source.test";
+    const oldScopeKey = "plugin:source-a:site:old-source.test";
+    const newScopeKey = "plugin:source-a:site:new-source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -2622,7 +2610,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a", "source-b"],
         verificationRequested: false,
       },
     ]);
@@ -2646,7 +2633,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a", "source-b"],
       },
     ]);
 
@@ -2656,8 +2642,8 @@ describe("TaskScheduler", () => {
 
   it("preserves an old-host block when the replacement host is also blocked", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const oldScopeKey = "site:old-source.test";
-    const newScopeKey = "site:new-source.test";
+    const oldScopeKey = "plugin:source-a:site:old-source.test";
+    const newScopeKey = "plugin:source-a:site:new-source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -2670,7 +2656,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey: oldScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
       {
@@ -2682,7 +2667,6 @@ describe("TaskScheduler", () => {
         revision: 8,
         scopeKey: newScopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2701,8 +2685,8 @@ describe("TaskScheduler", () => {
       scheduler.resolveSourceAccessVerificationUrl(oldScopeKey, 7),
     ).resolves.toBeNull();
     expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
-      { revision: 7, scopeKey: oldScopeKey, sourceIds: ["source-a"] },
-      { revision: 8, scopeKey: newScopeKey, sourceIds: ["source-a"] },
+      { revision: 7, scopeKey: oldScopeKey },
+      { revision: 8, scopeKey: newScopeKey },
     ]);
 
     scheduler.cancel(canary.id);
@@ -2711,7 +2695,7 @@ describe("TaskScheduler", () => {
 
   it("resets a verification request when its queued canary is cancelled", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let finishImmediate!: () => void;
 
     const immediate = scheduler.enqueueSource({
@@ -2736,7 +2720,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2769,7 +2752,7 @@ describe("TaskScheduler", () => {
 
   it("releases a source access verification when its running canary is cancelled", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let canaryStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       canaryStarted = resolve;
@@ -2785,7 +2768,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -2846,7 +2828,7 @@ describe("TaskScheduler", () => {
 
   it.each([true, false])("cancels a blocked origin and runs the next task (cancellable: %s)", async (canCancel) => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     const origin = scheduler.enqueueSource({
       kind: "chapter.download",
       title: "Blocked origin",
@@ -2884,7 +2866,7 @@ describe("TaskScheduler", () => {
 
   it("waits for a force-cancelled canary to settle and blocks again on a new challenge", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
     let canaryContext!: TaskRunContext;
     let finishCanary!: () => void;
@@ -2948,18 +2930,17 @@ describe("TaskScheduler", () => {
 
   it("cancels a restored origin without clearing unrelated blocks or user pauses", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
-    const scopeKey = "site:source.test";
-    const blocks = [scopeKey, "site:other.test"].map((key, index) => ({
+    const scopeKey = "plugin:source-0:site:source.test";
+    const blocks = ["source.test", "other.test"].map((hostname, index) => ({
       challenge: {
         kind: "captcha" as const,
-        url: `https://${key.slice(5)}/chapter/1`,
+        url: `https://${hostname}/chapter/1`,
       },
       detectedAt: 1,
       originTaskKey: `chapter.download:source-${index}:1`,
       revision: index + 1,
-      scopeKey: key,
+      scopeKey: `plugin:source-${index}:site:${hostname}`,
       sourceId: `source-${index}`,
-      sourceIds: [`source-${index}`],
       verificationRequested: false,
     }));
     scheduler.hydrateSourceAccessBlocks(blocks);
@@ -2982,7 +2963,7 @@ describe("TaskScheduler", () => {
     expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
     expect(scheduler.getTask(next.id)?.status).toBe("queued");
     expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([blocks[1]]);
-    expect(scheduler.cancelSourceAccessBlock("site:other.test", 2)).toBe(true);
+    expect(scheduler.cancelSourceAccessBlock("plugin:source-1:site:other.test", 2)).toBe(true);
     expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
     scheduler.cancel(next.id);
     await Promise.allSettled([next.promise]);
@@ -2990,7 +2971,7 @@ describe("TaskScheduler", () => {
 
   it("does not use cookie clearing as a source access canary", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -3002,7 +2983,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -3029,7 +3009,7 @@ describe("TaskScheduler", () => {
 
   it("does not use media repair as a source access canary", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -3041,7 +3021,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -3068,7 +3047,7 @@ describe("TaskScheduler", () => {
 
   it("reuses media repair only when it created the access block", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
 
     const repair = scheduler.enqueueSource({
@@ -3104,7 +3083,7 @@ describe("TaskScheduler", () => {
 
   it("does not use non-cancellable work as a source access canary", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
 
     scheduler.hydrateSourceAccessBlocks([
       {
@@ -3116,7 +3095,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -3143,7 +3121,7 @@ describe("TaskScheduler", () => {
 
   it("reuses a non-cancellable task only when it created the access block", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
 
     const merge = scheduler.enqueueSource({
@@ -3186,7 +3164,7 @@ describe("TaskScheduler", () => {
 
   it("requeues a running non-cancellable origin canary when verification is stopped", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let canaryStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       canaryStarted = resolve;
@@ -3671,7 +3649,7 @@ describe("TaskScheduler", () => {
 
   it("completes local-only work without clearing a source access block", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let localRuns = 0;
 
     scheduler.hydrateSourceAccessBlocks([
@@ -3684,7 +3662,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -3714,7 +3691,7 @@ describe("TaskScheduler", () => {
 
   it("requeues source-required work behind an access block", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let runCount = 0;
 
     scheduler.hydrateSourceAccessBlocks([
@@ -3727,7 +3704,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);
@@ -3759,7 +3735,7 @@ describe("TaskScheduler", () => {
 
   it("does not abort a local check when source access becomes blocked", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     let finishLocal!: () => void;
     let localSignal: AbortSignal | undefined;
 
@@ -3788,7 +3764,6 @@ describe("TaskScheduler", () => {
         revision: 7,
         scopeKey,
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       },
     ]);

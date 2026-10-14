@@ -60,7 +60,6 @@ import { isAbortError } from "../abort";
 import { bytesToBase64 } from "../base64";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
-  sourceBaseDomainKey,
   TASK_PAUSE_ABORT_MESSAGE,
   taskScheduler,
   type TaskEvent,
@@ -1279,9 +1278,9 @@ export function enqueueChapterMediaRepair(
   const sourcePlugin = pluginManager.getPlugin(job.pluginId);
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
   const sourceBaseUrl = sourcePlugin ? getPluginBaseUrl(sourcePlugin) : undefined;
-  const sourceCooldownKey = sourceBaseDomainKey(sourceBaseUrl) ?? job.pluginId;
+  const sourceCooldownKey = job.pluginId;
   const sourceAccessScope = sourceBaseUrl
-    ? sourceAccessScopeKey(sourceBaseUrl)
+    ? sourceAccessScopeKey(sourceBaseUrl, job.pluginId)
     : undefined;
   return taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",

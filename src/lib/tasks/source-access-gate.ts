@@ -13,38 +13,26 @@ export interface SourceAccessBlock {
   revision: number;
   scopeKey: string;
   sourceId: string;
-  sourceIds: string[];
   verificationError?: string;
   verificationRequested: boolean;
   verificationTaskId?: string;
 }
 
-export interface SourceAccessBlockState extends Readonly<
-  Omit<SourceAccessBlock, "sourceIds">
-> {
-  readonly sourceIds: ReadonlySet<string>;
-}
-
-interface MutableSourceAccessBlock extends Omit<
-  SourceAccessBlock,
-  "sourceIds"
-> {
-  sourceIds: Set<string>;
-}
+export type SourceAccessBlockState = Readonly<SourceAccessBlock>;
 
 interface SourceAccessChallengeOrigin {
   sourceId: string;
   taskId: string;
   taskKey: string | undefined;
-  sourceIds: Iterable<string>;
 }
 
 export function normalizedSourceAccessUrl(
   value: string,
   scopeKey: string,
+  sourceId: string,
 ): string | null {
   try {
-    if (sourceAccessScopeKey(value) !== scopeKey) return null;
+    if (sourceAccessScopeKey(value, sourceId) !== scopeKey) return null;
     return new URL(value).href;
   } catch {
     return null;
@@ -60,7 +48,7 @@ export function normalizedSourceAccessTaskKey(
 }
 
 export class SourceAccessGate {
-  private readonly blocks = new Map<string, MutableSourceAccessBlock>();
+  private readonly blocks = new Map<string, SourceAccessBlock>();
   private revision = 0;
 
   get size(): number {
@@ -75,23 +63,11 @@ export class SourceAccessGate {
     return this.blocks.values();
   }
 
-  isBlocked(
-    scopeKey: string | undefined,
-    sourceId: string | undefined,
-  ): boolean {
-    if (scopeKey && this.blocks.has(scopeKey)) return true;
+  isBlocked(sourceId: string | undefined): boolean {
     for (const block of this.blocks.values()) {
-      if (sourceId && block.sourceIds.has(sourceId)) return true;
+      if (sourceId === block.sourceId) return true;
     }
     return false;
-  }
-
-  registerSource(
-    scopeKey: string | undefined,
-    sourceId: string | undefined,
-  ): void {
-    if (scopeKey && sourceId)
-      this.blocks.get(scopeKey)?.sourceIds.add(sourceId);
   }
 
   snapshot(): SourceAccessBlock[] {
@@ -105,7 +81,6 @@ export class SourceAccessGate {
         revision: block.revision,
         scopeKey: block.scopeKey,
         sourceId: block.sourceId,
-        sourceIds: [...block.sourceIds].sort(),
         ...(block.verificationError
           ? { verificationError: block.verificationError }
           : {}),
@@ -143,9 +118,7 @@ export class SourceAccessGate {
         : existing.originTaskKey;
     const revision =
       !existing || replacesChallenge ? this.nextRevision() : existing.revision;
-    const sourceIds = new Set(existing?.sourceIds ?? []);
-    for (const sourceId of origin.sourceIds) sourceIds.add(sourceId);
-    const block: MutableSourceAccessBlock = {
+    const block: SourceAccessBlock = {
       challenge: { ...challenge },
       detectedAt: Date.now(),
       originTaskId:
@@ -154,7 +127,6 @@ export class SourceAccessGate {
       revision,
       scopeKey,
       sourceId: origin.sourceId,
-      sourceIds,
       ...(invalidatesVerification
         ? { verificationError }
         : !challengeChanged && existing?.verificationError
@@ -167,13 +139,15 @@ export class SourceAccessGate {
   }
 
   hydrate(blocks: Iterable<SourceAccessBlock>): void {
-    const hydrated = new Map<string, MutableSourceAccessBlock>();
+    const hydrated = new Map<string, SourceAccessBlock>();
     let highestRevision = this.revision;
     for (const block of blocks) {
       const scopeKey = block.scopeKey?.trim();
+      const sourceId = block.sourceId?.trim();
       const revision = Math.floor(block.revision);
       if (
         !scopeKey ||
+        !sourceId ||
         !Number.isFinite(block.detectedAt) ||
         !Number.isFinite(revision) ||
         revision <= 0 ||
@@ -185,19 +159,10 @@ export class SourceAccessGate {
         continue;
       }
       try {
-        if (sourceAccessScopeKey(block.challenge.url) !== scopeKey) continue;
+        if (sourceAccessScopeKey(block.challenge.url, sourceId) !== scopeKey) continue;
       } catch {
         continue;
       }
-      const sourceIds = new Set(
-        Array.isArray(block.sourceIds)
-          ? block.sourceIds
-              .filter((sourceId) => typeof sourceId === "string")
-              .map((sourceId) => sourceId.trim())
-              .filter(Boolean)
-          : [],
-      );
-      if (!sourceIds.has(block.sourceId)) continue;
       const current = hydrated.get(scopeKey);
       if (current && current.revision > revision) continue;
       const originTaskKey = normalizedSourceAccessTaskKey(block.originTaskKey);
@@ -208,8 +173,7 @@ export class SourceAccessGate {
         ...(originTaskKey ? { originTaskKey } : {}),
         revision,
         scopeKey,
-        sourceId: block.sourceId,
-        sourceIds,
+        sourceId,
         ...(typeof block.verificationError === "string" &&
         block.verificationError.trim()
           ? { verificationError: block.verificationError }

@@ -88,9 +88,6 @@ vi.mock("../content-sync/novel-source", () => ({
   tryDownloadServerChapter: vi.fn(async () => false),
 }));
 vi.mock("./scheduler", () => ({
-  sourceBaseDomainKey: vi.fn((baseUrl?: string) =>
-    baseUrl ? "source.test" : null,
-  ),
   TASK_PAUSE_ABORT_MESSAGE: "Task was paused.",
   taskScheduler: {
     batch: schedulerMocks.batch,
@@ -2321,6 +2318,18 @@ describe("enqueueChapterDownload", () => {
 });
 
 describe("enqueueChapterMediaRepair", () => {
+  it("keeps repair cooldowns separate for plugins sharing a hostname", () => {
+    pluginMocks.getPlugin.mockImplementation((id: string) => ({
+      id, name: id, getBaseUrl: () => "https://source.test",
+    }));
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    enqueueChapterMediaRepair({ id: 8, pluginId: "source-b", title: "Chapter 8" });
+    const specs = schedulerMocks.enqueueSource.mock.calls.map(([spec]) => spec as SourceTaskSpec<void>);
+    expect(specs.map(spec => spec.sourceCooldownKey)).toEqual([
+      "chapter.download:source-a", "chapter.download:source-b",
+    ]);
+  });
+
   it("repairs a server-bound chapter by replacing its package before source access", async () => {
     vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
     vi.mocked(getChapterById).mockResolvedValueOnce({ id: 7, novelId: 3, path: "/chapter/7" } as never);

@@ -71,7 +71,7 @@ function openBrowser(phase: "queued" | "loading" | "ready" | "error") {
       mode: "source-access",
       challenge: { kind: "captcha", url: "https://source.test/chapter/1" },
       revision: 3,
-      scopeKey: "site:source.test",
+      scopeKey: "plugin:source-a:site:source.test",
       sourceName: "Source A",
     },
   );
@@ -136,9 +136,8 @@ describe("source access browser controls", () => {
         challenge: { kind: "captcha", url: "https://source.test/chapter/1" },
         detectedAt: Date.now(),
         revision: 3,
-        scopeKey: "site:source.test",
+        scopeKey: "plugin:source-a:site:source.test",
         sourceId: "source-a",
-        sourceIds: ["source-a"],
         verificationRequested: false,
       }],
     });
@@ -148,8 +147,8 @@ describe("source access browser controls", () => {
 
     expect(verify.props.disabled).toBe(false);
     verify.props.onClick!();
-    await vi.waitFor(() => expect(begin).toHaveBeenCalledWith("site:source.test"));
-    expect(begin).not.toHaveBeenCalledWith("site:source-new.test");
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledWith("plugin:source-a:site:source.test"));
+    expect(begin).not.toHaveBeenCalledWith("plugin:source-a:site:source-new.test");
     expect(useSiteBrowserStore.getState()).toMatchObject({
       completion: { outcome: "verify", taskId: "browser-task", revision: 3 },
       visible: false,
@@ -170,7 +169,7 @@ describe("source access browser controls", () => {
       currentUrl: "https://other.test/login",
       taskId: "browser-task",
       sourceId: "source-a",
-      context: { mode: "source-access", revision: 3, scopeKey: "site:source.test" },
+      context: { mode: "source-access", revision: 3, scopeKey: "plugin:source-a:site:source.test" },
     });
     findControl(SiteBrowserOverlay(), "siteBrowser.close")!.props.onClick!();
     expect(useSiteBrowserStore.getState().completion?.outcome).toBe("keep-paused");
@@ -187,7 +186,7 @@ describe("source access browser controls", () => {
     expect(forceStop).toBeDefined();
     expect(forceStop!.props.disabled).not.toBe(true);
     forceStop!.props.onClick!();
-    expect(cancel).toHaveBeenCalledWith("site:source.test", 3);
+    expect(cancel).toHaveBeenCalledWith("plugin:source-a:site:source.test", 3);
   });
 });
 

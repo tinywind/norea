@@ -835,7 +835,7 @@ function SourceAccessBanner({
     try {
       return new URL(block.challenge.url).hostname;
     } catch {
-      return block.scopeKey.replace(/^site:/, "");
+      return block.sourceId;
     }
   })();
   const sourceLabel = sourceNames.length > 0 ? sourceNames.join(", ") : hostname;

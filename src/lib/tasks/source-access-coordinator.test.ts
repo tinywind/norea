@@ -21,9 +21,8 @@ function sourceAccessBlock(
     detectedAt: 1_700_000_000_000,
     originTaskKey: "chapter.download:source-a:1",
     revision: 3,
-    scopeKey: "site:source.test",
+    scopeKey: "plugin:source-a:site:source.test",
     sourceId: "source-a",
-    sourceIds: ["source-a"],
     verificationRequested: false,
     ...overrides,
   };
@@ -43,18 +42,36 @@ function memoryStorage(initialValue: string | null = null) {
 }
 
 describe("source access persistence", () => {
+  it("restores separate plugin blocks for the same hostname", () => {
+    const blocks = [sourceAccessBlock(), sourceAccessBlock({
+      sourceId: "source-b", scopeKey: "plugin:source-b:site:source.test", revision: 4,
+      originTaskKey: "chapter.download:source-b:1",
+    })];
+    const storage = memoryStorage();
+    startSourceAccessPersistence({
+      getSnapshot: () => ({ sourceAccessBlocks: blocks }),
+      hydrateSourceAccessBlocks: () => {},
+      subscribe: () => () => {},
+    }, storage);
+    const restored = loadPersistedSourceAccessBlocks(storage);
+    expect(restored.map(block => block.sourceId)).toEqual(["source-a", "source-b"]);
+    expect(restored.map(block => block.scopeKey)).toEqual([
+      "plugin:source-a:site:source.test", "plugin:source-b:site:source.test",
+    ]);
+  });
+
   it("preserves the challenged browser profile across restart", () => {
     const storage = memoryStorage(JSON.stringify({
       version: 1,
       blocks: [{
         ...sourceAccessBlock(),
+        scopeKey: "plugin:source-b:site:source.test",
         sourceId: "source-b",
-        sourceIds: ["source-a", "source-b"],
+        originTaskKey: "chapter.download:source-b:1",
       }],
     }));
     expect(loadPersistedSourceAccessBlocks(storage)[0]).toMatchObject({
       sourceId: "source-b",
-      sourceIds: ["source-a", "source-b"],
     });
   });
 
@@ -131,7 +148,7 @@ describe("source access persistence", () => {
         },
         detectedAt: index,
         revision: index + 1,
-        scopeKey: `site:source-${index}.test`,
+        scopeKey: `plugin:source-a:site:source-${index}.test`,
       }),
     );
     const storage = memoryStorage();
@@ -147,13 +164,13 @@ describe("source access persistence", () => {
       blocks: SourceAccessBlock[];
     };
     expect(persisted.blocks).toHaveLength(102);
-    expect(persisted.blocks[0]?.scopeKey).toBe("site:source-0.test");
-    expect(persisted.blocks.at(-1)?.scopeKey).toBe("site:source-101.test");
+    expect(persisted.blocks[0]?.scopeKey).toBe("plugin:source-a:site:source-0.test");
+    expect(persisted.blocks.at(-1)?.scopeKey).toBe("plugin:source-a:site:source-101.test");
 
     const restored = loadPersistedSourceAccessBlocks(storage);
     expect(restored).toHaveLength(102);
-    expect(restored[0]?.scopeKey).toBe("site:source-0.test");
-    expect(restored.at(-1)?.scopeKey).toBe("site:source-101.test");
+    expect(restored[0]?.scopeKey).toBe("plugin:source-a:site:source-0.test");
+    expect(restored.at(-1)?.scopeKey).toBe("plugin:source-a:site:source-101.test");
   });
 
   it("fails closed to an empty list for unknown or invalid persisted data", () => {
@@ -163,7 +180,7 @@ describe("source access persistence", () => {
     const mismatchedScope = memoryStorage(
       JSON.stringify({
         version: 1,
-        blocks: [sourceAccessBlock({ scopeKey: "site:other.test" })],
+        blocks: [sourceAccessBlock({ scopeKey: "plugin:source-a:site:other.test" })],
       }),
     );
 
@@ -325,7 +342,7 @@ describe("cancelSourceAccessWait", () => {
     vi.spyOn(taskScheduler, "cancelSourceAccessBlock").mockReturnValue(true);
     const cancelBrowser = vi.spyOn(taskScheduler, "cancel");
 
-    expect(cancelSourceAccessWait("site:other.test", 3)).toBe(true);
+    expect(cancelSourceAccessWait("plugin:source-a:site:other.test", 3)).toBe(true);
     expect(cancelBrowser).not.toHaveBeenCalled();
     expect(useSiteBrowserStore.getState().visible).toBe(true);
   });

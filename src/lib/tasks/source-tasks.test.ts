@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 describe("enqueueSourceTask", () => {
-  it("scopes source work by exact hostname and confirms after a successful run", async () => {
+  it("scopes source work by plugin and hostname and confirms after a successful run", async () => {
     const confirmSourceAccess = vi.fn(() => true);
     const run = vi.fn(async () => "done");
 
@@ -61,7 +61,7 @@ describe("enqueueSourceTask", () => {
       title: "Search",
     });
 
-    expect(capturedSpec?.sourceAccessScopeKey).toBe("site:reader.source.test");
+    expect(capturedSpec?.sourceAccessScopeKey).toBe("plugin:source-a:site:reader.source.test");
     expect(capturedSpec?.resolveSourceAccessUrl).toBeUndefined();
     await expect(
       capturedSpec?.run(runContext(confirmSourceAccess)),
@@ -181,9 +181,8 @@ describe("enqueueSourceAccessBrowserTask", () => {
       challenge: { kind: "cloudflare" as const, url: "https://source.test/cf" },
       detectedAt: 1,
       revision: 2,
-      scopeKey: "site:source.test",
+      scopeKey: "plugin:source-a:site:source.test",
       sourceId: "source-a",
-      sourceIds: ["source-a"],
       verificationRequested: false,
     };
 
@@ -201,7 +200,7 @@ describe("enqueueSourceAccessBrowserTask", () => {
       mode: "source-access",
       challenge: block.challenge,
       revision: 2,
-      scopeKey: "site:source.test",
+      scopeKey: "plugin:source-a:site:source.test",
       sourceName: "Source A",
     });
     useSiteBrowserStore
@@ -218,9 +217,8 @@ describe("enqueueSourceAccessBrowserTask", () => {
       challenge: { kind: "captcha" as const, url: "https://source.test/cf" },
       detectedAt: 1,
       revision: 5,
-      scopeKey: "site:source.test",
+      scopeKey: "plugin:source-a:site:source.test",
       sourceId: "source-a",
-      sourceIds: ["source-a"],
       verificationRequested: false,
     };
     const handle = enqueueSourceAccessBrowserTask(

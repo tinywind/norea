@@ -75,6 +75,7 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
   if (value === null || typeof value !== "object") return null;
   const block = value as Record<string, unknown>;
   const scopeKey = typeof block.scopeKey === "string" ? block.scopeKey.trim() : "";
+  const sourceId = typeof block.sourceId === "string" ? block.sourceId.trim() : "";
   const revision =
     typeof block.revision === "number" ? Math.floor(block.revision) : 0;
   const detectedAt =
@@ -85,6 +86,7 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
   };
   if (
     !scopeKey ||
+    !sourceId ||
     !Number.isFinite(detectedAt) ||
     !Number.isFinite(revision) ||
     revision <= 0 ||
@@ -95,25 +97,11 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
   const challenge = accessError.challenge;
 
   try {
-    if (sourceAccessScopeKey(challenge.url) !== scopeKey) return null;
+    if (sourceAccessScopeKey(challenge.url, sourceId) !== scopeKey) return null;
   } catch {
     return null;
   }
 
-  const sourceIds = Array.isArray(block.sourceIds)
-    ? [
-        ...new Set(
-          block.sourceIds
-            .filter(
-              (sourceId): sourceId is string => typeof sourceId === "string",
-            )
-            .map((sourceId) => sourceId.trim())
-            .filter(Boolean),
-        ),
-      ]
-    : [];
-  const sourceId = typeof block.sourceId === "string" ? block.sourceId.trim() : "";
-  if (!sourceIds.includes(sourceId)) return null;
   const persistedChallengeUrl = challengeUrlForPersistence(challenge.url);
   const challengeUrlRedacted =
     block.challengeUrlRedacted === true || persistedChallengeUrl.redacted;
@@ -129,7 +117,6 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
     revision,
     scopeKey,
     sourceId,
-    sourceIds,
     verificationRequested: false,
   };
 }
@@ -337,9 +324,6 @@ export function sourceAccessBlockSourceNames(
   block: SourceAccessBlock,
   snapshot: Pick<TaskSnapshot, "records"> = taskScheduler.getSnapshot(),
 ): string[] {
-  const namesById = new Map<string, string>();
-  for (const record of snapshot.records) {
-    if (record.source) namesById.set(record.source.id, record.source.name);
-  }
-  return block.sourceIds.map((sourceId) => namesById.get(sourceId) ?? sourceId);
+  const source = snapshot.records.find(record => record.source?.id === block.sourceId)?.source;
+  return [source?.name ?? block.sourceId];
 }

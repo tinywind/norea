@@ -64,9 +64,8 @@ function accessBlock(): SourceAccessBlock {
     },
     detectedAt: 1,
     revision: 1,
-    scopeKey: "site:source.test",
+    scopeKey: "plugin:source-a:site:source.test",
     sourceId: "source-a",
-    sourceIds: ["source-a"],
     verificationRequested: false,
   };
 }
@@ -100,7 +99,7 @@ describe("nextAutoOpenSourceAccessBlock", () => {
   });
 
   it("keeps a block pending after a transient browser open failure", () => {
-    const scopeKey = "site:source.test";
+    const scopeKey = "plugin:source-a:site:source.test";
     const pendingScopes = new Set([scopeKey]);
     const inFlightScopes = new Set([scopeKey]);
 
@@ -204,7 +203,7 @@ describe("source access notifications", () => {
 
   it("does not let a dismissed source hide other blocked sources", () => {
     const block = accessBlock();
-    const secondBlock = { ...block, scopeKey: "site:second.test" };
+    const secondBlock = { ...block, scopeKey: "plugin:source-a:site:second.test" };
     const sync = mountNotifications([block, secondBlock]);
     notifications.hide(notificationsStore.getState().notifications[0]!.id!);
     sync();
