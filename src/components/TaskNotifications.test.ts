@@ -5,6 +5,7 @@ import { notifications, notificationsStore } from "@mantine/notifications";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import type { SourceAccessBlock } from "../lib/tasks/scheduler";
+import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
 import {
   completeAutoOpenSourceAccessAttempt,
   nextAutoOpenSourceAccessBlock,
@@ -134,6 +135,7 @@ describe("source access notifications", () => {
     notifications.clean();
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   function mountNotifications(initialBlocks: SourceAccessBlock[]) {
@@ -158,6 +160,20 @@ describe("source access notifications", () => {
       sync();
     };
   }
+
+  it("opens a restored challenge when a new source request becomes eligible", async () => {
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const open = vi.spyOn(sourceAccessCoordinator, "openSourceAccessBrowser")
+      .mockResolvedValue(true);
+    const sync = mountNotifications([accessBlock()]);
+    expect(open).not.toHaveBeenCalled();
+    vi.mocked(taskScheduler.canBeginSourceAccessVerification).mockReturnValue(true);
+
+    sync();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+    sync();
+    expect(open).toHaveBeenCalledOnce();
+  });
 
   it("allows dismissal without reopening on task updates or unblocking access", () => {
     const block = accessBlock();

@@ -157,7 +157,7 @@ export function TaskNotifications() {
     const knownScopes = new Set(
       initialSnapshot.sourceAccessBlocks.map((block) => block.scopeKey),
     );
-    const pendingAutoOpenScopes = new Set<string>();
+    const pendingAutoOpenScopes = new Set(knownScopes);
     const autoOpenInFlightScopes = new Set<string>();
     const dismissedRevisions = new Map<string, number>();
     let notificationVisible = false;
