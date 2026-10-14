@@ -1,7 +1,7 @@
-use std::{borrow::Cow, fs, path::Path, time::Duration};
+use std::{fs, path::Path, time::Duration};
 
 use sqlx::{
-    migrate::{Migration as SqlxMigration, MigrationType, Migrator},
+    migrate::{Migration as SqlxMigration, MigrationType},
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
@@ -28,72 +28,53 @@ fn run_async_command<F: std::future::Future>(command: F) -> F::Output {
     }
 }
 
-pub fn compatibility_plugin(migrations: Vec<Migration>) -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    let migrator = Migrator {
-        migrations: Cow::Owned(
-            migrations
-                .into_iter()
-                .filter_map(|migration| match migration.kind {
-                    MigrationKind::Up => Some(SqlxMigration::new(
-                        migration.version,
-                        migration.description.into(),
-                        MigrationType::ReversibleUp,
-                        migration.sql.into(),
-                        false,
-                    )),
-                    MigrationKind::Down => None,
-                })
-                .collect(),
-        ),
-        ..Migrator::DEFAULT
-    };
-    tauri::plugin::Builder::new("database-compatibility")
+pub fn schema_migration() -> Migration {
+    Migration {
+        version: 1,
+        description: "create current application schema",
+        sql: include_str!("schema.sql"),
+        kind: MigrationKind::Up,
+    }
+}
+
+pub fn schema_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    let schema = schema_migration();
+    let expected = SqlxMigration::new(
+        schema.version,
+        schema.description.into(),
+        MigrationType::ReversibleUp,
+        schema.sql.into(),
+        false,
+    );
+    tauri::plugin::Builder::new("database-schema")
         .setup(move |app, _| {
             let path = app.path().app_config_dir()?.join(DB_FILE);
-            run_async_command(reset_incompatible_database(&path, &migrator))?;
+            run_async_command(reset_incompatible_database(&path, &expected))?;
             Ok(())
         })
         .build()
 }
 
-async fn history_is_compatible(
+async fn schema_is_current(
     pool: &SqlitePool,
-    migrator: &Migrator,
+    expected: &SqlxMigration,
 ) -> Result<bool, sqlx::Error> {
     let has_history: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
     ).fetch_one(pool).await?;
-    let applied = if has_history {
-        sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
-            "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version",
-        )
-        .fetch_all(pool)
-        .await?
-    } else {
-        Vec::new()
-    };
-    if applied.is_empty() {
-        let has_tables: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' \
-             AND name != '_sqlx_migrations' AND name NOT GLOB 'sqlite_*')",
-        )
-        .fetch_one(pool)
-        .await?;
-        return Ok(!has_tables);
+    if !has_history {
+        return Ok(false);
     }
-    // Applied migrations must be an exact prefix, including every checksum.
-    Ok(applied.len() <= migrator.migrations.len()
-        && applied
-            .iter()
-            .zip(migrator.iter())
-            .all(|((version, checksum, success), expected)| {
-                *success
-                    && *version == expected.version
-                    && checksum.as_slice() == expected.checksum.as_ref()
-            }))
+    let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
+        "SELECT version, checksum, success FROM _sqlx_migrations",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(matches!(applied.as_slice(), [(version, checksum, true)]
+        if *version == expected.version && checksum.as_slice() == expected.checksum.as_ref()))
 }
 
-async fn reset_incompatible_database(path: &Path, migrator: &Migrator) -> Result<(), sqlx::Error> {
+async fn reset_incompatible_database(path: &Path, expected: &SqlxMigration) -> Result<(), sqlx::Error> {
     if !path.try_exists()? {
         return Ok(());
     }
@@ -105,12 +86,12 @@ async fn reset_incompatible_database(path: &Path, migrator: &Migrator) -> Result
                 .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS)),
         )
         .await?;
-    let compatible = history_is_compatible(&pool, migrator).await;
+    let current = schema_is_current(&pool, expected).await;
     pool.close().await;
-    if compatible? {
+    if current? {
         return Ok(());
     }
-    log::warn!("Resetting application database because migration history is incompatible");
+    log::warn!("Resetting application database because its schema does not match this build");
     // Run before the SQL plugin opens any connections; leave media and other app files intact.
     for suffix in ["-wal", "-shm", "-journal", ""] {
         let mut file = path.as_os_str().to_os_string();
@@ -156,29 +137,18 @@ mod tests {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
 
-    fn migrations(scripts: &[&str]) -> Migrator {
-        Migrator {
-            migrations: Cow::Owned(
-                scripts
-                    .iter()
-                    .enumerate()
-                    .map(|(index, sql)| {
-                        Migration::new(
-                            index as i64 + 1,
-                            "fixture".into(),
-                            MigrationType::ReversibleUp,
-                            (*sql).to_owned().into(),
-                            false,
-                        )
-                    })
-                    .collect(),
-            ),
-            ..Migrator::DEFAULT
-        }
+    fn schema(sql: &str) -> SqlxMigration {
+        Migration::new(
+            1,
+            "fixture".into(),
+            MigrationType::ReversibleUp,
+            sql.to_owned().into(),
+            false,
+        )
     }
 
-    async fn bootstrap(path: &std::path::Path, migrator: &Migrator) -> sqlx::SqlitePool {
-        reset_incompatible_database(path, migrator).await.unwrap();
+    async fn bootstrap(path: &std::path::Path, expected: &SqlxMigration) -> sqlx::SqlitePool {
+        reset_incompatible_database(path, expected).await.unwrap();
         let pool = sqlite_pool_options()
             .connect_with(
                 SqliteConnectOptions::new()
@@ -187,24 +157,29 @@ mod tests {
             )
             .await
             .unwrap();
-        migrator.run(&pool).await.unwrap();
+        Migrator {
+            migrations: Cow::Owned(vec![expected.clone()]),
+            ..Migrator::DEFAULT
+        }
+        .run(&pool)
+        .await
+        .unwrap();
         pool
     }
 
-    const V1: &str = "CREATE TABLE sample (value INTEGER);";
-    const V2: &str = "ALTER TABLE sample ADD COLUMN title TEXT;";
+    const CURRENT: &str = "CREATE TABLE sample (value INTEGER);";
 
     #[tokio::test]
-    async fn compatible_upgrade_and_reopen_preserve_data() {
+    async fn current_schema_reopens_without_changing_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
-        let pool = bootstrap(&path, &migrations(&[V1])).await;
+        let pool = bootstrap(&path, &schema(CURRENT)).await;
         sqlx::query("INSERT INTO sample VALUES (42)")
             .execute(&pool)
             .await
             .unwrap();
         pool.close().await;
-        let pool = bootstrap(&path, &migrations(&[V1, V2])).await;
+        let pool = bootstrap(&path, &schema(CURRENT)).await;
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT value FROM sample")
                 .fetch_one(&pool)
@@ -212,86 +187,61 @@ mod tests {
                 .unwrap(),
             42
         );
-        sqlx::query("UPDATE sample SET title = 'kept'")
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn changed_schema_resets_only_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let media = dir.path().join("content.html");
+        fs::write(&media, "chapter content").unwrap();
+        let pool = bootstrap(&path, &schema("CREATE TABLE sample (value TEXT);")).await;
+        sqlx::query("INSERT INTO sample (value) VALUES (42)")
             .execute(&pool)
             .await
             .unwrap();
         pool.close().await;
-        let pool = bootstrap(&path, &migrations(&[V1, V2])).await;
+        let pool = bootstrap(&path, &schema(CURRENT)).await;
         assert_eq!(
-            sqlx::query_scalar::<_, String>("SELECT title FROM sample")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sample")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            "kept"
+            0
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
+                .fetch_all(&pool)
+                .await
+                .unwrap(),
+            vec![1]
+        );
+        assert_eq!(fs::read_to_string(media).unwrap(), "chapter content");
         pool.close().await;
     }
 
     #[tokio::test]
-    async fn incompatible_history_resets_only_database() {
-        let cases = [
-            (vec![V1], vec!["CREATE TABLE sample (value TEXT);"]),
-            (vec![V1, V2], vec![V1]),
-            (
-                vec![V1, V2],
-                vec![
-                    V1,
-                    "ALTER TABLE sample ADD COLUMN name TEXT;",
-                    "CREATE TABLE added (id INTEGER);",
-                ],
-            ),
-        ];
-        for (old, new) in cases {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(DB_FILE);
-            let media = dir.path().join("content.html");
-            fs::write(&media, "chapter content").unwrap();
-            let pool = bootstrap(&path, &migrations(&old)).await;
-            sqlx::query("INSERT INTO sample (value) VALUES (42)")
-                .execute(&pool)
-                .await
-                .unwrap();
-            pool.close().await;
-            let pool = bootstrap(&path, &migrations(&new)).await;
-            assert_eq!(
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sample")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap(),
-                0
-            );
-            assert_eq!(
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap(),
-                new.len() as i64
-            );
-            assert_eq!(fs::read_to_string(media).unwrap(), "chapter content");
-            pool.close().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn incomplete_or_missing_history_resets_database() {
+    async fn noncurrent_history_resets_database() {
         for change in [
-            "DELETE FROM _sqlx_migrations WHERE version = 1",
-            "UPDATE _sqlx_migrations SET success = 0 WHERE version = 2",
+            "UPDATE _sqlx_migrations SET version = 2",
+            "UPDATE _sqlx_migrations SET success = 0",
+            "INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time) \
+             SELECT 2,description,success,checksum,execution_time FROM _sqlx_migrations",
             "DELETE FROM _sqlx_migrations",
             "DROP TABLE _sqlx_migrations",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(DB_FILE);
-            let migrator = migrations(&[V1, V2]);
-            let pool = bootstrap(&path, &migrator).await;
+            let expected = schema(CURRENT);
+            let pool = bootstrap(&path, &expected).await;
             sqlx::query("INSERT INTO sample (value) VALUES (42)")
                 .execute(&pool)
                 .await
                 .unwrap();
             sqlx::query(change).execute(&pool).await.unwrap();
             pool.close().await;
-            let pool = bootstrap(&path, &migrator).await;
+            let pool = bootstrap(&path, &expected).await;
             assert_eq!(
                 sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sample")
                     .fetch_one(&pool)
@@ -309,7 +259,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let contents = b"not a SQLite database";
         fs::write(&path, contents).unwrap();
-        assert!(reset_incompatible_database(&path, &migrations(&[V1]))
+        assert!(reset_incompatible_database(&path, &schema(CURRENT))
             .await
             .is_err());
         assert_eq!(fs::read(path).unwrap(), contents);

@@ -1,5 +1,5 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import { readContentSyncStateCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
 import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
@@ -27,9 +27,8 @@ export async function workMetadataFingerprint(metadata: NovelMetadataV1, cover: 
   return hash(new TextEncoder().encode(JSON.stringify([canonical(metadata), cover ? await hash(cover) : null])));
 }
 async function readCache(server: string): Promise<WorkSyncCache> {
-  const saved = await readContentSyncStateCache(cacheKey(server), "works");
-  const parsed = saved ? JSON.parse(saved) as Partial<WorkSyncCache> : {};
-  return { cursor: parsed.cursor ?? 0, fingerprints: parsed.fingerprints ?? {}, fileVersions: parsed.fileVersions ?? {}, deleted: parsed.deleted ?? {} };
+  const saved = await readContentSyncCache(cacheKey(server));
+  return saved ? JSON.parse(saved) as WorkSyncCache : { cursor: 0, fingerprints: {}, fileVersions: {}, deleted: {} };
 }
 async function saveCache(server: string, cache: WorkSyncCache): Promise<void> {
   await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));

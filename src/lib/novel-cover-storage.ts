@@ -45,8 +45,8 @@ const IMAGE_EXTENSIONS = new Set([
 interface NovelCoverManifest {
   contentType: string | null;
   fileName: string;
-  novelPath: string | null;
-  sourceId: string | null;
+  novelPath: string;
+  sourceId: string;
   sourceUrl: string;
   updatedAt: number;
   version: 1;
@@ -181,7 +181,7 @@ async function resolveNovelCoverDisplaySourceForCache(
     return resolveNovelCoverDisplaySource(plugin, novel);
   }
 
-  const src = await resolveStoredNovelCoverSrc(novel, plugin);
+  const src = await resolveStoredNovelCoverSrc(novel);
   return src ? { dispose: () => undefined, src } : null;
 }
 
@@ -214,7 +214,7 @@ export async function resolveNovelCoverDisplaySource(
     return sourceUrl ? { dispose: () => undefined, src: sourceUrl } : null;
   }
 
-  const existing = await readStoredNovelCover(novel, sourceUrl).catch(
+  const existing = await readStoredNovelCover(novel).catch(
     (error: unknown) => {
       console.debug("[novel-cover] stored cover unavailable", {
         error,
@@ -370,7 +370,7 @@ async function storeNovelCoverFromSource(
   novel: NovelCoverStorageInput,
   sourceUrl: string,
 ): Promise<boolean> {
-  const existing = await readStoredNovelCover(novel, null);
+  const existing = await readStoredNovelCover(novel);
   if (
     existing?.manifest.sourceId === novel.pluginId &&
     existing.manifest.novelPath === novel.path &&
@@ -424,16 +424,10 @@ async function storeNovelCoverFromSource(
 
 export async function resolveStoredNovelCoverSrc(
   novel: NovelCoverStorageInput & { cover?: string | null },
-  plugin?: Plugin | null,
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
 
-  const stored = await readStoredNovelCover(
-    novel,
-    plugin
-      ? absolutePluginCoverUrl(plugin, novel.cover)
-      : novel.cover?.trim() || null,
-  );
+  const stored = await readStoredNovelCover(novel);
   if (!stored) return null;
 
   return storedNovelCoverSrc(stored, novel.id);
@@ -453,7 +447,6 @@ function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string 
 
 async function readStoredNovelCover(
   novel: NovelCoverStorageInput,
-  expectedSourceUrl: string | null,
 ): Promise<StoredNovelCover | null> {
   const metadataDirectory = resolvedNovelStorageDir(novel.id);
   if (metadataDirectory) {
@@ -466,7 +459,6 @@ async function readStoredNovelCover(
   }
   if (isAndroidRuntime()) {
     const result = await inspectAndroidNovelCover({
-      expectedSourceUrl,
       novelPath: novel.path,
       novelIdentitySuffix: novelStorageIdentitySuffix(novel),
       preferredNovelDir: novelStorageRelativeDir(novel),
@@ -481,7 +473,6 @@ async function readStoredNovelCover(
   const result = await invoke<NovelCoverReadResultWire | null>(
     "novel_cover_read_manifest",
     {
-      expectedSourceUrl,
       ...novelCoverInvokeArgs(novel),
     },
   );
@@ -742,6 +733,10 @@ function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null 
     const parsed = JSON.parse(raw) as Partial<NovelCoverManifest>;
     if (
       parsed.version !== 1 ||
+      typeof parsed.sourceId !== "string" ||
+      typeof parsed.novelPath !== "string" ||
+      typeof parsed.updatedAt !== "number" ||
+      !Number.isFinite(parsed.updatedAt) ||
       typeof parsed.sourceUrl !== "string" ||
       typeof parsed.fileName !== "string"
     ) {
@@ -751,12 +746,10 @@ function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null 
       contentType:
         typeof parsed.contentType === "string" ? parsed.contentType : null,
       fileName: parsed.fileName,
-      novelPath:
-        typeof parsed.novelPath === "string" ? parsed.novelPath : null,
-      sourceId: typeof parsed.sourceId === "string" ? parsed.sourceId : null,
+      novelPath: parsed.novelPath,
+      sourceId: parsed.sourceId,
       sourceUrl: parsed.sourceUrl,
-      updatedAt:
-        typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
+      updatedAt: parsed.updatedAt,
       version: 1,
     };
   } catch {

@@ -14,7 +14,6 @@ vi.mock("./pack", () => ({
 vi.mock("../android-storage", () => ({
   copyAndroidContentUriToTempFile: vi.fn(),
   deleteAndroidContentUriTempFile: vi.fn(),
-  readAndroidContentUriBytes: vi.fn(),
   writeAndroidContentUriFile: vi.fn(),
 }));
 
@@ -29,14 +28,12 @@ vi.mock("./snapshot", () => ({
 
 vi.mock("./unpack", () => ({
   unpackBackup: vi.fn(),
-  unpackBackupBytes: vi.fn(),
 }));
 
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
-  readAndroidContentUriBytes,
   writeAndroidContentUriFile,
 } from "../android-storage";
 import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
@@ -55,7 +52,7 @@ import {
   applyBackupSnapshot,
   gatherBackupSnapshot,
 } from "./snapshot";
-import { unpackBackup, unpackBackupBytes } from "./unpack";
+import { unpackBackup } from "./unpack";
 
 const openMock = vi.mocked(open);
 const saveMock = vi.mocked(save);
@@ -71,9 +68,7 @@ const copyAndroidContentUriToTempFileMock = vi.mocked(
 const deleteAndroidContentUriTempFileMock = vi.mocked(
   deleteAndroidContentUriTempFile,
 );
-const readAndroidContentUriBytesMock = vi.mocked(readAndroidContentUriBytes);
 const unpackBackupMock = vi.mocked(unpackBackup);
-const unpackBackupBytesMock = vi.mocked(unpackBackupBytes);
 const writeAndroidContentUriFileMock = vi.mocked(writeAndroidContentUriFile);
 
 function makeManifest(): BackupManifest {
@@ -95,7 +90,10 @@ function makeManifest(): BackupManifest {
         progress: 0,
         isDownloaded: false,
         contentType: "html",
+        sourceContentType: "html",
         content: null,
+        contentBytes: 0,
+        mediaBytes: 0,
         releaseTime: null,
         readAt: null,
         createdAt: 1_700_000_000,
@@ -115,7 +113,10 @@ function makeManifest(): BackupManifest {
         progress: 0,
         isDownloaded: true,
         contentType: "html",
-        content: "<p>downloaded</p>",
+        sourceContentType: "html",
+        content: null,
+        contentBytes: 0,
+        mediaBytes: 0,
         releaseTime: null,
         readAt: null,
         createdAt: 1_700_000_000,
@@ -126,6 +127,7 @@ function makeManifest(): BackupManifest {
     categories: [],
     novelCategories: [],
     repositories: [],
+    vpnGateServerVerdicts: [],
     installedPlugins: [
       {
         id: "demo",
@@ -149,9 +151,8 @@ beforeEach(() => {
   packBackupMock.mockResolvedValue(undefined);
   packBackupTempFileMock.mockResolvedValue("C:\\temp\\norea-backup.zip");
   applyBackupSnapshotMock.mockResolvedValue(undefined);
-  copyAndroidContentUriToTempFileMock.mockResolvedValue(null);
+  copyAndroidContentUriToTempFileMock.mockReset();
   deleteAndroidContentUriTempFileMock.mockResolvedValue(undefined);
-  readAndroidContentUriBytesMock.mockResolvedValue([4, 5, 6]);
 });
 
 describe("defaultBackupFilename", () => {
@@ -252,8 +253,6 @@ describe("backup import/export flow", () => {
     );
     expect(unpackBackupMock).toHaveBeenCalledWith(tempFile.path);
     expect(deleteAndroidContentUriTempFileMock).toHaveBeenCalledWith(tempFile);
-    expect(readAndroidContentUriBytesMock).not.toHaveBeenCalled();
-    expect(unpackBackupBytesMock).not.toHaveBeenCalled();
     expect(applyBackupSnapshotMock).toHaveBeenCalledWith(manifest);
   });
 
@@ -273,31 +272,21 @@ describe("backup import/export flow", () => {
     await expect(importBackupFromFile()).rejects.toThrow(failure);
 
     expect(deleteAndroidContentUriTempFileMock).toHaveBeenCalledWith(tempFile);
-    expect(readAndroidContentUriBytesMock).not.toHaveBeenCalled();
-    expect(unpackBackupBytesMock).not.toHaveBeenCalled();
     expect(applyBackupSnapshotMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to base64 Android content URI imports when temp files are unavailable", async () => {
-    const manifest = makeManifest();
+  it("propagates Android temp file bridge failures before applying a backup", async () => {
     const uri = "content://com.android.externalstorage.documents/document/backup.zip";
+    const failure = new Error("Android content URI temp-file bridge is unavailable.");
     isAndroidRuntimeMock.mockReturnValue(true);
     openMock.mockResolvedValue(uri);
-    copyAndroidContentUriToTempFileMock.mockResolvedValue(null);
-    unpackBackupBytesMock.mockResolvedValue(manifest);
+    copyAndroidContentUriToTempFileMock.mockRejectedValue(failure);
 
-    const path = await importBackupFromFile();
+    await expect(importBackupFromFile()).rejects.toThrow(failure);
 
-    expect(path).toBe(uri);
-    expect(copyAndroidContentUriToTempFileMock).toHaveBeenCalledWith(
-      uri,
-      MAX_BACKUP_ARCHIVE_BYTES,
-    );
-    expect(readAndroidContentUriBytesMock).toHaveBeenCalledWith(uri);
-    expect(unpackBackupBytesMock).toHaveBeenCalledWith([4, 5, 6]);
     expect(deleteAndroidContentUriTempFileMock).not.toHaveBeenCalled();
     expect(unpackBackupMock).not.toHaveBeenCalled();
-    expect(applyBackupSnapshotMock).toHaveBeenCalledWith(manifest);
+    expect(applyBackupSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("skips import work when the open dialog is cancelled", async () => {

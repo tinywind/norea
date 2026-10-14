@@ -2,7 +2,6 @@
 
 use super::cache::remove_existing_path;
 use super::chapter_media_blocking;
-use super::content::delete_legacy_storage_manifest;
 use super::paths::{
     ensure_contents_nomedia, media_root, relative_storage_path, safe_relative_storage_path,
     CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
@@ -627,7 +626,6 @@ pub async fn chapter_storage_prepare_transfer(
             entries,
             &chapter_storage_transfer_token(),
         )?;
-        delete_legacy_storage_manifest(&root)?;
         Ok(preparation)
     })
     .await
@@ -640,8 +638,7 @@ pub async fn chapter_storage_finalize_transfer(
 ) -> Result<(), String> {
     chapter_media_blocking("finalize chapter storage transfer", move || {
         let root = media_root(&app)?;
-        finalize_chapter_storage_transfer_at_root(&root, &preparation)?;
-        delete_legacy_storage_manifest(&root)
+        finalize_chapter_storage_transfer_at_root(&root, &preparation)
     })
     .await
 }
@@ -653,8 +650,7 @@ pub async fn chapter_storage_rollback_transfer(
 ) -> Result<(), String> {
     chapter_media_blocking("rollback chapter storage transfer", move || {
         let root = media_root(&app)?;
-        rollback_chapter_storage_transfer_at_root(&root, &preparation)?;
-        delete_legacy_storage_manifest(&root)
+        rollback_chapter_storage_transfer_at_root(&root, &preparation)
     })
     .await
 }
@@ -678,8 +674,7 @@ fn chapter_storage_remove_dir_sync(app: AppHandle, relative_dir: String) -> Resu
     }
     validate_storage_path_ancestors(&media_root, &relative_dir)?;
     let path = media_root.join(relative_dir);
-    remove_transfer_path(&path, "chapter media: remove chapter storage dir")?;
-    delete_legacy_storage_manifest(&media_root)
+    remove_transfer_path(&path, "chapter media: remove chapter storage dir")
 }
 
 #[tauri::command]
@@ -720,8 +715,7 @@ fn chapter_storage_relocate_dir_sync(
     }
     remove_existing_path(&new_path, "chapter media: remove relocated storage target")?;
     fs::rename(&old_path, &new_path)
-        .map_err(|err| format!("chapter media: relocate chapter storage dir: {err}"))?;
-    delete_legacy_storage_manifest(&media_root)
+        .map_err(|err| format!("chapter media: relocate chapter storage dir: {err}"))
 }
 
 #[tauri::command]
@@ -763,7 +757,7 @@ fn chapter_storage_prune_dir_children_sync(
                 .map_err(|err| format!("chapter media: remove stale storage dir: {err}"))?;
         }
     }
-    delete_legacy_storage_manifest(&media_root)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ internal class AndroidContentSyncStorage(
   private val snapshotGuard = AndroidContentSnapshotGuard()
 
   private data class SnapshotFile(
-    val relativePath: String,
+    val name: String,
     val uri: Uri,
     val bytes: Long,
     val lastModified: Long,
@@ -41,12 +41,9 @@ internal class AndroidContentSyncStorage(
           source = storage.storageChildDocumentFile(child) ?: error("Stored chapter is missing.")
         }
         val files = snapshotFiles(source)
-        if (files.any { it.relativePath.startsWith("media/") }) {
-          check(File(destination, "media").mkdir()) { "Cannot create media snapshot." }
-        }
         var total = 0L
         for (file in files) {
-          val target = File(destination, file.relativePath)
+          val target = File(destination, file.name)
           var bytes = 0L
           context.contentResolver.openInputStream(file.uri)?.use { input ->
             target.outputStream().use { output ->
@@ -75,23 +72,17 @@ internal class AndroidContentSyncStorage(
 
   private fun snapshotFiles(source: DocumentFile): List<SnapshotFile> {
     val files = mutableListOf<SnapshotFile>()
-    fun collect(directory: DocumentFile, relative: String) {
+    for (child in storage.listStorageChildren(source)) {
       check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
-      for (child in storage.listStorageChildren(directory)) {
-        require(child.name.isNotEmpty() && child.name != "." && child.name != ".." && !child.name.contains('/') && !child.name.contains('\\')) { "Unsafe chapter file." }
+      require(child.name.isNotEmpty() && child.name != "." && child.name != ".." && !child.name.contains('/') && !child.name.contains('\\')) { "Unsafe chapter file." }
+      check(child.name != "media") { "Chapter media must use media.zip." }
+      if (child.name in setOf("content.html", "content.pdf", "manifest.json", "media.zip")) {
+        check(!child.isDirectory) { "Invalid chapter artifact." }
         val document = storage.storageChildDocumentFile(child) ?: error("Chapter file disappeared.")
-        if (child.isDirectory) {
-          if (relative.isEmpty() && child.name == "media") {
-            collect(document, "media/")
-          }
-        } else if (relative.isNotEmpty() || child.name in setOf("content.html", "content.pdf", "manifest.json", "media.zip")) {
-          check(files.size < 10_000) { "Too many chapter files." }
-          files.add(SnapshotFile("$relative${child.name}", document.uri, document.length(), document.lastModified()))
-        }
+        files.add(SnapshotFile(child.name, document.uri, document.length(), document.lastModified()))
       }
     }
-    collect(source, "")
-    return files.sortedBy { it.relativePath }
+    return files.sortedBy { it.name }
   }
 
   fun install(rootUri: String, storageDir: String, stagePath: String) = snapshotGuard.install(rootUri, storageDir) {

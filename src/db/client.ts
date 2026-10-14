@@ -1,7 +1,7 @@
 import Database from "@tauri-apps/plugin-sql";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
-import { ensureContentSyncJournal, notifyContentSyncChanges } from "./content-sync-journal";
+import { notifyContentSyncChanges } from "./content-sync-journal";
 import { flushWorkMetadata, initializeWorkMetadata } from "./work-metadata";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 
@@ -18,7 +18,6 @@ function observationError(error: unknown): string {
 
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
-  await ensureContentSyncJournal(db);
   await initializeWorkMetadata(db);
   return db;
 }
@@ -57,7 +56,7 @@ function serializedDb(rawDb: Database): Database {
             await flushWorkMetadata(rawDb);
             await rawDb.execute("COMMIT");
           }
-          if (/\b(novel|chapter|content_sync_position|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
+          if (/\b(novel|chapter|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
           finish({ rowsAffected: result.rowsAffected });
           return result;
         } catch (error) {

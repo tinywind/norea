@@ -9,10 +9,7 @@ import {
   chapterStorageRelativeDir,
 } from "../chapter-storage-path";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
-import { androidChapterMediaRelativePath } from "./sources";
 import { type ChapterMediaStorageContext } from "./types";
-
-const CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json";
 
 export function hasStorageContext(
   context: ChapterMediaStorageContext | null | undefined,
@@ -69,7 +66,7 @@ export function androidChapterMediaRelativePathForContext(
   fileName?: string,
 ): string {
   if (!hasStorageContext(context)) {
-    return androidChapterMediaRelativePath(context?.chapterId ?? 0, fileName);
+    throw new Error("Chapter media storage identity is required.");
   }
   return resolvedAndroidChapterStoragePath(
     context,
@@ -96,30 +93,11 @@ export function resolvedAndroidChapterStoragePath(
   return `${resolvedDir}${preferredPath.slice(preferredDir.length)}`;
 }
 
-function uniqueAndroidStoragePaths(paths: string[]): string[] {
-  return [...new Set(paths)];
-}
-
-export function androidChapterMediaRelativePathCandidates(
-  context: ChapterMediaStorageContext | null | undefined,
-  fileName?: string,
-): string[] {
-  const preferred = androidChapterMediaRelativePathForContext(
-    context,
-    fileName,
-  );
-  if (!hasStorageContext(context)) return [preferred];
-  return uniqueAndroidStoragePaths([
-    preferred,
-    androidChapterMediaRelativePath(context.chapterId, fileName),
-  ]);
-}
-
 export function androidChapterMediaArchiveRelativePathForContext(
   context: ChapterMediaStorageContext | null | undefined,
 ): string {
   if (!hasStorageContext(context)) {
-    return `chapter-media/${context?.chapterId ?? 0}/media.zip`;
+    throw new Error("Chapter media storage identity is required.");
   }
   return resolvedAndroidChapterStoragePath(
     context,
@@ -130,44 +108,11 @@ export function androidChapterMediaArchiveRelativePathForContext(
   );
 }
 
-export function androidChapterMediaArchiveRelativePathCandidates(
-  context: ChapterMediaStorageContext | null | undefined,
-): string[] {
-  const preferred = androidChapterMediaArchiveRelativePathForContext(context);
-  if (!hasStorageContext(context)) return [preferred];
-  return uniqueAndroidStoragePaths([
-    preferred,
-    `chapter-media/${context.chapterId}/media.zip`,
-  ]);
-}
-
-export function androidChapterMediaSourceCandidates(
-  context: ChapterMediaStorageContext | null | undefined,
-): Array<{ archivePath: string; mediaPath: string }> {
-  const preferred = {
-    archivePath: androidChapterMediaArchiveRelativePathForContext(context),
-    mediaPath: androidChapterMediaRelativePathForContext(context),
-  };
-  if (!hasStorageContext(context)) return [preferred];
-  const legacy = {
-    archivePath: `chapter-media/${context.chapterId}/media.zip`,
-    mediaPath: androidChapterMediaRelativePath(context.chapterId),
-  };
-  const unique = new Map<string, { archivePath: string; mediaPath: string }>();
-  for (const candidate of [preferred, legacy]) {
-    unique.set(
-      `${candidate.mediaPath}\u0000${candidate.archivePath}`,
-      candidate,
-    );
-  }
-  return [...unique.values()];
-}
-
 export function androidChapterMediaManifestRelativePath(
   context: ChapterMediaStorageContext | null | undefined,
 ): string {
   if (!hasStorageContext(context)) {
-    return `chapter-media/${context?.chapterId ?? 0}/${CHAPTER_MEDIA_MANIFEST_FILE}`;
+    throw new Error("Chapter media storage identity is required.");
   }
   return resolvedAndroidChapterStoragePath(
     context,
@@ -178,33 +123,22 @@ export function androidChapterMediaManifestRelativePath(
   );
 }
 
-export function androidChapterMediaManifestRelativePathCandidates(
-  context: ChapterMediaStorageContext | null | undefined,
-): string[] {
-  const preferred = androidChapterMediaManifestRelativePath(context);
-  if (!hasStorageContext(context)) return [preferred];
-  return uniqueAndroidStoragePaths([
-    preferred,
-    `chapter-media/${context.chapterId}/${CHAPTER_MEDIA_MANIFEST_FILE}`,
-  ]);
-}
-
 export function androidChapterMediaTransactionPaths({
-  archivePaths,
-  manifestPaths,
+  archivePath,
+  manifestPath,
 }: {
-  archivePaths: string[];
-  manifestPaths: string[];
+  archivePath: string;
+  manifestPath: string;
 }): string[] {
-  return uniqueAndroidStoragePaths([
-    ...archivePaths.flatMap((path) => [
-      path,
-      `${path}.tmp.zip`,
-      `${path}.bak`,
-      `${path}.rollback`,
-    ]),
-    ...manifestPaths.flatMap((path) => [path, `${path}.tmp`, `${path}.bak`]),
-  ]);
+  return [
+    archivePath,
+    `${archivePath}.tmp.zip`,
+    `${archivePath}.bak`,
+    `${archivePath}.rollback`,
+    manifestPath,
+    `${manifestPath}.tmp`,
+    `${manifestPath}.bak`,
+  ];
 }
 
 export function chapterMediaManifestLogContext(
@@ -216,7 +150,7 @@ export function chapterMediaManifestLogContext(
     chapterNumber: context.chapterNumber,
     chapterPosition: context.chapterPosition,
     hasStorageContext: hasStorageContext(context),
-    manifestPaths: androidChapterMediaManifestRelativePathCandidates(context),
+    manifestPath: androidChapterMediaManifestRelativePath(context),
     novelId: context.novelId,
     novelName: context.novelName,
     novelPath: context.novelPath,

@@ -76,9 +76,6 @@ from the original site. The label changes when a server attempt falls back to
 the source. Queued rows show the known pending step; an unstarted download has
 no selected source yet.
 
-The previous automatic-sync switch migrates to When changes occur when enabled,
-or Manual only when disabled.
-
 Registered devices can delete and restore server chapters. Server deletion
 preserves local files. Removing a local download does not delete the server copy
 or automatically download it again. Select chapters in the work page and use
@@ -163,18 +160,14 @@ Native code checks every file's name, size, and completed transfer in a private
 staging directory before installing the complete set. Interrupted replacement
 preserves a target-named backup that storage access can recover.
 
-Older server ZIP revisions remain readable through the compatibility decoder.
-Their manifests omit `layout`, and their catalog entries retain `zipBytes` and
-`zipSha256`. This legacy download path checks file sizes and unpacks the ZIP before
-installation; new uploads send original chapter files.
+Only the current original-file format is supported. There is no outer ZIP
+transfer, older manifest decoder, or media-reference conversion.
 
 Chapter transfers do not compute or compare SHA-256 file checksums. A same-size
 change with an unchanged modification time cannot be detected by a file rescan.
 Identity and authentication hashes are independent of file transfer validation.
 
-Update the server before using an app that uploads original files. Older apps
-that only support ZIP downloads cannot read new `chapter-files` revisions;
-update each device that needs to download those revisions.
+Use current app and server builds together. Older protocols are unsupported.
 
 The app records local content changes in SQLite alongside the affected data.
 Sync uses durable catalog cursors, fingerprints, and pending uploads so failed
@@ -192,15 +185,15 @@ wrong-sized server files can be repaired by the next completed upload.
 
 Chapter deltas contain identities and deletion state, without package file
 inventories. The app retains cursors and tombstones instead of a full remote
-catalog snapshot. Legacy snapshots are compacted inside SQLite before crossing
-the WebView bridge. Browsing retrieves summaries in pages; a selected download
+catalog snapshot. Browsing retrieves summaries in pages; a selected download
 fetches its package manifest separately.
 
-The current development schema has one v1 bootstrap; it does not migrate older
-application databases. Use a fresh development database when testing this
-baseline, keeping existing user databases and folders intact. Sync cursors and
-device keys remain outside portable backups. Downloaded folder names are
-unchanged. No account, session, or personal-state endpoint is called.
+The current development schema has one v1 bootstrap. A version or checksum
+mismatch recreates the app database, without importing previous records. Current
+files remain available for an explicit rescan. Server schema mismatch requires
+a fresh state volume; no migration or format conversion runs. Sync cursors and
+device keys remain outside portable backups. No account, session, or personal-state
+endpoint is called.
 
 Local content installation is serialized per work. Network transfers use private
 staging directories and do not hold a work lock. Upload fingerprinting and transfer

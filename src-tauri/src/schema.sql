@@ -4,6 +4,35 @@ CREATE TABLE `work_metadata_dirty` (
   PRIMARY KEY (`plugin_id`, `path`)
 );
 --> statement-breakpoint
+CREATE TABLE `work_metadata_cache_state` (
+  `id` integer PRIMARY KEY,
+  CONSTRAINT `work_metadata_cache_state_singleton` CHECK (`id` = 1)
+);
+--> statement-breakpoint
+CREATE TABLE `work_metadata_file_cache` (
+  `plugin_id` text NOT NULL,
+  `path` text NOT NULL,
+  `novel_id` integer NOT NULL,
+  `directory` text NOT NULL,
+  `fingerprint` text NOT NULL,
+  PRIMARY KEY (`plugin_id`, `path`)
+);
+--> statement-breakpoint
+CREATE TABLE `work_metadata_sync_journal` (
+  `plugin_id` text NOT NULL,
+  `path` text NOT NULL,
+  `revision` integer NOT NULL,
+  PRIMARY KEY (`plugin_id`, `path`)
+);
+--> statement-breakpoint
+CREATE TABLE `work_metadata_directory_cache` (
+  `chapter_id` integer PRIMARY KEY,
+  `novel_id` integer NOT NULL,
+  `directory` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `work_metadata_directory_novel` ON `work_metadata_directory_cache` (`novel_id`);
+--> statement-breakpoint
 CREATE TABLE `work_metadata_reading_state` (
   `plugin_id` text NOT NULL,
   `novel_path` text NOT NULL,
@@ -200,16 +229,107 @@ INSERT INTO `content_sync_origin` (`id`, `remote`) VALUES (1, 0);
 --> statement-breakpoint
 CREATE TABLE `content_sync_journal` (
   `sequence` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  `state_key` text NOT NULL,
-  `payload` text NOT NULL
+  `state_key` text NOT NULL
 );
 --> statement-breakpoint
 CREATE INDEX `content_sync_journal_key_idx` ON `content_sync_journal` (`state_key`, `sequence`);
 --> statement-breakpoint
-CREATE TABLE `content_sync_position` (
-  `novel_id` integer PRIMARY KEY NOT NULL,
-  `chapter_id` integer NOT NULL
-);
+CREATE TRIGGER `content_sync_novel_content_delete`
+BEFORE DELETE ON `novel`
+WHEN (SELECT remote FROM content_sync_origin WHERE id=1)=0
+BEGIN
+  INSERT INTO content_sync_journal(state_key)
+  SELECT 'content:' || json_array(OLD.plugin_id,OLD.path,c.path) FROM chapter c WHERE c.novel_id=OLD.id;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `content_sync_chapter_content_delete`
+BEFORE DELETE ON `chapter`
+WHEN (SELECT remote FROM content_sync_origin WHERE id=1)=0
+BEGIN
+  INSERT INTO content_sync_journal(state_key)
+  SELECT 'content:' || json_array(n.plugin_id,n.path,OLD.path) FROM novel n WHERE n.id=OLD.novel_id;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `content_sync_chapter_content_insert`
+AFTER INSERT ON `chapter`
+WHEN (SELECT remote FROM content_sync_origin WHERE id=1)=0 AND NEW.is_downloaded=1
+BEGIN
+  INSERT INTO content_sync_journal(state_key)
+  SELECT 'content:' || json_array(n.plugin_id,n.path,NEW.path) FROM novel n WHERE n.id=NEW.novel_id;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `content_sync_chapter_content_update`
+AFTER UPDATE OF is_downloaded,stored_content_type,content_bytes,media_bytes,media_repair_needed,name,chapter_number,position,page,content_type ON `chapter`
+WHEN (SELECT remote FROM content_sync_origin WHERE id=1)=0
+BEGIN
+  INSERT INTO content_sync_journal(state_key)
+  SELECT 'content:' || json_array(n.plugin_id,n.path,NEW.path) FROM novel n WHERE n.id=NEW.novel_id;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `content_sync_novel_metadata`
+AFTER UPDATE OF name,author,summary,is_local ON `novel`
+WHEN (SELECT remote FROM content_sync_origin WHERE id=1)=0
+BEGIN
+  INSERT INTO content_sync_journal(state_key)
+  SELECT 'content:' || json_array(NEW.plugin_id,NEW.path,c.path) FROM chapter c WHERE c.novel_id=NEW.id AND c.is_downloaded=1;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_preserve_reading`
+BEFORE DELETE ON `chapter`
+BEGIN
+  INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at)
+  SELECT plugin_id,path,OLD.path,OLD.progress,OLD.bookmark,OLD.unread,OLD.read_at FROM novel WHERE id=OLD.novel_id
+  ON CONFLICT(plugin_id,novel_path,chapter_path) DO UPDATE SET progress=excluded.progress,bookmark=excluded.bookmark,unread=excluded.unread,read_at=excluded.read_at;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_novel_insert`
+AFTER INSERT ON `novel`
+BEGIN
+  INSERT INTO work_metadata_dirty(plugin_id,path) SELECT NEW.plugin_id,NEW.path WHERE true
+  ON CONFLICT(plugin_id,path) DO NOTHING;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_novel_update`
+AFTER UPDATE ON `novel`
+WHEN OLD.plugin_id IS NOT NEW.plugin_id OR OLD.path IS NOT NEW.path OR OLD.name IS NOT NEW.name
+  OR OLD.cover IS NOT NEW.cover OR OLD.author IS NOT NEW.author OR OLD.artist IS NOT NEW.artist
+  OR OLD.summary IS NOT NEW.summary OR OLD.status IS NOT NEW.status OR OLD.genres IS NOT NEW.genres
+  OR OLD.rating IS NOT NEW.rating OR OLD.is_local IS NOT NEW.is_local
+BEGIN
+  INSERT INTO work_metadata_dirty(plugin_id,path) SELECT NEW.plugin_id,NEW.path WHERE true
+  ON CONFLICT(plugin_id,path) DO NOTHING;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_novel_delete`
+AFTER DELETE ON `novel`
+BEGIN
+  INSERT INTO work_metadata_dirty(plugin_id,path) SELECT OLD.plugin_id,OLD.path WHERE true
+  ON CONFLICT(plugin_id,path) DO NOTHING;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_chapter_insert`
+AFTER INSERT ON `chapter`
+BEGIN
+  INSERT INTO work_metadata_dirty(plugin_id,path) SELECT plugin_id,path FROM novel WHERE id=NEW.novel_id
+  ON CONFLICT(plugin_id,path) DO NOTHING;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_chapter_update`
+AFTER UPDATE ON `chapter`
+WHEN OLD.novel_id IS NOT NEW.novel_id OR OLD.path IS NOT NEW.path OR OLD.name IS NOT NEW.name
+  OR OLD.chapter_number IS NOT NEW.chapter_number OR OLD.position IS NOT NEW.position
+  OR OLD.page IS NOT NEW.page OR OLD.content_type IS NOT NEW.content_type OR OLD.release_time IS NOT NEW.release_time
+BEGIN
+  INSERT INTO work_metadata_dirty(plugin_id,path) SELECT plugin_id,path FROM novel WHERE id=NEW.novel_id
+  ON CONFLICT(plugin_id,path) DO NOTHING;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `work_metadata_chapter_delete`
+AFTER DELETE ON `chapter`
+BEGIN
+  INSERT INTO work_metadata_dirty(plugin_id,path) SELECT plugin_id,path FROM novel WHERE id=OLD.novel_id
+  ON CONFLICT(plugin_id,path) DO NOTHING;
+END;
 --> statement-breakpoint
 CREATE TRIGGER `chapter_stats_after_insert`
 AFTER INSERT ON `chapter`

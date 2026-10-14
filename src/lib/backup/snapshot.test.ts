@@ -29,7 +29,6 @@ import {
   parseBackupManifest,
 } from "./format";
 import { applyBackupSnapshot, gatherBackupSnapshot } from "./snapshot";
-import { attachBackupChapterMediaFiles } from "./unpack";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
 
 const mockedGetDb = vi.mocked(getDb);
@@ -43,15 +42,6 @@ const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
   "localStorage",
 );
-const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
-  globalThis,
-  "window",
-);
-const originalTauriInternalsDescriptor =
-  typeof window === "undefined"
-    ? undefined
-    : Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
-
 beforeEach(() => {
   vi.clearAllMocks();
   mockSelect = vi.fn();
@@ -74,23 +64,7 @@ afterEach(() => {
   } else {
     delete (globalThis as { localStorage?: Storage }).localStorage;
   }
-  if (typeof window !== "undefined") {
-    if (originalTauriInternalsDescriptor) {
-      Object.defineProperty(
-        window,
-        "__TAURI_INTERNALS__",
-        originalTauriInternalsDescriptor,
-      );
-    } else {
-      delete (window as Window & { __TAURI_INTERNALS__?: unknown })
-        .__TAURI_INTERNALS__;
-    }
-  }
-  if (originalWindowDescriptor) {
-    Object.defineProperty(globalThis, "window", originalWindowDescriptor);
-  } else {
-    delete (globalThis as { window?: Window }).window;
-  }
+
 });
 
 function installLocalStorage(initial: Record<string, string>): Storage {
@@ -120,23 +94,6 @@ function installLocalStorage(initial: Record<string, string>): Storage {
     value: storage,
   });
   return storage;
-}
-
-function installTauriRuntime(): void {
-  const runtimeWindow =
-    typeof window === "undefined"
-      ? ({} as Window & { __TAURI_INTERNALS__?: unknown })
-      : window;
-  if (typeof window === "undefined") {
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: runtimeWindow,
-    });
-  }
-  Object.defineProperty(runtimeWindow, "__TAURI_INTERNALS__", {
-    configurable: true,
-    value: {},
-  });
 }
 
 const RAW_NOVEL = {
@@ -295,6 +252,7 @@ describe("gatherBackupSnapshot", () => {
     installLocalStorage({
       "app-appearance-settings": "{\"state\":{\"themeMode\":\"dark\"}}",
       "plugin-v2:demo:token": "secret",
+      "plugin:demo:token": "obsolete-token",
       "source-filters:demo": "{\"filters\":{}}",
       unrelated: "skip",
       "norea-content-device:http://server": "device-key",
@@ -320,24 +278,22 @@ describe("applyBackupSnapshot", () => {
     return gatherBackupSnapshot();
   }
 
-  it("keeps sync waiting for every body write and excludes an incomplete restore from upload", async () => {
-    const gathered = await gatherForTest();
-    const first = { ...gathered.chapters[0]!, isDownloaded: true, content: "<p>restored</p>" };
-    const manifest = { ...gathered, chapters: [first, { ...first, id: 11, path: "/chapter-2" }] };
+  it("keeps content sync waiting until the database restore settles", async () => {
+    const manifest = await gatherForTest();
     let release: () => void = () => undefined;
-    writeStoredChapterContentMirrorMock.mockRejectedValueOnce(new Error("body write failed"));
-    writeStoredChapterContentMirrorMock.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
-    const restore = applyBackupSnapshot(manifest).catch((error: unknown) => error);
-    await vi.waitFor(() => expect(writeStoredChapterContentMirrorMock).toHaveBeenCalledTimes(2));
+    invokeMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      release = resolve;
+    }));
+    const restore = applyBackupSnapshot(manifest);
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledOnce());
     const synchronize = vi.fn(async () => undefined);
     const sync = runContentStorageOperation(synchronize);
     await Promise.resolve();
     await Promise.resolve();
     expect(synchronize).not.toHaveBeenCalled();
     release();
-    expect(await restore).toEqual(new Error("body write failed"));
+    await restore;
     await sync;
-    expect(mockExecute).toHaveBeenCalledWith("UPDATE chapter SET media_repair_needed=1 WHERE is_downloaded=1");
     expect(synchronize).toHaveBeenCalledOnce();
   });
 
@@ -350,32 +306,8 @@ describe("applyBackupSnapshot", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
       manifestJson: encodeBackupManifest(manifest),
-      mediaBytesByChapterId: {},
     });
     expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
-  });
-
-  it("writes chapter bodies carried by archives from earlier builds", async () => {
-    const gathered = await gatherForTest();
-    const manifest = parseBackupManifest(
-      encodeBackupManifest({
-        ...gathered,
-        chapters: [
-          {
-            ...gathered.chapters[0]!,
-            isDownloaded: true,
-            content: "<p>hi</p>",
-          },
-        ],
-      }),
-    );
-
-    await applyBackupSnapshot(manifest);
-
-    expect(writeStoredChapterContentMirrorMock).toHaveBeenCalledWith(
-      10,
-      "<p>hi</p>",
-    );
   });
 
   it("leaves chapter files alone for downloaded chapters without inline bodies", async () => {
@@ -393,7 +325,6 @@ describe("applyBackupSnapshot", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
       manifestJson: encodeBackupManifest(manifest),
-      mediaBytesByChapterId: {},
     });
     expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
   });
@@ -401,7 +332,8 @@ describe("applyBackupSnapshot", () => {
   it("restores backed up settings without touching unrelated localStorage", async () => {
     const storage = installLocalStorage({
       "app-appearance-settings": "old",
-      "plugin:demo:token": "old-token",
+      "plugin-v2:demo:token": "old-token",
+      "plugin:demo:token": "obsolete-token",
       "norea-content-device:http://server": "device-key",
       unrelated: "keep",
     });
@@ -410,7 +342,8 @@ describe("applyBackupSnapshot", () => {
         ...(await gatherForTest()),
         settings: [
           { key: "app-appearance-settings", value: "new" },
-          { key: "plugin:demo:token", value: "new-token" },
+          { key: "plugin-v2:demo:token", value: "new-token" },
+          { key: "plugin:demo:token", value: "ignored-token" },
           { key: "norea-content-device:http://server", value: "foreign-device-key" },
         ],
       }),
@@ -419,7 +352,8 @@ describe("applyBackupSnapshot", () => {
     await applyBackupSnapshot(manifest);
 
     expect(storage.getItem("app-appearance-settings")).toBe("new");
-    expect(storage.getItem("plugin:demo:token")).toBe("new-token");
+    expect(storage.getItem("plugin-v2:demo:token")).toBe("new-token");
+    expect(storage.getItem("plugin:demo:token")).toBe("obsolete-token");
     expect(storage.getItem("norea-content-device:http://server")).toBe("device-key");
     expect(storage.getItem("unrelated")).toBe("keep");
   });
@@ -449,189 +383,4 @@ describe("applyBackupSnapshot", () => {
     expect(storage.getItem("unrelated")).toBe("keep");
   });
 
-  it("keeps existing storage media when unpack attached no media files", async () => {
-    installTauriRuntime();
-    const manifest = attachBackupChapterMediaFiles(
-      parseBackupManifest(encodeBackupManifest(await gatherForTest())),
-      [],
-    );
-
-    await applyBackupSnapshot(manifest);
-
-    expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_begin_restore");
-  });
-
-  it("restores chapter media files attached by unpack", async () => {
-    installTauriRuntime();
-    invokeMock.mockImplementation((command: string) => {
-      if (command === "chapter_media_begin_restore") {
-        return Promise.resolve("restore-1");
-      }
-      if (command === "chapter_media_archive_cache") {
-        return Promise.resolve(9);
-      }
-      return Promise.resolve(undefined);
-    });
-    const manifest = attachBackupChapterMediaFiles(
-      parseBackupManifest(encodeBackupManifest(await gatherForTest())),
-      [
-        {
-          chapterId: 10,
-          mediaSrc: "norea-media://reader-asset/image.png",
-          bytes: 3,
-          stagedRef: "media-0.bin",
-          stagingId: "stage-1",
-        },
-      ],
-    );
-
-    await applyBackupSnapshot(manifest);
-
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_begin_restore");
-    expect(invokeMock).toHaveBeenCalledWith("backup_restore_staged_media", {
-      chapterId: 10,
-      chapterName: "Chapter 1",
-      chapterNumber: "1",
-      chapterPosition: 1,
-      fileName: "image.png",
-      novelId: 1,
-      novelName: "Sample Novel",
-      novelPath: "/n/1",
-      sourceId: "demo",
-      stagedRef: "media-0.bin",
-      stagingId: "stage-1",
-    });
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "chapter_media_store",
-      expect.anything(),
-    );
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_write_manifest", {
-      chapterId: 10,
-      chapterName: "Chapter 1",
-      chapterNumber: "1",
-      chapterPosition: 1,
-      complete: true,
-      files: [
-        expect.objectContaining({
-          bytes: 3,
-          fileName: "image.png",
-          path: "media/image.png",
-          sourceUrl: "norea-media://reader-asset/image.png",
-          status: "stored",
-        }),
-      ],
-      novelId: 1,
-      novelName: "Sample Novel",
-      novelPath: "/n/1",
-      sourceId: "demo",
-    });
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", {
-      chapterId: 10,
-      chapterName: "Chapter 1",
-      chapterNumber: "1",
-      chapterPosition: 1,
-      novelId: 1,
-      novelName: "Sample Novel",
-      novelPath: "/n/1",
-      sourceId: "demo",
-    });
-    expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
-      manifestJson: encodeBackupManifest(manifest),
-      mediaBytesByChapterId: { 10: 9 },
-    });
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_commit_restore", {
-      token: "restore-1",
-    });
-    expect(invokeMock).toHaveBeenCalledWith("backup_cleanup_staged_unpack", {
-      stagingId: "stage-1",
-    });
-  });
-
-  it("keeps legacy media body restore as an explicit fallback", async () => {
-    installTauriRuntime();
-    invokeMock.mockImplementation((command: string) => {
-      if (command === "chapter_media_begin_restore") {
-        return Promise.resolve("restore-1");
-      }
-      if (command === "chapter_media_archive_cache") {
-        return Promise.resolve(9);
-      }
-      return Promise.resolve(undefined);
-    });
-    const manifest = attachBackupChapterMediaFiles(
-      parseBackupManifest(encodeBackupManifest(await gatherForTest())),
-      [
-        {
-          chapterId: 10,
-          mediaSrc: "norea-media://reader-asset/image.png",
-          body: [1, 2, 3],
-          bytes: 3,
-        },
-      ],
-    );
-
-    await applyBackupSnapshot(manifest);
-
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_store", {
-      body: [1, 2, 3],
-      chapterId: 10,
-      chapterName: "Chapter 1",
-      chapterNumber: "1",
-      chapterPosition: 1,
-      fileName: "image.png",
-      novelId: 1,
-      novelName: "Sample Novel",
-      novelPath: "/n/1",
-      sourceId: "demo",
-    });
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "backup_restore_staged_media",
-      expect.anything(),
-    );
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "backup_cleanup_staged_unpack",
-      expect.anything(),
-    );
-  });
-
-  it("rolls back restored media when database restore fails", async () => {
-    installTauriRuntime();
-    const failure = new Error("restore failed");
-    invokeMock.mockImplementation((command: string) => {
-      if (command === "chapter_media_begin_restore") {
-        return Promise.resolve("restore-1");
-      }
-      if (command === "chapter_media_archive_cache") {
-        return Promise.resolve(9);
-      }
-      if (command === "backup_restore_snapshot") {
-        return Promise.reject(failure);
-      }
-      return Promise.resolve(undefined);
-    });
-    const manifest = attachBackupChapterMediaFiles(
-      parseBackupManifest(encodeBackupManifest(await gatherForTest())),
-      [
-        {
-          chapterId: 10,
-          mediaSrc: "norea-media://reader-asset/image.png",
-          bytes: 3,
-          stagedRef: "media-0.bin",
-          stagingId: "stage-1",
-        },
-      ],
-    );
-
-    await expect(applyBackupSnapshot(manifest)).rejects.toThrow(failure);
-
-    expect(invokeMock).toHaveBeenCalledWith("chapter_media_rollback_restore", {
-      token: "restore-1",
-    });
-    expect(invokeMock).toHaveBeenCalledWith("backup_cleanup_staged_unpack", {
-      stagingId: "stage-1",
-    });
-    expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_commit_restore", {
-      token: "restore-1",
-    });
-  });
 });

@@ -52,8 +52,7 @@ async function readNovelMetadataForReplacement(directory: string, identity: Nove
   if (!body) return null;
   const value: unknown = JSON.parse(new TextDecoder().decode(base64ToBytes(body)));
   if (!hasWorkIdentity(value, identity)) throw new Error("work metadata: replacement identity does not match the existing file");
-  try { return { directory, metadata: parseNovelMetadata(value) }; }
-  catch { return null; }
+  return { directory, metadata: parseNovelMetadata(value) };
 }
 
 export async function workMetadataOperation(input: WorkMetadataOperation): Promise<WorkMetadataOperationResult> {

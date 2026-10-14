@@ -37,7 +37,7 @@ internal class AndroidChapterArtifactInspector(
         rootUri,
         directory,
         relativeDir,
-        allowLegacyWithoutManifest = true,
+        allowMissingManifest = true,
       )
       val existingArchiveBytes = storage.findStorageChild(directory, CHAPTER_MEDIA_ARCHIVE_FILE)
         ?.takeIf { it.isFile }

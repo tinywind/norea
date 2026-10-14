@@ -94,7 +94,7 @@ export function useNovelCoverSource(
           controller.signal,
         );
       }
-      const src = await resolveStoredNovelCoverSrc(novel, plugin);
+      const src = await resolveStoredNovelCoverSrc(novel);
       return src ? { dispose: () => undefined, src } : null;
     }
     void request

@@ -877,11 +877,10 @@ mod tests {
             fs::write(legacy_media_dir.join("page.bin"), [1, 2, 3]).expect("write legacy media");
 
             let content_dir = content_chapter_dir(media_root, chapter_id);
-            fs::create_dir_all(content_dir.join("media")).expect("create content media dir");
+            fs::create_dir_all(&content_dir).expect("create content dir");
             fs::write(content_dir.join("content.html"), "<p>cached</p>")
                 .expect("write content mirror");
-            fs::write(content_dir.join("media").join("page.bin"), [4, 5, 6])
-                .expect("write content media");
+            fs::write(content_dir.join("media.zip"), [4, 5, 6]).expect("write content media archive");
         }
 
         (first_legacy_file, first_content_file)
@@ -952,7 +951,7 @@ mod tests {
             assert_eq!(result.deleted, 120);
             assert_eq!(result.failed, 0);
             assert!(!result.cancelled);
-            assert!(!legacy_file.exists(), "legacy cache file should be removed");
+            assert!(legacy_file.exists(), "unsupported folders must remain untouched");
             assert!(!content_file.exists(), "content mirror should be removed");
 
             let downloaded_count: i64 =

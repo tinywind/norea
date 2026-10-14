@@ -46,6 +46,7 @@ const VALID_MANIFEST: BackupManifest = {
       contentType: "html",
       sourceContentType: "text",
       content: null,
+      contentBytes: 0,
       mediaBytes: 0,
       releaseTime: null,
       readAt: null,
@@ -103,15 +104,16 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(parsed).toEqual(VALID_MANIFEST);
   });
 
-  it("preserves chapter content in the round trip", () => {
-    const manifest: BackupManifest = {
+  it("rejects inline chapter bodies from earlier development builds", () => {
+    const manifest = {
       ...VALID_MANIFEST,
       chapters: [
         { ...VALID_MANIFEST.chapters[0]!, content: "<p>hi</p>" },
       ],
     };
-    const round = parseBackupManifest(encodeBackupManifest(manifest));
-    expect(round.chapters[0]?.content).toBe("<p>hi</p>");
+    expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+      /chapters contains a malformed entry/,
+    );
   });
 
   it("preserves chapter content byte counts in the round trip", () => {
@@ -129,22 +131,14 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(round.chapters[0]?.contentBytes).toBe(4096);
   });
 
-  it("normalizes markdown chapter content type to html in the round trip", () => {
-    const manifest: BackupManifest = {
+  it("rejects obsolete physical chapter content types", () => {
+    const manifest = {
       ...VALID_MANIFEST,
-      chapters: [
-        {
-          ...VALID_MANIFEST.chapters[0]!,
-          contentType: "markdown",
-          content: `<section class="reader-markdown-content"><h1>Hi</h1></section>`,
-        },
-      ],
+      chapters: [{ ...VALID_MANIFEST.chapters[0]!, contentType: "markdown" }],
     };
-
-    const round = parseBackupManifest(encodeBackupManifest(manifest));
-
-    expect(round.chapters[0]?.contentType).toBe("html");
-    expect(round.chapters[0]?.content).toContain("reader-markdown-content");
+    expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+      /chapters contains a malformed entry/,
+    );
   });
 
   it("preserves epub chapter content type in the round trip", () => {
@@ -154,7 +148,6 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
         {
           ...VALID_MANIFEST.chapters[0]!,
           contentType: "epub",
-          content: `<article class="reader-epub-content" data-epub-rendered="true"><section>Hi</section></article>`,
         },
       ],
     };
@@ -162,7 +155,6 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     const round = parseBackupManifest(encodeBackupManifest(manifest));
 
     expect(round.chapters[0]?.contentType).toBe("epub");
-    expect(round.chapters[0]?.content).toContain("reader-epub-content");
   });
 
   it("preserves source and physical chapter content types separately", () => {
@@ -172,36 +164,41 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(round.chapters[0]?.contentType).toBe("html");
   });
 
-  it("normalizes older v1 manifests that lack discovery timestamps", () => {
-    const legacy = JSON.parse(
-      encodeBackupManifest(VALID_MANIFEST),
-    ) as Record<string, unknown>;
-    const novels = legacy.novels as Array<Record<string, unknown>>;
-    const chapters = legacy.chapters as Array<Record<string, unknown>>;
-    delete novels[0]!.libraryAddedAt;
-    delete legacy.installedPlugins;
-    delete legacy.settings;
-    delete legacy.vpnGateServerVerdicts;
-    delete chapters[0]!.createdAt;
-    delete chapters[0]!.contentType;
-    delete chapters[0]!.sourceContentType;
-    delete chapters[0]!.foundAt;
+  it.each(["createdAt", "foundAt", "contentType", "sourceContentType", "contentBytes", "mediaBytes"])(
+    "rejects chapter metadata missing %s",
+    (field) => {
+      const chapter: Record<string, unknown> = { ...VALID_MANIFEST.chapters[0]! };
+      delete chapter[field];
+      expect(() => parseBackupManifest(JSON.stringify({
+        ...VALID_MANIFEST,
+        chapters: [chapter],
+      }))).toThrow(/chapters contains a malformed entry/);
+    },
+  );
 
-    const parsed = parseBackupManifest(JSON.stringify(legacy));
+  it.each(["installedPlugins", "settings", "vpnGateServerVerdicts"])(
+    "rejects a manifest missing %s",
+    (field) => {
+      const manifest: Record<string, unknown> = { ...VALID_MANIFEST };
+      delete manifest[field];
+      expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+        `${field} is not an array`,
+      );
+    },
+  );
 
+  it("allows absent nullable library timestamps without inventing values", () => {
+    const novel: Record<string, unknown> = { ...VALID_MANIFEST.novels[0]! };
+    delete novel.libraryAddedAt;
+    delete novel.lastReadAt;
+    const parsed = parseBackupManifest(JSON.stringify({
+      ...VALID_MANIFEST,
+      novels: [novel],
+    }));
     expect(parsed.novels[0]?.libraryAddedAt).toBeNull();
-    expect(parsed.chapters[0]?.createdAt).toBe(
-      VALID_MANIFEST.chapters[0]?.updatedAt,
-    );
-    expect(parsed.chapters[0]?.contentType).toBe("html");
-    expect(parsed.chapters[0]?.sourceContentType).toBe("html");
-    expect(parsed.chapters[0]?.foundAt).toBe(
-      VALID_MANIFEST.chapters[0]?.updatedAt,
-    );
-    expect(parsed.installedPlugins).toBeUndefined();
-    expect(parsed.settings).toBeUndefined();
-    expect(parsed.vpnGateServerVerdicts).toBeUndefined();
+    expect(parsed.novels[0]?.lastReadAt).toBeNull();
   });
+
 });
 
 describe("parseBackupManifest error cases", () => {
@@ -215,11 +212,9 @@ describe("parseBackupManifest error cases", () => {
     expect(() => parseBackupManifest("[]")).toThrow(BackupFormatError);
   });
 
-  it("accepts version 1 manifests written by earlier builds", () => {
+  it("rejects version 1 manifests written by earlier builds", () => {
     const legacy = JSON.stringify({ ...VALID_MANIFEST, version: 1 });
-    const parsed = parseBackupManifest(legacy);
-    expect(parsed.version).toBe(BACKUP_FORMAT_VERSION);
-    expect(parsed.chapters).toEqual(VALID_MANIFEST.chapters);
+    expect(() => parseBackupManifest(legacy)).toThrow(/version 1/);
   });
 
   it("throws on a wrong version", () => {
@@ -258,6 +253,19 @@ describe("parseBackupManifest error cases", () => {
     };
     expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
       /chapters contains a malformed entry/,
+    );
+  });
+
+  it("rejects backups with multiple configured repositories", () => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      repositories: [
+        VALID_MANIFEST.repositories[0],
+        { ...VALID_MANIFEST.repositories[0], id: 2 },
+      ],
+    };
+    expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+      /at most one repository/,
     );
   });
 

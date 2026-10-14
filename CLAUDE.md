@@ -64,12 +64,14 @@ Release notes:
 
 Compatibility notes:
 
-- Norea-owned data and backup compatibility is guaranteed only inside the active
-  release line.
-- Stable releases (`1.0.0` and later) keep compatibility only within the same
-  major version.
-- Pre-release development builds (`0.x.y`) keep compatibility only within the
-  same minor version.
+- Current development supports only the current database, settings, metadata,
+  backup, content-server API, and chapter package formats.
+- Do not preserve earlier development formats through migrations, fallback
+  readers, old endpoint aliases, or settings translation.
+- Keep one current SQLite bootstrap. A schema mismatch resets the app database
+  without migrating its data; chapter and metadata files remain on disk.
+- Future release compatibility requirements must be decided explicitly before
+  they introduce implementation work.
 - Data, backup, migration, import/export, or local-file changes must follow
   `docs/release-compatibility.md`.
 

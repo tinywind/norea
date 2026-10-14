@@ -43,7 +43,7 @@ fn write_novel_cover(
 }
 
 #[test]
-fn novel_cover_lookup_accepts_a_legacy_manifest_in_the_preferred_directory() {
+fn novel_cover_lookup_rejects_a_manifest_without_work_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_novel_cover(
         dir.path(),
@@ -53,16 +53,9 @@ fn novel_cover_lookup_accepts_a_legacy_manifest_in_the_preferred_directory() {
         None,
     );
 
-    let cover =
-        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path", None)
-            .expect("read preferred cover")
-            .expect("preferred cover");
-
-    assert_eq!(
-        cover.relative_path,
-        "contents/demo/Current-Title-novel-path/cover.jpg"
-    );
-    assert!(cover.manifest.contains("current.jpg"));
+    assert!(novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path")
+        .expect("read preferred cover")
+        .is_none());
 }
 
 #[test]
@@ -75,7 +68,6 @@ fn novel_cover_lookup_returns_none_without_an_identity_match() {
         "demo",
         "Current Title",
         "novel/path",
-        None,
     )
     .expect("read missing cover")
     .is_none());
@@ -107,7 +99,6 @@ fn novel_cover_lookup_ignores_an_empty_cover_file() {
         "demo",
         "Current Title",
         "novel/path",
-        None,
     )
     .expect("read empty cover")
     .is_none());
@@ -125,7 +116,7 @@ fn novel_cover_lookup_reuses_an_identity_manifest_from_an_older_title_directory(
     );
 
     let cover =
-        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path", None)
+        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path")
             .expect("read renamed cover")
             .expect("renamed cover");
 
@@ -152,59 +143,9 @@ fn novel_cover_lookup_rejects_a_mismatched_identity_in_the_preferred_directory()
         "demo",
         "Current Title",
         "novel/path",
-        None,
     )
     .expect("read mismatched preferred cover")
     .is_none());
-}
-
-#[test]
-fn novel_cover_lookup_requires_an_exact_source_url_for_a_legacy_fallback() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write_novel_cover(
-        dir.path(),
-        "Old-Title-novel-path",
-        "https://source.test/cover.jpg",
-        1,
-        None,
-    );
-
-    assert!(novel_cover_read_manifest_at(
-        dir.path(),
-        7,
-        "demo",
-        "Current Title",
-        "novel/path",
-        None,
-    )
-    .expect("read legacy cover without a source URL")
-    .is_none());
-    assert!(novel_cover_read_manifest_at(
-        dir.path(),
-        7,
-        "demo",
-        "Current Title",
-        "novel/path",
-        Some("https://source.test/other.jpg"),
-    )
-    .expect("read legacy cover with a different source URL")
-    .is_none());
-
-    let cover = novel_cover_read_manifest_at(
-        dir.path(),
-        7,
-        "demo",
-        "Current Title",
-        "novel/path",
-        Some("https://source.test/cover.jpg"),
-    )
-    .expect("read matching legacy cover")
-    .expect("matching legacy cover");
-
-    assert_eq!(
-        cover.relative_path,
-        "contents/demo/Old-Title-novel-path/cover.jpg"
-    );
 }
 
 #[test]
@@ -219,7 +160,7 @@ fn novel_cover_lookup_excludes_a_suffix_collision_using_manifest_identity() {
     );
 
     assert!(
-        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "abc", None,)
+        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "abc",)
             .expect("read colliding cover")
             .is_none()
     );
@@ -244,7 +185,7 @@ fn novel_cover_lookup_selects_the_latest_matching_manifest() {
     );
 
     let cover =
-        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path", None)
+        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path")
             .expect("read latest cover")
             .expect("latest cover");
 
@@ -273,7 +214,7 @@ fn novel_cover_lookup_prefers_the_current_title_directory() {
     );
 
     let cover =
-        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path", None)
+        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path")
             .expect("read preferred cover")
             .expect("preferred cover");
 
@@ -302,7 +243,7 @@ fn novel_cover_lookup_breaks_updated_at_ties_by_relative_path() {
     );
 
     let cover =
-        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path", None)
+        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path")
             .expect("read deterministic cover")
             .expect("deterministic cover");
 

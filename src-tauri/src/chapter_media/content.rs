@@ -4,9 +4,8 @@ use super::archives::finalize_chapter_media_artifacts;
 use super::chapter_media_blocking;
 use super::manifest::ChapterMediaFinalization;
 use super::paths::{
-    chapter_number_segment, content_chapter_dir_at, content_chapter_dirs_for_lookup,
-    content_chapter_dirs_matching_identity, content_chapter_dirs_matching_segments,
-    content_chapter_relative_dir, ensure_contents_nomedia, legacy_storage_manifest_path,
+    chapter_number_segment, content_chapter_dir_at, content_chapter_dirs_matching_identity,
+    content_chapter_dirs_matching_segments, content_chapter_relative_dir, ensure_contents_nomedia,
     media_root, relative_storage_path, safe_relative_storage_path, CHAPTER_PARTIAL_CONTENT_FILE,
     MEDIA_ARCHIVE_FILE,
 };
@@ -182,70 +181,20 @@ fn chapter_content_relative_path(
     ))
 }
 
-pub(super) fn delete_legacy_storage_manifest(root: &Path) -> Result<(), String> {
-    let manifest_path = legacy_storage_manifest_path(root);
-    match fs::remove_file(&manifest_path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!(
-            "chapter media: remove legacy storage manifest: {err}"
-        )),
-    }
-}
-
 fn remove_chapter_content_files_in_dir(
     chapter_dir: &Path,
     keep_path: Option<&Path>,
 ) -> Result<(), String> {
-    if !chapter_dir.is_dir() {
-        return Ok(());
-    }
-    for entry in
-        fs::read_dir(chapter_dir).map_err(|err| format!("chapter media: read dir: {err}"))?
-    {
-        let entry = entry.map_err(|err| format!("chapter media: read entry: {err}"))?;
-        let path = entry.path();
-        if path.is_file()
-            && path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value == CHAPTER_PARTIAL_CONTENT_FILE)
-        {
-            fs::remove_file(path)
-                .map_err(|err| format!("chapter media: remove partial content: {err}"))?;
-            continue;
-        }
+    for file_name in ["content.html", "content.pdf", CHAPTER_PARTIAL_CONTENT_FILE] {
+        let path = chapter_dir.join(file_name);
         if keep_path.is_some_and(|keep_path| path == keep_path) {
             continue;
         }
-        if path.is_file()
-            && path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| {
-                    ["html", "txt", "pdf", "epub"]
-                        .iter()
-                        .any(|extension| value.eq_ignore_ascii_case(extension))
-                })
-            && path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value == "content" || value.starts_with("chapter"))
-        {
-            fs::remove_file(path)
-                .map_err(|err| format!("chapter media: remove content mirror: {err}"))?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("chapter media: remove content mirror: {err}")),
         }
-    }
-    Ok(())
-}
-
-fn remove_stored_chapter_content_files(
-    root: &Path,
-    chapter_id: i64,
-    keep_path: Option<&Path>,
-) -> Result<(), String> {
-    for chapter_dir in content_chapter_dirs_for_lookup(root, chapter_id)? {
-        remove_chapter_content_files_in_dir(&chapter_dir, keep_path)?;
     }
     Ok(())
 }
@@ -261,6 +210,9 @@ pub(super) fn content_chapter_dir_from_context(
     chapter_name: Option<&str>,
     chapter_position: Option<i64>,
 ) -> Result<Option<PathBuf>, String> {
+    if let Some(directory) = super::work_metadata::registered_chapter_directory(root, chapter_id) {
+        return Ok(Some(directory));
+    }
     let Some(novel_id) = novel_id else {
         return Ok(None);
     };
@@ -400,8 +352,7 @@ pub async fn chapter_content_mirror_store(
         let chapter_dir = content_path
             .parent()
             .ok_or_else(|| "chapter media: content mirror has no parent directory".to_string())?;
-        remove_chapter_content_files_in_dir(chapter_dir, Some(&content_path))?;
-        delete_legacy_storage_manifest(&media_root)
+        remove_chapter_content_files_in_dir(chapter_dir, Some(&content_path))
     })
     .await
 }
@@ -467,11 +418,11 @@ pub async fn chapter_content_mirror_store_partial(
 }
 
 #[tauri::command]
-pub async fn chapter_content_mirror_clear(app: AppHandle, chapter_id: i64) -> Result<(), String> {
+pub async fn chapter_content_mirror_clear(app: AppHandle, chapter_dir: String) -> Result<(), String> {
     chapter_media_blocking("clear content mirror", move || {
         let media_root = media_root(&app)?;
-        remove_stored_chapter_content_files(&media_root, chapter_id, None)?;
-        delete_legacy_storage_manifest(&media_root)
+        let relative_dir = safe_relative_storage_path(&chapter_dir)?;
+        remove_chapter_content_files_in_dir(&media_root.join(relative_dir), None)
     })
     .await
 }
@@ -499,15 +450,6 @@ pub async fn chapter_content_mirror_inspect(
 }
 
 #[tauri::command]
-pub async fn chapter_content_mirror_cleanup_legacy_manifest(app: AppHandle) -> Result<(), String> {
-    chapter_media_blocking("clean up legacy content manifest", move || {
-        let media_root = media_root(&app)?;
-        delete_legacy_storage_manifest(&media_root)
-    })
-    .await
-}
-
-#[tauri::command]
 pub async fn chapter_content_mirror_read_file(
     app: AppHandle,
     content_file: String,
@@ -529,4 +471,30 @@ pub async fn chapter_content_mirror_read_file(
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_cleanup_only_removes_current_body_files() {
+        let root = tempfile::tempdir().expect("temporary storage");
+        for file_name in [
+            "content.html", "content.pdf", CHAPTER_PARTIAL_CONTENT_FILE,
+            "content.html.tmp", "content.html.bak", "content.txt", "chapter-42.html",
+        ] {
+            fs::write(root.path().join(file_name), b"content").expect("write content");
+        }
+        let keep = root.path().join("content.html");
+
+        remove_chapter_content_files_in_dir(root.path(), Some(&keep)).expect("clean current body");
+
+        assert!(keep.exists());
+        assert!(!root.path().join("content.pdf").exists());
+        assert!(!root.path().join(CHAPTER_PARTIAL_CONTENT_FILE).exists());
+        for file_name in ["content.html.tmp", "content.html.bak", "content.txt", "chapter-42.html"] {
+            assert!(root.path().join(file_name).exists());
+        }
+    }
 }

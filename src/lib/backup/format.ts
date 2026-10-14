@@ -4,32 +4,16 @@
  * The on-disk artifact is a `.zip` whose entries are written and
  * read by `pack.ts` and `unpack.ts`. This module owns the envelope:
  * the JSON payload that lives in `manifest.json` inside the zip.
- * Keeping the format self-describing lets future format versions
- * evolve without breaking older backups.
- *
- * Version 2 manifests carry chapter download metadata without inline
- * chapter bodies; version 1 readers would treat such chapters as not
- * downloaded, so version 2 exports are rejected by earlier builds
- * instead of restoring with wrong flags. Version 1 archives written
- * by earlier builds remain readable.
+ * Only the current format is readable. Chapter bodies and media remain
+ * in chapter storage; the archive carries their download metadata.
  *
  * The project intentionally uses its own backup format instead of
  * preserving upstream backup zip compatibility.
  */
 
-import {
-  DEFAULT_CHAPTER_CONTENT_TYPE,
-  normalizeChapterContentType,
-  storedChapterContentType,
-  type ChapterContentType,
-} from "../chapter-content";
+import type { ChapterContentType } from "../chapter-content";
 
 export const BACKUP_FORMAT_VERSION = 2 as const;
-
-const READABLE_BACKUP_FORMAT_VERSIONS: ReadonlySet<unknown> = new Set([
-  1,
-  BACKUP_FORMAT_VERSION,
-]);
 
 export interface BackupNovel {
   id: number;
@@ -62,19 +46,16 @@ export interface BackupChapter {
   unread: boolean;
   progress: number;
   isDownloaded: boolean;
-  /** Plugin acquisition type. Falls back to contentType for older v1 backups. */
-  sourceContentType?: ChapterContentType;
+  /** Plugin acquisition type. */
+  sourceContentType: ChapterContentType;
   /** Physical/effective type of the stored chapter body. */
-  contentType?: ChapterContentType;
-  /**
-   * Inline reader body carried by archives from earlier 0.2 builds. Current
-   * exports keep chapter bodies in chapter storage and write null.
-   */
-  content: string | null;
+  contentType: ChapterContentType;
+  /** Chapter bodies remain in chapter storage. */
+  content: null;
   /** Bytes of the stored chapter body. Zero when the chapter is not downloaded. */
-  contentBytes?: number;
+  contentBytes: number;
   /** Bytes occupied by local chapter media files referenced by content. */
-  mediaBytes?: number;
+  mediaBytes: number;
   releaseTime: string | null;
   readAt: number | null;
   createdAt: number;
@@ -134,9 +115,9 @@ export interface BackupManifest {
   novelCategories: BackupNovelCategory[];
   /** The app stores at most one configured plugin repository. */
   repositories: BackupRepository[];
-  installedPlugins?: BackupInstalledPlugin[];
-  settings?: BackupSetting[];
-  vpnGateServerVerdicts?: BackupVpnGateServerVerdict[];
+  installedPlugins: BackupInstalledPlugin[];
+  settings: BackupSetting[];
+  vpnGateServerVerdicts: BackupVpnGateServerVerdict[];
 }
 
 export class BackupFormatError extends Error {
@@ -164,15 +145,6 @@ function asArray<T>(
     }
   }
   return value;
-}
-
-function asOptionalArray<T>(
-  value: unknown,
-  field: string,
-  guard: (item: unknown) => item is T,
-): T[] | undefined {
-  if (value === undefined) return undefined;
-  return asArray(value, field, guard);
 }
 
 function isNovel(value: unknown): value is BackupNovel {
@@ -205,24 +177,20 @@ function isChapter(value: unknown): value is BackupChapter {
     typeof value.unread === "boolean" &&
     typeof value.progress === "number" &&
     typeof value.isDownloaded === "boolean" &&
-    (value.contentType === undefined ||
-      value.contentType === "html" ||
-      value.contentType === "text" ||
+    (value.contentType === "html" ||
       value.contentType === "pdf" ||
-      value.contentType === "markdown" ||
       value.contentType === "epub") &&
-    (value.sourceContentType === undefined ||
-      value.sourceContentType === "html" ||
+    (value.sourceContentType === "html" ||
       value.sourceContentType === "text" ||
       value.sourceContentType === "pdf" ||
       value.sourceContentType === "markdown" ||
       value.sourceContentType === "epub") &&
-    (value.contentBytes === undefined ||
-      typeof value.contentBytes === "number") &&
-    (value.mediaBytes === undefined || typeof value.mediaBytes === "number") &&
+    value.content === null &&
+    typeof value.contentBytes === "number" &&
+    typeof value.mediaBytes === "number" &&
     typeof value.updatedAt === "number" &&
-    (value.createdAt === undefined || typeof value.createdAt === "number") &&
-    (value.foundAt === undefined || typeof value.foundAt === "number")
+    typeof value.createdAt === "number" &&
+    typeof value.foundAt === "number"
   );
 }
 
@@ -231,23 +199,6 @@ function normalizeNovel(novel: BackupNovel): BackupNovel {
     ...novel,
     libraryAddedAt: novel.libraryAddedAt ?? null,
     lastReadAt: novel.lastReadAt ?? null,
-  };
-}
-
-function normalizeChapter(chapter: BackupChapter): BackupChapter {
-  const createdAt = chapter.createdAt ?? chapter.updatedAt;
-  const contentType = normalizeChapterContentType(
-    chapter.contentType ?? DEFAULT_CHAPTER_CONTENT_TYPE,
-  );
-  return {
-    ...chapter,
-    sourceContentType: normalizeChapterContentType(
-      chapter.sourceContentType ?? contentType,
-    ),
-    contentType: storedChapterContentType(contentType),
-    mediaBytes: chapter.mediaBytes ?? 0,
-    createdAt,
-    foundAt: chapter.foundAt ?? Math.max(createdAt, chapter.updatedAt),
   };
 }
 
@@ -339,15 +290,17 @@ export function parseBackupManifest(json: string): BackupManifest {
   if (!isObject(parsed)) {
     throw new BackupFormatError("Backup manifest is not a JSON object.");
   }
-  if (!READABLE_BACKUP_FORMAT_VERSIONS.has(parsed.version)) {
+  if (parsed.version !== BACKUP_FORMAT_VERSION) {
     throw new BackupFormatError(
-      `Unsupported backup version ${String(parsed.version)}; expected ${[
-        ...READABLE_BACKUP_FORMAT_VERSIONS,
-      ].join(" or ")}.`,
+      `Unsupported backup version ${String(parsed.version)}; expected ${BACKUP_FORMAT_VERSION}.`,
     );
   }
   if (typeof parsed.exportedAt !== "number") {
     throw new BackupFormatError("Backup manifest is missing exportedAt.");
+  }
+  const repositories = asArray(parsed.repositories, "repositories", isRepository);
+  if (repositories.length > 1) {
+    throw new BackupFormatError("Backup manifest must contain at most one repository.");
   }
 
   return {
@@ -358,25 +311,21 @@ export function parseBackupManifest(json: string): BackupManifest {
       parsed.chapters,
       "chapters",
       isChapter,
-    ).map(normalizeChapter),
+    ),
     categories: asArray(parsed.categories, "categories", isCategory),
     novelCategories: asArray(
       parsed.novelCategories,
       "novelCategories",
       isNovelCategory,
     ),
-    repositories: asArray(
-      parsed.repositories,
-      "repositories",
-      isRepository,
-    ),
-    installedPlugins: asOptionalArray(
+    repositories,
+    installedPlugins: asArray(
       parsed.installedPlugins,
       "installedPlugins",
       isInstalledPlugin,
     ),
-    settings: asOptionalArray(parsed.settings, "settings", isSetting),
-    vpnGateServerVerdicts: asOptionalArray(
+    settings: asArray(parsed.settings, "settings", isSetting),
+    vpnGateServerVerdicts: asArray(
       parsed.vpnGateServerVerdicts,
       "vpnGateServerVerdicts",
       isVpnGateServerVerdict,

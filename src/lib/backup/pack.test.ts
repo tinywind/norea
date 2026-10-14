@@ -52,6 +52,7 @@ function makeManifest(): BackupManifest {
         progress: 0,
         isDownloaded: true,
         contentType: "html",
+        sourceContentType: "html",
         content: null,
         contentBytes: 17,
         mediaBytes: 0,
@@ -74,6 +75,7 @@ function makeManifest(): BackupManifest {
         progress: 0,
         isDownloaded: false,
         contentType: "html",
+        sourceContentType: "html",
         content: null,
         contentBytes: 0,
         mediaBytes: 0,
@@ -87,6 +89,7 @@ function makeManifest(): BackupManifest {
     categories: [{ id: 1, name: "Default", sort: 0, isSystem: true }],
     novelCategories: [{ id: 1, novelId: 1, categoryId: 1 }],
     repositories: [],
+    vpnGateServerVerdicts: [],
     installedPlugins: [
       {
         id: "demo",

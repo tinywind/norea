@@ -9,8 +9,8 @@ use super::manifest::{
     ValidChapterMediaArchiveManifest,
 };
 use super::paths::{
-    content_chapter_dir_at, content_chapter_dirs_for_lookup, ensure_contents_nomedia, media_root,
-    media_roots_for_lookup, validate_chapter_dir_under_storage_root, MEDIA_ARCHIVE_FILE,
+    content_chapter_dir_at, ensure_contents_nomedia, media_root,
+    validate_chapter_dir_under_storage_root, MEDIA_ARCHIVE_FILE,
     MEDIA_DOWNLOAD_DIR,
 };
 use super::publication::{
@@ -741,14 +741,6 @@ fn chapter_media_archive_cache_sync(
         ChapterMediaFinalization::Ready(media_bytes) => media_bytes,
     };
 
-    for root in media_roots_for_lookup(&app)? {
-        for old_chapter_dir in content_chapter_dirs_for_lookup(&root, chapter_id)? {
-            if old_chapter_dir != chapter_dir {
-                validate_chapter_dir_under_storage_root(&root, &old_chapter_dir)?;
-                clear_content_media_artifacts(&old_chapter_dir)?;
-            }
-        }
-    }
     Ok(media_bytes)
 }
 

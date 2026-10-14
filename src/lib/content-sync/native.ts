@@ -12,20 +12,18 @@ export interface ContentIdentity {
 
 export interface PackageManifest {
   packageVersion: 1;
-  layout?: "chapter-files";
+  layout: "chapter-files";
   identity: ContentIdentity;
   novel: { name: string; author?: string | null; summary?: string | null; isLocal: boolean };
   chapter: { name: string; position: number; chapterNumber?: string | null; contentType: "html" | "text" | "markdown" | "pdf"; page: string };
   bodyPath: string;
-  files: { path: string; size: number; modifiedAt?: number; sha256?: string }[];
+  files: { path: string; size: number; modifiedAt: number }[];
 }
 
 export interface CatalogEntry {
   id: string;
   revision: string;
-  zipSha256?: string;
-  zipBytes?: number;
-  fileBytes?: number;
+  fileBytes: number;
   manifest: PackageManifest;
   deleted: boolean;
   sequence: number;
@@ -51,7 +49,7 @@ export async function uploadContentChapter(input: {
   serverUrl: string;
   token: string;
   chapterId: number;
-  manifest: Omit<PackageManifest, "files" | "bodyPath">;
+  manifest: Omit<PackageManifest, "layout" | "files" | "bodyPath">;
   storageDir: string;
   stagePath: string;
 }): Promise<CatalogEntry> {

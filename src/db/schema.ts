@@ -20,6 +20,30 @@ export const workMetadataDirtyTable = sqliteTable("work_metadata_dirty", {
   path: text("path").notNull(),
 }, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.path] }) }));
 
+export const workMetadataCacheStateTable = sqliteTable("work_metadata_cache_state", {
+  id: integer("id").primaryKey(),
+}, (table) => ({ singleton: check("work_metadata_cache_state_singleton", sql`${table.id}=1`) }));
+
+export const workMetadataFileCacheTable = sqliteTable("work_metadata_file_cache", {
+  pluginId: text("plugin_id").notNull(),
+  path: text("path").notNull(),
+  novelId: integer("novel_id").notNull(),
+  directory: text("directory").notNull(),
+  fingerprint: text("fingerprint").notNull(),
+}, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.path] }) }));
+
+export const workMetadataSyncJournalTable = sqliteTable("work_metadata_sync_journal", {
+  pluginId: text("plugin_id").notNull(),
+  path: text("path").notNull(),
+  revision: integer("revision").notNull(),
+}, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.path] }) }));
+
+export const workMetadataDirectoryCacheTable = sqliteTable("work_metadata_directory_cache", {
+  chapterId: integer("chapter_id").primaryKey(),
+  novelId: integer("novel_id").notNull(),
+  directory: text("directory").notNull(),
+}, (table) => ({ novelIdx: index("work_metadata_directory_novel").on(table.novelId) }));
+
 export const workMetadataReadingStateTable = sqliteTable("work_metadata_reading_state", {
   pluginId: text("plugin_id").notNull(),
   novelPath: text("novel_path").notNull(),
@@ -333,12 +357,7 @@ export const contentSyncOriginTable = sqliteTable("content_sync_origin", {
 export const contentSyncJournalTable = sqliteTable("content_sync_journal", {
   sequence: integer("sequence").primaryKey({ autoIncrement: true }),
   stateKey: text("state_key").notNull(),
-  payload: text("payload").notNull(),
 }, (t) => ({ keyIdx: index("content_sync_journal_key_idx").on(t.stateKey, t.sequence) }));
-export const contentSyncPositionTable = sqliteTable("content_sync_position", {
-  novelId: integer("novel_id").primaryKey(),
-  chapterId: integer("chapter_id").notNull(),
-});
 export type NovelInsert = typeof novelTable.$inferInsert;
 export type Chapter = typeof chapterTable.$inferSelect;
 export type ChapterInsert = typeof chapterTable.$inferInsert;

@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearPluginInputValues,
   getPluginInputValue,
-  migrateLegacyPluginStorageValues,
+  getPluginInputValues,
+  setPluginInputValue,
 } from "./inputs";
 
 const values = new Map<string, string>();
@@ -32,15 +33,18 @@ beforeEach(() => {
 });
 
 describe("plugin storage namespaces", () => {
-  it("migrates nested source ids without merging or over-clearing their values", () => {
+  it("ignores values stored in the obsolete namespace", () => {
     values.set("plugin:komga:alpha:token", "alpha-token");
     values.set("plugin:komga:alpha:beta:token", "beta-token");
 
-    const pluginIds = ["komga:alpha", "komga:alpha:beta"];
+    expect(getPluginInputValue("komga:alpha", "token")).toBeNull();
+    expect(getPluginInputValues("komga:alpha:beta")).toEqual({});
+    expect(values.size).toBe(2);
+  });
 
-    expect(migrateLegacyPluginStorageValues(pluginIds)).toBe(2);
-    expect(migrateLegacyPluginStorageValues(pluginIds)).toBe(0);
-
+  it("isolates nested source ids when reading and clearing their values", () => {
+    setPluginInputValue("komga:alpha", "token", "alpha-token");
+    setPluginInputValue("komga:alpha:beta", "token", "beta-token");
     expect(getPluginInputValue("komga:alpha", "token")).toBe("alpha-token");
     expect(getPluginInputValue("komga:alpha:beta", "token")).toBe(
       "beta-token",

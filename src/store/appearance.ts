@@ -143,10 +143,7 @@ export const useAppearanceStore = create<AppearanceState>()(
         if (persistedState === null || typeof persistedState !== "object") {
           return currentState;
         }
-        const persisted = persistedState as Partial<AppearanceState> & {
-          uiScalePercent?: unknown;
-        };
-        const { uiScalePercent, ...persistedAppearance } = persisted;
+        const persistedAppearance = persistedState as Partial<AppearanceState>;
         return {
           ...currentState,
           ...persistedAppearance,
@@ -156,7 +153,7 @@ export const useAppearanceStore = create<AppearanceState>()(
             persistedAppearance.androidViewScalePercent,
           ),
           fontScalePercent: normalizeFontScalePercent(
-            persistedAppearance.fontScalePercent ?? uiScalePercent,
+            persistedAppearance.fontScalePercent,
           ),
           appLocale: normalizeAppLocale(persistedAppearance.appLocale),
         };

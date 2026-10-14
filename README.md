@@ -188,8 +188,8 @@ The app sends these files byte for byte, without creating an extra ZIP, rewritin
 HTML or media references, or recompressing media. The server publishes a revision
 only after every listed file arrives with its declared size. Transfers check
 file names, sizes, and completion without computing or comparing chapter-file
-SHA-256 hashes. Downloads install the complete files; older server ZIP revisions
-remain readable through the compatibility decoder. Deleting a local download
+SHA-256 hashes. Downloads support only the current original-file format.
+Deleting a local download
 leaves the server copy intact. The server keeps one complete copy per chapter.
 The app checks for that copy before creating a snapshot or uploading files.
 To replace a server copy, select chapters in the work page, choose **Delete from
@@ -224,24 +224,16 @@ include your library, reading progress, categories, source settings, installed
 sources, and chapter download status. Downloaded chapter bodies and cached
 chapter media are not packed into the backup; they stay in the chapter storage
 folder, and Norea re-checks that folder after a restore so download flags match
-the files that are actually present. Backups written by earlier 0.2 builds that
-still carry chapter bodies and media continue to import. Backups written by this
-build use manifest format 2, which earlier 0.2 builds refuse to import instead
-of restoring every chapter as not downloaded.
+the files that are actually present. Only the current manifest format 2 is supported.
 
 ## Version Compatibility
 
-Norea keeps app data and backup compatibility inside each active release line.
-Stable releases (`1.0.0` and later) guarantee compatibility only within the same
-major version. During pre-release development (`0.x.y`), compatibility is
-guaranteed only within the same minor version.
-
-For example, `0.1.x` data is supported by later `0.1.x` releases, but `0.2.0`
-may introduce incompatible data changes. Export a backup before moving across a
-major version, or across a minor version while Norea is still `0.x`.
-
-The 0.2 app and plugin contract do not guarantee compatibility with 0.1 app
-data, downloaded content, or source plugins.
+During early development, Norea supports only the current database, settings,
+metadata, backup, and content-server formats. There are no upgrade migrations,
+old-format readers, or settings translations. A schema version or checksum
+mismatch recreates the app database; downloaded files remain on disk and can be
+rescanned when they follow the current file format. Use current app and server
+builds together. Any future compatibility policy will be decided separately.
 
 Maintainer details live in
 [docs/release-compatibility.md](./docs/release-compatibility.md).

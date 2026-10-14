@@ -227,7 +227,6 @@ async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
       await deleteAndroidStoragePath(chapterDir);
     }
   }
-  await deleteAndroidStoragePath(`chapter-media/${chapterId}`);
   forgetResolvedChapterStorageDir(chapterId);
 }
 

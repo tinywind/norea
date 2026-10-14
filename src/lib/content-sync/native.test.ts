@@ -2,28 +2,36 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { snapshotAndroidContentChapter, installAndroidContentChapter } from "../android-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
-import { fingerprintContentChapter, uploadContentChapter, withContentChapterStage, withDownloadedContentChapter } from "./native";
+import { fingerprintContentChapter, uploadContentChapter, withContentChapterStage, withDownloadedContentChapter, type CatalogEntry } from "./native";
 import { runWorkContentStorageOperation } from "./storage-operation";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../android-storage", () => ({ snapshotAndroidContentChapter: vi.fn(), installAndroidContentChapter: vi.fn() }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: vi.fn() }));
 const identity = { pluginId: "source", novelPath: "/book" };
+const entry: CatalogEntry = {
+  id: "chapter", revision: "upload", fileBytes: 18, deleted: false, sequence: 1,
+  manifest: {
+    packageVersion: 1, layout: "chapter-files", identity: { ...identity, chapterPath: "/one" },
+    novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" },
+    bodyPath: "content.html", files: [{ path: "content.html", size: 18, modifiedAt: 1 }],
+  },
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(isAndroidRuntime).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "content_sync_create_stage") return "/cache/content-sync/one";
-    if (command === "content_sync_fingerprint") return "snapshot-hash";
+    if (command === "content_sync_fingerprint") return "snapshot-fingerprint";
     return undefined;
   });
 });
 
-it("hashes and uploads one Android snapshot instead of copying the chapter twice", async () => {
+it("fingerprints and uploads one Android snapshot instead of copying the chapter twice", async () => {
   const storageDir = "contents/source/Book/1-One";
   await withContentChapterStage({ storageDir, identity }, async stagePath => {
-    expect(await fingerprintContentChapter({ storageDir, stagePath })).toBe("snapshot-hash");
+    expect(await fingerprintContentChapter({ storageDir, stagePath })).toBe("snapshot-fingerprint");
     await uploadContentChapter({ storageDir, stagePath, serverUrl: "http://server", token: "token", chapterId: 1,
       manifest: { packageVersion: 1, identity: { pluginId: "source", novelPath: "/book", chapterPath: "/one" },
         novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } });
@@ -61,8 +69,8 @@ it("releases the Windows work lock after the snapshot, before transferring it", 
 it.each([true, false])("stages a download before publishing it and always removes the stage (Android: %s)", async android => {
   vi.mocked(isAndroidRuntime).mockReturnValue(android);
   const storageDir = "contents/source/Book/1-One";
-  await withDownloadedContentChapter({ serverUrl: "http://server", entry: {} as never, storageDir, chapterId: 1 }, async (_sizes, install) => {
-    expect(invoke).toHaveBeenCalledWith("content_sync_download", expect.objectContaining({ storageDir, stagePath: "/cache/content-sync/one" }));
+  await withDownloadedContentChapter({ serverUrl: "http://server", entry, storageDir, chapterId: 1 }, async (_sizes, install) => {
+    expect(invoke).toHaveBeenCalledWith("content_sync_download", expect.objectContaining({ entry, storageDir, stagePath: "/cache/content-sync/one" }));
     expect(invoke).not.toHaveBeenCalledWith("content_sync_install", expect.anything());
     expect(installAndroidContentChapter).not.toHaveBeenCalled();
     await install(storageDir);
@@ -85,7 +93,7 @@ it("settles a cancelled transfer immediately and cleans its private files after 
   const apply = vi.fn();
   let error: unknown;
   let settled = false;
-  const input = { serverUrl: "http://server", entry: {} as never, storageDir: "contents/source/Book/1-One", chapterId: 1, signal: controller.signal };
+  const input = { serverUrl: "http://server", entry, storageDir: "contents/source/Book/1-One", chapterId: 1, signal: controller.signal };
   const download = withDownloadedContentChapter(input, apply).catch(reason => { error = reason; }).finally(() => { settled = true; });
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   controller.abort(new DOMException("Deleted", "AbortError"));

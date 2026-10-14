@@ -30,29 +30,6 @@ class AndroidNovelCoverInspectionTest {
   }
 
   @Test
-  fun prefersLegacyCoverInPreferredDirectory() {
-    val preferred = cover(
-      relativePath = "contents/demo/Current-novel-path/cover.jpg",
-      sourceId = null,
-      novelPath = null,
-      sourceUrl = "https://source.test/legacy.jpg",
-      updatedAt = 1L,
-    )
-    val fallback = cover(
-      relativePath = "contents/demo/Previous-novel-path/cover.jpg",
-      updatedAt = 2L,
-    )
-
-    assertEquals(
-      preferred,
-      select(
-        preferred = preferred,
-        matches = listOf(fallback),
-      ),
-    )
-  }
-
-  @Test
   fun rejectsPreferredCoverWithDifferentStoredIdentity() {
     val preferredCollision = cover(
       relativePath = "contents/demo/Current-novel-path/cover.jpg",
@@ -74,30 +51,6 @@ class AndroidNovelCoverInspectionTest {
   }
 
   @Test
-  fun allowsLegacyFallbackOnlyForExactExpectedSourceUrl() {
-    val legacy = cover(
-      relativePath = "contents/demo/Previous-novel-path/cover.jpg",
-      sourceId = null,
-      novelPath = null,
-    )
-
-    assertEquals(
-      legacy,
-      select(
-        matches = listOf(legacy),
-        expectedSourceUrl = sourceUrl,
-      ),
-    )
-    assertNull(select(matches = listOf(legacy), expectedSourceUrl = ""))
-    assertNull(
-      select(
-        matches = listOf(legacy),
-        expectedSourceUrl = "https://source.test/different.jpg",
-      ),
-    )
-  }
-
-  @Test
   fun excludesSuffixCollisionWithDifferentManifestIdentity() {
     assertNull(
       select(
@@ -107,19 +60,18 @@ class AndroidNovelCoverInspectionTest {
             novelPath = "other/novel/path",
           ),
         ),
-        expectedSourceUrl = sourceUrl,
       ),
     )
   }
 
   @Test
   fun supportsPersistedNovelIdentityWhenTheSourcePathIsBlank() {
-    val identity = parseAndroidNovelCoverIdentity(sourceId, "")
-    assertEquals("", identity?.novelPath)
+    val identity = requireNotNull(parseAndroidNovelCoverIdentity(sourceId, ""))
+    assertEquals("", identity.novelPath)
     val cover = cover(
       relativePath = "contents/demo/Current-7/cover.jpg",
-      sourceId = identity?.sourceId,
-      novelPath = identity?.novelPath,
+      sourceId = identity.sourceId,
+      novelPath = identity.novelPath,
     )
 
     assertEquals(
@@ -129,9 +81,15 @@ class AndroidNovelCoverInspectionTest {
         matches = emptyList(),
         sourceId = sourceId,
         novelPath = "",
-        expectedSourceUrl = sourceUrl,
       ),
     )
+  }
+
+  @Test
+  fun rejectsCoverIdentityWithoutBothCurrentFields() {
+    assertNull(parseAndroidNovelCoverIdentity(null, null))
+    assertNull(parseAndroidNovelCoverIdentity(sourceId, null))
+    assertNull(parseAndroidNovelCoverIdentity(null, novelPath))
   }
 
   @Test
@@ -169,8 +127,8 @@ class AndroidNovelCoverInspectionTest {
 
   private fun cover(
     relativePath: String,
-    sourceId: String? = this.sourceId,
-    novelPath: String? = this.novelPath,
+    sourceId: String = this.sourceId,
+    novelPath: String = this.novelPath,
     sourceUrl: String = this.sourceUrl,
     updatedAt: Long = 1L,
   ): AndroidNovelCoverInspection = AndroidNovelCoverInspection(
@@ -185,12 +143,10 @@ class AndroidNovelCoverInspectionTest {
   private fun select(
     preferred: AndroidNovelCoverInspection? = null,
     matches: List<AndroidNovelCoverInspection>,
-    expectedSourceUrl: String = sourceUrl,
   ): AndroidNovelCoverInspection? = selectAndroidNovelCoverInspection(
     preferred = preferred,
     matches = matches,
     sourceId = sourceId,
     novelPath = novelPath,
-    expectedSourceUrl = expectedSourceUrl,
   )
 }

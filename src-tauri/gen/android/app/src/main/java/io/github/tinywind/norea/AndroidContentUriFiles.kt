@@ -36,21 +36,6 @@ internal class AndroidContentUriFiles(
         .put("mimeType", mimeType)
     }
 
-  fun writeContentUriFile(uri: String, inputPath: String, mimeType: String): JSONObject =
-    run {
-      val inputFile = File(inputPath)
-      require(inputFile.isFile) { "Selected backup temp file is unavailable." }
-      val bytes = inputFile.inputStream().use { input ->
-        contentResolver.openOutputStream(Uri.parse(uri), "wt")?.use { output ->
-          input.copyTo(output)
-        } ?: throw IllegalStateException("Cannot open selected file for writing.")
-      }
-      JSONObject()
-        .put("ok", true)
-        .put("bytes", bytes)
-        .put("mimeType", mimeType)
-    }
-
   fun writeContentUriFileCapped(
     uri: String,
     inputPath: String,

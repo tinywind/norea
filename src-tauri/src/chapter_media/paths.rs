@@ -22,8 +22,6 @@ pub(super) const MEDIA_ARCHIVE_FILE: &str = "media.zip";
 
 pub(super) const NOVEL_COVER_MANIFEST_FILE: &str = "cover.json";
 
-const LEGACY_STORAGE_MANIFEST_FILE: &str = "storage-manifest.json";
-
 pub(super) const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 
 pub(super) const CHAPTER_PARTIAL_CONTENT_FILE: &str = ".chapter-content.partial";
@@ -34,7 +32,7 @@ pub(super) const MEDIA_RESTORE_BACKUP_INFIX: &str = ".restore-backup-";
 
 pub(super) const IMMUTABLE_COVER_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
-fn legacy_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+fn default_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -67,7 +65,7 @@ fn configured_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBu
 }
 
 pub(crate) fn media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    configured_media_root(app)?.map_or_else(|| legacy_media_root(app), Ok)
+    configured_media_root(app)?.map_or_else(|| default_media_root(app), Ok)
 }
 
 fn save_configured_media_root<R: Runtime>(
@@ -108,9 +106,9 @@ pub(super) fn media_roots_for_lookup<R: Runtime>(
 ) -> Result<Vec<PathBuf>, String> {
     let mut roots = Vec::new();
     roots.push(media_root(app)?);
-    let legacy_root = legacy_media_root(app)?;
-    if !roots.iter().any(|root| root == &legacy_root) {
-        roots.push(legacy_root);
+    let default_root = default_media_root(app)?;
+    if !roots.iter().any(|root| root == &default_root) {
+        roots.push(default_root);
     }
     Ok(roots)
 }
@@ -146,7 +144,7 @@ pub async fn chapter_media_set_storage_root(
 #[tauri::command]
 pub async fn chapter_media_use_default_storage_root(app: AppHandle) -> Result<String, String> {
     chapter_media_blocking("use default storage root", move || {
-        let root_path = legacy_media_root(&app)?;
+        let root_path = default_media_root(&app)?;
         save_configured_media_root(&app, &root_path)
     })
     .await
@@ -300,13 +298,6 @@ fn chapter_folder_segment(
     )
 }
 
-pub(super) fn chapter_dir_at(root: &Path, chapter_id: i64) -> Result<PathBuf, String> {
-    if chapter_id <= 0 {
-        return Err("chapter media: invalid chapter id".to_string());
-    }
-    Ok(root.join(chapter_id.to_string()))
-}
-
 pub(super) fn content_chapter_dir_at(
     root: &Path,
     source_id: &str,
@@ -357,64 +348,6 @@ pub(super) fn content_chapter_relative_dir(
         chapter_position,
     )?;
     Ok(dir.to_string_lossy().replace('\\', "/"))
-}
-
-fn path_segment_has_id_suffix(path: &Path, id: i64) -> bool {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.ends_with(&format!("-{id}")))
-}
-
-pub(super) fn content_chapter_dirs_for_lookup(
-    root: &Path,
-    chapter_id: i64,
-) -> Result<Vec<PathBuf>, String> {
-    if chapter_id <= 0 {
-        return Err("chapter media: invalid chapter id".to_string());
-    }
-
-    let contents_dir = root.join(CONTENTS_ROOT_DIR);
-    if !contents_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut dirs = Vec::new();
-    for source_entry in
-        fs::read_dir(&contents_dir).map_err(|err| format!("chapter media: read contents: {err}"))?
-    {
-        let source_entry =
-            source_entry.map_err(|err| format!("chapter media: read contents entry: {err}"))?;
-        let source_dir = source_entry.path();
-        if !source_dir.is_dir() {
-            continue;
-        }
-        for novel_entry in fs::read_dir(&source_dir)
-            .map_err(|err| format!("chapter media: read source contents: {err}"))?
-        {
-            let novel_entry =
-                novel_entry.map_err(|err| format!("chapter media: read source entry: {err}"))?;
-            let novel_dir = novel_entry.path();
-            if !novel_dir.is_dir() {
-                continue;
-            }
-            for chapter_entry in fs::read_dir(&novel_dir)
-                .map_err(|err| format!("chapter media: read novel contents: {err}"))?
-            {
-                let chapter_entry = chapter_entry
-                    .map_err(|err| format!("chapter media: read novel entry: {err}"))?;
-                let chapter_dir = chapter_entry.path();
-                if chapter_dir.is_dir() && path_segment_has_id_suffix(&chapter_dir, chapter_id) {
-                    dirs.push(chapter_dir);
-                }
-            }
-        }
-    }
-    dirs.sort();
-    Ok(dirs)
-}
-
-pub(super) fn legacy_storage_manifest_path(root: &Path) -> PathBuf {
-    root.join(LEGACY_STORAGE_MANIFEST_FILE)
 }
 
 pub(super) fn safe_relative_storage_path(value: &str) -> Result<PathBuf, String> {

@@ -66,7 +66,6 @@ interface AndroidStorageBridge {
     novelIdentitySuffix: string,
     sourceId: string,
     novelPath: string,
-    expectedSourceUrl: string,
   ) => void;
   finalizeChapterStorageTransfer: (
     requestId: string,
@@ -105,12 +104,12 @@ interface AndroidStorageBridge {
     archiveRelativePath: string,
     entryName: string,
   ) => string;
-  readZipEntriesBase64?: (
+  readZipEntriesBase64: (
     rootUri: string,
     archiveRelativePath: string,
     entryNamesJson: string,
   ) => string;
-  zipEntrySizes?: (
+  zipEntrySizes: (
     requestId: string,
     rootUri: string,
     archiveRelativePath: string,
@@ -138,13 +137,8 @@ interface AndroidStorageBridge {
     rootUri: string,
     preparationJson: string,
   ) => void;
-  deleteTempFile?: (path: string) => string;
-  writeContentUriFile: (
-    uri: string,
-    inputPath: string,
-    mimeType: string,
-  ) => string;
-  writeContentUriFileCapped?: (
+  deleteTempFile: (path: string) => string;
+  writeContentUriFileCapped: (
     uri: string,
     inputPath: string,
     mimeType: string,
@@ -277,7 +271,6 @@ export interface AndroidNovelCoverInspection {
 }
 
 export interface AndroidNovelCoverLookupInput {
-  expectedSourceUrl: string | null;
   novelPath: string;
   preferredNovelDir: string;
   sourceId: string;
@@ -503,7 +496,6 @@ function novelCoverInspectionCache(
 
 function novelCoverInspectionKey(input: AndroidNovelCoverLookupInput): string {
   return JSON.stringify([
-    input.expectedSourceUrl,
     input.novelPath,
     input.preferredNovelDir,
     input.sourceId,
@@ -626,28 +618,27 @@ export async function writeAndroidContentUriFile(
 ): Promise<void> {
   const bridge = androidStorageBridge();
   const maxByteLimit = normalizeContentUriMaxBytes(maxBytes);
-  if (bridge.writeContentUriFileCapped) {
-    parseStorageResponse(
-      bridge.writeContentUriFileCapped(
-        uri,
-        inputPath,
-        mimeType,
-        String(maxByteLimit),
-      ),
-    );
-    return;
+  if (!bridge.writeContentUriFileCapped) {
+    throw new Error("Android capped content URI file bridge is unavailable.");
   }
   parseStorageResponse(
-    bridge.writeContentUriFile(uri, inputPath, mimeType),
+    bridge.writeContentUriFileCapped(
+      uri,
+      inputPath,
+      mimeType,
+      String(maxByteLimit),
+    ),
   );
 }
 
 export async function copyAndroidContentUriToTempFile(
   uri: string,
   maxBytes: number = MAX_BACKUP_ARCHIVE_BYTES,
-): Promise<AndroidStorageTempFile | null> {
+): Promise<AndroidStorageTempFile> {
   const bridge = androidStorageBridge();
-  if (!bridge.readContentUriFile) return null;
+  if (!bridge.readContentUriFile) {
+    throw new Error("Android content URI file bridge is unavailable.");
+  }
   const response = parseStorageResponse<AndroidStorageTempFileResponse>(
     bridge.readContentUriFile(
       uri,
@@ -688,7 +679,9 @@ export async function deleteAndroidContentUriTempFile(
   tempFile: AndroidStorageTempFile | string,
 ): Promise<void> {
   const bridge = androidStorageBridge();
-  if (!bridge.deleteTempFile) return;
+  if (!bridge.deleteTempFile) {
+    throw new Error("Android temp file cleanup bridge is unavailable.");
+  }
   const path = typeof tempFile === "string" ? tempFile : tempFile.path;
   parseStorageResponse(bridge.deleteTempFile(path));
 }
@@ -782,7 +775,6 @@ async function inspectAndroidNovelCoverUncached(
         input.novelIdentitySuffix,
         input.sourceId,
         input.novelPath,
-        input.expectedSourceUrl ?? "",
       );
     } catch (error) {
       novelCoverInspectionResolvers.delete(requestId);
@@ -909,17 +901,7 @@ export async function readAndroidStorageZipEntriesDataUrls(
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
   if (!bridge.readZipEntriesBase64) {
-    const entries = new Map<string, string>();
-    await Promise.all(
-      uniqueEntryNames.map(async (entryName) => {
-        const dataUrl = await readAndroidStorageZipEntryDataUrl(
-          archiveRelativePath,
-          entryName,
-        );
-        if (dataUrl) entries.set(entryName, dataUrl);
-      }),
-    );
-    return entries;
+    throw new Error("Android ZIP entry batch read bridge is unavailable.");
   }
 
   const response = parseStorageResponse<AndroidStorageZipEntriesResponse>(
@@ -1009,9 +991,11 @@ export async function androidStorageZipEntryExists(
 export async function androidStorageZipEntrySizes(
   archiveRelativePath: string,
   entryNames: readonly string[],
-): Promise<Map<string, number> | null> {
+): Promise<Map<string, number>> {
   const bridge = androidStorageBridge();
-  if (!bridge.zipEntrySizes) return null;
+  if (!bridge.zipEntrySizes) {
+    throw new Error("Android ZIP entry size bridge is unavailable.");
+  }
   const uniqueEntryNames = [...new Set(entryNames)].filter(
     (entryName) => entryName.trim() !== "",
   );
@@ -1021,7 +1005,7 @@ export async function androidStorageZipEntrySizes(
   const response =
     await runAndroidStorageOperation<AndroidStorageZipEntrySizesResponse>(
       (requestId) =>
-        bridge.zipEntrySizes!(
+        bridge.zipEntrySizes(
           requestId,
           root,
           archiveRelativePath,

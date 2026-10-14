@@ -151,7 +151,6 @@ describe("saveNovelCoverFromSource", () => {
     expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
-      expectedSourceUrl: null,
       novelId: 7,
       novelName: "Sample Novel",
       novelPath: "/novel",
@@ -390,9 +389,6 @@ describe("saveNovelCoverFromSource", () => {
       "https://source.test/covers/cover.jpg",
     );
 
-    expect(inspectAndroidNovelCoverMock).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedSourceUrl: null }),
-    );
     expect(writeAndroidStorageBytesMock).toHaveBeenCalledWith(
       "contents/demo/New-Title-novel/cover.jpg",
       new Uint8Array([1, 2, 3]),
@@ -422,7 +418,6 @@ describe("saveNovelCoverFromSource", () => {
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
-      expectedSourceUrl: null,
       novelId: 7,
       novelName: "Sample Novel",
       novelPath: "/foo//bar",
@@ -484,7 +479,6 @@ describe("saveNovelCoverFromSource", () => {
       `/__norea_android_media__/file/Y29udGVudHMvZGVtby9PbGQtVGl0bGUtbm92ZWwvY292ZXIuanBn?v=${coverVersion()}`,
     );
     expect(inspectAndroidNovelCoverMock).toHaveBeenCalledWith({
-      expectedSourceUrl: "https://source.test/covers/cover.jpg",
       novelPath: "/novel",
       novelIdentitySuffix: "-novel",
       preferredNovelDir: "contents/demo/New-Title-novel",
@@ -504,28 +498,6 @@ describe("saveNovelCoverFromSource", () => {
     ).resolves.toBe(
       `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
     );
-  });
-
-  it("canonicalizes a relative cover URL for legacy desktop lookup", async () => {
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult("https://source.test/covers/cover.jpg"),
-    );
-
-    await expect(
-      resolveStoredNovelCoverSrc(
-        { ...novel, cover: "/covers/cover.jpg" },
-        makePlugin(),
-      ),
-    ).resolves.toBe(
-      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
-    );
-    expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
-      expectedSourceUrl: "https://source.test/covers/cover.jpg",
-      novelId: 7,
-      novelName: "Sample Novel",
-      novelPath: "/novel",
-      sourceId: "demo",
-    });
   });
 
   it("keeps cover URLs content-relative when the novel folder has unicode", async () => {

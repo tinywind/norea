@@ -8,27 +8,24 @@ internal const val NOVEL_COVER_MANIFEST_FILE = "cover.json"
 internal data class AndroidNovelCoverInspection(
   val manifest: String,
   val relativePath: String,
-  val sourceId: String?,
-  val novelPath: String?,
+  val sourceId: String,
+  val novelPath: String,
   val sourceUrl: String,
   val updatedAt: Long,
 )
 
 internal data class AndroidNovelCoverIdentity(
-  val sourceId: String?,
-  val novelPath: String?,
+  val sourceId: String,
+  val novelPath: String,
 )
 
 internal fun parseAndroidNovelCoverIdentity(
   sourceIdValue: Any?,
   novelPathValue: Any?,
 ): AndroidNovelCoverIdentity? {
-  if (sourceIdValue != null && sourceIdValue !is String) return null
-  if (novelPathValue != null && novelPathValue !is String) return null
-  return AndroidNovelCoverIdentity(
-    sourceId = (sourceIdValue as? String)?.takeIf { it.isNotBlank() },
-    novelPath = novelPathValue as? String,
-  )
+  if (sourceIdValue !is String || sourceIdValue.isBlank()) return null
+  if (novelPathValue !is String) return null
+  return AndroidNovelCoverIdentity(sourceIdValue, novelPathValue)
 }
 
 internal fun nonEmptyAndroidNovelCoverInspection(
@@ -46,26 +43,17 @@ internal fun selectAndroidNovelCoverInspection(
   matches: List<AndroidNovelCoverInspection>,
   sourceId: String,
   novelPath: String,
-  expectedSourceUrl: String,
 ): AndroidNovelCoverInspection? {
-  fun AndroidNovelCoverInspection.hasIdentity(): Boolean =
-    this.sourceId != null || this.novelPath != null
-
   fun AndroidNovelCoverInspection.matchesIdentity(): Boolean =
     this.sourceId == sourceId && this.novelPath == novelPath
 
-  if (preferred != null && (!preferred.hasIdentity() || preferred.matchesIdentity())) {
+  if (preferred != null && preferred.matchesIdentity()) {
     return preferred
   }
 
   return matches
     .asSequence()
-    .filter { candidate ->
-      candidate.matchesIdentity() ||
-        (!candidate.hasIdentity() &&
-          expectedSourceUrl.isNotBlank() &&
-          candidate.sourceUrl == expectedSourceUrl)
-    }
+    .filter { it.matchesIdentity() }
     .sortedWith(
       compareByDescending<AndroidNovelCoverInspection> { it.updatedAt }
         .thenBy { it.relativePath },
@@ -81,7 +69,6 @@ internal class AndroidNovelCoverInspector(private val storage: AndroidStorageDoc
     novelIdentitySuffix: String,
     sourceId: String,
     novelPath: String,
-    expectedSourceUrl: String,
   ): JSONObject {
     val root = storage.storageRoot(rootUri)
     require(root.canRead()) { "Android storage folder is not readable." }
@@ -127,7 +114,7 @@ internal class AndroidNovelCoverInspector(private val storage: AndroidStorageDoc
         storedNovelPathValue.takeUnless { it == JSONObject.NULL },
       ) ?: return null
       val sourceUrl = manifestJson.opt("sourceUrl") as? String ?: return null
-      val updatedAt = (manifestJson.opt("updatedAt") as? Number)?.toLong() ?: 0L
+      val updatedAt = (manifestJson.opt("updatedAt") as? Number)?.toLong() ?: return null
       val cover = directory.findFile(fileName) ?: return null
       if (!cover.isFile) return null
       require(cover.canRead()) {
@@ -155,7 +142,6 @@ internal class AndroidNovelCoverInspector(private val storage: AndroidStorageDoc
       matches = emptyList(),
       sourceId = sourceId,
       novelPath = novelPath,
-      expectedSourceUrl = expectedSourceUrl,
     )
     val selected = selectedPreferred ?: run {
       val matches = mutableListOf<AndroidNovelCoverInspection>()
@@ -178,7 +164,6 @@ internal class AndroidNovelCoverInspector(private val storage: AndroidStorageDoc
         matches = matches,
         sourceId = sourceId,
         novelPath = novelPath,
-        expectedSourceUrl = expectedSourceUrl,
       )
     }
 

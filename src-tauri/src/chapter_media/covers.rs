@@ -22,12 +22,10 @@ fn novel_cover_manifest_path(novel_dir: &Path) -> PathBuf {
 #[serde(rename_all = "camelCase")]
 struct NovelCoverManifestMetadata {
     file_name: String,
-    #[serde(default)]
-    novel_path: Option<String>,
-    #[serde(default)]
-    source_id: Option<String>,
-    source_url: String,
-    #[serde(default)]
+    novel_path: String,
+    source_id: String,
+    #[serde(rename = "sourceUrl")]
+    _source_url: String,
     updated_at: u64,
     version: u64,
 }
@@ -68,35 +66,11 @@ struct NovelCoverCandidate {
     updated_at: u64,
 }
 
-fn novel_cover_manifest_matches_identity(
-    manifest: &NovelCoverManifestMetadata,
-    source_id: &str,
-    novel_path: &str,
-    expected_source_url: Option<&str>,
-    is_preferred: bool,
-) -> bool {
-    match (
-        manifest.source_id.as_deref(),
-        manifest.novel_path.as_deref(),
-    ) {
-        (Some(stored_source_id), Some(stored_novel_path)) => {
-            stored_source_id == source_id && stored_novel_path == novel_path
-        }
-        (None, None) => {
-            is_preferred
-                || expected_source_url.is_some_and(|source_url| manifest.source_url == source_url)
-        }
-        _ => false,
-    }
-}
-
 fn read_novel_cover_candidate_at(
     media_root: &Path,
     novel_dir: &Path,
     source_id: &str,
     novel_path: &str,
-    expected_source_url: Option<&str>,
-    is_preferred: bool,
 ) -> Result<Option<NovelCoverCandidate>, String> {
     let Some(manifest) = read_existing_novel_cover_manifest(novel_dir)? else {
         return Ok(None);
@@ -104,13 +78,7 @@ fn read_novel_cover_candidate_at(
     let Some(metadata) = novel_cover_manifest_metadata(&manifest) else {
         return Ok(None);
     };
-    if !novel_cover_manifest_matches_identity(
-        &metadata,
-        source_id,
-        novel_path,
-        expected_source_url,
-        is_preferred,
-    ) {
+    if metadata.source_id != source_id || metadata.novel_path != novel_path {
         return Ok(None);
     }
     let file_name = safe_segment(&metadata.file_name, "cover");
@@ -173,7 +141,6 @@ fn novel_cover_read_manifest_at(
     source_id: &str,
     novel_name: &str,
     novel_path: &str,
-    expected_source_url: Option<&str>,
 ) -> Result<Option<NovelCoverReadResult>, String> {
     let preferred_dir = content_novel_dir_at(
         media_root,
@@ -187,8 +154,6 @@ fn novel_cover_read_manifest_at(
         &preferred_dir,
         source_id,
         novel_path,
-        expected_source_url,
-        true,
     )? {
         return Ok(Some(cover.cover));
     }
@@ -205,8 +170,6 @@ fn novel_cover_read_manifest_at(
             &novel_dir,
             source_id,
             novel_path,
-            expected_source_url,
-            false,
         )? {
             matches.push(cover);
         }
@@ -228,7 +191,6 @@ pub async fn novel_cover_read_manifest(
     source_id: String,
     novel_name: String,
     novel_path: String,
-    expected_source_url: Option<String>,
 ) -> Result<Option<NovelCoverReadResult>, String> {
     chapter_media_blocking("read novel cover manifest", move || {
         let media_root = media_root(&app)?;
@@ -238,7 +200,6 @@ pub async fn novel_cover_read_manifest(
             &source_id,
             &novel_name,
             &novel_path,
-            expected_source_url.as_deref(),
         )
     })
     .await
@@ -259,15 +220,15 @@ fn novel_cover_store_at(
     }
     let incoming_manifest = novel_cover_manifest_metadata(manifest)
         .ok_or_else(|| "chapter media: invalid novel cover manifest".to_string())?;
-    if incoming_manifest.source_id.as_deref() != Some(source_id)
-        || incoming_manifest.novel_path.as_deref() != Some(novel_path)
+    if incoming_manifest.source_id != source_id
+        || incoming_manifest.novel_path != novel_path
     {
         return Err("chapter media: novel cover manifest identity does not match".to_string());
     }
 
     ensure_contents_nomedia(media_root)?;
     let existing_cover = novel_cover_read_manifest_at(
-        media_root, novel_id, source_id, novel_name, novel_path, None,
+        media_root, novel_id, source_id, novel_name, novel_path,
     )?;
     let novel_dir = match existing_cover {
         Some(existing_cover) => {

@@ -67,10 +67,9 @@ pnpm test
 Run `pnpm tauri build --debug` on Windows when the change touches native
 desktop integration.
 
-`pnpm db:generate` remains available for deliberate release-boundary schema
-generation work, but pre-release schema churn should not accumulate migration
-history. Reset local development databases when the current schema is
-intentionally replaced.
+Keep `src-tauri/src/schema.sql` and `src/db/schema.ts` aligned as one current
+development schema. Do not add upgrade migrations or retain older schema readers.
+The app recreates its database when the installed schema checksum differs.
 
 Rust-side checks:
 

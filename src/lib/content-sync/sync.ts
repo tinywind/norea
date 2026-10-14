@@ -1,6 +1,6 @@
 import {
   contentIdentity, importContentMetadata, listContentSyncChapters,
-  markContentInstalled, readContentSyncStateCache, writeContentSyncCache, type ContentSyncChapter,
+  markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
   contentJournalHead, readContentJournal,
 } from "../../db/queries/content-sync";
 import { useContentSyncStore } from "../../store/content-sync";
@@ -27,10 +27,8 @@ interface CatalogCache {
 interface CatalogChangesPage { items: { identity: ContentIdentity; deleted: boolean; sequence: number }[]; cursor: number; hasMore: boolean }
 function saveCache(key: string, value: unknown): Promise<void> { return writeContentSyncCache(key, JSON.stringify(value)); }
 async function catalogCache(server: string): Promise<CatalogCache> {
-  const saved = await readContentSyncStateCache(`norea-content-catalog:${server}`, "catalog");
-  const parsed = saved ? JSON.parse(saved) as Partial<CatalogCache> : {};
-  return { cursor: parsed.cursor ?? 0, tombstones: parsed.tombstones ?? {}, uploaded: parsed.uploaded ?? {},
-    downloads: parsed.downloads ?? {}, excluded: parsed.excluded ?? [], pendingUploads: parsed.pendingUploads ?? [], localCursor: parsed.localCursor ?? undefined };
+  const saved = await readContentSyncCache(`norea-content-catalog:${server}`);
+  return saved ? JSON.parse(saved) as CatalogCache : { cursor: 0, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] };
 }
 function saveCatalog(server: string, cache: CatalogCache): Promise<void> { return saveCache(`norea-content-catalog:${server}`, cache); }
 function identity(row: ContentSyncChapter): string { return contentIdentity(row.pluginId, row.novelPath, row.chapterPath); }

@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  androidStorageZipEntrySizes,
   clearAndroidStorageRoot,
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
@@ -17,6 +18,7 @@ import {
   prepareAndroidChapterStorageTransfer,
   prepareAndroidReaderMediaCache,
   readAndroidStorageText,
+  readAndroidStorageZipEntriesDataUrls,
   removeAndroidChapterStorageDirectory,
   rollbackAndroidChapterStorageTransfer,
   selectAndroidStorageRoot,
@@ -39,12 +41,13 @@ type TestBridge = {
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
   readText?: ReturnType<typeof vi.fn>;
+  readZipEntriesBase64?: ReturnType<typeof vi.fn>;
   removeChapterStorageDirectory?: ReturnType<typeof vi.fn>;
   rollbackChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   writeBytes?: ReturnType<typeof vi.fn>;
-  writeContentUriFile?: ReturnType<typeof vi.fn>;
   writeContentUriFileCapped?: ReturnType<typeof vi.fn>;
   writeText?: ReturnType<typeof vi.fn>;
+  zipEntrySizes?: ReturnType<typeof vi.fn>;
 };
 
 const invokeMock = vi.mocked(invoke);
@@ -64,13 +67,11 @@ beforeEach(() => {
 });
 
 describe("android storage bridge facade", () => {
-  it("prefers capped file writes when the Android bridge exposes them", async () => {
-    const legacyWrite = vi.fn(() => JSON.stringify({ ok: true }));
+  it("writes content URI files through the capped Android bridge method", async () => {
     const cappedWrite = vi.fn(() =>
       JSON.stringify({ bytes: 12, ok: true }),
     );
     const bridge = {
-      writeContentUriFile: legacyWrite,
       writeContentUriFileCapped: cappedWrite,
     };
     installBridge(bridge);
@@ -90,28 +91,16 @@ describe("android storage bridge facade", () => {
     );
     // The WebView rejects @JavascriptInterface methods detached from the bridge.
     expect(cappedWrite.mock.contexts[0]).toBe(bridge);
-    expect(legacyWrite).not.toHaveBeenCalled();
   });
 
-  it("falls back to legacy content URI file writes", async () => {
-    const legacyWrite = vi.fn(() =>
-      JSON.stringify({ bytes: 12, ok: true }),
-    );
-    installBridge({
-      writeContentUriFile: legacyWrite,
-    });
-
-    await writeAndroidContentUriFile(
-      "content://backup",
-      "/cache/export.zip",
-      "application/zip",
-    );
-
-    expect(legacyWrite).toHaveBeenCalledWith(
-      "content://backup",
-      "/cache/export.zip",
-      "application/zip",
-    );
+  it("rejects file writes when the capped bridge method is missing", async () => {
+    await expect(
+      writeAndroidContentUriFile(
+        "content://backup",
+        "/cache/export.zip",
+        "application/zip",
+      ),
+    ).rejects.toThrow("Android capped content URI file bridge is unavailable.");
   });
 
   it("copies content URIs into Android temp files when supported", async () => {
@@ -207,15 +196,15 @@ describe("android storage bridge facade", () => {
     });
   });
 
-  it("returns null for temp file reads when the bridge lacks the method", async () => {
+  it("rejects temp file reads when the current bridge method is missing", async () => {
     installBridge({});
 
     await expect(
       copyAndroidContentUriToTempFile("content://backup"),
-    ).resolves.toBeNull();
+    ).rejects.toThrow("Android content URI file bridge is unavailable.");
   });
 
-  it("deletes Android temp files when the bridge exposes cleanup", async () => {
+  it("deletes Android temp files through the current bridge method", async () => {
     const deleteTempFile = vi.fn(() => JSON.stringify({ ok: true }));
     installBridge({ deleteTempFile });
 
@@ -224,6 +213,105 @@ describe("android storage bridge facade", () => {
     expect(deleteTempFile).toHaveBeenCalledWith(
       "/cache/android-storage-bridge/a.tmp",
     );
+  });
+
+  it("rejects temp file cleanup when the current bridge method is missing", async () => {
+    await expect(
+      deleteAndroidContentUriTempFile("/cache/android-storage-bridge/a.tmp"),
+    ).rejects.toThrow("Android temp file cleanup bridge is unavailable.");
+  });
+
+  it("reads current ZIP entries in one call and omits missing entries", async () => {
+    const root = "content://tree/primary%3ANoreaZipBatchRead";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const readZipEntriesBase64 = vi.fn(() =>
+      JSON.stringify({
+        entries: { "page.png": { base64: "AQ==", mimeType: "image/png" } },
+        ok: true,
+      }),
+    );
+    invokeMock.mockResolvedValue(root);
+    const bridge = { ensureNoMedia, readZipEntriesBase64 };
+    installBridge(bridge);
+
+    await expect(
+      readAndroidStorageZipEntriesDataUrls("contents/book/1-Chapter/media.zip", [
+        "page.png",
+        "missing.png",
+        "page.png",
+        " ",
+      ]),
+    ).resolves.toEqual(new Map([["page.png", "data:image/png;base64,AQ=="]]));
+    expect(readZipEntriesBase64).toHaveBeenCalledWith(
+      root,
+      "contents/book/1-Chapter/media.zip",
+      '["page.png","missing.png"]',
+    );
+    expect(readZipEntriesBase64.mock.contexts[0]).toBe(bridge);
+
+    readZipEntriesBase64.mockReturnValue(JSON.stringify({ entries: {}, ok: true }));
+    await expect(
+      readAndroidStorageZipEntriesDataUrls("contents/book/2-Chapter/media.zip", [
+        "missing.png",
+      ]),
+    ).resolves.toEqual(new Map());
+  });
+
+  it("rejects ZIP batch reads when the current bridge method is missing", async () => {
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    invokeMock.mockResolvedValue("content://tree/primary%3ANoreaMissingZipBatchRead");
+    installBridge({ ensureNoMedia });
+
+    await expect(
+      readAndroidStorageZipEntriesDataUrls("contents/book/1-Chapter/media.zip", [
+        "page.png",
+      ]),
+    ).rejects.toThrow("Android ZIP entry batch read bridge is unavailable.");
+  });
+
+  it("reads exact ZIP entry sizes and keeps missing archives empty", async () => {
+    const root = "content://tree/primary%3ANoreaZipEntrySizes";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    let sizes: Record<string, number> = { "page.png": 3, "empty.png": 0 };
+    const zipEntrySizes = vi.fn((requestId: string) => {
+      queueMicrotask(() => {
+        window.__noreaResolveAndroidStorageOperation?.(
+          requestId,
+          JSON.stringify({ ok: true, sizes }),
+        );
+      });
+    });
+    invokeMock.mockResolvedValue(root);
+    const bridge = { ensureNoMedia, zipEntrySizes };
+    installBridge(bridge);
+
+    await expect(
+      androidStorageZipEntrySizes("contents/book/1-Chapter/media.zip", [
+        "page.png",
+        "empty.png",
+        "missing.png",
+        "page.png",
+        " ",
+      ]),
+    ).resolves.toEqual(new Map([["page.png", 3], ["empty.png", 0]]));
+    expect(zipEntrySizes).toHaveBeenCalledWith(
+      expect.any(String),
+      root,
+      "contents/book/1-Chapter/media.zip",
+      '["page.png","empty.png","missing.png"]',
+    );
+    expect(zipEntrySizes.mock.contexts[0]).toBe(bridge);
+
+    sizes = {};
+    await expect(
+      androidStorageZipEntrySizes("contents/book/2-Chapter/media.zip", ["page.png"]),
+    ).resolves.toEqual(new Map());
+  });
+
+  it("rejects ZIP size reads when the current bridge method is missing", async () => {
+    await expect(
+      androidStorageZipEntrySizes("contents/book/1-Chapter/media.zip", ["page.png"]),
+    ).rejects.toThrow("Android ZIP entry size bridge is unavailable.");
   });
 
   it("ensures .nomedia once while reading from the selected storage root", async () => {
@@ -447,7 +535,6 @@ describe("android storage bridge facade", () => {
       installBridge({ ensureNoMedia, inspectNovelCover });
 
       const input = {
-        expectedSourceUrl: "https://source.test/cover.jpg",
         novelPath: "/novel/1",
         novelIdentitySuffix: "-novel-1",
         preferredNovelDir: "contents/demo/New-title-novel-1",
@@ -467,7 +554,6 @@ describe("android storage bridge facade", () => {
         "-novel-1",
         "demo",
         "/novel/1",
-        "https://source.test/cover.jpg",
       );
 
       let settled = false;
@@ -500,7 +586,6 @@ describe("android storage bridge facade", () => {
     installBridge({ ensureNoMedia, inspectNovelCover });
 
     const inspection = inspectAndroidNovelCover({
-      expectedSourceUrl: null,
       novelPath: "/novel/1",
       novelIdentitySuffix: "-novel-1",
       preferredNovelDir: "contents/demo/New-title-novel-1",
@@ -526,7 +611,6 @@ describe("android storage bridge facade", () => {
     installBridge({ ensureNoMedia, inspectNovelCover });
 
     const inspection = inspectAndroidNovelCover({
-      expectedSourceUrl: "https://source.test/cover.jpg",
       novelPath: "/novel/1",
       novelIdentitySuffix: "-novel-1",
       preferredNovelDir: "contents/demo/New-title-novel-1",

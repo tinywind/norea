@@ -57,35 +57,6 @@ export async function writeContentSyncCache(key: string, payload: string): Promi
   await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload", [key, payload]);
 }
 
-export async function readContentSyncStateCache(key: string, kind: "catalog" | "works"): Promise<string | null> {
-  const db = await getDb();
-  const fields = kind === "works" ? `json_object(
-    'cursor',COALESCE(json_extract(payload,'$.cursor'),0),
-    'fingerprints',json(COALESCE(json_extract(payload,'$.fingerprints'),'{}')),
-    'fileVersions',json(COALESCE(json_extract(payload,'$.fileVersions'),'{}')))` : `json_patch(json_object(
-    'cursor',COALESCE(json_extract(payload,'$.cursor'),0),
-    'tombstones',json(COALESCE(json_extract(payload,'$.tombstones'),(
-      SELECT json_group_object(json_array(
-        json_extract(value,'$.manifest.identity.pluginId'),
-        json_extract(value,'$.manifest.identity.novelPath'),
-        json_extract(value,'$.manifest.identity.chapterPath')),json('true'))
-      FROM json_each(payload,'$.entries') WHERE json_extract(value,'$.deleted')=1),'{}')),
-    'uploaded',json(COALESCE(json_extract(payload,'$.uploaded'),'{}')),
-    'downloads',json(COALESCE(json_extract(payload,'$.downloads'),'{}')),
-    'excluded',json(COALESCE(json_extract(payload,'$.excluded'),'[]')),
-    'pendingUploads',json(COALESCE(json_extract(payload,'$.pendingUploads'),'[]'))),
-    CASE WHEN json_type(payload,'$.localCursor') IS NOT NULL
-      THEN json_object('localCursor',json_extract(payload,'$.localCursor')) ELSE '{}' END)`;
-  // Project legacy snapshots in SQLite so file inventories never cross the WebView bridge.
-  const rows = await db.select<{ payload: string | null; legacy: number }[]>(`SELECT
-    CASE WHEN json_valid(payload) THEN ${fields} ELSE NULL END AS payload,
-    CASE WHEN json_valid(payload) THEN json_type(payload,'$.entries') IS NOT NULL ELSE 0 END AS legacy
-    FROM content_sync_cache WHERE cache_key=$1`, [key]);
-  const row = rows[0];
-  if (row?.legacy && row.payload !== null) await writeContentSyncCache(key, row.payload);
-  return row?.payload ?? null;
-}
-
 export interface ContentSyncChapter {
   chapterId: number;
   novelId: number;
@@ -158,7 +129,7 @@ export function contentIdentity(pluginId: string, novelPath: string, chapterPath
   return JSON.stringify([pluginId, novelPath, chapterPath]);
 }
 
-export interface ContentJournalEntry { sequence: number; key: string; value: null }
+export interface ContentJournalEntry { sequence: number; key: string }
 
 export async function contentJournalHead(): Promise<number> {
   const db = await getDb();
@@ -168,8 +139,7 @@ export async function contentJournalHead(): Promise<number> {
 
 export async function readContentJournal(after: number, through: number): Promise<ContentJournalEntry[]> {
   const db = await getDb();
-  const rows = await db.select<{ sequence: number; key: string; payload: string }[]>(`SELECT j.sequence,j.state_key AS key,j.payload
+  return db.select<ContentJournalEntry[]>(`SELECT j.sequence,j.state_key AS key
     FROM content_sync_journal j JOIN (SELECT MAX(sequence) AS sequence FROM content_sync_journal
-    WHERE sequence>$1 AND sequence<=$2 AND state_key LIKE 'content:%' GROUP BY state_key) latest ON latest.sequence=j.sequence ORDER BY j.sequence`, [after, through]);
-  return rows.map((row) => ({ sequence: row.sequence, key: row.key, value: null }));
+    WHERE sequence>$1 AND sequence<=$2 GROUP BY state_key) latest ON latest.sequence=j.sequence ORDER BY j.sequence`, [after, through]);
 }

@@ -340,9 +340,6 @@ export async function importPluginVpnProfile(): Promise<PluginVpnStatus | null> 
       selected,
       MAX_OPENVPN_PROFILE_BYTES,
     );
-    if (!tempFile) {
-      throw new Error("Android OpenVPN profile import is unavailable.");
-    }
     path = tempFile.path;
   }
 

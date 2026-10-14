@@ -64,33 +64,6 @@ export interface ReaderThemeDefinition {
   textColor: string;
 }
 
-const LEGACY_WEBTOON_STRIP_CSS = `.reader-content {
-  max-width: none !important;
-  width: 100% !important;
-  padding: 0 !important;
-}
-
-.reader-content > :where(p, div, figure, a) {
-  margin: 0 !important;
-  padding: 0 !important;
-  width: 100% !important;
-}
-
-.reader-content :where(img, picture, svg, video, canvas) {
-  display: block !important;
-  width: 100% !important;
-  max-width: 100% !important;
-  height: auto !important;
-  margin: 0 auto !important;
-  object-fit: contain !important;
-}
-
-.reader-content picture > img {
-  width: 100% !important;
-  max-width: 100% !important;
-  height: auto !important;
-}`;
-
 function createWebtoonStripCss(mediaMargin: string): string {
   return `.reader-content {
   max-width: none !important;
@@ -155,11 +128,6 @@ const PAGE_FIT_MEDIA_CSS = `.reader-viewport-paged .reader-content {
   width: auto !important;
   height: auto !important;
 }`;
-
-const LEGACY_PAGE_FIT_MEDIA_CSS = PAGE_FIT_MEDIA_CSS.replace(
-  "var(--norea-reader-page-media-max-height, 100dvh)",
-  "calc(100dvh - 8rem)",
-);
 
 export interface ReaderGeneralSettings {
   fullPageReader: boolean;
@@ -737,24 +705,11 @@ function normalizeTapZones(
   return next;
 }
 
-function normalizeCustomCss(customCss: string | undefined): string | undefined {
-  const normalizedCustomCss = customCss?.trim();
-  if (normalizedCustomCss === LEGACY_WEBTOON_STRIP_CSS.trim()) {
-    return WEBTOON_STRIP_CSS;
-  }
-  if (normalizedCustomCss === LEGACY_PAGE_FIT_MEDIA_CSS.trim()) {
-    return PAGE_FIT_MEDIA_CSS;
-  }
-  return customCss;
-}
-
 function normalizeAppearance(
   settings: Partial<ReaderAppearanceSettings>,
 ): Partial<ReaderAppearanceSettings> {
-  const customCss = normalizeCustomCss(settings.customCss);
   return {
     ...settings,
-    ...(customCss !== undefined ? { customCss } : {}),
     ...(settings.textSize !== undefined
       ? { textSize: Math.round(clamp(settings.textSize, 12, 36)) }
       : {}),

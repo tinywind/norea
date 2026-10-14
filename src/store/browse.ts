@@ -174,13 +174,9 @@ export const useBrowseStore = create<BrowseState>()(
         if (persistedState === null || typeof persistedState !== "object") {
           return currentState;
         }
-        const persisted = persistedState as Partial<BrowseState> & {
-          globalSearchConcurrency?: number;
-          globalSearchTimeoutSeconds?: number;
-        };
+        const persisted = persistedState as Partial<BrowseState>;
         const sourceWorkConcurrency = normalizeConcurrency(
-          persisted.sourceWorkConcurrency ??
-            persisted.globalSearchConcurrency,
+          persisted.sourceWorkConcurrency,
         );
         taskScheduler.setSourceForegroundConcurrency(sourceWorkConcurrency);
         return {
@@ -191,8 +187,7 @@ export const useBrowseStore = create<BrowseState>()(
           ),
           sourceWorkConcurrency,
           sourceRequestTimeoutSeconds: normalizeTimeoutSeconds(
-            persisted.sourceRequestTimeoutSeconds ??
-              persisted.globalSearchTimeoutSeconds,
+            persisted.sourceRequestTimeoutSeconds,
           ),
           chapterDownloadCooldownSeconds:
             normalizeChapterDownloadCooldownSeconds(

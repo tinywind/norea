@@ -39,10 +39,5 @@ export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => (
 }), {
   name: "norea-content-server",
   version: 1,
-  migrate: (persisted) => {
-    const previous = persisted as { serverUrl?: string; deviceName?: string; autoSync?: boolean };
-    return { serverUrl: previous.serverUrl ?? "", deviceName: previous.deviceName ?? "Norea",
-      syncMode: previous.autoSync ? "changes" as const : "manual" as const, syncIntervalMinutes: 15, lookupTimeoutSeconds: 3 };
-  },
   partialize: ({ serverUrl, deviceName, syncMode, syncIntervalMinutes, lookupTimeoutSeconds }) => ({ serverUrl, deviceName, syncMode, syncIntervalMinutes, lookupTimeoutSeconds }),
 }));

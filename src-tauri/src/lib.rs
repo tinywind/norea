@@ -19,7 +19,6 @@ mod update;
 mod webview_resource_capture;
 
 use tauri::Manager;
-use tauri_plugin_sql::{Migration, MigrationKind};
 
 fn parse_runtime_log_level(level: &str) -> Result<log::LevelFilter, String> {
     match level {
@@ -52,20 +51,9 @@ fn write_frontend_log(level: String, message: String) -> Result<(), String> {
     Ok(())
 }
 
-fn application_migrations() -> Vec<Migration> {
-    vec![
-        Migration {
-            version: 1,
-            description: "create current application schema",
-            sql: include_str!("schema.sql"),
-            kind: MigrationKind::Up,
-        },
-    ]
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = application_migrations();
+    let migrations = vec![database::schema_migration()];
 
     let plugin_vpn = plugin_vpn::PluginVpnState::bind()
         .expect("could not start the plugin VPN proxy");
@@ -124,7 +112,7 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(database::compatibility_plugin(application_migrations()))
+        .plugin(database::schema_plugin())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:norea.db", migrations)
@@ -143,19 +131,13 @@ pub fn run() {
             content_sync::content_sync_install,
             android_file_open::android_open_file_temp_read,
             android_file_open::android_open_file_url_take,
-            backup::backup_cleanup_staged_unpack,
             backup::backup_delete_temp_file,
             backup::backup_pack,
             backup::backup_pack_bytes,
             backup::backup_pack_temp_file,
-            backup::backup_restore_staged_media,
             backup::backup_restore_snapshot,
             backup::backup_unpack,
-            backup::backup_unpack_bytes,
-            backup::backup_unpack_bytes_staged,
-            backup::backup_unpack_staged,
             chapter_media::chapter_content_mirror_clear,
-            chapter_media::chapter_content_mirror_cleanup_legacy_manifest,
             chapter_media::chapter_content_mirror_inspect,
             chapter_media::chapter_content_mirror_read_file,
             chapter_media::chapter_content_mirror_store,
@@ -174,7 +156,6 @@ pub fn run() {
             chapter_media::chapter_media_read_manifest,
             chapter_media::chapter_media_rollback_restore,
             chapter_media::chapter_media_set_storage_root,
-            chapter_media::chapter_media_store,
             chapter_media::chapter_media_store_handle,
             chapter_media::chapter_media_total_size,
             chapter_media::chapter_media_use_default_storage_root,
@@ -269,6 +250,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri_plugin_sql::{Migration, MigrationKind};
 
     use std::borrow::Cow;
 
@@ -306,7 +288,7 @@ mod tests {
                 .connect("sqlite::memory:")
                 .await
                 .expect("open in-memory database");
-            sqlx_migrator(application_migrations())
+            sqlx_migrator(vec![database::schema_migration()])
                 .run(&pool)
                 .await
                 .expect("apply fresh v1 bootstrap");
@@ -337,7 +319,7 @@ mod tests {
             .await
             .expect("seed VPN verdict");
 
-            sqlx_migrator(application_migrations())
+            sqlx_migrator(vec![database::schema_migration()])
                 .run(&pool)
                 .await
                 .expect("reopening v1 should retain existing data");

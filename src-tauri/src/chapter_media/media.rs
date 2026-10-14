@@ -3,9 +3,9 @@
 use super::chapter_media_blocking;
 use super::content::content_chapter_dir_from_context;
 use super::paths::{
-    chapter_dir_at, content_chapter_dir_at, content_chapter_dirs_for_lookup,
-    ensure_contents_nomedia, media_root, media_roots_for_lookup, safe_media_relative_path,
-    safe_segment, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR, MEDIA_ROOT_DIR, MEDIA_URI_PREFIX,
+    content_chapter_dir_at, ensure_contents_nomedia, media_root, media_roots_for_lookup,
+    safe_media_relative_path, safe_segment, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
+    MEDIA_URI_PREFIX,
 };
 use crate::native_stream::{self, NativeStreamState, CHAPTER_MEDIA_STREAM_DOMAIN};
 use std::{
@@ -142,26 +142,10 @@ pub(super) fn chapter_media_path_from_src_with_context(
             if let Some(path) = media_path_from_chapter_dir(&chapter_dir, &file_name)? {
                 return Ok(path);
             }
-            if chapter_dir.is_dir() {
-                // The context-derived chapter directory is authoritative. Media kept
-                // only inside media.zip has no extractable file path and is served via
-                // chapter_media_data_url instead, so skip the full-library scan rather
-                // than walking every downloaded chapter directory on each media
-                // request (which is O(chapters) per image and freezes large libraries).
-                continue;
-            }
-        }
-
-        for chapter_dir in content_chapter_dirs_for_lookup(root, chapter_id)? {
-            if let Some(path) = media_path_from_chapter_dir(&chapter_dir, &file_name)? {
-                return Ok(path);
-            }
         }
     }
 
-    Ok(chapter_dir_at(&roots[0], chapter_id)?
-        .join(MEDIA_DOWNLOAD_DIR)
-        .join(&file_name))
+    Err("chapter media: file not found".to_string())
 }
 
 pub(crate) fn chapter_media_body_from_src_with_context(
@@ -195,33 +179,10 @@ pub(crate) fn chapter_media_body_from_src_with_context(
             if let Some(body) = media_body_from_chapter_dir(&chapter_dir, &file_name)? {
                 return Ok((body, file_name));
             }
-            if chapter_dir.is_dir() {
-                // Authoritative context dir exists; avoid the O(chapters) full-library
-                // scan on every media request (see chapter_media_path_from_src_with_context).
-                continue;
-            }
-        }
-
-        for chapter_dir in content_chapter_dirs_for_lookup(root, chapter_id)? {
-            if let Some(body) = media_body_from_chapter_dir(&chapter_dir, &file_name)? {
-                return Ok((body, file_name));
-            }
         }
     }
 
     Err("chapter media: file not found".to_string())
-}
-
-pub(crate) fn chapter_media_from_backup_entry(entry_name: &str) -> Option<(i64, String)> {
-    let rest = entry_name.strip_prefix(&format!("{MEDIA_ROOT_DIR}/"))?;
-    let mut parts = rest.split('/');
-    let chapter_id = parts.next()?.parse::<i64>().ok()?;
-    if chapter_id <= 0 {
-        return None;
-    }
-    let file_name = parts.collect::<Vec<_>>().join("/");
-    let file_name = safe_media_relative_path(&file_name).ok()?;
-    Some((chapter_id, format!("{MEDIA_URI_PREFIX}{file_name}")))
 }
 
 struct ChapterMediaStoreInput {
@@ -234,11 +195,6 @@ struct ChapterMediaStoreInput {
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
-}
-
-enum ChapterMediaStoreSource {
-    Bytes(Vec<u8>),
-    File(PathBuf),
 }
 
 pub(super) fn move_media_source_to_part_path(
@@ -270,7 +226,7 @@ pub(super) fn move_media_source_to_part_path(
 fn store_chapter_media_at_root(
     root: &Path,
     input: ChapterMediaStoreInput,
-    source: ChapterMediaStoreSource,
+    source_path: PathBuf,
 ) -> Result<String, String> {
     let file_name = safe_segment(&input.file_name, "media");
     let novel_id = input
@@ -296,19 +252,11 @@ fn store_chapter_media_at_root(
     fs::create_dir_all(&dir).map_err(|err| format!("chapter media: create dir: {err}"))?;
     let part_path = dir.join(format!("{file_name}.part"));
     let final_path = dir.join(&file_name);
-    match source {
-        ChapterMediaStoreSource::Bytes(body) => {
-            fs::write(&part_path, body)
-                .map_err(|err| format!("chapter media: write media file: {err}"))?;
-        }
-        ChapterMediaStoreSource::File(source_path) => {
-            move_media_source_to_part_path(
-                &source_path,
-                &part_path,
-                "chapter media: store media handle",
-            )?;
-        }
-    }
+    move_media_source_to_part_path(
+        &source_path,
+        &part_path,
+        "chapter media: store media handle",
+    )?;
     if final_path.exists() {
         fs::remove_file(&final_path)
             .map_err(|err| format!("chapter media: replace media file: {err}"))?;
@@ -321,74 +269,10 @@ fn store_chapter_media_at_root(
 fn store_chapter_media(
     app: &AppHandle,
     input: ChapterMediaStoreInput,
-    source: ChapterMediaStoreSource,
+    source_path: PathBuf,
 ) -> Result<String, String> {
     let root = media_root(app)?;
-    store_chapter_media_at_root(&root, input, source)
-}
-
-pub(crate) fn store_chapter_media_file_source(
-    app: &AppHandle,
-    source_path: PathBuf,
-    chapter_id: i64,
-    file_name: String,
-    novel_id: Option<i64>,
-    source_id: Option<String>,
-    novel_name: Option<String>,
-    novel_path: Option<String>,
-    chapter_number: Option<String>,
-    chapter_name: Option<String>,
-    chapter_position: Option<i64>,
-) -> Result<String, String> {
-    store_chapter_media(
-        app,
-        ChapterMediaStoreInput {
-            chapter_id,
-            file_name,
-            novel_id,
-            source_id,
-            novel_name,
-            novel_path,
-            chapter_number,
-            chapter_name,
-            chapter_position,
-        },
-        ChapterMediaStoreSource::File(source_path),
-    )
-}
-
-#[tauri::command]
-pub async fn chapter_media_store(
-    app: AppHandle,
-    chapter_id: i64,
-    file_name: String,
-    body: Vec<u8>,
-    novel_id: Option<i64>,
-    source_id: Option<String>,
-    novel_name: Option<String>,
-    novel_path: Option<String>,
-    chapter_number: Option<String>,
-    chapter_name: Option<String>,
-    chapter_position: Option<i64>,
-) -> Result<String, String> {
-    chapter_media_blocking("store", move || {
-        store_chapter_media(
-            &app,
-            ChapterMediaStoreInput {
-                chapter_id,
-                file_name,
-                novel_id,
-                source_id,
-                novel_name,
-                novel_path,
-                chapter_number,
-                chapter_name,
-                chapter_position,
-            },
-            ChapterMediaStoreSource::Bytes(body),
-        )
-    })
-    .await
+    store_chapter_media_at_root(&root, input, source_path)
 }
 
 #[tauri::command]
@@ -427,7 +311,7 @@ pub async fn chapter_media_store_handle(
                 chapter_name,
                 chapter_position,
             },
-            ChapterMediaStoreSource::File(stream_path),
+            stream_path,
         );
         if result.is_err() {
             let _ = fs::remove_file(cleanup_path);

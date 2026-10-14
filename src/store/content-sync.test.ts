@@ -34,16 +34,15 @@ it("defaults chapter lookup to three seconds and persists a bounded timeout", as
   expect(useContentSyncStore.getState().lookupTimeoutSeconds).toBe(3);
 });
 
-it("uses the three-second default for existing settings saved before the timeout option", async () => {
-  storage.set("norea-content-server", JSON.stringify({ state: { serverUrl: "http://server", deviceName: "Tablet", syncMode: "periodic", syncIntervalMinutes: 30 }, version: 1 }));
-  await useContentSyncStore.persist.rehydrate();
-  expect(useContentSyncStore.getState()).toMatchObject({ lookupTimeoutSeconds: 3, syncMode: "periodic", syncIntervalMinutes: 30 });
-});
-
-it.each([[true, "changes"], [false, "manual"]])("migrates legacy automatic sync %s to %s", async (autoSync, syncMode) => {
-  storage.set("norea-content-server", JSON.stringify({ state: { serverUrl: "http://server", deviceName: "Tablet", autoSync }, version: 0 }));
-  await useContentSyncStore.persist.rehydrate();
-  expect(useContentSyncStore.getState()).toMatchObject({ serverUrl: "http://server", deviceName: "Tablet", syncMode, syncIntervalMinutes: 15 });
+it("discards settings from a different schema without translating automatic sync", async () => {
+  storage.set("norea-content-server", JSON.stringify({ state: { serverUrl: "http://server", deviceName: "Tablet", autoSync: true }, version: 0 }));
+  const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    await useContentSyncStore.persist.rehydrate();
+    expect(useContentSyncStore.getState()).toMatchObject({ serverUrl: "", deviceName: "Norea", syncMode: "manual", syncIntervalMinutes: 15 });
+  } finally {
+    error.mockRestore();
+  }
 });
 
 it("bounds the sync interval and keeps device keys outside portable settings", () => {

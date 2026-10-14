@@ -884,7 +884,7 @@ fn chapter_media_recovery_completes_remote_only_manifest_without_an_archive() {
 }
 
 #[test]
-fn chapter_media_recovery_keeps_manifestless_legacy_content_present() {
+fn chapter_media_recovery_keeps_manifestless_current_content_present() {
     let dir = tempfile::tempdir().expect("tempdir");
     let chapter_dir = recovery_chapter_dir(dir.path());
     fs::create_dir_all(&chapter_dir).expect("create chapter dir");
@@ -892,7 +892,7 @@ fn chapter_media_recovery_keeps_manifestless_legacy_content_present() {
 
     let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
-        .expect("legacy chapter");
+        .expect("manifestless chapter");
 
     assert_eq!(inspection.status, "present");
     assert_eq!(inspection.media_bytes, 0);

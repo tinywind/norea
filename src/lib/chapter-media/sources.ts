@@ -124,12 +124,6 @@ export function chapterMediaByteLength(
   return bytes.length;
 }
 
-export function chapterMediaBytesToArray(
-  bytes: Uint8Array | readonly number[],
-): number[] {
-  return Array.from(bytes);
-}
-
 export function localChapterMediaSrc(fileName: string): string {
   return `${LOCAL_MEDIA_SRC_PREFIX}${fileName}`;
 }
@@ -190,13 +184,6 @@ export function relativeChapterMediaFileName(
     : null;
 }
 
-export function androidChapterMediaRelativePath(
-  chapterId: number,
-  fileName?: string,
-): string {
-  const base = `chapter-media/${chapterId}/media`;
-  return fileName ? `${base}/${fileName}` : base;
-}
 
 export function parseLocalChapterMediaSrc(src: string): {
   fileName: string;

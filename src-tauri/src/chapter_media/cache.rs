@@ -2,12 +2,11 @@
 
 use super::archives::clear_content_media_artifacts;
 use super::chapter_media_blocking;
-use super::content::{content_chapter_dir_from_context, delete_legacy_storage_manifest};
+use super::content::content_chapter_dir_from_context;
 use super::media::{media_path_in_chapter_dir, media_src_chapter_id, parse_media_src};
 use super::paths::{
-    chapter_dir_at, content_chapter_dir_at, content_chapter_dirs_for_lookup,
-    content_chapter_dirs_matching_identity, ensure_contents_nomedia, media_roots_for_lookup,
-    CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
+    content_chapter_dir_at, content_chapter_dirs_matching_identity, ensure_contents_nomedia,
+    media_roots_for_lookup, CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
 };
 use super::protocol::archive_contains_file;
 use super::publication::archive_backup_path;
@@ -115,51 +114,6 @@ fn chapter_media_total_size_sync(
                 }
             }
 
-            for chapter_dir in content_chapter_dirs_for_lookup(&root, chapter_id)? {
-                if found {
-                    break;
-                }
-                if let Some(path) = media_path_in_chapter_dir(&chapter_dir, &file_name) {
-                    match fs::metadata(&path) {
-                        Ok(metadata) if metadata.is_file() => {
-                            total += metadata.len();
-                            found = true;
-                            break;
-                        }
-                        Ok(_) => {}
-                        Err(err) if err.kind() == ErrorKind::NotFound => {}
-                        Err(err) => {
-                            return Err(format!("chapter media: read media metadata: {err}"));
-                        }
-                    }
-                }
-
-                let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
-                if archive_path.is_file() {
-                    let archive_key = archive_path.to_string_lossy().into_owned();
-                    if counted_archives.contains(&archive_key)
-                        || !archive_contains_file(&archive_path, &file_name)?
-                    {
-                        continue;
-                    }
-                    match fs::metadata(&archive_path) {
-                        Ok(metadata) if metadata.is_file() => {
-                            total += metadata.len();
-                            counted_archives.insert(archive_key);
-                            found = true;
-                            break;
-                        }
-                        Ok(_) => {}
-                        Err(err) if err.kind() == ErrorKind::NotFound => {}
-                        Err(err) => {
-                            return Err(format!("chapter media: read archive metadata: {err}"));
-                        }
-                    }
-                }
-                if found {
-                    break;
-                }
-            }
             if found {
                 break;
             }
@@ -213,25 +167,7 @@ fn clear_storage_root(root: &Path) -> Result<(), String> {
         fs::remove_dir_all(&contents_dir)
             .map_err(|err| format!("chapter media: remove contents dir: {err}"))?;
     }
-    ensure_contents_nomedia(root)?;
-
-    delete_legacy_storage_manifest(root)?;
-
-    if !root.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(root).map_err(|err| format!("chapter media: read root dir: {err}"))? {
-        let entry = entry.map_err(|err| format!("chapter media: read root entry: {err}"))?;
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        if file_name.chars().all(|ch| ch.is_ascii_digit()) {
-            let path = entry.path();
-            if path.is_dir() {
-                fs::remove_dir_all(path)
-                    .map_err(|err| format!("chapter media: remove legacy chapter dir: {err}"))?;
-            }
-        }
-    }
-    Ok(())
+    ensure_contents_nomedia(root)
 }
 
 pub(super) fn remove_existing_path(path: &Path, context: &str) -> Result<(), String> {
@@ -298,10 +234,6 @@ fn chapter_media_prune_sync(
         )? {
             prune_chapter_dir(&chapter_dir)?;
         }
-        for chapter_dir in content_chapter_dirs_for_lookup(&root, chapter_id)? {
-            prune_chapter_dir(&chapter_dir)?;
-        }
-        prune_chapter_dir(&chapter_dir_at(&root, chapter_id)?)?;
     }
     Ok(())
 }
@@ -359,16 +291,6 @@ fn chapter_media_clear_sync<R: Runtime>(
         )? {
             clear_content_media_artifacts(&chapter_dir)?;
         }
-
-        for chapter_dir in content_chapter_dirs_for_lookup(&root, chapter_id)? {
-            clear_content_media_artifacts(&chapter_dir)?;
-        }
-
-        let dir = chapter_dir_at(&root, chapter_id)?;
-        if dir.exists() {
-            fs::remove_dir_all(dir)
-                .map_err(|err| format!("chapter media: remove chapter dir: {err}"))?;
-        }
     }
     Ok(())
 }
@@ -387,7 +309,7 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
 ) -> Result<(), String> {
     for root in media_roots_for_lookup(app)? {
         let mut chapter_dirs = HashSet::new();
-        let has_storage_identity = if let (Some(novel_id), Some(source_id), Some(novel_path)) = (
+        if let (Some(novel_id), Some(source_id), Some(novel_path)) = (
             context.novel_id,
             context.source_id.as_deref(),
             context.novel_path.as_deref(),
@@ -419,12 +341,11 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
                 context.chapter_position,
             )?);
             chapter_dirs.extend(identity_dirs);
-            true
-        } else {
-            false
-        };
-        if !has_storage_identity {
-            chapter_dirs.extend(content_chapter_dirs_for_lookup(&root, context.chapter_id)?);
+        } else if let Some(directory) = super::work_metadata::registered_chapter_directory(
+            &root,
+            context.chapter_id,
+        ) {
+            chapter_dirs.insert(directory);
         }
 
         for chapter_dir in chapter_dirs {
@@ -440,11 +361,6 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
                 Err(err) => return Err(format!("chapter media: inspect chapter dir: {err}")),
             }
         }
-
-        delete_legacy_storage_manifest(&root)?;
-
-        let legacy_dir = chapter_dir_at(&root, context.chapter_id)?;
-        remove_downloaded_chapter_dir(&legacy_dir)?;
     }
     Ok(())
 }
@@ -466,6 +382,21 @@ fn chapter_media_clear_all_sync(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_storage_only_removes_current_contents() {
+        let root = tempfile::tempdir().expect("temporary storage");
+        fs::create_dir_all(root.path().join("contents/demo/Novel/1-Chapter")).expect("create contents");
+        fs::create_dir_all(root.path().join("42")).expect("create obsolete directory");
+        fs::write(root.path().join("storage-manifest.json"), b"obsolete").expect("write obsolete manifest");
+
+        clear_storage_root(root.path()).expect("clear current storage");
+
+        assert!(!root.path().join("contents/demo").exists());
+        assert!(root.path().join("contents/.nomedia").exists());
+        assert!(root.path().join("42").exists());
+        assert!(root.path().join("storage-manifest.json").exists());
+    }
 
     #[test]
     fn repeated_chapter_deletion_accepts_an_already_removed_directory() {

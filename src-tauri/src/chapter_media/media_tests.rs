@@ -33,28 +33,6 @@ fn stored_media_path(root: &Path, file_name: &str) -> PathBuf {
 }
 
 #[test]
-fn store_chapter_media_body_writes_contextual_media_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let src = store_chapter_media_at_root(
-        dir.path(),
-        store_input("page.png"),
-        ChapterMediaStoreSource::Bytes(vec![1, 2, 3]),
-    )
-    .expect("store media");
-
-    assert_eq!(src, "norea-media://reader-asset/page.png");
-    assert_eq!(
-        fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
-        vec![1, 2, 3]
-    );
-    assert!(dir
-        .path()
-        .join(CONTENTS_ROOT_DIR)
-        .join(NO_MEDIA_FILE)
-        .exists());
-}
-
-#[test]
 fn store_chapter_media_file_consumes_source_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let source_path = dir.path().join("stream.bin");
@@ -63,12 +41,13 @@ fn store_chapter_media_file_consumes_source_path() {
     let src = store_chapter_media_at_root(
         dir.path(),
         store_input("page.png"),
-        ChapterMediaStoreSource::File(source_path.clone()),
+        source_path.clone(),
     )
     .expect("store media handle");
 
     assert_eq!(src, "norea-media://reader-asset/page.png");
     assert!(!source_path.exists());
+    assert!(dir.path().join(CONTENTS_ROOT_DIR).join(NO_MEDIA_FILE).exists());
     assert_eq!(
         fs::read(stored_media_path(dir.path(), "page.png")).expect("stored media"),
         vec![7, 8, 9]

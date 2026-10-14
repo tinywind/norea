@@ -4,23 +4,11 @@ import { sqliteBoolean } from "../../db/sqlite-value";
 import { useReaderStore } from "../../store/reader";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
 import {
-  beginAndroidStorageRestore,
-  commitAndroidStorageRestore,
-  rollbackAndroidStorageRestore,
-} from "../android-storage";
-import {
   normalizeChapterContentType,
   storedChapterContentType,
 } from "../chapter-content";
-import { writeStoredChapterContentMirror } from "../chapter-content-storage";
 import { clearResolvedChapterStorageDirs } from "../chapter-storage-resolution";
 import { invalidateAllNovelCoverSources } from "../novel-cover-storage";
-import {
-  MAX_ZIP_ENTRY_BYTES,
-  MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
-  assertByteBudget,
-} from "../performance-budgets";
-import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import {
   BACKUP_FORMAT_VERSION,
   encodeBackupManifest,
@@ -34,23 +22,6 @@ import {
   type BackupSetting,
   type BackupVpnGateServerVerdict,
 } from "./format";
-import {
-  cleanupBackupStagedUnpack,
-  getBackupChapterMediaFiles,
-  getBackupChapterMediaStagingIds,
-  hasBackupChapterMediaFiles,
-  isLegacyBackupChapterMediaFile,
-  isStagedBackupChapterMediaFile,
-  type BackupChapterMediaFile,
-} from "./unpack";
-
-/**
- * SQLite stores booleans as 0/1 integers; some older app paths also wrote
- * string boolean values. The format-side type guards (`isNovel`, `isChapter`,
- * ...) require strict booleans, so gather coerces every flag column on the way
- * out.
- */
-
 interface RawNovelRow {
   id: number;
   pluginId: string;
@@ -128,12 +99,8 @@ const BACKUP_SETTING_KEYS = new Set([
 
 const BACKUP_SETTING_PREFIXES = [
   "plugin-v2:",
-  "plugin:",
   "source-filters:",
 ];
-const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
-  /^norea-media:\/\/reader-asset\/([A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*)$/;
-
 const SELECT_NOVELS = `
   SELECT
     id,
@@ -175,7 +142,7 @@ const SELECT_CHAPTERS = `
     media_bytes    AS mediaBytes,
     release_time   AS releaseTime,
     read_at        AS readAt,
-    COALESCE(created_at, updated_at) AS createdAt,
+    created_at     AS createdAt,
     found_at       AS foundAt,
     updated_at     AS updatedAt
   FROM chapter
@@ -324,144 +291,6 @@ function toChapter(row: RawChapterRow): BackupChapter {
   };
 }
 
-function parseBackupChapterMediaSource(
-  mediaSrc: string,
-  fallbackChapterId?: number,
-): {
-  chapterId: number;
-  fileName: string;
-} {
-  const match = LOCAL_CHAPTER_MEDIA_SRC_PATTERN.exec(mediaSrc);
-  if (!match) {
-    throw new Error(`Invalid backup chapter media reference: ${mediaSrc}`);
-  }
-  const chapterId = fallbackChapterId;
-  if (!chapterId || chapterId <= 0) {
-    throw new Error(`Invalid backup chapter media reference: ${mediaSrc}`);
-  }
-  return {
-    chapterId,
-    fileName: match[1]!,
-  };
-}
-
-async function restoreBackupChapterMediaFiles(
-  manifest: BackupManifest,
-  files: readonly BackupChapterMediaFile[],
-): Promise<Map<number, number>> {
-  const mediaBytesByChapterId = new Map<number, number>();
-  if (files.length === 0) return mediaBytesByChapterId;
-  if (!isTauriRuntime()) return mediaBytesByChapterId;
-
-  const chaptersById = new Map(
-    manifest.chapters.map((chapter) => [chapter.id, chapter]),
-  );
-  const novelsById = new Map(manifest.novels.map((novel) => [novel.id, novel]));
-  const restoredFilesByChapterId = new Map<
-    number,
-    Array<{
-      bytes: number;
-      fileName: string;
-      path: string;
-      sourceUrl: string;
-      status: "stored";
-      updatedAt: number;
-    }>
-  >();
-  let totalMediaBytes = 0;
-
-  for (const file of files) {
-    assertByteBudget(
-      file.bytes,
-      MAX_ZIP_ENTRY_BYTES,
-      "Backup media entry",
-    );
-    totalMediaBytes += file.bytes;
-    assertByteBudget(
-      totalMediaBytes,
-      MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
-      "Backup media total",
-    );
-    const { chapterId, fileName } = parseBackupChapterMediaSource(
-      file.mediaSrc,
-      file.chapterId,
-    );
-    const chapter = chaptersById.get(chapterId);
-    const novel = chapter ? novelsById.get(chapter.novelId) : undefined;
-    const storeArgs = {
-      chapterId,
-      ...(chapter?.name ? { chapterName: chapter.name } : {}),
-      ...(chapter?.chapterNumber
-        ? { chapterNumber: chapter.chapterNumber }
-        : {}),
-      ...(chapter ? { chapterPosition: chapter.position } : {}),
-      fileName,
-      ...(chapter ? { novelId: chapter.novelId } : {}),
-      ...(novel ? { novelName: novel.name } : {}),
-      ...(novel ? { novelPath: novel.path } : {}),
-      ...(novel ? { sourceId: novel.pluginId } : {}),
-    };
-    if (isStagedBackupChapterMediaFile(file)) {
-      await invoke("backup_restore_staged_media", {
-        ...storeArgs,
-        stagedRef: file.stagedRef,
-        stagingId: file.stagingId,
-      });
-    } else if (isLegacyBackupChapterMediaFile(file)) {
-      await invoke("chapter_media_store", {
-        ...storeArgs,
-        body: file.body,
-      });
-    } else {
-      throw new Error(
-        `Backup media file is missing staged data: ${file.mediaSrc}`,
-      );
-    }
-    const restoredFiles = restoredFilesByChapterId.get(chapterId) ?? [];
-    restoredFiles.push({
-      bytes: file.bytes,
-      fileName,
-      path: `media/${fileName}`,
-      sourceUrl: file.mediaSrc,
-      status: "stored",
-      updatedAt: Date.now(),
-    });
-    restoredFilesByChapterId.set(chapterId, restoredFiles);
-  }
-
-  for (const [chapterId, restoredFiles] of restoredFilesByChapterId) {
-    const chapter = chaptersById.get(chapterId);
-    const novel = chapter ? novelsById.get(chapter.novelId) : undefined;
-    const context = {
-      chapterId,
-      ...(chapter?.name ? { chapterName: chapter.name } : {}),
-      ...(chapter?.chapterNumber
-        ? { chapterNumber: chapter.chapterNumber }
-        : {}),
-      ...(chapter ? { chapterPosition: chapter.position } : {}),
-      ...(chapter ? { novelId: chapter.novelId } : {}),
-      ...(novel ? { novelName: novel.name } : {}),
-      ...(novel ? { novelPath: novel.path } : {}),
-      ...(novel ? { sourceId: novel.pluginId } : {}),
-    };
-    await invoke("chapter_media_write_manifest", {
-      ...context,
-      files: restoredFiles,
-    });
-    const archiveBytes = await invoke<number>(
-      "chapter_media_archive_cache",
-      context,
-    );
-    await invoke("chapter_media_write_manifest", {
-      ...context,
-      complete: true,
-      files: restoredFiles,
-    });
-    mediaBytesByChapterId.set(chapterId, archiveBytes);
-  }
-  return mediaBytesByChapterId;
-}
-
 function toCategory(row: RawCategoryRow): BackupCategory {
   return {
     id: row.id,
@@ -482,49 +311,6 @@ function toInstalledPlugin(row: RawInstalledPluginRow): BackupInstalledPlugin {
     sourceCode: row.sourceCode,
     installedAt: row.installedAt,
   };
-}
-
-async function beginChapterMediaRestore(): Promise<string> {
-  return isAndroidRuntime()
-    ? beginAndroidStorageRestore()
-    : invoke<string>("chapter_media_begin_restore");
-}
-
-async function commitChapterMediaRestore(token: string): Promise<void> {
-  if (isAndroidRuntime()) {
-    await commitAndroidStorageRestore(token);
-    return;
-  }
-  await invoke("chapter_media_commit_restore", { token });
-}
-
-async function rollbackChapterMediaRestore(token: string): Promise<void> {
-  if (isAndroidRuntime()) {
-    await rollbackAndroidStorageRestore(token);
-    return;
-  }
-  await invoke("chapter_media_rollback_restore", { token });
-}
-
-async function cleanupBackupChapterMediaStaging(
-  stagingIds: readonly string[],
-): Promise<void> {
-  await Promise.all(
-    stagingIds.map((stagingId) => cleanupBackupStagedUnpack(stagingId)),
-  );
-}
-
-async function restoreBackupChapterContentFiles(
-  manifest: BackupManifest,
-): Promise<void> {
-  const results = await Promise.allSettled(
-    manifest.chapters.map(async (chapter) => {
-      if (!chapter.isDownloaded || chapter.content === null) return;
-      await writeStoredChapterContentMirror(chapter.id, chapter.content);
-    }),
-  );
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed?.status === "rejected") throw failed.reason;
 }
 
 /**
@@ -585,69 +371,13 @@ export function applyBackupSnapshot(
 async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
   clearResolvedChapterStorageDirs();
   await getDb();
-  let restoredDatabase = false;
-  let mediaRestoreToken: string | null = null;
-  let mediaBytesByChapterId = new Map<number, number>();
-  const shouldRestoreChapterMedia =
-    hasBackupChapterMediaFiles(manifest) && isTauriRuntime();
-  const stagedMediaIds = shouldRestoreChapterMedia
-    ? getBackupChapterMediaStagingIds(manifest)
-    : [];
-
-  try {
-    if (shouldRestoreChapterMedia) {
-      mediaRestoreToken = await beginChapterMediaRestore();
-      mediaBytesByChapterId = await restoreBackupChapterMediaFiles(
-        manifest,
-        getBackupChapterMediaFiles(manifest),
-      );
-    }
-    await runExclusiveDatabaseOperation(() =>
-      invoke("backup_restore_snapshot", {
-        manifestJson: encodeBackupManifest(manifest),
-        mediaBytesByChapterId: Object.fromEntries(mediaBytesByChapterId),
-      }),
-    );
-    restoredDatabase = true;
-    await restoreBackupChapterContentFiles(manifest);
-  } catch (error) {
-    if (mediaRestoreToken) {
-      await rollbackChapterMediaRestore(mediaRestoreToken).catch(
-        (rollbackError) => {
-          console.warn("[backup] media restore rollback failed", rollbackError);
-        },
-      );
-    }
-    if (stagedMediaIds.length > 0) {
-      await cleanupBackupChapterMediaStaging(stagedMediaIds).catch(
-        (cleanupError) => {
-          console.warn("[backup] media staging cleanup failed", cleanupError);
-        },
-      );
-    }
-    clearResolvedChapterStorageDirs();
-    if (restoredDatabase) {
-      const db = await getDb();
-      await db.execute("UPDATE chapter SET media_repair_needed=1 WHERE is_downloaded=1");
-    }
-    throw error;
-  }
-
-  if (mediaRestoreToken) {
-    await commitChapterMediaRestore(mediaRestoreToken).catch((error) => {
-      console.warn("[backup] media restore cleanup failed", error);
-    });
-  }
-  if (stagedMediaIds.length > 0) {
-    await cleanupBackupChapterMediaStaging(stagedMediaIds).catch((error) => {
-      console.warn("[backup] media staging cleanup failed", error);
-    });
-  }
+  await runExclusiveDatabaseOperation(() =>
+    invoke("backup_restore_snapshot", {
+      manifestJson: encodeBackupManifest(manifest),
+    }),
+  );
   clearResolvedChapterStorageDirs();
   invalidateAllNovelCoverSources();
-
-  if (manifest.settings !== undefined) {
-    writeBackupSettings(manifest.settings);
-    await useReaderStore.persist.rehydrate();
-  }
+  writeBackupSettings(manifest.settings);
+  await useReaderStore.persist.rehydrate();
 }

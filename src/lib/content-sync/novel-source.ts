@@ -70,8 +70,7 @@ export async function tryDownloadServerChapter(
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
   }
-  const serverRequired = chapter.path.startsWith("norea-folder:") || Boolean(source &&
-    (novel.isLocal || novel.path.startsWith("norea-folder:")));
+  const serverRequired = chapter.path.startsWith("norea-folder:") || Boolean(source && novel.isLocal);
   if (!serverRequired && (!source || pluginManager.getPlugin(novel.pluginId))
     && (unavailableUntil.get(serverUrl) ?? 0) > Date.now()) return false;
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };

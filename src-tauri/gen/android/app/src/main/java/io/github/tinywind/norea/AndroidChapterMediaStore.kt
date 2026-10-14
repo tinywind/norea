@@ -475,16 +475,16 @@ internal class AndroidChapterMediaStore(
     rootUri: String,
     directory: DocumentFile,
     relativeDir: String,
-    allowLegacyWithoutManifest: Boolean,
+    allowMissingManifest: Boolean,
   ): Long? {
     val manifestResult = readChapterMediaManifest(rootUri, directory, relativeDir)
     if (!manifestResult.exists) {
-      if (!allowLegacyWithoutManifest) return null
-      val legacyArchive = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
-      if (legacyArchive != null && legacyArchive.isFile && !legacyArchive.canRead()) {
-        throw IllegalStateException("Android legacy chapter media archive is not readable.")
+      if (!allowMissingManifest) return null
+      val archive = directory.findFile(CHAPTER_MEDIA_ARCHIVE_FILE)
+      if (archive != null && archive.isFile && !archive.canRead()) {
+        throw IllegalStateException("Android chapter media archive is not readable.")
       }
-      return legacyArchive
+      return archive
         ?.takeIf { it.isFile }
         ?.length()
         ?.coerceAtLeast(0L)

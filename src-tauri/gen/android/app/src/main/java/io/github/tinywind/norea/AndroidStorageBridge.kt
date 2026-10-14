@@ -122,12 +122,6 @@ internal class AndroidStorageBridge(
   }
 
   @JavascriptInterface
-  fun writeContentUriFile(uri: String, inputPath: String, mimeType: String): String =
-    storageResponse {
-    contentFiles.writeContentUriFile(uri, inputPath, mimeType)
-  }
-
-  @JavascriptInterface
   fun writeContentUriFileCapped(
     uri: String,
     inputPath: String,
@@ -221,7 +215,7 @@ internal class AndroidStorageBridge(
         rootUri,
         chapterDirectory,
         chapterRelativeDir,
-        allowLegacyWithoutManifest = false,
+        allowMissingManifest = false,
       ) ?: throw IllegalStateException(
         "Android chapter media files do not match the manifest.",
       )
@@ -253,7 +247,6 @@ internal class AndroidStorageBridge(
     novelIdentitySuffix: String,
     sourceId: String,
     novelPath: String,
-    expectedSourceUrl: String,
   ) {
     storageExecutors.foreground.execute {
       resolveNovelCoverInspection(
@@ -265,7 +258,6 @@ internal class AndroidStorageBridge(
           novelIdentitySuffix,
           sourceId,
           novelPath,
-          expectedSourceUrl,
         ),
       )
     }
@@ -278,7 +270,6 @@ internal class AndroidStorageBridge(
     novelIdentitySuffix: String,
     sourceId: String,
     novelPath: String,
-    expectedSourceUrl: String,
   ): String = storageResponse {
     coverInspector.inspectNovelCover(
       rootUri,
@@ -287,7 +278,6 @@ internal class AndroidStorageBridge(
       novelIdentitySuffix,
       sourceId,
       novelPath,
-      expectedSourceUrl,
     )
   }
 

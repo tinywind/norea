@@ -11,7 +11,6 @@ import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import { getPluginBaseUrl } from "./base-url";
 import {
   clearPluginInputValues,
-  migrateLegacyPluginStorageValues,
   setPluginInputValue,
 } from "./inputs";
 import {
@@ -418,7 +417,6 @@ export class PluginManager {
 
   private async loadInstalledFromDbOnce(): Promise<void> {
     const rows = await listInstalledPlugins();
-    migrateLegacyPluginStorageValues(rows.map((row) => row.id));
     for (const row of rows) {
       try {
         const item: PluginItem = {

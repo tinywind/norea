@@ -55,7 +55,7 @@ it("rejects a different work returned by the server before publishing files", as
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
 
-it("accepts legacy covers whose metadata has no MIME type", async () => {
+it("detects an image MIME type when the response uses application/octet-stream", async () => {
   vi.mocked(nativeFetch).mockResolvedValue(new Response(new Uint8Array([255, 216, 255]), { headers: { "content-type": "application/octet-stream" } }));
   expect(await serverCoverSource("http://server", "device", "work")).toBe("data:image/jpeg;base64,/9j/");
 });

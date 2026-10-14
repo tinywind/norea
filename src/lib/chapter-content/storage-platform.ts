@@ -146,9 +146,9 @@ export async function clearChapterContentFiles(
     | null
     | Promise<ChapterContentStorageIdentity | null>,
 ): Promise<void> {
+  const identity = await loadIdentity();
+  if (!identity) return;
   if (isAndroidRuntime()) {
-    const identity = await loadIdentity();
-    if (!identity) return;
     await deleteAndroidStoragePath(
       chapterContentRelativePath(identity.novel, identity.chapter),
     );
@@ -157,5 +157,10 @@ export async function clearChapterContentFiles(
     );
     return;
   }
-  await invoke("chapter_content_mirror_clear", { chapterId });
+  await invoke("chapter_content_mirror_clear", {
+    chapterDir: resolvedChapterStorageDir(chapterId) ?? chapterStorageRelativeDir(
+      identity.novel,
+      identity.chapter,
+    ),
+  });
 }

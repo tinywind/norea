@@ -8,11 +8,11 @@ can rebuild downloaded chapter entries.
 The app database retains queryable metadata as a rebuildable cache. Files win
 when cache and disk differ. Reading progress, bookmarks, library membership,
 and other device preferences stay local and are not sent to the content server.
-No old-database migration or automatic rewriting of existing user folders is
-part of this change. Both applications use a single database schema v1 baseline,
-metadata schema v1, and API/package version 1. Existing databases must be retained
-separately when preparing a fresh development database. The independent
-source-plugin API remains 0.2.
+Both applications support only the current database schema v1, metadata schema v1,
+and API/package version 1. No upgrade migrations or previous-format readers are
+retained. A schema checksum mismatch recreates the app database while leaving
+files on disk. The server requires a fresh state volume for an incompatible
+schema. The independent source-plugin API remains 0.2.
 
 The work identity uses the plugin ID and its source path without the base URL,
 for example `/novel/123456`. Absolute HTTP URLs, protocol-relative URLs, and
@@ -68,9 +68,8 @@ The metadata document has no timestamp or chapter list.
 Cache writes must not silently overwrite newer files during startup/rebuild.
 Invalid local metadata is skipped with a path-only warning during scans; valid
 works still load. Storage access errors and duplicate valid work identities
-remain errors. Fresh validated metadata from a source or server can replace an
-obsolete document when its stored plugin ID and work path match exactly. This
-replaces only work metadata; existing chapter bodies and media remain untouched.
+remain errors. Updates require a current-format document with matching plugin ID
+and work path. Obsolete documents are not converted or repaired implicitly.
 Invalid metadata is never converted into an empty work. Identity,
 directory traversal, and size limits are
 validated at both import boundaries. Renaming a title retains the existing work
@@ -79,8 +78,8 @@ directory when its identity already exists.
 ## Server and synchronization
 
 The work ID is SHA-256 of `JSON.stringify([pluginId, novelPath])`, matching the
-existing chapter package work identity. Existing complete chapter ZIPs keep
-packageVersion 1. Work metadata and cover transfer independently of chapter
+current chapter file identity. Chapter transfers use original files with
+packageVersion 1 and layout `chapter-files`. Work metadata and cover transfer independently of chapter
 downloads so catalog-only works display their covers in the app.
 
 - `PUT /api/v1/works/:id`: device-authenticated JSON upsert of NovelMetadataV1.
@@ -113,8 +112,8 @@ remain read-only scan inputs.
 ## Console
 
 Content opens as a responsive work-cover grid with a grid/list toggle, search,
-chapter counts, and a Metadata action. A work opens its existing chapter and
-revision controls. Metadata is shown as readable fields plus its full JSON;
+chapter counts, and Metadata and Delete actions. A work opens its chapter list
+with Inspect and Delete actions. Metadata is shown as readable fields plus its full JSON;
 missing covers have a stable placeholder. Image requests use console auth without
 putting session tokens in URLs. Existing console styles and accessibility apply.
 

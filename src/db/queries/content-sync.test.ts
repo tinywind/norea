@@ -4,9 +4,8 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
-import { CONTENT_SYNC_JOURNAL_SCHEMA } from "../content-sync-journal";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
-import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, readContentSyncStateCache, writeContentSyncCache } from "./content-sync";
+import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, writeContentSyncCache } from "./content-sync";
 import { cacheServerChapters } from "./content-sync";
 
 let sqlite: DatabaseSync;
@@ -14,7 +13,6 @@ beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(42,'source','/work','A work')");
-  for (const sql of CONTENT_SYNC_JOURNAL_SCHEMA) sqlite.exec(sql);
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),
     execute: async (sql: string, params: unknown[] = []) => {
@@ -38,6 +36,7 @@ afterEach(() => sqlite.close());
 
 const manifest = {
   packageVersion: 1 as const,
+  layout: "chapter-files" as const,
   identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" },
   novel: { name: "A work", isLocal: false },
   chapter: { name: "Opening", position: 1, contentType: "html" as const, page: "1" },
@@ -113,41 +112,22 @@ it("stores catalog data larger than WebView localStorage without crossing accoun
   expect(await readContentSyncCache("catalog:two")).toBeNull();
 });
 
-it("projects legacy work snapshots before returning them across the database bridge", async () => {
-  await writeContentSyncCache("works", JSON.stringify({ cursor: 45, fingerprints: { work: "hash" }, entries: { work: { metadata: "a".repeat(6 * 1024 * 1024) } } }));
-  const compact = await readContentSyncStateCache("works", "works");
-  expect(JSON.parse(compact!)).toEqual({ cursor: 45, fingerprints: { work: "hash" }, fileVersions: {} });
-  expect(await readContentSyncCache("works")).toBe(compact);
-  expect(compact!.length).toBeLessThan(100);
-});
-
 it("retains work file revisions when reopening the compact sync cache", async () => {
-  const value = { cursor: 45, fingerprints: { work: "content-hash" }, fileVersions: { '["source","/book"]': "file-revision" } };
+  const value = { cursor: 45, fingerprints: { work: "content-hash" }, fileVersions: { '["source","/book"]': "file-revision" }, deleted: { removed: true } };
   await writeContentSyncCache("works", JSON.stringify(value));
-  expect(JSON.parse((await readContentSyncStateCache("works", "works"))!)).toEqual(value);
+  expect(JSON.parse((await readContentSyncCache("works"))!)).toEqual(value);
 });
 
-it("compacts legacy chapter inventories while retaining tombstones and local checkpoints", async () => {
-  await writeContentSyncCache("catalog", JSON.stringify({ cursor: 72, localCursor: 9,
-    entries: { deleted: { deleted: true, manifest }, active: { deleted: false, manifest: { ...manifest, identity: { ...manifest.identity, chapterPath: "/active" } } } },
+it("retains chapter tombstones and local checkpoints", async () => {
+  const value = { cursor: 72, localCursor: 9, tombstones: { '["source","/work","/chapter"]': true },
     uploaded: { local: "hash" }, downloads: { local: true }, excluded: ["excluded"], pendingUploads: ["pending"],
-  }));
-  const compact = await readContentSyncStateCache("catalog", "catalog");
-  expect(JSON.parse(compact!)).toEqual({ cursor: 72, localCursor: 9,
-    tombstones: { '["source","/work","/chapter"]': true },
-    uploaded: { local: "hash" }, downloads: { local: true }, excluded: ["excluded"], pendingUploads: ["pending"],
-  });
-  expect(await readContentSyncCache("catalog")).toBe(compact);
+  };
+  await writeContentSyncCache("catalog", JSON.stringify(value));
+  expect(JSON.parse((await readContentSyncCache("catalog"))!)).toEqual(value);
 });
 
-it("preserves compact tombstones without introducing an initial local checkpoint", async () => {
-  await writeContentSyncCache("catalog", JSON.stringify({ cursor: 12, tombstones: { removed: true } }));
-  expect(JSON.parse((await readContentSyncStateCache("catalog", "catalog"))!)).toEqual({
-    cursor: 12, tombstones: { removed: true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [],
-  });
-  await writeContentSyncCache("broken", "invalid-json");
-  expect(await readContentSyncStateCache("broken", "catalog")).toBeNull();
-  expect(await readContentSyncStateCache("missing", "works")).toBeNull();
+it("returns no cached state before the first sync", async () => {
+  expect(await readContentSyncCache("missing")).toBeNull();
 });
 
 it("limits initial upload discovery to downloaded chapters", async () => {
@@ -204,32 +184,15 @@ it("rechecking unchanged downloaded files does not journal content but equal-siz
 
 it("keeps personal state local and only journals content changes", async () => {
   const { chapterId } = await importContentMetadata(manifest);
-  await writeContentSyncCache("norea-content-account:legacy", "preserved");
   sqlite.exec(`UPDATE novel SET in_library=1,last_read_at=123; UPDATE chapter SET unread=0,progress=60,bookmark=1,read_at=123 WHERE id=${chapterId}`);
   expect(await contentJournalHead()).toBe(0);
   await importContentMetadata(manifest);
   expect(sqlite.prepare("SELECT unread,progress,bookmark,read_at FROM chapter").get()).toEqual({ unread: 0, progress: 60, bookmark: 1, read_at: 123 });
   expect(sqlite.prepare("SELECT in_library,last_read_at FROM novel").get()).toEqual({ in_library: 1, last_read_at: 123 });
-  expect(await readContentSyncCache("norea-content-account:legacy")).toBe("preserved");
   sqlite.exec("UPDATE chapter SET is_downloaded=1");
   const changes = await readContentJournal(0, await contentJournalHead());
   expect(changes).toHaveLength(1);
   expect(changes[0]?.key).toBe('content:["source","/work","/chapter"]');
-});
-
-it("retires legacy personal-state triggers while preserving their rows and selected position", async () => {
-  const { novelId, chapterId } = await importContentMetadata(manifest);
-  sqlite.exec(`INSERT INTO content_sync_position VALUES(${novelId},${chapterId});
-    INSERT INTO content_sync_journal(state_key,payload) VALUES('position:legacy','{}');
-    CREATE TRIGGER content_sync_chapter_read AFTER UPDATE OF progress ON chapter BEGIN
-      INSERT INTO content_sync_journal(state_key,payload) VALUES('read:legacy','{}'); END;`);
-  for (const sql of CONTENT_SYNC_JOURNAL_SCHEMA) sqlite.exec(sql);
-  const head = await contentJournalHead();
-  sqlite.exec("UPDATE chapter SET progress=77");
-  expect(await contentJournalHead()).toBe(head);
-  expect(sqlite.prepare("SELECT * FROM content_sync_position").get()).toEqual({ novel_id: novelId, chapter_id: chapterId });
-  expect(sqlite.prepare("SELECT count(*) AS count FROM content_sync_journal").get()).toEqual({ count: 1 });
-  expect(await readContentJournal(0, head)).toEqual([]);
 });
 
 it("retains content deletion events without personal-state tombstones", async () => {

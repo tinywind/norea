@@ -10,8 +10,6 @@ import { runWorkContentStorageOperation } from "../lib/content-sync/storage-oper
 interface KnownMetadataFile { directory: string; fingerprint: string }
 export interface WorkMetadataSyncFile extends KnownMetadataFile { pluginId: string; path: string; revision: number }
 const knownFiles = new Map<string, KnownMetadataFile>();
-const novelColumns = ["plugin_id", "path", "name", "cover", "author", "artist", "summary", "status", "genres", "rating", "is_local"];
-const chapterColumns = ["novel_id", "path", "name", "chapter_number", "position", "page", "content_type", "release_time"];
 const keyFor = (pluginId: string, path: string) => JSON.stringify([pluginId, path]);
 
 export async function applyNovelMetadataToCache(db: Database, metadata: NovelMetadataV1, directory?: string): Promise<number> {
@@ -76,39 +74,6 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
 
 export async function initializeWorkMetadata(db: Database, options: { rebuild?: boolean } = {}): Promise<void> {
   if (!isTauriRuntime()) return;
-  // The dirty queue is rebuildable bookkeeping, never a second metadata authority.
-  await db.execute("CREATE TABLE IF NOT EXISTS work_metadata_dirty (plugin_id text NOT NULL, path text NOT NULL, PRIMARY KEY(plugin_id,path))");
-  await db.execute("CREATE TABLE IF NOT EXISTS work_metadata_cache_state (id integer PRIMARY KEY CHECK(id=1))");
-  await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_file_cache (
-    plugin_id text NOT NULL, path text NOT NULL, novel_id integer NOT NULL,
-    directory text NOT NULL, fingerprint text NOT NULL, PRIMARY KEY(plugin_id,path))`);
-  const [journal] = await db.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type='table' AND name='work_metadata_sync_journal'");
-  if (!journal) {
-    await db.execute("UPDATE content_sync_cache SET payload=json_remove(payload,'$.fileVersions') WHERE cache_key GLOB 'norea-content-works:*' AND json_valid(payload)");
-  }
-  await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_sync_journal (
-    plugin_id text NOT NULL, path text NOT NULL, revision integer NOT NULL, PRIMARY KEY(plugin_id,path))`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_directory_cache (
-    chapter_id integer PRIMARY KEY, novel_id integer NOT NULL, directory text NOT NULL)`);
-  await db.execute("CREATE INDEX IF NOT EXISTS work_metadata_directory_novel ON work_metadata_directory_cache(novel_id)");
-  await db.execute(`CREATE TABLE IF NOT EXISTS work_metadata_reading_state (
-    plugin_id text NOT NULL, novel_path text NOT NULL, chapter_path text NOT NULL,
-    progress integer NOT NULL, bookmark integer NOT NULL, unread integer NOT NULL, read_at integer,
-    PRIMARY KEY(plugin_id,novel_path,chapter_path))`);
-  await db.execute(`CREATE TRIGGER IF NOT EXISTS work_metadata_preserve_reading BEFORE DELETE ON chapter BEGIN
-    INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at)
-    SELECT plugin_id,path,OLD.path,OLD.progress,OLD.bookmark,OLD.unread,OLD.read_at FROM novel WHERE id=OLD.novel_id
-    ON CONFLICT(plugin_id,novel_path,chapter_path) DO UPDATE SET progress=excluded.progress,bookmark=excluded.bookmark,unread=excluded.unread,read_at=excluded.read_at;
-    END`);
-  for (const [table, columns] of [["novel", novelColumns], ["chapter", chapterColumns]] as const) {
-    for (const action of ["INSERT", "UPDATE", "DELETE"]) {
-      const ref = action === "DELETE" ? "OLD" : "NEW";
-      const condition = action === "UPDATE" ? `WHEN ${columns.map((column) => `OLD.${column} IS NOT NEW.${column}`).join(" OR ")}` : "";
-      const selection = table === "novel" ? `SELECT ${ref}.plugin_id,${ref}.path WHERE true` : `SELECT plugin_id,path FROM novel WHERE id=${ref}.novel_id`;
-      await db.execute(`CREATE TRIGGER IF NOT EXISTS work_metadata_${table}_${action.toLowerCase()} AFTER ${action} ON ${table} ${condition}
-        BEGIN INSERT INTO work_metadata_dirty(plugin_id,path) ${selection} ON CONFLICT(plugin_id,path) DO NOTHING; END`);
-    }
-  }
   const [initialized] = await db.select<{ id: number }[]>("SELECT id FROM work_metadata_cache_state WHERE id=1");
   const [pending] = await db.select<{ pending: number }[]>("SELECT 1 AS pending FROM work_metadata_dirty LIMIT 1");
   if (initialized && !pending && !options.rebuild) {

@@ -88,9 +88,6 @@ async function takeAndroidOpenFile(
 
   try {
     const tempFile = await copyAndroidContentUriToTempFile(uri, limit);
-    if (!tempFile) {
-      throw new Error("Android content URI temp-file bridge is unavailable.");
-    }
     try {
       const bytes = await invoke<ArrayBuffer>("android_open_file_temp_read", {
         path: tempFile.path,

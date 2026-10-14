@@ -85,7 +85,7 @@ describe("useReaderStore", () => {
     expect(state.general.autoDownloadNextChapter).toBe(true);
   });
 
-  it("enables next chapter downloads when older settings are restored", async () => {
+  it("fills omitted current reader settings with defaults", async () => {
     localStorageHarness.values.set(
       "reader-settings",
       JSON.stringify({

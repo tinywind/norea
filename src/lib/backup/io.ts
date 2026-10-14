@@ -2,7 +2,6 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   copyAndroidContentUriToTempFile,
   deleteAndroidContentUriTempFile,
-  readAndroidContentUriBytes,
   writeAndroidContentUriFile,
 } from "../android-storage";
 import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
@@ -10,7 +9,7 @@ import { isAndroidRuntime } from "../tauri-runtime";
 import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
 import { applyBackupSnapshot, gatherBackupSnapshot } from "./snapshot";
 import type { BackupManifest } from "./format";
-import { unpackBackup, unpackBackupBytes } from "./unpack";
+import { unpackBackup } from "./unpack";
 
 const ZIP_FILTER_NAME = "Norea Backup";
 
@@ -102,12 +101,9 @@ async function unpackAndroidBackupContentUri(
     uri,
     MAX_BACKUP_ARCHIVE_BYTES,
   );
-  if (tempFile) {
-    try {
-      return await unpackBackup(tempFile.path);
-    } finally {
-      await deleteAndroidContentUriTempFile(tempFile);
-    }
+  try {
+    return await unpackBackup(tempFile.path);
+  } finally {
+    await deleteAndroidContentUriTempFile(tempFile);
   }
-  return unpackBackupBytes(await readAndroidContentUriBytes(uri));
 }

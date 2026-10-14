@@ -50,6 +50,7 @@ import {
   storeEmbeddedChapterMedia,
 } from "./chapter-media";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "./http";
+import { storeChapterMedia } from "./chapter-media/storage";
 import { SourceAccessRequiredError } from "./plugins/source-access";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { PLUGIN_VPN_READY_TIMEOUT_MS } from "./plugin-vpn-traffic";
@@ -71,6 +72,20 @@ function nativeStreamInfo(handle: string, size = 0, finished = false) {
     maxBytes: 100,
     size,
   };
+}
+
+function mockChapterMediaInvoke(
+  implementation: Parameters<typeof invokeMock.mockImplementation>[0],
+): void {
+  invokeMock.mockImplementation(async (command, args) => {
+    if (command === "native_stream_create") return nativeStreamInfo("media-1");
+    if (command === "native_stream_write_chunk") {
+      const { chunk, offset } = args as { chunk: number[]; offset: number };
+      return nativeStreamInfo("media-1", offset + chunk.length);
+    }
+    if (command === "native_stream_finish") return nativeStreamInfo("media-1", 0, true);
+    return implementation(command, args);
+  });
 }
 
 interface Deferred<T> {
@@ -174,6 +189,7 @@ beforeEach(() => {
   getChapterByIdMock.mockReset();
   getNovelByIdMock.mockReset();
   Object.values(androidStorageMocks).forEach((mock) => mock.mockReset());
+  androidStorageMocks.prepareAndroidReaderMediaCache.mockResolvedValue(undefined);
   vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
   installTemplateDocument();
 });
@@ -188,6 +204,24 @@ describe("ChapterMediaFinalizationError", () => {
       "Chapter media finalization failed: write failed",
     );
   });
+});
+
+it("requires the current native media store command", async () => {
+  mockChapterMediaInvoke(async (command) => {
+    if (command === "chapter_media_store_handle") {
+      throw new Error("unknown command: chapter_media_store_handle");
+    }
+    return null;
+  });
+  await expect(storeChapterMedia({
+    body: new Uint8Array([1]),
+    chapterId: 42,
+    fileName: "page.png",
+    novelId: 7,
+    novelPath: "/novel",
+    sourceId: "demo",
+  })).rejects.toThrow("unknown command: chapter_media_store_handle");
+  expect(invokeMock).toHaveBeenCalledWith("native_stream_cancel", { handle: "media-1" });
 });
 
 describe("cacheHtmlChapterMedia", () => {
@@ -225,8 +259,8 @@ describe("cacheHtmlChapterMedia", () => {
     const controller = new AbortController();
     const events: string[] = [];
     pluginMediaFetchMock.mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "chapter_media_store") {
+    mockChapterMediaInvoke(async (command) => {
+      if (command === "chapter_media_store_handle") {
         writeStarted.resolve();
         const src = await localWrite.promise;
         events.push("write");
@@ -281,7 +315,7 @@ describe("cacheHtmlChapterMedia", () => {
     async (cancelCommand) => {
       const controller = new AbortController();
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      invokeMock.mockImplementation(async (command) => {
+      mockChapterMediaInvoke(async (command) => {
         if (command === cancelCommand) controller.abort();
         return command === "chapter_media_archive_cache" ? 0 : null;
       });
@@ -318,10 +352,10 @@ describe("cacheHtmlChapterMedia", () => {
           status: 200,
         }),
       );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_archive_cache") return 6;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as { fileName: string };
         return `norea-media://reader-asset/${input.fileName}`;
       }
@@ -375,7 +409,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_archive_cache") return 6;
       const input = args as {
         chapterId: number;
@@ -426,9 +460,9 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
-        body: [1, 2, 3],
+        handle: "media-1",
         chapterId: 42,
         chapterName: "Opening",
         chapterNumber: "1",
@@ -441,9 +475,9 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
-        body: [1, 2, 3],
+        handle: "media-1",
         chapterId: 42,
         chapterName: "Opening",
         chapterNumber: "1",
@@ -484,7 +518,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(result.html).not.toMatch(/000\d-[^"]+-[0-9a-f]{8}\./);
   });
 
-  it("stores desktop media through a native stream handle when available", async () => {
+  it("stores desktop media through a native stream handle with the current native protocol", async () => {
     pluginMediaFetchMock.mockResolvedValue(
       new Response(new Uint8Array([1, 2, 3]), {
         headers: { "content-type": "image/png" },
@@ -543,10 +577,6 @@ describe("cacheHtmlChapterMedia", () => {
       novelPath: "/novel/sample",
       sourceId: "demo",
     });
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "chapter_media_store",
-      expect.anything(),
-    );
     expect(result.html).toContain(
       'src="norea-media://reader-asset/0001-page.png"',
     );
@@ -561,7 +591,7 @@ describe("cacheHtmlChapterMedia", () => {
       status: 200,
       statusText: "OK",
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_store_handle") {
@@ -626,7 +656,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       };
     });
-    invokeMock.mockImplementation(async (command) => {
+    mockChapterMediaInvoke(async (command) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_store_handle") {
@@ -695,7 +725,7 @@ describe("cacheHtmlChapterMedia", () => {
       status: 200,
       statusText: "OK",
     }));
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_store_handle") {
@@ -737,62 +767,6 @@ describe("cacheHtmlChapterMedia", () => {
     );
   });
 
-  it("falls back to legacy desktop media store when the handle command is missing", async () => {
-    pluginMediaFetchMock.mockImplementation(async () => {
-      return new Response(new Uint8Array([4, 5]), {
-        headers: { "content-type": "image/png" },
-        status: 200,
-        statusText: "OK",
-      });
-    });
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "chapter_media_prepare_workspace") return null;
-      if (command === "chapter_media_read_manifest") return null;
-      if (command === "native_stream_create") return nativeStreamInfo("media-1");
-      if (command === "native_stream_write_chunk") {
-        return nativeStreamInfo("media-1", 2);
-      }
-      if (command === "native_stream_finish") {
-        return nativeStreamInfo("media-1", 2, true);
-      }
-      if (command === "chapter_media_store_handle") {
-        throw new Error("unknown command: chapter_media_store_handle");
-      }
-      if (command === "native_stream_cancel") return null;
-      if (command === "chapter_media_store") {
-        const input = args as {
-          chapterId: number;
-          fileName: string;
-        };
-        return `norea-media://reader-asset/${input.fileName}`;
-      }
-      if (command === "chapter_media_archive_cache") return 2;
-      if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_total_size") return 0;
-      throw new Error(`unexpected command: ${command}`);
-    });
-
-    const result = await cacheHtmlChapterMedia({
-      baseUrl: "https://source.test/chapter/1",
-      chapterId: 42,
-      html: `<img src="/page.png">`,
-    });
-
-    expect(invokeMock).toHaveBeenCalledWith("native_stream_cancel", {
-      handle: "media-1",
-    });
-    expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
-      expect.objectContaining({
-        body: [4, 5],
-        fileName: "0001-page.png",
-      }),
-    );
-    expect(result.html).toContain(
-      'src="norea-media://reader-asset/0001-page.png"',
-    );
-  });
-
   it("rewrites lazy and responsive image sources through the media cache", async () => {
     pluginMediaFetchMock.mockImplementation(async () => {
       return new Response(new Uint8Array([4, 5, 6]), {
@@ -801,7 +775,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_archive_cache") return 15;
       const input = args as {
         chapterId: number;
@@ -846,7 +820,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_archive_cache") return 10;
       const input = args as {
         chapterId: number;
@@ -894,7 +868,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_archive_cache") return 1;
       const input = args as {
         chapterId: number;
@@ -953,7 +927,7 @@ describe("cacheHtmlChapterMedia", () => {
     const mediaPatches: Array<
       Array<{ attributes: Record<string, string>; index: number }>
     > = [];
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") {
         events.push("prepare");
         return null;
@@ -1023,7 +997,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
@@ -1083,7 +1057,7 @@ describe("cacheHtmlChapterMedia", () => {
           statusText: "OK",
         }),
       );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
@@ -1115,7 +1089,7 @@ describe("cacheHtmlChapterMedia", () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     pluginMediaFetchMock.mockRejectedValue(new TypeError("network error"));
-    invokeMock.mockImplementation(async (command) => {
+    mockChapterMediaInvoke(async (command) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_archive_cache") return 0;
       if (command === "chapter_media_write_manifest") return null;
@@ -1150,7 +1124,7 @@ describe("cacheHtmlChapterMedia", () => {
     pluginMediaFetchMock.mockResolvedValue(
       new Response("missing", { status: 404, statusText: "Not Found" }),
     );
-    invokeMock.mockImplementation(async (command) => {
+    mockChapterMediaInvoke(async (command) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_archive_cache") return 0;
       if (command === "chapter_media_write_manifest") return null;
@@ -1179,7 +1153,7 @@ describe("cacheHtmlChapterMedia", () => {
         bodyBytes: 3, bodyHandle: "retry-response", finalUrl: "https://source.test/page.png",
         headers: { "content-type": "text/plain", "retry-after": "30" }, status: 503, statusText: "Unavailable",
       });
-      invokeMock.mockImplementation(async command => {
+      mockChapterMediaInvoke(async command => {
         if (command === "native_stream_cancel" && cleanupFails) throw new Error("already closed");
         return null;
       });
@@ -1237,12 +1211,12 @@ describe("cacheHtmlChapterMedia", () => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
       usePluginVpnStore.getState().setEnabled(true);
       vpnPhase = "connected";
-      invokeMock.mockImplementation(async (command, args) => {
+      mockChapterMediaInvoke(async (command, args) => {
         if (command === "plugin_vpn_status") return {
           phase: vpnPhase, error: null, supported: true, proxyPort: 43127,
           profile: { remoteHost: "203.0.113.1", isVpnGateFinder: true, requiresUsernamePassword: false },
         };
-        if (command === "chapter_media_store") {
+        if (command === "chapter_media_store_handle") {
           return `norea-media://reader-asset/${(args as { fileName: string }).fileName}`;
         }
         if (command === "chapter_media_archive_cache") return 3;
@@ -1412,7 +1386,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_archive_cache") return 3;
       const input = args as {
@@ -1455,12 +1429,9 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
-      if (command === "native_stream_create") {
-        throw new Error("unknown command: native_stream_create");
-      }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_write_manifest") return null;
       if (command === "chapter_media_total_size") return 0;
@@ -1501,7 +1472,7 @@ describe("cacheHtmlChapterMedia", () => {
   it("finalizes the manifest when every media asset falls back to remote", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     pluginMediaFetchMock.mockRejectedValue(new Error("offline"));
-    invokeMock.mockImplementation(async (command) => {
+    mockChapterMediaInvoke(async (command) => {
       if (command === "chapter_media_archive_cache") return 0;
       return null;
     });
@@ -1555,7 +1526,7 @@ describe("cacheHtmlChapterMedia", () => {
     const archiveError = new Error("manifest finalization failed");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     pluginMediaFetchMock.mockRejectedValue(new Error("offline"));
-    invokeMock.mockImplementation(async (command) => {
+    mockChapterMediaInvoke(async (command) => {
       if (command === "chapter_media_archive_cache") throw archiveError;
       return null;
     });
@@ -1597,10 +1568,10 @@ describe("cacheHtmlChapterMedia", () => {
         status: 200,
       }),
     );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_archive_cache") throw archiveError;
       if (command === "chapter_media_total_size") return 3;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as { fileName: string };
         return `norea-media://reader-asset/${input.fileName}`;
       }
@@ -1649,7 +1620,7 @@ describe("cacheHtmlChapterMedia", () => {
         status: 200,
       }),
     );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_write_manifest") {
         manifestWriteCount += 1;
         if (manifestWriteCount === 3) throw manifestError;
@@ -1657,7 +1628,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 3;
       if (command === "chapter_media_total_size") return 3;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as { fileName: string };
         return `norea-media://reader-asset/${input.fileName}`;
       }
@@ -1740,7 +1711,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_total_size") return 7;
       if (command === "chapter_media_archive_cache") return 5;
       if (command === "chapter_media_read_manifest") {
@@ -1774,7 +1745,7 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
         fileName: "0002-page-2.png",
       }),
@@ -1846,7 +1817,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       }),
     );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") {
         return JSON.stringify(manifest);
@@ -1857,7 +1828,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 15;
       if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as {
           chapterId: number;
           fileName: string;
@@ -1891,7 +1862,7 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
         fileName: "0002-page-2.png",
       }),
@@ -1966,7 +1937,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") {
         return JSON.stringify(manifest);
@@ -1977,7 +1948,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 15;
       if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as {
           chapterId: number;
           fileName: string;
@@ -2030,7 +2001,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_total_size") {
@@ -2038,7 +2009,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 12;
       if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as {
           chapterId: number;
           fileName: string;
@@ -2067,7 +2038,7 @@ describe("cacheHtmlChapterMedia", () => {
       expect.anything(),
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
         fileName: "0001-page-1.png",
       }),
@@ -2119,7 +2090,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") {
         return JSON.stringify(manifest);
@@ -2132,7 +2103,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 15;
       if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as {
           chapterId: number;
           fileName: string;
@@ -2182,7 +2153,7 @@ describe("cacheHtmlChapterMedia", () => {
       "norea-media://reader-asset/0003-page-3.png",
     ]);
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
         fileName: "0002-page-2.png",
       }),
@@ -2251,13 +2222,13 @@ describe("cacheHtmlChapterMedia", () => {
         status: 200,
       }),
     );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_read_manifest") {
         return JSON.stringify(manifest);
       }
       if (command === "chapter_media_total_size") return 3;
       if (command === "chapter_media_archive_cache") return 5;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as { fileName: string };
         return `norea-media://reader-asset/${input.fileName}`;
       }
@@ -2365,18 +2336,10 @@ describe("cacheHtmlChapterMedia", () => {
         `${preferredDir}/manifest.json`,
         `${preferredDir}/manifest.json.tmp`,
         `${preferredDir}/manifest.json.bak`,
-        "chapter-media/42/media",
-        "chapter-media/42/media.zip",
-        "chapter-media/42/media.zip.tmp.zip",
-        "chapter-media/42/media.zip.bak",
-        "chapter-media/42/media.zip.rollback",
-        "chapter-media/42/manifest.json",
-        "chapter-media/42/manifest.json.tmp",
-        "chapter-media/42/manifest.json.bak",
       ]),
     );
     expect(deletedPaths).not.toContain(`${preferredDir}/media.zip.tmp`);
-    expect(deletedPaths).not.toContain("chapter-media/42/media.zip.tmp");
+    expect(deletedPaths.every((path) => path.startsWith(`${preferredDir}/`))).toBe(true);
     expect(
       androidStorageMocks.archiveAndroidStorageDirectory,
     ).toHaveBeenCalledWith(
@@ -2419,7 +2382,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") {
         return JSON.stringify(manifest);
@@ -2430,7 +2393,7 @@ describe("cacheHtmlChapterMedia", () => {
       }
       if (command === "chapter_media_archive_cache") return 12;
       if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as {
           chapterId: number;
           fileName: string;
@@ -2469,11 +2432,11 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       }),
     );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
       if (command === "chapter_media_write_manifest") return null;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as {
           chapterId: number;
           fileName: string;
@@ -2518,8 +2481,9 @@ describe("cacheHtmlChapterMedia", () => {
     );
   });
 
-  it("refetches legacy Android archive entries without exact byte sizes", async () => {
+  it("refetches Android assets missing from the current archive", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
+    androidStorageMocks.androidStorageZipEntrySizes.mockResolvedValue(new Map());
     const manifest = {
       media: {
         files: [
@@ -2559,7 +2523,7 @@ describe("cacheHtmlChapterMedia", () => {
     });
     androidStorageMocks.readAndroidStorageText.mockImplementation(
       async (path: string) =>
-        path === "chapter-media/42/manifest.json"
+        path === preferredArchive.replace("media.zip", "manifest.json")
           ? JSON.stringify(manifest)
           : null,
     );
@@ -2594,9 +2558,7 @@ describe("cacheHtmlChapterMedia", () => {
     expect(androidStorageMocks.readAndroidStorageText).toHaveBeenCalledWith(
       preferredArchive.replace("media.zip", "manifest.json"),
     );
-    expect(androidStorageMocks.readAndroidStorageText).toHaveBeenCalledWith(
-      "chapter-media/42/manifest.json",
-    );
+    expect(androidStorageMocks.readAndroidStorageText).toHaveBeenCalledTimes(1);
     expect(androidStorageMocks.extractAndroidStorageZip).not.toHaveBeenCalled();
     expect(
       androidStorageMocks.archiveAndroidStorageDirectory,
@@ -2643,7 +2605,7 @@ describe("cacheHtmlChapterMedia", () => {
     );
     androidStorageMocks.readAndroidStorageText.mockImplementation(
       async (path: string) =>
-        path === "chapter-media/42/manifest.json"
+        path === preferredArchive.replace("media.zip", "manifest.json")
           ? JSON.stringify(manifest)
           : null,
     );
@@ -2741,7 +2703,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       }),
     );
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_prepare_workspace") {
         workspacePrepared = true;
         return null;
@@ -2798,7 +2760,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_total_size") return 7;
       if (command === "chapter_media_archive_cache") return 5;
       if (command === "chapter_media_read_manifest") {
@@ -2844,7 +2806,7 @@ describe("cacheHtmlChapterMedia", () => {
         statusText: "OK",
       });
     });
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_total_size") return 0;
       if (command === "chapter_media_archive_cache") return 5;
       if (command === "chapter_media_read_manifest") return null;
@@ -2873,7 +2835,7 @@ describe("cacheHtmlChapterMedia", () => {
       }),
     );
     expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_media_store",
+      "chapter_media_store_handle",
       expect.objectContaining({
         fileName: "0001-page-1.png",
       }),
@@ -2883,7 +2845,7 @@ describe("cacheHtmlChapterMedia", () => {
   });
 
   it("keeps reader asset prefixes in stored repair HTML", async () => {
-    invokeMock.mockImplementation(async (command) => {
+    mockChapterMediaInvoke(async (command) => {
       if (command === "chapter_media_archive_cache") return 0;
       if (command === "chapter_media_prepare_workspace") return null;
       if (command === "chapter_media_read_manifest") return null;
@@ -2948,7 +2910,6 @@ describe("clearChapterMedia", () => {
         `${preferredDir}/manifest.json`,
         `${preferredDir}/manifest.json.tmp`,
         `${preferredDir}/manifest.json.bak`,
-        "chapter-media/42",
       ]),
     );
     expect(deletedPaths).not.toContain(`${preferredDir}/media.zip.tmp`);
@@ -2956,14 +2917,14 @@ describe("clearChapterMedia", () => {
 });
 
 describe("storeEmbeddedChapterMedia", () => {
-  it.each(["chapter_media_store", "chapter_media_write_manifest"])(
+  it.each(["chapter_media_store_handle", "chapter_media_write_manifest"])(
     "stops embedded media publication when cancelled during %s",
     async (cancelCommand) => {
       const controller = new AbortController();
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      invokeMock.mockImplementation(async (command) => {
+      mockChapterMediaInvoke(async (command) => {
         if (command === cancelCommand) controller.abort();
-        if (command === "chapter_media_store") {
+        if (command === "chapter_media_store_handle") {
           return "norea-media://reader-asset/page.png";
         }
         return null;
@@ -2986,7 +2947,7 @@ describe("storeEmbeddedChapterMedia", () => {
           "chapter_media_archive_cache",
           expect.anything(),
         );
-        if (cancelCommand === "chapter_media_store") {
+        if (cancelCommand === "chapter_media_store_handle") {
           expect(invokeMock).not.toHaveBeenCalledWith(
             "chapter_media_write_manifest",
             expect.anything(),
@@ -3001,13 +2962,10 @@ describe("storeEmbeddedChapterMedia", () => {
   it("keeps the manifest incomplete when archive finalization fails", async () => {
     const archiveError = new Error("archive validation failed");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "native_stream_create") {
-        throw new Error("unknown command: native_stream_create");
-      }
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_archive_cache") throw archiveError;
       if (command === "chapter_media_total_size") return 3;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as { fileName: string };
         return `norea-media://reader-asset/${input.fileName}`;
       }
@@ -3055,13 +3013,10 @@ describe("storeEmbeddedChapterMedia", () => {
   it("classifies embedded manifest publication failures as finalization errors", async () => {
     const manifestError = new Error("manifest publication failed");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "native_stream_create") {
-        throw new Error("unknown command: native_stream_create");
-      }
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_write_manifest") throw manifestError;
       if (command === "chapter_media_archive_cache") return 3;
-      if (command === "chapter_media_store") {
+      if (command === "chapter_media_store_handle") {
         const input = args as { fileName: string };
         return `norea-media://reader-asset/${input.fileName}`;
       }
@@ -3193,14 +3148,14 @@ describe("resolveLocalChapterMedia", () => {
 
     const html = await resolveLocalChapterMedia(
       `<img src="norea-media://reader-asset/page.png">`,
-      { chapterId: 95 },
+      { chapterId: 95, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
     );
 
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "chapter-media/95/media",
-      "chapter-media/95/media.zip",
+      "contents/demo/Novel-novel/95-chapter/media",
+      "contents/demo/Novel-novel/95-chapter/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(html).toMatch(
@@ -3209,7 +3164,7 @@ describe("resolveLocalChapterMedia", () => {
   });
 
   it("uses data URLs for desktop media outside the asset scope", async () => {
-    invokeMock.mockImplementation(async (command, args) => {
+    mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_data_url") {
         const { mediaSrc } = args as { mediaSrc: string };
         return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
@@ -3228,7 +3183,7 @@ describe("resolveLocalChapterMedia", () => {
   });
 
   it("rewrites cached chapter media to local data URLs", async () => {
-    invokeMock.mockImplementation(async (_command, args) => {
+    mockChapterMediaInvoke(async (_command, args) => {
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
@@ -3273,7 +3228,7 @@ describe("resolveLocalChapterMedia", () => {
   });
 
   it("deduplicates repeated cached media sources while resolving HTML", async () => {
-    invokeMock.mockImplementation(async (_command, args) => {
+    mockChapterMediaInvoke(async (_command, args) => {
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });
@@ -3335,7 +3290,7 @@ describe("resolveLocalChapterMediaPatches", () => {
           },
         },
       ],
-      { chapterId: 42 },
+      { chapterId: 42, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
     );
 
     expect(androidStorageMocks.readAndroidStorageDataUrl).not.toHaveBeenCalled();
@@ -3345,8 +3300,8 @@ describe("resolveLocalChapterMediaPatches", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "chapter-media/42/media",
-      "chapter-media/42/media.zip",
+      "contents/demo/Novel-novel/42-chapter/media",
+      "contents/demo/Novel-novel/42-chapter/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(patches).toHaveLength(2);
@@ -3392,14 +3347,14 @@ describe("resolveLocalChapterMediaPatches", () => {
           },
         },
       ],
-      { chapterId: 27 },
+      { chapterId: 27, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
     );
 
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "chapter-media/27/media",
-      "chapter-media/27/media.zip",
+      "contents/demo/Novel-novel/27-chapter/media",
+      "contents/demo/Novel-novel/27-chapter/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(patches[0]?.attributes.src).toMatch(
@@ -3461,7 +3416,7 @@ describe("resolveLocalChapterMediaPatches", () => {
           sourceAttributes: { src: scoped },
         },
       ],
-      { chapterId: 42 },
+      { chapterId: 42, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
     );
 
     expect(
@@ -3471,7 +3426,7 @@ describe("resolveLocalChapterMediaPatches", () => {
   });
 
   it("deduplicates repeated cached media sources across a patch batch", async () => {
-    invokeMock.mockImplementation(async (_command, args) => {
+    mockChapterMediaInvoke(async (_command, args) => {
       const { mediaSrc } = args as { mediaSrc: string };
       return `data:image/png;base64,${mediaSrc.split("/").pop()}`;
     });

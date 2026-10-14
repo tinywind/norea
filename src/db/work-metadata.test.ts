@@ -101,17 +101,13 @@ it("tracks changed cover bytes even when the metadata descriptor is unchanged", 
   expect(await readWorkMetadataSyncFiles()).toEqual([after]);
 });
 
-it("invalidates only file checkpoints when the derived work journal is recreated", async () => {
-  save(fixture()); await initializeWorkMetadata(db);
-  const checkpoint = { cursor: 45, fingerprints: { work: "uploaded" }, fileVersions: { work: "old-revision" } };
-  await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", ["norea-content-works:http://server", JSON.stringify(checkpoint)]);
-  sqlite.exec("DROP TABLE work_metadata_sync_journal");
-  storage.lists = 0;
-  await initializeWorkMetadata(db);
-  const saved = sqlite.prepare("SELECT payload FROM content_sync_cache").get()!.payload as string;
-  expect(JSON.parse(saved)).toEqual({ cursor: 45, fingerprints: { work: "uploaded" } });
-  expect(storage.lists).toBe(0);
-  expect(storage.writes).toBe(0);
+it("bootstraps work tracking before the frontend opens the database", () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/book','Book')");
+  expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_file_cache").all()).toEqual([]);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_sync_journal").all()).toEqual([]);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_directory_cache").all()).toEqual([]);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_cache_state").all()).toEqual([]);
 });
 
 it("advances work revisions when rebuilding from authoritative files", async () => {
@@ -221,7 +217,7 @@ it("does not export old DB records on startup or when only reading state changes
   expect(storage.files.size).toBe(0);
 });
 
-it.each(["source", "server"])("replaces same-work legacy metadata from fresh %s metadata without touching chapter files", async (origin) => {
+it.each(["source", "server"])("rejects obsolete work metadata during %s publication without converting files", async (origin) => {
   const metadata = fixture();
   const directory = novelStorageRelativeDir({ pluginId: "source", path: "/book", name: metadata.novel.name });
   const legacy = { ...metadata, novel: { ...metadata.novel, rating: undefined, summary: "Old summary" }, chapters: [{ path: "/old", name: "Old chapter" }], updatedAt: 1 };
@@ -234,19 +230,19 @@ it.each(["source", "server"])("replaces same-work legacy metadata from fresh %s 
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM novel").get()).toEqual({ count: 0 });
   if (origin === "source") {
     await applyNovelMetadataToCache(db, metadata);
-    await flushWorkMetadata(db);
+    await expect(flushWorkMetadata(db)).rejects.toThrow();
   } else {
-    await installStoredNovelMetadata(metadata);
+    await expect(installStoredNovelMetadata(metadata)).rejects.toThrow();
   }
-  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(`${directory}/novel.json`)!)))).toEqual(metadata);
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(`${directory}/novel.json`)!)))).toEqual(JSON.parse(JSON.stringify(legacy)));
   expect(storage.files.get(contentPath)).toEqual([1, 2, 3]);
   expect(storage.files.get(mediaPath)).toEqual([4, 5, 6]);
   expect([...storage.files.keys()].filter(file => file.endsWith("/novel.json"))).toEqual([`${directory}/novel.json`]);
 });
 
-it("does not overwrite another work when replacing an obsolete metadata document", async () => {
-  const legacy = { ...fixture(), identity: { pluginId: "other", novelPath: "/other" }, chapters: [], updatedAt: 1 };
-  const bytes = [...new TextEncoder().encode(JSON.stringify(legacy))];
+it("does not overwrite a metadata document for another work", async () => {
+  const other = { ...fixture(), identity: { pluginId: "other", novelPath: "/other" } };
+  const bytes = [...new TextEncoder().encode(JSON.stringify(other))];
   storage.files.set(path, bytes);
   await expect(writeStoredNovelMetadata("contents/source/Original-book", fixture())).rejects.toThrow("identity");
   expect(storage.files.get(path)).toEqual(bytes);

@@ -8,11 +8,8 @@
 //!
 //! The manifest carries library, progress, category, repository, plugin,
 //! and chapter download metadata. Chapter bodies and media stay in chapter
-//! storage. Archives written by earlier 0.2 builds may also carry
-//! `chapters/<id>.html` and `chapter-media/<chapterId>/<fileName>` entries;
-//! unpack still reads those so older backups restore their content.
+//! storage. Only the current manifest-only archive format is supported.
 
-use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
 use std::net::Ipv4Addr;
@@ -26,20 +23,13 @@ use tauri_plugin_sql::{DbInstances, DbPool};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::chapter_media::{chapter_media_from_backup_entry, store_chapter_media_file_source};
-
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const MANIFEST_ENTRY: &str = "manifest.json";
-const CHAPTERS_PREFIX: &str = "chapters/";
-const CHAPTER_SUFFIX: &str = ".html";
 const DB_URL: &str = "sqlite:norea.db";
 const BACKUP_TEMP_DIR: &str = "backup";
-const BACKUP_STAGING_DIR: &str = "staged-restore";
 const MAX_BACKUP_ARCHIVE_BYTES: u64 = 2 * 1024 * BYTES_PER_MIB;
-const MAX_BACKUP_ZIP_ENTRIES: usize = 100_000;
+const MAX_BACKUP_ZIP_ENTRIES: usize = 1;
 const MAX_BACKUP_MANIFEST_BYTES: u64 = 256 * BYTES_PER_MIB;
-const MAX_BACKUP_CHAPTER_HTML_BYTES: u64 = 64 * BYTES_PER_MIB;
-const MAX_BACKUP_MEDIA_ENTRY_BYTES: u64 = 256 * BYTES_PER_MIB;
 const MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * BYTES_PER_MIB;
 const MAX_BACKUP_COMPRESSION_RATIO: u64 = 200;
 const MIN_BACKUP_RATIO_CHECK_BYTES: u64 = BYTES_PER_MIB;
@@ -48,8 +38,6 @@ const MIN_BACKUP_RATIO_CHECK_BYTES: u64 = BYTES_PER_MIB;
 struct BackupArchiveLimits {
     max_entries: usize,
     max_manifest_bytes: u64,
-    max_chapter_html_bytes: u64,
-    max_media_entry_bytes: u64,
     max_total_uncompressed_bytes: u64,
     max_compression_ratio: u64,
 }
@@ -58,8 +46,6 @@ impl BackupArchiveLimits {
     const DEFAULT: Self = Self {
         max_entries: MAX_BACKUP_ZIP_ENTRIES,
         max_manifest_bytes: MAX_BACKUP_MANIFEST_BYTES,
-        max_chapter_html_bytes: MAX_BACKUP_CHAPTER_HTML_BYTES,
-        max_media_entry_bytes: MAX_BACKUP_MEDIA_ENTRY_BYTES,
         max_total_uncompressed_bytes: MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES,
         max_compression_ratio: MAX_BACKUP_COMPRESSION_RATIO,
     };
@@ -142,59 +128,23 @@ impl BackupArchiveReadBudget {
     }
 }
 
-/// One downloaded chapter body, keyed by the local chapter row id.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChapterContent {
-    pub id: i64,
-    pub html: String,
-}
-
-/// One local chapter media file read from an archive written by an earlier build.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChapterMediaContent {
-    pub media_src: String,
-    pub chapter_id: Option<i64>,
-    pub body: Vec<u8>,
-}
-
-/// Result of `backup_unpack`: the raw manifest JSON plus legacy
-/// chapter HTML and local media entries when an old archive carries them.
+/// Result of `backup_unpack`: the current manifest JSON.
 #[derive(Debug, Serialize)]
 pub struct UnpackedBackup {
     pub manifest_json: String,
-    pub chapters: Vec<ChapterContent>,
-    pub chapter_media: Vec<ChapterMediaContent>,
-}
-
-/// One staged local chapter media file extracted from a backup archive.
-#[derive(Debug, Clone, Serialize)]
-pub struct StagedChapterMediaContent {
-    pub media_src: String,
-    pub chapter_id: Option<i64>,
-    pub staged_ref: String,
-    pub bytes: u64,
-}
-
-/// Result of `backup_unpack_staged`: the raw manifest JSON plus legacy
-/// chapter HTML and staged local media refs.
-#[derive(Debug, Serialize)]
-pub struct StagedUnpackedBackup {
-    pub manifest_json: String,
-    pub chapters: Vec<ChapterContent>,
-    pub chapter_media: Vec<StagedChapterMediaContent>,
-    pub staging_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupRestoreManifest {
+    version: u32,
     novels: Vec<BackupRestoreNovel>,
     chapters: Vec<BackupRestoreChapter>,
     categories: Vec<BackupRestoreCategory>,
     novel_categories: Vec<BackupRestoreNovelCategory>,
     repositories: Vec<BackupRestoreRepository>,
-    installed_plugins: Option<Vec<BackupRestoreInstalledPlugin>>,
-    vpn_gate_server_verdicts: Option<Vec<BackupRestoreVpnGateServerVerdict>>,
+    installed_plugins: Vec<BackupRestoreInstalledPlugin>,
+    vpn_gate_server_verdicts: Vec<BackupRestoreVpnGateServerVerdict>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,11 +182,11 @@ struct BackupRestoreChapter {
     unread: bool,
     progress: i64,
     is_downloaded: bool,
-    content_type: Option<String>,
-    source_content_type: Option<String>,
+    content_type: String,
+    source_content_type: String,
     content: Option<String>,
-    content_bytes: Option<i64>,
-    media_bytes: Option<i64>,
+    content_bytes: i64,
+    media_bytes: i64,
     release_time: Option<String>,
     read_at: Option<i64>,
     created_at: i64,
@@ -311,109 +261,10 @@ fn bool_to_int(value: bool) -> i64 {
     if value { 1 } else { 0 }
 }
 
-fn backup_content_type(value: Option<&str>) -> &str {
-    match value {
-        Some("pdf") => "pdf",
-        Some("epub") => "epub",
-        _ => "html",
-    }
-}
-
-fn backup_source_content_type(value: Option<&str>) -> &str {
-    match value {
-        Some("text") => "text",
-        Some("markdown") => "markdown",
-        Some("pdf") => "pdf",
-        Some("epub") => "epub",
-        _ => "html",
-    }
-}
-
-fn content_byte_len(value: Option<&str>) -> i64 {
-    value
-        .map(|content| content.as_bytes().len() as i64)
-        .unwrap_or(0)
-}
-
-fn segment_has_remote_url(segment: &str) -> bool {
-    segment.contains("http://")
-        || segment.contains("https://")
-        || segment.contains("=\"//")
-        || segment.contains("='//")
-        || segment.contains("=//")
-}
-
-fn contains_remote_style_url(content: &str) -> bool {
-    let mut rest = content;
-    while let Some(position) = rest.find("url(") {
-        let value = &rest[position + 4..];
-        let value = value
-            .trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == '"' || ch == '\'');
-        if value.starts_with("http://") || value.starts_with("https://") || value.starts_with("//")
-        {
-            return true;
-        }
-        rest = &value[1.min(value.len())..];
-    }
-    false
-}
-
-fn contains_remote_media_tag(content: &str) -> bool {
-    const MEDIA_TAGS: [&str; 9] = [
-        "<img", "<picture", "<source", "<video", "<audio", "<track", "<iframe", "<embed", "<object",
-    ];
-    for tag in MEDIA_TAGS {
-        let mut rest = content;
-        while let Some(position) = rest.find(tag) {
-            let tag_body = &rest[position..];
-            let end = tag_body
-                .find('>')
-                .unwrap_or_else(|| tag_body.len().min(4096));
-            if segment_has_remote_url(&tag_body[..end]) {
-                return true;
-            }
-            let next = position + tag.len();
-            if next >= rest.len() {
-                break;
-            }
-            rest = &rest[next..];
-        }
-    }
-    false
-}
-
-fn chapter_media_repair_needed(content: Option<&str>, content_type: Option<&str>) -> i64 {
-    if !matches!(backup_content_type(content_type), "html" | "epub") {
-        return 0;
-    }
-    let Some(content) = content else {
-        return 0;
-    };
-    if content.is_empty() {
-        return 0;
-    }
-    let content = content.to_ascii_lowercase();
-    bool_to_int(contains_remote_media_tag(&content) || contains_remote_style_url(&content))
-}
-
-fn select_backup_repository(
-    repositories: &[BackupRestoreRepository],
-) -> Option<&BackupRestoreRepository> {
-    repositories.iter().max_by(|left, right| {
-        left.added_at
-            .cmp(&right.added_at)
-            .then(left.id.cmp(&right.id))
-    })
-}
-
 async fn restore_vpn_gate_server_verdicts(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
-    verdicts: Option<&[BackupRestoreVpnGateServerVerdict]>,
+    verdicts: &[BackupRestoreVpnGateServerVerdict],
 ) -> Result<(), String> {
-    let Some(verdicts) = verdicts else {
-        return Ok(());
-    };
-
     for verdict in verdicts {
         let Ok(address) = verdict.ip.parse::<Ipv4Addr>() else {
             return Err(format!(
@@ -453,8 +304,23 @@ async fn restore_vpn_gate_server_verdicts(
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
-    media_bytes_by_chapter_id: HashMap<i64, i64>,
 ) -> Result<(), String> {
+    if manifest.version != 2 {
+        return Err(format!(
+            "backup_restore_snapshot: unsupported backup version {}",
+            manifest.version
+        ));
+    }
+    if manifest
+        .chapters
+        .iter()
+        .any(|chapter| chapter.content.is_some())
+    {
+        return Err("backup_restore_snapshot: inline chapter bodies are not supported".to_string());
+    }
+    if manifest.repositories.len() > 1 {
+        return Err("backup_restore_snapshot: at most one repository is supported".to_string());
+    }
     sqlx::query("DELETE FROM novel_category")
         .execute(&mut **tx)
         .await
@@ -483,13 +349,11 @@ async fn execute_restore_snapshot(
         .execute(&mut **tx)
         .await
         .map_err(|err| format!("backup_restore_snapshot: delete repository_index_cache: {err}"))?;
-    if manifest.installed_plugins.is_some() {
-        sqlx::query("DELETE FROM installed_plugin")
-            .execute(&mut **tx)
-            .await
-            .map_err(|err| format!("backup_restore_snapshot: delete installed_plugin: {err}"))?;
-    }
-    restore_vpn_gate_server_verdicts(tx, manifest.vpn_gate_server_verdicts.as_deref()).await?;
+    sqlx::query("DELETE FROM installed_plugin")
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: delete installed_plugin: {err}"))?;
+    restore_vpn_gate_server_verdicts(tx, &manifest.vpn_gate_server_verdicts).await?;
 
     for category in &manifest.categories {
         sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES ($1, $2, $3, $4)")
@@ -502,9 +366,9 @@ async fn execute_restore_snapshot(
             .map_err(|err| format!("backup_restore_snapshot: insert category: {err}"))?;
     }
 
-    if let Some(repository) = select_backup_repository(&manifest.repositories) {
+    if let Some(repository) = manifest.repositories.first() {
         sqlx::query("INSERT INTO repository (id, url, name, added_at) VALUES ($1, $2, $3, $4)")
-            .bind(1_i64)
+            .bind(repository.id)
             .bind(repository.url.as_str())
             .bind(repository.name.as_deref())
             .bind(repository.added_at)
@@ -513,25 +377,23 @@ async fn execute_restore_snapshot(
             .map_err(|err| format!("backup_restore_snapshot: insert repository: {err}"))?;
     }
 
-    if let Some(installed_plugins) = &manifest.installed_plugins {
-        for plugin in installed_plugins {
-            sqlx::query(
-                "INSERT INTO installed_plugin (
-                    id, name, lang, version, icon_url, source_url, source_code, installed_at
-                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            )
-            .bind(plugin.id.as_str())
-            .bind(plugin.name.as_str())
-            .bind(plugin.lang.as_str())
-            .bind(plugin.version.as_str())
-            .bind(plugin.icon_url.as_str())
-            .bind(plugin.source_url.as_str())
-            .bind(plugin.source_code.as_str())
-            .bind(plugin.installed_at)
-            .execute(&mut **tx)
-            .await
-            .map_err(|err| format!("backup_restore_snapshot: insert installed_plugin: {err}"))?;
-        }
+    for plugin in &manifest.installed_plugins {
+        sqlx::query(
+            "INSERT INTO installed_plugin (
+                id, name, lang, version, icon_url, source_url, source_code, installed_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(plugin.id.as_str())
+        .bind(plugin.name.as_str())
+        .bind(plugin.lang.as_str())
+        .bind(plugin.version.as_str())
+        .bind(plugin.icon_url.as_str())
+        .bind(plugin.source_url.as_str())
+        .bind(plugin.source_code.as_str())
+        .bind(plugin.installed_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: insert installed_plugin: {err}"))?;
     }
 
     for novel in &manifest.novels {
@@ -565,19 +427,13 @@ async fn execute_restore_snapshot(
 
     for chapter in &manifest.chapters {
         let restored_downloaded = chapter.is_downloaded;
-        let restored_content_bytes = if !restored_downloaded {
-            0
-        } else if chapter.content.is_some() {
-            content_byte_len(chapter.content.as_deref())
+        let restored_content_bytes = if restored_downloaded {
+            chapter.content_bytes
         } else {
-            chapter.content_bytes.unwrap_or(0)
+            0
         };
         let restored_media_bytes = if restored_downloaded {
-            media_bytes_by_chapter_id
-                .get(&chapter.id)
-                .copied()
-                .or(chapter.media_bytes)
-                .unwrap_or(0)
+            chapter.media_bytes
         } else {
             0
         };
@@ -603,18 +459,10 @@ async fn execute_restore_snapshot(
         .bind(bool_to_int(restored_downloaded))
         .bind(restored_content_bytes)
         .bind(restored_media_bytes)
-        .bind(chapter_media_repair_needed(
-            chapter.content.as_deref(),
-            chapter.content_type.as_deref(),
-        ))
-        .bind(backup_source_content_type(
-            chapter
-                .source_content_type
-                .as_deref()
-                .or(chapter.content_type.as_deref()),
-        ))
+        .bind(0_i64)
+        .bind(chapter.source_content_type.as_str())
         .bind(if restored_downloaded {
-            Some(backup_content_type(chapter.content_type.as_deref()))
+            Some(chapter.content_type.as_str())
         } else {
             None
         })
@@ -775,113 +623,6 @@ pub fn backup_delete_temp_file(app: AppHandle, path: String) -> Result<(), Strin
     fs::remove_file(&file_path).map_err(|err| format!("backup_delete_temp_file: remove: {err}"))
 }
 
-fn backup_staging_root(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(backup_temp_dir(app)?.join(BACKUP_STAGING_DIR))
-}
-
-fn prepare_backup_staging_root(root: &Path) -> Result<PathBuf, String> {
-    fs::create_dir_all(root).map_err(|err| format!("backup_unpack_staged: create root: {err}"))?;
-    root.canonicalize()
-        .map_err(|err| format!("backup_unpack_staged: canonicalize root: {err}"))
-}
-
-fn validate_backup_stage_token(value: &str, label: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value == "."
-        || value == ".."
-        || value.len() > 128
-        || !value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
-    {
-        return Err(format!("backup_unpack_staged: invalid {label}"));
-    }
-    Ok(())
-}
-
-fn allocate_backup_staging_dir(app: &AppHandle) -> Result<(String, PathBuf), String> {
-    let root = prepare_backup_staging_root(&backup_staging_root(app)?)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    for attempt in 0..16_u32 {
-        let staging_id = format!("restore-{now}-{attempt}");
-        let path = root.join(&staging_id);
-        match fs::create_dir(&path) {
-            Ok(()) => {
-                let path = path.canonicalize().map_err(|err| {
-                    format!("backup_unpack_staged: canonicalize staging dir: {err}")
-                })?;
-                if !path.starts_with(&root) {
-                    return Err("backup_unpack_staged: staging dir escaped root".to_string());
-                }
-                return Ok((staging_id, path));
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(format!("backup_unpack_staged: create staging dir: {err}")),
-        }
-    }
-    Err("backup_unpack_staged: failed to allocate staging dir".to_string())
-}
-
-fn backup_staging_dir(root: &Path, staging_id: &str) -> Result<PathBuf, String> {
-    validate_backup_stage_token(staging_id, "staging id")?;
-    let root = prepare_backup_staging_root(root)?;
-    let path = root.join(staging_id);
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|err| format!("backup_unpack_staged: inspect staging dir: {err}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err("backup_unpack_staged: staging path is not a directory".to_string());
-    }
-    let path = path
-        .canonicalize()
-        .map_err(|err| format!("backup_unpack_staged: canonicalize staging dir: {err}"))?;
-    if !path.starts_with(&root) {
-        return Err("backup_unpack_staged: staging dir escaped root".to_string());
-    }
-    Ok(path)
-}
-
-fn backup_staged_media_path(
-    app: &AppHandle,
-    staging_id: &str,
-    staged_ref: &str,
-) -> Result<PathBuf, String> {
-    validate_backup_stage_token(staged_ref, "staged ref")?;
-    let dir = backup_staging_dir(&backup_staging_root(app)?, staging_id)?;
-    let path = dir.join(staged_ref);
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|err| format!("backup_restore_staged_media: inspect staged file: {err}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("backup_restore_staged_media: staged path is not a file".to_string());
-    }
-    let path = path
-        .canonicalize()
-        .map_err(|err| format!("backup_restore_staged_media: canonicalize staged file: {err}"))?;
-    if !path.starts_with(&dir) {
-        return Err("backup_restore_staged_media: staged file escaped staging dir".to_string());
-    }
-    Ok(path)
-}
-
-fn remove_backup_staging_dir(app: &AppHandle, staging_id: &str) -> Result<(), String> {
-    let dir = backup_staging_dir(&backup_staging_root(app)?, staging_id)?;
-    fs::remove_dir_all(&dir)
-        .map_err(|err| format!("backup_cleanup_staged_unpack: remove staging dir: {err}"))
-}
-
-#[tauri::command]
-pub async fn backup_cleanup_staged_unpack(
-    app: AppHandle,
-    staging_id: String,
-) -> Result<(), String> {
-    backup_blocking("backup_cleanup_staged_unpack", move || {
-        remove_backup_staging_dir(&app, &staging_id)
-    })
-    .await
-}
-
 #[tauri::command]
 pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String> {
     backup_blocking("backup_pack_bytes", move || {
@@ -894,7 +635,6 @@ pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String>
 pub async fn backup_restore_snapshot(
     db_instances: State<'_, DbInstances>,
     manifest_json: String,
-    media_bytes_by_chapter_id: HashMap<i64, i64>,
 ) -> Result<(), String> {
     let manifest: BackupRestoreManifest = serde_json::from_str(&manifest_json)
         .map_err(|err| format!("backup_restore_snapshot: parse manifest: {err}"))?;
@@ -910,8 +650,7 @@ pub async fn backup_restore_snapshot(
         .await
         .map_err(|err| format!("backup_restore_snapshot: begin transaction: {err}"))?;
 
-    if let Err(error) = execute_restore_snapshot(&mut tx, manifest, media_bytes_by_chapter_id).await
-    {
+    if let Err(error) = execute_restore_snapshot(&mut tx, manifest).await {
         let _ = tx.rollback().await;
         return Err(error);
     }
@@ -922,11 +661,7 @@ pub async fn backup_restore_snapshot(
     Ok(())
 }
 
-/// Read a backup zip from `input_path` and return the manifest JSON
-/// plus every `chapters/<id>.html` and chapter media entry.
-///
-/// Unrelated entries (foreign tools writing extra files) are skipped
-/// silently. Missing `manifest.json` is an error.
+/// Read the current manifest-only archive. Missing or extra entries are errors.
 fn read_backup_archive<R: Read + Seek>(reader: R) -> Result<UnpackedBackup, String> {
     read_backup_archive_with_limits(reader, BackupArchiveLimits::DEFAULT)
 }
@@ -1001,8 +736,6 @@ fn read_backup_archive_with_limits<R: Read + Seek>(
     }
 
     let mut manifest_json: Option<String> = None;
-    let mut chapters: Vec<ChapterContent> = Vec::new();
-    let mut chapter_media: Vec<ChapterMediaContent> = Vec::new();
     let mut budget = BackupArchiveReadBudget::new(limits);
 
     for index in 0..archive.len() {
@@ -1029,217 +762,13 @@ fn read_backup_archive_with_limits<R: Read + Seek>(
             continue;
         }
 
-        if let Some(rest) = name.strip_prefix(CHAPTERS_PREFIX) {
-            if let Some(stem) = rest.strip_suffix(CHAPTER_SUFFIX) {
-                let Ok(id) = stem.parse::<i64>() else {
-                    continue;
-                };
-                ensure_entry_declared_size(
-                    &name,
-                    "chapter HTML",
-                    declared_size,
-                    limits.max_chapter_html_bytes,
-                )?;
-                let html = read_limited_string(&mut entry, limits.max_chapter_html_bytes, &name)?;
-                budget.validate_actual_entry_size(&name, declared_size, html.len() as u64)?;
-                chapters.push(ChapterContent { id, html });
-            }
-            continue;
-        }
-
-        if let Some((chapter_id, media_src)) = chapter_media_from_backup_entry(&name) {
-            ensure_entry_declared_size(
-                &name,
-                "chapter media",
-                declared_size,
-                limits.max_media_entry_bytes,
-            )?;
-            let body = read_limited_bytes(&mut entry, limits.max_media_entry_bytes, &name)?;
-            budget.validate_actual_entry_size(&name, declared_size, body.len() as u64)?;
-            chapter_media.push(ChapterMediaContent {
-                media_src,
-                chapter_id: Some(chapter_id),
-                body,
-            });
-        }
+        return Err(format!("backup_unpack: unsupported archive entry '{name}'"));
     }
 
     let manifest_json = manifest_json
         .ok_or_else(|| "backup_unpack: archive is missing manifest.json".to_string())?;
 
-    Ok(UnpackedBackup {
-        manifest_json,
-        chapters,
-        chapter_media,
-    })
-}
-
-fn write_limited_staged_file<R: Read>(
-    reader: &mut R,
-    stage_dir: &Path,
-    staged_ref: &str,
-    max_bytes: u64,
-    label: &str,
-) -> Result<u64, String> {
-    validate_backup_stage_token(staged_ref, "staged ref")?;
-    fs::create_dir_all(stage_dir)
-        .map_err(|err| format!("backup_unpack_staged: create staging dir: {err}"))?;
-    let stage_dir = stage_dir
-        .canonicalize()
-        .map_err(|err| format!("backup_unpack_staged: canonicalize staging dir: {err}"))?;
-    let final_path = stage_dir.join(staged_ref);
-    let part_path = stage_dir.join(format!("{staged_ref}.part"));
-    if !final_path.starts_with(&stage_dir) || !part_path.starts_with(&stage_dir) {
-        return Err("backup_unpack_staged: staged file escaped staging dir".to_string());
-    }
-    let _ = fs::remove_file(&part_path);
-
-    let result = (|| -> Result<u64, String> {
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part_path)
-            .map_err(|err| format!("backup_unpack_staged: create staged file: {err}"))?;
-        let mut total = 0_u64;
-        let mut buffer = [0_u8; 8192];
-
-        loop {
-            let read = reader
-                .read(&mut buffer)
-                .map_err(|err| format!("backup_unpack_staged: read {label}: {err}"))?;
-            if read == 0 {
-                break;
-            }
-            total = total.checked_add(read as u64).ok_or_else(|| {
-                format!("backup_unpack_staged: read {label}: byte count overflow")
-            })?;
-            if total > max_bytes {
-                return Err(format!(
-                    "backup_unpack_staged: {label} exceeds the {max_bytes} byte limit"
-                ));
-            }
-            output
-                .write_all(&buffer[..read])
-                .map_err(|err| format!("backup_unpack_staged: write staged file: {err}"))?;
-        }
-        output
-            .flush()
-            .map_err(|err| format!("backup_unpack_staged: flush staged file: {err}"))?;
-        drop(output);
-        fs::rename(&part_path, &final_path)
-            .map_err(|err| format!("backup_unpack_staged: finalize staged file: {err}"))?;
-        Ok(total)
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&part_path);
-        let _ = fs::remove_file(&final_path);
-    }
-    result
-}
-
-fn read_backup_archive_staged_with_limits<R: Read + Seek>(
-    reader: R,
-    stage_dir: &Path,
-    staging_id: String,
-    limits: BackupArchiveLimits,
-) -> Result<StagedUnpackedBackup, String> {
-    let mut archive = ZipArchive::new(reader)
-        .map_err(|err| format!("backup_unpack_staged: not a valid zip: {err}"))?;
-
-    if archive.len() > limits.max_entries {
-        return Err(format!(
-            "backup_unpack_staged: archive has {} entries, which exceeds the {} entry limit",
-            archive.len(),
-            limits.max_entries
-        ));
-    }
-
-    let mut manifest_json: Option<String> = None;
-    let mut chapters: Vec<ChapterContent> = Vec::new();
-    let mut chapter_media: Vec<StagedChapterMediaContent> = Vec::new();
-    let mut budget = BackupArchiveReadBudget::new(limits);
-
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|err| format!("backup_unpack_staged: read entry {index}: {err}"))?;
-        let name = entry.name().to_string();
-        if entry.is_dir() {
-            continue;
-        }
-        let declared_size = entry.size();
-        budget.validate_declared_entry(&name, declared_size, entry.compressed_size())?;
-
-        if name == MANIFEST_ENTRY {
-            ensure_entry_declared_size(
-                &name,
-                "manifest",
-                declared_size,
-                limits.max_manifest_bytes,
-            )?;
-            let buf = read_limited_string(&mut entry, limits.max_manifest_bytes, "manifest")?;
-            budget.validate_actual_entry_size(&name, declared_size, buf.len() as u64)?;
-            manifest_json = Some(buf);
-            continue;
-        }
-
-        if let Some(rest) = name.strip_prefix(CHAPTERS_PREFIX) {
-            if let Some(stem) = rest.strip_suffix(CHAPTER_SUFFIX) {
-                let Ok(id) = stem.parse::<i64>() else {
-                    continue;
-                };
-                ensure_entry_declared_size(
-                    &name,
-                    "chapter HTML",
-                    declared_size,
-                    limits.max_chapter_html_bytes,
-                )?;
-                let html = read_limited_string(&mut entry, limits.max_chapter_html_bytes, &name)?;
-                budget.validate_actual_entry_size(&name, declared_size, html.len() as u64)?;
-                chapters.push(ChapterContent { id, html });
-            }
-            continue;
-        }
-
-        if let Some((chapter_id, media_src)) = chapter_media_from_backup_entry(&name) {
-            ensure_entry_declared_size(
-                &name,
-                "chapter media",
-                declared_size,
-                limits.max_media_entry_bytes,
-            )?;
-            let staged_ref = format!("media-{}.bin", chapter_media.len());
-            let bytes = write_limited_staged_file(
-                &mut entry,
-                stage_dir,
-                &staged_ref,
-                limits.max_media_entry_bytes,
-                &name,
-            )?;
-            budget.validate_actual_entry_size(&name, declared_size, bytes)?;
-            chapter_media.push(StagedChapterMediaContent {
-                media_src,
-                chapter_id: Some(chapter_id),
-                staged_ref,
-                bytes,
-            });
-        }
-    }
-
-    let manifest_json = manifest_json
-        .ok_or_else(|| "backup_unpack_staged: archive is missing manifest.json".to_string())?;
-
-    Ok(StagedUnpackedBackup {
-        manifest_json,
-        chapters,
-        staging_id: if chapter_media.is_empty() {
-            None
-        } else {
-            Some(staging_id)
-        },
-        chapter_media,
-    })
+    Ok(UnpackedBackup { manifest_json })
 }
 
 #[tauri::command]
@@ -1264,132 +793,6 @@ fn unpack_backup_path(input_path: String) -> Result<UnpackedBackup, String> {
         .map_err(|err| format!("backup_unpack: failed to inspect '{input_path}': {err}"))?;
     ensure_backup_archive_size(metadata.len())?;
     read_backup_archive(BufReader::new(file))
-}
-
-fn unpack_backup_path_staged(
-    app: AppHandle,
-    input_path: String,
-) -> Result<StagedUnpackedBackup, String> {
-    let file = File::open(&input_path)
-        .map_err(|err| format!("backup_unpack_staged: failed to open '{input_path}': {err}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|err| format!("backup_unpack_staged: failed to inspect '{input_path}': {err}"))?;
-    ensure_backup_archive_size(metadata.len())?;
-    let (staging_id, stage_dir) = allocate_backup_staging_dir(&app)?;
-    let result = read_backup_archive_staged_with_limits(
-        BufReader::new(file),
-        &stage_dir,
-        staging_id,
-        BackupArchiveLimits::DEFAULT,
-    );
-    match result {
-        Ok(unpacked) => {
-            if unpacked.chapter_media.is_empty() {
-                let _ = fs::remove_dir_all(&stage_dir);
-            }
-            Ok(unpacked)
-        }
-        Err(error) => {
-            let _ = fs::remove_dir_all(&stage_dir);
-            Err(error)
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn backup_unpack_staged(
-    app: AppHandle,
-    input_path: String,
-) -> Result<StagedUnpackedBackup, String> {
-    backup_blocking("backup_unpack_staged", move || {
-        unpack_backup_path_staged(app, input_path)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn backup_unpack_bytes(body: Vec<u8>) -> Result<UnpackedBackup, String> {
-    backup_blocking("backup_unpack_bytes", move || {
-        unpack_backup_bytes_body(body)
-    })
-    .await
-}
-
-fn unpack_backup_bytes_body(body: Vec<u8>) -> Result<UnpackedBackup, String> {
-    ensure_backup_archive_size(body.len() as u64)?;
-    read_backup_archive(Cursor::new(body))
-}
-
-fn unpack_backup_bytes_staged_body(
-    app: AppHandle,
-    body: Vec<u8>,
-) -> Result<StagedUnpackedBackup, String> {
-    ensure_backup_archive_size(body.len() as u64)?;
-    let (staging_id, stage_dir) = allocate_backup_staging_dir(&app)?;
-    let result = read_backup_archive_staged_with_limits(
-        Cursor::new(body),
-        &stage_dir,
-        staging_id,
-        BackupArchiveLimits::DEFAULT,
-    );
-    match result {
-        Ok(unpacked) => {
-            if unpacked.chapter_media.is_empty() {
-                let _ = fs::remove_dir_all(&stage_dir);
-            }
-            Ok(unpacked)
-        }
-        Err(error) => {
-            let _ = fs::remove_dir_all(&stage_dir);
-            Err(error)
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn backup_unpack_bytes_staged(
-    app: AppHandle,
-    body: Vec<u8>,
-) -> Result<StagedUnpackedBackup, String> {
-    backup_blocking("backup_unpack_bytes_staged", move || {
-        unpack_backup_bytes_staged_body(app, body)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn backup_restore_staged_media(
-    app: AppHandle,
-    staging_id: String,
-    staged_ref: String,
-    chapter_id: i64,
-    file_name: String,
-    novel_id: Option<i64>,
-    source_id: Option<String>,
-    novel_name: Option<String>,
-    novel_path: Option<String>,
-    chapter_number: Option<String>,
-    chapter_name: Option<String>,
-    chapter_position: Option<i64>,
-) -> Result<String, String> {
-    let staged_path = backup_staged_media_path(&app, &staging_id, &staged_ref)?;
-    backup_blocking("backup_restore_staged_media", move || {
-        store_chapter_media_file_source(
-            &app,
-            staged_path,
-            chapter_id,
-            file_name,
-            novel_id,
-            source_id,
-            novel_name,
-            novel_path,
-            chapter_number,
-            chapter_name,
-            chapter_position,
-        )
-    })
-    .await
 }
 
 #[cfg(test)]
@@ -1420,6 +823,8 @@ mod tests {
     #[test]
     fn restore_manifest_rejects_an_unknown_vpn_gate_verdict() {
         let json = r#"{
+            "version": 2,
+            "installedPlugins": [],
             "novels": [],
             "chapters": [],
             "categories": [],
@@ -1431,39 +836,6 @@ mod tests {
         }"#;
 
         assert!(serde_json::from_str::<BackupRestoreManifest>(json).is_err());
-    }
-
-    #[tokio::test]
-    async fn restore_vpn_gate_verdicts_preserves_rows_when_omitted() {
-        let pool = vpn_gate_verdict_pool().await;
-        sqlx::query(
-            "INSERT INTO vpn_gate_server_verdict (ip, verdict, updated_at)
-             VALUES ('198.51.100.10', 'works', 1700000000)",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed verdict");
-        let mut tx = pool.begin().await.expect("begin");
-
-        restore_vpn_gate_server_verdicts(&mut tx, None)
-            .await
-            .expect("preserve verdicts");
-        tx.commit().await.expect("commit");
-
-        let rows = sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT ip, verdict, updated_at FROM vpn_gate_server_verdict",
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("select verdicts");
-        assert_eq!(
-            rows,
-            vec![(
-                "198.51.100.10".to_string(),
-                "works".to_string(),
-                1_700_000_000,
-            )]
-        );
     }
 
     #[tokio::test]
@@ -1483,7 +855,7 @@ mod tests {
         }];
         let mut tx = pool.begin().await.expect("begin");
 
-        restore_vpn_gate_server_verdicts(&mut tx, Some(&restored))
+        restore_vpn_gate_server_verdicts(&mut tx, &restored)
             .await
             .expect("replace verdicts");
         tx.commit().await.expect("commit");
@@ -1514,7 +886,7 @@ mod tests {
         }];
         let mut tx = pool.begin().await.expect("begin");
 
-        let error = restore_vpn_gate_server_verdicts(&mut tx, Some(&restored))
+        let error = restore_vpn_gate_server_verdicts(&mut tx, &restored)
             .await
             .expect_err("reject non-canonical IPv4 address");
 
@@ -1548,19 +920,21 @@ mod tests {
         let pool = restore_pool().await;
         let json = format!(
             r#"{{
+                "version": 2,
+                "installedPlugins": [],
+                "vpnGateServerVerdicts": [],
                 "novels": [{{"id":1,"pluginId":"demo","path":"/n/1","name":"Novel","inLibrary":true,"isLocal":false,"createdAt":1,"updatedAt":1}}],
-                "chapters": [{}, {}, {}],
+                "chapters": [{}, {}],
                 "categories": [],
                 "novelCategories": [],
                 "repositories": []
             }}"#,
             restore_chapter_json(10, true, None),
-            restore_chapter_json(11, true, Some("<p>hi</p>")),
             restore_chapter_json(12, false, None),
         );
         let manifest: BackupRestoreManifest = serde_json::from_str(&json).expect("parse manifest");
         let mut tx = pool.begin().await.expect("begin");
-        execute_restore_snapshot(&mut tx, manifest, HashMap::new())
+        execute_restore_snapshot(&mut tx, manifest)
             .await
             .expect("restore");
         tx.commit().await.expect("commit");
@@ -1577,18 +951,46 @@ mod tests {
             rows,
             vec![
                 (10, 1, 1234, 56, Some("html".to_string()), 0, 40),
-                (11, 1, 9, 56, Some("html".to_string()), 0, 40),
                 (12, 0, 0, 0, None, 0, 40),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rejects_obsolete_formats_before_replacing_rows() {
+        let pool = restore_pool().await;
+        sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES (99, 'Keep', 1, 0)")
+            .execute(&pool)
+            .await
+            .expect("seed category");
+        for (version, content) in [(1, None), (2, Some("<p>old body</p>"))] {
+            let json = format!(
+                r#"{{"version":{version},"novels":[],"chapters":[{}],"categories":[],"novelCategories":[],"repositories":[],"installedPlugins":[],"vpnGateServerVerdicts":[]}}"#,
+                restore_chapter_json(10, true, content),
+            );
+            let manifest = serde_json::from_str(&json).expect("parse obsolete manifest");
+            let mut tx = pool.begin().await.expect("begin");
+            let error = execute_restore_snapshot(&mut tx, manifest)
+                .await
+                .expect_err("reject obsolete manifest");
+            assert!(
+                error.contains("unsupported backup version")
+                    || error.contains("inline chapter bodies")
+            );
+            let retained =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM category WHERE id=99")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .expect("read existing category");
+            assert_eq!(retained, 1);
+            tx.rollback().await.expect("rollback");
+        }
     }
 
     fn test_limits() -> BackupArchiveLimits {
         BackupArchiveLimits {
             max_entries: 8,
             max_manifest_bytes: 16,
-            max_chapter_html_bytes: 16,
-            max_media_entry_bytes: 4,
             max_total_uncompressed_bytes: 64,
             max_compression_ratio: MAX_BACKUP_COMPRESSION_RATIO,
         }
@@ -1605,139 +1007,17 @@ mod tests {
     }
 
     #[test]
-    fn media_repair_detection_ignores_local_media_refs() {
-        assert_eq!(
-            chapter_media_repair_needed(
-                Some(r#"<img src="norea-media://reader-asset/page.png">"#),
-                Some("html"),
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn backup_source_content_type_preserves_plugin_acquisition_type() {
-        assert_eq!(backup_source_content_type(Some("text")), "text");
-        assert_eq!(backup_source_content_type(Some("markdown")), "markdown");
-        assert_eq!(backup_source_content_type(None), "html");
-    }
-
-    #[test]
-    fn media_repair_detection_flags_remote_media_refs() {
-        assert_eq!(
-            chapter_media_repair_needed(
-                Some(r#"<img src="https://cdn.example/page.png">"#),
-                Some("html"),
-            ),
-            1
-        );
-        assert_eq!(
-            chapter_media_repair_needed(
-                Some(r#"<p style="background-image: url(//cdn.example/page.png)"></p>"#),
-                Some("html"),
-            ),
-            1
-        );
-    }
-
-    #[test]
     fn pack_then_unpack_round_trips_manifest_only() {
         let dir = tempdir().expect("tempdir");
         let zip_path = dir.path().join("backup.zip");
         let zip_path_str = zip_path.to_string_lossy().to_string();
 
-        let manifest_json = r#"{"version":1,"exportedAt":1700000000}"#.to_string();
+        let manifest_json = r#"{"version":2,"exportedAt":1700000000}"#.to_string();
 
         write_backup_zip(&manifest_json, &zip_path_str).expect("pack");
 
         let unpacked = unpack_backup_path(zip_path_str).expect("unpack");
         assert_eq!(unpacked.manifest_json, manifest_json);
-        assert!(unpacked.chapters.is_empty());
-        assert!(unpacked.chapter_media.is_empty());
-    }
-
-    #[test]
-    fn unpack_accepts_chapter_media() {
-        let dir = tempdir().expect("tempdir");
-        let zip_path = dir.path().join("backup.zip");
-        let zip_path_str = zip_path.to_string_lossy().to_string();
-
-        let file = File::create(&zip_path).expect("create");
-        let mut zip = ZipWriter::new(BufWriter::new(file));
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        zip.start_file(MANIFEST_ENTRY, options).expect("manifest");
-        zip.write_all(br#"{"version":1,"exportedAt":1700000000}"#)
-            .expect("manifest body");
-        zip.start_file("chapter-media/10/image.png", options)
-            .expect("media");
-        zip.write_all(&[1, 2, 3, 4]).expect("media body");
-        zip.finish().expect("finish");
-
-        let unpacked = unpack_backup_path(zip_path_str).expect("unpack");
-        assert_eq!(unpacked.chapter_media.len(), 1);
-        assert_eq!(
-            unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://reader-asset/image.png"
-        );
-        assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
-        assert_eq!(unpacked.chapter_media[0].body.as_slice(), &[1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn staged_unpack_writes_chapter_media_refs_without_bodies() {
-        let dir = tempdir().expect("tempdir");
-        let stage_dir = dir.path().join("stage-1");
-        let body = zip_bytes(&[
-            (MANIFEST_ENTRY, br#"{}"#),
-            ("chapter-media/10/image.png", &[1, 2, 3, 4]),
-        ]);
-
-        let unpacked = read_backup_archive_staged_with_limits(
-            Cursor::new(body),
-            &stage_dir,
-            "stage-1".to_string(),
-            test_limits(),
-        )
-        .expect("staged unpack");
-
-        assert_eq!(unpacked.manifest_json, r#"{}"#);
-        assert_eq!(unpacked.staging_id.as_deref(), Some("stage-1"));
-        assert_eq!(unpacked.chapter_media.len(), 1);
-        assert_eq!(
-            unpacked.chapter_media[0].media_src.as_str(),
-            "norea-media://reader-asset/image.png"
-        );
-        assert_eq!(unpacked.chapter_media[0].chapter_id, Some(10));
-        assert_eq!(unpacked.chapter_media[0].staged_ref.as_str(), "media-0.bin");
-        assert_eq!(unpacked.chapter_media[0].bytes, 4);
-        assert_eq!(
-            fs::read(stage_dir.join("media-0.bin")).expect("staged media"),
-            vec![1, 2, 3, 4]
-        );
-    }
-
-    #[test]
-    fn staged_unpack_rejects_oversized_media_without_staged_file() {
-        let dir = tempdir().expect("tempdir");
-        let stage_dir = dir.path().join("stage-1");
-        let media = vec![1, 2, 3, 4, 5];
-        let body = zip_bytes(&[
-            (MANIFEST_ENTRY, br#"{}"#),
-            ("chapter-media/10/image.png", media.as_slice()),
-        ]);
-
-        let result = read_backup_archive_staged_with_limits(
-            Cursor::new(body),
-            &stage_dir,
-            "stage-1".to_string(),
-            test_limits(),
-        );
-
-        assert!(result.is_err());
-        let entries = fs::read_dir(&stage_dir)
-            .map(|entries| entries.count())
-            .unwrap_or(0);
-        assert_eq!(entries, 0);
     }
 
     #[test]
@@ -1745,12 +1025,10 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let zip_path = dir.path().join("no-manifest.zip");
 
-        // Build a zip with only a chapter entry, no manifest.json.
         let file = File::create(&zip_path).expect("create");
         let mut zip = ZipWriter::new(BufWriter::new(file));
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        zip.start_file("chapters/1.html", options).expect("start");
-        zip.write_all(b"<p>orphan</p>").expect("write");
+        zip.add_directory("empty/", options).expect("start");
         zip.finish().expect("finish");
 
         let result = unpack_backup_path(zip_path.to_string_lossy().to_string());
@@ -1760,29 +1038,19 @@ mod tests {
     }
 
     #[test]
-    fn unpack_skips_unknown_entries() {
-        let dir = tempdir().expect("tempdir");
-        let zip_path = dir.path().join("with-junk.zip");
+    fn unpack_rejects_archives_with_chapter_content_or_media() {
+        for name in ["chapters/10.html", "chapter-media/10/image.png"] {
+            let body = zip_bytes(&[(MANIFEST_ENTRY, br#"{}"#), (name, b"obsolete content")]);
+            let result = read_backup_archive(Cursor::new(body));
+            assert!(result.is_err(), "accepted obsolete entry: {name}");
+        }
+    }
 
-        let file = File::create(&zip_path).expect("create");
-        let mut zip = ZipWriter::new(BufWriter::new(file));
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        zip.start_file(MANIFEST_ENTRY, options).expect("manifest");
-        zip.write_all(br#"{"version":1,"exportedAt":0}"#)
-            .expect("manifest body");
-        zip.start_file("README.txt", options).expect("readme");
-        zip.write_all(b"ignore me").expect("readme body");
-        zip.start_file("chapters/not-a-number.html", options)
-            .expect("bad name");
-        zip.write_all(b"ignored").expect("bad body");
-        zip.start_file("chapters/42.html", options).expect("good");
-        zip.write_all(b"<p>kept</p>").expect("good body");
-        zip.finish().expect("finish");
-
-        let unpacked = unpack_backup_path(zip_path.to_string_lossy().to_string()).expect("unpack");
-        assert_eq!(unpacked.chapters.len(), 1);
-        assert_eq!(unpacked.chapters[0].id, 42);
-        assert_eq!(unpacked.chapters[0].html, "<p>kept</p>");
+    #[test]
+    fn unpack_rejects_unknown_entries() {
+        let body = zip_bytes(&[("README.txt", b"extra")]);
+        let error = read_backup_archive(Cursor::new(body)).expect_err("reject unknown entry");
+        assert!(error.contains("unsupported archive entry"));
     }
 
     #[test]
@@ -1791,29 +1059,13 @@ mod tests {
             max_manifest_bytes: 4,
             ..test_limits()
         };
-        let body = zip_bytes(&[(MANIFEST_ENTRY, br#"{"version":1}"#)]);
+        let body = zip_bytes(&[(MANIFEST_ENTRY, br#"{"version":2}"#)]);
 
         let result = read_backup_archive_with_limits(Cursor::new(body), limits);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("manifest"), "error was: {err}");
-        assert!(err.contains("byte limit"), "error was: {err}");
-    }
-
-    #[test]
-    fn unpack_rejects_oversized_media_entry() {
-        let media = vec![1, 2, 3, 4, 5];
-        let body = zip_bytes(&[
-            (MANIFEST_ENTRY, br#"{}"#),
-            ("chapter-media/10/image.png", media.as_slice()),
-        ]);
-
-        let result = read_backup_archive_with_limits(Cursor::new(body), test_limits());
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("chapter media"), "error was: {err}");
         assert!(err.contains("byte limit"), "error was: {err}");
     }
 
@@ -1835,15 +1087,10 @@ mod tests {
     #[test]
     fn unpack_rejects_excessive_total_uncompressed_size() {
         let limits = BackupArchiveLimits {
-            max_media_entry_bytes: 16,
             max_total_uncompressed_bytes: 6,
             ..test_limits()
         };
-        let media = vec![1, 2, 3, 4, 5];
-        let body = zip_bytes(&[
-            (MANIFEST_ENTRY, br#"{}"#),
-            ("chapter-media/10/image.png", media.as_slice()),
-        ]);
+        let body = zip_bytes(&[(MANIFEST_ENTRY, br#"{"long":true}"#)]);
 
         let result = read_backup_archive_with_limits(Cursor::new(body), limits);
 
@@ -1855,16 +1102,12 @@ mod tests {
     #[test]
     fn unpack_rejects_excessive_compression_ratio() {
         let limits = BackupArchiveLimits {
-            max_media_entry_bytes: 2 * BYTES_PER_MIB,
             max_total_uncompressed_bytes: 2 * BYTES_PER_MIB,
             max_compression_ratio: 2,
             ..test_limits()
         };
-        let media = vec![0; MIN_BACKUP_RATIO_CHECK_BYTES as usize];
-        let body = zip_bytes(&[
-            (MANIFEST_ENTRY, br#"{}"#),
-            ("chapter-media/10/image.png", media.as_slice()),
-        ]);
+        let manifest = vec![b' '; MIN_BACKUP_RATIO_CHECK_BYTES as usize];
+        let body = zip_bytes(&[(MANIFEST_ENTRY, manifest.as_slice())]);
 
         let result = read_backup_archive_with_limits(Cursor::new(body), limits);
 

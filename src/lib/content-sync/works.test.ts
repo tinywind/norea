@@ -6,12 +6,12 @@ vi.mock("../work-metadata", async original => ({
   listStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(),
   installStoredNovelMetadata: vi.fn(),
 }));
-vi.mock("../../db/queries/content-sync", () => ({ readContentSyncStateCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFiles: vi.fn() }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
-import { readContentSyncStateCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFiles, storedNovelMetadataFingerprint } from "../../db/work-metadata";
 import { syncWorkMetadata, contentWorkId } from "./works";
 
@@ -31,7 +31,7 @@ let puts: number;
 beforeEach(() => {
   vi.clearAllMocks(); memory.clear(); localCovers.clear(); revisions.clear(); local = []; remote = undefined; remoteCover = undefined; sequence = 0; puts = 0;
   vi.stubGlobal("window", new EventTarget());
-  vi.mocked(readContentSyncStateCache).mockImplementation(async key => memory.get(key) ?? null);
+  vi.mocked(readContentSyncCache).mockImplementation(async key => memory.get(key) ?? null);
   vi.mocked(writeContentSyncCache).mockImplementation(async (key, value) => { memory.set(key, value); });
   vi.mocked(listStoredNovelMetadata).mockImplementation(async () => structuredClone(local));
   vi.mocked(readWorkMetadataSyncFiles).mockImplementation(async rescan => {
