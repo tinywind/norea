@@ -35,7 +35,7 @@ import {
   VirtualChapterList,
 } from "../components/novel/NovelChapterList";
 import { NovelWorkspace } from "../components/novel/NovelWorkspace";
-import { ServerChapterDelete } from "../components/novel/ServerChapterDelete";
+import { ServerChapterManager } from "../components/novel/ServerChapterManager";
 import { useLocalNovelEditor } from "../components/novel/use-local-novel-editor";
 import { useNovelChapterActions } from "../components/novel/use-novel-chapter-actions";
 import { useNovelDownloadStatuses } from "../components/novel/use-novel-download-statuses";
@@ -437,10 +437,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           <ConsolePanel className="norea-novel-chapters-panel">
             <ConsoleSectionHeader
               actions={
-                <ChapterSortPicker
-                  onChange={setDefaultChapterSort}
-                  value={defaultChapterSort}
-                />
+                <>
+                  <ServerChapterManager novel={novel} source={serverSourceQuery.data} active={active} />
+                  <ChapterSortPicker
+                    onChange={setDefaultChapterSort}
+                    value={defaultChapterSort}
+                  />
+                </>
               }
               eyebrow={t("novel.chapterIndex")}
               title={t("novel.chapters")}
@@ -540,7 +543,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       <DownloadedGlyph />
                     )}
                   </IconButton>
-                  <ServerChapterDelete novel={novel} chapters={selectedChapters} />
                   <IconButton
                     className="norea-novel-selection-icon"
                     disabled={selectedUnreadCount === 0 || chapterSelectionBusy}

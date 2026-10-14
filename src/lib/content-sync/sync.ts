@@ -43,13 +43,13 @@ async function contentFingerprint(row: ContentSyncChapter, stagePath: string): P
   return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
-async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber">, includeUnavailable = false, signal?: AbortSignal): Promise<CatalogEntry | null> {
+async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber">, signal?: AbortSignal): Promise<CatalogEntry | null> {
   const local = { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath };
   const recovered = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(row.chapterPath);
   const chapterNumber = row.chapterNumber ?? recovered?.[1];
   let entry: CatalogEntry;
   try {
-    const query = new URLSearchParams({ ...local, ...(includeUnavailable ? { includeUnavailable: "true" } : {}), ...(chapterNumber && /^\d+(?:\.\d+)?$/.test(chapterNumber) ? { chapterNumber } : {}) });
+    const query = new URLSearchParams({ ...local, ...(chapterNumber && /^\d+(?:\.\d+)?$/.test(chapterNumber) ? { chapterNumber } : {}) });
     entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token, "GET", undefined, signal);
   } catch (error) {
     if (error instanceof ContentServerError && error.status === 404) return null;
@@ -141,7 +141,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         activity.signal.throwIfAborted();
         if (!await canUploadContentChapter(row.chapterId)) continue;
         activity.signal.throwIfAborted();
-        const existing = await findUploadedChapter(server, token, row, false, activity.signal);
+        const existing = await findUploadedChapter(server, token, row, activity.signal);
         activity.signal.throwIfAborted();
         assertDevice(server, token);
         if (existing) {
@@ -275,16 +275,6 @@ async function mutateServerChapter(entry: CatalogEntry, restore: boolean): Promi
 }
 export function deleteServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, false); }
 export function restoreServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, true); }
-
-export async function deleteServerChapters(chapters: readonly (ContentIdentity & { chapterNumber: string | null })[]): Promise<void> {
-  const { serverUrl } = useContentSyncStore.getState();
-  const token = await initializeDevice(serverUrl);
-  for (const chapter of chapters) {
-    assertDevice(serverUrl, token);
-    const entry = await findUploadedChapter(serverUrl, token, chapter, true);
-    if (entry) await contentServerRequest(serverUrl, `/chapters/${encodeURIComponent(entry.id)}`, token, "DELETE");
-  }
-}
 
 export async function getContentSyncCursors(): Promise<{ catalogCursor: number; workCursor: number }> {
   const { serverUrl } = useContentSyncStore.getState();

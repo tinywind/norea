@@ -9,6 +9,58 @@
   display: none;
 }
 
+.norea-server-management {
+  margin-inline: auto;
+  max-width: 72rem;
+  min-width: 0;
+}
+
+.norea-server-address,
+.norea-server-chapter-title {
+  overflow-wrap: anywhere;
+}
+
+.norea-server-chapters-panel > .norea-console-section-header {
+  padding: 0.75rem;
+}
+
+.norea-server-selection-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.75rem;
+  border-block: 1px solid var(--mantine-color-default-border);
+}
+
+.norea-server-chapter-row {
+  align-items: center;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  cursor: pointer;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1.125rem minmax(2.5rem, auto) minmax(0, 1fr);
+  min-height: 3.25rem;
+  padding: 0.625rem 0.875rem;
+}
+
+.norea-server-chapter-row:has(input:checked) {
+  background: var(--mantine-primary-color-light);
+}
+
+.norea-server-chapter-row input {
+  accent-color: var(--mantine-primary-color-filled);
+  height: 1.125rem;
+  margin: 0;
+  width: 1.125rem;
+}
+
+.norea-server-chapter-number {
+  color: var(--mantine-color-dimmed);
+  font-variant-numeric: tabular-nums;
+}
+
 .norea-novel-layout {
   display: flex;
   flex-direction: column;

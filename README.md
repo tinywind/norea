@@ -192,9 +192,11 @@ SHA-256 hashes. Downloads support only the current original-file format.
 Deleting a local download
 leaves the server copy intact. The server keeps one complete copy per chapter.
 The app checks for that copy before creating a snapshot or uploading files.
-To replace a server copy, select chapters in the work page, choose **Delete from
-server**, then use **Rescan local files and sync**. Server deletion preserves
-local files and reading state.
+To replace a server copy, open **Manage server data** from the work page and
+select chapters in the separate server list. Confirm **Delete from server**,
+then use **Rescan local files and sync**. Server deletion preserves local files,
+reading state, work metadata, and covers. Whole-work deletion is available only
+in the server admin console.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
 `novel.json` stores its details beside its cover, without a chapter list or source

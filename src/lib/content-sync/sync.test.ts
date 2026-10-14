@@ -19,7 +19,7 @@ import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
-import { syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, deleteServerChapters, restoreServerChapter } from "./sync";
+import { syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { syncWorkMetadata } from "./works";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { ContentServerError } from "./client";
@@ -135,18 +135,6 @@ it("skips every local chapter belonging to a deleted server work", async () => {
   expect(fingerprintContentChapter).not.toHaveBeenCalled();
   expect(uploadContentChapter).not.toHaveBeenCalled();
   expect(useContentSyncStore.getState().status).toBe("idle");
-});
-
-it("deletes only requested server chapters without starting uploads or changing local downloads", async () => {
-  const original = vi.mocked(appFetch).getMockImplementation()!;
-  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
-    ? Promise.resolve(Response.json({ id: "existing", deleted: false, manifest: { identity: { pluginId: "p", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
-  await deleteServerChapters([{ pluginId: "p", novelPath: "n", chapterPath: "c", chapterNumber: null }]);
-  expect(appFetch).toHaveBeenCalledWith(expect.stringContaining("includeUnavailable=true"), expect.anything());
-  expect(appFetch).toHaveBeenCalledWith("http://localhost:7788/api/v1/chapters/existing", expect.objectContaining({ method: "DELETE" }));
-  expect(uploadContentChapter).not.toHaveBeenCalled();
-  expect(listContentSyncChapters).not.toHaveBeenCalled();
-  expect(markContentInstalled).not.toHaveBeenCalled();
 });
 
 it("does not upload local content when the catalog contains a server tombstone", async () => {

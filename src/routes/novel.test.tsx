@@ -37,7 +37,6 @@ vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () 
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
 vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: {}, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
 vi.mock("../components/novel/use-novel-download-statuses", () => ({ useNovelDownloadStatuses: () => new Map() }));
-vi.mock("../components/novel/ServerChapterDelete", () => ({ ServerChapterDelete: () => null }));
 vi.mock("../components/novel/use-local-novel-editor", () => ({ useLocalNovelEditor: () => ({ addLocalChapters: {}, reorderLocalChapters: {} }) }));
 vi.mock("../components/ReaderSettingsPanel", () => ({ ReaderSettingsPanel: () => null }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => mocks.installed ? { id: "source-a", name: "Source", getBaseUrl: () => "https://source.example" } : undefined } }));
@@ -83,6 +82,8 @@ it("presents server-published local works as downloadable without changing store
   expect($("button[aria-label='novel.batchDownload.open']")).toHaveLength(1);
   expect($("button[aria-label='novel.local.addChapters']")).toHaveLength(0);
   expect($("button[aria-label='novel.openSource']")).toHaveLength(0);
+  expect($("button").filter((_, button) => $(button).text() === "contentSync.manageChapters")).toHaveLength(1);
+  expect($.text()).not.toContain("contentSync.deleteServer");
   expect(mocks.novel.isLocal).toBe(true);
 });
 
@@ -157,7 +158,10 @@ it("does not expose source actions for a server folder path before binding looku
 });
 
 it("retains local editing presentation for unbound local works", () => {
-  expect(renderPage()("button[aria-label='novel.local.editMetadata']")).toHaveLength(1);
+  const $ = renderPage();
+  expect($("button[aria-label='novel.local.editMetadata']")).toHaveLength(1);
+  expect($.text()).not.toContain("contentSync.manageChapters");
+  expect($.text()).not.toContain("contentSync.deleteServer");
 });
 
 it("shows available packages and downloaded chapters without deleting canonical metadata chapters", () => {

@@ -85,10 +85,13 @@ no selected source yet.
 
 Registered devices can delete and restore server chapters. Server deletion
 preserves local files. Removing a local download does not delete the server copy
-or automatically download it again. Select chapters in the work page and use
-**Delete from server** to remove their server copies. Automatic sync respects
+or automatically download it again. When the work is on the server or already
+linked to it, **Manage server data** opens a separate server chapter list from
+the work page. It has its own selection, pages of 100 chapters, and deletion
+confirmation naming the work and server. Only selected server chapter IDs are
+deleted; local files, work metadata, and covers remain. Automatic sync respects
 deletions. To replace content, delete it on the server, then choose **Rescan local
-files and sync**.
+files and sync**. The app does not offer whole-work deletion from the server.
 Whole-work deletion in the server console removes the server folder, metadata,
 cover, and chapter index. It keeps device copies intact and blocks automatic
 metadata reuploads until an explicit rescan restores the work.
