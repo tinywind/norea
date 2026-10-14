@@ -1322,6 +1322,7 @@ class AndroidScraperBridge(
     val id = payload.getString("id")
     val url = payload.getString("url")
     val beforeScript = payload.optString("beforeScript").takeIf { it.isNotEmpty() }
+    val navigationScript = payload.optString("chapterNavigationScript")
     val timeoutMs = payload.optLong("timeoutMs", 30_000L)
     val resultNonce = beforeScript?.let { bridgeSession.newNonce() }
     val webView = scraper(state, payloadUserAgent(payload))
@@ -1339,6 +1340,7 @@ class AndroidScraperBridge(
     }
 
     state.activeExtractId = id
+    state.retainExtractDocument = navigationScript.isNotBlank()
     state.activeResultNonce = resultNonce
     logState(
       state,
@@ -1357,11 +1359,11 @@ class AndroidScraperBridge(
     }
     val loadTarget = {
       if (state.activeExtractId == id && state.activeAction?.id == id) {
-        val navigationScript = payload.optString("chapterNavigationScript")
         runCatching {
           if (useDocumentStartScript && navigationScript.isNotBlank()) {
             val prepareCapture = scripts.extractStart(id, resultNonce.orEmpty(), beforeScript.orEmpty())
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
+              if (state.activeExtractId == id && followed == "true") logState(state, "followed chapter link id=$id", targetUrl)
               if (state.activeExtractId == id && followed != "true") webView.loadUrl(targetUrl)
             }
           } else {
@@ -1694,6 +1696,7 @@ class AndroidScraperBridge(
     state.activeResultNonce = null
     state.activeAction = null
     state.fetchInFlight = false
+    state.retainExtractDocument = false
     sendResult(id, envelope)
     state.busy = false
     runNextAfterPendingBlank(state)
@@ -1808,7 +1811,7 @@ class AndroidScraperBridge(
     state.webView?.let { profileCookieManager(it).flush() }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")
     clearTimeout(state)
-    state.blankBeforeNextAction = true
+    if (!state.retainExtractDocument) state.blankBeforeNextAction = true
     finishSuccess(state, activeId, payload)
   }
 

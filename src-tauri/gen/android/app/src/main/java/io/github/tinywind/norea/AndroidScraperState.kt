@@ -13,6 +13,7 @@ internal class AndroidScraperState(val key: String) {
   val queue = AndroidScraperQueue()
   var activeAction: AndroidScraperQueuedAction? = null
   var activeExtractId: String? = null
+  var retainExtractDocument = false
   var activeExtractScript: ScriptHandler? = null
   var activeFetchId: String? = null
   var activeResultNonce: String? = null
