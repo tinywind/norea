@@ -703,9 +703,6 @@ export function PluginSearchSection({
       t("tasks.task.openSite", { source: plugin.name }),
     ).promise.catch(() => undefined);
   };
-  const sourceWorkConcurrency = useBrowseStore(
-    (s) => s.sourceWorkConcurrency,
-  );
   const setLastUsedPluginId = useBrowseStore((s) => s.setLastUsedPluginId);
   const pinnedPluginIds = useBrowseStore((s) => s.pinnedPluginIds);
   const togglePinnedPlugin = useBrowseStore((s) => s.togglePinnedPlugin);
@@ -958,7 +955,6 @@ export function PluginSearchSection({
     });
 
     globalSearch(pluginManager, trimmedQuery, {
-      concurrency: sourceWorkConcurrency,
       plugins: pluginsToStart,
       signal: controller.signal,
       taskTitle: (plugin) =>
@@ -1008,7 +1004,6 @@ export function PluginSearchSection({
     clearGlobalSearch,
     currentSearchKey,
     finishGlobalSearch,
-    sourceWorkConcurrency,
     globalSearchState,
     pluginsToSearch,
     retryPluginIdSet,

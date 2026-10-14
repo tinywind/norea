@@ -171,11 +171,11 @@ describe("globalSearch", () => {
     expect(results[0]?.error).toContain("Search timed out");
     expect(cancelAndroidScraperExecutor).toHaveBeenCalledWith(
       "scraper: global search timed out",
-      "pool:0",
+      "search:0",
     );
   });
 
-  it("queues global search tasks while source queues are paused", async () => {
+  it("searches while download source queues are paused", async () => {
     let started = 0;
     const manager = makeManager([
       makePlugin("queued", async () => {
@@ -189,9 +189,8 @@ describe("globalSearch", () => {
       const promise = globalSearch(manager, "x", { timeoutMs: 5 });
       await settle();
 
-      expect(started).toBe(0);
+      expect(started).toBe(1);
 
-      taskScheduler.resumeSourceQueue();
       const results = await promise;
 
       expect(started).toBe(1);
@@ -215,7 +214,8 @@ describe("globalSearch", () => {
     expect(onResult).toHaveBeenCalledTimes(3);
   });
 
-  it("respects concurrency=1 (sequential calls)", async () => {
+  it("searches in parallel when download concurrency is one", async () => {
+    taskScheduler.setSourceForegroundConcurrency(1);
     let active = 0;
     let maxActive = 0;
     const slow = (id: string) =>
@@ -234,12 +234,39 @@ describe("globalSearch", () => {
       slow("d"),
     ]);
 
-    await globalSearch(manager, "x", { concurrency: 1 });
+    await globalSearch(manager, "x");
 
-    expect(maxActive).toBe(1);
+    expect(maxActive).toBe(3);
   });
 
-  it("caps in-flight calls at concurrency=2", async () => {
+  it("does not change the concurrency of queued downloads", async () => {
+    taskScheduler.setSourceForegroundConcurrency(1);
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const downloads = ["download-a", "download-b"].map(id => taskScheduler.enqueueSource({
+      kind: "chapter.download",
+      priority: "user",
+      title: id,
+      source: { id, name: id },
+      run: async () => { started.push(id); await gate; },
+    }));
+
+    try {
+      await settle();
+      expect(started).toEqual(["download-a"]);
+      const manager = makeManager([makePlugin("search", async () => [])]);
+      await globalSearch(manager, "x");
+      await settle();
+      expect(started).toEqual(["download-a"]);
+    } finally {
+      release();
+      await Promise.all(downloads.map(task => task.promise));
+    }
+  });
+
+  it("keeps search concurrency independent of a larger download pool", async () => {
+    taskScheduler.setSourceForegroundConcurrency(8);
     let active = 0;
     let maxActive = 0;
     const slow = (id: string) =>
@@ -259,9 +286,9 @@ describe("globalSearch", () => {
       slow("e"),
     ]);
 
-    await globalSearch(manager, "x", { concurrency: 2 });
+    await globalSearch(manager, "x");
 
-    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(maxActive).toBe(3);
   });
 
   it("discards results once the signal is aborted before any task starts", async () => {
@@ -296,10 +323,9 @@ describe("globalSearch", () => {
     const controller = new AbortController();
 
     const promise = globalSearch(manager, "x", {
-      concurrency: 1,
       signal: controller.signal,
     });
-    // Let the first plugin start, then abort.
+    // Let the first search group start, then abort.
     await new Promise((resolve) => setTimeout(resolve, 1));
     controller.abort();
 

@@ -113,11 +113,11 @@ describe("chapter download stage", () => {
     ChapterDownloadStatus,
     string,
   ]>([
-    [{ kind: "running", phase: "local" }, "Checking local files"],
+    [{ kind: "running", phase: "local" }, "Checking download status"],
     [{ kind: "running", phase: "server-lookup" }, "Checking content server"],
     [{ kind: "running", phase: "server-download" }, "Content server: downloading"],
     [{ kind: "running", phase: "source-download" }, "Original site: downloading"],
-    [{ kind: "queued", phase: "local" }, "Local file check queued"],
+    [{ kind: "queued", phase: "local" }, "Download status check queued"],
     [{ kind: "queued", phase: "server-lookup" }, "Content server check queued"],
     [{ kind: "queued", phase: "server-download" }, "Content server download queued"],
     [{ kind: "queued", phase: "source-download" }, "Original site download queued"],

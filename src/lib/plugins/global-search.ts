@@ -12,8 +12,6 @@ export interface GlobalSearchResult {
 }
 
 export interface GlobalSearchOptions {
-  /** Default 3, mirrors the queued source work setting. */
-  concurrency?: number;
   plugins?: readonly Plugin[];
   /** When the signal aborts, no further results are yielded. */
   signal?: AbortSignal;
@@ -24,7 +22,6 @@ export interface GlobalSearchOptions {
   taskTitle?: (plugin: Plugin) => string;
 }
 
-const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function normalizeTimeoutMs(value: unknown): number {
@@ -65,8 +62,8 @@ async function withTimeout<T>(
 }
 
 /**
- * Fan a single search query across every installed plugin with a
- * scheduler-bounded concurrency. Returns the per-plugin result list
+ * Fan a single search query across every installed plugin with three search
+ * executors, separate from the download queue. Returns the per-plugin results
  * once every task has settled.
  *
  * If the {@link AbortSignal} fires, in-flight plugin tasks may still
@@ -83,11 +80,6 @@ export async function globalSearch(
   const plugins = options.plugins ?? manager.list();
   if (plugins.length === 0) return [];
 
-  const concurrency = Math.max(
-    1,
-    options.concurrency ?? DEFAULT_CONCURRENCY,
-  );
-  taskScheduler.setSourceForegroundConcurrency(concurrency);
   const { signal, onResult } = options;
   const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
   const collected: GlobalSearchResult[] = [];

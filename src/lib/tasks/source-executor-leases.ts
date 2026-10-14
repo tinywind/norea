@@ -15,6 +15,7 @@ export class SourceExecutorLeases {
   private readonly leasesByTaskId = new Map<string, SourceExecutorLease>();
   private readonly activeTaskIdsBySource = new Map<string, Set<string>>();
   private readonly poolTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
+  private readonly searchTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
   private readonly executorBySource = new Map<string, ScraperExecutorId>();
   private immediateTaskId: string | null = null;
   private backgroundCount = 0;
@@ -34,7 +35,7 @@ export class SourceExecutorLeases {
   }
 
   get hasActiveExecutor(): boolean {
-    return this.immediateTaskId !== null || this.poolTaskIdsByExecutor.size > 0;
+    return this.immediateTaskId !== null || this.poolTaskIdsByExecutor.size > 0 || this.searchTaskIdsByExecutor.size > 0;
   }
 
   activeTaskIds(sourceId: string): ReadonlySet<string> | undefined {
@@ -53,6 +54,15 @@ export class SourceExecutorLeases {
     for (let index = 0; index < this.poolConcurrency; index += 1) {
       const executorId: ScraperExecutorId = `pool:${index}`;
       if (!this.poolTaskIdsByExecutor.has(executorId)) ids.push(executorId);
+    }
+    return ids;
+  }
+
+  freeSearchExecutorIds(): ScraperExecutorId[] {
+    const ids: ScraperExecutorId[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const executorId: ScraperExecutorId = `search:${index}`;
+      if (!this.searchTaskIdsByExecutor.has(executorId)) ids.push(executorId);
     }
     return ids;
   }
@@ -85,13 +95,15 @@ export class SourceExecutorLeases {
     activeIds.add(taskId);
     this.activeTaskIdsBySource.set(lease.sourceId, activeIds);
     if (
-      lease.executorId !== "immediate" &&
+      lease.executorId.startsWith("pool:") &&
       !this.assignedExecutor(lease.sourceId)
     ) {
       this.executorBySource.set(lease.sourceId, lease.executorId);
     }
     if (lease.executorId === "immediate") {
       this.immediateTaskId = taskId;
+    } else if (lease.executorId.startsWith("search:")) {
+      this.searchTaskIdsByExecutor.set(lease.executorId, taskId);
     } else {
       this.poolTaskIdsByExecutor.set(lease.executorId, taskId);
     }
@@ -110,6 +122,8 @@ export class SourceExecutorLeases {
     }
     if (lease.executorId === "immediate") {
       if (this.immediateTaskId === taskId) this.immediateTaskId = null;
+    } else if (this.searchTaskIdsByExecutor.get(lease.executorId) === taskId) {
+      this.searchTaskIdsByExecutor.delete(lease.executorId);
     } else if (this.poolTaskIdsByExecutor.get(lease.executorId) === taskId) {
       this.poolTaskIdsByExecutor.delete(lease.executorId);
     }

@@ -56,10 +56,17 @@ completed source refresh. Unchanged server metadata and covers are not reinstall
 A failed server or site request leaves the saved work usable. A work must have
 original source identity metadata; folder names cannot establish work identity.
 
-Before a chapter download, Norea first checks for a complete local copy, then
-asks the server for that chapter. Matching files install into the existing local
-chapter; otherwise an available source plugin handles the download.
-The server lookup timeout defaults to 3 seconds
+Before a chapter download, Norea checks the cached download state in SQLite and
+skips completed chapters. For pending chapters, each download batch lists the
+work's chapter folders once and restores missing download flags and chapter
+rows before contacting the server. Known completed folders are skipped; only
+uncached folders are checked for final body filenames and sizes,
+without reading bodies or finalizing media archives. Deletions during this scan
+cannot restore stale download flags. Detailed content recovery remains part of
+opening stored content and explicit storage rescans.
+For an unfinished chapter, Norea asks the server for that chapter. Matching files
+install into the existing local chapter; otherwise an available source plugin
+handles the download. The server lookup timeout defaults to 3 seconds
 and can be set from 1 to 120 seconds. This deadline includes device registration
 and metadata lookup, and also applies to work-home server refreshes. Chapter file
 transfers have their own timeout. Server-only chapters report unavailable-server
@@ -70,7 +77,7 @@ back to the source plugin. Cancelling a transfer releases the download task with
 publishing late results. Native HTTP may finish in its private staging directory,
 which is removed after the request ends.
 
-Chapter rows show the current step below the title: checking local files,
+Chapter rows show the current step below the title: checking download status,
 checking the content server, downloading from the content server, or downloading
 from the original site. The label changes when a server attempt falls back to
 the source. Queued rows show the known pending step; an unstarted download has

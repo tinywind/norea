@@ -37,6 +37,8 @@ vi.mock("../../lib/tasks/download-cache-delete", () => ({
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 
 import { useNovelChapterActions } from "./use-novel-chapter-actions";
+import { enqueueChapterDownload, enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
+import type { ChapterListRow } from "../../db/queries/chapter";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -77,4 +79,21 @@ it("reports a failed deletion and refreshes the affected chapter state", async (
     color: "red", message: "Storage permission was revoked",
   }));
   expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["download-cache"] });
+});
+
+it.each([false, true])("reloads only the chapter list after local discovery (batch: %s)", async (batch) => {
+  let complete!: () => void;
+  const promise = new Promise<void>((resolve) => { complete = resolve; });
+  const handle = { id: "download", promise };
+  vi.mocked(enqueueChapterDownload).mockReturnValue(handle);
+  vi.mocked(enqueueChapterDownloadBatch).mockReturnValue(handle as never);
+  const chapter = { id: 7, name: "Opening", path: "/chapter/1", chapterNumber: "1", contentType: "html" } as ChapterListRow;
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, [chapter]);
+  if (batch) actions.downloadChapters([chapter]);
+  else actions.downloadChapter(chapter);
+  expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+
+  complete();
+
+  await vi.waitFor(() => expect(mocks.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: ["novel", "detail", 3, "chapters"], exact: true }));
 });

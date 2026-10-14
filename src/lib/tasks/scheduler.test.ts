@@ -1030,7 +1030,7 @@ describe("TaskScheduler", () => {
     await download.promise;
   });
 
-  it("runs queued pool UI work after the current background resource yields", async () => {
+  it("runs global search beside the current background resource", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
       sourceQueuesPaused: false,
@@ -1074,12 +1074,12 @@ describe("TaskScheduler", () => {
 
     await settle();
 
-    expect(order).toEqual(["download:1:pool:0:start"]);
+    expect(order).toEqual(["download:1:pool:0:start", "search:search:0:start"]);
     const observedFirstDownloadContext = firstDownloadContext as
       | TaskRunContext
       | null;
     expect(observedFirstDownloadContext?.signal.aborted).toBe(false);
-    expect(observedFirstDownloadContext?.shouldYield?.()).toBe(true);
+    expect(observedFirstDownloadContext?.shouldYield?.()).toBe(false);
 
     finishDownload();
     await search.promise;
@@ -1087,12 +1087,9 @@ describe("TaskScheduler", () => {
 
     expect(order).toEqual([
       "download:1:pool:0:start",
-      "download:1:yielded",
-      "search:pool:0:start",
-      "download:2:pool:0:start",
+      "search:search:0:start",
     ]);
 
-    finishDownload();
     await download.promise;
   });
 
@@ -1290,13 +1287,13 @@ describe("TaskScheduler", () => {
     ]);
   });
 
-  it("lets open site work run while source queues are paused", async () => {
+  it("lets search and open site work run while source queues are paused", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
     const order: string[] = [];
 
     const search = scheduler.enqueueSource({
       kind: "source.search",
-      title: "Paused search",
+      title: "Interactive search",
       priority: "interactive",
       source: { id: "p", name: "Plugin" },
       run: async () => {
@@ -1317,8 +1314,8 @@ describe("TaskScheduler", () => {
     await browser.promise;
     await settle();
 
-    expect(order).toEqual(["browser:immediate:start"]);
-    expect(scheduler.getTask(search.id)?.status).toBe("queued");
+    expect(order).toEqual(["search:start", "browser:immediate:start"]);
+    expect(scheduler.getTask(search.id)?.status).toBe("succeeded");
   });
 
   it("pauses running source work and requeues it", async () => {
@@ -3442,7 +3439,7 @@ describe("TaskScheduler", () => {
     await Promise.all(tasks.map((task) => task.promise));
   });
 
-  it("delays tasks with a matching source cooldown", async () => {
+  it("delays queued downloads with a matching source cooldown", async () => {
     vi.useFakeTimers();
     try {
       const scheduler = new TaskScheduler({
@@ -3466,9 +3463,9 @@ describe("TaskScheduler", () => {
       await first.promise;
 
       const second = scheduler.enqueueSource({
-        kind: "source.globalSearch",
+        kind: "chapter.download",
         title: "Second",
-        priority: "user",
+        priority: "background",
         source: { id: "p", name: "Plugin" },
         sourceCooldownKey: cooldownKey,
         run: async () => {
@@ -3568,9 +3565,9 @@ describe("TaskScheduler", () => {
       ]);
 
       const afterRemote = scheduler.enqueueSource({
-        kind: "source.globalSearch",
+        kind: "chapter.download",
         title: "Later online work",
-        priority: "user",
+        priority: "background",
         source: { id: "p", name: "Plugin" },
         sourceCooldownKey: cooldownKey,
         run: async () => {

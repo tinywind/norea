@@ -60,6 +60,7 @@ type SourceTaskGroup = {
 };
 
 type SourceWorkTaskGroup = {
+  queueIndex: number;
   tasks: TaskRecord[];
   title: string;
   workKey: string;
@@ -247,9 +248,11 @@ function groupSourceTasksByWork(tasks: TaskRecord[]): SourceTaskGroupItem[] {
 
     const group = groupsByKey.get(workKey);
     if (group) {
+      group.queueIndex = Math.min(group.queueIndex, task.queueIndex ?? Infinity);
       group.tasks.push(task);
     } else {
       const nextGroup = {
+        queueIndex: task.queueIndex ?? Infinity,
         tasks: [task],
         title: sourceWorkTaskTitle(task),
         workKey,
@@ -259,7 +262,11 @@ function groupSourceTasksByWork(tasks: TaskRecord[]): SourceTaskGroupItem[] {
     }
   }
 
-  return items;
+  return items.sort((left, right) => {
+    const leftIndex = left.type === "work" ? left.group.queueIndex : left.task.queueIndex ?? Infinity;
+    const rightIndex = right.type === "work" ? right.group.queueIndex : right.task.queueIndex ?? Infinity;
+    return leftIndex - rightIndex;
+  });
 }
 
 function sourceWorkOpenKey(sourceId: string, workKey: string): string {

@@ -5,18 +5,19 @@
  *
  * Logical source queues protect sites from noisy access patterns:
  * - Keep one queue per source id.
- * - Gate each source with pause, cooldown, backoff, and an active lease.
+ * - Gate queued downloads with pause, cooldown, backoff, and an active lease.
  * - Dispatch source queues through a source lane so queued work for one source
  *   does not spread across multiple hidden WebViews.
- * - Default to one active task per source. Queue order can be changed by the
- *   user, but it must not bypass source rate limits unless a future task
- *   explicitly opts into that policy.
+ * - UI interactions use a separate executor and ignore download queue settings.
+ *   They neither wait for nor extend a download cooldown. Network availability
+ *   and source authentication still apply to every request.
  *
  * Physical scraper executors own WebViews:
  * - `immediate` owns the foreground/site-browser WebView and is reserved for
  *   UI-responsive work such as opening a site or manual challenge clearing.
  * - `pool:0..N-1` own hidden worker WebViews. N is the user-configured
  *   concurrent source work setting.
+ * - `search:0..2` run global search independently of download slots.
  * - WebViews assigned to the same source id use one browser profile across
  *   executors. Different source ids use isolated cookies, storage, and cache.
  *
@@ -122,11 +123,8 @@ const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
 
 /**
  * When background concurrency follows the foreground setting, reserve one pool
- * executor for foreground work so a batch of background downloads cannot occupy
- * every executor and stall interactive search, novel-home refresh, or
- * "read now" chapter downloads. With a single executor (N=1) this collapses to
- * 1 because reservation is impossible; interactive work escapes to the
- * dedicated immediate executor regardless.
+ * executor for queued foreground work. With a single executor this collapses to
+ * 1 because reservation is impossible. UI interactions use separate executors.
  */
 function reservedBackgroundConcurrency(foregroundConcurrency: number): number {
   return Math.max(1, foregroundConcurrency - 1);
@@ -183,17 +181,23 @@ function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
   );
 }
 
-function isImmediateInteractionSourceKind(kind: TaskKind): boolean {
-  return isImmediateBrowseSourceKind(kind) || kind === "chapter.download";
-}
-
 function isUiResponsiveSourceKind(kind: TaskKind): boolean {
   return (
     isOpenSiteSourceKind(kind) ||
     isImmediateBrowseSourceKind(kind) ||
+    kind === "source.clearCookies" ||
     kind === "source.globalSearch" ||
     kind === "source.refreshNovel"
   );
+}
+
+function isUiInteraction(entry: TaskEntry): boolean {
+  return entry.record.priority === "interactive" ||
+    (entry.record.priority === "user" && isUiResponsiveSourceKind(entry.record.kind));
+}
+
+function usesSearchExecutor(entry: TaskEntry): boolean {
+  return entry.record.kind === "source.globalSearch" && isUiInteraction(entry);
 }
 
 function isInterruptibleDownloadKind(kind: TaskKind): boolean {
@@ -203,17 +207,15 @@ function isInterruptibleDownloadKind(kind: TaskKind): boolean {
 function shouldUseImmediateExecutor(entry: TaskEntry): boolean {
   if (entry.spec.requiresForegroundExecutor) return true;
   if (isOpenSiteSourceKind(entry.record.kind)) return true;
-  return (
-    entry.record.priority === "interactive" &&
-    isImmediateInteractionSourceKind(entry.record.kind)
-  );
+  return isUiInteraction(entry) && !usesSearchExecutor(entry);
 }
 
 function canUsePoolExecutorForImmediateInteraction(entry: TaskEntry): boolean {
   return (
     entry.spec.requiresForegroundExecutor !== true &&
-    entry.record.priority === "interactive" &&
-    isImmediateInteractionSourceKind(entry.record.kind)
+    !isOpenSiteSourceKind(entry.record.kind) &&
+    !usesSearchExecutor(entry) &&
+    isUiInteraction(entry)
   );
 }
 
@@ -377,6 +379,8 @@ export class TaskScheduler {
             ...activeEntry.record,
             priority: requestedPriority,
           };
+          if (isUiInteraction(activeEntry)) this.clearTaskRetry(activeEntry);
+          this.handleUiResponsiveSourceEnqueue(activeEntry);
           this.publishSnapshot();
           this.requestDrain();
         }
@@ -630,7 +634,7 @@ export class TaskScheduler {
     for (const id of queue) {
       const entry = this.entries.get(id);
       if (
-        entry?.record.status === "queued" &&
+        (entry?.record.status === "queued" || entry?.record.status === "running") &&
         taskWorkQueueKey(entry.record.subject) === workKey
       ) {
         selectedIds.add(id);
@@ -661,7 +665,7 @@ export class TaskScheduler {
       return false;
     }
 
-    queue.splice(0, queue.length, ...reordered);
+    this.sourceQueues.set(sourceId, reordered);
     this.debug("source work queue moved", undefined, {
       sourceId,
       target,
@@ -1065,7 +1069,7 @@ export class TaskScheduler {
 
   private yieldRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return 0;
-    if (canUsePoolExecutorForImmediateInteraction(entry)) return 0;
+    if (canUsePoolExecutorForImmediateInteraction(entry) || usesSearchExecutor(entry)) return 0;
     const requiresImmediateExecutor = shouldUseImmediateExecutor(entry);
     const yielded = this.yieldRunningSourceTasks(undefined, (candidate) => {
       if (!isInterruptibleDownloadKind(candidate.record.kind)) return false;
@@ -1085,7 +1089,6 @@ export class TaskScheduler {
   private handleUiResponsiveSourceEnqueue(entry: TaskEntry): void {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return;
     this.promoteQueuedUiSourceEntry(entry);
-    this.promoteSourceQueue(entry.record.source?.id);
     this.yieldRunningInterruptibleDownloadsForUi(entry);
   }
 
@@ -1093,9 +1096,7 @@ export class TaskScheduler {
     return (
       entry.record.lane === "source" &&
       entry.record.status === "queued" &&
-      (entry.record.priority === "interactive" ||
-        (entry.record.priority === "user" &&
-          isUiResponsiveSourceKind(entry.record.kind)))
+      isUiInteraction(entry)
     );
   }
 
@@ -1105,15 +1106,6 @@ export class TaskScheduler {
     this.removeQueuedId(queue, entry.record.id);
     const insertIndex = this.sourceQueueUiInsertIndex(queue);
     queue.splice(insertIndex, 0, entry.record.id);
-  }
-
-  private promoteSourceQueue(sourceId: string | undefined): void {
-    if (!sourceId) return;
-    this.ensureSourceQueueOrder(sourceId);
-    const currentIndex = this.sourceQueueOrder.indexOf(sourceId);
-    if (currentIndex <= 0) return;
-    this.sourceQueueOrder.splice(currentIndex, 1);
-    this.sourceQueueOrder.unshift(sourceId);
   }
 
   private sourceQueueUiInsertIndex(queue: string[]): number {
@@ -1246,7 +1238,7 @@ export class TaskScheduler {
   }
 
   pauseSourceQueue(sourceId?: string): boolean {
-    const paused = this.pauseRunningSourceTasks(sourceId);
+    const paused = this.pauseRunningSourceTasks(sourceId, entry => !isUiInteraction(entry));
     if (!sourceId) {
       if (this.sourceQueuesPaused) return paused > 0;
       this.sourceQueuesPaused = true;
@@ -1557,6 +1549,7 @@ export class TaskScheduler {
     this.drainMain();
     if (this.sourceDispatchBlockedByMainBarrier()) return;
     this.drainImmediateExecutor();
+    this.drainSearchExecutors();
     this.drainSourcePool();
   }
 
@@ -1626,9 +1619,7 @@ export class TaskScheduler {
       return;
     }
     const browse = this.pickSourceTask(
-      (entry) =>
-        entry.record.priority === "interactive" &&
-        isImmediateInteractionSourceKind(entry.record.kind),
+      entry => isUiInteraction(entry) && !usesSearchExecutor(entry),
       { allowActiveSource: true },
     );
     if (browse) {
@@ -1639,6 +1630,14 @@ export class TaskScheduler {
       (entry) => entry.spec.requiresForegroundExecutor === true,
     );
     if (foreground) this.startSource(foreground, "immediate");
+  }
+
+  private drainSearchExecutors(): void {
+    for (const executor of this.sourceExecutors.freeSearchExecutorIds()) {
+      const next = this.pickSourceTask(usesSearchExecutor, { allowActiveSource: true });
+      if (!next) return;
+      this.startSource(next, executor);
+    }
   }
 
   private drainSourcePool(): void {
@@ -1668,7 +1667,7 @@ export class TaskScheduler {
         const next =
           immediateInteraction ??
           this.pickSourceTaskFromQueue(sourceId, (entry) => {
-            if (shouldUseImmediateExecutor(entry)) return false;
+            if (shouldUseImmediateExecutor(entry) || usesSearchExecutor(entry)) return false;
             if (!this.canUseExecutorForSource(entry, executorId)) return false;
             if (
               isBackgroundPriority(entry.record.priority) &&
@@ -1711,7 +1710,7 @@ export class TaskScheduler {
   }
 
   private startSource(entry: TaskEntry, executorId: ScraperExecutorId): void {
-    this.removeFromSourceQueue(entry);
+    // Keep the slot while running so pauses, retries, and local checks preserve manual order.
     const sourceId = entry.record.source!.id;
     this.sourceExecutors.acquire(entry.record.id, {
       sourceId,
@@ -1748,9 +1747,7 @@ export class TaskScheduler {
           continue;
         }
         if (!canRunBeforeSourceGates) {
-          const cooldownDelay = this.sourceCooldowns.delay(
-            entry.spec.sourceCooldownKey,
-          );
+          const cooldownDelay = this.sourceCooldownDelay(entry);
           if (cooldownDelay > 0) {
             this.sourceCooldowns.scheduleDrain(
               entry.spec.sourceCooldownKey!,
@@ -1796,9 +1793,7 @@ export class TaskScheduler {
         continue;
       }
       if (!canRunBeforeSourceGates) {
-        const cooldownDelay = this.sourceCooldowns.delay(
-          entry.spec.sourceCooldownKey,
-        );
+        const cooldownDelay = this.sourceCooldownDelay(entry);
         if (cooldownDelay > 0) {
           this.sourceCooldowns.scheduleDrain(
             entry.spec.sourceCooldownKey!,
@@ -1821,6 +1816,7 @@ export class TaskScheduler {
   }
 
   private isSourceQueuePaused(entry: TaskEntry): boolean {
+    if (isUiInteraction(entry)) return false;
     const sourceId = entry.record.source?.id;
     return (
       this.sourceQueuesPaused ||
@@ -1841,15 +1837,15 @@ export class TaskScheduler {
     if (options.allowActiveSource) return true;
     const sourceId = entry.record.source?.id;
     if (!sourceId) return true;
-    return !this.hasActiveNonOpenSiteSourceTask(sourceId);
+    return !this.hasActiveNonUiSourceTask(sourceId);
   }
 
-  private hasActiveNonOpenSiteSourceTask(sourceId: string): boolean {
+  private hasActiveNonUiSourceTask(sourceId: string): boolean {
     const activeIds = this.sourceExecutors.activeTaskIds(sourceId);
     if (!activeIds) return false;
     for (const id of activeIds) {
       const activeEntry = this.entries.get(id);
-      if (activeEntry && !isOpenSiteSourceKind(activeEntry.record.kind)) {
+      if (activeEntry && !isOpenSiteSourceKind(activeEntry.record.kind) && !isUiInteraction(activeEntry)) {
         return true;
       }
     }
@@ -1873,6 +1869,10 @@ export class TaskScheduler {
     return a.record.createdAt - b.record.createdAt;
   }
 
+  private sourceCooldownDelay(entry: TaskEntry): number {
+    return isUiInteraction(entry) ? 0 : this.sourceCooldowns.delay(entry.spec.sourceCooldownKey);
+  }
+
   private tryStartSourceAccess(entry: TaskEntry): boolean {
     if (
       entry.record.status !== "running" ||
@@ -1888,7 +1888,7 @@ export class TaskScheduler {
       return true;
     }
 
-    const cooldownDelay = this.sourceCooldowns.delay(entry.spec.sourceCooldownKey);
+    const cooldownDelay = this.sourceCooldownDelay(entry);
     if (cooldownDelay > 0) {
       this.sourceCooldowns.scheduleDrain(
         entry.spec.sourceCooldownKey!,
@@ -1956,7 +1956,10 @@ export class TaskScheduler {
     };
 
     Promise.resolve()
-      .then(() => this.runWithScraperExecutorContext(entry, context))
+      .then(() => {
+        context.signal.throwIfAborted();
+        return this.runWithScraperExecutorContext(entry, context);
+      })
       .then((value) => {
         if (entry.controller.signal.aborted) {
           if (entry.pauseRequested && entry.record.lane === "source") {
@@ -2097,7 +2100,6 @@ export class TaskScheduler {
         this.drain();
       }
     }, Math.max(1, Math.min(2_147_483_647, Math.round(decision.delayMs))));
-    this.requeueSourceEntry(entry);
     this.debug("waiting for automatic retry", entry, { attempt, delayMs: decision.delayMs });
     this.publish(entry, previousStatus);
     this.drain();
@@ -2191,7 +2193,7 @@ export class TaskScheduler {
     this.revokeSourceAccessVerificationForEntry(entry);
     this.debug("paused task settled", entry);
     this.releaseActive(entry);
-    if (sourceCooldownKey) {
+    if (sourceCooldownKey && !isUiInteraction(entry)) {
       this.sourceCooldowns.clear(sourceCooldownKey);
     }
     if (entry.dedupeKey) {
@@ -2212,7 +2214,6 @@ export class TaskScheduler {
       canRetry: false,
     };
     this.entries.set(entry.record.id, entry);
-    this.requeueSourceEntry(entry);
     this.publish(entry, previousStatus);
     this.drain();
   }
@@ -2241,44 +2242,8 @@ export class TaskScheduler {
       canRetry: false,
     };
     this.entries.set(entry.record.id, entry);
-    this.requeueSourceEntry(entry);
     this.publish(entry, previousStatus);
     this.drain();
-  }
-
-  private requeueSourceEntry(entry: TaskEntry): void {
-    const sourceId = entry.record.source?.id;
-    if (!sourceId) return;
-    const queue = this.sourceQueues.get(sourceId) ?? [];
-    if (!queue.includes(entry.record.id)) {
-      queue.splice(
-        this.sourceQueueRequeueIndex(queue, entry),
-        0,
-        entry.record.id,
-      );
-    }
-    this.sourceQueues.set(sourceId, queue);
-  }
-
-  /**
-   * Paused work resumes ahead of queued siblings, but a download that only
-   * deferred its source access keeps its creation order. Inserting deferred
-   * downloads at the front made a batch drain newest-first because every
-   * fresh entry ran its local check during the source cooldown and then
-   * jumped ahead of the entries deferred before it.
-   */
-  private sourceQueueRequeueIndex(queue: string[], entry: TaskEntry): number {
-    if (!isInterruptibleDownloadKind(entry.record.kind)) return 0;
-    let index = this.sourceQueueUiInsertIndex(queue);
-    if (entry.sourceAccessDeferred !== true) return index;
-    while (index < queue.length) {
-      const candidate = this.entries.get(queue[index]!);
-      if (!candidate || candidate.record.createdAt > entry.record.createdAt) {
-        break;
-      }
-      index += 1;
-    }
-    return index;
   }
 
   private releaseActive(entry: TaskEntry): void {
@@ -2303,10 +2268,10 @@ export class TaskScheduler {
         this.sourceTaskSettlementWaiters.delete(entry.record.id);
         for (const resolve of settlementWaiters) resolve();
       }
-      if (
+      if (!isUiInteraction(entry) && (
         entry.spec.canCompleteWithoutSourceAccess !== true ||
         entry.sourceAccessStarted === true
-      ) {
+      )) {
         this.sourceCooldowns.set(
           entry.spec.sourceCooldownKey,
           entry.spec.sourceCooldownMs ?? 0,
@@ -2335,6 +2300,7 @@ export class TaskScheduler {
       status,
     };
     if (status !== "queued" && status !== "running") {
+      if (entry.record.lane === "source") this.removeFromSourceQueue(entry);
       delete entry.record.waitingForNetwork;
       if (entry.record.detail === this.networkWaitingDetail) delete entry.record.detail;
     }
@@ -2501,14 +2467,13 @@ export class TaskScheduler {
       entry: TaskEntry | undefined,
       queuePosition?: Pick<TaskRecord, "queueIndex" | "queueSize">,
     ): boolean => {
-      if (!entry || materializedTaskIds.has(entry.record.id)) {
-        return false;
-      }
-      materializedTaskIds.add(entry.record.id);
-      materializedEntries.push(entry);
+      if (!entry) return false;
       if (queuePosition) {
         queuePositions.set(entry.record.id, queuePosition);
       }
+      if (materializedTaskIds.has(entry.record.id)) return false;
+      materializedTaskIds.add(entry.record.id);
+      materializedEntries.push(entry);
       return true;
     };
     const terminalCandidates: TaskEntry[] = [];
@@ -2561,7 +2526,7 @@ export class TaskScheduler {
       ) {
         const id = queue[queueIndex]!;
         const entry = this.entries.get(id);
-        if (entry?.record.status === "queued") {
+        if (entry?.record.status === "queued" || entry?.record.status === "running") {
           addMaterializedEntry(entry, {
             queueIndex,
             queueSize: queue.length,

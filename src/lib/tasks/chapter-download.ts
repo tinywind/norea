@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
+import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import type { ChapterDownloadPhase } from "./task-types";
@@ -30,7 +31,6 @@ import {
 import {
   readStoredChapterContentMirror,
   readStoredChapterPartialContentMirror,
-  reconcileStoredChapterContent,
   saveStoredChapterContent,
   saveStoredChapterPartialContent,
 } from "../chapter-content-storage";
@@ -853,6 +853,7 @@ function enqueueChapterDownloadForExecutor(
     persistBeforeStart?: boolean;
     removeQueuedJobOnFailure?: boolean;
     waitForBackendQueue?: boolean;
+    localWorkScans?: Map<number, Promise<void>>;
   } = {},
 ): TaskHandle<void> {
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
@@ -860,6 +861,7 @@ function enqueueChapterDownloadForExecutor(
   const waitForBackendQueue =
     options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
   const removeQueuedJobOnFailure = options.removeQueuedJobOnFailure ?? true;
+  const localWorkScans = options.localWorkScans ?? new Map<number, Promise<void>>();
   installChapterDownloadLifecycleListeners();
   if (options.persistBeforeStart !== false) {
     queueChapterDownloadJob(job);
@@ -916,9 +918,27 @@ function enqueueChapterDownloadForExecutor(
         if (signal.aborted) throw abortReason(signal);
         await waitForChapterStorageOperation(job.pluginId, signal);
         if (signal.aborted) throw abortReason(signal);
-        const storedArtifacts = await withChapterDownloadWrite(job.id, signal, () => reconcileStoredChapterContent(job.id));
+        let chapter = await withChapterDownloadWrite(job.id, signal, () => getChapterById(job.id));
+        if (chapter && !chapter.isDownloaded && !sourceAccessVerification) {
+          const novelId = chapter.novelId ?? job.novelId;
+          if (novelId) {
+            let scan = localWorkScans.get(novelId);
+            if (!scan) {
+              scan = refreshStoredNovelChapterDownloads(novelId).catch((error: unknown) => {
+                localWorkScans.delete(novelId);
+                throw error;
+              });
+              localWorkScans.set(novelId, scan);
+            }
+            await abortableStep(signal, scan);
+            chapter = await withChapterDownloadWrite(job.id, signal, () => getChapterById(job.id));
+          }
+        }
         if (signal.aborted) throw abortReason(signal);
-        if (!sourceAccessVerification && storedArtifacts.status === "present") {
+        if (!chapter) {
+          throw missingLocalChapterError(job);
+        }
+        if (!sourceAccessVerification && chapter.isDownloaded) {
           settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
           reportProgress(
             { current: progressTotal, total: progressTotal },
@@ -945,10 +965,6 @@ function enqueueChapterDownloadForExecutor(
           job.pluginId,
           executor ?? "immediate",
         );
-        const chapter = await getChapterById(job.id);
-        if (!chapter) {
-          throw missingLocalChapterError(job);
-        }
         const novel =
           job.novelPath && job.novelName && job.novelId
             ? {
@@ -1571,6 +1587,7 @@ export function enqueueChapterDownloadBatch({
     total,
   });
   const materializedTaskCompletions: Promise<void>[] = [];
+  const localWorkScans = new Map<number, Promise<void>>();
 
   const promise = runBoundedTaskBatch({
     items: jobs,
@@ -1601,6 +1618,7 @@ export function enqueueChapterDownloadBatch({
             persistBeforeStart: persistMaterializedJobs,
             removeQueuedJobOnFailure: persist,
             waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
+            localWorkScans,
           },
         );
         const completion = handle.promise.then(

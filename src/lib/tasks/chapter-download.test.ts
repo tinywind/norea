@@ -37,6 +37,9 @@ vi.mock("../../db/queries/chapter", () => ({
 vi.mock("../../db/queries/novel", () => ({
   getNovelById: vi.fn(),
 }));
+vi.mock("../../db/work-metadata", () => ({
+  refreshStoredNovelChapterDownloads: vi.fn(),
+}));
 vi.mock("../../store/browse", () => ({
   useBrowseStore: {
     getState: vi.fn(() => ({ chapterDownloadCooldownSeconds: 0 })),
@@ -100,6 +103,7 @@ vi.mock("./scheduler", () => ({
 
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
+import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
 import {
   cacheHtmlChapterMedia,
   clearChapterMedia,
@@ -121,6 +125,7 @@ import { isTauriRuntime } from "../tauri-runtime";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { TaskUserCancelledError } from "./task-errors";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
+import { withChapterDownloadDeletion } from "../chapter-download-writes";
 import {
   cancelChapterDownloadBatches,
   enqueueChapterDownloadBatch,
@@ -256,18 +261,20 @@ beforeEach(() => {
     mediaBytes: 3,
     storedMediaCount: 1,
   });
-  vi.mocked(getChapterById).mockResolvedValue({
+  vi.mocked(getChapterById).mockReset().mockResolvedValue({
     contentType: "text",
     sourceContentType: "text",
     id: 7,
+    isDownloaded: false,
   } as never);
   vi.mocked(getNovelById).mockResolvedValue(null);
+  vi.mocked(refreshStoredNovelChapterDownloads).mockReset().mockResolvedValue(undefined);
   vi.mocked(getStoredChapterMediaBytes).mockResolvedValue(3);
   vi.mocked(hasRemoteChapterMedia).mockReturnValue(true);
   vi.mocked(localChapterMediaSources).mockReturnValue([]);
   vi.mocked(readStoredChapterContentMirror).mockResolvedValue(null);
   vi.mocked(readStoredChapterPartialContentMirror).mockResolvedValue(null);
-  vi.mocked(reconcileStoredChapterContent).mockResolvedValue({
+  vi.mocked(reconcileStoredChapterContent).mockReset().mockResolvedValue({
     status: "missing",
     contentFile: null,
     contentBytes: 0,
@@ -290,6 +297,45 @@ beforeEach(() => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
+  it("checks one work once for a thousand downloads and skips files missing from the cache", async () => {
+    let localChaptersDiscovered = false;
+    vi.mocked(refreshStoredNovelChapterDownloads).mockImplementation(async () => { localChaptersDiscovered = true; });
+    vi.mocked(getChapterById).mockImplementation(async (id) => ({
+      id, novelId: 42, contentType: "html", isDownloaded: localChaptersDiscovered && id <= 500,
+    }) as never);
+    vi.mocked(reconcileStoredChapterContent).mockRejectedValue(
+      new Error("Download batches must not recover bodies or finalize media."),
+    );
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => ({
+      id: `task-${spec.subject?.chapterId}`,
+      promise: spec.run({
+        executor: "pool:1",
+        setDetail: vi.fn(),
+        setProgress: vi.fn(),
+        signal: new AbortController().signal,
+        taskId: `task-${spec.subject?.chapterId}`,
+      }),
+    }));
+    const jobs = Array.from({ length: 1000 }, (_, index) => ({
+      id: index + 1,
+      novelId: 42,
+      pluginId: "source-a",
+      chapterPath: `/chapter/${index + 1}`,
+      title: `Chapter ${index + 1}`,
+    }));
+
+    const handle = enqueueChapterDownloadBatch({ jobs, title: "All chapters" });
+
+    await expect(handle.promise).resolves.toEqual({
+      total: 1000, succeeded: 1000, failed: 0, cancelled: 0,
+    });
+    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
+    expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledExactlyOnceWith(42);
+    expect(tryDownloadServerChapter).toHaveBeenCalledTimes(500);
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+  });
+
   it("does not materialize a deleted chapter from a pending batch window", async () => {
     const first = createDeferred<void>();
     schedulerMocks.enqueueSource.mockImplementation(() => ({ id: "first", promise: first.promise }));
@@ -1147,7 +1193,7 @@ describe("enqueueChapterDownload", () => {
     );
   });
 
-  it("finishes without plugin or network work when final content exists", async () => {
+  it("skips a completed chapter without filesystem, plugin, or network work", async () => {
     const getBaseUrl = vi.fn(() => "https://source.test");
     pluginMocks.getPlugin.mockReturnValueOnce({
       apiVersion: "0.2",
@@ -1157,12 +1203,12 @@ describe("enqueueChapterDownload", () => {
       getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan,
       getChapterResource: pluginMocks.getChapterResource,
     });
-    vi.mocked(reconcileStoredChapterContent).mockResolvedValueOnce({
-      status: "present",
-      contentFile: "contents/source-a/novel/7-Chapter/content.html",
-      contentBytes: 24,
-      mediaBytes: 8,
-    });
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      id: 7, contentType: "html", isDownloaded: true,
+    } as never);
+    vi.mocked(reconcileStoredChapterContent).mockRejectedValueOnce(
+      new Error("Completed downloads must not be rescanned."),
+    );
 
     enqueueChapterDownload({
       id: 7,
@@ -1192,7 +1238,45 @@ describe("enqueueChapterDownload", () => {
     expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
     expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
-    expect(getChapterById).not.toHaveBeenCalled();
+    expect(getChapterById).toHaveBeenCalledWith(7);
+    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
+    expect(readStoredChapterContentMirror).not.toHaveBeenCalled();
+    expect(readStoredChapterPartialContentMirror).not.toHaveBeenCalled();
+    expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+  });
+
+  it("checks the current download state after a concurrent deletion finishes", async () => {
+    const removing = createDeferred<void>();
+    const deletion = withChapterDownloadDeletion([7], () => removing.promise);
+    vi.mocked(getChapterById).mockResolvedValue({
+      id: 7, contentType: "html", isDownloaded: true,
+    } as never);
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    enqueueChapterDownload({
+      id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7",
+    });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const pending = capturedSpec.run({
+      executor: "pool:1",
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    });
+    try {
+      await flushMicrotasks();
+      expect(getChapterById).not.toHaveBeenCalled();
+      expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+      vi.mocked(getChapterById).mockResolvedValue({
+        id: 7, contentType: "html", isDownloaded: false,
+      } as never);
+    } finally {
+      removing.resolve();
+      await Promise.all([deletion, pending]);
+    }
+    expect(getChapterById).toHaveBeenCalledWith(7);
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
   });
 
   it("returns to the scheduler before plugin work when source access is deferred", async () => {
@@ -1221,7 +1305,8 @@ describe("enqueueChapterDownload", () => {
       tryStartSourceAccess,
     });
 
-    expect(reconcileStoredChapterContent).toHaveBeenCalledWith(7);
+    expect(getChapterById).toHaveBeenCalledWith(7);
+    expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
     expect(tryStartSourceAccess).toHaveBeenCalledOnce();
     expect(setChapterDownloadPhase.mock.calls).toEqual([["local"], ["server-lookup"], ["source-download"]]);
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
@@ -1231,10 +1316,10 @@ describe("enqueueChapterDownload", () => {
     expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
   });
 
-  it("does not start source work when local storage inspection fails", async () => {
-    const storageError = new Error("Android storage folder is not readable.");
+  it("does not start network work when the download state cannot be read", async () => {
+    const storageError = new Error("Database is unavailable.");
     const tryStartSourceAccess = vi.fn(() => true);
-    vi.mocked(reconcileStoredChapterContent).mockRejectedValueOnce(storageError);
+    vi.mocked(getChapterById).mockRejectedValueOnce(storageError);
 
     enqueueChapterDownload({
       id: 7,
@@ -1256,6 +1341,7 @@ describe("enqueueChapterDownload", () => {
     ).rejects.toBe(storageError);
 
     expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(tryDownloadServerChapter).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
     expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();
@@ -1266,12 +1352,9 @@ describe("enqueueChapterDownload", () => {
   it("reacquires final content when verifying source access", async () => {
     const confirmSourceAccess = vi.fn(() => true);
     const setSourceAccessUrl = vi.fn(() => true);
-    vi.mocked(reconcileStoredChapterContent).mockResolvedValueOnce({
-      status: "present",
-      contentFile: "contents/source-a/novel/7-Chapter/content.html",
-      contentBytes: 24,
-      mediaBytes: 8,
-    });
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      id: 7, contentType: "text", isDownloaded: true,
+    } as never);
 
     enqueueChapterDownload({
       id: 7,
@@ -1694,7 +1777,7 @@ describe("enqueueChapterDownload", () => {
     vi.mocked(getChapterById).mockResolvedValueOnce({
       contentType: "html",
       id: 7,
-      isDownloaded: true,
+      isDownloaded: false,
     } as never);
 
     enqueueChapterDownload({

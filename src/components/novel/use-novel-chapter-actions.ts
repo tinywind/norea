@@ -137,7 +137,7 @@ export function useNovelChapterActions(
       novelPath: novel.path,
       priority: "user",
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
-    }).promise.catch(() => undefined);
+    }).promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
   }
 
   function downloadChapters(chaptersToDownload: ChapterListRow[]): void {
@@ -163,7 +163,7 @@ export function useNovelChapterActions(
         count: chaptersToDownload.length,
       }),
       total: chaptersToDownload.length,
-    }).promise.catch(() => undefined);
+    }).promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
   }
 
   return {
