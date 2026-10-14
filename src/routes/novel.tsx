@@ -118,7 +118,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     enabled: active && Boolean(serverSourceQuery.data && novelQuery.data) && !hasSourcePlugin,
     staleTime: 30_000,
   });
-  const { serverError, sourceError } = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
+  useServerNovelSync(id, active, novelQuery.data?.name ?? "");
 
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
@@ -351,8 +351,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  if (novelQuery.isLoading || serverSourceQuery.isPending
-    || (serverSourceQuery.isFetching && !serverSourceQuery.data)) {
+  if (novelQuery.isLoading) {
     return (
       <PageFrame>
         <StateView
@@ -364,7 +363,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  const loadError = novelQuery.error ?? serverSourceQuery.error;
+  const loadError = novelQuery.error;
   if (loadError) {
     return (
       <PageFrame>
@@ -394,7 +393,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  const allowSourceAccess = !serverSourceQuery.data || hasSourcePlugin;
+  const allowSourceAccess = hasSourcePlugin;
   const sourceUrl = allowSourceAccess ? resolveNovelSourceUrl(novel) : null;
   const sourcePlugin = novel.isLocal || !allowSourceAccess
     ? null
@@ -627,16 +626,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   : String(metadataRefreshError)}
               </Text>
             ) : null}
-
-            {serverChaptersQuery.error ? (
-              <Text c="red" className="norea-novel-local-error" size="sm">
-                {serverChaptersQuery.error instanceof Error
-                  ? serverChaptersQuery.error.message
-                  : String(serverChaptersQuery.error)}
-              </Text>
-            ) : null}
-            {serverError ? <Text c="dimmed" size="sm">{t("contentSync.workRefreshFailed")}</Text> : null}
-            {sourceError ? <Text c="dimmed" size="sm">{t("contentSync.sourceRefreshFailed")}</Text> : null}
 
             {chaptersQuery.isLoading ? (
               <StateView
