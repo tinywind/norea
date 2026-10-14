@@ -84,6 +84,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const changePage = (next: number) => { setSelected(new Set()); remove.reset(); setPage(next); };
   const error = remove.error ?? chapters.error;
   return <Modal opened onClose={onClose} fullScreen title={t("contentSync.manageChapters")}
+    classNames={{ inner: "norea-server-management-modal", content: "norea-server-management-dialog" }}
     closeOnEscape={!confirmation && !remove.isPending} withCloseButton={!remove.isPending}>
     <Stack className="norea-server-management" gap="md">
       <ConsoleSectionHeader title={name} eyebrow={t("contentSync.manageChapters")}

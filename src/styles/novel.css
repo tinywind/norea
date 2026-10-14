@@ -9,6 +9,17 @@
   display: none;
 }
 
+.norea-server-management-modal {
+  padding: var(--norea-safe-area-top) var(--norea-safe-area-right)
+    var(--norea-safe-area-bottom) var(--norea-safe-area-left);
+}
+
+.norea-server-management-modal .norea-server-management-dialog {
+  height: calc(
+    var(--norea-viewport-height) - var(--norea-safe-area-top) - var(--norea-safe-area-bottom)
+  );
+}
+
 .norea-server-management {
   margin-inline: auto;
   max-width: 72rem;
