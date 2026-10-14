@@ -57,6 +57,18 @@ it("caches a server chapter list without duplicating a source chapter or changin
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()?.count).toBe(2);
 });
 
+it("retains different local files with the same chapter number", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name,is_local) VALUES(1,'local','local','local',1)");
+  sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position,is_downloaded) VALUES(1,'local:file-a','A','1',1,1)");
+  const incoming = { id: "b", chapterPath: "local:file-b", name: "B", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const };
+  expect(await cacheServerChapters(1, [incoming])).toBe(true);
+  expect(sqlite.prepare("SELECT path,is_downloaded FROM chapter ORDER BY path").all()).toEqual([
+    { path: "local:file-a", is_downloaded: 1 },
+    { path: "local:file-b", is_downloaded: 0 },
+  ]);
+  expect(await cacheServerChapters(1, [incoming])).toBe(false);
+});
+
 it("stops future chapter batches on navigation cancellation without rejecting the database transaction", async () => {
   const controller = new AbortController();
   const db = await getDb();

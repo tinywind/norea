@@ -2,11 +2,14 @@ import { getDb, runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import type { PackageManifest } from "../../lib/content-sync/native";
 import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
+import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
 
 export async function cacheServerChapters(novelId: number, chapters: readonly ServerChapterSummary[], signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
   const changed = await runDatabaseTransaction(async db => {
     if (signal?.aborted) return false;
+    const [novel] = await db.select<{ pluginId: string }[]>(
+      "SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
     const existing = await db.select<{ path: string; chapterNumber: string | null }[]>(
       "SELECT path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [novelId]);
     if (signal?.aborted) return false;
@@ -20,7 +23,7 @@ export async function cacheServerChapters(novelId: number, chapters: readonly Se
     const incoming: ServerChapterSummary[] = [];
     for (const chapter of chapters) {
       if (paths.has(chapter.chapterPath)) continue;
-      const number = chapter.chapterNumber?.trim() && Number.isFinite(Number(chapter.chapterNumber)) ? String(Number(chapter.chapterNumber)) : null;
+      const number = novel?.pluginId !== LOCAL_PLUGIN_ID && chapter.chapterNumber?.trim() && Number.isFinite(Number(chapter.chapterNumber)) ? String(Number(chapter.chapterNumber)) : null;
       const matches = number === null ? [] : numbers.get(number) ?? [];
       if (matches.length) {
         if (matches.length > 1) throw new Error("Server chapter number matches multiple local chapters.");
