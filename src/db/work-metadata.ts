@@ -8,6 +8,7 @@ import { isLocalCoverSource } from "../lib/local-cover";
 import { runWorkContentStorageOperation } from "../lib/content-sync/storage-operation";
 import { canAdoptChapterDownloadSnapshot, currentChapterDeletionRevision } from "../lib/chapter-download-writes";
 import type { StoredNovelChapter } from "../lib/work-metadata";
+import { LOCAL_PLUGIN_ID } from "../lib/plugins/types";
 
 interface KnownMetadataFile { directory: string; fingerprint: string }
 export interface WorkMetadataSyncFile extends KnownMetadataFile { pluginId: string; path: string; revision: number }
@@ -32,8 +33,10 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
 
 export async function scanStoredNovelChaptersToCache(db: Database, novelId: number, directory: string, snapshot?: { chapters: StoredNovelChapter[]; deletionRevision: number }): Promise<void> {
   const discovered = snapshot?.chapters ?? await listStoredNovelChapters(directory);
-  const cached = await db.select<{ id: number; path: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null }[]>(
-    `SELECT c.id,c.path,c.chapter_number AS chapterNumber,c.position,d.directory,c.is_downloaded AS isDownloaded,c.stored_content_type AS storedContentType FROM chapter c
+  const [novel] = await db.select<{ pluginId: string }[]>("SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
+  const isLocal = novel?.pluginId === LOCAL_PLUGIN_ID;
+  const cached = await db.select<{ id: number; path: string; name: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null }[]>(
+    `SELECT c.id,c.path,c.name,c.chapter_number AS chapterNumber,c.position,d.directory,c.is_downloaded AS isDownloaded,c.stored_content_type AS storedContentType FROM chapter c
     LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1`, [novelId]);
   const byDirectory = new Map(cached.filter((row) => row.directory).map((row) => [row.directory, row]));
   const byPath = new Map(cached.map((row) => [row.path, row]));
@@ -53,12 +56,16 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
   const updates = new Map<StoredNovelChapter["contentType"], number[]>();
   for (const [index, chapter] of discovered.entries()) {
     const absoluteDirectory = `${directory}/${chapter.directory}`;
-    const recoveredPath = `norea-folder:${chapter.chapterNumber}`;
+    const recoveredPath = isLocal ? `local-folder:${chapter.directory}` : `norea-folder:${chapter.chapterNumber}`;
     const exact = byDirectory.get(absoluteDirectory) ?? byPath.get(recoveredPath);
     const number = Number(chapter.chapterNumber);
     const numbered = byNumber.get(number) ?? [];
-    const matched = exact ?? (numbered.length === 1 ? numbered[0] : undefined);
-    if ((matched && used.has(matched.id)) || (!exact && (numbered.length > 1 || discoveredCounts.get(number)! > 1))) continue;
+    const candidates = isLocal ? numbered.filter((row) => !row.directory && chapterStorageRelativeDir({}, {
+      name: row.name, chapterNumber: row.chapterNumber, position: row.position,
+    }).endsWith(`/${chapter.directory}`)) : numbered;
+    const matched = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (isLocal && !exact && candidates.length > 1) continue;
+    if ((matched && used.has(matched.id)) || (!isLocal && !exact && (numbered.length > 1 || discoveredCounts.get(number)! > 1))) continue;
     if (snapshot && matched?.isDownloaded && matched.directory && matched.directory !== absoluteDirectory) continue;
     let id = matched?.id;
     if (id !== undefined && snapshot && !canAdoptChapterDownloadSnapshot(id, snapshot.deletionRevision)) continue;

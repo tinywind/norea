@@ -88,6 +88,26 @@ it("reopens the persisted cache without reading work files or rewriting chapters
   expect(storage.directories).toEqual({ "1": "contents/source/Original-book/1-Opening" });
 });
 
+it("recovers distinct local files with the same chapter number and keeps their directory identities", async () => {
+  const metadata = fixture();
+  metadata.identity = { pluginId: "local", novelPath: "local" };
+  metadata.novel.isLocal = true;
+  storage.chapters.set(path, [
+    "contents/source/Original-book/1-First/content.html",
+    "contents/source/Original-book/1-Second/content.pdf",
+  ]);
+  save(metadata);
+  await initializeWorkMetadata(db);
+
+  expect(sqlite.prepare("SELECT path,is_downloaded,stored_content_type FROM chapter ORDER BY id").all()).toEqual([
+    { path: "local-folder:1-First", is_downloaded: 1, stored_content_type: "html" },
+    { path: "local-folder:1-Second", is_downloaded: 1, stored_content_type: "pdf" },
+  ]);
+  await refreshStoredNovelChapterDownloads(1);
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 2 });
+  expect(storage.writes).toBe(0);
+});
+
 it("discovers uncached chapter files in one work without reading bodies or other works", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position) VALUES(1,'/source-2','Second','2',2)");
