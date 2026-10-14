@@ -168,6 +168,7 @@ pub async fn webview_extract(
     _user_agent: Option<String>,
     _queue: Option<String>,
     _capture_resources: Option<bool>,
+    _chapter_navigation_script: Option<String>,
 ) -> Result<String, String> {
     Err(SCRAPER_UNAVAILABLE.to_string())
 }

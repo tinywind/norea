@@ -1358,7 +1358,17 @@ class AndroidScraperBridge(
     }
     val loadTarget = {
       if (state.activeExtractId == id && state.activeAction?.id == id) {
-        runCatching { webView.loadUrl(targetUrl) }
+        val navigationScript = payload.optString("chapterNavigationScript")
+        runCatching {
+          if (extractOriginRule != null && navigationScript.isNotBlank()) {
+            val prepareCapture = scripts.extractStart(id, resultNonce.orEmpty(), beforeScript.orEmpty())
+            webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
+              if (state.activeExtractId == id && followed != "true") webView.loadUrl(targetUrl)
+            }
+          } else {
+            webView.loadUrl(targetUrl)
+          }
+        }
           .onFailure { error ->
             finishError(
               state,

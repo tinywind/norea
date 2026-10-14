@@ -1894,22 +1894,14 @@ async fn wait_for_scraper_bridge_ready(
 const BROWSER_CHALLENGE_DETECTOR_SCRIPT: &str =
     include_str!("../../../src/lib/plugins/browser-challenge-detector.js");
 
-async fn document_has_browser_challenge(scraper: &ScraperWebview) -> bool {
-    // The desktop retry loop and fallback envelope only handle Cloudflare;
-    // captcha pages are reported by the in-page snapshot script instead.
-    let kind =
-        eval_json::<Option<String>>(scraper, format!("({BROWSER_CHALLENGE_DETECTOR_SCRIPT})()"))
-            .await;
-    matches!(kind, Ok(Some(ref kind)) if kind == "cloudflare")
-}
-
-fn looks_like_browser_challenge_extract_result(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    lower.contains("cloudflare challenge")
-        || lower.contains("\"kind\":\"cf\"")
-        || lower.contains("\"kind\": \"cf\"")
-        || lower.contains("\"kind\":\"cloudflare\"")
-        || lower.contains("\"kind\": \"cloudflare\"")
+async fn document_browser_challenge(scraper: &ScraperWebview) -> Option<String> {
+    eval_json::<Option<String>>(
+        scraper,
+        format!("(function () {{ var detect = {BROWSER_CHALLENGE_DETECTOR_SCRIPT}; return detect(); }})()"),
+    )
+    .await
+    .ok()
+    .flatten()
 }
 
 fn browser_challenge_envelope(kind: &str, url: &str) -> String {
@@ -1926,47 +1918,19 @@ fn browser_challenge_envelope(kind: &str, url: &str) -> String {
 }
 
 fn browser_challenge_url(scraper: &ScraperWebview, fallback: &str) -> String {
-    scraper
+    let url = scraper
         .url()
         .map(|url| url.to_string())
-        .unwrap_or_else(|_| fallback.to_string())
+        .unwrap_or_else(|_| fallback.to_string());
+    clean_challenge_url(&url)
 }
 
-async fn wait_for_browser_challenge_to_clear(
-    scraper: &ScraperWebview,
-    operation: &str,
-    url: &str,
-    timeout: Duration,
-    generation: &AtomicU64,
-    expected_generation: u64,
-    executor: &str,
-) -> Result<bool, String> {
-    let url_for_log = scraper_url_for_log(url);
-    let started = Instant::now();
-    let mut poll_interval = Duration::from_millis(250);
-    let max_poll_interval = Duration::from_millis(1000);
-    let mut challenge_logged = false;
-
-    while started.elapsed() < timeout {
-        ensure_executor_generation(generation, expected_generation, operation, executor)?;
-        tokio::time::sleep(poll_interval).await;
-        poll_interval = next_poll_backoff(poll_interval, max_poll_interval);
-        if !document_is_ready(scraper).await {
-            continue;
-        }
-        if document_has_browser_challenge(scraper).await {
-            if !challenge_logged {
-                log::debug!(
-                    "[scraper:{operation}] waiting browser challenge before retry url={url_for_log}"
-                );
-                challenge_logged = true;
-            }
-            continue;
-        }
-        return Ok(true);
+fn clean_challenge_url(value: &str) -> String {
+    let Ok(mut url) = Url::parse(value) else { return value.to_string(); };
+    if url.fragment().is_some_and(|fragment| fragment.starts_with("__norea_result__=")) {
+        url.set_fragment(None);
     }
-
-    Ok(false)
+    url.to_string()
 }
 
 fn origin_url(url: &Url) -> String {
@@ -2253,7 +2217,6 @@ async fn prepare_extract_context(
         )
     })?;
 
-    let mut challenge_logged = false;
     poll_interval = Duration::from_millis(150);
     while started.elapsed() < deadline {
         ensure_executor_generation(generation, expected_generation, "extract", executor)?;
@@ -2266,14 +2229,8 @@ async fn prepare_extract_context(
         else {
             continue;
         };
-        if document_has_browser_challenge(scraper).await {
-            if !challenge_logged {
-                log::debug!(
-                    "[scraper:extract] prepare context waiting browser challenge url={context_url_for_log}"
-                );
-                challenge_logged = true;
-            }
-            continue;
+        if document_browser_challenge(scraper).await.is_some() {
+            return Ok(ready_url);
         }
         ensure_executor_generation(generation, expected_generation, "extract", executor)?;
         log::debug!(
@@ -2344,16 +2301,17 @@ fn clear_webview_extract_result_marker(scraper: &ScraperWebview, current_url: &s
     let _ = scraper.eval(script);
 }
 
-async fn take_webview_extract_result(scraper: &ScraperWebview) -> Option<String> {
+async fn take_webview_extract_result(scraper: &ScraperWebview, request_id: &str) -> Option<String> {
+    let request_id_json = serde_json::to_string(request_id).ok()?;
     eval_json::<Option<String>>(
         scraper,
-        r#"(function () {
+        format!(r#"(function () {{
+  if (window.__noreaExtractRequestId !== {request_id_json}) return null;
   if (typeof window.__noreaExtractResult !== "string") return null;
   var result = window.__noreaExtractResult;
   window.__noreaExtractResult = null;
   return result;
-})()"#
-            .to_string(),
+}})()"#),
     )
     .await
     .ok()
@@ -2364,7 +2322,7 @@ fn install_webview_extract_before_script(
     scraper: &ScraperWebview,
     before_script: Option<&str>,
     request_id: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let request_id_json = serde_json::to_string(request_id)
         .map_err(|err| format!("webview_extract: serialize extract request id: {err}"))?;
     // The id-setter runs on the destination document via the SCRAPER_INIT_SCRIPT
@@ -2387,7 +2345,8 @@ fn install_webview_extract_before_script(
     );
     scraper
         .eval(script)
-        .map_err(|err| format!("webview_extract: install before script: {err}"))
+        .map_err(|err| format!("webview_extract: install before script: {err}"))?;
+    Ok(combined)
 }
 
 fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&str>) {
@@ -2395,6 +2354,11 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
         r#"(function () {
   try { window.__noreaExtractResult = null; } catch (error) {}
   try { window.__noreaExtractRequestId = null; } catch (error) {}
+  try { window.__noreaChapterCaptureRunId = null; window.__noreaChapterLinkTargetUrl = null; } catch (error) {}
+  try {
+    if (window.__noreaChapterCaptureObserver) window.__noreaChapterCaptureObserver.disconnect();
+    window.__noreaChapterCaptureObserver = null;
+  } catch (error) {}
   try {
     if ((window.name || "").indexOf("__norea_script__=") === 0) {
       window.name = "";
@@ -2832,6 +2796,7 @@ pub async fn webview_extract(
     user_agent: Option<String>,
     queue: Option<String>,
     capture_resources: Option<bool>,
+    chapter_navigation_script: Option<String>,
 ) -> Result<String, String> {
     let user_agent = normalize_user_agent(user_agent);
     let url_for_log = scraper_url_for_log(&url);
@@ -2884,12 +2849,11 @@ pub async fn webview_extract(
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let result_marker = "#__norea_result__=";
-    let mut retried_after_browser_challenge = false;
     let max_attempts = 2;
 
     // Event-driven wake for the first result via the page's postMessage signal.
     // The marker/result read below is unchanged, so backoff polling remains the
-    // safety net if the signal never arrives (e.g. challenge-retry navigations).
+    // safety net if the signal never arrives.
     let request_id = format!("extract-{}", FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed));
     let mut completion = register_completion(&state, &request_id);
     let _completion_guard = CompletionGuard {
@@ -2899,51 +2863,43 @@ pub async fn webview_extract(
     let mut signaled = false;
 
     for attempt in 1..=max_attempts {
-        let extract_target = match prepare_extract_context(
-            &scraper,
-            &parsed,
-            &generation,
-            expected_generation,
-            &queue,
-        )
-        .await
-        {
-            Ok(target) => target,
-            Err(error) => {
-                if generation.load(Ordering::Acquire) == expected_generation
-                    && document_has_browser_challenge(&scraper).await
-                {
-                    let challenge_url = browser_challenge_url(&scraper, &url);
-                    return Ok(browser_challenge_envelope("cloudflare", &challenge_url));
-                }
-                return Err(error);
+        let can_follow_link = attempt == 1 && document_browser_challenge(&scraper).await.is_none();
+        clear_webview_extract_result(&scraper, None);
+        let mut capture_id = None;
+        let mut followed_link = false;
+        if can_follow_link {
+            if let Some(script) = chapter_navigation_script.as_deref() {
+                let capture_script = install_webview_extract_before_script(&scraper, before_script, &request_id)?;
+                capture_id = capture_resources
+                    .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
+                followed_link = eval_json::<bool>(
+                    &scraper, format!("({script})(function () {{ {capture_script} }})"),
+                ).await.unwrap_or(false);
+                ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
             }
-        };
-        let _ = wait_for_scraper_bridge_ready(
-            &scraper,
-            "extract",
-            Duration::from_secs(5),
-            &generation,
-            expected_generation,
-            &queue,
-        )
-        .await?;
-        ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-        install_webview_extract_before_script(&scraper, before_script, &request_id)?;
-        let mut capture_id = capture_resources
-            .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
-
-        log::trace!(
-            "[scraper:extract] reload queue={queue} url={url_for_log} target_url={} attempt={attempt}",
-            scraper_url_for_log(extract_target.as_str())
-        );
-
-        navigate_prepared_extract_target(&scraper, &extract_target).map_err(|err| {
-            format!(
-                "webview_extract: navigate prepared target: {}",
-                redact_urls_for_log(&err.to_string())
-            )
-        })?;
+        }
+        if followed_link {
+            log::debug!("[scraper:extract] followed chapter link queue={queue} url={url_for_log}");
+        } else {
+            if let Some(id) = capture_id.take() { state.captured_resources.finish(&queue, id); }
+            let extract_target = prepare_extract_context(
+                &scraper, &parsed, &generation, expected_generation, &queue,
+            ).await?;
+            if let Some(kind) = document_browser_challenge(&scraper).await {
+                clear_webview_extract_result(&scraper, None);
+                return Ok(browser_challenge_envelope(&kind, &browser_challenge_url(&scraper, &url)));
+            }
+            let _ = wait_for_scraper_bridge_ready(
+                &scraper, "extract", Duration::from_secs(5), &generation, expected_generation, &queue,
+            ).await?;
+            ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
+            install_webview_extract_before_script(&scraper, before_script, &request_id)?;
+            capture_id = capture_resources
+                .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
+            navigate_prepared_extract_target(&scraper, &extract_target).map_err(|err| {
+                format!("webview_extract: navigate prepared target: {}", redact_urls_for_log(&err.to_string()))
+            })?;
+        }
 
         let start = Instant::now();
         let mut poll_interval = Duration::from_millis(150);
@@ -2966,7 +2922,13 @@ pub async fn webview_extract(
             }
             poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(600));
             ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-            let mut extract_result = take_webview_extract_result(&scraper)
+            if let Some(kind) = document_browser_challenge(&scraper).await {
+                if let Some(id) = capture_id.take() { state.captured_resources.finish(&queue, id); }
+                clear_webview_extract_result(&scraper, None);
+                log::debug!("[scraper:extract] {kind} requires manual action queue={queue} url={url_for_log}");
+                return Ok(browser_challenge_envelope(&kind, &browser_challenge_url(&scraper, &url)));
+            }
+            let mut extract_result = take_webview_extract_result(&scraper, &request_id)
                 .await
                 .map(|decoded| (decoded, None::<String>));
             if extract_result.is_none() {
@@ -2981,72 +2943,6 @@ pub async fn webview_extract(
             }
             if let Some((decoded, current_url)) = extract_result {
                 ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-                if !retried_after_browser_challenge
-                    && looks_like_browser_challenge_extract_result(&decoded)
-                {
-                    retried_after_browser_challenge = true;
-                    if let Some(capture_id) = capture_id.take() {
-                        state.captured_resources.finish(&queue, capture_id);
-                    }
-                    clear_webview_extract_result(&scraper, current_url.as_deref());
-                    let remaining = timeout.checked_sub(start.elapsed()).unwrap_or_default();
-                    let wait_budget = remaining.min(Duration::from_secs(20));
-                    if wait_budget > Duration::from_millis(0)
-                        && wait_for_browser_challenge_to_clear(
-                            &scraper,
-                            "extract",
-                            &url,
-                            wait_budget,
-                            &generation,
-                            expected_generation,
-                            &queue,
-                        )
-                        .await?
-                    {
-                        ensure_executor_generation(
-                            &generation,
-                            expected_generation,
-                            "extract",
-                            &queue,
-                        )?;
-                        let extract_target = prepare_extract_context(
-                            &scraper,
-                            &parsed,
-                            &generation,
-                            expected_generation,
-                            &queue,
-                        )
-                        .await?;
-                        let _ = wait_for_scraper_bridge_ready(
-                            &scraper,
-                            "extract",
-                            Duration::from_secs(5),
-                            &generation,
-                            expected_generation,
-                            &queue,
-                        )
-                        .await?;
-                        install_webview_extract_before_script(
-                            &scraper,
-                            before_script,
-                            &request_id,
-                        )?;
-                        capture_id = capture_resources
-                            .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
-                        log::debug!(
-                            "[scraper:extract] retry after browser challenge queue={queue} url={url_for_log}"
-                        );
-                        navigate_prepared_extract_target(&scraper, &extract_target).map_err(
-                            |err| {
-                                format!(
-                                    "webview_extract: retry after browser challenge: {}",
-                                    redact_urls_for_log(&err.to_string())
-                                )
-                            },
-                        )?;
-                        continue;
-                    }
-                }
                 // Clear result state without leaving the source origin. Navigating
                 // away would force the next fetch to prepare the source context again.
                 clear_webview_extract_result(&scraper, current_url.as_deref());
@@ -3096,13 +2992,13 @@ pub async fn webview_extract(
     }
 
     clear_webview_extract_result(&scraper, None);
-    if document_has_browser_challenge(&scraper).await {
+    if let Some(kind) = document_browser_challenge(&scraper).await {
         let challenge_url = browser_challenge_url(&scraper, &url);
         let challenge_url_for_log = scraper_url_for_log(&challenge_url);
         log::debug!(
             "[scraper:extract] browser challenge requires manual action queue={queue} url={challenge_url_for_log}"
         );
-        return Ok(browser_challenge_envelope("cloudflare", &challenge_url));
+        return Ok(browser_challenge_envelope(&kind, &challenge_url));
     }
     log::error!(
         "[scraper:extract] timeout queue={queue} url={url_for_log} current_url={}",
@@ -3848,6 +3744,14 @@ mod tests {
             value["challenge"]["url"],
             "https://source.test/chapter/1?token=quoted%22value"
         );
+    }
+
+    #[test]
+    fn challenge_urls_exclude_internal_capture_results() {
+        assert_eq!(clean_challenge_url("https://source.test/chapter/16?token=one#__norea_result__=payload"),
+            "https://source.test/chapter/16?token=one");
+        assert_eq!(clean_challenge_url("https://source.test/chapter/16#reader"),
+            "https://source.test/chapter/16#reader");
     }
 
     fn fetch_context_navigation(request: &str) -> FetchContextNavigation {
