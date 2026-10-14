@@ -1,5 +1,5 @@
 (function () {
-  if (window.top !== window) return;
+  if (window.top !== window || !/^https?:$/.test(window.location.protocol)) return;
   window.ReactNativeWebView = window.ReactNativeWebView || {};
   window.ReactNativeWebView.postMessage = function (payload) {
     try {
@@ -10,8 +10,6 @@
       );
     } catch (e) {}
   };
-})();
-if (window.top === window) {
   try {
     __NOREA_BEFORE_SCRIPT__
   } catch (e) {
@@ -22,4 +20,4 @@ if (window.top === window) {
       }));
     } catch (e2) {}
   }
-}
+})();

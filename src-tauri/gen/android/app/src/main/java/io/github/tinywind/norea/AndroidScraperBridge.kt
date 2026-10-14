@@ -1326,11 +1326,10 @@ class AndroidScraperBridge(
     val resultNonce = beforeScript?.let { bridgeSession.newNonce() }
     val webView = scraper(state, payloadUserAgent(payload))
     // Page CSP applies to the eval fallback in norea_scraper_init.js but not to embedder
-    // document-start scripts, so a per-request script scoped to the page origin
-    // keeps captures working on sites that forbid 'unsafe-eval'.
-    val extractOriginRule = originUrl(Uri.parse(url))
-      ?.takeIf { beforeScript != null && state.documentStartScriptEnabled }
-    val targetUrl = if (beforeScript != null && extractOriginRule == null) {
+    // document-start scripts. Keep this per-request script across redirects;
+    // its wrapper admits only top-level HTTP(S) documents.
+    val useDocumentStartScript = beforeScript != null && state.documentStartScriptEnabled && isHttpUrl(url)
+    val targetUrl = if (beforeScript != null && !useDocumentStartScript) {
       val base = url.substringBefore("#")
       "$base#__norea_script__=${Uri.encode(beforeScript)}" +
         "&__norea_request_id__=${Uri.encode(id)}" +
@@ -1344,23 +1343,23 @@ class AndroidScraperBridge(
     logState(
       state,
       "runExtract start id=$id url=$url timeoutMs=$timeoutMs beforeScriptLength=${beforeScript?.length ?: 0} " +
-        "documentStartScript=${extractOriginRule != null}",
+        "documentStartScript=$useDocumentStartScript",
       url,
     )
     setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms")
     clearExtractScript(state)
-    if (beforeScript != null && extractOriginRule != null) {
+    if (beforeScript != null && useDocumentStartScript) {
       state.activeExtractScript = WebViewCompat.addDocumentStartJavaScript(
         webView,
         scripts.extractStart(id, resultNonce.orEmpty(), beforeScript),
-        setOf(extractOriginRule),
+        setOf("*"),
       )
     }
     val loadTarget = {
       if (state.activeExtractId == id && state.activeAction?.id == id) {
         val navigationScript = payload.optString("chapterNavigationScript")
         runCatching {
-          if (extractOriginRule != null && navigationScript.isNotBlank()) {
+          if (useDocumentStartScript && navigationScript.isNotBlank()) {
             val prepareCapture = scripts.extractStart(id, resultNonce.orEmpty(), beforeScript.orEmpty())
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
               if (state.activeExtractId == id && followed != "true") webView.loadUrl(targetUrl)
