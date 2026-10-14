@@ -150,7 +150,17 @@ rescan. Pending local edits and failed transfers remain eligible for retry.
 Saved metadata supports offline browsing without refetching the
 source site. Reading progress and library membership stay on each device.
 
-Only complete chapters are uploaded. Native code sends the original `content.html`
+Only complete chapters outside the download queue can start an upload. This also
+applies to manual sync and local rescans. Pending queue writes, persisted queue
+entries, active downloads, and media repairs defer the affected chapter. Queue
+checks use chapter-ID maps and SQLite primary-key lookups, without scanning the
+task list for every chapter. Queue changes invalidate an upload being prepared,
+and completion and queue state are checked again before native transfer starts.
+Deferred chapters stay pending; other completed chapters continue syncing. When
+changes mode is enabled, queue settlement schedules another sync. Transfers use
+a private snapshot of completed files and never hold download locks during HTTP.
+
+Native code sends the original `content.html`
 or `content.pdf`, with `manifest.json` and `media.zip` when present, in one multipart
 request. It streams the saved bytes without creating an extra ZIP, rewriting HTML
 or media references, or extracting and recompressing media.

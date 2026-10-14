@@ -4,6 +4,7 @@ import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
+import { beginChapterDownloadQueueWrite, notifyChapterDownloadsSettled } from "./chapter-download-activity";
 import type { ChapterDownloadPhase } from "./task-types";
 import { useBrowseStore } from "../../store/browse";
 import {
@@ -528,6 +529,7 @@ async function removeBackendChapterDownloadJobs(
 ): Promise<void> {
   if (chapterIds.length === 0) return;
   await invoke("chapter_download_queue_remove", { chapterIds });
+  notifyChapterDownloadsSettled();
 }
 
 async function leaseBackendChapterDownloadJobs(
@@ -628,6 +630,7 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
     if (queuedJob) jobsById.set(queuedJob.id, queuedJob);
   }
   const queuedJobs = [...jobsById.values()];
+  const finishQueueWrite = beginChapterDownloadQueueWrite(jobsById.keys());
   for (const job of queuedJobs) pendingBackendChapterDownloadJobsById.set(job.id, job);
   queueBackendChapterDownloadMutation("queue chapter downloads", async () => {
     const pending = queuedJobs.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) === job);
@@ -639,6 +642,7 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
       for (const job of pending) {
         if (pendingBackendChapterDownloadJobsById.get(job.id) === job) pendingBackendChapterDownloadJobsById.delete(job.id);
       }
+      finishQueueWrite();
     }
   });
 }
@@ -1282,7 +1286,7 @@ export function enqueueChapterMediaRepair(
   const sourceAccessScope = sourceBaseUrl
     ? sourceAccessScopeKey(sourceBaseUrl, job.pluginId)
     : undefined;
-  return taskScheduler.enqueueSource<void>({
+  const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
     retry: downloadRetryDecision,
     priority: job.priority ?? "user",
@@ -1550,6 +1554,8 @@ export function enqueueChapterMediaRepair(
       );
     },
   });
+  void handle.promise.then(notifyChapterDownloadsSettled, notifyChapterDownloadsSettled);
+  return handle;
 }
 
 export function enqueueChapterDownloadBatch({

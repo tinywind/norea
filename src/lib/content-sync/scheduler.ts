@@ -3,6 +3,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { contentServerRequest } from "./client";
 import { getContentSyncCursors, syncContentServer } from "./sync";
 import { subscribeWorkMetadataChanges } from "../work-metadata";
+import { subscribeChapterDownloadsSettled } from "../tasks/chapter-download-activity";
 
 export function startContentServerSync(): () => void {
   let disposed = false;
@@ -108,6 +109,9 @@ export function startContentServerSync(): () => void {
   const unsubscribeMetadata = subscribeWorkMetadataChanges(() => {
     if (useContentSyncStore.getState().syncMode === "changes") requestSync();
   });
+  const unsubscribeDownloads = subscribeChapterDownloadsSettled(() => {
+    if (useContentSyncStore.getState().syncMode === "changes") requestSync();
+  });
   window.addEventListener("online", restart);
   window.addEventListener("offline", restart);
   document.addEventListener("visibilitychange", restart);
@@ -119,6 +123,7 @@ export function startContentServerSync(): () => void {
     unsubscribe();
     unsubscribeChanges();
     unsubscribeMetadata();
+    unsubscribeDownloads();
     window.removeEventListener("online", restart);
     window.removeEventListener("offline", restart);
     document.removeEventListener("visibilitychange", restart);

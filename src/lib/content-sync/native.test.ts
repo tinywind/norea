@@ -20,6 +20,7 @@ const entry: CatalogEntry = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(snapshotAndroidContentChapter).mockReset();
   vi.mocked(isAndroidRuntime).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "content_sync_create_stage") return "/cache/content-sync/one";
@@ -46,6 +47,22 @@ it("removes the private snapshot after a failed transfer", async () => {
   await expect(withContentChapterStage({ storageDir: "contents/source/Book/1-One", identity }, async () => {
     throw new Error("server offline");
   })).rejects.toThrow("server offline");
+  expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
+});
+
+it.each([true, false])("discards a snapshot invalidated by a new download before upload (Android: %s)", async android => {
+  vi.mocked(isAndroidRuntime).mockReturnValue(android);
+  const controller = new AbortController();
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "content_sync_snapshot") controller.abort();
+    return original(command, args);
+  });
+  vi.mocked(snapshotAndroidContentChapter).mockImplementationOnce(async () => { controller.abort(); });
+  const upload = vi.fn();
+  await expect(withContentChapterStage({ storageDir: "contents/source/Book/1-One", identity, signal: controller.signal }, upload))
+    .rejects.toMatchObject({ name: "AbortError" });
+  expect(upload).not.toHaveBeenCalled();
   expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
 });
 

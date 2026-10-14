@@ -1,7 +1,7 @@
 import {
   contentIdentity, importContentMetadata, listContentSyncChapters,
   markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
-  contentJournalHead, readContentJournal,
+  contentJournalHead, readContentJournal, canUploadContentChapter,
 } from "../../db/queries/content-sync";
 import { useContentSyncStore } from "../../store/content-sync";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
@@ -11,6 +11,7 @@ import {
 } from "./client";
 import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity } from "./native";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
+import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata } from "./works";
@@ -42,14 +43,14 @@ async function contentFingerprint(row: ContentSyncChapter, stagePath: string): P
   return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
-async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber">, includeUnavailable = false): Promise<CatalogEntry | null> {
+async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber">, includeUnavailable = false, signal?: AbortSignal): Promise<CatalogEntry | null> {
   const local = { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath };
   const recovered = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(row.chapterPath);
   const chapterNumber = row.chapterNumber ?? recovered?.[1];
   let entry: CatalogEntry;
   try {
     const query = new URLSearchParams({ ...local, ...(includeUnavailable ? { includeUnavailable: "true" } : {}), ...(chapterNumber && /^\d+(?:\.\d+)?$/.test(chapterNumber) ? { chapterNumber } : {}) });
-    entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token);
+    entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token, "GET", undefined, signal);
   } catch (error) {
     if (error instanceof ContentServerError && error.status === 404) return null;
     throw error;
@@ -122,6 +123,11 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     for (const id of pending) {
       assertDevice(server, token);
       const row = rowsByIdentity.get(id);
+      if (row?.isDownloadQueued) {
+        processed++;
+        reportProgress();
+        continue;
+      }
       if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath])) || (cache.tombstones[id] && !rescan)) {
         if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
         delete cache.downloads[id];
@@ -130,25 +136,32 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         reportProgress();
         continue;
       }
+      const activity = watchChapterDownloadActivity(row.chapterId);
       try {
-        const existing = await findUploadedChapter(server, token, row);
+        activity.signal.throwIfAborted();
+        if (!await canUploadContentChapter(row.chapterId)) continue;
+        activity.signal.throwIfAborted();
+        const existing = await findUploadedChapter(server, token, row, false, activity.signal);
+        activity.signal.throwIfAborted();
         assertDevice(server, token);
         if (existing) {
           cache.downloads[id] = true;
           pending.delete(id);
-          processed++;
-          reportProgress();
           continue;
         }
-        await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath } }, async stagePath => {
+        await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath }, signal: activity.signal }, async stagePath => {
+          activity.signal.throwIfAborted();
           const fingerprint = await contentFingerprint(row, stagePath);
           assertDevice(server, token);
+          if (!await canUploadContentChapter(row.chapterId)) return;
+          activity.signal.throwIfAborted();
           await uploadContentChapter({
-            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath,
+            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal,
             manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath },
               novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
               chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
           });
+          activity.signal.throwIfAborted();
           assertDevice(server, token);
           cache.uploaded[id] = fingerprint;
           uploaded++;
@@ -157,15 +170,18 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         });
       } catch (error) {
         if (error instanceof ContentServerError && (error.status === 401 || error.status === 403)) throw error;
+        if (activity.signal.aborted) continue;
         assertDevice(server, token);
         failures.push(`${row.novelName} / ${row.chapterName}: ${error instanceof Error ? error.message : String(error)}`);
         useContentSyncStore.setState({ error: failures.at(-1) });
-      }
-      processed++;
-      reportProgress();
-      if (processed % 25 === 0) {
-        cache.pendingUploads = [...pending];
-        await saveCatalog(server, cache);
+      } finally {
+        activity.dispose();
+        processed++;
+        reportProgress();
+        if (processed % 25 === 0) {
+          cache.pendingUploads = [...pending];
+          await saveCatalog(server, cache);
+        }
       }
     }
   } finally {

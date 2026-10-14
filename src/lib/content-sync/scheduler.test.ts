@@ -21,6 +21,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { contentServerRequest } from "./client";
 import { syncContentServer } from "./sync";
 import { startContentServerSync } from "./scheduler";
+import { notifyChapterDownloadsSettled } from "../tasks/chapter-download-activity";
 
 let cleanup: (() => void) | undefined;
 let page: EventTarget & { visibilityState: string };
@@ -81,6 +82,17 @@ it("coalesces local changes and queues a second pass for changes during a transf
   await vi.advanceTimersByTimeAsync(1500);
   expect(syncContentServer).toHaveBeenCalledTimes(2);
   expect(contentServerRequest).toHaveBeenCalledOnce();
+});
+
+it.each(["manual", "periodic", "changes"] as const)("retries deferred uploads after queue settlement only in changes mode (%s)", async syncMode => {
+  useContentSyncStore.setState({ syncMode });
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+  vi.mocked(syncContentServer).mockClear();
+  notifyChapterDownloadsSettled();
+  notifyChapterDownloadsSettled();
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(syncContentServer).toHaveBeenCalledTimes(syncMode === "changes" ? 1 : 0);
 });
 
 it("syncs a server notification using the saved cursors", async () => {

@@ -29,12 +29,18 @@ export interface CatalogEntry {
   sequence: number;
 }
 
-export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath"> }, run: (stagePath: string) => Promise<T>): Promise<T> {
+export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath">; signal?: AbortSignal }, run: (stagePath: string) => Promise<T>): Promise<T> {
+  input.signal?.throwIfAborted();
   const stagePath = await invoke<string>("content_sync_create_stage");
   try {
+    input.signal?.throwIfAborted();
     if (isAndroidRuntime()) await snapshotAndroidContentChapter(input.storageDir, stagePath);
     else await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath,
-      () => invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath }));
+      () => {
+        input.signal?.throwIfAborted();
+        return invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath });
+      });
+    input.signal?.throwIfAborted();
     return await run(stagePath);
   } finally {
     await invoke("content_sync_remove_stage", { stagePath });
@@ -52,8 +58,10 @@ export async function uploadContentChapter(input: {
   manifest: Omit<PackageManifest, "layout" | "files" | "bodyPath">;
   storageDir: string;
   stagePath: string;
+  signal?: AbortSignal;
 }): Promise<CatalogEntry> {
   try {
+    input.signal?.throwIfAborted();
     return await invoke<CatalogEntry>("content_sync_upload", {
       serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
       storageDir: input.storageDir, stagePath: input.stagePath,

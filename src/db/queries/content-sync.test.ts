@@ -5,7 +5,7 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest";
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
-import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, writeContentSyncCache } from "./content-sync";
+import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
 import { cacheServerChapters } from "./content-sync";
 
 let sqlite: DatabaseSync;
@@ -42,6 +42,19 @@ const manifest = {
   chapter: { name: "Opening", position: 1, contentType: "html" as const, page: "1" },
   bodyPath: "content.html", files: [],
 };
+
+it("keeps persisted and leased downloads out of upload readiness even before scheduler restoration", async () => {
+  sqlite.exec(`INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,media_repair_needed) VALUES
+    (1,42,'/one','One',1,1,0), (2,42,'/two','Two',2,1,0), (3,42,'/three','Three',3,1,0),
+    (4,42,'/four','Four',4,0,0), (5,42,'/five','Five',5,1,1);
+    INSERT INTO chapter_download_queue(chapter_id,job_json,created_at_ms,updated_at_ms,leased_at_ms)
+    VALUES (1,'{}',1,1,NULL), (2,'{}',1,1,1)`);
+  const rows = await listContentSyncChapters(undefined, true);
+  expect(rows.filter(row => row.isDownloadQueued).map(row => row.chapterId)).toEqual([1, 2]);
+  expect(await Promise.all([1, 2, 3, 4, 5, 999].map(canUploadContentChapter))).toEqual([false, false, true, false, false, false]);
+  sqlite.exec("DELETE FROM chapter_download_queue WHERE chapter_id=1");
+  expect(await canUploadContentChapter(1)).toBe(true);
+});
 
 it("caches a server chapter list without duplicating a source chapter or changing reading state", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/cache-work','Book')");

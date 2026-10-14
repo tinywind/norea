@@ -94,7 +94,7 @@ vi.mock("./scheduler", () => ({
     enqueueSource: schedulerMocks.enqueueSource,
     getSnapshot: vi.fn(() => ({ records: [] })),
     getTaskByDedupeKey: vi.fn(),
-    subscribeEvents: vi.fn(),
+    subscribeEvents: vi.fn(() => () => undefined),
   },
 }));
 
@@ -119,6 +119,7 @@ import {
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { isTauriRuntime } from "../tauri-runtime";
+import { watchChapterDownloadActivity } from "./chapter-download-activity";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { TaskUserCancelledError } from "./task-errors";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
@@ -560,6 +561,10 @@ describe("enqueueChapterDownloadBatch", () => {
       windowSize: 2,
     });
     void handle.promise.catch(() => undefined);
+
+    const unmaterializedUpload = watchChapterDownloadActivity(4);
+    expect(unmaterializedUpload.signal.aborted).toBe(true);
+    unmaterializedUpload.dispose();
 
     await flushMicrotasks();
 
