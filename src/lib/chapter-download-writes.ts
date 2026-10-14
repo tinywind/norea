@@ -2,6 +2,16 @@ import { throwIfAborted } from "./abort";
 
 const activeWrites = new Map<number, Set<Promise<void>>>();
 const activeDeletions = new Map<number, Set<Promise<void>>>();
+const deletionRevisions = new Map<number, number>();
+let deletionRevision = 0;
+
+export function currentChapterDeletionRevision(): number {
+  return deletionRevision;
+}
+
+export function canAdoptChapterDownloadSnapshot(chapterId: number, revision: number): boolean {
+  return !activeDeletions.has(chapterId) && (deletionRevisions.get(chapterId) ?? 0) <= revision;
+}
 
 /** Tracks local filesystem or database writes; keep network waits outside. */
 export async function withChapterDownloadWrite<T>(
@@ -45,6 +55,7 @@ export async function withChapterDownloadDeletion<T>(
     settle = resolve;
   });
   for (const chapterId of selectedChapterIds) {
+    deletionRevisions.set(chapterId, ++deletionRevision);
     const deletions = activeDeletions.get(chapterId) ?? new Set<Promise<void>>();
     activeDeletions.set(chapterId, deletions);
     deletions.add(settled);
@@ -53,6 +64,7 @@ export async function withChapterDownloadDeletion<T>(
     return await remove();
   } finally {
     for (const chapterId of selectedChapterIds) {
+      deletionRevisions.set(chapterId, ++deletionRevision);
       const deletions = activeDeletions.get(chapterId)!;
       deletions.delete(settled);
       if (deletions.size === 0) activeDeletions.delete(chapterId);

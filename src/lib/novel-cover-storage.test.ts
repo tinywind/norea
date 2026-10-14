@@ -1,70 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
-}));
+vi.mock("./http", () => ({ pluginMediaFetch: vi.fn() }));
+vi.mock("../db/work-metadata", () => ({ knownNovelMetadataDirectory: vi.fn() }));
+vi.mock("./work-metadata", () => ({ workMetadataOperation: vi.fn(), persistNovelCover: vi.fn() }));
+vi.mock("./chapter-storage-resolution", () => ({ resolvedNovelStorageDir: vi.fn() }));
+vi.mock("./tauri-runtime", () => ({ isAndroidRuntime: vi.fn(), isTauriRuntime: vi.fn() }));
 
-vi.mock("./android-storage", () => ({
-  deleteAndroidStoragePath: vi.fn(),
-  inspectAndroidNovelCover: vi.fn(),
-  writeAndroidStorageBytes: vi.fn(),
-  writeAndroidStorageText: vi.fn(),
-}));
-
-vi.mock("./http", () => ({
-  pluginMediaFetch: vi.fn(),
-}));
-
-vi.mock("./tauri-runtime", () => ({
-  isAndroidRuntime: vi.fn(),
-  isTauriRuntime: vi.fn(),
-}));
-
-import {
-  deleteAndroidStoragePath,
-  inspectAndroidNovelCover,
-  writeAndroidStorageBytes,
-  writeAndroidStorageText,
-} from "./android-storage";
-import { invoke } from "@tauri-apps/api/core";
 import { pluginMediaFetch } from "./http";
 import {
-  clearNovelCoverDisplayCache,
-  getNovelCoverSnapshot,
-  invalidateAllNovelCoverSources,
-  notifyNovelCoverChanged,
-  peekCachedNovelCoverSrc,
-  resolveCachedNovelCoverSrc,
-  resolveNovelCoverDisplaySource,
-  resolveStoredNovelCoverSrc,
-  saveNovelCoverFromSource,
-  subscribeNovelCoverChanges,
+  clearNovelCoverDisplayCache, acquireCachedNovelCoverSource, getNovelCoverSnapshot,
+  invalidateAllNovelCoverSources, notifyNovelCoverChanged, peekCachedNovelCoverSrc,
+  resolveCachedNovelCoverSrc, resolveNovelCoverDisplaySource, resolveStoredNovelCoverSrc,
+  saveNovelCoverFromSource, subscribeNovelCoverChanges,
 } from "./novel-cover-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import type { Plugin } from "./plugins/types";
 import { runWithScraperExecutor } from "./tasks/scraper-queue";
+import { knownNovelMetadataDirectory } from "../db/work-metadata";
+import { workMetadataOperation, persistNovelCover } from "./work-metadata";
+import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
 
-const invokeMock = vi.mocked(invoke);
-const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
-const inspectAndroidNovelCoverMock = vi.mocked(inspectAndroidNovelCover);
+const workMetadataMock = vi.mocked(workMetadataOperation);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
-const writeAndroidStorageBytesMock = vi.mocked(writeAndroidStorageBytes);
-const writeAndroidStorageTextMock = vi.mocked(writeAndroidStorageText);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
-
-const novel = {
-  id: 7,
-  name: "Sample Novel",
-  path: "/novel",
-  pluginId: "demo",
-};
-
+const novel = { id: 7, name: "Sample Novel", path: "/novel", pluginId: "demo" };
+const directory = "contents/demo/Sample-Novel-novel";
 function coverVersion(): string {
   const snapshot = getNovelCoverSnapshot(novel.id);
   return snapshot ? `1-${snapshot}` : "1";
 }
-
 function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   return {
     apiVersion: "0.2",
@@ -86,554 +51,179 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   };
 }
 
-function coverManifest(sourceUrl: string, fileName = "cover.jpg"): string {
-  return JSON.stringify({
-    contentType: "image/jpeg",
-    fileName,
-    novelPath: "/novel",
-    sourceId: "demo",
-    sourceUrl,
-    updatedAt: 1,
-    version: 1,
-  });
-}
 
-function desktopCoverResult(
-  sourceUrl: string,
-  fileName = "cover.jpg",
-  relativePath = `contents/demo/Sample-Novel-novel/${fileName}`,
-) {
-  return {
-    manifest: coverManifest(sourceUrl, fileName),
-    relativePath,
-  };
+function desktopCoverResult(_sourceUrl: string) {
+  return { cover: { fileName: "cover.jpg", modifiedAt: 1 } };
 }
-
 beforeEach(() => {
-  clearNovelCoverDisplayCache();
+  invalidateAllNovelCoverSources();
   vi.clearAllMocks();
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
-  deleteAndroidStoragePathMock.mockResolvedValue(undefined);
-  inspectAndroidNovelCoverMock.mockResolvedValue(null);
-  invokeMock.mockImplementation((command) =>
-    Promise.resolve(command === "novel_cover_read_manifest" ? null : undefined),
-  );
-  pluginMediaFetchMock.mockResolvedValue(
-    new Response(new Uint8Array([1, 2, 3]), {
-      headers: { "content-type": "image/jpeg" },
-      status: 200,
-    }),
-  );
+  vi.mocked(knownNovelMetadataDirectory).mockReturnValue(undefined);
+  vi.mocked(resolvedNovelStorageDir).mockImplementation(id => (id ?? 0) > 0 ? directory : null);
+  workMetadataMock.mockReset().mockResolvedValue({ cover: null });
+  vi.mocked(persistNovelCover).mockReset().mockResolvedValue(undefined);
+  pluginMediaFetchMock.mockImplementation(async () => new Response(new Uint8Array([1, 2, 3]), {
+    headers: { "content-type": "image/jpeg" }, status: 200,
+  }));
 });
 
 describe("saveNovelCoverFromSource", () => {
-  it("reads current work metadata writer covers without an update timestamp", async () => {
-    const { writeStoredNovelCover } = await vi.importActual<
-      typeof import("./work-metadata")
-    >("./work-metadata");
-    const directory = "contents/demo/Sample-Novel-novel";
-    const files = new Map<string, number[]>();
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "work_metadata_operation") {
-        const { input } = args as {
-          input: { operation: string; path: string; body?: number[] };
-        };
-        if (input.operation === "read") {
-          return { body: files.get(input.path) ?? null };
-        }
-        if (input.operation === "write" && input.body) {
-          files.set(input.path, input.body);
-          return {};
-        }
-      }
-      if (command === "novel_cover_read_manifest") {
-        return {
-          manifest: new TextDecoder().decode(
-            new Uint8Array(files.get(`${directory}/cover.json`) ?? []),
-          ),
-          relativePath: `${directory}/cover.jpg`,
-        };
-      }
-      throw new Error(`Unexpected command: ${command}`);
+  it.each([false, true])("stores only image bytes and a local descriptor (Android: %s)", async android => {
+    isAndroidRuntimeMock.mockReturnValue(android);
+    await saveNovelCoverFromSource(makePlugin(), novel, "/cover.jpg");
+    expect(persistNovelCover).toHaveBeenCalledExactlyOnceWith(directory, {
+      body: new Uint8Array([1, 2, 3]), contentType: "image/jpeg", fileName: "cover.jpg",
     });
-    await writeStoredNovelCover(directory, {
-      schemaVersion: 1,
-      identity: { pluginId: novel.pluginId, novelPath: novel.path },
-      novel: {
-        name: novel.name,
-        cover: "https://source.test/cover.jpg",
-        author: null,
-        artist: null,
-        summary: null,
-        status: null,
-        genres: null,
-        rating: null,
-        isLocal: false,
-      },
-      cover: {
-        contentType: "image/jpeg",
-        fileName: "cover.jpg",
-        sourceUrl: "https://source.test/cover.jpg",
-      },
-    }, new Uint8Array([1, 2, 3]), false);
-
-    const manifest = new TextDecoder().decode(
-      new Uint8Array(files.get(`${directory}/cover.json`) ?? []),
-    );
-    expect(JSON.parse(manifest)).toEqual({
-      contentType: "image/jpeg",
-      fileName: "cover.jpg",
-      novelPath: novel.path,
-      sourceId: novel.pluginId,
-      sourceUrl: "https://source.test/cover.jpg",
-      version: 1,
-    });
-    const snapshot = getNovelCoverSnapshot(novel.id);
-    const version = snapshot ? `0-${snapshot}` : "0";
-    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBe(
-      `http://norea-media.localhost/${directory}/cover.jpg?v=${version}`,
-    );
-
-    isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
-      manifest,
-      relativePath: `${directory}/cover.jpg`,
-    });
-    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBe(
-      `/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIuanBn?v=${version}`,
-    );
-  });
-
-  it("skips the download when the stored cover uses the same source URL", async () => {
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult("https://source.test/covers/cover.jpg"),
-    );
-    const listener = vi.fn();
-    const snapshot = getNovelCoverSnapshot(novel.id);
-    const unsubscribe = subscribeNovelCoverChanges(listener);
-
-    try {
-      await saveNovelCoverFromSource(
-        makePlugin(),
-        novel,
-        "https://source.test/covers/cover.jpg",
-      );
-    } finally {
-      unsubscribe();
-    }
-
-    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
-    expect(listener).not.toHaveBeenCalled();
-    expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot);
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
-      novelId: 7,
-      novelName: "Sample Novel",
-      novelPath: "/novel",
-      sourceId: "demo",
+    expect(pluginMediaFetchMock).toHaveBeenCalledWith("https://source.test/cover.jpg", {
+      contextUrl: "https://source.test/books/", sourceId: "demo",
     });
   });
-
-  it("refreshes the cover when the source URL query changed", async () => {
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult("https://source.test/covers/cover.jpg?token=old"),
-    );
-
-    await saveNovelCoverFromSource(
-      makePlugin(),
-      novel,
-      "https://source.test/covers/cover.jpg?token=new",
-    );
-
-    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
-      "https://source.test/covers/cover.jpg?token=new",
-      {
-        contextUrl: "https://source.test/books/",
-        sourceId: "demo",
-      },
-    );
-  });
-
-  it("downloads and stores a missing desktop cover in the novel folder", async () => {
-    await saveNovelCoverFromSource(
-      makePlugin(),
-      novel,
-      "https://source.test/covers/cover.jpg",
-    );
-
-    expect(pluginMediaFetchMock).toHaveBeenCalledWith(
-      "https://source.test/covers/cover.jpg",
-      {
-        contextUrl: "https://source.test/books/",
-        sourceId: "demo",
-      },
-    );
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "novel_cover_store", {
-      body: [1, 2, 3],
-      fileName: "cover.jpg",
-      manifest: expect.any(String),
-      novelId: 7,
-      novelName: "Sample Novel",
-      novelPath: "/novel",
-      sourceId: "demo",
-    });
-
-    const storeArgs = invokeMock.mock.calls[1]?.[1] as { manifest: string };
-    expect(JSON.parse(storeArgs.manifest)).toEqual(
-      expect.objectContaining({
-        contentType: "image/jpeg",
-        fileName: "cover.jpg",
-        novelPath: "/novel",
-        sourceId: "demo",
-        sourceUrl: "https://source.test/covers/cover.jpg",
-        version: 1,
-      }),
-    );
-  });
-
-  it("notifies cover subscribers after storing a desktop cover", async () => {
-    const listener = vi.fn();
-    const snapshot = getNovelCoverSnapshot(novel.id);
-    const unsubscribe = subscribeNovelCoverChanges(listener);
-
-    try {
-      await saveNovelCoverFromSource(
-        makePlugin(),
-        novel,
-        "https://source.test/covers/cover.jpg",
-      );
-    } finally {
-      unsubscribe();
-    }
-
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith(novel.id);
-    expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot + 1);
-  });
-
-  it("does not store a successful challenge page as a cover", async () => {
-    pluginMediaFetchMock.mockResolvedValueOnce(
-      new Response("<html>challenge</html>", {
-        headers: { "content-type": "text/html; charset=utf-8" },
-        status: 200,
-      }),
-    );
-    const listener = vi.fn();
-    const unsubscribe = subscribeNovelCoverChanges(listener);
-
-    try {
-      await expect(
-        saveNovelCoverFromSource(
-          makePlugin(),
-          novel,
-          "https://source.test/covers/cover.jpg",
-        ),
-      ).rejects.toThrow("non-image content type (text/html)");
-    } finally {
-      unsubscribe();
-    }
-
-    expect(listener).not.toHaveBeenCalled();
-    expect(
-      invokeMock.mock.calls.filter(([command]) => command === "novel_cover_store"),
-    ).toHaveLength(0);
-  });
-
-  it("serializes cover saves across title changes by stable source identity", async () => {
-    let storedCover: ReturnType<typeof desktopCoverResult> | null = null;
-    invokeMock.mockImplementation((command, args) => {
-      if (command === "novel_cover_read_manifest") {
-        return Promise.resolve(storedCover);
-      }
-      if (command === "novel_cover_store") {
-        storedCover = {
-          manifest: (args as { manifest: string }).manifest,
-          relativePath: "contents/demo/Old-Title-novel/cover.jpg",
-        };
-      }
-      return Promise.resolve(undefined);
-    });
-    let resolveFetch!: (response: Response) => void;
-    const pendingFetch = new Promise<Response>((resolve) => {
-      resolveFetch = resolve;
-    });
-    pluginMediaFetchMock.mockReturnValueOnce(pendingFetch);
-    const listener = vi.fn();
-    const snapshot = getNovelCoverSnapshot(novel.id);
-    const unsubscribe = subscribeNovelCoverChanges(listener);
-
-    try {
-      const first = saveNovelCoverFromSource(
-        makePlugin(),
-        { ...novel, name: "Old Title" },
-        "https://source.test/covers/cover.jpg",
-      );
-      await vi.waitFor(() => expect(pluginMediaFetchMock).toHaveBeenCalledOnce());
-      const second = saveNovelCoverFromSource(
-        makePlugin(),
-        { ...novel, name: "New Title" },
-        "https://source.test/covers/cover.jpg",
-      );
-      resolveFetch(
-        new Response(new Uint8Array([1, 2, 3]), {
-          headers: { "content-type": "image/jpeg" },
-          status: 200,
-        }),
-      );
-
-      await Promise.all([first, second]);
-    } finally {
-      unsubscribe();
-    }
-
+  it("reuses a successful session fetch but refreshes a changed source URL", async () => {
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    await saveNovelCoverFromSource(makePlugin(), novel, "/cover.jpg?v=1");
+    await saveNovelCoverFromSource(makePlugin(), novel, "/cover.jpg?v=1");
     expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
-    expect(
-      invokeMock.mock.calls.filter(([command]) => command === "novel_cover_store"),
-    ).toHaveLength(1);
-    expect(listener).toHaveBeenCalledOnce();
-    expect(listener).toHaveBeenCalledWith(novel.id);
-    expect(getNovelCoverSnapshot(novel.id)).toBe(snapshot + 1);
+    await saveNovelCoverFromSource(makePlugin(), novel, "/cover.jpg?v=2");
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
   });
-
-  it("writes Android cover files under the contents novel directory", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    pluginMediaFetchMock.mockResolvedValueOnce(
-      new Response(new Uint8Array([4, 5]), {
-        headers: { "content-type": "image/webp" },
-        status: 200,
-      }),
-    );
-
-    await saveNovelCoverFromSource(makePlugin(), novel, "/covers/current");
-
-    expect(writeAndroidStorageBytesMock).toHaveBeenCalledWith(
-      "contents/demo/Sample-Novel-novel/cover.webp",
-      new Uint8Array([4, 5]),
-      "image/webp",
-    );
-    expect(writeAndroidStorageTextMock).toHaveBeenCalledWith(
-      "contents/demo/Sample-Novel-novel/cover.json",
-      expect.any(String),
-    );
-  });
-
-  it("removes the previous Android cover file when the extension changes", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
-      manifest: coverManifest("https://source.test/old.jpg", "cover.jpg"),
-      relativePath: "contents/demo/Old-Title-novel/cover.jpg",
-    });
-    pluginMediaFetchMock.mockResolvedValueOnce(
-      new Response(new Uint8Array([6]), {
-        headers: { "content-type": "image/png" },
-        status: 200,
-      }),
-    );
-
-    await saveNovelCoverFromSource(
-      makePlugin(),
-      novel,
-      "https://source.test/new.png",
-    );
-
-    expect(writeAndroidStorageBytesMock).toHaveBeenCalledWith(
-      "contents/demo/Old-Title-novel/cover.png",
-      new Uint8Array([6]),
-      "image/png",
-    );
-    expect(deleteAndroidStoragePathMock).toHaveBeenCalledWith(
-      "contents/demo/Old-Title-novel/cover.jpg",
-    );
-  });
-
-  it("does not reuse a legacy Android cover directory while storing", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
-      manifest: JSON.stringify({
-        contentType: "image/jpeg",
-        fileName: "cover.jpg",
-        sourceUrl: "https://source.test/covers/cover.jpg",
-        updatedAt: 1,
-        version: 1,
-      }),
-      relativePath: "contents/demo/Old-Title-novel/cover.jpg",
-    });
-
-    await saveNovelCoverFromSource(
-      makePlugin(),
-      { ...novel, name: "New Title" },
-      "https://source.test/covers/cover.jpg",
-    );
-
-    expect(writeAndroidStorageBytesMock).toHaveBeenCalledWith(
-      "contents/demo/New-Title-novel/cover.jpg",
-      new Uint8Array([1, 2, 3]),
-      "image/jpeg",
-    );
-    expect(deleteAndroidStoragePathMock).not.toHaveBeenCalled();
-  });
-
-  it("resolves a stored Windows desktop cover to the custom protocol host", async () => {
-    const repeatedSeparatorNovel = {
-      ...novel,
-      path: "/foo//bar",
-    };
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult(
-        "https://source.test/covers/cover.jpg",
-        "cover.jpg",
-        "contents/demo/Sample-Novel-foo--bar/cover.jpg",
-      ),
-    );
-
-    await expect(
-      resolveStoredNovelCoverSrc(repeatedSeparatorNovel),
-    ).resolves.toBe(
-      `http://norea-media.localhost/contents/demo/Sample-Novel-foo--bar/cover.jpg?v=${coverVersion()}`,
-    );
-
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("novel_cover_read_manifest", {
-      novelId: 7,
-      novelName: "Sample Novel",
-      novelPath: "/foo//bar",
-      sourceId: "demo",
+  it("stores an unlabelled image without adding a source URL or invalid MIME descriptor", async () => {
+    pluginMediaFetchMock.mockResolvedValue(new Response(new Uint8Array([1, 2]), { headers: { "content-type": "application/octet-stream" } }));
+    await saveNovelCoverFromSource(makePlugin(), novel, "/image?id=1");
+    expect(persistNovelCover).toHaveBeenCalledExactlyOnceWith(directory, {
+      body: new Uint8Array([1, 2]), fileName: "cover.img", contentType: null,
     });
   });
-
-  it("resolves a stored Android cover to the direct storage URL", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
-      manifest: coverManifest(
-        "https://source.test/covers/cover.webp",
-        "cover.webp",
-      ),
-      relativePath: "contents/demo/Sample-Novel-novel/cover.webp",
-    });
-
-    await expect(
-      resolveStoredNovelCoverSrc(novel),
-    ).resolves.toBe(
-      `/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIud2VicA?v=${coverVersion()}`,
-    );
+  it("does not save a challenge page as an image", async () => {
+    pluginMediaFetchMock.mockResolvedValue(new Response("challenge", { headers: { "content-type": "text/html" } }));
+    await expect(saveNovelCoverFromSource(makePlugin(), novel, "/cover.jpg")).rejects.toThrow("non-image");
+    expect(persistNovelCover).not.toHaveBeenCalled();
   });
-
-  it("encodes unicode Android cover paths in the direct storage URL", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
-      manifest: coverManifest("https://source.test/covers/cover.jpg"),
-      relativePath:
-        "contents/naver-webtoon/광마회귀-webtoon-list-titleId-776601/cover.jpg",
-    });
-
-    await expect(
-      resolveStoredNovelCoverSrc({
-        id: 776601,
-        name: "광마회귀",
-        path: "webtoon/list?titleId=776601",
-        pluginId: "naver-webtoon",
-      }),
-    ).resolves.toBe(
-      "/__norea_android_media__/file/Y29udGVudHMvbmF2ZXItd2VidG9vbi_qtJHrp4jtmozqt4Atd2VidG9vbi1saXN0LXRpdGxlSWQtNzc2NjAxL2NvdmVyLmpwZw?v=1",
-    );
+  it("notifies the affected work after publication", async () => {
+    const listener = vi.fn(); const unsubscribe = subscribeNovelCoverChanges(listener);
+    try {
+      await saveNovelCoverFromSource(makePlugin(), novel, "/cover.jpg");
+      expect(listener).toHaveBeenCalledExactlyOnceWith(novel.id);
+    } finally { unsubscribe(); }
   });
+  it("serializes competing saves under the exact work identity across title changes", async () => {
+    let finish!: () => void;
+    vi.mocked(persistNovelCover).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = saveNovelCoverFromSource(makePlugin(), novel, "/first.jpg");
+    await vi.waitFor(() => expect(persistNovelCover).toHaveBeenCalledOnce());
+    const second = saveNovelCoverFromSource(makePlugin(), { ...novel, name: "Renamed" }, "/second.jpg");
+    expect(persistNovelCover).toHaveBeenCalledOnce();
+    finish(); await Promise.all([first, second]);
+    expect(persistNovelCover).toHaveBeenCalledTimes(2);
+    expect(pluginMediaFetchMock.mock.calls[1]?.[0]).toBe("https://source.test/second.jpg");
+  });
+});
 
-  it("reuses an Android cover stored under an older novel title", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
-      manifest: coverManifest("https://source.test/covers/cover.jpg"),
-      relativePath: "contents/demo/Old-Title-novel/cover.jpg",
-    });
-
-    await expect(
-      resolveStoredNovelCoverSrc({
-        ...novel,
-        cover: "https://source.test/covers/cover.jpg",
-        name: "New Title",
-      }),
-    ).resolves.toBe(
-      `/__norea_android_media__/file/Y29udGVudHMvZGVtby9PbGQtVGl0bGUtbm92ZWwvY292ZXIuanBn?v=${coverVersion()}`,
-    );
-    expect(inspectAndroidNovelCoverMock).toHaveBeenCalledWith({
-      novelPath: "/novel",
-      novelIdentitySuffix: "-novel",
-      preferredNovelDir: "contents/demo/New-Title-novel",
-      sourceId: "demo",
-      sourceDir: "contents/demo",
-    });
+describe("stored cover discovery", () => {
+  it.each([false, true])("uses the actual cover file without a source URL or sidecar (Android: %s)", async android => {
+    isAndroidRuntimeMock.mockReturnValue(android);
+    workMetadataMock.mockResolvedValue({ cover: { fileName: "cover.jpg", modifiedAt: 1 } });
+    const src = await resolveStoredNovelCoverSrc(novel);
+    expect(src).toContain(android ? "/__norea_android_media__/file/" : `http://norea-media.localhost/${directory}/cover.jpg`);
+    expect(workMetadataMock).toHaveBeenCalledExactlyOnceWith({ operation: "cover", path: `${directory}/novel.json` });
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
   });
-
-  it("prefers a stored desktop cover when the current remote URL differs", async () => {
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult("https://source.test/old-cover.jpg"),
-    );
-
-    await expect(
-      resolveStoredNovelCoverSrc(novel),
-    ).resolves.toBe(
-      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
-    );
+  it("uses the indexed directory after a work title changes", async () => {
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue("contents/demo/Original");
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    expect(await resolveStoredNovelCoverSrc({ ...novel, name: "New title" })).toContain("/Original/cover.jpg");
   });
-
-  it("keeps cover URLs content-relative when the novel folder has unicode", async () => {
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult(
-        "https://source.test/covers/cover.jpg",
-        "cover.jpg",
-        "contents/naver-webtoon/광마회귀-webtoon-list-titleId-776601/cover.jpg",
-      ),
-    );
-
-    await expect(
-      resolveStoredNovelCoverSrc({
-        id: 776601,
-        name: "광마회귀",
-        path: "webtoon/list?titleId=776601",
-        pluginId: "naver-webtoon",
-      }),
-    ).resolves.toBe(
-      "http://norea-media.localhost/contents/naver-webtoon/%EA%B4%91%EB%A7%88%ED%9A%8C%EA%B7%80-webtoon-list-titleId-776601/cover.jpg?v=1",
-    );
-  });
-
-  it("keeps Windows cover URLs content-relative when the novel folder has unicode", async () => {
-    invokeMock.mockResolvedValueOnce(
-      desktopCoverResult(
-        "https://source.test/covers/cover.jpg",
-        "cover.jpg",
-        "contents/newtoki-webtoon/가정부-길들이기-webtoon-2025/cover.jpg",
-      ),
-    );
-
-    await expect(
-      resolveStoredNovelCoverSrc({
-        id: 2025,
-        name: "가정부 길들이기",
-        path: "webtoon/2025",
-        pluginId: "newtoki-webtoon",
-      }),
-    ).resolves.toBe(
-      "http://norea-media.localhost/contents/newtoki-webtoon/%EA%B0%80%EC%A0%95%EB%B6%80-%EA%B8%B8%EB%93%A4%EC%9D%B4%EA%B8%B0-webtoon-2025/cover.jpg?v=1",
-    );
-  });
-
-  it("returns null instead of a remote cover when no stored cover exists", async () => {
-    invokeMock.mockResolvedValueOnce(null);
-
-    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBeNull();
+  it("does not derive an unindexed work location from its title", async () => {
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
+    expect(await resolveStoredNovelCoverSrc(novel)).toBeNull();
+    expect(workMetadataMock).not.toHaveBeenCalled();
   });
 });
 
 describe("cached novel cover display sources", () => {
+  it("reuses a browse cover without searching local work folders", async () => {
+    const displayNovel = { ...novel, id: 0, cover: "/cover.jpg" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    const first = acquireCachedNovelCoverSource(displayNovel, options);
+    const src = await first.promise;
+    first.release();
+    const second = acquireCachedNovelCoverSource(displayNovel, options);
+    expect(peekCachedNovelCoverSrc(displayNovel, options)).toBe(src);
+    await expect(second.promise).resolves.toBe(src);
+    second.release();
+    expect(workMetadataMock).not.toHaveBeenCalled();
+    expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("uses the indexed cover of a browse result without enumerating chapter folders", async () => {
+    vi.mocked(knownNovelMetadataDirectory).mockReturnValue("contents/demo/Renamed-novel");
+    workMetadataMock.mockResolvedValue({ cover: { fileName: "cover.jpg", modifiedAt: 1 } });
+    const source = await resolveNovelCoverDisplaySource(makePlugin(), { ...novel, id: 0, cover: "/cover.jpg" });
+    expect(source?.src).toContain("contents/demo/Renamed-novel/cover.jpg");
+    expect(workMetadataOperation).toHaveBeenCalledExactlyOnceWith({ operation: "cover", path: "contents/demo/Renamed-novel/novel.json" });
+    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("cancels an unfinished cover only after its last consumer leaves", async () => {
+    pluginMediaFetchMock.mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    }));
+    const displayNovel = { ...novel, id: 0, cover: "/cover.jpg" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    const first = acquireCachedNovelCoverSource(displayNovel, options);
+    const second = acquireCachedNovelCoverSource(displayNovel, options);
+    const settled = Promise.allSettled([first.promise, second.promise]);
+    await vi.waitFor(() => expect(pluginMediaFetchMock).toHaveBeenCalledOnce());
+    const signal = pluginMediaFetchMock.mock.calls[0]![1]!.signal!;
+    first.release();
+    expect(signal.aborted).toBe(false);
+    second.release();
+    expect(signal.aborted).toBe(true);
+    expect((await settled).every((result) => result.status === "rejected")).toBe(true);
+    expect(peekCachedNovelCoverSrc(displayNovel, options)).toBeUndefined();
+  });
+
+  it("invalidates a browse cover by source identity after it is saved to the library", async () => {
+    const displayNovel = { ...novel, id: 0, cover: "/cover.jpg" };
+    const other = { ...displayNovel, path: "/other" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    await resolveCachedNovelCoverSrc(displayNovel, options);
+    await resolveCachedNovelCoverSrc(other, options);
+    const snapshot = getNovelCoverSnapshot(0);
+    notifyNovelCoverChanged(novel.id, novel);
+    expect(peekCachedNovelCoverSrc(displayNovel, options)).toBeUndefined();
+    expect(peekCachedNovelCoverSrc(other, options)).toEqual(expect.any(String));
+    expect(getNovelCoverSnapshot(0)).toBeGreaterThan(snapshot);
+  });
+
+  it("bounds unused browse covers while retaining covers still on screen", async () => {
+    pluginMediaFetchMock.mockImplementation(async () => new Response(new Uint8Array([1]), { headers: { "content-type": "image/png" } }));
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    const displayNovel = { ...novel, id: 0, cover: "/cover.jpg" };
+    const visible = acquireCachedNovelCoverSource(displayNovel, options);
+    await visible.promise;
+    const oldest = { ...displayNovel, path: "/oldest" };
+    const first = acquireCachedNovelCoverSource(oldest, options);
+    await first.promise;
+    first.release();
+    for (let index = 0; index < 100; index++) {
+      const handle = acquireCachedNovelCoverSource({ ...displayNovel, path: `/book/${index}` }, options);
+      await handle.promise;
+      handle.release();
+    }
+    expect(peekCachedNovelCoverSrc(displayNovel, options)).toEqual(expect.any(String));
+    expect(peekCachedNovelCoverSrc(oldest, options)).toBeUndefined();
+    visible.release();
+  });
+
   it("reuses a resolved stored cover without another native lookup", async () => {
     const plugin = makePlugin();
     const displayNovel = {
       ...novel,
       cover: "https://source.test/covers/cover.jpg",
     };
-    invokeMock.mockResolvedValue(
+    workMetadataMock.mockResolvedValue(
       desktopCoverResult("https://source.test/covers/cover.jpg"),
     );
 
@@ -646,7 +236,7 @@ describe("cached novel cover display sources", () => {
     );
     expect(cached).toBe(first);
     expect(second).toBe(first);
-    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(workMetadataMock).toHaveBeenCalledOnce();
   });
 
   it("keeps a cached cover when saving the same source is a no-op", async () => {
@@ -655,10 +245,12 @@ describe("cached novel cover display sources", () => {
       ...novel,
       cover: "https://source.test/covers/cover.jpg",
     };
-    invokeMock.mockResolvedValue(
+    workMetadataMock.mockResolvedValue(
       desktopCoverResult("https://source.test/covers/cover.jpg"),
     );
 
+    await saveNovelCoverFromSource(plugin, novel, displayNovel.cover);
+    workMetadataMock.mockClear();
     const cached = await resolveCachedNovelCoverSrc(displayNovel, { plugin });
     await saveNovelCoverFromSource(plugin, novel, displayNovel.cover);
 
@@ -666,7 +258,7 @@ describe("cached novel cover display sources", () => {
     await expect(
       resolveCachedNovelCoverSrc(displayNovel, { plugin }),
     ).resolves.toBe(cached);
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(workMetadataMock).toHaveBeenCalledTimes(2);
   });
 
   it("invalidates a cached cover after storing new cover bytes", async () => {
@@ -675,7 +267,7 @@ describe("cached novel cover display sources", () => {
       ...novel,
       cover: "https://source.test/covers/old.jpg",
     };
-    invokeMock.mockResolvedValue(
+    workMetadataMock.mockResolvedValue(
       desktopCoverResult("https://source.test/covers/old.jpg"),
     );
 
@@ -721,7 +313,7 @@ describe("cached novel cover display sources", () => {
         "blob:cached-cover",
         "blob:cached-cover",
       ]);
-      expect(invokeMock).toHaveBeenCalledOnce();
+      expect(workMetadataMock).toHaveBeenCalledOnce();
       expect(createObjectUrl).toHaveBeenCalledOnce();
       expect(revokeObjectUrl).not.toHaveBeenCalled();
 
@@ -776,7 +368,7 @@ describe("cached novel cover display sources", () => {
 
 describe("resolveNovelCoverDisplaySource", () => {
   it("uses an existing local cover without fetching or storing", async () => {
-    invokeMock.mockResolvedValueOnce(
+    workMetadataMock.mockResolvedValueOnce(
       desktopCoverResult("https://source.test/covers/old-cover.jpg"),
     );
 
@@ -793,9 +385,7 @@ describe("resolveNovelCoverDisplaySource", () => {
       `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
     );
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
-    expect(
-      invokeMock.mock.calls.filter(([command]) => command === "novel_cover_store"),
-    ).toHaveLength(0);
+    expect(persistNovelCover).not.toHaveBeenCalled();
   });
 
   it("uses a transient object URL when no local cover exists", async () => {
@@ -825,11 +415,7 @@ describe("resolveNovelCoverDisplaySource", () => {
           sourceId: "demo",
         },
       );
-      expect(
-        invokeMock.mock.calls.filter(
-          ([command]) => command === "novel_cover_store",
-        ),
-      ).toHaveLength(0);
+      expect(persistNovelCover).not.toHaveBeenCalled();
 
       resolved?.dispose();
       resolved?.dispose();
@@ -842,7 +428,7 @@ describe("resolveNovelCoverDisplaySource", () => {
   });
 
   it("uses the source WebView when local cover inspection fails", async () => {
-    invokeMock.mockRejectedValueOnce(new Error("storage unavailable"));
+    workMetadataMock.mockRejectedValueOnce(new Error("storage unavailable"));
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const createObjectUrl = vi
       .spyOn(URL, "createObjectURL")
@@ -1012,10 +598,7 @@ describe("invalidateAllNovelCoverSources", () => {
 it("changes only the affected stored cover URL when its bytes change without a new metadata timestamp", async () => {
   const current = { ...novel, id: 401 };
   const other = { ...novel, id: 402 };
-  invokeMock.mockResolvedValue({
-    relativePath: "contents/demo/Novel/cover.png",
-    manifest: JSON.stringify({ version: 1, fileName: "cover.png", sourceUrl: "https://source.test/cover.png", sourceId: "demo", novelPath: "/novel", updatedAt: 100 }),
-  });
+  workMetadataMock.mockResolvedValue({ cover: { fileName: "cover.png", modifiedAt: 100 } });
   const before = await resolveStoredNovelCoverSrc(current);
   const otherBefore = await resolveStoredNovelCoverSrc(other);
   notifyNovelCoverChanged(current.id);

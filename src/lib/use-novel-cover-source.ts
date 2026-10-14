@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   getNovelCoverSnapshot,
+  acquireCachedNovelCoverSource,
   peekCachedNovelCoverSrc,
-  resolveCachedNovelCoverSrc,
-  resolveNovelCoverDisplaySource,
-  resolveStoredNovelCoverSrc,
   subscribeNovelCoverChanges,
-  type NovelCoverDisplaySource,
   type NovelCoverStorageInput,
 } from "./novel-cover-storage";
 import { pluginManager } from "./plugins/manager";
@@ -32,7 +29,7 @@ export function useNovelCoverSource(
   const subscribeToCover = useCallback(
     (onStoreChange: () => void) =>
       subscribeNovelCoverChanges((changedNovelId) => {
-        if (changedNovelId === 0 || changedNovelId === novel.id) {
+        if (changedNovelId === 0 || novel.id === 0 || changedNovelId === novel.id) {
           onStoreChange();
         }
       }),
@@ -50,13 +47,12 @@ export function useNovelCoverSource(
 
   useEffect(() => {
     let cancelled = false;
-    let displaySource: NovelCoverDisplaySource | null = null;
-    const controller = new AbortController();
+    let release: (() => void) | undefined;
     const localCover = novel.isLocal ? novel.cover?.trim() || null : null;
     const loadedPlugin =
       options.plugin ?? pluginManager.getPlugin(novel.pluginId);
     const cachedSource =
-      novel.id > 0 && !novel.isLocal
+      !localCover
         ? peekCachedNovelCoverSrc(novel, {
             allowSourceFallback: options.allowSourceFallback,
             plugin: loadedPlugin,
@@ -64,47 +60,27 @@ export function useNovelCoverSource(
         : undefined;
     setSource(cachedSource === undefined ? localCover : cachedSource);
 
-    if (novel.isLocal || novel.pluginId.trim() === "") return;
+    if (localCover || novel.pluginId.trim() === "") return;
 
     const request = resolveCover();
 
-    async function resolveCover(): Promise<NovelCoverDisplaySource | null> {
+    async function resolveCover(): Promise<string | null> {
       let plugin = loadedPlugin;
-      if (!plugin) {
+      if (!plugin && !novel.isLocal) {
         await pluginManager.loadInstalledFromDb().catch(() => undefined);
         plugin = pluginManager.getPlugin(novel.pluginId);
       }
-      if (controller.signal.aborted) return null;
-
-      if (novel.id > 0) {
-        const cacheOptions = {
-          allowSourceFallback: options.allowSourceFallback,
-          plugin,
-        };
-        const cached = peekCachedNovelCoverSrc(novel, cacheOptions);
-        if (cached !== undefined && !cancelled) setSource(cached);
-        const src = await resolveCachedNovelCoverSrc(novel, cacheOptions);
-        return src ? { dispose: () => undefined, src } : null;
-      }
-
-      if (options.allowSourceFallback && plugin) {
-        return resolveNovelCoverDisplaySource(
-          plugin,
-          novel,
-          controller.signal,
-        );
-      }
-      const src = await resolveStoredNovelCoverSrc(novel);
-      return src ? { dispose: () => undefined, src } : null;
+      if (cancelled) return null;
+      const cacheOptions = { allowSourceFallback: options.allowSourceFallback, plugin };
+      const cached = peekCachedNovelCoverSrc(novel, cacheOptions);
+      if (cached !== undefined) setSource(cached);
+      const handle = acquireCachedNovelCoverSource(novel, cacheOptions);
+      release = handle.release;
+      return handle.promise;
     }
     void request
       .then((resolved) => {
-        if (cancelled) {
-          resolved?.dispose();
-          return;
-        }
-        displaySource = resolved;
-        setSource(resolved?.src ?? null);
+        if (!cancelled) setSource(resolved);
       })
       .catch(() => {
         if (!cancelled) setSource(null);
@@ -112,8 +88,7 @@ export function useNovelCoverSource(
 
     return () => {
       cancelled = true;
-      controller.abort();
-      displaySource?.dispose();
+      release?.();
     };
   }, [
     coverSnapshot,
@@ -134,8 +109,8 @@ function initialNovelCoverSource(
   novel: NovelCoverSourceInput,
   options: NovelCoverSourceOptions,
 ): string | null {
-  if (novel.isLocal) return novel.cover?.trim() || null;
-  if (novel.id <= 0 || novel.pluginId.trim() === "") return null;
+  if (novel.isLocal && novel.cover?.trim()) return novel.cover.trim();
+  if (novel.pluginId.trim() === "") return null;
 
   return (
     peekCachedNovelCoverSrc(novel, {

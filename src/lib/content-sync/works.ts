@@ -1,3 +1,4 @@
+import { canonicalMetadataValue } from "../work-metadata/schema";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
@@ -18,13 +19,9 @@ async function hash(bytes: Uint8Array): Promise<string> {
 export function contentWorkId(identity: NovelMetadataV1["identity"]): Promise<string> {
   return hash(new TextEncoder().encode(JSON.stringify([identity.pluginId, identity.novelPath])));
 }
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, entry]) => [key, canonical(entry)]));
-  return value;
-}
+
 export async function workMetadataFingerprint(metadata: NovelMetadataV1, cover: Uint8Array | null): Promise<string> {
-  return hash(new TextEncoder().encode(JSON.stringify([canonical(metadata), cover ? await hash(cover) : null])));
+  return hash(new TextEncoder().encode(JSON.stringify([canonicalMetadataValue(metadata), cover ? await hash(cover) : null])));
 }
 async function readCache(server: string): Promise<WorkSyncCache> {
   const saved = await readContentSyncCache(cacheKey(server));
@@ -126,6 +123,7 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
           fingerprint: await storedNovelMetadataFingerprint(stored.metadata), revision: (file?.revision ?? 0) + 1 };
         byIdentity.set(identity, installedFile);
         cache.fileVersions[identity] = fileVersion(installedFile);
+        if (!entry.hasCover && stored.metadata.cover) delete cache.fileVersions[identity];
         installed = true;
         cache.fingerprints[entry.id] = incomingFingerprint;
       }

@@ -197,7 +197,9 @@ server**, then use **Rescan local files and sync**. Server deletion preserves
 local files and reading state.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
-`novel.json` stores its details beside its cover, without a chapter list.
+`novel.json` stores its details beside its cover, without a chapter list or source
+cover URL. The plugin ID, source path, and work name are the only required fields;
+a local rescan rebuilds the metadata cache and discovers cover and chapter files.
 Downloaded chapters are discovered from their existing folders and files.
 These files are authoritative; the app keeps metadata in SQLite for browsing and
 search, including works with no downloaded chapters. Opening saved works does not

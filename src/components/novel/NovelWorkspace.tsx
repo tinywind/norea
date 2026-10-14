@@ -178,7 +178,7 @@ export function NovelWorkspace({
     isDesktopLayout,
   );
   const coverPlugin =
-    !allowSourceAccess || novel.isLocal || novel.inLibrary
+    !allowSourceAccess || novel.isLocal
       ? null
       : pluginManager.getPlugin(novel.pluginId);
   const coverSource = useNovelCoverSource(novel, {

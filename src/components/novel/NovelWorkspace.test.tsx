@@ -36,3 +36,21 @@ it("keeps source-site cover fallback available for unbound source works", () => 
   expect(html).toContain("https://original.test/cover.jpg");
   expect(html).toContain("novel.openSource");
 });
+
+it("loads a library work cover when its local cover has not been saved", () => {
+  const html = renderToStaticMarkup(
+    <MantineProvider>
+      <NovelWorkspace {...props} allowSourceAccess novel={{ ...props.novel, inLibrary: true }} />
+    </MantineProvider>,
+  );
+  expect(html).toContain("https://original.test/cover.jpg");
+});
+
+it("keeps source cover access disabled for server-only library works", () => {
+  const html = renderToStaticMarkup(
+    <MantineProvider>
+      <NovelWorkspace {...props} novel={{ ...props.novel, inLibrary: true }} />
+    </MantineProvider>,
+  );
+  expect(html).not.toContain("https://original.test/cover.jpg");
+});

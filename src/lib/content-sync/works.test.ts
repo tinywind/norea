@@ -17,8 +17,8 @@ import { syncWorkMetadata, contentWorkId } from "./works";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
   schemaVersion: 1, identity: { pluginId: "example", novelPath: "/book" },
-  novel: { name, cover: "https://example.com/cover.png", author: "Author", artist: null, summary: "Summary", status: "Ongoing", rating: 4.5, genres: "Fantasy", isLocal: false },
-  cover: { fileName: "cover.png", contentType: "image/png", sourceUrl: "https://example.com/cover.png" },
+  novel: { name, author: "Author", artist: null, summary: "Summary", status: "Ongoing", rating: 4.5, genres: "Fantasy", isLocal: false },
+  cover: { fileName: "cover.png", contentType: "image/png" },
 });
 const memory = new Map<string, string>();
 const localCovers = new Map<string, Uint8Array | null>();

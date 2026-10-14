@@ -30,7 +30,7 @@ import { syncServerNovelOnOpen, refreshServerNovelFromSource } from "./work-refr
 const chapter = { chapterPath: "/chapter/1", name: "One", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const, releaseTime: null, directory: "1-One" };
 const local: NovelMetadataV1 = {
   schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
-  novel: { name: "Book", cover: null, author: "Author", artist: null, summary: "Local summary", status: null, rating: null, genres: null, isLocal: false },
+  novel: { name: "Book", author: "Author", artist: null, summary: "Local summary", status: null, rating: null, genres: null, isLocal: false },
   cover: null,
 };
 beforeEach(() => {
@@ -110,7 +110,7 @@ it("skips conflicting server metadata without failing the installation transacti
 });
 
 it("does not reinstall an identical cover when the work is opened again", async () => {
-  const metadata = { ...local, novel: { ...local.novel, cover: "https://source/cover.jpg" }, cover: { fileName: "cover.jpg", contentType: "image/jpeg", sourceUrl: "https://source/cover.jpg" } };
+  const metadata = { ...local, cover: { fileName: "cover.jpg", contentType: "image/jpeg" } };
   mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata });
   mocks.storedCover.mockResolvedValue(new Uint8Array([1, 2, 3]));
   mocks.cover.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), contentType: "image/jpeg" });
@@ -120,7 +120,7 @@ it("does not reinstall an identical cover when the work is opened again", async 
 });
 
 it("installs changed cover bytes even when their metadata is unchanged", async () => {
-  const metadata = { ...local, novel: { ...local.novel, cover: "https://source/cover.jpg" }, cover: { fileName: "cover.jpg", contentType: "image/jpeg", sourceUrl: "https://source/cover.jpg" } };
+  const metadata = { ...local, cover: { fileName: "cover.jpg", contentType: "image/jpeg" } };
   mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata });
   mocks.storedCover.mockResolvedValue(new Uint8Array([1]));
   mocks.cover.mockResolvedValue({ bytes: new Uint8Array([2]), contentType: "image/jpeg" });
@@ -131,7 +131,7 @@ it("installs changed cover bytes even when their metadata is unchanged", async (
 });
 
 it("retains source cover bytes changed while a server refresh was pending", async () => {
-  const metadata = { ...local, novel: { ...local.novel, cover: "https://source/cover.jpg" }, cover: { fileName: "cover.jpg", contentType: "image/jpeg", sourceUrl: "https://source/cover.jpg" } };
+  const metadata = { ...local, cover: { fileName: "cover.jpg", contentType: "image/jpeg" } };
   mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata });
   mocks.storedCover.mockResolvedValueOnce(new Uint8Array([1])).mockResolvedValue(new Uint8Array([3]));
   mocks.cover.mockResolvedValue({ bytes: new Uint8Array([2]), contentType: "image/jpeg" });

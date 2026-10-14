@@ -1,33 +1,23 @@
-import { invoke } from "@tauri-apps/api/core";
-import {
-  deleteAndroidStoragePath,
-  inspectAndroidNovelCover,
-  writeAndroidStorageBytes,
-  writeAndroidStorageText,
-} from "./android-storage";
-import {
-  novelStorageIdentitySuffix,
-  novelStorageRelativeDir,
-  sourceStorageRelativeDir,
-  type ChapterStorageNovelPathInput,
-} from "./chapter-storage-path";
+import type { ChapterStorageNovelPathInput } from "./chapter-storage-path";
 import { pluginMediaFetch } from "./http";
 import { getPluginBaseUrl } from "./plugins/base-url";
 import type { Plugin } from "./plugins/types";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
+import { coverContentType } from "./work-metadata/schema";
 
-const NOVEL_COVER_MANIFEST_FILE = "cover.json";
 const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
 const ANDROID_LOCAL_MEDIA_SRC_PREFIX = "/__norea_android_media__/file/";
 const WINDOWS_NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
+const MAX_UNUSED_COVER_SOURCES = 100;
 
 type NovelCoverChangeListener = (novelId: number) => void;
 
 const novelCoverChangeListeners = new Set<NovelCoverChangeListener>();
 const novelCoverSnapshots = new Map<number, number>();
 const novelCoverSaveQueues = new Map<string, NovelCoverSaveQueue>();
+const savedCoverUrls = new Map<string, string>();
 const novelCoverDisplayCache = new Map<string, NovelCoverDisplayCacheEntry>();
 let novelCoverStorageEpoch = 0;
 
@@ -42,24 +32,9 @@ const IMAGE_EXTENSIONS = new Set([
   "webp",
 ]);
 
-interface NovelCoverManifest {
-  contentType: string | null;
-  fileName: string;
-  novelPath: string;
-  sourceId: string;
-  sourceUrl: string;
-  updatedAt: number;
-  version: 1;
-}
-
-interface NovelCoverReadResultWire {
-  manifest: string;
-  relativePath: string;
-}
-
 interface StoredNovelCover {
-  manifest: NovelCoverManifest;
   relativePath: string;
+  modifiedAt: number;
 }
 
 interface NovelCoverSaveQueue {
@@ -70,7 +45,10 @@ interface NovelCoverSaveQueue {
 }
 
 interface NovelCoverDisplayCacheEntry {
-  novelId: number;
+  novelIds: Set<number>;
+  identity: Pick<NovelCoverStorageInput, "pluginId" | "path">;
+  consumers: number;
+  controller: AbortController;
   promise: Promise<string | null>;
   resolved: boolean;
   source: NovelCoverDisplaySource | null;
@@ -124,17 +102,57 @@ export function resolveCachedNovelCoverSrc(
   novel: NovelCoverDisplayInput,
   options: NovelCoverDisplayCacheOptions = {},
 ): Promise<string | null> {
+  return getOrCreateNovelCoverCacheEntry(novel, options).promise;
+}
+
+export function acquireCachedNovelCoverSource(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions = {},
+): { promise: Promise<string | null>; release: () => void } {
+  const cacheKey = novelCoverDisplayCacheKey(novel, options);
+  const entry = getOrCreateNovelCoverCacheEntry(novel, options);
+  entry.consumers += 1;
+  let released = false;
+  return {
+    promise: entry.promise,
+    release: () => {
+      if (released) return;
+      released = true;
+      entry.consumers -= 1;
+      if (entry.consumers === 0 && !entry.resolved) {
+        if (novelCoverDisplayCache.get(cacheKey) === entry) {
+          novelCoverDisplayCache.delete(cacheKey);
+        }
+        entry.controller.abort();
+      }
+      trimUnusedNovelCoverSources();
+    },
+  };
+}
+
+function getOrCreateNovelCoverCacheEntry(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions,
+): NovelCoverDisplayCacheEntry {
   const cacheKey = novelCoverDisplayCacheKey(novel, options);
   const cached = novelCoverDisplayCache.get(cacheKey);
-  if (cached) return cached.promise;
+  if (cached) {
+    cached.novelIds.add(novel.id);
+    novelCoverDisplayCache.delete(cacheKey);
+    novelCoverDisplayCache.set(cacheKey, cached);
+    return cached;
+  }
 
   const entry: NovelCoverDisplayCacheEntry = {
-    novelId: novel.id,
+    novelIds: new Set([novel.id]),
+    identity: { pluginId: novel.pluginId, path: novel.path },
+    consumers: 0,
+    controller: new AbortController(),
     promise: Promise.resolve(null),
     resolved: false,
     source: null,
   };
-  const request = resolveNovelCoverDisplaySourceForCache(novel, options).then(
+  const request = resolveNovelCoverDisplaySourceForCache(novel, options, entry.controller.signal).then(
     (source) => {
       if (novelCoverDisplayCache.get(cacheKey) !== entry) {
         source?.dispose();
@@ -142,6 +160,7 @@ export function resolveCachedNovelCoverSrc(
       }
       entry.resolved = true;
       entry.source = source;
+      trimUnusedNovelCoverSources();
       return source?.src ?? null;
     },
     (error: unknown) => {
@@ -153,13 +172,26 @@ export function resolveCachedNovelCoverSrc(
   );
   entry.promise = request;
   novelCoverDisplayCache.set(cacheKey, entry);
-  return request;
+  return entry;
 }
 
-export function clearNovelCoverDisplayCache(novelId?: number): void {
+function trimUnusedNovelCoverSources(): void {
+  const unused = [...novelCoverDisplayCache].filter(([, entry]) => entry.resolved && entry.consumers === 0);
+  for (const [key, entry] of unused.slice(0, Math.max(0, unused.length - MAX_UNUSED_COVER_SOURCES))) {
+    novelCoverDisplayCache.delete(key);
+    entry.source?.dispose();
+  }
+}
+
+export function clearNovelCoverDisplayCache(
+  novelId?: number,
+  identity?: Pick<NovelCoverStorageInput, "pluginId" | "path">,
+): void {
   for (const [cacheKey, entry] of novelCoverDisplayCache) {
-    if (novelId !== undefined && entry.novelId !== novelId) continue;
+    const sameIdentity = identity && identity.pluginId === entry.identity.pluginId && identity.path === entry.identity.path;
+    if (novelId !== undefined && !entry.novelIds.has(novelId) && !sameIdentity) continue;
     novelCoverDisplayCache.delete(cacheKey);
+    entry.controller.abort();
     if (entry.resolved) entry.source?.dispose();
   }
 }
@@ -167,6 +199,7 @@ export function clearNovelCoverDisplayCache(novelId?: number): void {
 export function invalidateAllNovelCoverSources(): void {
   clearNovelCoverDisplayCache();
   novelCoverStorageEpoch += 1;
+  savedCoverUrls.clear();
   for (const listener of novelCoverChangeListeners) {
     listener(0);
   }
@@ -175,10 +208,11 @@ export function invalidateAllNovelCoverSources(): void {
 async function resolveNovelCoverDisplaySourceForCache(
   novel: NovelCoverDisplayInput,
   options: NovelCoverDisplayCacheOptions,
+  signal: AbortSignal,
 ): Promise<NovelCoverDisplaySource | null> {
   const plugin = options.plugin ?? null;
   if (options.allowSourceFallback && plugin) {
-    return resolveNovelCoverDisplaySource(plugin, novel);
+    return resolveNovelCoverDisplaySource(plugin, novel, signal);
   }
 
   const src = await resolveStoredNovelCoverSrc(novel);
@@ -311,7 +345,7 @@ async function enqueueNovelCoverSave(
   const request = queue.tail.catch(() => undefined).then(async () => {
     if (queue.generations.get(requestIdentity) !== generation) return;
     const stored = await storeNovelCoverFromSource(plugin, novel, sourceUrl);
-    if (stored) notifyNovelCoverChanged(novel.id);
+    if (stored) notifyNovelCoverChanged(novel.id, novel);
   });
   queue.tail = request;
   queue.latestRequests.set(requestIdentity, request);
@@ -362,7 +396,7 @@ function novelCoverSaveRequestIdentity(novel: NovelCoverStorageInput): string {
 }
 
 function novelCoverSaveQueueKey(novel: NovelCoverStorageInput): string {
-  return `${sourceStorageRelativeDir(novel)}/${novelStorageIdentitySuffix(novel)}`;
+  return JSON.stringify([novel.pluginId, novel.path]);
 }
 
 async function storeNovelCoverFromSource(
@@ -371,13 +405,8 @@ async function storeNovelCoverFromSource(
   sourceUrl: string,
 ): Promise<boolean> {
   const existing = await readStoredNovelCover(novel);
-  if (
-    existing?.manifest.sourceId === novel.pluginId &&
-    existing.manifest.novelPath === novel.path &&
-    existing.manifest.sourceUrl === sourceUrl
-  ) {
-    return false;
-  }
+  const key = novelCoverSaveQueueKey(novel);
+  if (existing && savedCoverUrls.get(key) === sourceUrl) return false;
 
   const baseUrl = safePluginBaseUrl(plugin);
   const response = await pluginMediaFetch(sourceUrl, {
@@ -413,12 +442,11 @@ async function storeNovelCoverFromSource(
     novel,
     {
       body,
-      contentType: contentType ?? mimeTypeFromFileName(fileName),
+      contentType: contentType?.startsWith("image/") ? contentType : coverContentType(fileName),
       fileName,
-      sourceUrl,
     },
-    existing,
   );
+  savedCoverUrls.set(key, sourceUrl);
   return true;
 }
 
@@ -437,7 +465,7 @@ function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string 
   const src = isAndroidRuntime()
     ? androidLocalMediaSrc(stored.relativePath)
     : noreaMediaSrc(stored.relativePath);
-  const updatedAt = Math.max(0, Math.trunc(stored.manifest.updatedAt));
+  const updatedAt = Math.max(0, Math.trunc(stored.modifiedAt));
   const snapshot = getNovelCoverSnapshot(novelId);
   const storageVersion = snapshot
     ? `${updatedAt}-${snapshot}`
@@ -448,122 +476,37 @@ function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string 
 async function readStoredNovelCover(
   novel: NovelCoverStorageInput,
 ): Promise<StoredNovelCover | null> {
-  const metadataDirectory = resolvedNovelStorageDir(novel.id);
-  if (metadataDirectory) {
-    const { workMetadataOperation } = await import("./work-metadata");
-    const { base64ToBytes } = await import("./base64");
-    const { body } = await workMetadataOperation({ operation: "read", path: `${metadataDirectory}/cover.json` });
-    const manifest = parseNovelCoverManifest(body ? new TextDecoder().decode(base64ToBytes(body)) : null);
-    if (!manifest || manifest.sourceId !== novel.pluginId || manifest.novelPath !== novel.path) return null;
-    return { manifest, relativePath: `${metadataDirectory}/${manifest.fileName}` };
+  let metadataDirectory = resolvedNovelStorageDir(novel.id);
+  if (novel.id <= 0) {
+    const { knownNovelMetadataDirectory } = await import("../db/work-metadata");
+    metadataDirectory = knownNovelMetadataDirectory({ pluginId: novel.pluginId, novelPath: novel.path }) ?? null;
+    // Browse results only inspect indexed work paths; recovery belongs to work discovery.
+    if (!metadataDirectory) return null;
   }
-  if (isAndroidRuntime()) {
-    const result = await inspectAndroidNovelCover({
-      novelPath: novel.path,
-      novelIdentitySuffix: novelStorageIdentitySuffix(novel),
-      preferredNovelDir: novelStorageRelativeDir(novel),
-      sourceId: novel.pluginId,
-      sourceDir: sourceStorageRelativeDir(novel),
-    });
-    const manifest = parseNovelCoverManifest(result?.manifest ?? null);
-    const relativePath = result?.relativePath.trim();
-    return manifest && relativePath ? { manifest, relativePath } : null;
-  }
-
-  const result = await invoke<NovelCoverReadResultWire | null>(
-    "novel_cover_read_manifest",
-    {
-      ...novelCoverInvokeArgs(novel),
-    },
-  );
-  const manifest = parseNovelCoverManifest(result?.manifest ?? null);
-  const relativePath = result?.relativePath.trim();
-  return manifest && relativePath ? { manifest, relativePath } : null;
+  if (!metadataDirectory) return null;
+  const { workMetadataOperation } = await import("./work-metadata");
+  const { cover } = await workMetadataOperation({ operation: "cover", path: `${metadataDirectory}/novel.json` });
+  return cover ? { relativePath: `${metadataDirectory}/${cover.fileName}`, modifiedAt: cover.modifiedAt } : null;
 }
 
 async function storeNovelCover(
   novel: NovelCoverStorageInput,
-  input: {
-    body: Uint8Array;
-    contentType: string;
-    fileName: string;
-    sourceUrl: string;
-  },
-  previous: StoredNovelCover | null,
+  input: { body: Uint8Array; contentType: string | null; fileName: string },
 ): Promise<void> {
   const metadataDirectory = resolvedNovelStorageDir(novel.id);
-  if (metadataDirectory) {
-    const { persistNovelCover } = await import("./work-metadata");
-    await persistNovelCover(metadataDirectory, input);
-    return;
-  }
-  const manifest = serializeNovelCoverManifest({
-    contentType: input.contentType,
-    fileName: input.fileName,
-    novelPath: novel.path,
-    sourceId: novel.pluginId,
-    sourceUrl: input.sourceUrl,
-    updatedAt: Date.now(),
-    version: 1,
-  });
-
-  if (isAndroidRuntime()) {
-    const targetDir = storedNovelCoverRelativeDir(novel, previous);
-    const relativePath = `${targetDir}/${input.fileName}`;
-    await writeAndroidStorageBytes(
-      relativePath,
-      input.body,
-      input.contentType,
-    );
-    await writeAndroidStorageText(
-      `${targetDir}/${NOVEL_COVER_MANIFEST_FILE}`,
-      manifest,
-    );
-    if (
-      previous &&
-      previous.relativePath !== relativePath &&
-      previous.manifest.fileName !== input.fileName
-    ) {
-      await deleteAndroidStoragePath(previous.relativePath).catch(
-        () => undefined,
-      );
-    }
-    return;
-  }
-
-  await invoke("novel_cover_store", {
-    body: Array.from(input.body),
-    fileName: input.fileName,
-    manifest,
-    ...novelCoverInvokeArgs(novel),
-  });
+  if (!metadataDirectory) throw new Error("novel cover: work metadata directory is not registered");
+  const { persistNovelCover } = await import("./work-metadata");
+  await persistNovelCover(metadataDirectory, input);
 }
 
-function storedNovelCoverRelativeDir(
-  novel: NovelCoverStorageInput,
-  previous: StoredNovelCover | null,
-): string {
-  if (!previous) return novelStorageRelativeDir(novel);
-  if (
-    previous.manifest.sourceId !== novel.pluginId ||
-    previous.manifest.novelPath !== novel.path
-  ) {
-    return novelStorageRelativeDir(novel);
-  }
-  const separator = previous.relativePath.lastIndexOf("/");
-  if (separator <= 0) return novelStorageRelativeDir(novel);
-  const relativeDir = previous.relativePath.slice(0, separator);
-  const sourcePrefix = `${sourceStorageRelativeDir(novel)}/`;
-  return relativeDir.startsWith(sourcePrefix) &&
-    relativeDir.endsWith(novelStorageIdentitySuffix(novel))
-    ? relativeDir
-    : novelStorageRelativeDir(novel);
-}
-
-export function notifyNovelCoverChanged(novelId: number): void {
+export function notifyNovelCoverChanged(
+  novelId: number,
+  identity?: Pick<NovelCoverStorageInput, "pluginId" | "path">,
+): void {
   if (novelId <= 0) return;
-  clearNovelCoverDisplayCache(novelId);
+  clearNovelCoverDisplayCache(novelId, identity);
   novelCoverSnapshots.set(novelId, (novelCoverSnapshots.get(novelId) ?? 0) + 1);
+  novelCoverSnapshots.set(0, (novelCoverSnapshots.get(0) ?? 0) + 1);
   for (const listener of novelCoverChangeListeners) {
     listener(novelId);
   }
@@ -585,17 +528,6 @@ function noreaMediaSrc(relativePath: string): string {
     .split("/")
     .map(encodeURIComponent)
     .join("/")}`;
-}
-
-function novelCoverInvokeArgs(
-  novel: NovelCoverStorageInput,
-): Record<string, unknown> {
-  return {
-    novelId: novel.id,
-    novelName: novel.name,
-    novelPath: novel.path,
-    sourceId: novel.pluginId,
-  };
 }
 
 function absolutePluginCoverUrl(
@@ -692,29 +624,6 @@ function extensionFromUrl(url: string): string | null {
   return normalized && IMAGE_EXTENSIONS.has(normalized) ? normalized : null;
 }
 
-function mimeTypeFromFileName(fileName: string): string {
-  const extension = fileName.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toLowerCase();
-  switch (extension) {
-    case "avif":
-      return "image/avif";
-    case "bmp":
-      return "image/bmp";
-    case "gif":
-      return "image/gif";
-    case "jpg":
-    case "jpeg":
-      return "image/jpeg";
-    case "png":
-      return "image/png";
-    case "svg":
-      return "image/svg+xml";
-    case "webp":
-      return "image/webp";
-    default:
-      return "application/octet-stream";
-  }
-}
-
 function normalizeContentType(contentType: string | null): string | null {
   return contentType?.split(";")[0]?.trim().toLowerCase() || null;
 }
@@ -725,38 +634,4 @@ function isCoverDocumentContentType(contentType: string): boolean {
     contentType === "application/xhtml+xml" ||
     contentType === "application/json"
   );
-}
-
-function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<NovelCoverManifest>;
-    if (
-      parsed.version !== 1 ||
-      typeof parsed.sourceId !== "string" ||
-      typeof parsed.novelPath !== "string" ||
-      (parsed.updatedAt !== undefined &&
-        (typeof parsed.updatedAt !== "number" || !Number.isFinite(parsed.updatedAt))) ||
-      typeof parsed.sourceUrl !== "string" ||
-      typeof parsed.fileName !== "string"
-    ) {
-      return null;
-    }
-    return {
-      contentType:
-        typeof parsed.contentType === "string" ? parsed.contentType : null,
-      fileName: parsed.fileName,
-      novelPath: parsed.novelPath,
-      sourceId: parsed.sourceId,
-      sourceUrl: parsed.sourceUrl,
-      updatedAt: parsed.updatedAt ?? 0,
-      version: 1,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function serializeNovelCoverManifest(manifest: NovelCoverManifest): string {
-  return JSON.stringify(manifest);
 }

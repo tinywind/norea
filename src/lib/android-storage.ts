@@ -58,15 +58,6 @@ interface AndroidStorageBridge {
     chapterIdentityPrefix: string,
     preferredContentFileName: string,
   ) => void;
-  inspectNovelCover: (
-    requestId: string,
-    rootUri: string,
-    preferredNovelDir: string,
-    sourceDir: string,
-    novelIdentitySuffix: string,
-    sourceId: string,
-    novelPath: string,
-  ) => void;
   finalizeChapterStorageTransfer: (
     requestId: string,
     rootUri: string,
@@ -178,7 +169,6 @@ export async function androidWorkMetadataOperation(
   if (!root) throw new Error(ANDROID_STORAGE_NOT_SELECTED);
   const bridge = androidStorageBridge();
   const result = await runAndroidStorageOperation<AndroidStorageResponse & import("./work-metadata").WorkMetadataOperationResult>((requestId) => bridge.workMetadataOperation(requestId, root, JSON.stringify(input)));
-  if (input.operation !== "read" && input.operation !== "list" && input.path && isNovelCoverStoragePath(input.path)) clearNovelCoverInspectionCache(bridge);
   return result;
 }
 
@@ -245,12 +235,6 @@ interface AndroidChapterStorageTransferResponse extends AndroidStorageResponse {
   preparation?: ChapterStorageTransferPreparation;
 }
 
-interface AndroidNovelCoverResponse extends AndroidStorageResponse {
-  status?: "missing" | "present";
-  manifest?: string;
-  relativePath?: string;
-}
-
 export interface AndroidChapterArtifacts {
   status: "missing" | "present";
   contentFile: string | null;
@@ -263,19 +247,6 @@ export interface AndroidChapterStorageLookupInput {
   sourceDir: string;
   novelIdentitySuffix: string;
   chapterIdentityPrefix: string;
-}
-
-export interface AndroidNovelCoverInspection {
-  manifest: string;
-  relativePath: string;
-}
-
-export interface AndroidNovelCoverLookupInput {
-  novelPath: string;
-  preferredNovelDir: string;
-  sourceId: string;
-  sourceDir: string;
-  novelIdentitySuffix: string;
 }
 
 export interface AndroidContentUriDescriptor {
@@ -300,10 +271,6 @@ const pickResolvers = new Map<
   (payload: AndroidStoragePickPayload) => void
 >();
 const chapterArtifactResolvers = new Map<string, (response: string) => void>();
-const novelCoverInspectionResolvers = new Map<
-  string,
-  (response: string) => void
->();
 const chapterStorageTransferResolvers = new Map<
   string,
   (response: string) => void
@@ -314,11 +281,6 @@ const storageOperationResolvers = new Map<
 >();
 const nomediaRoots = new Set<string>();
 const nomediaRootPromises = new Map<string, Promise<void>>();
-const novelCoverInspectionsByBridge = new WeakMap<
-  AndroidStorageBridge,
-  Map<string, Promise<AndroidNovelCoverInspection | null>>
->();
-
 declare global {
   interface Window {
     __noreaResolveAndroidStoragePick?: (
@@ -326,10 +288,6 @@ declare global {
       payload: AndroidStoragePickPayload,
     ) => void;
     __noreaResolveAndroidChapterArtifacts?: (
-      requestId: string,
-      response: string,
-    ) => void;
-    __noreaResolveAndroidNovelCover?: (
       requestId: string,
       response: string,
     ) => void;
@@ -474,55 +432,6 @@ async function runAndroidStorageOperation<T extends AndroidStorageResponse>(
   return parseStorageResponse<T>(rawResponse);
 }
 
-function ensureNovelCoverInspectionResolver(): void {
-  window.__noreaResolveAndroidNovelCover ??= (requestId, response) => {
-    const resolve = novelCoverInspectionResolvers.get(requestId);
-    if (!resolve) return;
-    novelCoverInspectionResolvers.delete(requestId);
-    resolve(response);
-  };
-}
-
-function novelCoverInspectionCache(
-  bridge: AndroidStorageBridge,
-): Map<string, Promise<AndroidNovelCoverInspection | null>> {
-  let cache = novelCoverInspectionsByBridge.get(bridge);
-  if (!cache) {
-    cache = new Map();
-    novelCoverInspectionsByBridge.set(bridge, cache);
-  }
-  return cache;
-}
-
-function novelCoverInspectionKey(input: AndroidNovelCoverLookupInput): string {
-  return JSON.stringify([
-    input.novelPath,
-    input.preferredNovelDir,
-    input.sourceId,
-    input.sourceDir,
-    input.novelIdentitySuffix,
-  ]);
-}
-
-function clearNovelCoverInspectionCache(bridge: AndroidStorageBridge): void {
-  novelCoverInspectionsByBridge.get(bridge)?.clear();
-}
-
-function isNovelCoverStoragePath(relativePath: string): boolean {
-  const segments = relativePath.split("/").filter(Boolean);
-  const fileName = segments.at(-1)?.toLowerCase() ?? "";
-  return (
-    segments.length === 4 &&
-    segments[0] === "contents" &&
-    (fileName === "cover.json" || fileName.startsWith("cover."))
-  );
-}
-
-function isNovelStorageDirectoryPath(relativePath: string): boolean {
-  const segments = relativePath.split("/").filter(Boolean);
-  return segments.length === 3 && segments[0] === "contents";
-}
-
 function ensureChapterStorageTransferResolver(): void {
   window.__noreaResolveAndroidChapterStorageTransfer ??= (
     requestId,
@@ -574,7 +483,6 @@ export async function selectAndroidStorageRoot(): Promise<string | null> {
   const root = await invoke<string>("chapter_media_set_storage_root", {
     root: payload.root,
   });
-  clearNovelCoverInspectionCache(androidStorageBridge());
   nomediaRoots.delete(root);
   await ensureAndroidStorageNomedia(root);
   return root;
@@ -591,9 +499,6 @@ export async function writeAndroidStorageBytes(
   await runAndroidStorageOperation((requestId) =>
     bridge.writeBytes(requestId, root, relativePath, base64, mimeType),
   );
-  if (isNovelCoverStoragePath(relativePath)) {
-    clearNovelCoverInspectionCache(bridge);
-  }
 }
 
 export async function writeAndroidContentUriBytes(
@@ -702,9 +607,6 @@ export async function writeAndroidStorageText(
   await runAndroidStorageOperation((requestId) =>
     bridge.writeText(requestId, root, relativePath, text),
   );
-  if (isNovelCoverStoragePath(relativePath)) {
-    clearNovelCoverInspectionCache(bridge);
-  }
 }
 
 export async function archiveAndroidStorageDirectory(
@@ -738,63 +640,6 @@ export async function readAndroidStorageText(
     if (error instanceof Error && /not found/i.test(error.message)) return null;
     throw error;
   }
-}
-
-export function inspectAndroidNovelCover(
-  input: AndroidNovelCoverLookupInput,
-): Promise<AndroidNovelCoverInspection | null> {
-  const bridge = androidStorageBridge();
-  const cache = novelCoverInspectionCache(bridge);
-  const cacheKey = novelCoverInspectionKey(input);
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
-
-  const inspection = inspectAndroidNovelCoverUncached(bridge, input);
-  cache.set(cacheKey, inspection);
-  void inspection.catch(() => {
-    if (cache.get(cacheKey) === inspection) cache.delete(cacheKey);
-  });
-  return inspection;
-}
-
-async function inspectAndroidNovelCoverUncached(
-  bridge: AndroidStorageBridge,
-  input: AndroidNovelCoverLookupInput,
-): Promise<AndroidNovelCoverInspection | null> {
-  const root = await androidStorageRoot();
-  ensureNovelCoverInspectionResolver();
-  const requestId = makeRequestId();
-  const rawResponse = await new Promise<string>((resolve, reject) => {
-    novelCoverInspectionResolvers.set(requestId, resolve);
-    try {
-      bridge.inspectNovelCover(
-        requestId,
-        root,
-        input.preferredNovelDir,
-        input.sourceDir,
-        input.novelIdentitySuffix,
-        input.sourceId,
-        input.novelPath,
-      );
-    } catch (error) {
-      novelCoverInspectionResolvers.delete(requestId);
-      reject(error);
-    }
-  });
-  const response = parseStorageResponse<AndroidNovelCoverResponse>(
-    rawResponse,
-  );
-  if (
-    response.status !== "present" ||
-    !response.manifest?.trim() ||
-    !response.relativePath?.trim()
-  ) {
-    return null;
-  }
-  return {
-    manifest: response.manifest,
-    relativePath: response.relativePath.trim(),
-  };
 }
 
 export async function inspectAndroidChapterArtifacts(input: AndroidChapterStorageLookupInput & {
@@ -1029,12 +874,6 @@ export async function deleteAndroidStoragePath(
   await runAndroidStorageOperation((requestId) =>
     bridge.deletePath(requestId, root, relativePath),
   );
-  if (
-    isNovelCoverStoragePath(relativePath) ||
-    isNovelStorageDirectoryPath(relativePath)
-  ) {
-    clearNovelCoverInspectionCache(bridge);
-  }
 }
 
 /**
@@ -1059,15 +898,6 @@ export async function deleteAndroidStoragePaths(
         bridge.deletePath(requestId, root, relativePath),
       );
     }
-  }
-  if (
-    uniquePaths.some(
-      (relativePath) =>
-        isNovelCoverStoragePath(relativePath) ||
-        isNovelStorageDirectoryPath(relativePath),
-    )
-  ) {
-    clearNovelCoverInspectionCache(bridge);
   }
 }
 
@@ -1136,7 +966,6 @@ export async function commitAndroidStorageRestore(token: string): Promise<void> 
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
   parseStorageResponse(bridge.commitRestore(root, token));
-  clearNovelCoverInspectionCache(bridge);
 }
 
 export async function rollbackAndroidStorageRestore(
@@ -1155,12 +984,6 @@ export async function renameAndroidStoragePath(
   await runAndroidStorageOperation((requestId) =>
     bridge.renamePath(requestId, root, relativePath, newName),
   );
-  if (
-    isNovelCoverStoragePath(relativePath) ||
-    isNovelStorageDirectoryPath(relativePath)
-  ) {
-    clearNovelCoverInspectionCache(bridge);
-  }
 }
 
 export async function deleteAndroidStorageChildrenExcept(
@@ -1177,7 +1000,6 @@ export async function clearAndroidStorageRoot(): Promise<void> {
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
   parseStorageResponse(bridge.deleteRootChildren(root));
-  clearNovelCoverInspectionCache(bridge);
   nomediaRoots.delete(root);
   await ensureAndroidStorageNomedia(root);
 }

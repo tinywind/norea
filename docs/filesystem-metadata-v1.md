@@ -34,13 +34,19 @@ An uninitialized cache, explicit rescan, or failed-write recovery reads the
 authoritative files. Changes made outside the app require a rescan; writes check
 the previous file fingerprint to avoid overwriting external edits.
 
+Readers require only `identity.pluginId`, `identity.novelPath`, and `novel.name`.
+`schemaVersion` defaults to 1 when absent; an explicit unsupported version is
+rejected. Other missing values default to null, with `isLocal` defaulting to false.
+Unknown fields are ignored and omitted on write and transfer. Present supported
+fields must have valid types, and cover filenames must stay within the work folder.
+The normalized document written by the app and server is:
+
 ```typescript
 interface NovelMetadataV1 {
   schemaVersion: 1;
   identity: { pluginId: string; novelPath: string };
   novel: {
     name: string;
-    cover: string | null;
     author: string | null;
     artist: string | null;
     summary: string | null;
@@ -49,7 +55,7 @@ interface NovelMetadataV1 {
     rating: number | null;
     isLocal: boolean;
   };
-  cover: { fileName: string; contentType: string | null; sourceUrl: string } | null;
+  cover: { fileName: string; contentType: string | null } | null;
 }
 ```
 
@@ -58,18 +64,21 @@ absent. `status` preserves source text. `totalPages` controls chapter pagination
 and is not work metadata. Chapter directories are safe child names and are never
 interpreted as source URLs. Numeric database IDs stay in the local cache.
 `cover.fileName` is a safe work-local `cover.<extension>` filename. Cover bytes
-and the existing `cover.json` sidecar live beside `novel.json`.
+live beside `novel.json`. The app does not generate or read `cover.json`.
+Source cover URLs remain in the app DB cache for source browsing and downloading
+missing covers; they are not written to this document or sent to the server.
+Local cover data URLs are also cache-only.
 Media `manifest.json` remains a separate chapter-media inventory.
 Text-only chapters do not require that media inventory.
 
 Metadata is written atomically through a temporary sibling file and rename.
-Identical metadata, cover bytes, and cover sidecars do not trigger file writes.
+Identical metadata and cover bytes do not trigger file writes.
 The metadata document has no timestamp or chapter list.
 Cache writes must not silently overwrite newer files during startup/rebuild.
 Invalid local metadata is skipped with a path-only warning during scans; valid
 works still load. Storage access errors and duplicate valid work identities
-remain errors. Updates require a current-format document with matching plugin ID
-and work path. Obsolete documents are not converted or repaired implicitly.
+remain errors. Updates require matching plugin ID and work path. Scans never rewrite source
+documents; publication writes only the normalized current fields.
 Invalid metadata is never converted into an empty work. Identity,
 directory traversal, and size limits are
 validated at both import boundaries. Renaming a title retains the existing work
@@ -103,7 +112,11 @@ Chapter catalog pages update the package index without rewriting work files.
 Full work metadata comes from the work catalog. A work must be installed before
 its chapter packages; a package cannot reconstruct missing work metadata.
 
-Folder scanning requires novel.json and does not consult an app database.
+Folder scanning requires the essential fields in novel.json and does not consult
+an app database. A cover descriptor is optional: readers discover nonempty
+`cover.jpg`, `cover.png`, and other supported image files directly in the work
+folder. An existing declared image takes priority; otherwise filename order
+selects a cover. Chapter entries come from the chapter folders.
 It registers the work and cover even when no complete chapter is present. It
 scans completed chapter folders independently of the work document. Invalid or
 missing metadata is not replaced by database guesses. Existing user folders

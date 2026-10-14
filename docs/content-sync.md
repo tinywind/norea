@@ -120,8 +120,10 @@ Plugin ID, novel path, and chapter path identify content across devices. Existin
 numeric database IDs remain device-local. Downloaded chapters use the existing
 readable directory rules; synchronization does not rename existing folders.
 
-Each work folder stores an authoritative `novel.json`, its cover image and
-`cover.json`. The document stores work information, including source rating,
+Each work folder stores an authoritative `novel.json` and its cover image.
+No cover sidecar or source cover URL is generated or transferred. Readers require
+only the plugin ID, source path, and work name; optional fields may be absent and
+unknown fields are ignored. The document stores work information, including source rating,
 without chapter lists or update timestamps. Work paths exclude the source base URL
 and retain identity query parameters. Chapter folders supply downloaded chapter
 numbers and titles. Source and server chapter lists are cached separately.

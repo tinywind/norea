@@ -13,7 +13,6 @@ import {
   deleteAndroidStoragePaths,
   describeAndroidContentUri,
   inspectAndroidChapterArtifacts,
-  inspectAndroidNovelCover,
   finalizeAndroidChapterStorageTransfer,
   prepareAndroidChapterStorageTransfer,
   prepareAndroidReaderMediaCache,
@@ -34,7 +33,6 @@ type TestBridge = {
   describeContentUri?: ReturnType<typeof vi.fn>;
   ensureNoMedia?: ReturnType<typeof vi.fn>;
   inspectChapterArtifacts?: ReturnType<typeof vi.fn>;
-  inspectNovelCover?: ReturnType<typeof vi.fn>;
   finalizeChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
   prepareChapterStorageTransfer?: ReturnType<typeof vi.fn>;
@@ -514,121 +512,6 @@ describe("android storage bridge facade", () => {
       mediaBytes: 3,
       status: "present",
     });
-  });
-
-  it(
-    "resolves and caches identical novel cover inspections through an asynchronous callback",
-    async () => {
-      const root = "content://tree/primary%3ANoreaCover";
-      const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
-      let requestId = "";
-      const inspectNovelCover = vi.fn((candidateRequestId: string) => {
-        requestId = candidateRequestId;
-      });
-      const response = JSON.stringify({
-        manifest: JSON.stringify({ fileName: "cover.jpg", version: 1 }),
-        ok: true,
-        relativePath: "contents/demo/Old-title-novel-1/cover.jpg",
-        status: "present",
-      });
-      invokeMock.mockResolvedValue(root);
-      installBridge({ ensureNoMedia, inspectNovelCover });
-
-      const input = {
-        novelPath: "/novel/1",
-        novelIdentitySuffix: "-novel-1",
-        preferredNovelDir: "contents/demo/New-title-novel-1",
-        sourceId: "demo",
-        sourceDir: "contents/demo",
-      };
-      const inspection = inspectAndroidNovelCover(input);
-      const duplicateInspection = inspectAndroidNovelCover(input);
-
-      expect(duplicateInspection).toBe(inspection);
-      await vi.waitFor(() => expect(inspectNovelCover).toHaveBeenCalled());
-      expect(inspectNovelCover).toHaveBeenCalledWith(
-        expect.any(String),
-        root,
-        "contents/demo/New-title-novel-1",
-        "contents/demo",
-        "-novel-1",
-        "demo",
-        "/novel/1",
-      );
-
-      let settled = false;
-      void inspection.finally(() => {
-        settled = true;
-      });
-      await Promise.resolve();
-      expect(settled).toBe(false);
-
-      window.__noreaResolveAndroidNovelCover?.(requestId, response);
-
-      const expected = {
-        manifest: JSON.stringify({ fileName: "cover.jpg", version: 1 }),
-        relativePath: "contents/demo/Old-title-novel-1/cover.jpg",
-      };
-      await expect(inspection).resolves.toEqual(expected);
-      await expect(duplicateInspection).resolves.toEqual(expected);
-      await expect(inspectAndroidNovelCover(input)).resolves.toEqual(expected);
-      expect(inspectNovelCover).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it("returns null when the Android bridge finds no stored novel cover", async () => {
-    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
-    let requestId = "";
-    const inspectNovelCover = vi.fn((candidateRequestId: string) => {
-      requestId = candidateRequestId;
-    });
-    invokeMock.mockResolvedValue("content://tree/primary%3ANoreaCover");
-    installBridge({ ensureNoMedia, inspectNovelCover });
-
-    const inspection = inspectAndroidNovelCover({
-      novelPath: "/novel/1",
-      novelIdentitySuffix: "-novel-1",
-      preferredNovelDir: "contents/demo/New-title-novel-1",
-      sourceId: "demo",
-      sourceDir: "contents/demo",
-    });
-    await vi.waitFor(() => expect(inspectNovelCover).toHaveBeenCalled());
-    window.__noreaResolveAndroidNovelCover?.(
-      requestId,
-      JSON.stringify({ ok: true, status: "missing" }),
-    );
-
-    await expect(inspection).resolves.toBeNull();
-  });
-
-  it("propagates Android novel cover inspection failures", async () => {
-    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
-    let requestId = "";
-    const inspectNovelCover = vi.fn((candidateRequestId: string) => {
-      requestId = candidateRequestId;
-    });
-    invokeMock.mockResolvedValue("content://tree/primary%3ANoreaCover");
-    installBridge({ ensureNoMedia, inspectNovelCover });
-
-    const inspection = inspectAndroidNovelCover({
-      novelPath: "/novel/1",
-      novelIdentitySuffix: "-novel-1",
-      preferredNovelDir: "contents/demo/New-title-novel-1",
-      sourceId: "demo",
-      sourceDir: "contents/demo",
-    });
-    await vi.waitFor(() => expect(inspectNovelCover).toHaveBeenCalled());
-    window.__noreaResolveAndroidNovelCover?.(
-      requestId,
-      JSON.stringify({
-        error: "Multiple stored novel cover folders match -novel-1",
-        ok: false,
-      }),
-    );
-
-    await expect(inspection).rejects.toThrow(
-      "Multiple stored novel cover folders match -novel-1",
-    );
   });
 
   it("runs chapter storage transfers through asynchronous bridge callbacks", async () => {

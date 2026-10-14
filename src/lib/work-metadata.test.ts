@@ -3,17 +3,38 @@ import { parseNovelMetadata } from "./work-metadata";
 
 export function metadataFixture() {
   return { schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
-    novel: { name: "Book", cover: null, author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+    novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
     cover: null };
 }
 
 describe("portable work metadata", () => {
+  it("restores minimal metadata and ignores unrelated fields and source cover URLs", () => {
+    const parsed = parseNovelMetadata({
+      identity: { pluginId: "source", novelPath: "/book?exact=1", sourceUrl: "https://removed.test" },
+      novel: { name: "Book", cover: "https://removed.test/cover.jpg" },
+      cover: { fileName: "cover.jpg", sourceUrl: "https://removed.test/cover.jpg" },
+      updatedAt: 123, chapters: [], inLibrary: true,
+    });
+    expect(parsed).toEqual({
+      schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
+      novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+      cover: { fileName: "cover.jpg", contentType: "image/jpeg" },
+    });
+    expect(JSON.stringify(parsed)).not.toContain("https://");
+  });
+
+  it("restores minimal metadata without optional properties", () => {
+    const parsed = parseNovelMetadata({ identity: { pluginId: "source", novelPath: "/book" }, novel: { name: "Book" } });
+    expect(parsed.identity.novelPath).toBe("/book");
+    expect(parsed.cover).toBeNull();
+    expect(parsed.novel.author).toBeNull();
+  });
   it("retains exact source identities without chapter or timestamp fields", () => {
     expect(parseNovelMetadata(metadataFixture())).toEqual(metadataFixture());
   });
-  it("rejects chapter lists, timestamps, and folder-derived work identities", () => {
-    expect(() => parseNovelMetadata({ ...metadataFixture(), chapters: [] })).toThrow();
-    expect(() => parseNovelMetadata({ ...metadataFixture(), updatedAt: 1 })).toThrow();
+  it("ignores extra fields but rejects folder-derived work identities", () => {
+    expect(parseNovelMetadata({ ...metadataFixture(), chapters: [] })).not.toHaveProperty("chapters");
+    expect(parseNovelMetadata({ ...metadataFixture(), updatedAt: 1 })).not.toHaveProperty("updatedAt");
     const input = metadataFixture(); input.identity.novelPath = "norea-folder:Book";
     expect(() => parseNovelMetadata(input)).toThrow();
   });
@@ -29,8 +50,8 @@ describe("portable work metadata", () => {
     const novel = { ...input.novel, rating: 4.25, status: "Source-specific status" };
     expect(parseNovelMetadata({ ...input, novel }).novel).toEqual(novel);
   });
-  it("rejects personal fields rather than transporting them", () => {
-    expect(() => parseNovelMetadata({ ...metadataFixture(), inLibrary: true })).toThrow();
+  it("omits personal fields from the portable result", () => {
+    expect(parseNovelMetadata({ ...metadataFixture(), inLibrary: true })).not.toHaveProperty("inLibrary");
   });
   it("rejects invalid unicode, oversized identities and document cover types", () => {
     const input = metadataFixture(); input.identity.novelPath = "\ud800";
