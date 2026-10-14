@@ -1188,7 +1188,7 @@
   "sourceAccess.captchaTitle": "CAPTCHA 인증 필요",
   "sourceAccess.cloudflareTitle": "Cloudflare 인증 필요",
   "sourceAccess.scopeBlocked": "인증에 성공할 때까지 {sources}의 다운로드와 소스 요청을 일시 중지합니다.",
-  "sourceAccess.browserInstructions": "{source}의 접근 인증을 완료한 뒤 창을 닫거나 '인증 확인 후 재개'를 누르세요. 실제 소스 요청에 성공하면 대기열이 재개됩니다.",
+  "sourceAccess.browserInstructions": "{source}의 접근 인증을 완료한 뒤 '인증 확인 후 재개'를 누르세요. 실제 소스 요청에 성공하면 대기열이 재개됩니다. 창을 닫으면 일시 중지 상태를 유지합니다.",
   "sourceAccess.keepPaused": "일시 중지 유지",
   "sourceAccess.originUnavailable": "현재 사이트 확인 불가",
   "sourceAccess.verifyAndResume": "인증 확인 후 재개",

@@ -1188,7 +1188,7 @@
   "sourceAccess.captchaTitle": "Complete CAPTCHA",
   "sourceAccess.cloudflareTitle": "Complete Cloudflare verification",
   "sourceAccess.scopeBlocked": "Downloads and source requests for {sources} are paused until verification succeeds.",
-  "sourceAccess.browserInstructions": "Complete the access check for {source}, then close this browser or select Verify and resume. The queue resumes once a source request succeeds.",
+  "sourceAccess.browserInstructions": "Complete the access check for {source}, then select Verify and resume. The queue resumes once a source request succeeds. Closing this browser keeps the queue paused.",
   "sourceAccess.keepPaused": "Keep paused",
   "sourceAccess.originUnavailable": "Current site unavailable",
   "sourceAccess.verifyAndResume": "Verify and resume",
