@@ -408,6 +408,7 @@ describe("syncNovelFromSource", () => {
         pluginId: "demo",
       },
       "https://source.test/cover.jpg",
+      { refresh: false },
     );
     expect(mockSelect.mock.calls[0]?.[0]).toContain(
       "in_library AS inLibrary",
@@ -447,6 +448,7 @@ describe("syncNovelFromSource", () => {
         pluginId: "demo",
       },
       "https://source.test/preserved-cover.jpg",
+      { refresh: false },
     );
     expect(mockSelect.mock.calls[0]?.[0]).toContain("SELECT id, cover");
   });
@@ -468,6 +470,17 @@ describe("syncNovelFromSource", () => {
     );
 
     expect(mockedSaveNovelCoverFromSource).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])("refreshes a cover on an explicit metadata update (in library: %s)", async inLibrary => {
+    mockSelect.mockResolvedValue([{ id: 7, inLibrary, cover: "https://source.test/cover.jpg" }]);
+    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { refreshCover: true });
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "demo" }),
+      expect.objectContaining({ id: 7, path: "/novel" }),
+      "https://source.test/cover.jpg",
+      { refresh: true },
+    );
   });
 
   it("propagates a source access challenge from cover storage", async () => {

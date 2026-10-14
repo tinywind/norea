@@ -17,7 +17,6 @@ type NovelCoverChangeListener = (novelId: number) => void;
 const novelCoverChangeListeners = new Set<NovelCoverChangeListener>();
 const novelCoverSnapshots = new Map<number, number>();
 const novelCoverSaveQueues = new Map<string, NovelCoverSaveQueue>();
-const savedCoverUrls = new Map<string, string>();
 const novelCoverDisplayCache = new Map<string, NovelCoverDisplayCacheEntry>();
 let novelCoverStorageEpoch = 0;
 
@@ -75,6 +74,10 @@ export interface NovelCoverDisplayCacheOptions {
   plugin?: Plugin | null;
 }
 
+export interface NovelCoverSaveOptions {
+  refresh?: boolean;
+}
+
 export function subscribeNovelCoverChanges(
   listener: NovelCoverChangeListener,
 ): () => void {
@@ -93,7 +96,7 @@ export function peekCachedNovelCoverSrc(
   options: NovelCoverDisplayCacheOptions = {},
 ): string | null | undefined {
   const entry = novelCoverDisplayCache.get(
-    novelCoverDisplayCacheKey(novel, options),
+    selectNovelCoverDisplayCacheKey(novel, options),
   );
   return entry?.resolved ? entry.source?.src ?? null : undefined;
 }
@@ -109,7 +112,7 @@ export function acquireCachedNovelCoverSource(
   novel: NovelCoverDisplayInput,
   options: NovelCoverDisplayCacheOptions = {},
 ): { promise: Promise<string | null>; release: () => void } {
-  const cacheKey = novelCoverDisplayCacheKey(novel, options);
+  const cacheKey = selectNovelCoverDisplayCacheKey(novel, options);
   const entry = getOrCreateNovelCoverCacheEntry(novel, options);
   entry.consumers += 1;
   let released = false;
@@ -134,7 +137,7 @@ function getOrCreateNovelCoverCacheEntry(
   novel: NovelCoverDisplayInput,
   options: NovelCoverDisplayCacheOptions,
 ): NovelCoverDisplayCacheEntry {
-  const cacheKey = novelCoverDisplayCacheKey(novel, options);
+  const cacheKey = selectNovelCoverDisplayCacheKey(novel, options);
   const cached = novelCoverDisplayCache.get(cacheKey);
   if (cached) {
     cached.novelIds.add(novel.id);
@@ -199,7 +202,6 @@ export function clearNovelCoverDisplayCache(
 export function invalidateAllNovelCoverSources(): void {
   clearNovelCoverDisplayCache();
   novelCoverStorageEpoch += 1;
-  savedCoverUrls.clear();
   for (const listener of novelCoverChangeListeners) {
     listener(0);
   }
@@ -219,18 +221,19 @@ async function resolveNovelCoverDisplaySourceForCache(
   return src ? { dispose: () => undefined, src } : null;
 }
 
-function novelCoverDisplayCacheKey(
+function selectNovelCoverDisplayCacheKey(
   novel: NovelCoverDisplayInput,
   options: NovelCoverDisplayCacheOptions,
 ): string {
   const plugin = options.plugin ?? null;
-  const path = novel.path.trim();
+  const identity = [novel.pluginId, novel.path, novel.path.trim() ? null : novel.id];
+  const storedKey = JSON.stringify(["stored", ...identity]);
+  if (!options.allowSourceFallback || !plugin || novelCoverDisplayCache.get(storedKey)?.source) {
+    return storedKey;
+  }
   return JSON.stringify([
-    options.allowSourceFallback && plugin ? "source" : "stored",
-    novel.pluginId,
-    novel.path,
-    path ? null : novel.id,
-    novel.name,
+    "source",
+    ...identity,
     novel.cover?.trim() || null,
     plugin?.version ?? null,
     plugin?.url ?? null,
@@ -248,7 +251,8 @@ export async function resolveNovelCoverDisplaySource(
     return sourceUrl ? { dispose: () => undefined, src: sourceUrl } : null;
   }
 
-  const existing = await readStoredNovelCover(novel).catch(
+  const stored = acquireCachedNovelCoverSource(novel);
+  const existing = await stored.promise.catch(
     (error: unknown) => {
       console.debug("[novel-cover] stored cover unavailable", {
         error,
@@ -257,12 +261,12 @@ export async function resolveNovelCoverDisplaySource(
       });
       return null;
     },
-  );
+  ).finally(stored.release);
   throwIfCoverRequestAborted(signal);
   if (existing) {
     return {
       dispose: () => undefined,
-      src: storedNovelCoverSrc(existing, novel.id),
+      src: existing,
     };
   }
   if (!sourceUrl) return null;
@@ -312,22 +316,24 @@ export async function saveNovelCoverFromSource(
   plugin: Plugin,
   novel: NovelCoverStorageInput,
   cover: string | null | undefined,
+  options: NovelCoverSaveOptions = {},
 ): Promise<void> {
   if (!isTauriRuntime()) return;
 
   const sourceUrl = absolutePluginCoverUrl(plugin, cover);
   if (!sourceUrl) return;
 
-  await enqueueNovelCoverSave(plugin, novel, sourceUrl);
+  await enqueueNovelCoverSave(plugin, novel, sourceUrl, options.refresh ?? false);
 }
 
 async function enqueueNovelCoverSave(
   plugin: Plugin,
   novel: NovelCoverStorageInput,
   sourceUrl: string,
+  refresh: boolean,
 ): Promise<void> {
   const cacheKey = novelCoverSaveQueueKey(novel);
-  const requestIdentity = novelCoverSaveRequestIdentity(novel);
+  const requestIdentity = novelCoverSaveRequestIdentity(novel, refresh);
   let queue = novelCoverSaveQueues.get(cacheKey);
   if (!queue) {
     queue = {
@@ -344,7 +350,7 @@ async function enqueueNovelCoverSave(
   queue.pending += 1;
   const request = queue.tail.catch(() => undefined).then(async () => {
     if (queue.generations.get(requestIdentity) !== generation) return;
-    const stored = await storeNovelCoverFromSource(plugin, novel, sourceUrl);
+    const stored = await storeNovelCoverFromSource(plugin, novel, sourceUrl, refresh);
     if (stored) notifyNovelCoverChanged(novel.id, novel);
   });
   queue.tail = request;
@@ -386,12 +392,13 @@ async function waitForLatestNovelCoverSave(
   }
 }
 
-function novelCoverSaveRequestIdentity(novel: NovelCoverStorageInput): string {
+function novelCoverSaveRequestIdentity(novel: NovelCoverStorageInput, refresh: boolean): string {
   const path = novel.path.trim();
   return JSON.stringify([
     novel.pluginId,
     novel.path,
     path ? null : novel.id,
+    refresh,
   ]);
 }
 
@@ -403,14 +410,14 @@ async function storeNovelCoverFromSource(
   plugin: Plugin,
   novel: NovelCoverStorageInput,
   sourceUrl: string,
+  refresh: boolean,
 ): Promise<boolean> {
-  const existing = await readStoredNovelCover(novel);
-  const key = novelCoverSaveQueueKey(novel);
-  if (existing && savedCoverUrls.get(key) === sourceUrl) return false;
+  if (!refresh && (peekCachedNovelCoverSrc({ ...novel, cover: sourceUrl }) || await readStoredNovelCover(novel))) return false;
 
   const baseUrl = safePluginBaseUrl(plugin);
   const response = await pluginMediaFetch(sourceUrl, {
     ...(plugin.imageRequestInit ?? {}),
+    ...(refresh ? { headers: { ...plugin.imageRequestInit?.headers, "Cache-Control": "no-cache" } } : {}),
     ...(baseUrl ? { contextUrl: baseUrl } : {}),
     sourceId: plugin.id,
   });
@@ -446,7 +453,6 @@ async function storeNovelCoverFromSource(
       fileName,
     },
   );
-  savedCoverUrls.set(key, sourceUrl);
   return true;
 }
 

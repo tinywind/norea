@@ -22,6 +22,7 @@ export interface SyncNovelFromSourceOptions {
   novelId?: number;
   notifyUpdatesIndex?: boolean;
   preserveMissingMetadata?: boolean;
+  refreshCover?: boolean;
 }
 
 export interface SourceDuplicateChapterInfo {
@@ -355,7 +356,7 @@ export async function syncNovelFromSource(
     markUpdatesIndexDirty("novel-sync");
   }
 
-  if (result.inLibrary) {
+  if (result.inLibrary || options.refreshCover) {
     try {
       await saveNovelCoverFromSource(
         plugin,
@@ -366,6 +367,7 @@ export async function syncNovelFromSource(
           pluginId: plugin.id,
         },
         result.cover,
+        { refresh: options.refreshCover ?? false },
       );
     } catch (error) {
       const sourceAccessError = normalizeSourceAccessRequiredError(error);

@@ -185,14 +185,18 @@ it("enriches a bound work through its installed plugin and the source task execu
   expect(await refreshServerNovelFromSource(42, "Refresh Book")).toBe(true);
   expect(mocks.executor).toHaveBeenCalledWith("source", "background");
   expect(mocks.load).toHaveBeenCalledOnce();
-  expect(mocks.sync).toHaveBeenCalledWith({ id: "source" }, { name: "Book", path: "/book", cover: undefined }, expect.objectContaining({ novelId: 42, preserveMissingMetadata: true }));
+  expect(mocks.sync).toHaveBeenCalledWith({ id: "source" }, { name: "Book", path: "/book", cover: undefined }, expect.objectContaining({ novelId: 42, preserveMissingMetadata: true, refreshCover: false }));
   expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({ priority: "deferred" }));
 });
 
 it("keeps an explicit source refresh ahead of automatic work enrichment", async () => {
   mocks.source.mockResolvedValue({ serverUrl: "http://server", workId: "work" });
-  expect(await refreshServerNovelFromSource(42, "Refresh Book", undefined, "user")).toBe(true);
+  await refreshServerNovelFromSource(42, "Automatic refresh");
+  const automaticKey = mocks.enqueue.mock.calls[0]![0].dedupeKey;
+  expect(await refreshServerNovelFromSource(42, "Refresh Book", undefined, { priority: "user", refreshCover: true })).toBe(true);
   expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({ priority: "user" }));
+  expect(mocks.enqueue.mock.calls[1]![0].dedupeKey).not.toBe(automaticKey);
+  expect(mocks.sync).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ refreshCover: true }));
 });
 
 it.each(["norea-folder:Book-book", "local:book"])("does not guess a source path from %s", async path => {

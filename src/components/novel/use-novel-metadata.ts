@@ -106,7 +106,7 @@ export function useNovelMetadata(
         if (changed) invalidateNovelMetadataRefresh();
         return null;
       }, error => ({ error }));
-      try { sourceRefreshed = await refreshServerNovelFromSource(novel.id, t("tasks.task.refreshNovelMetadataFull", { name: novel.name }), undefined, "user"); }
+      try { sourceRefreshed = await refreshServerNovelFromSource(novel.id, t("tasks.task.refreshNovelMetadataFull", { name: novel.name }), undefined, { priority: "user", refreshCover: true }); }
       finally { invalidateNovelMetadataRefresh(); }
       if (!sourceRefreshed) {
         const failure = await serverRefresh;
@@ -154,6 +154,7 @@ export function useNovelMetadata(
             chapterRefreshMode: mode,
             novelId: novel.id,
             preserveMissingMetadata: true,
+            refreshCover: true,
             signal: context.signal,
           },
         ),

@@ -127,6 +127,7 @@ async function runLibraryMetadataRefresh(
                 novelId: novel.id,
                 notifyUpdatesIndex: false,
                 preserveMissingMetadata: true,
+                refreshCover: true,
               },
             ),
         });

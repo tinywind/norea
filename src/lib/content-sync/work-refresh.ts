@@ -69,7 +69,12 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   return installed || chaptersChanged;
 }
 
-export async function refreshServerNovelFromSource(novelId: number, title: string, signal?: AbortSignal, priority: "deferred" | "user" = "deferred"): Promise<boolean> {
+interface ServerNovelSourceRefreshOptions {
+  priority?: "deferred" | "user";
+  refreshCover?: boolean;
+}
+
+export async function refreshServerNovelFromSource(novelId: number, title: string, signal?: AbortSignal, options: ServerNovelSourceRefreshOptions = {}): Promise<boolean> {
   signal?.throwIfAborted();
   if (!await readServerNovelSource(novelId)) return false;
   const novel = await getNovelById(novelId);
@@ -79,12 +84,12 @@ export async function refreshServerNovelFromSource(novelId: number, title: strin
   if (!plugin) return false;
   signal?.throwIfAborted();
   const task = enqueueSourceTask({
-    plugin, kind: "source.refreshNovel", priority, title,
+    plugin, kind: "source.refreshNovel", priority: options.priority ?? "deferred", title,
     subject: { novelId, novelName: novel.name, path: novel.path },
-    dedupeKey: `source.refreshNovel:on-open:${novel.pluginId}:${novel.path}`,
+    dedupeKey: `source.refreshNovel:${options.refreshCover ? "explicit" : "on-open"}:${novel.pluginId}:${novel.path}`,
     run: context => syncNovelFromSource(pluginManager.getPluginForExecutor(novel.pluginId, context.executor ?? "immediate"),
       { name: novel.name, path: novel.path, cover: novel.cover ?? undefined },
-      { novelId, chapterRefreshMode: "full", preserveMissingMetadata: true, signal: context.signal }),
+      { novelId, chapterRefreshMode: "full", preserveMissingMetadata: true, refreshCover: options.refreshCover ?? false, signal: context.signal }),
   });
   const abort = () => { taskScheduler.cancel(task.id); };
   signal?.addEventListener("abort", abort, { once: true });
