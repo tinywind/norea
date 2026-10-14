@@ -34,6 +34,8 @@
   "contentSync.download": "Download to this device",
   "contentSync.restore": "Restore on server",
   "contentSync.deleteServer": "Delete from server",
+  "contentSync.deleteSelectedConfirm": "Delete {count} selected chapters from the server? Local copies remain. To replace the server copy, delete it here, then use Rescan local files and sync.",
+  "contentSync.serverDeleteDone": "Deleted from the server. Local files were kept.",
   "contentSync.deleteConfirm": "Delete \"{chapter}\" from the server? Copies on your devices will remain.",
   "contentSync.refineSearch": "Showing the first 50 results. Refine your search to find more content.",
   "network.waiting": "Waiting for an internet connection. Queued work will resume when it is available.",

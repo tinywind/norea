@@ -190,7 +190,11 @@ only after every listed file arrives with its declared size. Transfers check
 file names, sizes, and completion without computing or comparing chapter-file
 SHA-256 hashes. Downloads install the complete files; older server ZIP revisions
 remain readable through the compatibility decoder. Deleting a local download
-leaves the server copy intact.
+leaves the server copy intact. The server keeps one complete copy per chapter.
+The app checks for that copy before creating a snapshot or uploading files.
+To replace a server copy, select chapters in the work page, choose **Delete from
+server**, then use **Rescan local files and sync**. Server deletion preserves
+local files and reading state.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
 `novel.json` stores its details beside its cover, without a chapter list.
@@ -199,7 +203,7 @@ These files are authoritative; the app keeps metadata in SQLite for browsing and
 search, including works with no downloaded chapters. Opening saved works does not
 require fetching their metadata from the source site again.
 
-The web console manages devices, content revisions, scan jobs, and multiple
+The web console manages devices, server copies, scan jobs, and multiple
 plugin repository indexes. The server uses its configured data directory for
 content storage and scanning; the console does not select additional folders.
 Scanning requires valid `novel.json` work metadata and discovers chapters from

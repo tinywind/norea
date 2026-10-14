@@ -34,6 +34,8 @@
   "contentSync.download": "이 기기에 다운로드",
   "contentSync.restore": "서버에서 복원",
   "contentSync.deleteServer": "서버에서 삭제",
+  "contentSync.deleteSelectedConfirm": "선택한 {count}개 회차를 서버에서 삭제할까요? 로컬 파일은 유지됩니다. 서버 사본을 교체하려면 삭제 후 '로컬 파일 재검사 후 동기화'를 실행하세요.",
+  "contentSync.serverDeleteDone": "서버에서 삭제했습니다. 로컬 파일은 유지됩니다.",
   "contentSync.deleteConfirm": "서버에서 \"{chapter}\" 회차를 삭제할까요? 기기에 저장된 파일은 유지됩니다.",
   "contentSync.refineSearch": "검색 결과 50개까지 표시합니다. 검색어를 추가해 원하는 콘텐츠를 찾아보세요.",
   "network.waiting": "인터넷 연결을 기다리고 있습니다. 연결되면 대기 중인 작업을 재개합니다.",

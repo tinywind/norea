@@ -81,8 +81,13 @@ or Manual only when disabled.
 
 Registered devices can delete and restore server chapters. Server deletion
 preserves local files. Removing a local download does not delete the server copy
-or automatically download it again. A server tombstone prevents a stale local
-upload from restoring deleted content.
+or automatically download it again. Select chapters in the work page and use
+**Delete from server** to remove their server copies. Automatic sync respects
+deletions. To replace content, delete it on the server, then choose **Rescan local
+files and sync**.
+Whole-work deletion in the server console removes the server folder, metadata,
+cover, and chapter index. It keeps device copies intact and blocks automatic
+metadata reuploads until an explicit rescan restores the work.
 Local deletion runs directly and cancels only the selected chapter downloads.
 It does not enter the task queue or wait for network requests or unrelated jobs.
 An in-progress local write for a selected chapter settles before its files are
@@ -179,9 +184,11 @@ times identify unchanged chapter snapshots without rereading their contents.
 
 The first sync establishes a baseline. Later syncs read recorded changes and
 check only affected complete chapters. The server's change-wait endpoint returns
-cursor hints; the app then fetches the corresponding deltas. A chapter with an
-older hash-based fingerprint is uploaded once when next selected for a rescan or
-recorded change, then uses the file metadata fingerprint.
+cursor hints; the app then fetches the corresponding deltas. Before making a
+snapshot, the app checks whether the server already has a complete chapter.
+Existing copies skip local file copying and upload, including after an app-side
+edit. The server retains one copy and ignores competing uploads. Missing or
+wrong-sized server files can be repaired by the next completed upload.
 
 Chapter deltas contain identities and deletion state, without package file
 inventories. The app retains cursors and tombstones instead of a full remote
