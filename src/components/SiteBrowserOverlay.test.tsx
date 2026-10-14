@@ -1,6 +1,7 @@
-import { Children, isValidElement, useEffect, type ReactElement, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
+import { taskScheduler } from "../lib/tasks/scheduler";
 import { useSiteBrowserStore } from "../store/site-browser";
 import { BlockingLoadingOverlay } from "./AppFrame";
 import { SiteBrowserOverlay } from "./SiteBrowserOverlay";
@@ -19,7 +20,7 @@ vi.mock("react", async (importOriginal) => ({
   useEffect: vi.fn(),
   useId: () => "loading-label",
   useRef: (initial: unknown) => ({ current: initial }),
-  useState: (initial: unknown) => [initial, vi.fn()],
+  useState: vi.fn((initial: unknown) => [initial, vi.fn()]),
 }));
 vi.mock("../i18n", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -112,6 +113,46 @@ describe("source access browser controls", () => {
     expect(pause).toBeDefined();
     pause!.props.onClick!();
     expect(useSiteBrowserStore.getState().completion?.outcome).toBe("keep-paused");
+  });
+
+  it("retries the blocked source after authentication redirects to another hostname", async () => {
+    openBrowser("ready");
+    const state = useSiteBrowserStore.getState();
+    vi.mocked(useState)
+      .mockReturnValueOnce([false, vi.fn()])
+      .mockReturnValueOnce([{
+        openSequence: state.openSequence,
+        origin: "https://source-new.test",
+        revision: 3,
+        sourceId: "source-a",
+        taskId: "browser-task",
+        url: "https://source-new.test/",
+      }, vi.fn()]);
+    platformMocks.currentOrigin.mockResolvedValue("https://source-new.test");
+    const originalSnapshot = taskScheduler.getSnapshot();
+    vi.spyOn(taskScheduler, "getSnapshot").mockReturnValue({
+      ...originalSnapshot,
+      sourceAccessBlocks: [{
+        challenge: { kind: "captcha", url: "https://source.test/chapter/1" },
+        detectedAt: Date.now(),
+        revision: 3,
+        scopeKey: "site:source.test",
+        sourceIds: ["source-a"],
+        verificationRequested: false,
+      }],
+    });
+    const begin = vi.spyOn(taskScheduler, "beginSourceAccessVerification")
+      .mockReturnValue(true);
+    const verify = findControl(SiteBrowserOverlay(), "sourceAccess.verifyAndResume")!;
+
+    expect(verify.props.disabled).toBe(false);
+    verify.props.onClick!();
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledWith("site:source.test"));
+    expect(begin).not.toHaveBeenCalledWith("site:source-new.test");
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      completion: { outcome: "verify", taskId: "browser-task", revision: 3 },
+      visible: false,
+    });
   });
 
   it("keeps the challenge and close action after a manual address change", () => {

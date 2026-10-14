@@ -9,7 +9,6 @@ import {
   type SiteBrowserPlatformApi,
 } from "../lib/site-browser";
 import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
-import { sourceAccessScopeKey } from "../lib/plugins/source-access";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { isAbortError } from "../lib/abort";
 import { taskScheduler } from "../lib/tasks/scheduler";
@@ -209,7 +208,7 @@ export function SiteBrowserOverlay() {
       ) {
         return false;
       }
-      if (!origin || sourceAccessScopeKey(origin) !== expectedScopeKey) {
+      if (!origin) {
         setOriginObservation(null);
         return false;
       }
@@ -228,6 +227,8 @@ export function SiteBrowserOverlay() {
             block.scopeKey === expectedScopeKey &&
             block.revision === expectedRevision,
         );
+      // Authentication can redirect to a new hostname. Only retry the original
+      // blocked request; its successful source response releases the queue.
       if (
         !currentBlock ||
         !taskScheduler.beginSourceAccessVerification(expectedScopeKey)
@@ -539,8 +540,7 @@ export function SiteBrowserOverlay() {
     !browserLoading &&
     sourceId !== null &&
     displayedOrigin !== null &&
-    sourceAccessContext !== null &&
-    sourceAccessScopeKey(displayedOrigin) === sourceAccessContext.scopeKey;
+    sourceAccessContext !== null;
 
   return (
     <Box
