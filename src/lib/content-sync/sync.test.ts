@@ -21,6 +21,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { syncWorkMetadata } from "./works";
 import { runWorkContentStorageOperation } from "./storage-operation";
+import { ContentServerError } from "./client";
 
 const memory = new Map<string, string>();
 let journal: { sequence: number; key: string; value: null }[];
@@ -102,6 +103,37 @@ it("uploads later chapters after a local package failure and retries only the fa
   await syncContentServer();
   expect(vi.mocked(uploadContentChapter).mock.calls.map(([input]) => input.chapterId)).toEqual([1]);
   expect(JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!).pendingUploads).toEqual([]);
+});
+
+it("preserves the upload rejection when an expired device registration is forgotten", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", novelPath: "n", chapterPath: "c", novelName: "Novel", chapterName: "Chapter", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  vi.mocked(uploadContentChapter).mockImplementation(async () => {
+    useContentSyncStore.setState({ deviceKey: null });
+    throw new ContentServerError(401, "Device registration expired");
+  });
+  await expect(syncContentServer()).rejects.toMatchObject({ status: 401, message: "Device registration expired" });
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "error", error: "Device registration expired" });
+  expect(JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!).pendingUploads).toEqual(['["p","n","c"]']);
+});
+
+it("shows and saves upload progress before a large batch finishes", async () => {
+  const chapters = Array.from({ length: 30 }, (_, index) => ({ chapterId: index + 1, novelId: 1, pluginId: "p", novelPath: "n",
+    chapterPath: `c${index + 1}`, novelName: "Novel", chapterName: `Chapter ${index + 1}`, contentType: "html",
+    position: index + 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }));
+  vi.mocked(listContentSyncChapters).mockResolvedValue(chapters as never);
+  let resume!: () => void;
+  vi.mocked(uploadContentChapter).mockImplementation(async input => {
+    if (input.chapterId === 26) await new Promise<void>(resolve => { resume = resolve; });
+    return {} as never;
+  });
+  const running = syncContentServer();
+  await vi.waitFor(() => expect(resume).toEqual(expect.any(Function)));
+  try {
+    const saved = JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!);
+    expect(Object.keys(saved.uploaded)).toHaveLength(25);
+    expect(useContentSyncStore.getState()).toMatchObject({ status: "syncing", progress: { completed: 25, total: 30, uploaded: 25, failed: 0 } });
+  } finally { resume(); await running; }
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "idle", progress: { completed: 30, total: 30, uploaded: 30, failed: 0 } });
 });
 
 it("does not mark a failed native import downloaded and preserves readable directory names", async () => {

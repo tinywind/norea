@@ -11,6 +11,7 @@ interface ContentSyncStore {
   syncIntervalMinutes: number;
   lookupTimeoutSeconds: number;
   status: "idle" | "syncing" | "error";
+  progress: { completed: number; total: number; uploaded: number; failed: number } | null;
   error: string | null;
   blocked: boolean;
   deviceKey: string | null;
@@ -23,12 +24,12 @@ interface ContentSyncStore {
 
 export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => ({
   serverUrl: "", deviceName: "Norea", syncMode: "manual", syncIntervalMinutes: 15, status: "idle", error: null, blocked: false,
-  deviceKey: null,
+  deviceKey: null, progress: null,
   lookupTimeoutSeconds: 3,
   setServerUrl: (value) => {
     const serverUrl = value.trim() ? normalizeContentServerUrl(value) : "";
     set((state) => serverUrl === state.serverUrl ? {} : ({
-      serverUrl, deviceKey: null, error: null, blocked: false, status: "idle",
+      serverUrl, deviceKey: null, error: null, blocked: false, status: "idle", progress: null,
     }));
   },
   setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() || "Norea" }),

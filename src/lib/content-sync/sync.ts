@@ -110,7 +110,11 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
   cache.localCursor = head;
   await saveCatalog(server, cache);
   let processed = 0;
+  let uploaded = 0;
+  const total = pending.size;
   const failures: string[] = [];
+  const reportProgress = () => useContentSyncStore.setState({ progress: { completed: processed, total, uploaded, failed: failures.length } });
+  reportProgress();
   try {
     for (const id of pending) {
       assertDevice(server, token);
@@ -119,6 +123,8 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
         delete cache.downloads[id];
         pending.delete(id);
+        processed++;
+        reportProgress();
         continue;
       }
       try {
@@ -136,16 +142,20 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
             });
             assertDevice(server, token);
             cache.uploaded[id] = fingerprint;
+            uploaded++;
           }
           cache.downloads[id] = true;
           pending.delete(id);
         });
       } catch (error) {
-        assertDevice(server, token);
         if (error instanceof ContentServerError && (error.status === 401 || error.status === 403)) throw error;
+        assertDevice(server, token);
         failures.push(`${row.novelName} / ${row.chapterName}: ${error instanceof Error ? error.message : String(error)}`);
+        useContentSyncStore.setState({ error: failures.at(-1) });
       }
-      if (++processed % 5000 === 0) {
+      processed++;
+      reportProgress();
+      if (processed % 25 === 0) {
         cache.pendingUploads = [...pending];
         await saveCatalog(server, cache);
       }
@@ -177,7 +187,7 @@ async function initializeDevice(serverUrl: string): Promise<string> {
 async function performSync(uploadContent = true, rescan = false): Promise<void> {
   const { serverUrl } = useContentSyncStore.getState();
   if (!serverUrl) return;
-  useContentSyncStore.setState({ status: "syncing", error: null, blocked: false });
+  useContentSyncStore.setState({ status: "syncing", error: null, blocked: false, progress: null });
   try {
     normalizeContentServerUrl(serverUrl);
     const token = await initializeDevice(serverUrl);

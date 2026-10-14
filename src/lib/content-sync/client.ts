@@ -1,8 +1,8 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 
 export class ContentServerError extends Error {
-  constructor(public status: number) {
-    super(`Content server request failed (${status}).`);
+  constructor(public status: number, message = `Content server request failed (${status}).`) {
+    super(message);
   }
 }
 

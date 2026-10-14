@@ -41,6 +41,13 @@ it("removes the private snapshot after a failed transfer", async () => {
   expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
 });
 
+it("preserves native HTTP status and server rejection details for sync recovery", async () => {
+  vi.mocked(invoke).mockRejectedValue("content sync: server returned 403: Device is blocked");
+  await expect(uploadContentChapter({ storageDir: "contents/source/Book/1-One", stagePath: "/stage", serverUrl: "http://server", token: "token", chapterId: 1,
+    manifest: { packageVersion: 1, identity: { pluginId: "source", novelPath: "/book", chapterPath: "/one" }, novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } }))
+    .rejects.toMatchObject({ status: 403, message: "Device is blocked" });
+});
+
 it("releases the Windows work lock after the snapshot, before transferring it", async () => {
   vi.mocked(isAndroidRuntime).mockReturnValue(false);
   const storageDir = "contents/source/Book/1-One";

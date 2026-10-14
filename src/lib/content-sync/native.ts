@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { snapshotAndroidContentChapter, installAndroidContentChapter } from "../android-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { runWorkContentStorageOperation } from "./storage-operation";
+import { ContentServerError } from "./client";
 
 export interface ContentIdentity {
   pluginId: string;
@@ -11,18 +12,20 @@ export interface ContentIdentity {
 
 export interface PackageManifest {
   packageVersion: 1;
+  layout?: "chapter-files";
   identity: ContentIdentity;
   novel: { name: string; author?: string | null; summary?: string | null; isLocal: boolean };
   chapter: { name: string; position: number; chapterNumber?: string | null; contentType: "html" | "text" | "markdown" | "pdf"; page: string };
   bodyPath: string;
-  files: { path: string; size: number; sha256: string }[];
+  files: { path: string; size: number; modifiedAt?: number; sha256?: string }[];
 }
 
 export interface CatalogEntry {
   id: string;
   revision: string;
-  zipSha256: string;
-  zipBytes: number;
+  zipSha256?: string;
+  zipBytes?: number;
+  fileBytes?: number;
   manifest: PackageManifest;
   deleted: boolean;
   sequence: number;
@@ -52,10 +55,21 @@ export async function uploadContentChapter(input: {
   storageDir: string;
   stagePath: string;
 }): Promise<CatalogEntry> {
-  return invoke<CatalogEntry>("content_sync_upload", {
-    serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
-    storageDir: input.storageDir, stagePath: input.stagePath,
-  });
+  try {
+    return await invoke<CatalogEntry>("content_sync_upload", {
+      serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
+      storageDir: input.storageDir, stagePath: input.stagePath,
+    });
+  } catch (error) {
+    const rejected = /^content sync: server returned (\d{3}): ([\s\S]*)$/.exec(String(error));
+    if (!rejected) throw error;
+    const status = Number(rejected[1]);
+    if (status === 401) {
+      const { forgetContentDeviceRegistration } = await import("./device");
+      forgetContentDeviceRegistration(input.serverUrl, input.token);
+    }
+    throw new ContentServerError(status, rejected[2]);
+  }
 }
 
 export async function withDownloadedContentChapter<T>(input: {

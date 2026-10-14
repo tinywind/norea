@@ -20,6 +20,7 @@ export function ContentServerSettings() {
   const syncIntervalMinutes = useContentSyncStore((state) => state.syncIntervalMinutes);
   const lookupTimeoutSeconds = useContentSyncStore((state) => state.lookupTimeoutSeconds);
   const status = useContentSyncStore((state) => state.status);
+  const progress = useContentSyncStore((state) => state.progress);
   const error = useContentSyncStore((state) => state.error);
   const blocked = useContentSyncStore((state) => state.blocked);
   const setServerUrl = useContentSyncStore((state) => state.setServerUrl);
@@ -101,6 +102,7 @@ export function ContentServerSettings() {
         </TextButton>
       </Group>
       {status === "syncing" ? <Text size="sm" c="dimmed" role="status">{t("contentSync.background")}</Text> : null}
+      {progress ? <Text size="sm" c="dimmed" role="status">{t("contentSync.progress", progress)}</Text> : null}
       <Text size="sm" c="dimmed">{t("contentSync.rescanDescription")}</Text>
       {actionError || error ? <Alert color="red" role="alert">{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
       <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>{t("contentSync.browse")}</TextButton>

@@ -12,6 +12,7 @@
   "contentSync.allSources": "All sources",
   "contentSync.browseHint": "Open a work to add it to your library or download chapters. Browsing does not require a full sync.",
   "contentSync.background": "Syncing in the background. You can keep browsing and reading.",
+  "contentSync.progress": "Checked {completed}/{total} chapters · Uploaded {uploaded} · Failed {failed}",
   "contentSync.description": "Share complete chapters with your devices. Reading positions, read status, bookmarks, and library membership stay on this device. Devices register automatically.",
   "contentSync.serverUrl": "Server URL",
   "contentSync.deviceName": "Device name",
