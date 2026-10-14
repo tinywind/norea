@@ -21,12 +21,6 @@ pub struct ChapterContentInspection {
     pub(super) media_bytes: u64,
 }
 
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NovelCoverReadResult {
-    pub(super) manifest: String,
-    pub(super) relative_path: String,
-}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

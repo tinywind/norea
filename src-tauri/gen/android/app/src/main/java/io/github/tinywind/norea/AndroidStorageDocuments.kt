@@ -67,6 +67,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
     val name: String,
     val uri: Uri,
     val mimeType: String?,
+    val byteSize: Long?,
   ) {
     val isDirectory: Boolean
       get() = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
@@ -166,6 +167,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
           name,
           child.uri,
           if (child.isDirectory) DocumentsContract.Document.MIME_TYPE_DIR else child.type,
+          child.length(),
         )
       }
     }
@@ -177,6 +179,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
       DocumentsContract.Document.COLUMN_DOCUMENT_ID,
       DocumentsContract.Document.COLUMN_DISPLAY_NAME,
       DocumentsContract.Document.COLUMN_MIME_TYPE,
+      DocumentsContract.Document.COLUMN_SIZE,
     )
     val children = mutableListOf<StorageChildDocument>()
     contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
@@ -188,6 +191,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
             name,
             DocumentsContract.buildDocumentUriUsingTree(parent.uri, documentId),
             cursor.getString(2),
+            if (cursor.isNull(3)) null else cursor.getLong(3),
           ),
         )
       }

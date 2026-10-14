@@ -2,7 +2,7 @@
 
 use super::{chapter_media_blocking, paths::media_root};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, io::{ErrorKind, Read, Write}, path::{Path, PathBuf}, sync::{LazyLock, Mutex}};
+use std::{collections::{HashMap, HashSet}, fs, io::{ErrorKind, Read, Write}, path::{Path, PathBuf}, sync::{LazyLock, Mutex}};
 use tauri::AppHandle;
 
 const MAX_METADATA_BYTES: usize = 16 * 1024 * 1024;
@@ -21,6 +21,7 @@ pub struct WorkMetadataOperation {
     path: Option<String>,
     body: Option<Vec<u8>>,
     chapter_directories: Option<HashMap<String, String>>,
+    skip_chapter_directories: Option<HashSet<String>>,
     reset: Option<bool>,
 }
 
@@ -28,6 +29,15 @@ pub struct WorkMetadataOperation {
 pub struct WorkMetadataResult {
     paths: Option<Vec<String>>,
     body: Option<Vec<u8>>,
+    cover: Option<StoredCover>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredCover { file_name: String, modified_at: u64 }
+
+pub(super) fn is_cover_file(name: &str) -> bool {
+    name.strip_prefix("cover.").is_some_and(|extension| matches!(extension, "avif" | "bmp" | "gif" | "img" | "jpg" | "jpeg" | "png" | "svg" | "webp"))
 }
 
 fn safe_child(value: &str) -> bool {
@@ -41,7 +51,7 @@ fn checked_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
         return Err("work metadata: invalid file path".into());
     }
     let name = parts[3];
-    if name != "novel.json" && name != "cover.json" && !(name.starts_with("cover.") && name[6..].chars().all(|c| c.is_ascii_alphanumeric())) {
+    if name != "novel.json" && !is_cover_file(name) {
         return Err("work metadata: unsupported file".into());
     }
     let mut path = root.to_path_buf();
@@ -112,7 +122,7 @@ fn list_files(root: &Path) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-fn list_chapter_files(root: &Path, relative: &str) -> Result<Vec<String>, String> {
+fn list_chapter_files(root: &Path, relative: &str, skipped: &HashSet<String>) -> Result<Vec<String>, String> {
     let metadata = checked_path(root, relative)?;
     if !relative.ends_with("/novel.json") { return Err("work metadata: chapter scan requires a work path".into()); }
     let work = metadata.parent().ok_or("work metadata: missing work directory")?;
@@ -126,6 +136,7 @@ fn list_chapter_files(root: &Path, relative: &str) -> Result<Vec<String>, String
         let child = child.map_err(|error| format!("work metadata: chapter entry: {error}"))?;
         if !child.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
         let name = child.file_name().to_string_lossy().into_owned();
+        if skipped.contains(&format!("{}/{name}", relative.trim_end_matches("/novel.json"))) { continue; }
         let Some((number, title)) = name.split_once('-') else { continue; };
         if !safe_child(&name) || title.is_empty() || number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.parse::<f64>().is_err() { continue; }
         let directory = child.path();
@@ -141,8 +152,8 @@ fn list_chapter_files(root: &Path, relative: &str) -> Result<Vec<String>, String
 }
 
 fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResult, String> {
-    if input.operation == "list" { return Ok(WorkMetadataResult { paths: Some(list_files(root)?), body: None }); }
-    if input.operation == "chapters" { return Ok(WorkMetadataResult { paths: Some(list_chapter_files(root, input.path.as_deref().ok_or("work metadata: missing path")?)?), body: None }); }
+    if input.operation == "list" { return Ok(WorkMetadataResult { paths: Some(list_files(root)?), ..Default::default() }); }
+    if input.operation == "chapters" { return Ok(WorkMetadataResult { paths: Some(list_chapter_files(root, input.path.as_deref().ok_or("work metadata: missing path")?, &input.skip_chapter_directories.unwrap_or_default())?), ..Default::default() }); }
     if input.operation == "register" {
         let mut directories = CHAPTER_DIRECTORIES.lock().map_err(|_| "work metadata: path registry unavailable")?;
         let incoming = input.chapter_directories.unwrap_or_default();
@@ -169,7 +180,8 @@ fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResu
     let path = checked_path(root, &relative)?;
     let limit = if relative.ends_with(".json") { MAX_METADATA_BYTES } else { MAX_COVER_BYTES };
     match input.operation.as_str() {
-        "read" => Ok(WorkMetadataResult { paths: None, body: read_file(&path, limit)? }),
+        "cover" => Ok(WorkMetadataResult { cover: discover_cover(&path)?, ..Default::default() }),
+        "read" => Ok(WorkMetadataResult { body: read_file(&path, limit)?, ..Default::default() }),
         "write" => {
             let body = input.body.ok_or("work metadata: missing body")?;
             if body.is_empty() || body.len() > limit { return Err("work metadata: invalid file size".into()); }
@@ -191,6 +203,31 @@ fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResu
     }
 }
 
+fn discover_cover(metadata_path: &Path) -> Result<Option<StoredCover>, String> {
+    if metadata_path.file_name().is_none_or(|name| name != "novel.json") { return Err("work metadata: cover lookup requires a work path".into()); }
+    let preferred = read_file(metadata_path, MAX_METADATA_BYTES)?
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value["cover"]["fileName"].as_str().map(str::to_owned));
+    let directory = metadata_path.parent().ok_or("work metadata: missing directory")?;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("work metadata: list covers: {error}")),
+    };
+    let mut covers = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_cover_file(&name) || !entry.file_type().map_err(|error| error.to_string())?.is_file() { continue; }
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
+        if metadata.len() == 0 || metadata.len() > MAX_COVER_BYTES as u64 { continue; }
+        let modified_at = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|duration| duration.as_millis() as u64).unwrap_or(0);
+        covers.push(StoredCover { file_name: name, modified_at });
+    }
+    covers.sort_by(|a, b| (preferred.as_ref() != Some(&a.file_name), &a.file_name).cmp(&(preferred.as_ref() != Some(&b.file_name), &b.file_name)));
+    Ok(covers.into_iter().next())
+}
+
 #[tauri::command]
 pub async fn work_metadata_operation(app: AppHandle, input: WorkMetadataOperation) -> Result<WorkMetadataResult, String> {
     let root = media_root(&app)?;
@@ -204,6 +241,39 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.tmp/work-metadata-tests");
         fs::create_dir_all(&root).unwrap();
         tempfile::tempdir_in(root).unwrap()
+    }
+    #[test]
+    fn discovers_cover_files_without_a_descriptor_or_sidecar() {
+        let root = fixture();
+        let path = checked_path(root.path(), "contents/source/Book/novel.json").unwrap();
+        publish(&path, br#"{"identity":{"pluginId":"source","novelPath":"/book"},"novel":{"name":"Book"}}"#).unwrap();
+        let original = fs::read(&path).unwrap();
+        let directory = path.parent().unwrap();
+        fs::write(directory.join("cover.json"), b"ignored").unwrap();
+        fs::write(directory.join("cover.png"), b"").unwrap();
+        fs::write(directory.join("cover.jpg"), b"image").unwrap();
+        fs::create_dir(directory.join("cover.webp")).unwrap();
+        let cover = discover_cover(&path).unwrap().unwrap();
+        assert_eq!(cover.file_name, "cover.jpg");
+        assert!(cover.modified_at > 0);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(checked_path(root.path(), "contents/source/Book/cover.json").is_err());
+        fs::remove_file(directory.join("cover.jpg")).unwrap();
+        assert!(discover_cover(&path).unwrap().is_none());
+    }
+    #[test]
+    fn prefers_the_declared_cover_and_discovers_an_existing_file_if_it_is_missing() {
+        let root = fixture();
+        let path = checked_path(root.path(), "contents/source/Book/novel.json").unwrap();
+        publish(&path, br#"{"cover":{"fileName":"cover.webp"}}"#).unwrap();
+        let directory = path.parent().unwrap();
+        fs::write(directory.join("cover.jpg"), b"jpeg").unwrap();
+        fs::write(directory.join("cover.webp"), b"webp").unwrap();
+        assert_eq!(discover_cover(&path).unwrap().unwrap().file_name, "cover.webp");
+        fs::remove_file(directory.join("cover.webp")).unwrap();
+        assert_eq!(discover_cover(&path).unwrap().unwrap().file_name, "cover.jpg");
+        publish(&path, br#"{"cover":{"fileName":"../../outside.jpg"}}"#).unwrap();
+        assert_eq!(discover_cover(&path).unwrap().unwrap().file_name, "cover.jpg");
     }
     #[test]
     fn metadata_only_work_roundtrip_and_interrupted_publication() {
@@ -236,7 +306,7 @@ mod tests {
         fs::write(work.join("7-Invalid-manifest/content.html"), b"body").unwrap();
         fs::write(work.join("7-Invalid-manifest/manifest.json"), b"invalid").unwrap();
         fs::write(work.join("cover/content.html"), b"body").unwrap();
-        let result = operate(root.path(), WorkMetadataOperation { operation: "chapters".into(), path: Some("contents/source/Book/novel.json".into()), body: None, chapter_directories: None, reset: None }).unwrap();
+        let result = operate(root.path(), WorkMetadataOperation { operation: "chapters".into(), path: Some("contents/source/Book/novel.json".into()), body: None, chapter_directories: None, skip_chapter_directories: None, reset: None }).unwrap();
         assert_eq!(result.paths.unwrap(), [
             "contents/source/Book/1-Opening/content.html",
             "contents/source/Book/2-Pdf/content.pdf",
@@ -244,6 +314,10 @@ mod tests {
             "contents/source/Book/6-Final-with-partial/content.html",
             "contents/source/Book/7-Invalid-manifest/content.html",
         ]);
+        let skipped = HashSet::from(["contents/source/Book/1-Opening".to_string()]);
+        let pending = list_chapter_files(root.path(), "contents/source/Book/novel.json", &skipped).unwrap();
+        assert_eq!(pending.len(), 4);
+        assert!(!pending.iter().any(|path| path.contains("/1-Opening/")));
     }
     #[test]
     fn rejects_escape_and_non_metadata_files() {
@@ -255,7 +329,7 @@ mod tests {
     #[test]
     fn registers_exact_chapter_directories_for_native_media_writes() {
         let root = fixture();
-        operate(root.path(), WorkMetadataOperation { operation: "register".into(), path: None, body: None, reset: None,
+        operate(root.path(), WorkMetadataOperation { operation: "register".into(), path: None, body: None, reset: None, skip_chapter_directories: None,
             chapter_directories: Some(HashMap::from([("42".into(), "contents/source/Original/chapter-alpha".into())])) }).unwrap();
         let directory = super::super::paths::content_chapter_dir_at(root.path(), "source", 7, Some("/book"), Some("Renamed"), 42, Some("1"), Some("Opening"), Some(1)).unwrap();
         assert_eq!(directory, root.path().join("contents/source/Original/chapter-alpha"));

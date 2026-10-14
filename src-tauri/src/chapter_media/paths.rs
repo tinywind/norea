@@ -20,7 +20,6 @@ pub(super) const MEDIA_DOWNLOAD_DIR: &str = "media";
 
 pub(super) const MEDIA_ARCHIVE_FILE: &str = "media.zip";
 
-pub(super) const NOVEL_COVER_MANIFEST_FILE: &str = "cover.json";
 
 pub(super) const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 

@@ -142,8 +142,7 @@ internal class AndroidLocalMediaResponder(
     val fileName = parts.getOrNull(3) ?: return false
     return parts.size == 4 &&
       parts[0] == CONTENTS_ROOT_DIR &&
-      fileName != NOVEL_COVER_MANIFEST_FILE &&
-      fileName.startsWith("cover.")
+      isAndroidWorkCoverFile(fileName)
   }
 
   private fun androidZipLocalMediaResponse(

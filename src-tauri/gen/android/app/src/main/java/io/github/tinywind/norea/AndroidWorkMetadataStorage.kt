@@ -6,6 +6,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
+private val workCoverPattern = Regex("cover\\.(avif|bmp|gif|img|jpe?g|png|svg|webp)")
+internal fun isAndroidWorkCoverFile(name: String): Boolean = workCoverPattern.matches(name)
+
 internal class AndroidWorkMetadataStorage(
   private val resolver: ContentResolver,
   private val storage: AndroidStorageDocuments,
@@ -37,14 +40,18 @@ internal class AndroidWorkMetadataStorage(
       require(parts.last() == "novel.json") { "Chapter scan requires a work path." }
       val paths = JSONArray()
       val workPath = parts.dropLast(1).joinToString("/")
+      val skipped = input.optJSONArray("skipChapterDirectories")
+      val skippedDirectories = if (skipped == null) emptySet() else (0 until skipped.length()).map { skipped.getString(it) }.toSet()
       val work = storage.storageDocumentAt(root, workPath) ?: return result.put("paths", paths)
       for (child in storage.listStorageChildren(work).filter { it.isDirectory }) {
+        if ("$workPath/${child.name}" in skippedDirectories) continue
         if (!Regex("[0-9]+(?:\\.[0-9]+)?-.+").matches(child.name)) continue
         val chapter = storage.storageChildDocumentFile(child) ?: continue
         val files = storage.listStorageChildren(chapter).associateBy { it.name }
         for (name in listOf("content.pdf", "content.html")) {
-          val file = files[name]?.let { storage.storageChildDocumentFile(it) } ?: continue
-          if (file.isFile && file.length() > 0) {
+          val file = files[name] ?: continue
+          val size = file.byteSize ?: storage.storageChildDocumentFile(file)?.length() ?: 0
+          if (!file.mimeType.isNullOrEmpty() && !file.isDirectory && size > 0) {
             paths.put("$workPath/${child.name}/$name")
             break
           }
@@ -53,11 +60,30 @@ internal class AndroidWorkMetadataStorage(
       return result.put("paths", paths)
     }
     val name = parts.last()
-    require(name == "novel.json" || name == "cover.json" || Regex("cover\\.[a-z0-9]{1,8}").matches(name)) {
+    require(name == "novel.json" || isAndroidWorkCoverFile(name)) {
       "Work metadata filename is invalid."
     }
     val limit = if (name.endsWith(".json")) 16 * 1024 * 1024 else 10 * 1024 * 1024
     when (input.getString("operation")) {
+      "cover" -> {
+        require(name == "novel.json") { "Cover lookup requires a work path." }
+        val work = storage.storageDocumentAt(root, parts.dropLast(1).joinToString("/"))
+          ?: return result.put("cover", JSONObject.NULL)
+        val metadata = operate(root, JSONObject().put("operation", "read").put("path", path))
+        val preferred = if (metadata.isNull("body")) null else runCatching {
+          JSONObject(String(Base64.decode(metadata.getString("body"), Base64.DEFAULT), Charsets.UTF_8))
+            .optJSONObject("cover")?.optString("fileName")
+        }.getOrNull()
+        val candidates = storage.listStorageChildren(work).filter { !it.isDirectory && isAndroidWorkCoverFile(it.name) }
+          .sortedWith(compareBy({ it.name != preferred }, { it.name }))
+        for (candidate in candidates) {
+          val file = storage.storageChildDocumentFile(candidate) ?: continue
+          val size = candidate.byteSize ?: file.length()
+          if (size <= 0 || size > 10 * 1024 * 1024) continue
+          return result.put("cover", JSONObject().put("fileName", candidate.name).put("modifiedAt", file.lastModified()))
+        }
+        result.put("cover", JSONObject.NULL)
+      }
       "read" -> {
         val document = storage.storageDocumentAt(root, path)
           ?: storage.storageDocumentAt(root, "$path.bak")

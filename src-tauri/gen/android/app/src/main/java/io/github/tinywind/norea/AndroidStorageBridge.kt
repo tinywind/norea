@@ -26,7 +26,6 @@ internal class AndroidStorageBridge(
   private val chapterTransfer = AndroidChapterStorageTransfer(contentResolver, storage)
   private val contentSync = AndroidContentSyncStorage(context, storage)
   private val workMetadata = AndroidWorkMetadataStorage(contentResolver, storage)
-  private val coverInspector = AndroidNovelCoverInspector(storage)
   private val chapterInspector = AndroidChapterArtifactInspector(storage, mediaStore)
   private val storageExecutors = AndroidStorageExecutors()
 
@@ -236,49 +235,6 @@ internal class AndroidStorageBridge(
         .put("ok", true)
         .put("text", text)
     }
-  }
-
-  @JavascriptInterface
-  fun inspectNovelCover(
-    requestId: String,
-    rootUri: String,
-    preferredNovelDir: String,
-    sourceDir: String,
-    novelIdentitySuffix: String,
-    sourceId: String,
-    novelPath: String,
-  ) {
-    storageExecutors.foreground.execute {
-      resolveNovelCoverInspection(
-        requestId,
-        inspectNovelCoverResponse(
-          rootUri,
-          preferredNovelDir,
-          sourceDir,
-          novelIdentitySuffix,
-          sourceId,
-          novelPath,
-        ),
-      )
-    }
-  }
-
-  private fun inspectNovelCoverResponse(
-    rootUri: String,
-    preferredNovelDir: String,
-    sourceDir: String,
-    novelIdentitySuffix: String,
-    sourceId: String,
-    novelPath: String,
-  ): String = storageResponse {
-    coverInspector.inspectNovelCover(
-      rootUri,
-      preferredNovelDir,
-      sourceDir,
-      novelIdentitySuffix,
-      sourceId,
-      novelPath,
-    )
   }
 
   @JavascriptInterface
@@ -725,15 +681,6 @@ internal class AndroidStorageBridge(
   private fun resolveChapterArtifactInspection(requestId: String, response: String) {
     val script =
       "window.__noreaResolveAndroidChapterArtifacts && window.__noreaResolveAndroidChapterArtifacts(" +
-        "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
-    mainWebView()?.post {
-      mainWebView()?.evaluateJavascript(script, null)
-    }
-  }
-
-  private fun resolveNovelCoverInspection(requestId: String, response: String) {
-    val script =
-      "window.__noreaResolveAndroidNovelCover && window.__noreaResolveAndroidNovelCover(" +
         "${JSONObject.quote(requestId)}, ${JSONObject.quote(response)});"
     mainWebView()?.post {
       mainWebView()?.evaluateJavascript(script, null)

@@ -3,7 +3,6 @@
 mod archives;
 mod cache;
 mod content;
-mod covers;
 mod manifest;
 mod media;
 mod paths;
@@ -18,7 +17,6 @@ mod work_metadata;
 pub use archives::*;
 pub use cache::*;
 pub use content::*;
-pub use covers::*;
 pub use media::*;
 pub use paths::*;
 pub use protocol::*;

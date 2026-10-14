@@ -5,7 +5,7 @@ use super::media::{
     parse_media_src,
 };
 use super::paths::{
-    media_root, CONTENTS_ROOT_DIR, IMMUTABLE_COVER_CACHE_CONTROL, NOVEL_COVER_MANIFEST_FILE,
+    media_root, CONTENTS_ROOT_DIR, IMMUTABLE_COVER_CACHE_CONTROL,
 };
 use std::{
     fs::{self, File},
@@ -51,8 +51,7 @@ fn is_novel_cover_media_path(request_path: &str) -> bool {
     let file_name = parts.get(3).copied().unwrap_or_default();
     parts.len() == 4
         && parts.first() == Some(&CONTENTS_ROOT_DIR)
-        && file_name != NOVEL_COVER_MANIFEST_FILE
-        && file_name.starts_with("cover.")
+        && super::work_metadata::is_cover_file(file_name)
 }
 
 fn norea_media_protocol_body(

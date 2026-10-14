@@ -166,8 +166,6 @@ pub fn run() {
             chapter_media::chapter_storage_relocate_dir,
             chapter_media::chapter_storage_remove_dir,
             chapter_media::chapter_storage_rollback_transfer,
-            chapter_media::novel_cover_read_manifest,
-            chapter_media::novel_cover_store,
             chapter_media::work_metadata_operation,
             desktop_file_open::desktop_open_file_discard,
             desktop_file_open::desktop_open_file_list,
