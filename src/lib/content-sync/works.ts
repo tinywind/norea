@@ -4,9 +4,9 @@ import { readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMet
 import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
 
-export interface WorkCatalogEntry { id: string; sequence: number; metadata: NovelMetadataV1; hasCover: boolean }
+export interface WorkCatalogEntry { id: string; sequence: number; metadata: NovelMetadataV1; hasCover: boolean; deleted?: boolean }
 interface WorkCatalogPage { items: WorkCatalogEntry[]; cursor: number; hasMore: boolean }
-interface WorkSyncCache { cursor: number; fingerprints: Record<string, string>; fileVersions: Record<string, string> }
+interface WorkSyncCache { cursor: number; fingerprints: Record<string, string>; fileVersions: Record<string, string>; deleted: Record<string, boolean> }
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const cacheKey = (server: string) => `norea-content-works:${server}`;
 const identityKey = (identity: NovelMetadataV1["identity"]) => JSON.stringify([identity.pluginId, identity.novelPath]);
@@ -29,7 +29,7 @@ export async function workMetadataFingerprint(metadata: NovelMetadataV1, cover: 
 async function readCache(server: string): Promise<WorkSyncCache> {
   const saved = await readContentSyncStateCache(cacheKey(server), "works");
   const parsed = saved ? JSON.parse(saved) as Partial<WorkSyncCache> : {};
-  return { cursor: parsed.cursor ?? 0, fingerprints: parsed.fingerprints ?? {}, fileVersions: parsed.fileVersions ?? {} };
+  return { cursor: parsed.cursor ?? 0, fingerprints: parsed.fingerprints ?? {}, fileVersions: parsed.fileVersions ?? {}, deleted: parsed.deleted ?? {} };
 }
 async function saveCache(server: string, cache: WorkSyncCache): Promise<void> {
   await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));
@@ -52,7 +52,7 @@ async function coverRequest(server: string, id: string, token: string, body?: Ui
   return bytes;
 }
 
-export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<void> {
+export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<ReadonlySet<string>> {
   let installed = false;
   const cache = await readCache(server);
   let dirty = false;
@@ -78,6 +78,13 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
         if (await contentWorkId(metadata.identity) !== entry.id) throw new Error("Server work identity does not match its metadata.");
         dirty = true;
         const identity = identityKey(metadata.identity);
+        if (entry.deleted) {
+          cache.deleted[entry.id] = true;
+          delete cache.fingerprints[entry.id];
+          delete cache.fileVersions[identity];
+          continue;
+        }
+        delete cache.deleted[entry.id];
         const file = byIdentity.get(identity);
         const current = file ? await readStoredNovelMetadata(file.directory) : null;
         let expectedFingerprint: string | null = null;
@@ -85,7 +92,22 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
           expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
           if (cache.fingerprints[entry.id] !== expectedFingerprint) continue;
         }
-        const cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null;
+        let cover: Uint8Array | null;
+        try { cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null; }
+        catch (error) {
+          if (error instanceof ContentServerError && error.status === 404) {
+            try { await contentServerRequest<WorkCatalogEntry>(server, `/works/${entry.id}`, token); }
+            catch (currentError) {
+              if (currentError instanceof ContentServerError && currentError.status === 404) {
+                cache.deleted[entry.id] = true;
+                delete cache.fingerprints[entry.id]; delete cache.fileVersions[identity];
+                continue;
+              }
+              throw currentError;
+            }
+          }
+          throw error;
+        }
         const installedMetadata = metadata;
         assertCurrent();
         const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
@@ -113,28 +135,36 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
       await checkpoint();
       more = page.hasMore;
     }
-    if (!upload) return;
+    if (!upload) return new Set(Object.keys(cache.deleted));
     let uploaded = 0;
     for (const [identity, file] of byIdentity) {
       const version = fileVersion(file);
-      if (cache.fileVersions[identity] === version) continue;
+      const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
+      if (cache.deleted[id] && !rescan) continue;
+      if (!rescan && cache.fileVersions[identity] === version) continue;
       const latest = await readStoredNovelMetadata(file.directory);
       if (!latest) { cache.fileVersions[identity] = version; dirty = true; continue; }
       const { metadata } = latest;
-      const id = await contentWorkId(metadata.identity);
       const cover = await readStoredNovelCover(file.directory, metadata);
       const current = await workMetadataFingerprint(metadata, cover);
-      if (cache.fingerprints[id] === current) { cache.fileVersions[identity] = version; dirty = true; continue; }
+      if (!rescan && cache.fingerprints[id] === current) { cache.fileVersions[identity] = version; dirty = true; continue; }
       assertCurrent();
-      await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}`, token, "PUT", metadata);
+      try {
+        await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", metadata);
+      } catch (error) {
+        if (error instanceof ContentServerError && error.status === 410) { cache.deleted[id] = true; dirty = true; continue; }
+        throw error;
+      }
       assertCurrent();
       if (cover) await coverRequest(server, id, token, cover, metadata.cover?.contentType);
       assertCurrent();
       cache.fingerprints[id] = current;
+      delete cache.deleted[id];
       cache.fileVersions[identity] = version;
       dirty = true;
       if (++uploaded % 25 === 0) await checkpoint();
     }
+    return new Set(Object.keys(cache.deleted));
   } finally {
     await checkpoint();
     if (installed && typeof window !== "undefined") window.dispatchEvent(new Event("norea-content-state-changed"));

@@ -81,6 +81,45 @@ it("uploads metadata and cover without any downloaded chapter and skips unchange
   expect(changed).not.toHaveBeenCalled();
 });
 
+it("keeps local metadata after server work deletion and restores only on explicit rescan", async () => {
+  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  const original = vi.mocked(nativeFetch).getMockImplementation()!;
+  const id = await contentWorkId(metadata().identity);
+  vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/works")) return Response.json({ items: Number(url.searchParams.get("after")) < 1 ? [{ id, sequence: 1, deleted: true, metadata: metadata(), hasCover: false }] : [], cursor: 1, hasMore: false });
+    return original(input, init);
+  });
+  await syncWorkMetadata("http://server", "device", true);
+  expect(puts).toBe(0);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(local).toHaveLength(1);
+  await syncWorkMetadata("http://server", "device", true, undefined, true);
+  expect(puts).toBe(1);
+  expect(nativeFetch).toHaveBeenCalledWith(`http://server/api/v1/works/${id}?restore=true`, expect.objectContaining({ method: "PUT" }));
+});
+
+it("advances past an in-flight work record whose cover and work were deleted", async () => {
+  const id = await contentWorkId(metadata().identity);
+  vi.mocked(nativeFetch).mockImplementation(async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/works")) return Response.json({ items: [{ id, sequence: 1, metadata: metadata(), hasCover: true }], cursor: 1, hasMore: false });
+    return new Response(null, { status: 404 });
+  });
+  const deleted = await syncWorkMetadata("http://server", "device", true);
+  expect(deleted.has(id)).toBe(true);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(JSON.parse([...memory.values()][0])).toMatchObject({ cursor: 1, deleted: { [id]: true } });
+});
+
+it("does not grant restore permission to active works during a rescan", async () => {
+  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  await syncWorkMetadata("http://server", "device", true, undefined, true);
+  const writes = vi.mocked(nativeFetch).mock.calls.filter(([, init]) => init?.method === "PUT");
+  expect(writes.length).toBeGreaterThan(0);
+  expect(writes.every(([url]) => !String(url).includes("restore=true"))).toBe(true);
+});
+
 it("does not traverse work files or read covers during an unchanged sync", async () => {
   local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
@@ -303,7 +342,7 @@ it("uses the local file index and checkpoints a work page instead of every insta
   expect(installStoredNovelMetadata).toHaveBeenCalledTimes(100);
   expect(writeContentSyncCache).toHaveBeenCalledTimes(1);
   const saved = JSON.parse([...memory.values()][0]);
-  expect(Object.keys(saved).sort()).toEqual(["cursor", "fileVersions", "fingerprints"]);
+  expect(Object.keys(saved).sort()).toEqual(["cursor", "deleted", "fileVersions", "fingerprints"]);
   expect(Object.keys(saved.fingerprints)).toHaveLength(100);
 });
 

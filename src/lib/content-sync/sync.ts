@@ -13,7 +13,7 @@ import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentC
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
-import { getWorkSyncCursor, syncWorkMetadata } from "./works";
+import { contentWorkId, getWorkSyncCursor, syncWorkMetadata } from "./works";
 
 interface CatalogCache {
   cursor: number;
@@ -44,17 +44,16 @@ async function contentFingerprint(row: ContentSyncChapter, stagePath: string): P
   return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
-async function uploadIdentity(server: string, token: string, row: ContentSyncChapter): Promise<ContentIdentity> {
+async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber">, includeUnavailable = false): Promise<CatalogEntry | null> {
   const local = { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath };
   const recovered = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(row.chapterPath);
   const chapterNumber = row.chapterNumber ?? recovered?.[1];
-  if (!chapterNumber || !/^\d+(?:\.\d+)?$/.test(chapterNumber)) return local;
   let entry: CatalogEntry;
   try {
-    const query = new URLSearchParams({ ...local, chapterNumber });
+    const query = new URLSearchParams({ ...local, ...(includeUnavailable ? { includeUnavailable: "true" } : {}), ...(chapterNumber && /^\d+(?:\.\d+)?$/.test(chapterNumber) ? { chapterNumber } : {}) });
     entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token);
   } catch (error) {
-    if (error instanceof ContentServerError && error.status === 404) return local;
+    if (error instanceof ContentServerError && error.status === 404) return null;
     throw error;
   }
   const remote = entry.manifest.identity;
@@ -65,7 +64,7 @@ async function uploadIdentity(server: string, token: string, row: ContentSyncCha
     !remote.chapterPath || !sameChapter) {
     throw new Error("Content server upload identity does not match the requested chapter.");
   }
-  return remote;
+  return entry;
 }
 function assertDevice(server: string, token: string | null): void {
   const current = useContentSyncStore.getState();
@@ -96,7 +95,7 @@ async function pullCatalog(server: string, token: string | null, cache: CatalogC
   }
 }
 
-async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean): Promise<void> {
+async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>): Promise<void> {
   const head = await contentJournalHead();
   const changes = cache.localCursor === undefined || rescan ? null
     : await readContentJournal(cache.localCursor, head);
@@ -104,6 +103,12 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
   const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
   const rows = await listContentSyncChapters(requested, requested === undefined);
   const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
+  const deletedLocalWorks = new Set<string>();
+  if (deletedWorks.size) {
+    for (const row of new Map(rows.map(row => [JSON.stringify([row.pluginId, row.novelPath]), row])).values()) {
+      if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
+    }
+  }
   const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys())]);
   if (!pending.size && cache.localCursor === head) return;
   cache.pendingUploads = [...pending];
@@ -119,7 +124,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     for (const id of pending) {
       assertDevice(server, token);
       const row = rowsByIdentity.get(id);
-      if (!row || !row.isDownloaded || row.mediaRepairNeeded || cache.tombstones[id]) {
+      if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath])) || (cache.tombstones[id] && !rescan)) {
         if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
         delete cache.downloads[id];
         pending.delete(id);
@@ -128,22 +133,27 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         continue;
       }
       try {
+        const existing = await findUploadedChapter(server, token, row);
+        assertDevice(server, token);
+        if (existing) {
+          cache.downloads[id] = true;
+          pending.delete(id);
+          processed++;
+          reportProgress();
+          continue;
+        }
         await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath } }, async stagePath => {
           const fingerprint = await contentFingerprint(row, stagePath);
           assertDevice(server, token);
-          if (cache.uploaded[id] !== fingerprint) {
-            const target = await uploadIdentity(server, token, row);
-            assertDevice(server, token);
-            await uploadContentChapter({
-              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath,
-              manifest: { packageVersion: 1, identity: target,
-                novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
-                chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
-            });
-            assertDevice(server, token);
-            cache.uploaded[id] = fingerprint;
-            uploaded++;
-          }
+          await uploadContentChapter({
+            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath,
+            manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath },
+              novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
+              chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
+          });
+          assertDevice(server, token);
+          cache.uploaded[id] = fingerprint;
+          uploaded++;
           cache.downloads[id] = true;
           pending.delete(id);
         });
@@ -193,10 +203,10 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     const token = await initializeDevice(serverUrl);
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
-    await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
+    const deletedWorks = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
-      await uploadLocalContent(serverUrl, token, cache, rescan);
+      await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks ?? new Set());
       await pullCatalog(serverUrl, token, cache);
     }
     assertDevice(serverUrl, token);
@@ -248,10 +258,19 @@ async function mutateServerChapter(entry: CatalogEntry, restore: boolean): Promi
   const { serverUrl } = useContentSyncStore.getState();
   const token = await initializeDevice(serverUrl);
   await contentServerRequest(serverUrl, `/chapters/${encodeURIComponent(entry.id)}${restore ? "/restore" : ""}`, token, restore ? "POST" : "DELETE");
-  await syncContentServer();
 }
 export function deleteServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, false); }
 export function restoreServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, true); }
+
+export async function deleteServerChapters(chapters: readonly (ContentIdentity & { chapterNumber: string | null })[]): Promise<void> {
+  const { serverUrl } = useContentSyncStore.getState();
+  const token = await initializeDevice(serverUrl);
+  for (const chapter of chapters) {
+    assertDevice(serverUrl, token);
+    const entry = await findUploadedChapter(serverUrl, token, chapter, true);
+    if (entry) await contentServerRequest(serverUrl, `/chapters/${encodeURIComponent(entry.id)}`, token, "DELETE");
+  }
+}
 
 export async function getContentSyncCursors(): Promise<{ catalogCursor: number; workCursor: number }> {
   const { serverUrl } = useContentSyncStore.getState();
