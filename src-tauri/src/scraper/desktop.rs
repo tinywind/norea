@@ -392,7 +392,10 @@ fn normalize_scraper_executor(queue: Option<&str>) -> Result<String, String> {
     if executor == IMMEDIATE_EXECUTOR {
         return Ok(executor.to_string());
     }
-    if let Some(index) = executor.strip_prefix("pool:") {
+    if let Some(index) = executor
+        .strip_prefix("pool:")
+        .or_else(|| executor.strip_prefix("search:"))
+    {
         if !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()) {
             return Ok(executor.to_string());
         }
@@ -3162,6 +3165,21 @@ mod tests {
             }),
         );
         state.captured_resources.finish(executor, capture_id);
+    }
+
+    #[test]
+    fn search_executor_ids_are_distinct_from_download_and_immediate_executors() {
+        for executor in ["immediate", "pool:0", "search:0", "search:2"] {
+            assert_eq!(normalize_scraper_executor(Some(executor)).unwrap(), executor);
+        }
+        for executor in ["search:", "search:-1", "search:other"] {
+            assert!(normalize_scraper_executor(Some(executor)).is_err());
+        }
+        let state = ScraperState::default();
+        let search = scraper_executor_lock(&state, "search:0");
+        assert!(Arc::ptr_eq(&search, &scraper_executor_lock(&state, "search:0")));
+        assert!(!Arc::ptr_eq(&search, &scraper_executor_lock(&state, "pool:0")));
+        assert!(!Arc::ptr_eq(&search, &scraper_executor_lock(&state, "immediate")));
     }
 
     #[test]

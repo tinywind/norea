@@ -564,7 +564,7 @@ class AndroidScraperBridge(
     val value = payload.optString("queue", IMMEDIATE_EXECUTOR).trim()
     if (value == "mainForeground") return IMMEDIATE_EXECUTOR
     if (value == IMMEDIATE_EXECUTOR) return value
-    if (Regex("^pool:\\d+$").matches(value)) return value
+    if (Regex("^(pool|search):\\d+$").matches(value)) return value
     return IMMEDIATE_EXECUTOR
   }
 
