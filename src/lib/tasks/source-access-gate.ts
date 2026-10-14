@@ -12,6 +12,7 @@ export interface SourceAccessBlock {
   originTaskKey?: string;
   revision: number;
   scopeKey: string;
+  sourceId: string;
   sourceIds: string[];
   verificationError?: string;
   verificationRequested: boolean;
@@ -32,6 +33,7 @@ interface MutableSourceAccessBlock extends Omit<
 }
 
 interface SourceAccessChallengeOrigin {
+  sourceId: string;
   taskId: string;
   taskKey: string | undefined;
   sourceIds: Iterable<string>;
@@ -102,6 +104,7 @@ export class SourceAccessGate {
         ...(block.originTaskKey ? { originTaskKey: block.originTaskKey } : {}),
         revision: block.revision,
         scopeKey: block.scopeKey,
+        sourceId: block.sourceId,
         sourceIds: [...block.sourceIds].sort(),
         ...(block.verificationError
           ? { verificationError: block.verificationError }
@@ -129,7 +132,8 @@ export class SourceAccessGate {
     );
     const challengeChanged = Boolean(
       existing &&
-      (existing.challenge.kind !== challenge.kind ||
+      (existing.sourceId !== origin.sourceId ||
+        existing.challenge.kind !== challenge.kind ||
         existing.challenge.url !== challenge.url),
     );
     const replacesChallenge = invalidatesVerification || challengeChanged;
@@ -149,6 +153,7 @@ export class SourceAccessGate {
       ...(originTaskKey ? { originTaskKey } : {}),
       revision,
       scopeKey,
+      sourceId: origin.sourceId,
       sourceIds,
       ...(invalidatesVerification
         ? { verificationError }
@@ -192,6 +197,7 @@ export class SourceAccessGate {
               .filter(Boolean)
           : [],
       );
+      if (!sourceIds.has(block.sourceId)) continue;
       const current = hydrated.get(scopeKey);
       if (current && current.revision > revision) continue;
       const originTaskKey = normalizedSourceAccessTaskKey(block.originTaskKey);
@@ -202,6 +208,7 @@ export class SourceAccessGate {
         ...(originTaskKey ? { originTaskKey } : {}),
         revision,
         scopeKey,
+        sourceId: block.sourceId,
         sourceIds,
         ...(typeof block.verificationError === "string" &&
         block.verificationError.trim()

@@ -137,6 +137,7 @@ describe("source access browser controls", () => {
         detectedAt: Date.now(),
         revision: 3,
         scopeKey: "site:source.test",
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       }],

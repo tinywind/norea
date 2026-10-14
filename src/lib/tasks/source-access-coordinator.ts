@@ -112,6 +112,8 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
         ),
       ]
     : [];
+  const sourceId = typeof block.sourceId === "string" ? block.sourceId.trim() : "";
+  if (!sourceIds.includes(sourceId)) return null;
   const persistedChallengeUrl = challengeUrlForPersistence(challenge.url);
   const challengeUrlRedacted =
     block.challengeUrlRedacted === true || persistedChallengeUrl.redacted;
@@ -126,6 +128,7 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
     ...(originTaskKey ? { originTaskKey } : {}),
     revision,
     scopeKey,
+    sourceId,
     sourceIds,
     verificationRequested: false,
   };
@@ -298,7 +301,7 @@ export async function openSourceAccessBrowser(
       ...current,
       challenge: { ...current.challenge, url: target.url },
     };
-    const sourceId = resolvedBlock.sourceIds[0] ?? resolvedBlock.scopeKey;
+    const sourceId = target.sourceId;
     const sourceName = options.sourceName.trim() || sourceId;
     const handle = enqueueSourceAccessBrowserTask(
       {

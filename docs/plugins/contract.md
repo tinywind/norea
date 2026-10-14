@@ -215,7 +215,9 @@ source-dependent promises pending. A chapter task may still reconcile
 authoritative final content locally while blocked; doing so does not verify or
 clear source access. The block survives an application restart. Norea opens the
 source in its session-owning browser so the user can complete the challenge,
-then offers **Keep paused** and **Verify**. Closing the browser keeps the source
+then offers **Keep paused** and **Verify**. The verification browser uses the
+same source profile as the queued task selected for verification, including when
+multiple plugins share a hostname. Closing the browser keeps the source
 paused in every loading phase; only **Verify** requests a source check. The
 pending task's blocking loading overlay is hidden while the site browser is
 open so it cannot intercept browser controls. The address bar allows HTTP(S)
@@ -229,8 +231,9 @@ bypass final-content and partial-resume fast paths so verification performs a re
 source acquisition. A repeated challenge or an unconfirmed canary leaves the queue
 blocked.
 
-Restart recovery persists only the challenge URL origin, because paths, query
-strings, and fragments may contain credentials or short-lived proof tokens. When
+Restart recovery persists the challenged source id and only the challenge URL
+origin, because paths, query strings, and fragments may contain credentials or
+short-lived proof tokens. Verification retries stay in that source's profile. When
 a queued chapter download can safely rebuild its current trusted acquisition
 URL, Norea validates that the rebuilt URL still belongs to the blocked hostname
 before opening the browser. Generic source tasks whose exact request URL cannot

@@ -1462,6 +1462,7 @@ describe("TaskScheduler", () => {
         },
         revision: 1,
         scopeKey: challengedScope,
+        sourceId: "source-a",
         sourceIds: ["source-a", "source-b"],
         verificationRequested: false,
       },
@@ -1728,6 +1729,7 @@ describe("TaskScheduler", () => {
     expect(scheduler.getSnapshot().sourceAccessBlocks).toMatchObject([
       {
         scopeKey: "site:source.test",
+        sourceId: "source-a",
         sourceIds: ["source-a"],
       },
     ]);
@@ -2227,6 +2229,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: true,
         verificationTaskId: "stale-task",
@@ -2276,6 +2279,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2305,6 +2309,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2320,7 +2325,7 @@ describe("TaskScheduler", () => {
 
     await expect(
       scheduler.resolveSourceAccessVerificationUrl(scopeKey, 7),
-    ).resolves.toEqual({ revision: 7, scopeKey, url: freshUrl });
+    ).resolves.toEqual({ revision: 7, scopeKey, sourceId: "source-a", url: freshUrl });
     expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
       challenge: { url: freshUrl },
       originTaskId: canary.id,
@@ -2349,6 +2354,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "source-a:search",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2373,6 +2379,7 @@ describe("TaskScheduler", () => {
         challenge: { url: "https://old-source.test/chapter/1" },
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
       },
     ]);
@@ -2398,6 +2405,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "chapter.download:source-a:chapter-1",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2425,6 +2433,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "chapter.download:source-a:chapter-1",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
       },
     ]);
@@ -2450,6 +2459,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "chapter.download:source-a:chapter-1",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2483,6 +2493,7 @@ describe("TaskScheduler", () => {
       revision: 7,
       scopeKey: oldScopeKey,
       url: sameHostUrl,
+      sourceId: "source-a",
     });
     expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
       originTaskId: sameHost.id,
@@ -2512,6 +2523,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "chapter.download:source-a:chapter-1",
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2537,7 +2549,7 @@ describe("TaskScheduler", () => {
 
     await expect(
       scheduler.resolveSourceAccessVerificationUrl(scopeKey, 7),
-    ).resolves.toEqual({ revision: 7, scopeKey, url: freshUrl });
+    ).resolves.toEqual({ revision: 7, scopeKey, sourceId: "source-a", url: freshUrl });
     expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
       originTaskId: origin.id,
       originTaskKey: "chapter.download:source-a:chapter-1",
@@ -2564,6 +2576,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "chapter.download:source-a:chapter-1",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2608,6 +2621,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "source-a:search",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a", "source-b"],
         verificationRequested: false,
       },
@@ -2631,6 +2645,7 @@ describe("TaskScheduler", () => {
       {
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a", "source-b"],
       },
     ]);
@@ -2654,6 +2669,7 @@ describe("TaskScheduler", () => {
         originTaskKey: "source-a:search",
         revision: 7,
         scopeKey: oldScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2665,6 +2681,7 @@ describe("TaskScheduler", () => {
         detectedAt: 20,
         revision: 8,
         scopeKey: newScopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2718,6 +2735,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2766,6 +2784,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -2939,6 +2958,7 @@ describe("TaskScheduler", () => {
       originTaskKey: `chapter.download:source-${index}:1`,
       revision: index + 1,
       scopeKey: key,
+      sourceId: `source-${index}`,
       sourceIds: [`source-${index}`],
       verificationRequested: false,
     }));
@@ -2981,6 +3001,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -3019,6 +3040,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -3093,6 +3115,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -3660,6 +3683,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -3702,6 +3726,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },
@@ -3762,6 +3787,7 @@ describe("TaskScheduler", () => {
         detectedAt: 10,
         revision: 7,
         scopeKey,
+        sourceId: "source-a",
         sourceIds: ["source-a"],
         verificationRequested: false,
       },

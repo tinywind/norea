@@ -773,6 +773,7 @@ export class TaskScheduler {
     const scopeKey = configuredScopeKey;
 
     const sourceId = entry.record.source?.id;
+    if (!sourceId) return false;
     const sourceIds = new Set<string>();
     for (const candidate of this.entries.values()) {
       const candidateSourceId = candidate.record.source?.id;
@@ -790,6 +791,7 @@ export class TaskScheduler {
       scopeKey,
       error.challenge,
       {
+        sourceId,
         taskId: entry.record.id,
         taskKey: entry.spec.sourceAccessVerificationKey,
         sourceIds,
@@ -849,6 +851,7 @@ export class TaskScheduler {
         return (
           entry.record.lane === "source" &&
           entry.record.status === "queued" &&
+          entry.record.source?.id === block.sourceId &&
           (entry.record.canCancel || entry.record.id === block.originTaskId) &&
           canVerifySourceAccess(
             entry.record.kind,
@@ -1308,6 +1311,7 @@ export class TaskScheduler {
   ): Promise<{
     revision: number;
     scopeKey: string;
+    sourceId: string;
     url: string;
   } | null> {
     const block = this.sourceAccess.get(scopeKey);
@@ -1321,11 +1325,12 @@ export class TaskScheduler {
       scopeKey,
       block,
     );
-    if (!entry) return null;
+    const sourceId = entry?.record.source?.id;
+    if (!entry || !sourceId) return null;
     let candidateScopeKey = entry.spec.sourceAccessScopeKey;
     if (!block.challengeUrlRedacted && candidateScopeKey === scopeKey) {
       return fallbackUrl
-        ? { revision: block.revision, scopeKey, url: fallbackUrl }
+        ? { revision: block.revision, scopeKey, sourceId, url: fallbackUrl }
         : null;
     }
 
@@ -1375,7 +1380,7 @@ export class TaskScheduler {
       );
       this.publishSnapshot();
     }
-    return { revision: current.revision, scopeKey, url: resolvedUrl };
+    return { revision: current.revision, scopeKey, sourceId, url: resolvedUrl };
   }
 
   beginSourceAccessVerification(scopeKey: string): boolean {

@@ -38,7 +38,7 @@ describe("task work group order", () => {
   it("shows mandatory CAPTCHA verification instead of a network retry", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [{
       challenge: { kind: "captcha", url: "https://source.test/chapter/16" },
-      detectedAt: 1, revision: 1, scopeKey: "site:source.test", sourceIds: ["source"],
+      detectedAt: 1, revision: 1, scopeKey: "site:source.test", sourceId: "source", sourceIds: ["source"],
       verificationRequested: false,
     }] };
     const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));

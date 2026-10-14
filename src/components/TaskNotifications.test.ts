@@ -65,6 +65,7 @@ function accessBlock(): SourceAccessBlock {
     detectedAt: 1,
     revision: 1,
     scopeKey: "site:source.test",
+    sourceId: "source-a",
     sourceIds: ["source-a"],
     verificationRequested: false,
   };

@@ -182,6 +182,7 @@ describe("enqueueSourceAccessBrowserTask", () => {
       detectedAt: 1,
       revision: 2,
       scopeKey: "site:source.test",
+      sourceId: "source-a",
       sourceIds: ["source-a"],
       verificationRequested: false,
     };
@@ -218,6 +219,7 @@ describe("enqueueSourceAccessBrowserTask", () => {
       detectedAt: 1,
       revision: 5,
       scopeKey: "site:source.test",
+      sourceId: "source-a",
       sourceIds: ["source-a"],
       verificationRequested: false,
     };

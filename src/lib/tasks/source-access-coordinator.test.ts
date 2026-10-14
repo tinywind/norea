@@ -22,6 +22,7 @@ function sourceAccessBlock(
     originTaskKey: "chapter.download:source-a:1",
     revision: 3,
     scopeKey: "site:source.test",
+    sourceId: "source-a",
     sourceIds: ["source-a"],
     verificationRequested: false,
     ...overrides,
@@ -42,6 +43,21 @@ function memoryStorage(initialValue: string | null = null) {
 }
 
 describe("source access persistence", () => {
+  it("preserves the challenged browser profile across restart", () => {
+    const storage = memoryStorage(JSON.stringify({
+      version: 1,
+      blocks: [{
+        ...sourceAccessBlock(),
+        sourceId: "source-b",
+        sourceIds: ["source-a", "source-b"],
+      }],
+    }));
+    expect(loadPersistedSourceAccessBlocks(storage)[0]).toMatchObject({
+      sourceId: "source-b",
+      sourceIds: ["source-a", "source-b"],
+    });
+  });
+
   it("loads valid blocks without restoring runtime state or URL secrets", () => {
     const storage = memoryStorage(
       JSON.stringify({
