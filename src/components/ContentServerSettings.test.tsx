@@ -4,13 +4,17 @@ import type { ReactElement, ReactNode } from "react";
 const mocks = vi.hoisted(() => ({
   state: {} as Record<string, unknown>,
   save: vi.fn(), navigate: vi.fn(), sync: vi.fn(), invalidate: vi.fn(),
+  defaultName: "TB320FC" as string | undefined, refetchName: vi.fn(),
   stateIndex: 0,
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
   useState: (initial: unknown) => [mocks.stateIndex++ === 0 ? "http://new-server" : initial, vi.fn()],
 }));
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ invalidateQueries: mocks.invalidate }) }));
+vi.mock("@tanstack/react-query", () => ({
+  useQueryClient: () => ({ invalidateQueries: mocks.invalidate }),
+  useQuery: () => ({ data: mocks.defaultName, refetch: mocks.refetchName }),
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../store/content-sync", () => ({ useContentSyncStore: (select: (state: Record<string, unknown>) => unknown) => select(mocks.state) }));
@@ -28,10 +32,31 @@ function controls(node: ReactNode): ReactElement<ControlProps>[] {
 
 beforeEach(() => {
   vi.clearAllMocks(); mocks.stateIndex = 0;
+  mocks.defaultName = "TB320FC";
+  mocks.refetchName.mockResolvedValue({ data: "TB320FC" });
   mocks.state = { serverUrl: "http://server", deviceName: "Phone", syncMode: "manual", syncIntervalMinutes: 15,
     lookupTimeoutSeconds: 3, setLookupTimeoutSeconds: vi.fn(),
     status: "syncing", error: null, blocked: false, setServerUrl: mocks.save,
     setDeviceName: vi.fn(), setSyncMode: vi.fn(), setSyncIntervalMinutes: vi.fn() };
+});
+
+it("shows the system name without a configured server and keeps custom names while it loads", () => {
+  mocks.state.serverUrl = "";
+  mocks.state.deviceName = "";
+  expect(controls(ContentServerSettings()).find(element => element.props["aria-label"] === "contentSync.deviceName")!.props.value).toBe("TB320FC");
+  mocks.state.deviceName = "My tablet";
+  mocks.defaultName = undefined;
+  expect(controls(ContentServerSettings()).find(element => element.props["aria-label"] === "contentSync.deviceName")!.props.value).toBe("My tablet");
+});
+
+it("resets a custom name to the current system default without synchronizing", async () => {
+  const reset = controls(ContentServerSettings()).find(element => element.props["aria-label"] === "contentSync.resetDeviceName");
+  expect(reset).toBeDefined();
+  reset!.props.onClick!();
+  await Promise.resolve();
+  expect(mocks.refetchName).toHaveBeenCalledWith({ throwOnError: true });
+  expect(mocks.state.setDeviceName).toHaveBeenCalledWith("");
+  expect(mocks.sync).not.toHaveBeenCalled();
 });
 
 it("exposes the three-second server lookup deadline while background sync is running", () => {

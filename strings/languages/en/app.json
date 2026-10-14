@@ -16,6 +16,7 @@
   "contentSync.description": "Share complete chapters with your devices. Reading positions, read status, bookmarks, and library membership stay on this device. Devices register automatically.",
   "contentSync.serverUrl": "Server URL",
   "contentSync.deviceName": "Device name",
+  "contentSync.resetDeviceName": "Reset device name",
   "contentSync.mode": "Sync mode",
   "contentSync.modeDescription": "Automatic content sync runs while the app is visible and catches up when you return.",
   "contentSync.manual": "Manual only",

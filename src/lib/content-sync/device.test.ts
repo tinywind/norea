@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+import { invoke } from "@tauri-apps/api/core";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { registerContentDevice } from "./device";
 import { contentServerRequest } from "./client";
@@ -9,6 +11,7 @@ const capabilities = { apiVersion: 1, packageVersion: 1, authentication: "device
 beforeEach(() => {
   storage.clear();
   vi.clearAllMocks();
+  vi.mocked(invoke).mockResolvedValue("TB320FC");
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
@@ -17,6 +20,37 @@ beforeEach(() => {
     ? capabilities : { id: "device", deviceName: "Tablet" }));
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it("registers the system device name before settings are opened and reuses registration", async () => {
+  const key = await registerContentDevice("http://server", "");
+  expect(await registerContentDevice("http://server", "")).toBe(key);
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("get_default_device_name");
+  const registration = vi.mocked(nativeFetch).mock.calls.find(([url]) => String(url).endsWith("/devices/register"))!;
+  expect(JSON.parse(registration[1]!.body as string)).toEqual({ deviceKey: key, deviceName: "TB320FC" });
+});
+
+it("uses a custom name without querying the system and restores the default with the same key", async () => {
+  const key = await registerContentDevice("http://server", "My tablet");
+  expect(invoke).not.toHaveBeenCalled();
+  expect(await registerContentDevice("http://server", "")).toBe(key);
+  const registrations = vi.mocked(nativeFetch).mock.calls.filter(([url]) => String(url).endsWith("/devices/register"));
+  expect(registrations.map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+    { deviceKey: key, deviceName: "My tablet" },
+    { deviceKey: key, deviceName: "TB320FC" },
+  ]);
+});
+
+it("does not contact the server if a default-name lookup fails or finishes after cancellation", async () => {
+  vi.mocked(invoke).mockRejectedValueOnce(new Error("Device name unavailable"));
+  await expect(registerContentDevice("http://server", "")).rejects.toThrow("Device name unavailable");
+  const controller = new AbortController();
+  vi.mocked(invoke).mockImplementationOnce(async () => {
+    controller.abort(new Error("Lookup expired"));
+    return "TB320FC";
+  });
+  await expect(registerContentDevice("http://server", "", controller.signal)).rejects.toThrow("Lookup expired");
+  expect(nativeFetch).not.toHaveBeenCalled();
+});
 
 it("registers once under concurrent initialization and persists the key before sending it", async () => {
   const first = registerContentDevice("http://server/", "Tablet");

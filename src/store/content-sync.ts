@@ -23,7 +23,7 @@ interface ContentSyncStore {
 }
 
 export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => ({
-  serverUrl: "", deviceName: "Norea", syncMode: "manual", syncIntervalMinutes: 15, status: "idle", error: null, blocked: false,
+  serverUrl: "", deviceName: "", syncMode: "manual", syncIntervalMinutes: 15, status: "idle", error: null, blocked: false,
   deviceKey: null, progress: null,
   lookupTimeoutSeconds: 3,
   setServerUrl: (value) => {
@@ -32,7 +32,7 @@ export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => (
       serverUrl, deviceKey: null, error: null, blocked: false, status: "idle", progress: null,
     }));
   },
-  setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() || "Norea" }),
+  setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() }),
   setSyncMode: (syncMode) => set({ syncMode }),
   setSyncIntervalMinutes: (minutes) => set({ syncIntervalMinutes: Number.isFinite(minutes) ? Math.min(1440, Math.max(1, Math.round(minutes))) : 15 }),
   setLookupTimeoutSeconds: (seconds) => set({ lookupTimeoutSeconds: Number.isFinite(seconds) ? Math.min(120, Math.max(1, Math.round(seconds))) : 3 }),

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { contentServerRequest, normalizeContentServerUrl } from "./client";
 
 interface ContentCapabilities {
@@ -41,6 +42,7 @@ export function registerContentDevice(serverUrl: string, deviceName: string, sig
   const pending = signal ? undefined : registrations.get(registrationKey);
   if (pending) return pending;
   const registration = (async () => {
+    const registrationName = deviceName || await invoke<string>("get_default_device_name");
     signal?.throwIfAborted();
     const capabilities = await contentServerRequest<ContentCapabilities>(server, "/capabilities", undefined, "GET", undefined, signal);
     signal?.throwIfAborted();
@@ -50,7 +52,7 @@ export function registerContentDevice(serverUrl: string, deviceName: string, sig
     }
     // Persist before registration so a failed response cannot create a second device.
     const deviceKey = deviceKeyForServer(server);
-    await contentServerRequest<RegisteredDevice>(server, "/devices/register", undefined, "POST", { deviceKey, deviceName }, signal);
+    await contentServerRequest<RegisteredDevice>(server, "/devices/register", undefined, "POST", { deviceKey, deviceName: registrationName }, signal);
     signal?.throwIfAborted();
     registeredDevices.set(server, { deviceName, deviceKey });
     return deviceKey;

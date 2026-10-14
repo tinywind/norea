@@ -16,6 +16,7 @@
   "contentSync.description": "기기 간에 완전한 챕터 파일을 공유합니다. 읽던 위치, 읽음 상태, 북마크와 서재 목록은 이 기기에만 저장됩니다. 기기는 자동으로 등록됩니다.",
   "contentSync.serverUrl": "서버 주소",
   "contentSync.deviceName": "기기 이름",
+  "contentSync.resetDeviceName": "기기 이름 초기화",
   "contentSync.mode": "동기화 방식",
   "contentSync.modeDescription": "앱이 화면에 표시되어 있는 동안 콘텐츠를 자동으로 동기화하며, 앱으로 돌아오면 다시 확인합니다.",
   "contentSync.manual": "수동으로만",

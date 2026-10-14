@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Alert, NumberInput, Select, Text, TextInput } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
 import { ContentServerError } from "../lib/content-sync/client";
@@ -16,6 +18,11 @@ export function ContentServerSettings() {
   const navigate = useNavigate();
   const serverUrl = useContentSyncStore((state) => state.serverUrl);
   const deviceName = useContentSyncStore((state) => state.deviceName);
+  const defaultDeviceName = useQuery({
+    queryKey: ["device", "default-name"],
+    queryFn: () => invoke<string>("get_default_device_name"),
+    staleTime: Infinity,
+  });
   const syncMode = useContentSyncStore((state) => state.syncMode);
   const syncIntervalMinutes = useContentSyncStore((state) => state.syncIntervalMinutes);
   const lookupTimeoutSeconds = useContentSyncStore((state) => state.lookupTimeoutSeconds);
@@ -68,8 +75,16 @@ export function ContentServerSettings() {
         </div>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.deviceName")}>
-        <TextInput aria-label={t("contentSync.deviceName")} value={deviceName}
-          disabled={disabled} onChange={(event) => setDeviceName(event.currentTarget.value)} />
+        <div className="norea-settings-connection">
+          <TextInput aria-label={t("contentSync.deviceName")} value={deviceName || defaultDeviceName.data || ""}
+            disabled={disabled} onChange={(event) => setDeviceName(event.currentTarget.value)} />
+          <TextButton aria-label={t("contentSync.resetDeviceName")} disabled={disabled} onClick={() => {
+            void run(async () => {
+              await defaultDeviceName.refetch({ throwOnError: true });
+              setDeviceName("");
+            });
+          }}>{t("common.reset")}</TextButton>
+        </div>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.mode")} description={t("contentSync.modeDescription")}>
         <Select aria-label={t("contentSync.mode")} value={syncMode}

@@ -39,10 +39,20 @@ it("discards settings from a different schema without translating automatic sync
   const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
   try {
     await useContentSyncStore.persist.rehydrate();
-    expect(useContentSyncStore.getState()).toMatchObject({ serverUrl: "", deviceName: "Norea", syncMode: "manual", syncIntervalMinutes: 15 });
+    expect(useContentSyncStore.getState()).toMatchObject({ serverUrl: "", deviceName: "", syncMode: "manual", syncIntervalMinutes: 15 });
   } finally {
     error.mockRestore();
   }
+});
+
+it("uses the system name by default and persists custom names or a reset", async () => {
+  expect(useContentSyncStore.getState().deviceName).toBe("");
+  useContentSyncStore.getState().setDeviceName("My tablet");
+  await useContentSyncStore.persist.rehydrate();
+  expect(useContentSyncStore.getState().deviceName).toBe("My tablet");
+  useContentSyncStore.getState().setDeviceName("");
+  await useContentSyncStore.persist.rehydrate();
+  expect(useContentSyncStore.getState().deviceName).toBe("");
 });
 
 it("bounds the sync interval and keeps device keys outside portable settings", () => {
