@@ -43,6 +43,37 @@ fn write_novel_cover(
 }
 
 #[test]
+fn novel_cover_lookup_reads_current_work_metadata_without_updated_at() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let novel_dir = dir.path().join("contents/demo/Current-Title-novel-path");
+    fs::create_dir_all(&novel_dir).expect("create novel cover directory");
+    fs::write(novel_dir.join("cover.jpg"), b"cover").expect("write novel cover");
+    let manifest = serde_json::json!({
+        "contentType": "image/jpeg",
+        "fileName": "cover.jpg",
+        "novelPath": "novel/path",
+        "sourceId": "demo",
+        "sourceUrl": "https://source.test/cover.jpg",
+        "version": 1,
+    })
+    .to_string();
+    fs::write(novel_dir.join(NOVEL_COVER_MANIFEST_FILE), &manifest)
+        .expect("write current work metadata cover manifest");
+
+    let metadata = novel_cover_manifest_metadata(&manifest).expect("parse current cover metadata");
+    assert_eq!(metadata.updated_at, 0);
+    let cover =
+        novel_cover_read_manifest_at(dir.path(), 7, "demo", "Current Title", "novel/path")
+            .expect("read current work metadata cover")
+            .expect("current work metadata cover");
+    assert_eq!(
+        cover.relative_path,
+        "contents/demo/Current-Title-novel-path/cover.jpg"
+    );
+    assert_eq!(cover.manifest, manifest);
+}
+
+#[test]
 fn novel_cover_lookup_rejects_a_manifest_without_work_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_novel_cover(

@@ -114,7 +114,11 @@ internal class AndroidNovelCoverInspector(private val storage: AndroidStorageDoc
         storedNovelPathValue.takeUnless { it == JSONObject.NULL },
       ) ?: return null
       val sourceUrl = manifestJson.opt("sourceUrl") as? String ?: return null
-      val updatedAt = (manifestJson.opt("updatedAt") as? Number)?.toLong() ?: return null
+      val updatedAt = if (manifestJson.has("updatedAt")) {
+        (manifestJson.opt("updatedAt") as? Number)?.toLong() ?: return null
+      } else {
+        0L
+      }
       val cover = directory.findFile(fileName) ?: return null
       if (!cover.isFile) return null
       require(cover.canRead()) {

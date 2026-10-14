@@ -128,6 +128,83 @@ beforeEach(() => {
 });
 
 describe("saveNovelCoverFromSource", () => {
+  it("reads current work metadata writer covers without an update timestamp", async () => {
+    const { writeStoredNovelCover } = await vi.importActual<
+      typeof import("./work-metadata")
+    >("./work-metadata");
+    const directory = "contents/demo/Sample-Novel-novel";
+    const files = new Map<string, number[]>();
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "work_metadata_operation") {
+        const { input } = args as {
+          input: { operation: string; path: string; body?: number[] };
+        };
+        if (input.operation === "read") {
+          return { body: files.get(input.path) ?? null };
+        }
+        if (input.operation === "write" && input.body) {
+          files.set(input.path, input.body);
+          return {};
+        }
+      }
+      if (command === "novel_cover_read_manifest") {
+        return {
+          manifest: new TextDecoder().decode(
+            new Uint8Array(files.get(`${directory}/cover.json`) ?? []),
+          ),
+          relativePath: `${directory}/cover.jpg`,
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    await writeStoredNovelCover(directory, {
+      schemaVersion: 1,
+      identity: { pluginId: novel.pluginId, novelPath: novel.path },
+      novel: {
+        name: novel.name,
+        cover: "https://source.test/cover.jpg",
+        author: null,
+        artist: null,
+        summary: null,
+        status: null,
+        genres: null,
+        rating: null,
+        isLocal: false,
+      },
+      cover: {
+        contentType: "image/jpeg",
+        fileName: "cover.jpg",
+        sourceUrl: "https://source.test/cover.jpg",
+      },
+    }, new Uint8Array([1, 2, 3]), false);
+
+    const manifest = new TextDecoder().decode(
+      new Uint8Array(files.get(`${directory}/cover.json`) ?? []),
+    );
+    expect(JSON.parse(manifest)).toEqual({
+      contentType: "image/jpeg",
+      fileName: "cover.jpg",
+      novelPath: novel.path,
+      sourceId: novel.pluginId,
+      sourceUrl: "https://source.test/cover.jpg",
+      version: 1,
+    });
+    const snapshot = getNovelCoverSnapshot(novel.id);
+    const version = snapshot ? `0-${snapshot}` : "0";
+    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBe(
+      `http://norea-media.localhost/${directory}/cover.jpg?v=${version}`,
+    );
+
+    isAndroidRuntimeMock.mockReturnValue(true);
+    inspectAndroidNovelCoverMock.mockResolvedValueOnce({
+      manifest,
+      relativePath: `${directory}/cover.jpg`,
+    });
+    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBe(
+      `/__norea_android_media__/file/Y29udGVudHMvZGVtby9TYW1wbGUtTm92ZWwtbm92ZWwvY292ZXIuanBn?v=${version}`,
+    );
+  });
+
   it("skips the download when the stored cover uses the same source URL", async () => {
     invokeMock.mockResolvedValueOnce(
       desktopCoverResult("https://source.test/covers/cover.jpg"),

@@ -26,6 +26,7 @@ struct NovelCoverManifestMetadata {
     source_id: String,
     #[serde(rename = "sourceUrl")]
     _source_url: String,
+    #[serde(default)]
     updated_at: u64,
     version: u64,
 }

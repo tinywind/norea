@@ -735,8 +735,8 @@ function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null 
       parsed.version !== 1 ||
       typeof parsed.sourceId !== "string" ||
       typeof parsed.novelPath !== "string" ||
-      typeof parsed.updatedAt !== "number" ||
-      !Number.isFinite(parsed.updatedAt) ||
+      (parsed.updatedAt !== undefined &&
+        (typeof parsed.updatedAt !== "number" || !Number.isFinite(parsed.updatedAt))) ||
       typeof parsed.sourceUrl !== "string" ||
       typeof parsed.fileName !== "string"
     ) {
@@ -749,7 +749,7 @@ function parseNovelCoverManifest(raw: string | null): NovelCoverManifest | null 
       novelPath: parsed.novelPath,
       sourceId: parsed.sourceId,
       sourceUrl: parsed.sourceUrl,
-      updatedAt: parsed.updatedAt,
+      updatedAt: parsed.updatedAt ?? 0,
       version: 1,
     };
   } catch {
