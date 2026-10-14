@@ -4,8 +4,6 @@ import {
   Modal,
   Stack,
   Text,
-  Textarea,
-  TextInput,
 } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -17,22 +15,19 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type FormEvent,
 } from "react";
 import {
-  upsertLocalNovelMetadata,
+  upsertLocalNovel,
   type LocalNovelImportResult,
-  type LocalNovelMetadataInput,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { clearLocalImportFileCache } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
+import { LOCAL_NOVEL_NAME, LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { useLibraryStore } from "../../store/library";
-import { LocalCoverPicker } from "../LocalCoverPicker";
 import { TextButton } from "../TextButton";
 import {
   analyzeLocalImportReviewItem,
-  createManualLocalNovelPath,
   getLocalImportErrorMessage,
   getLocalImportSummary,
   markSelectedLocalImportDuplicates,
@@ -41,19 +36,9 @@ import {
 } from "./local-import-review";
 import { LocalImportReviewRow } from "./LocalImportReviewRow";
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
-const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
-  name: "",
-  cover: "",
-  summary: "",
-  author: "",
-  artist: "",
-  status: "",
-  genres: "",
-};
-
 export interface LibraryLocalImportHandle {
   openFilePicker: () => void;
-  openNovelEditor: () => void;
+  openLocalHome: () => void;
 }
 
 export const LibraryLocalImport = forwardRef<
@@ -75,10 +60,6 @@ export const LibraryLocalImport = forwardRef<
     LocalImportReviewItem[]
   >([]);
   const [localImportAnalyzing, setLocalImportAnalyzing] = useState(false);
-  const [localNovelEditorOpen, setLocalNovelEditorOpen] = useState(false);
-  const [localNovelForm, setLocalNovelForm] = useState<LocalNovelMetadataInput>(
-    EMPTY_LOCAL_NOVEL_FORM,
-  );
   const localImportMutation = useMutation({
     mutationFn: async (
       items: readonly LocalImportReviewItem[],
@@ -140,6 +121,7 @@ export const LibraryLocalImport = forwardRef<
       );
       void queryClient.invalidateQueries({ queryKey: ["category"] });
       void queryClient.invalidateQueries({ queryKey: ["novel"] });
+      void queryClient.invalidateQueries({ queryKey: ["chapter"] });
 
       const imported = results.filter(
         (
@@ -159,15 +141,9 @@ export const LibraryLocalImport = forwardRef<
     },
   });
 
-  const createLocalNovelMutation = useMutation({
-    mutationFn: (input: LocalNovelMetadataInput) =>
-      upsertLocalNovelMetadata({
-        ...input,
-        path: createManualLocalNovelPath(),
-      }),
-    onSuccess: (novelId) => {
-      setLocalNovelEditorOpen(false);
-      setLocalNovelForm(EMPTY_LOCAL_NOVEL_FORM);
+  const openLocalHome = useMutation({
+    mutationFn: () => upsertLocalNovel({ name: LOCAL_NOVEL_NAME, path: LOCAL_NOVEL_PATH, chapters: [] }),
+    onSuccess: ({ novelId }) => {
       void queryClient.invalidateQueries({ queryKey: ["category"] });
       void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
       void navigate({ to: "/novel", search: { id: novelId } });
@@ -188,28 +164,6 @@ export const LibraryLocalImport = forwardRef<
     setLocalImportOpen(false);
     setLocalImportItems([]);
   }, [localImportItems, localImportMutation]);
-
-  const openLocalNovelEditor = useCallback(() => {
-    createLocalNovelMutation.reset();
-    setLocalNovelForm(EMPTY_LOCAL_NOVEL_FORM);
-    setLocalNovelEditorOpen(true);
-  }, [createLocalNovelMutation]);
-
-  const closeLocalNovelEditor = useCallback(() => {
-    if (createLocalNovelMutation.isPending) return;
-    createLocalNovelMutation.reset();
-    setLocalNovelEditorOpen(false);
-    setLocalNovelForm(EMPTY_LOCAL_NOVEL_FORM);
-  }, [createLocalNovelMutation]);
-
-  const handleLocalNovelSubmit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      if (localNovelForm.name.trim() === "") return;
-      createLocalNovelMutation.mutate(localNovelForm);
-    },
-    [createLocalNovelMutation, localNovelForm],
-  );
 
   const reviewLocalImportFiles = useCallback(
     async (files: readonly File[]) => {
@@ -273,9 +227,9 @@ export const LibraryLocalImport = forwardRef<
     ref,
     () => ({
       openFilePicker: openLocalImportInput,
-      openNovelEditor: openLocalNovelEditor,
+      openLocalHome: () => openLocalHome.mutate(),
     }),
-    [openLocalImportInput, openLocalNovelEditor],
+    [openLocalImportInput, openLocalHome],
   );
   return (
     <>
@@ -357,125 +311,11 @@ export const LibraryLocalImport = forwardRef<
         </Stack>
       </Modal>
       <Modal
-        opened={active && localNovelEditorOpen}
-        onClose={closeLocalNovelEditor}
-        size="lg"
+        opened={active && Boolean(openLocalHome.error)}
+        onClose={() => openLocalHome.reset()}
         title={t("library.localNovel.title")}
       >
-        <form onSubmit={handleLocalNovelSubmit}>
-          <Stack gap="sm">
-            <TextInput
-              autoFocus
-              label={t("library.localNovel.name")}
-              onChange={(event) => {
-                const { value } = event.currentTarget;
-                setLocalNovelForm((current) => ({
-                  ...current,
-                  name: value,
-                }));
-              }}
-              required
-              value={localNovelForm.name}
-            />
-            <Group grow>
-              <TextInput
-                label={t("library.localNovel.author")}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
-                  setLocalNovelForm((current) => ({
-                    ...current,
-                    author: value,
-                  }));
-                }}
-                value={localNovelForm.author ?? ""}
-              />
-              <TextInput
-                label={t("library.localNovel.artist")}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
-                  setLocalNovelForm((current) => ({
-                    ...current,
-                    artist: value,
-                  }));
-                }}
-                value={localNovelForm.artist ?? ""}
-              />
-            </Group>
-            <Group grow>
-              <TextInput
-                label={t("library.localNovel.status")}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
-                  setLocalNovelForm((current) => ({
-                    ...current,
-                    status: value,
-                  }));
-                }}
-                value={localNovelForm.status ?? ""}
-              />
-              <TextInput
-                label={t("library.localNovel.genres")}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
-                  setLocalNovelForm((current) => ({
-                    ...current,
-                    genres: value,
-                  }));
-                }}
-                value={localNovelForm.genres ?? ""}
-              />
-            </Group>
-            <LocalCoverPicker
-              alt={localNovelForm.name || t("library.localNovel.name")}
-              disabled={createLocalNovelMutation.isPending}
-              onChange={(cover) =>
-                setLocalNovelForm((current) => ({
-                  ...current,
-                  cover,
-                }))
-              }
-              value={localNovelForm.cover}
-            />
-            <Textarea
-              autosize
-              label={t("library.localNovel.summary")}
-              minRows={4}
-              onChange={(event) => {
-                const { value } = event.currentTarget;
-                setLocalNovelForm((current) => ({
-                  ...current,
-                  summary: value,
-                }));
-              }}
-              value={localNovelForm.summary ?? ""}
-            />
-            {createLocalNovelMutation.error ? (
-              <Text c="red" size="sm">
-                {getLocalImportErrorMessage(createLocalNovelMutation.error)}
-              </Text>
-            ) : null}
-            <Group justify="flex-end">
-              <TextButton
-                disabled={createLocalNovelMutation.isPending}
-                onClick={closeLocalNovelEditor}
-                type="button"
-                variant="subtle"
-              >
-                {t("common.cancel")}
-              </TextButton>
-              <TextButton
-                disabled={
-                  localNovelForm.name.trim() === "" ||
-                  createLocalNovelMutation.isPending
-                }
-                loading={createLocalNovelMutation.isPending}
-                type="submit"
-              >
-                {t("library.localNovel.create")}
-              </TextButton>
-            </Group>
-          </Stack>
-        </form>
+        <Text c="red">{getLocalImportErrorMessage(openLocalHome.error)}</Text>
       </Modal>
     </>
   );

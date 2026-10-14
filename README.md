@@ -34,13 +34,13 @@ webtoons or read manga and comics page by page.
 - Browse and search installed reading sources.
 - Add novels to your library and organize them with categories.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
-- Open TXT, EPUB, and PDF files with installed Windows or Android builds,
-  import them into file-named local works, and continue directly in the reader.
+- Open TXT, Markdown, EPUB, and PDF files with installed Windows or Android builds,
+  add them as chapters of the shared `local` work, and open the selected file in the reader.
 - Cache rendered chapter media for offline reading.
 - Route source-plugin requests through an app-local OpenVPN tunnel on Windows
   and Android, using an imported `.ovpn` profile or the built-in VPN Gate server
   finder.
-- Create local novel homes, add chapter files later, reorder local chapters, and
+- Keep local files in one work on Windows and Android, reorder its chapters, and
   manage local metadata with locally uploaded cover images.
 - Read text, webtoon, and manga chapters in paged or scrolling mode.
 - Change themes, font size, text color, tap zones, and keyboard navigation.

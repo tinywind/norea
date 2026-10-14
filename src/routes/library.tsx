@@ -71,8 +71,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     () => localImportRef.current?.openFilePicker(),
     [],
   );
-  const openLocalNovelEditor = useCallback(
-    () => localImportRef.current?.openNovelEditor(),
+  const openLocalHome = useCallback(
+    () => localImportRef.current?.openLocalHome(),
     [],
   );
   const openCreateCategory = useCallback(
@@ -358,7 +358,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 <IconButton
                   className="norea-library-icon-button"
                   label={t("library.localNovel.create")}
-                  onClick={openLocalNovelEditor}
+                  onClick={openLocalHome}
                   size="sm"
                   title={t("library.localNovel.create")}
                 >

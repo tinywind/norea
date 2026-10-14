@@ -11,7 +11,6 @@ import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import {
   countNovels,
-  findLocalNovelByPath,
   findNovelBySource,
   getLibraryNovelSummary,
   getNovelById,
@@ -25,8 +24,6 @@ import {
   setNovelInLibrary,
   updateLocalNovelMetadata,
   upsertLocalNovel,
-  upsertLocalNovelChapters,
-  upsertLocalNovelMetadata,
 } from "./novel";
 
 const mockedGetDb = vi.mocked(getDb);
@@ -723,111 +720,6 @@ describe("getNovelById", () => {
   });
 });
 
-describe("findLocalNovelByPath", () => {
-  it("finds only local novels by path and coerces booleans", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        id: 9,
-        pluginId: "local",
-        path: "/books/sample.epub",
-        name: "Local Book",
-        cover: null,
-        summary: null,
-        author: "Writer",
-        artist: null,
-        status: null,
-        genres: null,
-        inLibrary: 1,
-        isLocal: 1,
-        createdAt: 1_700_000_000,
-        updatedAt: 1_700_000_001,
-        libraryAddedAt: 1_700_000_000,
-        lastReadAt: null,
-      },
-    ]);
-
-    const result = await findLocalNovelByPath("/books/sample.epub");
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("plugin_id = $1");
-    expect(sql).toContain("path = $2");
-    expect(sql).toContain("is_local = 1");
-    expect(params).toEqual(["local", "/books/sample.epub"]);
-    expect(result?.inLibrary).toBe(true);
-    expect(result?.isLocal).toBe(true);
-    expect(result?.id).toBe(9);
-  });
-
-  it("returns null when no local novel matches", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await expect(findLocalNovelByPath("/missing.epub")).resolves.toBeNull();
-  });
-});
-
-describe("upsertLocalNovelMetadata", () => {
-  it("creates a local library novel without chapters", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select.mockResolvedValueOnce([{ id: 77 }]);
-
-    const novelId = await upsertLocalNovelMetadata({
-      path: "local:manual:abc",
-      name: "Manual Book",
-      cover: "",
-      summary: "Summary",
-      author: "Writer",
-      artist: "",
-      status: "Ongoing",
-      genres: "Fantasy",
-    });
-
-    const [sql, params] = db.execute.mock.calls[0]!;
-    expect(sql).toContain("INSERT INTO novel");
-    expect(sql).toContain("ON CONFLICT(plugin_id, path) DO UPDATE");
-    expect(sql).toContain("is_local");
-    expect(params).toEqual([
-      "local",
-      "local:manual:abc",
-      "Manual Book",
-      null,
-      "Summary",
-      "Writer",
-      null,
-      "Ongoing",
-      "Fantasy",
-    ]);
-
-    const [, selectParams] = db.select.mock.calls[0]!;
-    expect(selectParams).toEqual(["local", "local:manual:abc"]);
-    expect(novelId).toBe(77);
-  });
-
-  it("requires a title", async () => {
-    stubDb();
-
-    await expect(
-      upsertLocalNovelMetadata({ path: "local:manual:abc", name: " " }),
-    ).rejects.toThrow("local novel: name is required");
-  });
-
-  it("discards remote cover sources", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select.mockResolvedValueOnce([{ id: 77 }]);
-
-    await upsertLocalNovelMetadata({
-      path: "local:manual:abc",
-      name: "Manual Book",
-      cover: "https://example.test/cover.jpg",
-    });
-
-    expect(db.execute.mock.calls[0]?.[1]?.[3]).toBeNull();
-  });
-});
-
 describe("updateLocalNovelMetadata", () => {
   it("updates only local novel metadata fields", async () => {
     const db = stubDb();
@@ -889,117 +781,6 @@ describe("updateLocalNovelMetadata", () => {
     });
 
     expect(db.execute.mock.calls[0]?.[1]?.[2]).toBeNull();
-  });
-});
-
-describe("upsertLocalNovelChapters", () => {
-  it("adds downloaded chapters to an existing local novel", async () => {
-    const db = stubDb();
-    db.execute
-      .mockResolvedValueOnce({ rowsAffected: 1 })
-      .mockResolvedValueOnce({ rowsAffected: 0 })
-      .mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select.mockResolvedValueOnce([{ id: 42 }]);
-
-    const result = await upsertLocalNovelChapters(42, [
-      {
-        path: "local:txt:hash/chapter-0001",
-        name: "Chapter 1",
-        position: 2,
-        contentType: "text",
-        content: "Chapter body",
-        contentBytes: 12,
-      },
-    ]);
-
-    const [checkSql, checkParams] = db.select.mock.calls[0]!;
-    expect(checkSql).toContain("plugin_id = $2");
-    expect(checkSql).toContain("is_local = 1");
-    expect(checkParams).toEqual([42, "local"]);
-
-    const [chapterSql, chapterParams] = db.execute.mock.calls[0]!;
-    expect(chapterSql).toContain("INSERT INTO chapter");
-    expect(chapterSql).toContain("content_type");
-    expect(chapterSql).toContain("stored_content_type");
-    expect(chapterSql).toContain("media_repair_needed");
-    expect(chapterSql).toContain("is_downloaded");
-    expect(chapterParams).toEqual([
-      42,
-      "local:txt:hash/chapter-0001",
-      "Chapter 1",
-      2,
-      null,
-      "1",
-      null,
-      "text",
-      "html",
-      12,
-    ]);
-
-    const [deleteSql, deleteParams] = db.execute.mock.calls[1]!;
-    expect(deleteSql).toContain("DELETE FROM chapter");
-    expect(deleteSql).toContain("path LIKE $2");
-    expect(deleteSql).toContain("path NOT IN ($3)");
-    expect(deleteParams).toEqual([
-      42,
-      "local:txt:hash/chapter-%",
-      "local:txt:hash/chapter-0001",
-    ]);
-
-    expect(result).toEqual({
-      changed: true,
-      changedChapters: 1,
-      novelId: 42,
-      chapterCount: 1,
-    });
-  });
-
-  it("removes stale chapters from the same local import file prefix", async () => {
-    const db = stubDb();
-    db.execute
-      .mockResolvedValueOnce({ rowsAffected: 0 })
-      .mockResolvedValueOnce({ rowsAffected: 2 })
-      .mockResolvedValueOnce({ rowsAffected: 1 })
-      .mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select
-      .mockResolvedValueOnce([{ id: 42 }])
-      .mockResolvedValueOnce([
-        { id: 12, position: 12, chapterNumber: "12" },
-      ]);
-
-    const result = await upsertLocalNovelChapters(42, [
-      {
-        path: "local:epub:hash/chapter-0001",
-        name: "EPUB Book",
-        position: 1,
-        contentType: "epub",
-        content: "<article></article>",
-        contentBytes: 19,
-      },
-    ]);
-
-    const [deleteSql, deleteParams] = db.execute.mock.calls[1]!;
-    expect(deleteSql).toContain("DELETE FROM chapter");
-    expect(deleteParams).toEqual([
-      42,
-      "local:epub:hash/chapter-%",
-      "local:epub:hash/chapter-0001",
-    ]);
-    expect(result).toMatchObject({
-      changed: true,
-      changedChapters: 3,
-      chapterCount: 1,
-    });
-  });
-
-  it("rejects when the target novel is not local", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await expect(upsertLocalNovelChapters(42, [])).rejects.toThrow(
-      "local novel: target novel is not local",
-    );
-    expect(db.execute).not.toHaveBeenCalled();
   });
 });
 

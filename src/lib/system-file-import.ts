@@ -1,4 +1,4 @@
-import { listChaptersByNovel } from "../db/queries/chapter";
+import { findLocalImportedChapter } from "../db/queries/chapter";
 import { analyzeLocalImportFile } from "./local-import";
 import { importLocalFileToLibrary } from "./local-import-library";
 
@@ -13,16 +13,15 @@ export async function importSystemOpenedFile(
   const analysis = await analyzeLocalImportFile(file);
   const result = await importLocalFileToLibrary(file, {
     analysis,
-    novelName: analysis.title,
   });
-  const firstChapter = (await listChaptersByNovel(result.novelId))[0];
-  if (!firstChapter) {
+  const importedChapter = await findLocalImportedChapter(analysis.pathKey);
+  if (!importedChapter) {
     throw new Error(
       "System-opened file import created no readable chapter.",
     );
   }
   return {
-    chapterId: firstChapter.id,
+    chapterId: importedChapter.id,
     novelId: result.novelId,
   };
 }

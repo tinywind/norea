@@ -14,18 +14,14 @@ import {
 import {
   reorderLocalNovelChapters,
   updateLocalNovelMetadata,
-  upsertLocalNovelChapters,
-  type LocalNovelImportChapterInput,
   type LocalNovelMetadataInput,
   type NovelDetailRecord,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { syncLocalChapterStorageAfterOrderChange } from "../../lib/local-chapter-storage";
-import {
-  clearLocalImportFileCache,
-  convertLocalImportFile,
-} from "../../lib/local-import";
-import { cacheLocalImportedChapterMedia } from "../../lib/local-import-media";
+import { clearLocalImportFileCache } from "../../lib/local-import";
+import { importLocalFileToLibrary } from "../../lib/local-import-library";
+import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { type DefaultChapterSort } from "../../store/library";
 import { LocalCoverPicker } from "../LocalCoverPicker";
 import { TextButton } from "../TextButton";
@@ -56,41 +52,6 @@ function localMetadataFromNovel(
     status: novel.status ?? "",
     genres: novel.genres ?? "",
   };
-}
-
-async function convertLocalChapterFiles(
-  files: readonly File[],
-  startPosition: number,
-): Promise<LocalNovelImportChapterInput[]> {
-  const chapters: LocalNovelImportChapterInput[] = [];
-
-  for (const file of files) {
-    try {
-      const conversion = await convertLocalImportFile(file);
-      for (const chapter of conversion.chapters) {
-        chapters.push({
-          binaryResource: chapter.binaryResource,
-          chapterNumber:
-            chapter.chapterNumber == null
-              ? null
-              : String(chapter.chapterNumber),
-          content: chapter.content,
-          contentBytes: chapter.contentBytes,
-          contentType: chapter.contentType,
-          mediaResources: chapter.mediaResources,
-          name: chapter.name,
-          page: chapter.page,
-          path: chapter.path,
-          position: startPosition + chapters.length + 1,
-          releaseTime: chapter.releaseTime ?? null,
-        });
-      }
-    } finally {
-      clearLocalImportFileCache(file);
-    }
-  }
-
-  return chapters;
 }
 
 type EditableLocalNovel = Pick<
@@ -125,31 +86,13 @@ export function useLocalNovelEditor(
     useState<LocalNovelMetadataInput>(EMPTY_LOCAL_NOVEL_FORM);
   const addLocalChapters = useMutation({
     mutationFn: async (files: readonly File[]) => {
-      const startPosition =
-        chapters.reduce(
-          (maxPosition, chapter) => Math.max(maxPosition, chapter.position),
-          0,
-        ) ?? 0;
-      const importedChapters = await convertLocalChapterFiles(
-        files,
-        startPosition,
-      );
-      if (importedChapters.length === 0) return null;
-      const previousChapters = await listChaptersByNovel(id);
-      const result = await upsertLocalNovelChapters(id, importedChapters);
-      if (novel) {
-        const nextChapters = await listChaptersByNovel(id);
-        await syncLocalChapterStorageAfterOrderChange({
-          nextChapters,
-          novel,
-          previousChapters,
-        });
-        await cacheLocalImportedChapterMedia({
-          chapters: importedChapters,
-          novelId: id,
-          novelName: novel.name,
-          novelPath: novel.path,
-        });
+      let result = null;
+      for (const file of files) {
+        try {
+          result = await importLocalFileToLibrary(file);
+        } finally {
+          clearLocalImportFileCache(file);
+        }
       }
       return result;
     },
@@ -288,6 +231,7 @@ export function useLocalNovelEditor(
           <Stack gap="sm">
             <TextInput
               autoFocus
+              readOnly={novel?.path === LOCAL_NOVEL_PATH}
               label={t("library.localNovel.name")}
               onChange={(event) => {
                 const { value } = event.currentTarget;

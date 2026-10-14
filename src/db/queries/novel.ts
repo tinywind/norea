@@ -10,6 +10,7 @@ import {
 import type { EpubHtmlResource } from "../../lib/epub-html";
 import type { LocalImportBinaryResource } from "../../lib/local-import";
 import { isLocalCoverSource } from "../../lib/local-cover";
+import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import {
   clampRouteQueryLimit,
   MAX_ROUTE_QUERY_ROWS,
@@ -683,21 +684,6 @@ export async function findNovelBySource(
   return row ? mapNovelDetail(row) : null;
 }
 
-export async function findLocalNovelByPath(
-  path: string,
-): Promise<NovelDetailRecord | null> {
-  const db = await getDb();
-  const rows = await db.select<RawNovelDetail[]>(
-    `${SELECT_NOVEL_DETAIL_FIELDS}
-     WHERE n.plugin_id = $1
-       AND n.path = $2
-       AND n.is_local = 1`,
-    [LOCAL_PLUGIN_ID, path],
-  );
-  const row = rows[0];
-  return row ? mapNovelDetail(row) : null;
-}
-
 /**
  * Toggle a novel's library membership. Touches `updated_at` so
  * Library reorders the row on the next paint.
@@ -978,53 +964,6 @@ function isLocalNovel(pluginId: string, value: unknown): boolean {
   return pluginId === LOCAL_PLUGIN_ID && sqliteBoolean(value);
 }
 
-export async function upsertLocalNovelMetadata(
-  input: LocalNovelMetadataInput & { path: string },
-): Promise<number> {
-  const db = await getDb();
-  const name = input.name.trim();
-  if (!name) throw new Error("local novel: name is required");
-
-  await db.execute(
-    `INSERT INTO novel
-       (plugin_id, path, name, cover, summary, author, artist, status, genres, in_library, is_local, library_added_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 1, unixepoch())
-     ON CONFLICT(plugin_id, path) DO UPDATE SET
-       name             = excluded.name,
-       cover            = excluded.cover,
-       summary          = excluded.summary,
-       author           = excluded.author,
-       artist           = excluded.artist,
-       status           = excluded.status,
-       genres           = excluded.genres,
-       in_library       = 1,
-       is_local         = 1,
-       library_added_at = COALESCE(library_added_at, unixepoch()),
-       updated_at       = unixepoch()`,
-    [
-      LOCAL_PLUGIN_ID,
-      input.path,
-      name,
-      nullableLocalCover(input.cover),
-      nullableText(input.summary),
-      nullableText(input.author),
-      nullableText(input.artist),
-      nullableText(input.status),
-      nullableText(input.genres),
-    ],
-  );
-
-  const rows = await db.select<{ id: number }[]>(
-    `SELECT id FROM novel WHERE plugin_id = $1 AND path = $2 AND is_local = 1`,
-    [LOCAL_PLUGIN_ID, input.path],
-  );
-  const novelId = rows[0]?.id;
-  if (!novelId) {
-    throw new Error("local novel: failed to resolve local novel id");
-  }
-  return novelId;
-}
-
 export async function updateLocalNovelMetadata(
   novelId: number,
   input: LocalNovelMetadataInput,
@@ -1067,55 +1006,6 @@ export async function updateLocalNovelMetadata(
       LOCAL_PLUGIN_ID,
     ],
   );
-}
-
-export async function upsertLocalNovelChapters(
-  novelId: number,
-  chapters: LocalNovelImportChapterInput[],
-): Promise<LocalNovelImportResult> {
-  return runDatabaseTransaction(async (db) => {
-    await ensureLocalNovelExists(db, novelId);
-
-    let changedChapters = 0;
-    const chapterResult = await upsertDownloadedChaptersInDb(
-      db,
-      chapters.map((chapter) => ({
-        novelId,
-        path: chapter.path,
-        name: chapter.name,
-        position: chapter.position,
-        chapterNumber: chapter.chapterNumber ?? null,
-        page: chapter.page ?? "1",
-        releaseTime: chapter.releaseTime ?? null,
-        contentType: normalizeChapterContentType(chapter.contentType),
-        contentBytes: chapter.contentBytes,
-      })),
-    );
-    changedChapters += chapterResult.rowsAffected;
-    const deletedChapters = await deleteStaleLocalImportChapters(
-      db,
-      novelId,
-      chapters,
-    );
-    changedChapters += deletedChapters;
-    if (deletedChapters > 0) {
-      const renumbered = await renumberLocalNovelChaptersWithDb(db, novelId);
-      changedChapters += renumbered.rowsAffected;
-    }
-
-    await db.execute(
-      `UPDATE novel
-         SET updated_at = unixepoch()
-         WHERE id = $1`,
-      [novelId],
-    );
-    return {
-      changed: changedChapters > 0,
-      changedChapters,
-      novelId,
-      chapterCount: chapters.length,
-    };
-  });
 }
 
 export async function reorderLocalNovelChapters(
@@ -1223,6 +1113,12 @@ export async function upsertLocalNovel(
   input: LocalNovelImportInput,
 ): Promise<LocalNovelImportResult> {
   return runDatabaseTransaction(async (db) => {
+    const [current] = input.path === LOCAL_NOVEL_PATH
+      ? await db.select<Omit<LocalNovelMetadataInput, "name">[]>(
+          "SELECT cover,summary,author,artist,status,genres FROM novel WHERE plugin_id=$1 AND path=$2",
+          [LOCAL_PLUGIN_ID, LOCAL_NOVEL_PATH],
+        )
+      : [];
     const novelResult = await db.execute(
       `INSERT INTO novel
            (plugin_id, path, name, cover, summary, author, artist, status, genres, in_library, is_local, library_added_at)
@@ -1254,12 +1150,12 @@ export async function upsertLocalNovel(
         LOCAL_PLUGIN_ID,
         input.path,
         input.name,
-        nullableLocalCover(input.cover),
-        input.summary ?? null,
-        input.author ?? null,
-        input.artist ?? null,
-        input.status ?? null,
-        input.genres ?? null,
+        nullableLocalCover(input.cover === undefined ? current?.cover ?? null : input.cover),
+        input.summary === undefined ? current?.summary ?? null : input.summary,
+        input.author === undefined ? current?.author ?? null : input.author,
+        input.artist === undefined ? current?.artist ?? null : input.artist,
+        input.status === undefined ? current?.status ?? null : input.status,
+        input.genres === undefined ? current?.genres ?? null : input.genres,
       ],
     );
 
@@ -1272,10 +1168,23 @@ export async function upsertLocalNovel(
       throw new Error("local import: failed to resolve local novel id");
     }
 
+    let chapters = input.chapters;
+    if (input.path === LOCAL_NOVEL_PATH && chapters.length > 0) {
+      const existing = await db.select<{ path: string; position: number; chapterNumber: string | null }[]>(
+        "SELECT path,position,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [novelId],
+      );
+      const byPath = new Map(existing.map((chapter) => [chapter.path, chapter]));
+      let lastPosition = existing.reduce((max, chapter) => Math.max(max, chapter.position), 0);
+      chapters = input.chapters.map((chapter) => {
+        const previous = byPath.get(chapter.path);
+        const position = previous?.position ?? ++lastPosition;
+        return { ...chapter, position, chapterNumber: previous?.chapterNumber ?? String(position) };
+      });
+    }
     let changedChapters = 0;
     const chapterResult = await upsertDownloadedChaptersInDb(
       db,
-      input.chapters.map((chapter) => ({
+      chapters.map((chapter) => ({
         novelId,
         path: chapter.path,
         name: chapter.name,
@@ -1288,7 +1197,7 @@ export async function upsertLocalNovel(
       })),
     );
     changedChapters += chapterResult.rowsAffected;
-    const deletedChapters = await deleteStaleLocalImportChapters(
+    const deletedChapters = input.path === LOCAL_NOVEL_PATH ? 0 : await deleteStaleLocalImportChapters(
       db,
       novelId,
       input.chapters,

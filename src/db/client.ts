@@ -4,6 +4,7 @@ import { startPerformanceObservation } from "../lib/observability";
 import { notifyContentSyncChanges } from "./content-sync-journal";
 import { flushWorkMetadata, initializeWorkMetadata } from "./work-metadata";
 import { isTauriRuntime } from "../lib/tauri-runtime";
+import { consolidateLocalLibrary } from "./local-library";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
@@ -19,6 +20,7 @@ function observationError(error: unknown): string {
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   await initializeWorkMetadata(db);
+  await consolidateLocalLibrary(db);
   return db;
 }
 

@@ -16,6 +16,18 @@ import {
 } from "../../lib/performance-budgets";
 import { getDb, runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
+import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
+import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
+
+export async function findLocalImportedChapter(pathKey: string): Promise<{ id: number; novelId: number } | null> {
+  const db = await getDb();
+  const [chapter] = await db.select<{ id: number; novelId: number }[]>(
+    `SELECT c.id,c.novel_id AS novelId FROM chapter c JOIN novel n ON n.id=c.novel_id
+     WHERE n.plugin_id=$1 AND n.path=$2 AND n.is_local=1 AND c.path=$3`,
+    [LOCAL_PLUGIN_ID, LOCAL_NOVEL_PATH, `${pathKey}/chapter-0001`],
+  );
+  return chapter ?? null;
+}
 
 export interface ChapterRow {
   id: number;

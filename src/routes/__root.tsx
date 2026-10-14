@@ -449,7 +449,7 @@ export function RootLayout() {
         for (const file of files) {
           try {
             const imported = await importSystemOpenedFile(file);
-            chapterId ??= imported.chapterId;
+            chapterId = imported.chapterId;
           } catch (error) {
             console.error("[file-open] failed to import file", error);
             failedFiles.push(file);
@@ -462,6 +462,7 @@ export function RootLayout() {
         if (chapterId !== undefined) {
           void queryClient.invalidateQueries({ queryKey: ["category"] });
           void queryClient.invalidateQueries({ queryKey: ["novel"] });
+          void queryClient.invalidateQueries({ queryKey: ["chapter"] });
           await navigate({ to: "/reader", search: { chapterId } });
         } else if (failedFiles.length > 0) {
           await navigate({ to: "/" });

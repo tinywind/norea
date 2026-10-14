@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db/queries/chapter", () => ({
-  listChaptersByNovel: vi.fn(),
+  findLocalImportedChapter: vi.fn(),
 }));
 
 vi.mock("./local-import", () => ({
@@ -12,23 +12,23 @@ vi.mock("./local-import-library", () => ({
   importLocalFileToLibrary: vi.fn(),
 }));
 
-import { listChaptersByNovel } from "../db/queries/chapter";
+import { findLocalImportedChapter } from "../db/queries/chapter";
 import { analyzeLocalImportFile } from "./local-import";
 import { importLocalFileToLibrary } from "./local-import-library";
 import { importSystemOpenedFile } from "./system-file-import";
 
 const analyzeLocalImportFileMock = vi.mocked(analyzeLocalImportFile);
 const importLocalFileToLibraryMock = vi.mocked(importLocalFileToLibrary);
-const listChaptersByNovelMock = vi.mocked(listChaptersByNovel);
+const findLocalImportedChapterMock = vi.mocked(findLocalImportedChapter);
 
 beforeEach(() => {
   analyzeLocalImportFileMock.mockReset();
   importLocalFileToLibraryMock.mockReset();
-  listChaptersByNovelMock.mockReset();
+  findLocalImportedChapterMock.mockReset();
 });
 
 describe("importSystemOpenedFile", () => {
-  it("uses the file name for the work home and returns its first chapter", async () => {
+  it("returns the exact imported file chapter in the shared local work", async () => {
     const file = new File(["text"], "My Book.txt", { type: "text/plain" });
     const analysis = {
       contentHash: "hash",
@@ -55,7 +55,7 @@ describe("importSystemOpenedFile", () => {
       chapterCount: 1,
       novelId: 21,
     });
-    listChaptersByNovelMock.mockResolvedValue([{ id: 44 }] as never);
+    findLocalImportedChapterMock.mockResolvedValue({ id: 44, novelId: 21 });
 
     await expect(importSystemOpenedFile(file)).resolves.toEqual({
       chapterId: 44,
@@ -63,9 +63,8 @@ describe("importSystemOpenedFile", () => {
     });
     expect(importLocalFileToLibraryMock).toHaveBeenCalledWith(file, {
       analysis,
-      novelName: "My Book",
     });
-    expect(listChaptersByNovelMock).toHaveBeenCalledWith(21);
+    expect(findLocalImportedChapterMock).toHaveBeenCalledWith("local:txt:hash");
   });
 
   it("fails when the imported work has no readable chapter", async () => {
@@ -94,7 +93,7 @@ describe("importSystemOpenedFile", () => {
       chapterCount: 0,
       novelId: 22,
     });
-    listChaptersByNovelMock.mockResolvedValue([]);
+    findLocalImportedChapterMock.mockResolvedValue(null);
 
     await expect(importSystemOpenedFile(file)).rejects.toThrow(
       "System-opened file import created no readable chapter.",

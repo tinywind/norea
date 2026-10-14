@@ -56,7 +56,7 @@ import {
   executeNovelMerge,
   type NovelMergeChapterDecision,
 } from "../lib/novel-merge";
-import { getSourceRequestTimeoutMs, useBrowseStore } from "../store/browse";
+import { getSourceRequestTimeoutMs } from "../store/browse";
 import { useReaderStore } from "../store/reader";
 import { describeError } from "../lib/errors";
 import { isTauriRuntime } from "../lib/tauri-runtime";
@@ -507,9 +507,6 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const sourceWorkConcurrency = useBrowseStore(
-    (state) => state.sourceWorkConcurrency,
-  );
   const initializedSearchRef = useRef(false);
   const searchAbortRef = useRef<AbortController | null>(null);
   const previewTaskRef = useRef<TaskHandle<SourceNovel> | null>(null);
@@ -576,7 +573,6 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       const controller = new AbortController();
       searchAbortRef.current = controller;
       return globalSearch(pluginManager, query, {
-        concurrency: sourceWorkConcurrency,
         plugins: targetPlugins,
         signal: controller.signal,
         timeoutMs: getSourceRequestTimeoutMs(),

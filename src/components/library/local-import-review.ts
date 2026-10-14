@@ -1,7 +1,5 @@
-import {
-  findLocalNovelByPath,
-  type LocalNovelImportResult,
-} from "../../db/queries/novel";
+import { type LocalNovelImportResult } from "../../db/queries/novel";
+import { findLocalImportedChapter } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
 import {
   analyzeLocalImportFile,
@@ -46,16 +44,16 @@ export async function analyzeLocalImportReviewItem(
 
   try {
     const analysis = await analyzeLocalImportFile(file);
-    const existingNovel = await findLocalNovelByPath(analysis.pathKey);
+    const existingChapter = await findLocalImportedChapter(analysis.pathKey);
 
     return {
       analysis,
-      duplicateKind: existingNovel ? "library" : undefined,
-      existingNovelId: existingNovel?.id,
+      duplicateKind: existingChapter ? "library" : undefined,
+      existingNovelId: existingChapter?.novelId,
       file,
       format: analysis.format,
       id,
-      status: existingNovel ? "duplicate" : "ready",
+      status: existingChapter ? "duplicate" : "ready",
     };
   } catch (error) {
     return {
@@ -85,14 +83,6 @@ export function markSelectedLocalImportDuplicates(
     seenPathKeys.add(item.analysis.pathKey);
     return item;
   });
-}
-
-export function createManualLocalNovelPath(): string {
-  const id =
-    globalThis.crypto && "randomUUID" in globalThis.crypto
-      ? globalThis.crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `local:manual:${id}`;
 }
 
 export function getLocalImportErrorMessage(error: unknown): string {
