@@ -486,11 +486,6 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     padding: 0.55rem 0.5rem 0.55rem 0.65rem;
   }
-
-  .norea-task-row-actions {
-    display: grid;
-    grid-template-columns: repeat(2, 2.5rem);
-  }
 }
 
 @media (max-width: 575px) {
