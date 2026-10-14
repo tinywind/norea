@@ -6,6 +6,7 @@ mod chapter_media;
 mod content_sync;
 mod database;
 mod desktop_file_open;
+mod device;
 mod download_cache;
 mod download_queue;
 mod native_stream;
@@ -122,6 +123,7 @@ pub fn run() {
             chapter_media::norea_media_protocol_response(ctx.app_handle(), request)
         })
         .invoke_handler(tauri::generate_handler![
+            device::get_default_device_name,
             content_sync::content_sync_create_stage,
             content_sync::content_sync_snapshot,
             content_sync::content_sync_fingerprint,
