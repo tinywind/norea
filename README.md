@@ -131,10 +131,16 @@ the source site's terms.
 ## Optional Content Server
 
 [Norea Content Server](https://github.com/tinywind/norea-content-server) stores
-complete chapter packages so you can upload content from one device and download
+complete chapter files so you can upload content from one device and download
 it on another. An archived copy remains available when the original source site
-is offline or removes a work. The server is optional: locally downloaded content
-remains readable without a server connection.
+is offline or removes a work.
+
+The server is an optional shadow backup. Library navigation, saved work details,
+and locally downloaded reading must remain usable immediately, even while the
+server is slow or unavailable. Automatic server lookups, transfers, and refreshes
+run in the background and must never add blocking loaders, error banners, or
+other interruptions to normal use. Actions you explicitly request, such as a
+server download or manual sync, still report failures that prevent completion.
 
 ### Start with Docker
 
@@ -156,7 +162,7 @@ docker exec norea-content-server cat /data/admin-password.hash
 ```
 
 Keep the data volume across container replacements: it contains the catalog,
-chapter packages, and console password. The command publishes port 8080 on all
+chapter files, and console password. The command publishes port 8080 on all
 host interfaces. Devices on your network can use `http://<server-LAN-IP>:8080`
 when the host firewall permits access. New devices register automatically and
 downloads are anonymous by default, so anyone who can reach the server can
@@ -174,24 +180,32 @@ as described in the [server documentation](https://github.com/tinywind/norea-con
 No account or password is needed in the app. Each device uses its own key;
 reading positions, read flags, bookmarks, and library membership stay local.
 Choose Manual only, Periodically, or When changes occur. Automatic sync runs
-while the app is visible, and later syncs use recorded content changes. Chapters
-are uploaded as ZIPs only after their body and assets are complete. Deleting a
-local download leaves the server copy intact.
+while the app is visible, and later syncs use recorded content changes.
+
+Complete chapters upload as multipart requests containing the original
+`content.html` or `content.pdf`, plus `manifest.json` and `media.zip` when present.
+The app sends these files byte for byte, without creating an extra ZIP, rewriting
+HTML or media references, or recompressing media. The server publishes a revision
+only after every listed file arrives with its declared size. Transfers check
+file names, sizes, and completion without computing or comparing chapter-file
+SHA-256 hashes. Downloads install the complete files; older server ZIP revisions
+remain readable through the compatibility decoder. Deleting a local download
+leaves the server copy intact.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
-`novel.json` stores its details and complete known chapter list beside its cover.
+`novel.json` stores its details beside its cover, without a chapter list.
+Downloaded chapters are discovered from their existing folders and files.
 These files are authoritative; the app keeps metadata in SQLite for browsing and
 search, including works with no downloaded chapters. Opening saved works does not
 require fetching their metadata from the source site again.
 
-The web console manages devices, content revisions, scan jobs, connected folders,
-and multiple plugin repository indexes. To reuse an existing Norea content
-folder, mount it read-only into the container, then register its path under
-Folders. Current folders use `novel.json`; older folders can use an optional
-read-only metadata database. Scanning uses saved metadata or a
-complete ZIP manifest without contacting source sites or requiring installed
-plugins. Unsupported or incomplete files and raw chapters without exact identity
-metadata are skipped; original files are preserved. Works and their covers remain
+The web console manages devices, content revisions, scan jobs, and multiple
+plugin repository indexes. The server uses its configured data directory for
+content storage and scanning; the console does not select additional folders.
+Scanning requires valid `novel.json` work metadata and discovers chapters from
+their folders and files without contacting source sites or requiring installed
+plugins. Unsupported or incomplete files are skipped; original files are
+preserved. Works and their covers remain
 available even when none of their chapters can be imported. The console offers
 cover grids, a list view, and full metadata inspection.
 

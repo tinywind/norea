@@ -1,7 +1,7 @@
 # Content server integration
 
 The optional [Norea Content Server](https://github.com/tinywind/norea-content-server)
-stores complete chapter packages for your devices. Configure it under Settings >
+stores complete chapter files for your devices. Configure it under Settings >
 Data > Content server. Reading positions, read flags, bookmarks, and library
 membership stay local. Reading continues when the server is unavailable.
 
@@ -13,7 +13,7 @@ membership stay local. Reading continues when the server is unavailable.
    load one page at a time, without waiting for a full sync. The device registers
    automatically; no account or password is required.
 4. Open a work to view its cover and available chapters. Use the usual library
-   and download buttons. Downloads use the server package without contacting
+   and download buttons. Downloads use the server's files without contacting
    the original site or requiring its plugin.
 5. Choose a sync mode. Sync now remains available in every mode.
 
@@ -29,8 +29,12 @@ suspension stops the foreground scheduler. Changing to Manual only stops schedul
 work and cancels the server change wait; a transfer already started may finish.
 Reading, bookmarking, and library changes do not trigger content sync.
 
-Sync runs in the background without locking navigation or refreshing plugin
-repositories. A work becomes visible after its metadata and cover are installed.
+The server acts as an optional shadow backup. Automatic lookups, transfers, and
+refreshes run in the background without blocking navigation or adding error
+banners to normal pages. Saved work details and local reading stay usable when
+the server is slow or unavailable. Explicit server actions still report failures
+that prevent completion. Sync does not refresh plugin repositories.
+A work becomes visible after its metadata and cover are installed.
 Sync preserves existing library membership; add a server work to the library
 from its detail page. Sync now uploads complete local chapters and updates the
 remote catalog independently of browsing or selected chapter downloads.
@@ -53,15 +57,15 @@ A failed server or site request leaves the saved work usable. A work must have
 original source identity metadata; folder names cannot establish work identity.
 
 Before a chapter download, Norea first checks for a complete local copy, then
-asks the server for that chapter. A matching
-package installs into the existing local chapter; otherwise an available source
-plugin handles the download. The server lookup timeout defaults to 3 seconds
+asks the server for that chapter. Matching files install into the existing local
+chapter; otherwise an available source plugin handles the download.
+The server lookup timeout defaults to 3 seconds
 and can be set from 1 to 120 seconds. This deadline includes device registration
-and metadata lookup, and also applies to work-home server refreshes. Chapter ZIP
+and metadata lookup, and also applies to work-home server refreshes. Chapter file
 transfers have their own timeout. Server-only chapters report unavailable-server
 errors instead of sending their folder identities to a source plugin.
 After a server failure, source-capable chapters skip server attempts for 30 seconds;
-a missing chapter does not trigger this delay. A failed package transfer also falls
+a missing chapter does not trigger this delay. A failed chapter transfer also falls
 back to the source plugin. Cancelling a transfer releases the download task without
 publishing late results. Native HTTP may finish in its private staging directory,
 which is removed after the request ends.
@@ -128,26 +132,56 @@ folder. The [v1 file contract](filesystem-metadata-v1.md) defines
 the fields and validation rules. Existing folders are not automatically rewritten
 from an older database during startup.
 
-Work metadata and covers transfer separately from chapter ZIPs. Sync records a
+Work metadata and covers transfer separately from chapter files. Sync records a
 work cursor, per-work fingerprints, and local metadata/cover change revisions.
 Normal sync reads only changed work files; external edits require an explicit
 rescan. Pending local edits and failed transfers remain eligible for retry.
 Saved metadata supports offline browsing without refetching the
 source site. Reading progress and library membership stay on each device.
 
-Only complete bodies and media are packaged. Native code transfers ZIP files and
-verifies their inventory, sizes and SHA-256 before installation. Interrupted
-replacement preserves a target-named backup that storage access can recover.
+Only complete chapters are uploaded. Native code sends the original `content.html`
+or `content.pdf`, with `manifest.json` and `media.zip` when present, in one multipart
+request. It streams the saved bytes without creating an extra ZIP, rewriting HTML
+or media references, or extracting and recompressing media.
+
+Uploads use `POST /api/v1/chapter-files`. The `metadata` part contains the
+`PackageManifest`, with `layout: "chapter-files"`, the body path, and each file's
+path, size, and filesystem modification time (`modifiedAt`, Unix milliseconds).
+Each file has its own multipart part, named after its filename.
+The server publishes a revision only after every listed file arrives
+and passes validation. Catalog entries for this layout expose their total stored
+size as `fileBytes`.
+
+Downloads request each original file through
+`GET /api/v1/chapters/:id/files?revision=<revision>&path=<filename>`.
+Native code checks every file's name, size, and completed transfer in a private
+staging directory before installing the complete set. Interrupted replacement
+preserves a target-named backup that storage access can recover.
+
+Older server ZIP revisions remain readable through the compatibility decoder.
+Their manifests omit `layout`, and their catalog entries retain `zipBytes` and
+`zipSha256`. This legacy download path checks file sizes and unpacks the ZIP before
+installation; new uploads send original chapter files.
+
+Chapter transfers do not compute or compare SHA-256 file checksums. A same-size
+change with an unchanged modification time cannot be detected by a file rescan.
+Identity and authentication hashes are independent of file transfer validation.
+
+Update the server before using an app that uploads original files. Older apps
+that only support ZIP downloads cannot read new `chapter-files` revisions;
+update each device that needs to download those revisions.
 
 The app records local content changes in SQLite alongside the affected data.
 Sync uses durable catalog cursors, fingerprints, and pending uploads so failed
-requests can be retried after a restart. These records are scoped to the server;
-timestamps are not used to decide which changes to skip.
+requests can be retried after a restart. These records are scoped to the server.
+Journal sequence numbers select changes; file names, sizes, and modification
+times identify unchanged chapter snapshots without rereading their contents.
 
 The first sync establishes a baseline. Later syncs read recorded changes and
 check only affected complete chapters. The server's change-wait endpoint returns
-cursor hints; the app then fetches the corresponding deltas. Existing
-fingerprints remain valid when upgrading to device access.
+cursor hints; the app then fetches the corresponding deltas. A chapter with an
+older hash-based fingerprint is uploaded once when next selected for a rescan or
+recorded change, then uses the file metadata fingerprint.
 
 Chapter deltas contain identities and deletion state, without package file
 inventories. The app retains cursors and tombstones instead of a full remote
@@ -162,7 +196,7 @@ device keys remain outside portable backups. Downloaded folder names are
 unchanged. No account, session, or personal-state endpoint is called.
 
 Local content installation is serialized per work. Network transfers use private
-staging directories and do not hold a work lock. Upload fingerprinting and packaging
+staging directories and do not hold a work lock. Upload fingerprinting and transfer
 use one snapshot. Android copies snapshots on a separate, bounded worker so that
 the foreground storage queue can process metadata, downloads, and deletion.
 Conflicting changes during copying discard the snapshot and leave the upload pending.
@@ -173,17 +207,18 @@ as needing repair and are excluded from upload.
 
 ## Current limits
 
-Automatic per-work download policies are not implemented.
-Downloads restart after interruption; the server supports Range but the app does
-not yet resume partial ZIPs. Local imports and completed downloads enter the
-local change record and follow the selected sync mode.
+Automatic per-work download policies are not implemented. Downloads restart after
+interruption; the app does not resume partial chapter files or legacy ZIP transfers.
+Local imports and completed downloads enter the local change record and follow
+the selected sync mode.
 
 Edits made directly to downloaded files outside Norea are not database changes.
-Use Rescan local files and sync after those edits. This explicit scan hashes all
+Use Rescan local files and sync after those edits. This explicit scan checks all
 complete local chapters and can take time for large libraries. Android uses a
 cache snapshot to read SAF files, so staging also needs free device storage.
-HTML reference conversion reads the chapter body into memory; ZIP and media
-transfer use streaming. Source-plugin traffic continues through the existing
+Transfers stream the saved body and media without conversion.
+The legacy ZIP decoder still reads HTML into memory when converting old package
+references. Source-plugin traffic continues through the existing
 scraper path, independently of content-server traffic.
 
 ## Local Android testing
