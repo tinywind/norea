@@ -1,3 +1,5 @@
+import { LOCAL_PLUGIN_ID } from "../plugins/types";
+
 export const MAX_NOVEL_METADATA_BYTES = 16 * 1024 * 1024;
 export const MAX_NOVEL_COVER_BYTES = 10 * 1024 * 1024;
 
@@ -66,7 +68,7 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
     novel: {
       name: parsed.novel.name, author: parsed.novel.author ?? null,
       artist: parsed.novel.artist ?? null, summary: parsed.novel.summary ?? null, status: parsed.novel.status ?? null,
-      genres: parsed.novel.genres ?? null, rating: parsed.novel.rating ?? null, isLocal: parsed.novel.isLocal ?? false,
+      genres: parsed.novel.genres ?? null, rating: parsed.novel.rating ?? null, isLocal: parsed.novel.isLocal ?? parsed.identity.pluginId === LOCAL_PLUGIN_ID,
     },
     cover,
   };

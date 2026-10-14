@@ -2,9 +2,11 @@ import Database from "@tauri-apps/plugin-sql";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
 import { notifyContentSyncChanges } from "./content-sync-journal";
-import { flushWorkMetadata, initializeWorkMetadata } from "./work-metadata";
+import { flushWorkMetadata, initializeWorkMetadata, restoreWorkMetadataDirectories } from "./work-metadata";
 import { isTauriRuntime } from "../lib/tauri-runtime";
-import { consolidateLocalLibrary } from "./local-library";
+import { useStorageRecoveryStore } from "../store/storage-recovery";
+import { describeError } from "../lib/errors";
+import { notifyWorkMetadataChanges } from "../lib/work-metadata";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
@@ -12,6 +14,7 @@ const DB_BUSY_TIMEOUT_MS = 5000;
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
 let dbOperationQueue: Promise<void> = Promise.resolve();
+let metadataRecovery: AbortController | null = null;
 
 function observationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -19,8 +22,11 @@ function observationError(error: unknown): string {
 
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
-  await initializeWorkMetadata(db);
-  await consolidateLocalLibrary(db);
+  if (isTauriRuntime()) {
+    await db.execute("DELETE FROM work_metadata_cache_state WHERE EXISTS (SELECT 1 FROM work_metadata_dirty)");
+    await db.execute("DELETE FROM work_metadata_dirty");
+    await restoreWorkMetadataDirectories(db, false);
+  }
   return db;
 }
 
@@ -64,7 +70,8 @@ function serializedDb(rawDb: Database): Database {
         } catch (error) {
           if (metadataMutation) {
             await rawDb.execute("ROLLBACK").catch(() => undefined);
-            await initializeWorkMetadata(rawDb, { rebuild: true });
+            await restoreWorkMetadataDirectories(rawDb, false);
+            startWorkMetadataRecovery(true);
           }
           finish({ error: observationError(error), failed: true });
           throw error;
@@ -110,14 +117,47 @@ function getRawDb(): Promise<Database> {
  */
 export function getDb(): Promise<Database> {
   if (!dbPromise) {
-    dbPromise = getRawDb().then(serializedDb);
+    dbPromise = getRawDb().then(db => {
+      startWorkMetadataRecovery();
+      return serializedDb(db);
+    });
   }
   return dbPromise;
 }
 
-export async function reloadWorkMetadataCache(): Promise<void> {
-  const db = await getRawDb();
-  await queueDbOperation(() => initializeWorkMetadata(db, { rebuild: true }));
+export function cancelWorkMetadataRecovery(): void {
+  metadataRecovery?.abort();
+  metadataRecovery = null;
+  useStorageRecoveryStore.setState({ status: "idle", progress: null, error: null });
+}
+
+export function startWorkMetadataRecovery(rebuild = false): void {
+  if (!isTauriRuntime() || (metadataRecovery && !rebuild)) return;
+  cancelWorkMetadataRecovery();
+  const controller = new AbortController();
+  metadataRecovery = controller;
+  let recoveredWorks = 0;
+  void getRawDb().then(async db => {
+    await initializeWorkMetadata(db, {
+      rebuild, signal: controller.signal, runExclusive: queueDbOperation,
+      onProgress: progress => {
+        if (controller.signal.aborted) return;
+        useStorageRecoveryStore.setState({ status: "scanning", progress, error: null });
+        if (progress.recoveredWorks > recoveredWorks) {
+          recoveredWorks = progress.recoveredWorks;
+          notifyWorkMetadataChanges();
+        }
+      },
+    });
+    if (controller.signal.aborted) return;
+    if (!controller.signal.aborted && useStorageRecoveryStore.getState().status === "scanning") {
+      useStorageRecoveryStore.setState({ status: "complete" });
+    }
+  }).catch((error: unknown) => {
+    if (!controller.signal.aborted) useStorageRecoveryStore.setState({ status: "error", error: describeError(error) });
+  }).finally(() => {
+    if (metadataRecovery === controller) metadataRecovery = null;
+  });
 }
 
 export async function runExclusiveDatabaseOperation<T>(
@@ -131,7 +171,10 @@ export async function runExclusiveDatabaseOperation<T>(
       await notifyContentSyncChanges(rawDb);
       return result;
     } catch (error) {
-      await initializeWorkMetadata(rawDb, { rebuild: true });
+      if (isTauriRuntime()) {
+        await restoreWorkMetadataDirectories(rawDb, false);
+        startWorkMetadataRecovery(true);
+      }
       throw error;
     }
   });
@@ -157,7 +200,10 @@ export async function runDatabaseTransaction<T>(
         // eslint-disable-next-line no-console
         console.warn("[db] transaction rollback failed", rollbackError);
       });
-      await initializeWorkMetadata(rawDb, { rebuild: true });
+      if (isTauriRuntime()) {
+        await restoreWorkMetadataDirectories(rawDb, false);
+        startWorkMetadataRecovery(true);
+      }
       throw error;
     }
   });

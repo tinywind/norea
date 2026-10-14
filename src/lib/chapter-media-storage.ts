@@ -4,9 +4,9 @@ import { selectAndroidStorageRoot } from "./android-storage";
 import { invalidateAllNovelCoverSources } from "./novel-cover-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
-async function reloadStorageMetadata(): Promise<void> {
-  const { reloadWorkMetadataCache } = await import("../db/client");
-  await reloadWorkMetadataCache();
+async function recoverStorageMetadata(): Promise<void> {
+  const { startWorkMetadataRecovery } = await import("../db/client");
+  startWorkMetadataRecovery(true);
   invalidateAllNovelCoverSources();
 }
 
@@ -18,27 +18,47 @@ export async function getChapterMediaStorageRoot(): Promise<string | null> {
 export async function setChapterMediaStorageRoot(
   root: string,
 ): Promise<string> {
-  const selectedRoot = await invoke<string>("chapter_media_set_storage_root", {
-    root,
-  });
-  await reloadStorageMetadata();
-  return selectedRoot;
+  const { cancelWorkMetadataRecovery, startWorkMetadataRecovery } = await import("../db/client");
+  cancelWorkMetadataRecovery();
+  try {
+    const selectedRoot = await invoke<string>("chapter_media_set_storage_root", { root });
+    await recoverStorageMetadata();
+    return selectedRoot;
+  } catch (error) {
+    startWorkMetadataRecovery();
+    throw error;
+  }
 }
 
 export async function useDefaultChapterMediaStorageRoot(): Promise<string> {
   if (isAndroidRuntime()) {
     throw new Error("Android requires selecting an external storage folder.");
   }
-  const root = await invoke<string>("chapter_media_use_default_storage_root");
-  await reloadStorageMetadata();
-  return root;
+  const { cancelWorkMetadataRecovery, startWorkMetadataRecovery } = await import("../db/client");
+  cancelWorkMetadataRecovery();
+  try {
+    const root = await invoke<string>("chapter_media_use_default_storage_root");
+    await recoverStorageMetadata();
+    return root;
+  } catch (error) {
+    startWorkMetadataRecovery();
+    throw error;
+  }
 }
 
 export async function selectChapterMediaStorageRoot(): Promise<string | null> {
   if (isAndroidRuntime()) {
-    const root = await selectAndroidStorageRoot();
-    if (root) await reloadStorageMetadata();
-    return root;
+    const { cancelWorkMetadataRecovery, startWorkMetadataRecovery } = await import("../db/client");
+    cancelWorkMetadataRecovery();
+    try {
+      const root = await selectAndroidStorageRoot();
+      if (root) await recoverStorageMetadata();
+      else startWorkMetadataRecovery();
+      return root;
+    } catch (error) {
+      startWorkMetadataRecovery();
+      throw error;
+    }
   }
 
   const selected = await open({

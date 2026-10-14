@@ -5,6 +5,7 @@ import { novelStorageRelativeDir } from "./chapter-storage-path";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 import { canonicalMetadataValue, coverContentType, MAX_NOVEL_COVER_BYTES, parseNovelMetadata, safeMetadataChild, type NovelMetadataV1 } from "./work-metadata/schema";
+import { throwIfAborted } from "./abort";
 export { parseNovelMetadata, type NovelMetadataV1 } from "./work-metadata/schema";
 
 export interface StoredNovelMetadata { directory: string; metadata: NovelMetadataV1 }
@@ -103,18 +104,32 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>): Promis
 }
 
 export async function listStoredNovelMetadata(): Promise<StoredNovelMetadata[]> {
-  if (!isTauriRuntime()) return [];
-  const { paths = [] } = await workMetadataOperation({ operation: "list" });
   const entries: StoredNovelMetadata[] = [];
+  for await (const entry of scanStoredNovelMetadata()) entries.push(entry);
+  return entries;
+}
+
+export async function* scanStoredNovelMetadata(
+  onDiscovered?: (total: number) => void,
+  onInspected?: (path: string, skipped: boolean) => void,
+  signal?: AbortSignal,
+): AsyncGenerator<StoredNovelMetadata> {
+  if (!isTauriRuntime()) return;
+  const { paths = [] } = await workMetadataOperation({ operation: "list" });
+  throwIfAborted(signal, "Storage recovery cancelled.");
+  onDiscovered?.(paths.length);
   const identities = new Set<string>();
   for (const path of paths) {
+    throwIfAborted(signal, "Storage recovery cancelled.");
     const { body } = await workMetadataOperation({ operation: "read", path });
-    if (!body) throw new Error(`work metadata: missing listed file ${path}`);
+    throwIfAborted(signal, "Storage recovery cancelled.");
+    if (!body) { onInspected?.(path, true); continue; }
     let metadata: NovelMetadataV1;
     try { metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body)))); }
     catch {
       // eslint-disable-next-line no-console -- Report skipped input paths without logging document contents.
       console.warn("[work-metadata] skipped invalid metadata", path);
+      onInspected?.(path, true);
       continue;
     }
     const identity = JSON.stringify(metadata.identity);
@@ -122,9 +137,10 @@ export async function listStoredNovelMetadata(): Promise<StoredNovelMetadata[]> 
     identities.add(identity);
     const directory = path.slice(0, -"/novel.json".length);
     metadata.cover = await discoverStoredNovelCover(directory, metadata.cover);
-    entries.push({ directory, metadata });
+    throwIfAborted(signal, "Storage recovery cancelled.");
+    onInspected?.(path, false);
+    yield { directory, metadata };
   }
-  return entries;
 }
 
 export interface StoredNovelChapter {

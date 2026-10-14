@@ -55,6 +55,7 @@ import {
   selectChapterMediaStorageRoot,
 } from "../lib/chapter-media-storage";
 import { restartChapterContentStorageMirrorSweep } from "../lib/chapter-content-storage";
+import { StorageRecoveryStatus } from "../components/runtime/StorageRecovery";
 import { pluginManager } from "../lib/plugins/manager";
 import {
   canStartPluginVpnConnection,
@@ -302,6 +303,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
 
   return (
     <SettingsSection title={t("settings.data.mediaStorage.title")}>
+      <StorageRecoveryStatus />
       <SettingsFieldRow
         label={t("settings.data.mediaStorage.folder.label")}
         description={

@@ -9,6 +9,7 @@ import { describeError } from "../../lib/errors";
 import { pluginManager } from "../../lib/plugins/manager";
 import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
 import { useAppearanceStore } from "../../store/appearance";
+import { StorageRecoveryNotifications } from "./StorageRecovery";
 
 export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
   const appLocale = useAppearanceStore((state) => state.appLocale);
@@ -123,5 +124,5 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
     );
   }
 
-  return children;
+  return <><StorageRecoveryNotifications />{children}</>;
 }

@@ -205,6 +205,13 @@ These files are authoritative; the app keeps metadata in SQLite for browsing and
 search, including works with no downloaded chapters. Opening saved works does not
 require fetching their metadata from the source site again.
 
+After app data is cleared, selecting an existing content folder restores its
+works to the library in the background. The library and storage settings show
+the current work, inspected folders, recovered works and chapters, and skipped
+folders. Each recovered work becomes available immediately; library and plugin
+repository queries do not wait for the scan. Recovery reads local files without
+rewriting them or contacting the content server or source sites.
+
 The web console manages devices, server copies, scan jobs, and multiple
 plugin repository indexes. The server uses its configured data directory for
 content storage and scanning; the console does not select additional folders.

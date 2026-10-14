@@ -42,6 +42,7 @@ import {
 } from "../components/library/LibraryLocalImport";
 import { ImportFileIcon } from "../components/library/LocalImportReviewRow";
 import { useLibraryQuery } from "../components/library/use-library-query";
+import { StorageRecoveryStatus } from "../components/runtime/StorageRecovery";
 import { useLibrarySelection } from "../components/library/use-library-selection";
 import { LibraryGrid } from "../components/LibraryGrid";
 import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
@@ -280,6 +281,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             className="norea-library-main"
             aria-label={t("library.mainLabel")}
           >
+            <StorageRecoveryStatus />
             <header className="norea-library-main-header">
               <div className="norea-library-header-copy">
                 <h1 className="norea-library-title-heading">

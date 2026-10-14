@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const storage = vi.hoisted(() => ({ files: new Map<string, number[]>(), fail: false, failOncePath: "", failReadPath: "", lists: 0, reads: 0, chapterLists: 0, skippedDirectories: [] as string[], chapterScan: undefined as Promise<void> | undefined, chapters: new Map<string, string[]>(), writes: 0, directories: {} as Record<string, string> }));
+const storage = vi.hoisted(() => ({ files: new Map<string, number[]>(), readGates: new Map<string, Promise<void>>(), fail: false, failOncePath: "", failReadPath: "", lists: 0, reads: 0, chapterLists: 0, skippedDirectories: [] as string[], chapterScan: undefined as Promise<void> | undefined, chapters: new Map<string, string[]>(), writes: 0, directories: {} as Record<string, string> }));
 const databaseClient = vi.hoisted(() => ({ transaction: vi.fn(), get: vi.fn() }));
 vi.mock("./client", () => ({ runDatabaseTransaction: databaseClient.transaction, getDb: databaseClient.get }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
@@ -18,7 +18,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
     const file = candidates.find(path => path === directory + preferred) ?? candidates[0];
     return { cover: file ? { fileName: file.slice(directory.length), modifiedAt: 1 } : null };
   }
-  if (input.operation === "read") { if (storage.failReadPath === input.path) throw new Error("storage unavailable"); storage.reads++; return { body: storage.files.get(input.path) ?? null }; }
+  if (input.operation === "read") { if (storage.failReadPath === input.path) throw new Error("storage unavailable"); storage.reads++; await storage.readGates.get(input.path); return { body: storage.files.get(input.path) ?? null }; }
   if (input.operation === "register") storage.directories = { ...(input.reset ? {} : storage.directories), ...input.chapterDirectories };
   if (input.operation === "write") {
     if (storage.fail || storage.failOncePath === input.path) { storage.failOncePath = ""; throw new Error("disk full"); }
@@ -46,6 +46,7 @@ function fixture(): NovelMetadataV1 { return {
 function save(metadata: NovelMetadataV1) { storage.files.set(path, [...new TextEncoder().encode(JSON.stringify(metadata))]); }
 
 beforeEach(() => {
+  storage.readGates.clear();
   storage.chapterLists = 0; storage.skippedDirectories = []; storage.chapterScan = undefined;
   storage.files.clear(); storage.chapters.clear(); storage.chapters.set(path, ["contents/source/Original-book/1-Opening/content.html"]); storage.writes = 0; storage.fail = false; storage.failOncePath = ""; storage.failReadPath = ""; storage.lists = 0; storage.reads = 0; storage.directories = {};
   sqlite = new DatabaseSync(":memory:");
@@ -68,11 +69,58 @@ afterEach(() => sqlite.close());
 
 it("rebuilds work metadata and completed chapter folders without a DB seed", async () => {
   save(fixture()); await initializeWorkMetadata(db);
-  expect(sqlite.prepare("SELECT name,in_library FROM novel").get()).toEqual({ name: "Disk title", in_library: 0 });
+  expect(sqlite.prepare("SELECT name,in_library FROM novel").get()).toEqual({ name: "Disk title", in_library: 1 });
   expect(sqlite.prepare("SELECT path,is_downloaded FROM chapter").get()).toEqual({ path: "norea-folder:1", is_downloaded: 1 });
   expect(chapterStorageRelativeDir({ id: 1, name: "Renamed" }, { id: 1, name: "Renamed" })).toBe("contents/source/Original-book/1-Opening");
   clearResolvedChapterStorageDirs();
   expect(chapterStorageRelativeDir({ id: 1, name: "Renamed" }, { id: 1, name: "Renamed" })).toBe("contents/source/Original-book/1-Opening");
+});
+
+it("publishes the first recovered work before reading the next work", async () => {
+  save(fixture());
+  const secondPath = "contents/source/Second/novel.json";
+  const second = fixture(); second.identity.novelPath = "/second";
+  storage.files.set(secondPath, [...new TextEncoder().encode(JSON.stringify(second))]);
+  let release!: () => void;
+  storage.readGates.set(secondPath, new Promise<void>(resolve => { release = resolve; }));
+  const recovery = initializeWorkMetadata(db);
+  try {
+    await vi.waitFor(() => {
+      expect(sqlite.prepare("SELECT name FROM novel").all()).toEqual([{ name: "Disk title" }]);
+      expect(sqlite.prepare("SELECT is_downloaded FROM chapter").get()).toEqual({ is_downloaded: 1 });
+      expect(sqlite.isTransaction).toBe(false);
+    });
+  } finally {
+    release();
+    await recovery;
+  }
+  expect(storage.writes).toBe(0);
+});
+
+it("batches a cold recovery of a thousand chapters without per-chapter database calls", async () => {
+  save(fixture());
+  storage.chapters.set(path, Array.from({ length: 1001 }, (_, index) => `contents/source/Original-book/${index + 1}-Chapter/content.html`));
+  const execute = vi.spyOn(db, "execute");
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter WHERE is_downloaded=1").get()).toEqual({ count: 1001 });
+  expect(execute.mock.calls.length).toBeLessThan(80);
+  expect(storage.writes).toBe(0);
+});
+
+it("keeps a newer metadata edit while recovering chapters from an in-flight scan", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  storage.chapters.set(path, ["contents/source/Original-book/1-Opening/content.html", "contents/source/Original-book/2-New/content.html"]);
+  let release!: () => void;
+  storage.chapterScan = new Promise<void>(resolve => { release = resolve; });
+  storage.chapterLists = 0;
+  const recovery = initializeWorkMetadata(db, { rebuild: true });
+  await vi.waitFor(() => expect(storage.chapterLists).toBe(1));
+  await db.execute("UPDATE novel SET name='Edited during recovery' WHERE id=1");
+  await flushWorkMetadata(db);
+  release();
+  await recovery;
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Edited during recovery" });
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter WHERE is_downloaded=1").get()).toEqual({ count: 2 });
 });
 
 it("reopens the persisted cache without reading work files or rewriting chapters", async () => {
