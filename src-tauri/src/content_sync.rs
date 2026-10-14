@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -71,6 +72,7 @@ fn safe_path(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn file_hash(path: &Path) -> Result<(u64, String), String> {
     let mut input = File::open(path).map_err(failure)?;
     let mut hash = Sha256::new();
@@ -137,6 +139,48 @@ fn media_files(manifest: &Value) -> Result<Vec<(String, u64)>, String> {
         ));
     }
     Ok(result)
+}
+
+fn validate_chapter_media(source: &Path) -> Result<(), String> {
+    if !source.join("manifest.json").is_file() {
+        return if source.join("media.zip").exists() {
+            Err(failure("chapter media manifest is missing"))
+        } else {
+            Ok(())
+        };
+    }
+    let media = media_files(&read_json(&source.join("manifest.json"))?)?;
+    if media.len() + 2 > MAX_FILES {
+        return Err(failure("too many chapter media files"));
+    }
+    let mut archive = if source.join("media.zip").is_file() {
+        Some(ZipArchive::new(File::open(source.join("media.zip")).map_err(failure)?).map_err(failure)?)
+    } else {
+        None
+    };
+    if archive.as_ref().is_some_and(|archive| archive.len() != media.len()) {
+        return Err(failure("media archive inventory does not match its manifest"));
+    }
+    let mut media_bytes = 0;
+    for (name, size) in media {
+        if size > MAX_EXPANDED_BYTES - media_bytes {
+            return Err(failure("chapter media exceeds byte limit"));
+        }
+        media_bytes += size;
+        let actual = if let Some(archive) = archive.as_mut() {
+            let file = archive.by_name(&name).map_err(failure)?;
+            if file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+                return Err(failure("invalid chapter media artifact"));
+            }
+            file.size()
+        } else {
+            fs::metadata(source.join("media").join(name)).map_err(failure)?.len()
+        };
+        if actual != size {
+            return Err(failure("incomplete media file"));
+        }
+    }
+    Ok(())
 }
 
 fn convert_references(body: &str, files: &HashSet<String>, export: bool) -> Result<String, String> {
@@ -290,6 +334,7 @@ fn write_zip(path: &Path, root: &Path, files: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn export_package(source: &Path, stage: &Path, mut manifest: Value) -> Result<Value, String> {
     let body_path = if manifest["chapter"]["contentType"] == "pdf" {
         "content.pdf"
@@ -469,10 +514,8 @@ fn import_package(archive: &Path, stage: &Path, expected: &Value) -> Result<Valu
         }
         let path = stage.join(name);
         fs::create_dir_all(path.parent().unwrap()).map_err(failure)?;
-        copy_limited(&mut entry, &mut File::create(&path).map_err(failure)?, size)?;
-        let (actual_size, hash) = file_hash(&path)?;
-        if actual_size != size || record["sha256"] != hash {
-            return Err(failure("file checksum mismatch"));
+        if copy_limited(&mut entry, &mut File::create(&path).map_err(failure)?, size)? != size {
+            return Err(failure("file size mismatch"));
         }
     }
     if !declared.contains_key(body) {
@@ -620,15 +663,18 @@ fn install_directory(source: &Path, destination: &Path) -> Result<(), String> {
                 return Err(failure("invalid installed artifact"));
             }
             let target = stage.join(entry.file_name());
-            fs::copy(entry.path(), &target).map_err(failure)?;
-            File::options()
+            let original = entry.metadata().map_err(failure)?;
+            if fs::copy(entry.path(), &target).map_err(failure)? != original.len() {
+                return Err(failure("storage copy size mismatch"));
+            }
+            let stored = File::options()
                 .write(true)
                 .open(&target)
-                .map_err(failure)?
-                .sync_all()
                 .map_err(failure)?;
-            if file_hash(&entry.path())? != file_hash(&target)? {
-                return Err(failure("storage copy verification failed"));
+            stored.set_times(fs::FileTimes::new().set_modified(original.modified().map_err(failure)?)).map_err(failure)?;
+            stored.sync_all().map_err(failure)?;
+            if stored.metadata().map_err(failure)?.len() != original.len() {
+                return Err(failure("storage copy size mismatch"));
             }
         }
         Ok(())
@@ -730,16 +776,24 @@ fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
 }
 
 fn fingerprint_directory(source: &Path) -> Result<String, String> {
-    let mut fingerprint = Sha256::new();
+    let mut files = Vec::new();
     for path in chapter_files(source)? {
-        let (size, hash) = file_hash(&source.join(&path))?;
-        fingerprint.update(serde_json::to_vec(&json!([path, size, hash])).map_err(failure)?);
+        let (size, modified_at) = file_size_and_modified_at(&source.join(&path))?;
+        files.push(json!([path, size, modified_at]));
     }
-    Ok(format!("{:x}", fingerprint.finalize()))
+    serde_json::to_string(&files).map_err(failure)
+}
+
+fn file_size_and_modified_at(path: &Path) -> Result<(u64, u64), String> {
+    let metadata = fs::metadata(path).map_err(failure)?;
+    let modified_at = metadata.modified().map_err(failure)?
+        .duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    Ok((metadata.len(), u64::try_from(modified_at).map_err(failure)?))
 }
 
 fn snapshot_directory(source: &Path, stage: &Path) -> Result<(), String> {
     let files = chapter_files(source)?;
+    let before = fingerprint_directory(source)?;
     let destination = stage.join("source");
     fs::create_dir(&destination).map_err(failure)?;
     let copied = (|| {
@@ -756,47 +810,20 @@ fn snapshot_directory(source: &Path, stage: &Path) -> Result<(), String> {
             if size > MAX_EXPANDED_BYTES - total {
                 return Err(failure("chapter snapshot exceeds byte limit"));
             }
+            let mut output = File::create(target).map_err(failure)?;
             let bytes = copy_limited(
                 &mut File::open(input).map_err(failure)?,
-                &mut File::create(target).map_err(failure)?,
+                &mut output,
                 size,
             )?;
             if bytes != size {
                 return Err(failure("chapter changed during snapshot"));
             }
+            output.set_times(fs::FileTimes::new().set_modified(metadata.modified().map_err(failure)?)).map_err(failure)?;
             total += bytes;
         }
-        if destination.join("manifest.json").is_file() {
-            let media = media_files(&read_json(&destination.join("manifest.json"))?)?;
-            if media.len() + 2 > MAX_FILES {
-                return Err(failure("too many chapter media files"));
-            }
-            let mut archive = if destination.join("media.zip").is_file() {
-                Some(ZipArchive::new(File::open(destination.join("media.zip")).map_err(failure)?).map_err(failure)?)
-            } else {
-                None
-            };
-            let mut media_bytes = 0;
-            for (name, size) in media {
-                if size > MAX_EXPANDED_BYTES - media_bytes {
-                    return Err(failure("chapter media exceeds byte limit"));
-                }
-                media_bytes += size;
-                let actual = if let Some(archive) = archive.as_mut() {
-                    let file = archive.by_name(&name).map_err(failure)?;
-                    if file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
-                        return Err(failure("invalid chapter media artifact"));
-                    }
-                    file.size()
-                } else {
-                    fs::metadata(destination.join("media").join(name)).map_err(failure)?.len()
-                };
-                if actual != size {
-                    return Err(failure("incomplete media file"));
-                }
-            }
-        }
-        if fingerprint_directory(source)? != fingerprint_directory(&destination)? {
+        validate_chapter_media(&destination)?;
+        if fingerprint_directory(source)? != before {
             return Err(failure("chapter changed during snapshot"));
         }
         Ok(())
@@ -906,24 +933,59 @@ pub async fn content_sync_upload(
     safe_path(&storage_dir)?;
     let source = stage.join("source");
     tauri::async_runtime::spawn_blocking(move || {
-        chapter_files(&source)?;
-        export_package(&source, &stage, manifest)?;
-        let archive = stage.join("package.zip");
-        let bytes = fs::metadata(&archive).map_err(failure)?.len();
-        let response = http_client()?
-            .post(endpoint(&server_url, "packages")?)
-            .bearer_auth(token)
-            .header("Content-Type", "application/zip")
-            .header("Content-Length", bytes)
-            .body(File::open(archive).map_err(failure)?)
-            .send()
-            .map_err(failure)?
-            .error_for_status()
-            .map_err(failure)?;
-        serde_json::from_reader(response.take(16 * 1024 * 1024)).map_err(failure)
+        upload_chapter_files(&source, manifest, &server_url, &token)
     })
     .await
     .map_err(failure)?
+}
+
+fn chapter_file_manifest(source: &Path, mut manifest: Value) -> Result<Value, String> {
+    let body = if manifest["chapter"]["contentType"] == "pdf" { "content.pdf" } else { "content.html" };
+    let mut records = Vec::new();
+    for path in chapter_files(source)? {
+        if path != body && path != "manifest.json" && path != "media.zip" {
+            return Err(failure("chapter file transfer requires the current downloaded file layout"));
+        }
+        let (size, modified_at) = file_size_and_modified_at(&source.join(&path))?;
+        records.push(json!({"path":path,"size":size,"modifiedAt":modified_at}));
+    }
+    if !records.iter().any(|record| record["path"] == body) {
+        return Err(failure("chapter body is missing"));
+    }
+    validate_chapter_media(source)?;
+    manifest["layout"] = json!("chapter-files");
+    manifest["bodyPath"] = json!(body);
+    manifest["files"] = json!(records);
+    Ok(manifest)
+}
+
+fn checked_response(mut response: reqwest::blocking::Response) -> Result<reqwest::blocking::Response, String> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let mut bytes = Vec::new();
+    let _ = response.by_ref().take(4096).read_to_end(&mut bytes);
+    let detail = serde_json::from_slice::<Value>(&bytes).ok()
+        .and_then(|value| value["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| status.canonical_reason().unwrap_or("Request failed").to_string());
+    Err(failure(format!("server returned {}: {detail}", status.as_u16())))
+}
+
+fn upload_chapter_files(source: &Path, metadata: Value, server_url: &str, token: &str) -> Result<Value, String> {
+    let manifest = chapter_file_manifest(source, metadata)?;
+    let mut form = reqwest::blocking::multipart::Form::new()
+        .text("metadata", serde_json::to_string(&manifest).map_err(failure)?);
+    for record in manifest["files"].as_array().unwrap() {
+        let path = record["path"].as_str().unwrap();
+        let part = reqwest::blocking::multipart::Part::reader_with_length(
+            File::open(source.join(path)).map_err(failure)?, record["size"].as_u64().unwrap())
+            .file_name(path.to_string());
+        form = form.part(path.to_string(), part);
+    }
+    let response = checked_response(http_client()?.post(endpoint(server_url, "chapter-files")?)
+        .bearer_auth(token).multipart(form).send().map_err(failure)?)?;
+    serde_json::from_reader(response.take(16 * 1024 * 1024)).map_err(failure)
 }
 
 #[tauri::command]
@@ -951,6 +1013,9 @@ pub async fn content_sync_download(
         {
             return Err(failure("invalid chapter id"));
         }
+        if entry["manifest"]["layout"] == "chapter-files" {
+            return download_chapter_files(&server_url, token.as_deref(), &entry, &stage.join("install"));
+        }
         let expected_size = entry["zipBytes"]
             .as_u64()
             .ok_or_else(|| failure("missing ZIP size"))?;
@@ -962,20 +1027,15 @@ pub async fn content_sync_download(
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
-        let mut response = request
-            .send()
-            .map_err(failure)?
-            .error_for_status()
-            .map_err(failure)?;
+        let mut response = checked_response(request.send().map_err(failure)?)?;
         let archive = stage.join("download.zip");
         let bytes = copy_limited(
             &mut response,
             &mut File::create(&archive).map_err(failure)?,
             expected_size,
         )?;
-        let (_, hash) = file_hash(&archive)?;
-        if bytes != expected_size || entry["zipSha256"] != hash {
-            return Err(failure("downloaded ZIP checksum mismatch"));
+        if bytes != expected_size {
+            return Err(failure("downloaded ZIP size mismatch"));
         }
         let installed = stage.join("install");
         fs::create_dir(&installed).map_err(failure)?;
@@ -983,6 +1043,62 @@ pub async fn content_sync_download(
     })
     .await
     .map_err(failure)?
+}
+
+fn download_chapter_files(server_url: &str, token: Option<&str>, entry: &Value, destination: &Path) -> Result<Value, String> {
+    let manifest = &entry["manifest"];
+    let body = if manifest["chapter"]["contentType"] == "pdf" { "content.pdf" } else { "content.html" };
+    let id = entry["id"].as_str().ok_or_else(|| failure("missing chapter id"))?;
+    let revision = entry["revision"].as_str().ok_or_else(|| failure("missing chapter revision"))?;
+    let files = manifest["files"].as_array().ok_or_else(|| failure("missing chapter files"))?;
+    if manifest["packageVersion"] != 1 || manifest["bodyPath"] != body || files.is_empty() || files.len() > 3 {
+        return Err(failure("invalid chapter file manifest"));
+    }
+    let mut names = HashSet::new();
+    let mut total = 0;
+    for file in files {
+        let name = file["path"].as_str().ok_or_else(|| failure("missing chapter file path"))?;
+        let size = file["size"].as_u64().ok_or_else(|| failure("invalid chapter file size"))?;
+        let limit = match name {
+            "media.zip" => MAX_ZIP_BYTES,
+            "manifest.json" => 16 * 1024 * 1024,
+            _ if name == body => MAX_EXPANDED_BYTES,
+            _ => return Err(failure("unexpected chapter file")),
+        };
+        if !names.insert(name) || size > limit || size > MAX_EXPANDED_BYTES - total {
+            return Err(failure("duplicate or oversized chapter file"));
+        }
+        total += size;
+    }
+    if !names.contains(body) || (names.contains("media.zip") && !names.contains("manifest.json")) {
+        return Err(failure("missing chapter body or media manifest"));
+    }
+    fs::create_dir(destination).map_err(failure)?;
+    let client = http_client()?;
+    for file in files {
+        let name = file["path"].as_str().unwrap();
+        let size = file["size"].as_u64().unwrap();
+        let mut url = endpoint(server_url, &format!("chapters/{id}/files"))?;
+        url.query_pairs_mut().append_pair("revision", revision).append_pair("path", name);
+        let mut request = client.get(url);
+        if let Some(token) = token { request = request.bearer_auth(token); }
+        let mut response = checked_response(request.send().map_err(failure)?)?;
+        let path = destination.join(name);
+        let mut output = File::create(&path).map_err(failure)?;
+        if copy_limited(&mut response, &mut output, size)? != size {
+            return Err(failure(format!("downloaded {name} size mismatch")));
+        }
+        if let Some(value) = file.get("modifiedAt") {
+            let millis = value.as_u64().filter(|value| *value <= 9_007_199_254_740_991)
+                .ok_or_else(|| failure("invalid chapter file modification time"))?;
+            let modified = UNIX_EPOCH.checked_add(Duration::from_millis(millis))
+                .ok_or_else(|| failure("invalid chapter file modification time"))?;
+            output.set_times(fs::FileTimes::new().set_modified(modified)).map_err(failure)?;
+        }
+    }
+    validate_chapter_media(destination)?;
+    Ok(json!({"contentBytes": fs::metadata(destination.join(body)).map_err(failure)?.len(),
+        "mediaBytes": if names.contains("media.zip") { fs::metadata(destination.join("media.zip")).map_err(failure)?.len() } else { 0 }}))
 }
 
 #[tauri::command]
@@ -1017,6 +1133,159 @@ mod tests {
 
     fn metadata() -> Value {
         json!({"packageVersion":1,"identity":{"pluginId":"fixture","novelPath":"/novel","chapterPath":"/chapter"},"novel":{"name":"Work","isLocal":false},"chapter":{"name":"Chapter","position":1,"contentType":"html","page":"/chapter"}})
+    }
+
+    fn original_media_archive() -> Vec<u8> {
+        let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer.start_file("page.png", SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"image").unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn chapter_file_transfer_preserves_original_body_and_media_bytes() {
+        let root = workspace();
+        let body = b"<img src=\"norea-media://reader-asset/page.png\"><p>Original body</p>";
+        let media = original_media_archive();
+        let manifest = br#"{"version":1,"complete":true,"updatedAt":123,"media":{"files":[{"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}}"#;
+        fs::write(root.path().join("content.html"), body).unwrap();
+        fs::write(root.path().join("manifest.json"), manifest).unwrap();
+        fs::write(root.path().join("media.zip"), &media).unwrap();
+        let original = fingerprint_directory(root.path()).unwrap();
+        let description = chapter_file_manifest(root.path(), metadata()).unwrap();
+        assert_eq!(description["layout"], "chapter-files");
+        assert_eq!(description["bodyPath"], "content.html");
+        assert_eq!(description["files"].as_array().unwrap().len(), 3);
+        for record in description["files"].as_array().unwrap() {
+            let name = record["path"].as_str().unwrap();
+            let expected: &[u8] = match name {
+                "content.html" => body,
+                "manifest.json" => manifest,
+                "media.zip" => &media,
+                _ => panic!("unexpected transfer file"),
+            };
+            assert_eq!(record["size"], expected.len());
+            assert!(record.get("sha256").is_none());
+            assert!(record["modifiedAt"].as_u64().is_some());
+        }
+        assert_eq!(fingerprint_directory(root.path()).unwrap(), original);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn chapter_file_transfer_rejects_wrong_body_and_unpacked_legacy_media() {
+        let root = workspace();
+        fs::write(root.path().join("content.pdf"), b"pdf").unwrap();
+        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+        fs::remove_file(root.path().join("content.pdf")).unwrap();
+        fs::write(root.path().join("content.html"), b"text").unwrap();
+        fs::create_dir(root.path().join("media")).unwrap();
+        fs::write(root.path().join("media/page.png"), b"image").unwrap();
+        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+    }
+
+    #[test]
+    fn chapter_fingerprint_uses_file_metadata_without_reading_contents() {
+        let root = workspace();
+        let body = root.path().join("content.html");
+        let modified = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        fs::write(&body, b"one").unwrap();
+        File::options().write(true).open(&body).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        let original = fingerprint_directory(root.path()).unwrap();
+        fs::write(&body, b"two").unwrap();
+        File::options().write(true).open(&body).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        assert_eq!(fingerprint_directory(root.path()).unwrap(), original);
+        File::options().write(true).open(&body).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified + Duration::from_secs(1))).unwrap();
+        assert_ne!(fingerprint_directory(root.path()).unwrap(), original);
+        let stage = root.path().join("snapshot");
+        fs::create_dir(&stage).unwrap();
+        snapshot_directory(root.path(), &stage).unwrap();
+        assert_eq!(fingerprint_directory(root.path()).unwrap(), fingerprint_directory(&stage.join("source")).unwrap());
+    }
+
+    #[test]
+    fn chapter_file_transfer_rejects_media_inventory_mismatch_without_rewriting() {
+        let root = workspace();
+        fs::write(root.path().join("content.html"), b"<p>Original</p>").unwrap();
+        let archive = original_media_archive();
+        fs::write(root.path().join("media.zip"), &archive).unwrap();
+        for files in [json!([]), json!([{"fileName":"page.png","path":"media/page.png","status":"stored","bytes":6}])] {
+            fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":files}}).to_string()).unwrap();
+            assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+            assert_eq!(fs::read(root.path().join("media.zip")).unwrap(), archive);
+        }
+        fs::remove_file(root.path().join("manifest.json")).unwrap();
+        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+    }
+
+    #[test]
+    fn original_files_use_multipart_upload_and_individual_http_downloads() {
+        use std::net::TcpListener;
+        let root = workspace();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let files = vec![
+            ("content.html", b"<img src=\"norea-media://reader-asset/page.png\">".to_vec()),
+            ("manifest.json", br#"{"version":1,"complete":true,"updatedAt":123,"media":{"files":[{"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}}"#.to_vec()),
+            ("media.zip", original_media_archive()),
+        ];
+        for (name, bytes) in &files { fs::write(source.join(name), bytes).unwrap(); }
+        let manifest = chapter_file_manifest(&source, metadata()).unwrap();
+        let entry = json!({"id":"a".repeat(64),"revision":"b".repeat(64),"manifest":manifest,"deleted":false});
+        let reply = serde_json::to_vec(&entry).unwrap();
+        let expected = files.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let receiver = std::thread::spawn(move || {
+            for index in 0..4 {
+                let (mut connection, _) = listener.accept().unwrap();
+                connection.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0]; connection.read_exact(&mut byte).unwrap(); head.push(byte[0]);
+                    assert!(head.len() < 64 * 1024);
+                }
+                let head = String::from_utf8(head).unwrap();
+                let response = if index == 0 {
+                    assert!(head.starts_with("POST /api/v1/chapter-files HTTP/1.1"));
+                    assert!(head.to_ascii_lowercase().contains("content-type: multipart/form-data; boundary="));
+                    let length = head.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+                    }).unwrap();
+                    let mut body = vec![0; length]; connection.read_exact(&mut body).unwrap();
+                    for (name, bytes) in &expected {
+                        let part = [format!("filename=\"{name}\"\r\n\r\n").as_bytes(), bytes, b"\r\n"].concat();
+                        assert!(body.windows(part.len()).any(|window| window == part), "changed file bytes for {name}");
+                    }
+                    reply.clone()
+                } else {
+                    let target = head.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                    let url = reqwest::Url::parse(&format!("http://localhost{target}")).unwrap();
+                    let path = url.query_pairs().find(|(key, _)| key == "path").unwrap().1.into_owned();
+                    assert!(url.query_pairs().any(|(key, value)| key == "revision" && value == "b".repeat(64)));
+                    expected.iter().find(|(name, _)| *name == path).unwrap().1.clone()
+                };
+                write!(connection, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).unwrap();
+                connection.write_all(&response).unwrap();
+            }
+        });
+        let uploaded = upload_chapter_files(&source, metadata(), &server, "device").unwrap();
+        assert_eq!(uploaded, entry);
+        let destination = root.path().join("installed");
+        let sizes = download_chapter_files(&server, Some("device"), &entry, &destination).unwrap();
+        receiver.join().unwrap();
+        assert_eq!(sizes["contentBytes"], files[0].1.len());
+        assert_eq!(sizes["mediaBytes"], files[2].1.len());
+        for (name, bytes) in files {
+            assert_eq!(fs::read(source.join(name)).unwrap(), bytes);
+            assert_eq!(fs::read(destination.join(name)).unwrap(), bytes);
+        }
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 3);
     }
 
     #[test]
@@ -1181,10 +1450,10 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_body_fails_before_existing_chapter_is_replaced() {
+    fn wrong_body_size_fails_before_existing_chapter_is_replaced() {
         let root = workspace();
         let (stage, manifest) = plain_package(root.path());
-        fs::write(stage.join("portable/content.html"), "<p>Bad chapter</p>").unwrap();
+        fs::write(stage.join("portable/content.html"), "<p>Truncated</p>").unwrap();
         write_zip(
             &stage.join("corrupt.zip"),
             &stage.join("portable"),

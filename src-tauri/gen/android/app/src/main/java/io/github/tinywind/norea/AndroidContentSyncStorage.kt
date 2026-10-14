@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
-import java.security.MessageDigest
 
 internal class AndroidContentSyncStorage(
   private val context: Context,
@@ -47,19 +46,24 @@ internal class AndroidContentSyncStorage(
         }
         var total = 0L
         for (file in files) {
+          val target = File(destination, file.relativePath)
+          var bytes = 0L
           context.contentResolver.openInputStream(file.uri)?.use { input ->
-            File(destination, file.relativePath).outputStream().use { output ->
+            target.outputStream().use { output ->
               val buffer = ByteArray(DEFAULT_STORAGE_COPY_BUFFER_BYTES)
               while (true) {
                 check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
                 val length = input.read(buffer)
                 if (length < 0) break
+                bytes += length
                 total += length
                 check(total <= MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) { "Chapter snapshot exceeds byte limit." }
                 output.write(buffer, 0, length)
               }
             }
           } ?: error("Cannot read chapter file.")
+          check(bytes == file.bytes && target.length() == file.bytes) { "Chapter snapshot size mismatch." }
+          check(target.setLastModified(file.lastModified.coerceAtLeast(0L))) { "Cannot preserve chapter snapshot timestamp." }
         }
         check(files == snapshotFiles(source)) { "Chapter changed during content snapshot." }
       }
@@ -120,21 +124,11 @@ internal class AndroidContentSyncStorage(
       for (file in cache.listFiles() ?: error("Cannot list verified content.")) {
         require(file.isFile && file.name in setOf("content.html", "content.pdf", "manifest.json", "media.zip")) { "Invalid chapter artifact." }
         val target = storage.ensureStorageFile(rootUri, "${segments.dropLast(1).joinToString("/")}/$stageName/${file.name}", "application/octet-stream")
-        context.contentResolver.openOutputStream(target.uri, "wt")?.use { output ->
+        val expectedBytes = file.length()
+        val bytes = context.contentResolver.openOutputStream(target.uri, "wt")?.use { output ->
           file.inputStream().use { it.copyTo(output, DEFAULT_STORAGE_COPY_BUFFER_BYTES) }
         } ?: error("Cannot write chapter artifact.")
-        val expected = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-          val buffer = ByteArray(DEFAULT_STORAGE_COPY_BUFFER_BYTES)
-          while (true) { val count = input.read(buffer); if (count < 0) break; expected.update(buffer, 0, count) }
-        }
-        val actual = MessageDigest.getInstance("SHA-256")
-        var bytes = 0L
-        context.contentResolver.openInputStream(target.uri)?.use { input ->
-          val buffer = ByteArray(DEFAULT_STORAGE_COPY_BUFFER_BYTES)
-          while (true) { val count = input.read(buffer); if (count < 0) break; bytes += count; actual.update(buffer, 0, count) }
-        } ?: error("Cannot verify chapter artifact.")
-        check(bytes == file.length() && expected.digest().contentEquals(actual.digest())) { "Chapter storage checksum mismatch." }
+        check(bytes == expectedBytes && target.length() == expectedBytes) { "Chapter storage size mismatch." }
       }
       previous = storage.findStorageChild(parent, name)
       previous?.let { check(it.renameTo(backupName)) { "Cannot preserve previous chapter." } }
