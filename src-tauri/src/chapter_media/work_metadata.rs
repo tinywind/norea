@@ -111,11 +111,9 @@ fn list_files(root: &Path) -> Result<Vec<String>, String> {
         for work in fs::read_dir(source.path()).map_err(|e| e.to_string())? {
             let work = work.map_err(|e| e.to_string())?;
             if !work.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
-            if work.path().join("novel.json").exists() || work.path().join("novel.json.bak").exists() {
-                let relative = format!("contents/{}/{}/novel.json", source.file_name().to_string_lossy(), work.file_name().to_string_lossy());
-                checked_path(root, &relative)?;
-                paths.push(relative);
-            }
+            let relative = format!("contents/{}/{}/novel.json", source.file_name().to_string_lossy(), work.file_name().to_string_lossy());
+            checked_path(root, &relative)?;
+            paths.push(relative);
         }
     }
     paths.sort();
@@ -155,9 +153,8 @@ fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResu
     if input.operation == "list" { return Ok(WorkMetadataResult { paths: Some(list_files(root)?), ..Default::default() }); }
     if input.operation == "chapters" { return Ok(WorkMetadataResult { paths: Some(list_chapter_files(root, input.path.as_deref().ok_or("work metadata: missing path")?, &input.skip_chapter_directories.unwrap_or_default())?), ..Default::default() }); }
     if input.operation == "register" {
-        let mut directories = CHAPTER_DIRECTORIES.lock().map_err(|_| "work metadata: path registry unavailable")?;
         let incoming = input.chapter_directories.unwrap_or_default();
-        if input.reset.unwrap_or(false) { directories.retain(|(storage_root, _), _| storage_root != root); }
+        let mut validated = Vec::with_capacity(incoming.len());
         for (id, relative) in incoming {
             let parts: Vec<_> = relative.split('/').collect();
             if parts.len() != 4 || parts[0] != "contents" || !parts.iter().all(|part| safe_child(part)) {
@@ -172,8 +169,11 @@ fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResu
                     return Err("work metadata: symbolic chapter directory".into());
                 }
             }
-            directories.insert((root.to_path_buf(), chapter_id), root.join(relative));
+            validated.push(((root.to_path_buf(), chapter_id), root.join(relative)));
         }
+        let mut directories = CHAPTER_DIRECTORIES.lock().map_err(|_| "work metadata: path registry unavailable")?;
+        if input.reset.unwrap_or(false) { directories.retain(|(storage_root, _), _| storage_root != root); }
+        directories.extend(validated);
         return Ok(WorkMetadataResult::default());
     }
     let relative = input.path.ok_or("work metadata: missing path")?;
@@ -241,6 +241,16 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.tmp/work-metadata-tests");
         fs::create_dir_all(&root).unwrap();
         tempfile::tempdir_in(root).unwrap()
+    }
+    #[test]
+    fn lists_work_candidates_without_inspecting_chapter_folders() {
+        let root = fixture();
+        fs::create_dir_all(root.path().join("contents/source/Uninspected/1-Chapter")).unwrap();
+        fs::create_dir_all(root.path().join("contents/source/Ready")).unwrap();
+        fs::write(root.path().join("contents/source/Ready/novel.json"), b"{}").unwrap();
+        assert_eq!(list_files(root.path()).unwrap(), [
+            "contents/source/Ready/novel.json", "contents/source/Uninspected/novel.json",
+        ]);
     }
     #[test]
     fn discovers_cover_files_without_a_descriptor_or_sidecar() {

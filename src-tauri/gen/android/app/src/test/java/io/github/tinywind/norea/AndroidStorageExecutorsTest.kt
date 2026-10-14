@@ -10,6 +10,25 @@ import org.junit.Test
 
 class AndroidStorageExecutorsTest {
   @Test
+  fun foregroundStorageCompletesWhileFolderScanIsBlocked() {
+    val executors = AndroidStorageExecutors()
+    val scanStarted = CountDownLatch(1)
+    val releaseScan = CountDownLatch(1)
+    try {
+      val scan = executors.scans.submit {
+        scanStarted.countDown()
+        releaseScan.await()
+      }
+      assertTrue(scanStarted.await(5, TimeUnit.SECONDS))
+      assertEquals("read", executors.foreground.submit<String> { "read" }.get(1, TimeUnit.SECONDS))
+      releaseScan.countDown()
+      scan.get(5, TimeUnit.SECONDS)
+    } finally {
+      releaseScan.countDown()
+      executors.destroy()
+    }
+  }
+  @Test
   fun foregroundStorageCompletesWhileSnapshotIsBlocked() {
     val executors = AndroidStorageExecutors()
     val snapshotStarted = CountDownLatch(1)
@@ -58,10 +77,10 @@ class AndroidStorageExecutorsTest {
   }
 
   @Test
-  fun destroyInterruptsBothWorkersAndRejectsNewOperations() {
+  fun destroyInterruptsAllWorkersAndRejectsNewOperations() {
     val executors = AndroidStorageExecutors()
-    val operationsStarted = CountDownLatch(2)
-    val operationsInterrupted = CountDownLatch(2)
+    val operationsStarted = CountDownLatch(3)
+    val operationsInterrupted = CountDownLatch(3)
     val releaseOperations = CountDownLatch(1)
     val operation = Runnable {
       operationsStarted.countDown()
@@ -74,6 +93,7 @@ class AndroidStorageExecutorsTest {
     try {
       executors.foreground.execute(operation)
       executors.snapshots.execute(operation)
+      executors.scans.execute(operation)
       assertTrue(operationsStarted.await(5, TimeUnit.SECONDS))
 
       executors.destroy()
@@ -83,6 +103,9 @@ class AndroidStorageExecutorsTest {
       }
       assertThrows(RejectedExecutionException::class.java) {
         executors.snapshots.execute { }
+      }
+      assertThrows(RejectedExecutionException::class.java) {
+        executors.scans.execute { }
       }
     } finally {
       releaseOperations.countDown()

@@ -9,6 +9,12 @@ internal class AndroidStorageExecutors {
   val foreground = Executors.newSingleThreadExecutor { runnable ->
     Thread(runnable, "NoreaStorageBridge").apply { isDaemon = true }
   }
+  val scans = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "NoreaStorageScan").apply {
+      isDaemon = true
+      priority = Thread.MIN_PRIORITY
+    }
+  }
   val snapshots = ThreadPoolExecutor(
     1,
     1,
@@ -25,6 +31,7 @@ internal class AndroidStorageExecutors {
 
   fun destroy() {
     foreground.shutdownNow()
+    scans.shutdownNow()
     snapshots.shutdownNow()
   }
 }

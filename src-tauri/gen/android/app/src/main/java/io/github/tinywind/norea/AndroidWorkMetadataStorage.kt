@@ -21,11 +21,7 @@ internal class AndroidWorkMetadataStorage(
       for (source in storage.listStorageChildren(contents).filter { it.isDirectory }) {
         val sourceDir = storage.storageChildDocumentFile(source) ?: continue
         for (work in storage.listStorageChildren(sourceDir).filter { it.isDirectory }) {
-          val workDir = storage.storageChildDocumentFile(work) ?: continue
-          val names = storage.listStorageChildren(workDir).map { it.name }.toSet()
-          if ("novel.json" in names || "novel.json.bak" in names) {
-            paths.put("contents/${source.name}/${work.name}/novel.json")
-          }
+          paths.put("contents/${source.name}/${work.name}/novel.json")
         }
       }
       return result.put("paths", paths)
