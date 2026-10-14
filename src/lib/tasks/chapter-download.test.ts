@@ -1650,14 +1650,20 @@ describe("enqueueChapterDownload", () => {
     });
   });
 
-  it("recaptures a page plan when verifying source access", async () => {
+  it("verifies the requested source after a page redirects to a new hostname", async () => {
     const confirmSourceAccess = vi.fn(() => true);
-    const setSourceAccessUrl = vi.fn(() => true);
+    const setSourceAccessUrl = vi.fn(
+      (url: string) => new URL(url).hostname === "source.test",
+    );
     const storedHtml = `<img src="norea-media://reader-asset/page.png">`;
     pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
       type: "page",
       url: "https://source.test/chapter/7",
       contentSelector: "article.chapter",
+    });
+    acquisitionMocks.captureChapterPage.mockResolvedValueOnce({
+      baseUrl: "https://source-new.test/chapter/7",
+      content: `<img src="https://cdn.test/page.png?accessKey=signed">`,
     });
     vi.mocked(readStoredChapterPartialContentMirror).mockResolvedValueOnce(
       storedHtml,
@@ -1690,8 +1696,13 @@ describe("enqueueChapterDownload", () => {
 
     expect(acquisitionMocks.captureChapterPage).toHaveBeenCalledOnce();
     expect(confirmSourceAccess).toHaveBeenCalledOnce();
+    expect(setSourceAccessUrl).toHaveBeenCalledExactlyOnceWith(
+      "https://source.test/chapter/7",
+    );
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
+        baseUrl: "https://source-new.test/chapter/7",
+        sourceAccessUrl: "https://source.test/chapter/7",
         html: `<img src="https://cdn.test/page.png?accessKey=signed">`,
         previousHtml: storedHtml,
         repair: false,
@@ -2362,14 +2373,19 @@ describe("enqueueChapterMediaRepair", () => {
     });
   });
 
-  it("recaptures page plans before repairing media", async () => {
+  it.each([false, true])("recaptures media repair pages with verification=%s", async (sourceAccessVerification) => {
     const confirmSourceAccess = vi.fn(() => true);
-    const setSourceAccessUrl = vi.fn(() => true);
+    const setSourceAccessUrl = vi.fn(
+      (url: string) => new URL(url).hostname === "source.test",
+    );
     const setDetail = vi.fn();
     const signal = new AbortController().signal;
     const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
     const capturedHtml = `<img src="https://cdn.test/page.png?accessKey=asset">`;
     const repairedHtml = `<img src="norea-media://reader-asset/page.png">`;
+    const capturedUrl = sourceAccessVerification
+      ? "https://source-new.test/chapter/7?accessKey=fresh"
+      : "https://source.test/chapter/7?accessKey=fresh";
     const pagePlan = {
       type: "page" as const,
       url: "https://source.test/chapter/7?accessKey=chapter",
@@ -2378,7 +2394,7 @@ describe("enqueueChapterMediaRepair", () => {
     };
     pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce(pagePlan);
     acquisitionMocks.captureChapterPage.mockResolvedValueOnce({
-      baseUrl: "https://source.test/chapter/7?accessKey=fresh",
+      baseUrl: capturedUrl,
       content: capturedHtml,
     });
     vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
@@ -2424,6 +2440,7 @@ describe("enqueueChapterMediaRepair", () => {
       setProgress: vi.fn(),
       setSourceAccessUrl,
       signal,
+      sourceAccessVerification,
       taskId: "task-1",
     });
 
@@ -2442,26 +2459,27 @@ describe("enqueueChapterMediaRepair", () => {
     });
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
     expect(setSourceAccessUrl).toHaveBeenNthCalledWith(1, pagePlan.url);
-    expect(setSourceAccessUrl).toHaveBeenNthCalledWith(
-      2,
-      "https://source.test/chapter/7?accessKey=fresh",
+    if (!sourceAccessVerification) {
+      expect(setSourceAccessUrl).toHaveBeenNthCalledWith(2, capturedUrl);
+    }
+    expect(setSourceAccessUrl).toHaveBeenCalledTimes(
+      sourceAccessVerification ? 1 : 2,
     );
-    expect(setSourceAccessUrl).toHaveBeenCalledTimes(2);
-    expect(setSourceAccessUrl.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(setSourceAccessUrl.mock.invocationCallOrder.at(-1)).toBeLessThan(
       confirmSourceAccess.mock.invocationCallOrder[0] ?? Infinity,
     );
     expect(confirmSourceAccess).toHaveBeenCalledOnce();
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
-        baseUrl: "https://source.test/chapter/7?accessKey=fresh",
-        contextUrl: "https://source.test/chapter/7?accessKey=fresh",
+        baseUrl: capturedUrl,
+        contextUrl: capturedUrl,
         html: capturedHtml,
         previousHtml: storedHtml,
         repair: true,
         requestInit: { headers: { Referer: "https://source.test/" } },
         scraperExecutor: "pool:1",
         sourceId: "source-a",
-        sourceAccessUrl: "https://source.test/chapter/7?accessKey=fresh",
+        sourceAccessUrl: sourceAccessVerification ? pagePlan.url : capturedUrl,
       }),
     );
     expect(saveStoredChapterContent).toHaveBeenCalledWith(7, repairedHtml, "html", {

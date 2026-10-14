@@ -1116,12 +1116,14 @@ function enqueueChapterDownloadForExecutor(
             });
             rawContent = captured.content;
             baseUrl = captured.baseUrl;
-            if (setSourceAccessUrl?.(baseUrl) === false) {
-              throw new Error(
-                "Chapter source access URL does not match the verification scope.",
-              );
+            if (!sourceAccessVerification) {
+              if (setSourceAccessUrl?.(baseUrl) === false) {
+                throw new Error(
+                  "Chapter source access URL does not match the verification scope.",
+                );
+              }
+              trustedAccessUrl = baseUrl;
             }
-            trustedAccessUrl = baseUrl;
             confirmSourceAccess?.();
           } else {
             const resource = validateChapterContentResource(
@@ -1307,6 +1309,7 @@ export function enqueueChapterMediaRepair(
       setSourceAccessUrl,
       shouldYield,
       signal,
+      sourceAccessVerification,
       tryStartSourceAccess,
     }) => {
       setChapterDownloadPhase?.("local");
@@ -1412,7 +1415,7 @@ export function enqueueChapterMediaRepair(
               : convertedHtml;
           baseUrl = resource.baseUrl ?? baseUrl;
         }
-        if (baseUrl) {
+        if (baseUrl && !sourceAccessVerification) {
           if (setSourceAccessUrl?.(baseUrl) === false) {
             throw new Error(
               "Chapter source access URL does not match the verification scope.",
