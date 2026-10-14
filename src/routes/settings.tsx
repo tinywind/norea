@@ -730,11 +730,10 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
           <SettingsFieldRow
             label={t("settings.data.pluginVpn.profile.label")}
             description={t("settings.data.pluginVpn.profile.description")}
-            layout="stacked"
           >
             <SettingsWideField>
               <Stack gap="xs">
-                <Text>
+                <Text className="norea-settings-path-value">
                   {status?.profile?.remoteHost ??
                     t("settings.data.pluginVpn.profile.empty")}
                 </Text>
@@ -808,7 +807,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               layout="stacked"
             >
               <SettingsWideField>
-                <Stack gap="xs">
+                <div className="norea-settings-credentials">
                   <TextInput
                     autoComplete="off"
                     label={t("settings.data.pluginVpn.credentials.username")}
@@ -863,7 +862,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                       }));
                     }}
                   />
-                </Stack>
+                </div>
               </SettingsWideField>
             </SettingsFieldRow>
           ) : null}
@@ -1189,9 +1188,7 @@ function DataSettingsSection({
   const [userAgentInput, setUserAgentInput] = useState(userAgent);
 
   return (
-    <Stack gap="md">
-      <PluginVpnSettingsSection isBusy={isBusy} />
-
+    <div className="norea-settings-data">
       <SettingsSection
         title={t("settings.data.backup.title")}
       >
@@ -1200,7 +1197,7 @@ function DataSettingsSection({
           description={t("settings.data.backupFile.description")}
         >
           <SettingsInlineControls>
-            <TextButton onClick={onExport} loading={isBusy} disabled={isBusy}>
+            <TextButton tone="accent" onClick={onExport} loading={isBusy} disabled={isBusy}>
               {t("settings.data.exportBackup")}
             </TextButton>
             <TextButton
@@ -1215,6 +1212,50 @@ function DataSettingsSection({
         </SettingsFieldRow>
       </SettingsSection>
 
+      <ContentServerSettings />
+      <PluginVpnSettingsSection isBusy={isBusy} />
+
+      <SettingsSection title={t("settings.data.network.title")}>
+        <SettingsFieldRow
+          label={t("settings.data.userAgent.label")}
+          description={t("settings.data.userAgent.description")}
+          layout="stacked"
+        >
+          <SettingsWideField>
+            <Stack gap="sm">
+              <Textarea
+                aria-label={t("settings.data.userAgent.label")}
+                value={userAgentInput}
+                autosize
+                minRows={3}
+                onChange={(event) => setUserAgentInput(event.currentTarget.value)}
+              />
+              <SettingsInlineControls>
+                <TextButton
+                  tone="accent"
+                  onClick={() => {
+                    setUserAgent(userAgentInput);
+                    showSettingsToast("green", t("settings.toast.saved"));
+                  }}
+                >
+                  {t("common.save")}
+                </TextButton>
+                <TextButton
+                  variant="default"
+                  onClick={() => {
+                    const userAgent = resetUserAgent();
+                    setUserAgentInput(userAgent);
+                    showSettingsToast("green", t("settings.toast.reset"));
+                  }}
+                >
+                  {t("common.reset")}
+                </TextButton>
+              </SettingsInlineControls>
+            </Stack>
+          </SettingsWideField>
+        </SettingsFieldRow>
+      </SettingsSection>
+
       <SettingsSection
         title={t("settings.data.maintenance.title")}
       >
@@ -1226,6 +1267,7 @@ function DataSettingsSection({
             disabled={isBusy}
             loading={isBusy}
             variant="default"
+            tone="danger"
             onClick={() => {
               onRunMaintenance(
                 "maintenance.clearLibraryMembership",
@@ -1240,7 +1282,7 @@ function DataSettingsSection({
               );
             }}
           >
-            {t("common.clear")}
+            {t("settings.data.libraryMembership.button")}
           </TextButton>
         </SettingsFieldRow>
         <SettingsFieldRow
@@ -1251,11 +1293,12 @@ function DataSettingsSection({
             disabled={isBusy}
             loading={isBusy}
             variant="default"
+            tone="danger"
             onClick={() => {
               onClearDownloadedContent();
             }}
           >
-            {t("common.clear")}
+            {t("settings.data.downloadedContent.button")}
           </TextButton>
         </SettingsFieldRow>
         <SettingsFieldRow
@@ -1295,7 +1338,7 @@ function DataSettingsSection({
               );
             }}
           >
-            {t("common.clear")}
+            {t("settings.data.updatesQueue.button")}
           </TextButton>
         </SettingsFieldRow>
         <SettingsFieldRow
@@ -1306,6 +1349,7 @@ function DataSettingsSection({
             disabled={isBusy}
             loading={isBusy}
             variant="default"
+            tone="danger"
             onClick={() => {
               onRunMaintenance(
                 "maintenance.clearReadingProgress",
@@ -1324,55 +1368,11 @@ function DataSettingsSection({
               );
             }}
           >
-            {t("common.clear")}
+            {t("settings.data.readingProgress.button")}
           </TextButton>
         </SettingsFieldRow>
       </SettingsSection>
-
-      <SettingsSection
-        title={t("settings.data.network.title")}
-      >
-        <SettingsFieldRow
-          label={t("settings.data.userAgent.label")}
-          description={t("settings.data.userAgent.description")}
-          layout="stacked"
-        >
-          <SettingsWideField>
-            <Textarea
-              value={userAgentInput}
-              autosize
-              minRows={3}
-              onChange={(event) => setUserAgentInput(event.currentTarget.value)}
-            />
-          </SettingsWideField>
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("settings.data.saveUserAgent.label")}
-          description={t("settings.data.saveUserAgent.description")}
-        >
-          <SettingsInlineControls>
-            <TextButton
-              onClick={() => {
-                setUserAgent(userAgentInput);
-                showSettingsToast("green", t("settings.toast.saved"));
-              }}
-            >
-              {t("common.save")}
-            </TextButton>
-            <TextButton
-              variant="default"
-              onClick={() => {
-                const userAgent = resetUserAgent();
-                setUserAgentInput(userAgent);
-                showSettingsToast("green", t("settings.toast.reset"));
-              }}
-            >
-              {t("common.reset")}
-            </TextButton>
-          </SettingsInlineControls>
-        </SettingsFieldRow>
-      </SettingsSection>
-    </Stack>
+    </div>
   );
 }
 
@@ -2084,41 +2084,38 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       id: "data",
       title: t("settings.category.data.title"),
       content: (
-        <Stack gap="md">
-          <ContentServerSettings />
-          <DataSettingsSection
-            isBusy={isBusy}
-            onClearDownloadedContent={() => {
-              void clearDownloadedContent();
-            }}
-            onClearWebViewCache={() => {
-              void handleClearWebViewCache();
-            }}
-            onExport={() => {
-              void handleExport();
-            }}
-            onImport={() => {
-              void handleImport();
-            }}
-            onRunMaintenance={(
+        <DataSettingsSection
+          isBusy={isBusy}
+          onClearDownloadedContent={() => {
+            void clearDownloadedContent();
+          }}
+          onClearWebViewCache={() => {
+            void handleClearWebViewCache();
+          }}
+          onExport={() => {
+            void handleExport();
+          }}
+          onImport={() => {
+            void handleImport();
+          }}
+          onRunMaintenance={(
+            kind,
+            title,
+            message,
+            warning,
+            action,
+            successMessage,
+          ) => {
+            void runMaintenance(
               kind,
               title,
               message,
               warning,
               action,
               successMessage,
-            ) => {
-              void runMaintenance(
-                kind,
-                title,
-                message,
-                warning,
-                action,
-                successMessage,
-              );
-            }}
-          />
-        </Stack>
+            );
+          }}
+        />
       ),
     },
     {

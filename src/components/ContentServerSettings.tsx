@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Group, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
+import { Alert, NumberInput, Select, Text, TextInput } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -8,7 +8,7 @@ import {
   syncContentServer,
 } from "../lib/content-sync/sync";
 import { useContentSyncStore } from "../store/content-sync";
-import { SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
+import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 
 export function ContentServerSettings() {
@@ -52,10 +52,9 @@ export function ContentServerSettings() {
 
 
   return (
-    <SettingsSection title={t("contentSync.title")}>
-      <Text size="sm" c="dimmed">{t("contentSync.description")}</Text>
-      <SettingsFieldRow label={t("contentSync.serverUrl")} layout="stacked">
-        <Stack gap="xs">
+    <SettingsSection title={t("contentSync.title")} description={t("contentSync.description")}>
+      <SettingsFieldRow label={t("contentSync.serverUrl")}>
+        <div className="norea-settings-connection">
           <TextInput
             aria-label={t("contentSync.serverUrl")}
             placeholder="http://127.0.0.1:8080"
@@ -63,10 +62,10 @@ export function ContentServerSettings() {
             disabled={disabled}
             onChange={(event) => setUrlDraft(event.currentTarget.value)}
           />
-          <TextButton disabled={disabled || urlDraft === serverUrl} onClick={() => {
+          <TextButton tone="accent" disabled={disabled || urlDraft === serverUrl} onClick={() => {
             void run(async () => { setServerUrl(urlDraft.trim()); });
           }}>{t("common.save")}</TextButton>
-        </Stack>
+        </div>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.deviceName")}>
         <TextInput aria-label={t("contentSync.deviceName")} value={deviceName}
@@ -81,11 +80,6 @@ export function ContentServerSettings() {
           ]}
           onChange={(value) => { if (value === "manual" || value === "periodic" || value === "changes") setSyncMode(value); }} />
       </SettingsFieldRow>
-      <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
-        <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
-          min={1} max={120} allowDecimal={false} allowNegative={false}
-          onChange={(value) => { if (typeof value === "number") setLookupTimeoutSeconds(value); }} />
-      </SettingsFieldRow>
       {syncMode === "periodic" ? (
         <SettingsFieldRow label={t("contentSync.interval")}>
           <NumberInput aria-label={t("contentSync.interval")} value={syncIntervalMinutes}
@@ -93,19 +87,33 @@ export function ContentServerSettings() {
             onChange={(value) => { if (typeof value === "number") setSyncIntervalMinutes(value); }} />
         </SettingsFieldRow>
       ) : null}
-      <Group>
-        <TextButton loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
-          {t("contentSync.syncNow")}
+      <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
+        <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
+          min={1} max={120} allowDecimal={false} allowNegative={false}
+          onChange={(value) => { if (typeof value === "number") setLookupTimeoutSeconds(value); }} />
+      </SettingsFieldRow>
+      <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}>
+        <SettingsInlineControls>
+          <TextButton tone="accent" loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
+            {t("contentSync.syncNow")}
+          </TextButton>
+          <TextButton disabled={disabled || status === "syncing" || !serverUrl} onClick={() => startSync(true)}>
+            {t("contentSync.rescan")}
+          </TextButton>
+        </SettingsInlineControls>
+      </SettingsFieldRow>
+      {status === "syncing" || progress ? (
+        <div className="norea-settings-feedback" role="status">
+          {status === "syncing" ? <Text>{t("contentSync.background")}</Text> : null}
+          {progress ? <Text>{t("contentSync.progress", progress)}</Text> : null}
+        </div>
+      ) : null}
+      {actionError || error ? <Alert className="norea-settings-error" color="red" role="alert">{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
+      <SettingsFieldRow label={t("contentSync.catalog")} description={t("contentSync.browseHint")}>
+        <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>
+          {t("contentSync.browse")}
         </TextButton>
-        <TextButton disabled={disabled || status === "syncing" || !serverUrl} onClick={() => startSync(true)}>
-          {t("contentSync.rescan")}
-        </TextButton>
-      </Group>
-      {status === "syncing" ? <Text size="sm" c="dimmed" role="status">{t("contentSync.background")}</Text> : null}
-      {progress ? <Text size="sm" c="dimmed" role="status">{t("contentSync.progress", progress)}</Text> : null}
-      <Text size="sm" c="dimmed">{t("contentSync.rescanDescription")}</Text>
-      {actionError || error ? <Alert color="red" role="alert">{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
-      <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>{t("contentSync.browse")}</TextButton>
+      </SettingsFieldRow>
     </SettingsSection>
   );
 }

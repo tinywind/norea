@@ -228,6 +228,18 @@
   text-transform: none;
 }
 
+.norea-settings-group-description {
+  color: var(--norea-design-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.5;
+  margin-top: 0.375rem;
+  max-width: 52rem;
+  text-transform: none;
+}
+
 .norea-settings-group-body {
   padding: 0.25rem 0.875rem;
 }
@@ -350,6 +362,121 @@
   font-weight: 700;
   line-height: 1;
   text-align: right;
+}
+
+.norea-settings-data {
+  display: grid;
+  gap: 1rem;
+  margin-inline: auto;
+  max-width: 68rem;
+  min-width: 0;
+  padding: 1rem;
+}
+
+.norea-settings-data > .norea-settings-group {
+  border: 1px solid var(--norea-design-rule);
+  border-radius: 0.3125rem;
+  min-width: 0;
+}
+
+.norea-settings-data .norea-settings-group-body {
+  padding: 0 1rem;
+}
+
+.norea-settings-data .norea-settings-form-row {
+  align-items: start;
+  gap: 0.625rem 1.25rem;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0.875rem 0;
+}
+
+.norea-settings-data .norea-settings-form-description {
+  line-height: 1.5;
+  margin-top: 0.25rem;
+}
+
+.norea-settings-data .norea-settings-form-control {
+  justify-self: stretch;
+  max-width: none;
+  min-width: 0;
+}
+
+.norea-settings-data .norea-settings-form-control :where(.mantine-InputWrapper-root) {
+  width: 100%;
+}
+
+.norea-settings-data .norea-settings-inline-controls {
+  justify-content: flex-start;
+}
+
+.norea-settings-data .norea-text-button:disabled {
+  background: var(--norea-design-panel);
+  border-color: var(--norea-design-rule);
+  color: var(--norea-design-ink-subtle);
+}
+
+.norea-settings-connection {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.norea-settings-connection > .mantine-InputWrapper-root {
+  flex: 1;
+  min-width: 0;
+}
+
+.norea-settings-connection > .norea-text-button {
+  flex: 0 0 auto;
+}
+
+.norea-settings-credentials {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+
+.norea-settings-feedback {
+  background: var(--norea-design-panel);
+  border: 1px solid var(--norea-design-rule);
+  border-radius: 0.3125rem;
+  color: var(--norea-design-ink-muted);
+  display: grid;
+  gap: 0.375rem;
+  margin-block: 0.75rem;
+  overflow-wrap: anywhere;
+  padding: 0.75rem;
+}
+
+.norea-settings-feedback .mantine-Text-root {
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.norea-settings-error {
+  margin-block: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 992px) {
+  .norea-settings-data .norea-settings-form-row[data-layout="inline"][data-copy="visible"] {
+    align-items: center;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+
+  .norea-settings-data .norea-settings-form-row[data-layout="inline"] > .norea-settings-form-control {
+    display: flex;
+    justify-content: flex-end;
+    justify-self: end;
+    max-width: 26rem;
+    width: 100%;
+  }
+
+  .norea-settings-data .norea-settings-inline-controls {
+    justify-content: flex-end;
+  }
 }
 
 .norea-reader-tap-preset-grid {
@@ -524,6 +651,10 @@
 }
 
 @media (max-width: 767px) {
+  .norea-settings-data {
+    padding: 0.75rem;
+  }
+
   .norea-settings-page {
     height: auto;
     min-height: var(--norea-app-content-height);

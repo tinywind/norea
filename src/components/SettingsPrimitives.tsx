@@ -4,6 +4,7 @@ import { ConsolePanel } from "./ConsolePrimitives";
 
 interface SettingsSectionProps {
   children: ReactNode;
+  description?: string;
   title: string;
 }
 
@@ -20,12 +21,20 @@ interface SettingsInlineControlsProps {
 
 export function SettingsSection({
   children,
+  description,
   title,
 }: SettingsSectionProps) {
   return (
     <ConsolePanel
       className="norea-settings-group"
-      title={<Text className="norea-settings-group-title">{title}</Text>}
+      title={
+        <>
+          <Text className="norea-settings-group-title">{title}</Text>
+          {description ? (
+            <Text className="norea-settings-group-description">{description}</Text>
+          ) : null}
+        </>
+      }
     >
       <div className="norea-settings-group-body">{children}</div>
     </ConsolePanel>
