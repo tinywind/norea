@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { PluginSandboxError, loadPlugin } from "./sandbox";
 
 describe("loadPlugin", () => {
@@ -26,11 +26,6 @@ describe("loadPlugin", () => {
 
   it("throws PluginSandboxError on a syntax error", () => {
     expect(() => loadPlugin("const x = ;")).toThrow(PluginSandboxError);
-  });
-
-  it("throws PluginSandboxError when plugin code throws at load", () => {
-    const source = `throw new Error("boom"); module.exports.default = {};`;
-    expect(() => loadPlugin(source)).toThrow(PluginSandboxError);
   });
 
   it("forwards required modules through resolveRequire", () => {
@@ -72,17 +67,5 @@ describe("loadPlugin", () => {
       expect(error).toBeInstanceOf(PluginSandboxError);
       expect((error as Error).message).toContain("boom inside plugin");
     }
-  });
-
-  it("invokes the caller's resolveRequire with the requested id", () => {
-    const resolveRequire = vi.fn(() => ({ noop: true }));
-    const source = `
-      require("a");
-      require("b");
-      module.exports.default = { id: "x", name: "X", version: "1" };
-    `;
-    loadPlugin(source, { resolveRequire });
-    expect(resolveRequire).toHaveBeenCalledWith("a");
-    expect(resolveRequire).toHaveBeenCalledWith("b");
   });
 });

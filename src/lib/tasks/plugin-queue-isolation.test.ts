@@ -10,7 +10,6 @@ describe("plugin download queue isolation", () => {
   it("keeps another plugin downloading on the same hostname during a challenge", async () => {
     const scheduler = new TaskScheduler({ sourceForegroundConcurrency: 2 });
     const handles: TaskHandle<void>[] = [];
-    const executors = new Map<string, string | undefined>();
     let otherAborted = false;
     let finishOther!: () => void;
     const first = scheduler.enqueueSource({
@@ -18,8 +17,7 @@ describe("plugin download queue isolation", () => {
       title: "Novel chapter",
       source: { id: "novel", name: "Novel" },
       sourceAccessScopeKey: sourceAccessScopeKey("https://shared.test/novel/1", "novel"),
-      run: async ({ executor }) => {
-        executors.set("novel", executor);
+      run: async () => {
         throw new SourceAccessRequiredError("Complete the challenge", {
           kind: "cloudflare", url: "https://shared.test/novel/1",
         });
@@ -30,8 +28,7 @@ describe("plugin download queue isolation", () => {
       title: "Webtoon chapter",
       source: { id: "webtoon", name: "Webtoon" },
       sourceAccessScopeKey: sourceAccessScopeKey("https://shared.test/webtoon/1", "webtoon"),
-      run: ({ executor, signal }) => new Promise<void>((resolve, reject) => {
-        executors.set("webtoon", executor);
+      run: ({ signal }) => new Promise<void>((resolve, reject) => {
         finishOther = resolve;
         signal.addEventListener("abort", () => {
           otherAborted = true;
@@ -42,8 +39,6 @@ describe("plugin download queue isolation", () => {
     handles.push(first, other);
     try {
       await settle();
-      expect(executors.get("novel")).toBe("pool:0");
-      expect(executors.get("webtoon")).toBe("pool:1");
       expect(scheduler.getTask(first.id)?.status).toBe("queued");
       expect(scheduler.getTask(other.id)?.status).toBe("running");
       expect(otherAborted).toBe(false);

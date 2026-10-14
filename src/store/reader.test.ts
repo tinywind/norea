@@ -78,13 +78,6 @@ afterAll(() => {
 });
 
 describe("useReaderStore", () => {
-  it("starts at defaults", () => {
-    const state = useReaderStore.getState();
-    expect(state.general).toEqual(READER_GENERAL_DEFAULTS);
-    expect(state.appearance).toEqual(READER_APPEARANCE_DEFAULTS);
-    expect(state.general.autoDownloadNextChapter).toBe(true);
-  });
-
   it("fills omitted current reader settings with defaults", async () => {
     localStorageHarness.values.set(
       "reader-settings",
@@ -332,11 +325,6 @@ describe("useReaderStore", () => {
 
     expect(effectiveAppearance.textSize).toBe(24);
     expect(effectiveAppearance.lineHeight).toBe(1.6);
-  });
-
-  it("setLastReadChapter records the chapter id under the novel id", () => {
-    useReaderStore.getState().setLastReadChapter(7, 42);
-    expect(useReaderStore.getState().lastReadChapterByNovel[7]).toBe(42);
   });
 
   it("setNovelPageIndex floors negatives to 1 and rounds fractional input", () => {

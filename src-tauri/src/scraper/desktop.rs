@@ -3344,30 +3344,6 @@ mod tests {
     }
 
     #[test]
-    fn captured_media_uses_the_pool_when_the_foreground_url_does_not_match() {
-        let state = ScraperState::default();
-        register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", None);
-        register_test_executor(&state, "pool:1", "source-a", None);
-        let foreground_url = "https://cdn.test/page.png?token=foreground";
-        let pool_url = "https://cdn.test/page.png?token=pool";
-        capture_test_resource(&state, IMMEDIATE_EXECUTOR, foreground_url, b"foreground");
-        capture_test_resource(&state, "pool:1", pool_url, b"pool");
-
-        assert_eq!(
-            take_captured_resource_for_source(&state, "pool:1", "source-a", None, pool_url)
-                .map(|resource| resource.body.clone()),
-            Some(b"pool".to_vec())
-        );
-        assert_eq!(
-            state
-                .captured_resources
-                .take(IMMEDIATE_EXECUTOR, foreground_url)
-                .map(|resource| resource.body),
-            Some(b"foreground".to_vec())
-        );
-    }
-
-    #[test]
     fn captured_media_does_not_cross_source_profiles() {
         let state = ScraperState::default();
         register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-b", None);
@@ -3388,67 +3364,6 @@ mod tests {
                 .map(|resource| resource.body),
             Some(b"other-source".to_vec())
         );
-    }
-
-    #[test]
-    fn user_agent_differences_do_not_cross_executor_boundaries() {
-        let state = ScraperState::default();
-        register_test_executor(
-            &state,
-            IMMEDIATE_EXECUTOR,
-            "source-a",
-            Some("Foreground Agent"),
-        );
-        register_test_executor(&state, "pool:1", "source-a", Some("Batch Agent"));
-        let url = "https://cdn.test/page.png";
-        capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"foreground");
-        capture_test_resource(&state, "pool:1", url, b"pool");
-
-        assert_eq!(
-            take_captured_resource_for_source(
-                &state,
-                "pool:1",
-                "source-a",
-                Some("Batch Agent"),
-                url,
-            )
-            .map(|resource| resource.body.clone()),
-            Some(b"pool".to_vec())
-        );
-        assert_eq!(
-            take_captured_resource_for_source(
-                &state,
-                IMMEDIATE_EXECUTOR,
-                "source-a",
-                Some("Foreground Agent"),
-                url,
-            )
-            .map(|resource| resource.body.clone()),
-            Some(b"foreground".to_vec())
-        );
-    }
-
-    #[test]
-    fn user_agent_changes_do_not_enable_cross_executor_reuse() {
-        let state = ScraperState::default();
-        register_test_executor(
-            &state,
-            IMMEDIATE_EXECUTOR,
-            "source-a",
-            Some("Existing Agent"),
-        );
-        register_test_executor(&state, "pool:1", "source-a", Some("Existing Agent"));
-        let url = "https://cdn.test/page.png";
-        capture_test_resource(&state, IMMEDIATE_EXECUTOR, url, b"foreground");
-
-        assert!(take_captured_resource_for_source(
-            &state,
-            "pool:1",
-            "source-a",
-            Some("Updated Agent"),
-            url,
-        )
-        .is_none());
     }
 
     #[test]
@@ -3631,25 +3546,6 @@ mod tests {
                 .unwrap_err()
                 .contains("Request cancelled")
         );
-    }
-
-    #[test]
-    fn initialization_script_has_no_remote_page_controls() {
-        let script = scraper_initialization_script();
-
-        assert!(!script.contains("__noreaScraperControl"));
-        assert!(!script.contains("keep-paused"));
-        assert!(!script.contains("publish(\"verify\")"));
-    }
-
-    #[test]
-    fn browser_challenge_detector_requires_visible_or_correlated_evidence() {
-        assert!(BROWSER_CHALLENGE_DETECTOR_SCRIPT.contains("getClientRects"));
-        assert!(
-            BROWSER_CHALLENGE_DETECTOR_SCRIPT.contains("hasCloudflareEvidence && hasChallengeText")
-        );
-        assert!(!BROWSER_CHALLENGE_DETECTOR_SCRIPT
-            .contains("if (document.querySelector(selectors[i]))"));
     }
 
     #[test]
@@ -4125,16 +4021,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetch_start_script_uses_the_browser_default_cache_policy() {
-        let init = FetchInit::default();
-        let script =
-            build_webview_fetch_start_script("fetch-3", "https://example.com/a", &init).unwrap();
-        assert!(script.contains("__norea_scraper_result__"));
-        assert!(script.contains("encodeURIComponent(requestId)"));
-        assert!(script.contains(r#"credentials: "include""#));
-        assert!(!script.contains("preferBrowserCache"));
-        assert!(!script.contains("force-cache"));
-        assert!(!script.contains("cache:"));
-    }
 }

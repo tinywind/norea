@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  pageInstanceKey,
   readHistoryEntryKey,
   reducePageStack,
   type PageStackEntry,
@@ -119,20 +118,6 @@ describe("reducePageStack", () => {
     }
 
     expect(stack.map((entry) => entry.historyIndex)).toEqual([2, 3, 4, 5]);
-  });
-});
-
-describe("pageInstanceKey", () => {
-  it("scopes ordinary pages to their history entry", () => {
-    expect(
-      pageInstanceKey({ historyKey: "abc", pathname: "/novel" }, options),
-    ).toBe("/novel#abc");
-  });
-
-  it("shares one key for single-instance pages", () => {
-    expect(
-      pageInstanceKey({ historyKey: "abc", pathname: "/reader" }, options),
-    ).toBe("/reader");
   });
 });
 

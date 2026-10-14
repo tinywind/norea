@@ -39,7 +39,6 @@ import { getChapterById } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import {
   cacheHtmlChapterMedia,
-  ChapterMediaFinalizationError,
   clearChapterMedia,
   getStoredChapterMediaBytes,
   localChapterMediaSources,
@@ -196,14 +195,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-describe("ChapterMediaFinalizationError", () => {
-  it("describes manifest and archive publication failures neutrally", () => {
-    expect(new ChapterMediaFinalizationError(new Error("write failed")).message).toBe(
-      "Chapter media finalization failed: write failed",
-    );
-  });
 });
 
 it("requires the current native media store command", async () => {

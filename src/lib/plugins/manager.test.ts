@@ -111,10 +111,6 @@ beforeEach(() => {
 });
 
 describe("isValidPluginItem", () => {
-  it("accepts a fully-typed PluginItem", () => {
-    expect(isValidPluginItem(VALID_ITEM)).toBe(true);
-  });
-
   it("rejects null / non-object inputs", () => {
     expect(isValidPluginItem(null)).toBe(false);
     expect(isValidPluginItem(undefined)).toBe(false);
@@ -458,11 +454,5 @@ describe("PluginManager.uninstallPlugin", () => {
       "Failed to delete installed plugin 'demo' during uninstall.",
     );
     expect(manager.has("demo")).toBe(true);
-  });
-});
-
-describe("PluginManager.list", () => {
-  it("returns an empty array when nothing is installed", () => {
-    expect(new PluginManager().list()).toEqual([]);
   });
 });

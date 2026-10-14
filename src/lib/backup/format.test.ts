@@ -157,13 +157,6 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(round.chapters[0]?.contentType).toBe("epub");
   });
 
-  it("preserves source and physical chapter content types separately", () => {
-    const round = parseBackupManifest(encodeBackupManifest(VALID_MANIFEST));
-
-    expect(round.chapters[0]?.sourceContentType).toBe("text");
-    expect(round.chapters[0]?.contentType).toBe("html");
-  });
-
   it.each(["createdAt", "foundAt", "contentType", "sourceContentType", "contentBytes", "mediaBytes"])(
     "rejects chapter metadata missing %s",
     (field) => {

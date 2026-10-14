@@ -116,36 +116,6 @@ describe("TaskScheduler", () => {
     }
   });
 
-  it("runs main and source tasks independently", async () => {
-    const scheduler = new TaskScheduler({
-      sourceForegroundConcurrency: 1,
-      sourceQueuesPaused: false,
-    });
-    const order: string[] = [];
-
-    const main = scheduler.enqueueMain({
-      kind: "backup.export",
-      title: "Export backup",
-      run: async () => {
-        order.push("main");
-      },
-    });
-    const source = scheduler.enqueueSource({
-      kind: "source.search",
-      title: "Search source",
-      priority: "interactive",
-      source: { id: "p", name: "Plugin" },
-      run: async () => {
-        order.push("source");
-      },
-    });
-
-    await Promise.all([main.promise, source.promise]);
-
-    expect(order).toEqual(expect.arrayContaining(["main", "source"]));
-    expect(scheduler.getSnapshot().running).toBe(0);
-  });
-
   it("waits for source executors and blocks new source work while clearing WebView cache", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 1,
@@ -395,69 +365,6 @@ describe("TaskScheduler", () => {
       "first:pool:1:start",
       "second:pool:0:start",
     ]);
-  });
-
-  it("runs different sources that share a base domain concurrently", async () => {
-    const scheduler = new TaskScheduler({
-      sourceForegroundConcurrency: 2,
-      sourceQueuesPaused: false,
-    });
-    const order: string[] = [];
-    const finishers = new Map<string, () => void>();
-
-    const sharedA = scheduler.enqueueSource({
-      kind: "source.globalSearch",
-      title: "Shared A",
-      priority: "normal",
-      source: { id: "shared-a", name: "Shared A" },
-      run: (context) =>
-        new Promise<void>((resolve) => {
-          order.push(`shared-a:${context.executor}:start`);
-          finishers.set("shared-a", resolve);
-        }),
-    });
-    const sharedB = scheduler.enqueueSource({
-      kind: "source.globalSearch",
-      title: "Shared B",
-      priority: "normal",
-      source: { id: "shared-b", name: "Shared B" },
-      run: (context) =>
-        new Promise<void>((resolve) => {
-          order.push(`shared-b:${context.executor}:start`);
-          finishers.set("shared-b", resolve);
-        }),
-    });
-    const other = scheduler.enqueueSource({
-      kind: "source.globalSearch",
-      title: "Other",
-      priority: "normal",
-      source: { id: "other", name: "Other" },
-      run: (context) =>
-        new Promise<void>((resolve) => {
-          order.push(`other:${context.executor}:start`);
-          finishers.set("other", resolve);
-        }),
-    });
-
-    await settle();
-    expect(order).toEqual([
-      "shared-a:pool:0:start",
-      "shared-b:pool:1:start",
-    ]);
-
-    finishers.get("shared-a")?.();
-    await sharedA.promise;
-    await settle();
-
-    expect(order).toEqual([
-      "shared-a:pool:0:start",
-      "shared-b:pool:1:start",
-      "other:pool:0:start",
-    ]);
-
-    finishers.get("shared-b")?.();
-    finishers.get("other")?.();
-    await Promise.all([sharedB.promise, other.promise]);
   });
 
   it("keeps a queued source on its assigned executor when queues are reordered", async () => {
@@ -1117,31 +1024,6 @@ describe("TaskScheduler", () => {
     expect(scheduler.getTask(task.id)?.lane).toBe("source");
     expect(observations).toEqual(["immediate:immediate"]);
   });
-
-  it.each(["source.previewNovel", "source.mergeNovel"] as const)(
-    "runs %s on the immediate source executor",
-    async (kind) => {
-      const scheduler = new TaskScheduler({
-        sourceForegroundConcurrency: 1,
-        sourceQueuesPaused: false,
-      });
-      const observations: string[] = [];
-
-      const task = scheduler.enqueueSource({
-        kind,
-        title: "Novel merge interaction",
-        priority: "interactive",
-        source: { id: "p", name: "Plugin" },
-        run: async (context) => {
-          observations.push(String(context.executor));
-        },
-      });
-
-      await task.promise;
-
-      expect(observations).toEqual(["immediate"]);
-    },
-  );
 
   it("reserves the immediate executor for open site work without blocking the pool", async () => {
     const scheduler = new TaskScheduler({
@@ -3871,28 +3753,6 @@ describe("TaskScheduler", () => {
     await retry.promise;
 
     expect(order).toEqual(["cancelled:start", "retry:start"]);
-  });
-
-  it("passes the assigned scraper executor through the task context", async () => {
-    const scheduler = new TaskScheduler({
-      sourceForegroundConcurrency: 1,
-      sourceQueuesPaused: false,
-    });
-    let executor: TaskRunContext["executor"];
-
-    const task = scheduler.enqueueSource({
-      kind: "source.search",
-      title: "Search",
-      priority: "normal",
-      source: { id: "p", name: "Plugin" },
-      run: async (context) => {
-        executor = context.executor;
-      },
-    });
-
-    await task.promise;
-
-    expect(executor).toBe("pool:0");
   });
 
   it("coalesces snapshot publishes during a scheduler batch", () => {

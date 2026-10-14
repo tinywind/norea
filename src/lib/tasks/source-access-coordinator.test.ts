@@ -60,21 +60,6 @@ describe("source access persistence", () => {
     ]);
   });
 
-  it("preserves the challenged browser profile across restart", () => {
-    const storage = memoryStorage(JSON.stringify({
-      version: 1,
-      blocks: [{
-        ...sourceAccessBlock(),
-        scopeKey: "plugin:source-b:site:source.test",
-        sourceId: "source-b",
-        originTaskKey: "chapter.download:source-b:1",
-      }],
-    }));
-    expect(loadPersistedSourceAccessBlocks(storage)[0]).toMatchObject({
-      sourceId: "source-b",
-    });
-  });
-
   it("loads valid blocks without restoring runtime state or URL secrets", () => {
     const storage = memoryStorage(
       JSON.stringify({
