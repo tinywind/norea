@@ -84,9 +84,9 @@ fn read_json(path: &Path) -> Result<Value, String> {
     serde_json::from_reader(File::open(path).map_err(failure)?).map_err(failure)
 }
 
-fn media_files(manifest: &Value) -> Result<Vec<(String, u64)>, String> {
-    if manifest["version"] != 1 || manifest["complete"] != true {
-        return Err(failure("chapter media is incomplete"));
+fn media_files(manifest: &Value) -> Result<Vec<String>, String> {
+    if manifest["version"] != 1 {
+        return Err(failure("unsupported chapter media manifest version"));
     }
     let files = manifest["media"]["files"]
         .as_array()
@@ -97,6 +97,9 @@ fn media_files(manifest: &Value) -> Result<Vec<(String, u64)>, String> {
         let name = file["fileName"]
             .as_str()
             .ok_or_else(|| failure("invalid media filename"))?;
+        if file["status"] == "remote" {
+            return Err(failure(format!("media asset is not downloaded: {name}")));
+        }
         safe_path(name)?;
         if name.contains('/')
             || !name
@@ -106,14 +109,9 @@ fn media_files(manifest: &Value) -> Result<Vec<(String, u64)>, String> {
             || file["status"] != "stored"
             || file["path"] != format!("media/{name}")
         {
-            return Err(failure("incomplete or duplicate chapter media"));
+            return Err(failure(format!("invalid or duplicate media entry: {name}")));
         }
-        result.push((
-            name.to_string(),
-            file["bytes"]
-                .as_u64()
-                .ok_or_else(|| failure("invalid media size"))?,
-        ));
+        result.push(name.to_string());
     }
     Ok(result)
 }
@@ -138,18 +136,15 @@ fn validate_chapter_media(source: &Path) -> Result<(), String> {
         return Err(failure("media archive inventory does not match its manifest"));
     }
     let mut media_bytes = 0;
-    for (name, size) in media {
-        if size > MAX_EXPANDED_BYTES - media_bytes {
-            return Err(failure("chapter media exceeds byte limit"));
-        }
-        media_bytes += size;
+    for name in media {
         let file = archive.by_name(&name).map_err(failure)?;
         if file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
             return Err(failure("invalid chapter media artifact"));
         }
-        if file.size() != size {
-            return Err(failure("incomplete media file"));
+        if file.size() > MAX_EXPANDED_BYTES - media_bytes {
+            return Err(failure("chapter media exceeds byte limit"));
         }
+        media_bytes += file.size();
     }
     Ok(())
 }
@@ -761,6 +756,59 @@ mod tests {
     }
 
     #[test]
+    fn chapter_file_transfer_validates_stored_media_without_a_completion_marker() {
+        let root = workspace();
+        fs::write(root.path().join("content.html"), b"<img src=\"norea-media://reader-asset/page.png\">").unwrap();
+        let archive = original_media_archive();
+        fs::write(root.path().join("media.zip"), &archive).unwrap();
+        for complete in [None, Some(false)] {
+            let mut manifest = json!({"version":1,"media":{"files":[
+                {"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}});
+            if let Some(complete) = complete { manifest["complete"] = json!(complete); }
+            let raw = manifest.to_string();
+            fs::write(root.path().join("manifest.json"), &raw).unwrap();
+            let before = fingerprint_directory(root.path()).unwrap();
+            chapter_file_manifest(root.path(), metadata()).unwrap();
+            assert_eq!(fingerprint_directory(root.path()).unwrap(), before);
+            assert_eq!(fs::read_to_string(root.path().join("manifest.json")).unwrap(), raw);
+        }
+        fs::remove_file(root.path().join("media.zip")).unwrap();
+        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+    }
+
+    #[test]
+    fn chapter_file_transfer_reports_remote_assets_even_with_a_completion_marker() {
+        let root = workspace();
+        fs::write(root.path().join("content.html"), b"<img src=\"https://example.com/page.png\">").unwrap();
+        fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":[
+            {"fileName":"page.png","path":"","status":"remote","bytes":0}]}}).to_string()).unwrap();
+        let error = chapter_file_manifest(root.path(), metadata()).unwrap_err();
+        assert!(error.contains("media asset is not downloaded: page.png"), "{error}");
+    }
+
+    #[test]
+    fn chapter_file_transfer_uses_archive_sizes_without_rewriting_cached_sizes() {
+        let root = workspace();
+        fs::write(root.path().join("content.html"), b"<img src=\"norea-media://reader-asset/page.png\">").unwrap();
+        let archive = original_media_archive();
+        fs::write(root.path().join("media.zip"), &archive).unwrap();
+        for bytes in [0, 999] {
+            let manifest = json!({"version":1,"complete":true,"media":{"files":[
+                {"fileName":"page.png","path":"media/page.png","status":"stored","bytes":bytes}]}}).to_string();
+            fs::write(root.path().join("manifest.json"), &manifest).unwrap();
+            chapter_file_manifest(root.path(), metadata()).unwrap();
+            assert_eq!(fs::read_to_string(root.path().join("manifest.json")).unwrap(), manifest);
+            assert_eq!(fs::read(root.path().join("media.zip")).unwrap(), archive);
+        }
+        let mut oversized = archive;
+        let directory = oversized.windows(4).position(|bytes| bytes == b"PK\x01\x02").unwrap();
+        oversized[directory + 24..directory + 28].copy_from_slice(&((MAX_EXPANDED_BYTES + 1) as u32).to_le_bytes());
+        fs::write(root.path().join("media.zip"), oversized).unwrap();
+        let error = chapter_file_manifest(root.path(), metadata()).unwrap_err();
+        assert!(error.contains("chapter media exceeds byte limit"), "{error}");
+    }
+
+    #[test]
     fn chapter_file_transfer_rejects_wrong_body_and_unpacked_legacy_media() {
         let root = workspace();
         fs::write(root.path().join("content.pdf"), b"pdf").unwrap();
@@ -815,7 +863,7 @@ mod tests {
         fs::write(root.path().join("content.html"), b"<p>Original</p>").unwrap();
         let archive = original_media_archive();
         fs::write(root.path().join("media.zip"), &archive).unwrap();
-        for files in [json!([]), json!([{"fileName":"page.png","path":"media/page.png","status":"stored","bytes":6}])] {
+        for files in [json!([]), json!([{"fileName":"missing.png","path":"media/missing.png","status":"stored","bytes":5}])] {
             fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":files}}).to_string()).unwrap();
             assert!(chapter_file_manifest(root.path(), metadata()).is_err());
             assert_eq!(fs::read(root.path().join("media.zip")).unwrap(), archive);
@@ -939,7 +987,8 @@ mod tests {
         fs::create_dir(&source).unwrap();
         fs::create_dir(&stage).unwrap();
         fs::write(source.join("content.html"), "original").unwrap();
-        let manifest = json!({"version":1,"complete":false,"media":{"files":[]}}).to_string();
+        let manifest = json!({"version":1,"complete":true,"media":{"files":[
+            {"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}}).to_string();
         fs::write(source.join("manifest.json"), &manifest).unwrap();
         assert!(snapshot_directory(&source, &stage).is_err());
         assert!(!stage.join("source").exists());

@@ -72,6 +72,10 @@ missing covers; they are not written to this document or sent to the server.
 Local cover data URLs are also cache-only.
 Media `manifest.json` remains a separate chapter-media inventory.
 Text-only chapters do not require that media inventory.
+Backup validates stored media entries against the archive's filenames and uses
+the archive's uncompressed sizes for byte limits. It does not trust or require
+the download checkpoint's `complete` property or cached per-image byte counts.
+Remote-only media entries remain ineligible for complete offline backup.
 
 Metadata is written atomically through a temporary sibling file and rename.
 Identical metadata and cover bytes do not trigger file writes.
