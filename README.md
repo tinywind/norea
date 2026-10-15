@@ -199,9 +199,12 @@ reading state, work metadata, and covers. Whole-work deletion is available only
 in the server admin console.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
-`novel.json` stores its details beside its cover, without a chapter list or source
-cover URL. The plugin ID, source path, and work name are the only required fields;
-a local rescan rebuilds the metadata cache and discovers cover and chapter files.
+`novel.json` stores its details and a `chapters` map of source chapter numbers to
+titles beside its cover. Source metadata fetches update the catalog; downloading
+or deleting chapter files does not change it. No source cover URL is stored.
+The plugin ID, source path, and work name are the only required fields. A local
+rescan restores the catalog and marks chapters downloaded only when their completed
+files are found. The same catalog is backed up to the content server.
 Downloaded chapters are discovered from their existing folders and files.
 These files are authoritative; the app keeps metadata in SQLite for browsing and
 search, including works with no downloaded chapters. Opening saved works does not

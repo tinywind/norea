@@ -19,6 +19,7 @@ const metadata: NovelMetadataV1 = {
   schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
   novel: { name: "Book", author: null, artist: null, summary: null, status: null, rating: null, genres: null, isLocal: false },
   cover: null,
+  chapters: {},
 };
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget()); });
 

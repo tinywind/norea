@@ -224,6 +224,7 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
       if (existing) existing.metadata.cover = await discoverStoredNovelCover(directory, existing.metadata.cover);
       if (await beforeInstall?.(existing) === false) return null;
       return withWorkMetadataRollback(async () => {
+        metadata.chapters = { ...existing?.metadata.chapters, ...metadata.chapters };
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
         else metadata.cover = existing?.metadata.cover ?? null;
         await writeStoredNovelMetadata(directory, metadata, false);

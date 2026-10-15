@@ -104,7 +104,7 @@ export async function syncWorkMetadata(server: string, token: string, upload: bo
           }
           throw error;
         }
-        const installedMetadata = metadata;
+        const installedMetadata = { ...metadata, chapters: { ...current?.metadata.chapters, ...metadata.chapters } };
         assertCurrent();
         const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
         if (incomingFingerprint === expectedFingerprint) {

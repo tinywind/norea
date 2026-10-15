@@ -165,9 +165,9 @@ describe("insertChapterIfAbsent", () => {
 describe("getLatestSourceChapterAnchor", () => {
   it("returns the greatest numeric chapter number and its position", async () => {
     mockSelect.mockResolvedValueOnce([
-      { chapterNumber: "1", position: 1 },
-      { chapterNumber: "3", position: 3 },
-      { chapterNumber: "2", position: 2 },
+      { chapterNumber: "1", position: 1, path: "/chapter/1" },
+      { chapterNumber: "3", position: 3, path: "/chapter/3" },
+      { chapterNumber: "2", position: 2, path: "/chapter/2" },
     ]);
 
     const result = await getLatestSourceChapterAnchor(7);
@@ -185,8 +185,8 @@ describe("getLatestSourceChapterAnchor", () => {
 
   it("returns null when any existing chapter is missing a usable chapter number", async () => {
     mockSelect.mockResolvedValueOnce([
-      { chapterNumber: "1", position: 1 },
-      { chapterNumber: null, position: 2 },
+      { chapterNumber: "1", position: 1, path: "/chapter/1" },
+      { chapterNumber: null, position: 2, path: "/chapter/2" },
     ]);
 
     await expect(getLatestSourceChapterAnchor(7)).resolves.toBeNull();

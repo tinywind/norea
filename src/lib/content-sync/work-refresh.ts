@@ -54,7 +54,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   signal?.throwIfAborted();
   const local = stored.metadata;
   const remote = result.metadata;
-  const metadata = { ...remote, cover: result.cover ? remote.cover : local.cover };
+  const metadata = { ...remote, chapters: { ...local.chapters, ...remote.chapters }, cover: result.cover ? remote.cover : local.cover };
   const coverBytes = result.cover?.bytes ?? localCover;
   let installed = false;
   if (await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {

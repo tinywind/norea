@@ -1,4 +1,5 @@
 import { getDb, runDatabaseTransaction } from "../../db/client";
+import { flushWorkMetadata, knownNovelMetadataDirectory } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
 import { reconcileImportedNovelIdentityInDb } from "../../db/queries/novel-identity";
 import {
@@ -14,6 +15,8 @@ import {
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { markUpdatesIndexDirty } from "../updates/update-index-events";
 import { normalizeSourceAccessRequiredError } from "./source-access";
+import { readStoredNovelMetadata } from "../work-metadata";
+import { isTauriRuntime } from "../tauri-runtime";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 
 export interface SyncNovelFromSourceOptions {
@@ -224,6 +227,12 @@ async function parseNovelForSync(
     return parseFullNovel(plugin, item.path, options.signal);
   }
 
+  if (isTauriRuntime()) {
+    const directory = knownNovelMetadataDirectory({ pluginId: plugin.id, novelPath: item.path });
+    const stored = directory ? await readStoredNovelMetadata(directory) : null;
+    if (!stored || !Object.keys(stored.metadata.chapters).length) return parseFullNovel(plugin, item.path, options.signal);
+  }
+
   const anchor = await getLatestSourceChapterAnchor(existingNovelId);
   if (!anchor) {
     return parseFullNovel(plugin, item.path, options.signal);
@@ -340,6 +349,9 @@ export async function syncNovelFromSource(
         novelId,
       })),
     );
+    await flushWorkMetadata(db, {
+      novelId, chapters: Object.fromEntries(detail.chapters.map(chapter => [String(chapter.chapterNumber), chapter.name])),
+    });
     return {
       changedChapters: chapterMutation.rowsAffected,
       cover: optionalText(novelRow.cover) ?? cover,

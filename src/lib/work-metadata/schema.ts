@@ -17,6 +17,7 @@ export interface NovelMetadataV1 {
     isLocal: boolean;
   };
   cover: { fileName: string; contentType: string | null } | null;
+  chapters: Record<string, string>;
 }
 
 export function safeMetadataChild(value: string): boolean {
@@ -52,6 +53,14 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
   for (const key of ["author", "artist", "summary", "status", "genres"]) text(novel[key] ?? null, true);
   if (novel.rating != null && (typeof novel.rating !== "number" || !Number.isFinite(novel.rating) || novel.rating < 0 || novel.rating > 5)) throw new Error("work metadata: invalid rating");
   if (novel.isLocal != null && typeof novel.isLocal !== "boolean") throw new Error("work metadata: invalid local flag");
+  const chapters: NovelMetadataV1["chapters"] = {};
+  if (value.chapters !== undefined) {
+    for (const [number, name] of Object.entries(record(value.chapters))) {
+      if (!Number.isFinite(Number(number)) || String(Number(number)) !== number) throw new Error("work metadata: invalid chapter number");
+      text(name);
+      chapters[number] = name as string;
+    }
+  }
   let cover: NovelMetadataV1["cover"] = null;
   if (value.cover != null) {
     const input = record(value.cover);
@@ -71,6 +80,7 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
       genres: parsed.novel.genres ?? null, rating: parsed.novel.rating ?? null, isLocal: parsed.novel.isLocal ?? parsed.identity.pluginId === LOCAL_PLUGIN_ID,
     },
     cover,
+    chapters,
   };
 }
 

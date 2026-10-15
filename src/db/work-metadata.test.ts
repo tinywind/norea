@@ -34,6 +34,8 @@ import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover,
 import { getNovelCoverSnapshot, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "../lib/chapter-storage-path";
 import { clearResolvedChapterStorageDirs } from "../lib/chapter-storage-resolution";
+import { syncNovelFromSource } from "../lib/plugins/sync-novel";
+import type { Plugin } from "../lib/plugins/types";
 
 let sqlite: DatabaseSync;
 let db: Database;
@@ -41,7 +43,7 @@ const path = "contents/source/Original-book/novel.json";
 function fixture(): NovelMetadataV1 { return {
   schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
   novel: { name: "Disk title", author: "Writer", artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
-  cover: null,
+  cover: null, chapters: {},
 }; }
 function save(metadata: NovelMetadataV1) { storage.files.set(path, [...new TextEncoder().encode(JSON.stringify(metadata))]); }
 
@@ -76,6 +78,98 @@ it("rebuilds work metadata and completed chapter folders without a DB seed", asy
   expect(chapterStorageRelativeDir({ id: 1, name: "Renamed" }, { id: 1, name: "Renamed" })).toBe("contents/source/Original-book/1-Opening");
 });
 
+it("restores the full catalog with exact titles and only marks discovered bodies downloaded", async () => {
+  save({ ...fixture(), chapters: { "1": "Opening: a question?", "2": "Not downloaded", "3": "The final chapter" } });
+  storage.chapters.set(path, ["contents/source/Original-book/1-Opening/content.html", "contents/source/Original-book/3-Old-title/content.html", "contents/source/Original-book/4-Unlisted/content.html"]);
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT chapter_number,name,is_downloaded FROM chapter ORDER BY CAST(chapter_number AS REAL)").all()).toEqual([
+    { chapter_number: "1", name: "Opening: a question?", is_downloaded: 1 },
+    { chapter_number: "2", name: "Not downloaded", is_downloaded: 0 },
+    { chapter_number: "3", name: "The final chapter", is_downloaded: 1 },
+    { chapter_number: "4", name: "Unlisted", is_downloaded: 1 },
+  ]);
+  const third = sqlite.prepare("SELECT id FROM chapter WHERE chapter_number='3'").get() as { id: number };
+  expect(chapterStorageRelativeDir({ id: 1 }, { id: third.id })).toBe("contents/source/Original-book/3-Old-title");
+  expect(storage.writes).toBe(0);
+});
+
+it("merges fetched chapter titles and preserves them across download changes and file rescans", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const read = () => JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!)));
+  await flushWorkMetadata(db, { novelId: 1, chapters: { "1": "Opening", "2": "Second", "3": "Third" } });
+  expect(read().chapters).toEqual({ "1": "Opening", "2": "Second", "3": "Third" });
+  await flushWorkMetadata(db, { novelId: 1, chapters: { "3": "Renamed third", "4": "Fourth" } });
+  const expected = { "1": "Opening", "2": "Second", "3": "Renamed third", "4": "Fourth" };
+  expect(read().chapters).toEqual(expected);
+  const writes = storage.writes;
+  await flushWorkMetadata(db, { novelId: 1, chapters: { "4": "Fourth" } });
+  await db.execute("UPDATE chapter SET is_downloaded=0"); await flushWorkMetadata(db);
+  await db.execute("DELETE FROM chapter"); await flushWorkMetadata(db);
+  expect(read().chapters).toEqual(expected);
+  expect(storage.writes).toBe(writes);
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 4 });
+});
+
+it("fetches a full catalog before incremental refreshes and publishes source titles to the work file", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const detail = (numbers: number[]) => ({ name: "Disk title", path: "/book", chapters: numbers.map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) });
+  const plugin = { id: "source", parseNovel: vi.fn(async () => detail([1, 2, 3])), parseNovelSince: vi.fn(async () => detail([3, 4])) } as unknown as Plugin;
+  const item = { name: "Disk title", path: "/book" };
+  await syncNovelFromSource(plugin, item, { novelId: 1, chapterRefreshMode: "since" });
+  expect(plugin.parseNovel).toHaveBeenCalledOnce();
+  expect(plugin.parseNovelSince).not.toHaveBeenCalled();
+  await syncNovelFromSource(plugin, item, { novelId: 1, chapterRefreshMode: "since" });
+  expect(plugin.parseNovelSince).toHaveBeenCalledWith("/book", 3);
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).chapters).toEqual({ "1": "Title 1", "2": "Title 2", "3": "Title 3", "4": "Title 4" });
+  expect(sqlite.prepare("SELECT path,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
+    { path: "/chapter/1", is_downloaded: 1 }, { path: "/chapter/2", is_downloaded: 0 }, { path: "/chapter/3", is_downloaded: 0 }, { path: "/chapter/4", is_downloaded: 0 },
+  ]);
+  vi.mocked(plugin.parseNovelSince).mockResolvedValue(detail([4]));
+  const before = sqlite.prepare("SELECT total_changes() AS count").get();
+  await syncNovelFromSource(plugin, item, { novelId: 1, chapterRefreshMode: "since" });
+  expect(sqlite.prepare("SELECT total_changes() AS count").get()).toEqual(before);
+});
+
+it("installs a backed-up catalog without marking unavailable chapters downloaded or dropping known titles", async () => {
+  save({ ...fixture(), chapters: { "1": "Opening", "2": "Second" } }); await initializeWorkMetadata(db);
+  await installStoredNovelMetadata({ ...fixture(), chapters: { "2": "Corrected second", "3": "Third" } });
+  expect(sqlite.prepare("SELECT name,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
+    { name: "Opening", is_downloaded: 1 }, { name: "Corrected second", is_downloaded: 0 }, { name: "Third", is_downloaded: 0 },
+  ]);
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).chapters).toEqual({ "1": "Opening", "2": "Corrected second", "3": "Third" });
+});
+
+it("restores local reading state when a saved catalog rebuilds deleted cache rows", async () => {
+  save({ ...fixture(), chapters: { "1": "Opening", "2": "Second" } }); await initializeWorkMetadata(db);
+  await db.execute("UPDATE chapter SET progress=72,bookmark=1,unread=0,read_at=900 WHERE chapter_number='1'");
+  await db.execute("DELETE FROM chapter");
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(sqlite.prepare("SELECT progress,bookmark,unread,read_at,is_downloaded FROM chapter WHERE chapter_number='1'").get()).toEqual({ progress: 72, bookmark: 1, unread: 0, read_at: 900, is_downloaded: 1 });
+  expect(storage.writes).toBe(0);
+});
+
+it("refreshes the complete source list after restoring a catalog without source chapter paths", async () => {
+  save({ ...fixture(), chapters: { "1": "Opening", "2": "Second", "3": "Third" } }); await initializeWorkMetadata(db);
+  const detail = { name: "Disk title", path: "/book", chapters: [1, 2, 3].map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) };
+  const plugin = { id: "source", parseNovel: vi.fn(async () => detail), parseNovelSince: vi.fn(async () => ({ ...detail, chapters: [detail.chapters[2]!] })) } as unknown as Plugin;
+  await syncNovelFromSource(plugin, { name: "Disk title", path: "/book" }, { novelId: 1, chapterRefreshMode: "since" });
+  expect(plugin.parseNovel).toHaveBeenCalledOnce();
+  expect(sqlite.prepare("SELECT path FROM chapter ORDER BY position").all()).toEqual([{ path: "/chapter/1" }, { path: "/chapter/2" }, { path: "/chapter/3" }]);
+});
+
+it("resumes incremental fetches after a full refresh leaves archived source chapters unresolved", async () => {
+  save({ ...fixture(), chapters: { "1": "Opening", "2": "Removed from the source", "3": "Third" } }); await initializeWorkMetadata(db);
+  const detail = { name: "Disk title", path: "/book", chapters: [1, 3].map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) };
+  const plugin = { id: "source", parseNovel: vi.fn(async () => detail), parseNovelSince: vi.fn(async () => ({ ...detail, chapters: [detail.chapters[1]!] })) } as unknown as Plugin;
+  const options = { novelId: 1, chapterRefreshMode: "since" as const };
+  await syncNovelFromSource(plugin, { name: "Disk title", path: "/book" }, options);
+  await syncNovelFromSource(plugin, { name: "Disk title", path: "/book" }, options);
+  expect(plugin.parseNovel).toHaveBeenCalledOnce();
+  expect(plugin.parseNovelSince).toHaveBeenCalledWith("/book", 3);
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).chapters['2']).toBe("Removed from the source");
+});
+
 it("publishes the first recovered work before reading the next work", async () => {
   save(fixture());
   const secondPath = "contents/source/Second/novel.json";
@@ -98,12 +192,13 @@ it("publishes the first recovered work before reading the next work", async () =
 });
 
 it("batches a cold recovery of a thousand chapters without per-chapter database calls", async () => {
-  save(fixture());
+  save({ ...fixture(), chapters: Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [String(index + 1), `Chapter ${index + 1}`])) });
   storage.chapters.set(path, Array.from({ length: 1001 }, (_, index) => `contents/source/Original-book/${index + 1}-Chapter/content.html`));
   const execute = vi.spyOn(db, "execute");
   await initializeWorkMetadata(db);
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter WHERE is_downloaded=1").get()).toEqual({ count: 1001 });
-  expect(execute.mock.calls.length).toBeLessThan(80);
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 2001 });
+  expect(execute.mock.calls.length).toBeLessThan(100);
   expect(storage.writes).toBe(0);
 });
 
@@ -396,7 +491,7 @@ it("does not export old DB records on startup or when only reading state changes
 it.each(["source", "server"])("restores extensible metadata during %s publication without modifying chapter files", async (origin) => {
   const metadata = fixture();
   const directory = novelStorageRelativeDir({ pluginId: "source", path: "/book", name: metadata.novel.name });
-  const legacy = { ...metadata, novel: { ...metadata.novel, rating: undefined, summary: "Old summary" }, chapters: [{ path: "/old", name: "Old chapter" }], updatedAt: 1 };
+  const legacy = { ...metadata, novel: { ...metadata.novel, rating: undefined, summary: "Old summary" }, extra: [{ name: "Unrelated field" }], updatedAt: 1 };
   storage.files.set(`${directory}/novel.json`, [...new TextEncoder().encode(JSON.stringify(legacy))]);
   const contentPath = `${directory}/1-Opening/content.html`;
   const mediaPath = `${directory}/1-Opening/media.zip`;
@@ -424,16 +519,16 @@ it("does not overwrite a metadata document for another work", async () => {
   await expect(writeStoredNovelMetadata("contents/source/Original-book", fixture())).rejects.toThrow("identity");
   expect(storage.files.get(path)).toEqual(bytes);
 });
-it("keeps plugin chapter lists in the DB while retaining directories on rename", async () => {
+it("does not publish arbitrary chapter cache mutations while retaining directories on rename", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   await db.execute("UPDATE novel SET name='Renamed' WHERE id=1");
   await db.execute("INSERT INTO chapter(novel_id,path,name,position) VALUES(1,'/second','Second',2)");
   await flushWorkMetadata(db);
   expect(novelStorageRelativeDir({ id: 1, name: "Renamed" })).toBe("contents/source/Original-book");
-  expect((await listStoredNovelMetadata())[0]!.metadata).not.toHaveProperty("chapters");
+  expect((await listStoredNovelMetadata())[0]!.metadata.chapters).toEqual({});
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 2 });
   await db.execute("DELETE FROM chapter WHERE path='/second'"); await flushWorkMetadata(db);
-  expect((await listStoredNovelMetadata())[0]!.metadata).not.toHaveProperty("chapters");
+  expect((await listStoredNovelMetadata())[0]!.metadata.chapters).toEqual({});
 });
 it("prevents stale cache overwrites", async () => {
   save(fixture()); await initializeWorkMetadata(db);

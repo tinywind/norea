@@ -19,6 +19,7 @@ const metadata = (name = "Book"): NovelMetadataV1 => ({
   schemaVersion: 1, identity: { pluginId: "example", novelPath: "/book" },
   novel: { name, author: "Author", artist: null, summary: "Summary", status: "Ongoing", rating: 4.5, genres: "Fantasy", isLocal: false },
   cover: { fileName: "cover.png", contentType: "image/png" },
+  chapters: {},
 });
 const memory = new Map<string, string>();
 const localCovers = new Map<string, Uint8Array | null>();
@@ -66,9 +67,10 @@ beforeEach(() => {
 });
 
 it("uploads metadata and cover without any downloaded chapter and skips unchanged uploads", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  const chapters = { "1": "Opening", "2": "Not downloaded", "1000": "Latest chapter" };
+  local = [{ directory: "contents/example/Book-book", metadata: { ...metadata(), chapters } }];
   await syncWorkMetadata("http://server", "device", true);
-  expect(remote).not.toHaveProperty("chapters");
+  expect(remote?.chapters).toEqual(chapters);
   expect(remote).not.toHaveProperty("updatedAt");
   expect(remote?.novel.rating).toBe(4.5);
   expect(remoteCover).toEqual(new Uint8Array([1, 2, 3]));
@@ -79,6 +81,9 @@ it("uploads metadata and cover without any downloaded chapter and skips unchange
   expect(puts).toBe(1);
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(changed).not.toHaveBeenCalled();
+  local = []; memory.clear(); revisions.clear(); localCovers.clear();
+  await syncWorkMetadata("http://server", "device", false);
+  expect(local[0]?.metadata.chapters).toEqual(chapters);
 });
 
 it("keeps local metadata after server work deletion and restores only on explicit rescan", async () => {

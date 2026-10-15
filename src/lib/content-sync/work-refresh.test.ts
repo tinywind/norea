@@ -32,6 +32,7 @@ const local: NovelMetadataV1 = {
   schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
   novel: { name: "Book", author: "Author", artist: null, summary: "Local summary", status: null, rating: null, genres: null, isLocal: false },
   cover: null,
+  chapters: {},
 };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -64,6 +65,15 @@ it("refreshes only the opened work and retains locally known chapters", async ()
   expect(contentServerRequest).toHaveBeenCalledOnce();
   expect(vi.mocked(contentServerRequest).mock.calls[0]![1]).toBe(`/works/${id}`);
   expect(mocks.install.mock.calls[0]![0]).toMatchObject({ identity: local.identity, novel: { summary: "Updated" } });
+});
+
+it("does not reinstall unchanged metadata when the server catalog omits locally known chapters", async () => {
+  const chapters = { "1": "Opening", "2": "Second" };
+  mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata: { ...local, chapters } });
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: await contentWorkId(local.identity), metadata: { ...local, chapters: { "1": "Opening" } }, hasCover: false });
+  mocks.cache.mockResolvedValue(false);
+  expect(await syncServerNovelOnOpen(42)).toBe(false);
+  expect(mocks.commit).not.toHaveBeenCalled();
 });
 
 it("does not try a folder-name work identity after an exact identity misses", async () => {

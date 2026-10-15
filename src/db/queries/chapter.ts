@@ -569,9 +569,9 @@ export async function getLatestSourceChapterAnchor(
 ): Promise<LatestSourceChapterAnchor | null> {
   const db = await getDb();
   const rows = await db.select<
-    { chapterNumber: string | null; position: number }[]
+    { chapterNumber: string | null; position: number; path: string }[]
   >(
-    `SELECT chapter_number AS chapterNumber, position
+    `SELECT chapter_number AS chapterNumber, position, path
      FROM chapter
      WHERE novel_id = $1`,
     [novelId],
@@ -580,6 +580,7 @@ export async function getLatestSourceChapterAnchor(
 
   let latest: LatestSourceChapterAnchor | null = null;
   for (const row of rows) {
+    if (row.path.startsWith("norea-folder:")) continue;
     if (row.chapterNumber === null) return null;
     const chapterNumber = Number(row.chapterNumber);
     if (!Number.isFinite(chapterNumber)) return null;

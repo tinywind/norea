@@ -3,8 +3,8 @@
 ## Contract
 
 `contents/<source>/<work>/novel.json` is the authoritative, portable description
-of a work. Chapter lists remain in the app database; completed chapter files
-can rebuild downloaded chapter entries.
+of a work, including its saved chapter catalog. Recovery caches the catalog in
+SQLite and matches completed chapter files by their source chapter numbers.
 The app database retains queryable metadata as a rebuildable cache. Files win
 when cache and disk differ. Reading progress, bookmarks, library membership,
 and other device preferences stay local and are not sent to the content server.
@@ -36,7 +36,8 @@ the previous file fingerprint to avoid overwriting external edits.
 
 Readers require only `identity.pluginId`, `identity.novelPath`, and `novel.name`.
 `schemaVersion` defaults to 1 when absent; an explicit unsupported version is
-rejected. Other missing values default to null, with `isLocal` defaulting to false.
+rejected. Other missing values default to null, with `isLocal` defaulting to false
+and `chapters` defaulting to an empty map.
 Unknown fields are ignored and omitted on write and transfer. Present supported
 fields must have valid types, and cover filenames must stay within the work folder.
 The normalized document written by the app and server is:
@@ -56,6 +57,7 @@ interface NovelMetadataV1 {
     isLocal: boolean;
   };
   cover: { fileName: string; contentType: string | null } | null;
+  chapters: Record<string, string>;
 }
 ```
 
@@ -73,7 +75,15 @@ Text-only chapters do not require that media inventory.
 
 Metadata is written atomically through a temporary sibling file and rename.
 Identical metadata and cover bytes do not trigger file writes.
-The metadata document has no timestamp or chapter list.
+The metadata document has no update timestamp. `chapters` maps canonical numeric
+source chapter keys to exact titles, including fractional chapter numbers. The
+app writes this map only after source metadata fetches. The first fetch retrieves
+the full source list; incremental fetches merge titles without dropping earlier
+entries. Downloads, deletions, and reading changes never regenerate this map.
+Restoring a backup creates the complete cached catalog, then marks only discovered
+completed chapter files as downloaded. Completed folders missing from the catalog
+are still recovered. Source chapter URLs are not stored in this map; a source
+refresh resolves them after recovery before incremental updates can resume.
 Cache writes must not silently overwrite newer files during startup/rebuild.
 Invalid local metadata is skipped with a path-only warning during scans; valid
 works still load. Storage access errors and duplicate valid work identities
@@ -99,8 +109,14 @@ downloads so catalog-only works display their covers in the app.
   work's metadata supplies the filename. Maximum cover size is 10 MiB.
 - `GET /api/v1/works/:id/cover`: image bytes, using the normal read policy.
 - `GET /api/v1/admin/works?search=&offset=0&limit=50`: console-authenticated
-  `{items, total}`; each item also has `chapterCount` and `downloadedChapters`.
+  `{items, total}`; `chapterCount` counts catalog entries and `downloadedChapters`
+  counts available server copies. Summary metadata omits the chapter map;
+  the Metadata action fetches the full work document on demand.
 - `GET /api/v1/admin/works/:id/cover`: console-authenticated image bytes.
+- `GET /api/v1/admin/works/:id/chapters?search=&offset=0&limit=50`:
+  console-authenticated saved chapter catalog with available server entries
+  containing only `id` and `fileBytes`. Inspect fetches the full chapter details.
+  Chapters without stored bodies have a null entry and cannot be deleted or read.
 
 Metadata and covers are stored in readable work folders. SQLite indexes these
 files and keeps durable change cursors; the files can rebuild the work catalog.
@@ -116,7 +132,9 @@ Folder scanning requires the essential fields in novel.json and does not consult
 an app database. A cover descriptor is optional: readers discover nonempty
 `cover.jpg`, `cover.png`, and other supported image files directly in the work
 folder. An existing declared image takes priority; otherwise filename order
-selects a cover. Chapter entries come from the chapter folders.
+selects a cover. The saved catalog supplies chapter titles; chapter folders
+determine file availability. Uploading a smaller catalog preserves previously
+known titles. Deleting a chapter copy leaves the work catalog unchanged.
 It registers the work and cover even when no complete chapter is present. It
 scans completed chapter folders independently of the work document. Invalid or
 missing metadata is not replaced by database guesses. Existing user folders
@@ -126,7 +144,8 @@ remain read-only scan inputs.
 
 Content opens as a responsive work-cover grid with a grid/list toggle, search,
 chapter counts, and Metadata and Delete actions. A work opens its chapter list
-with Inspect and Delete actions. Metadata is shown as readable fields plus its full JSON;
+with file availability for each catalog chapter. Available copies have Inspect
+and Delete actions; missing copies show Not backed up. Metadata is shown as readable fields plus its full JSON;
 missing covers have a stable placeholder. Image requests use console auth without
 putting session tokens in URLs. Existing console styles and accessibility apply.
 

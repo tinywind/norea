@@ -4,21 +4,31 @@ import { parseNovelMetadata } from "./work-metadata";
 export function metadataFixture() {
   return { schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
     novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
-    cover: null };
+    cover: null, chapters: {} };
 }
 
 describe("portable work metadata", () => {
+  it("preserves the source chapter catalog independently of downloaded files", () => {
+    const chapters = { "1": "Opening: a question?", "2.5": "Interlude", "1000": "Latest chapter" };
+    expect(parseNovelMetadata({ ...metadataFixture(), chapters })).toMatchObject({ chapters });
+  });
+
+  it.each([[[]], [{ "not-a-number": "Chapter" }], [{ "01": "Chapter" }], [{ "1": 123 }]])("rejects an invalid chapter catalog %j", (chapters) => {
+    expect(() => parseNovelMetadata({ ...metadataFixture(), chapters })).toThrow();
+  });
+
   it("restores minimal metadata and ignores unrelated fields and source cover URLs", () => {
     const parsed = parseNovelMetadata({
       identity: { pluginId: "source", novelPath: "/book?exact=1", sourceUrl: "https://removed.test" },
       novel: { name: "Book", cover: "https://removed.test/cover.jpg" },
       cover: { fileName: "cover.jpg", sourceUrl: "https://removed.test/cover.jpg" },
-      updatedAt: 123, chapters: [], inLibrary: true,
+      updatedAt: 123, inLibrary: true,
     });
     expect(parsed).toEqual({
       schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
       novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
       cover: { fileName: "cover.jpg", contentType: "image/jpeg" },
+      chapters: {},
     });
   });
 

@@ -33,9 +33,11 @@ compatibility requirements must be decided explicitly before implementation.
 
 ## Other Formats
 
-- Work metadata version 1 has no chapter list or timestamp. Source chapter
-  lists stay in SQLite; completed local chapter folders can be discovered from
-  the filesystem.
+- Work metadata version 1 stores a `chapters` map from source chapter numbers
+  to titles. Source metadata fetches merge this catalog; downloads, deletions,
+  and reading changes do not edit it. There is no update timestamp. Recovery
+  restores the catalog into SQLite and marks only discovered completed files
+  as downloaded.
 - Content sync shares work metadata and chapter content. Library membership,
   reading progress, bookmarks, and selected reading positions remain local.
 - Upstream app data formats remain out of scope unless the user explicitly
