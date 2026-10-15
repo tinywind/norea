@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => (() => void))[],
-  invalidateQueries: vi.fn(async (_options: { queryKey: readonly unknown[]; refetchType?: string }, _config?: { cancelRefetch: boolean }) => undefined),
+  invalidateQueries: vi.fn<QueryClient["invalidateQueries"]>(),
+  refetchQueries: vi.fn<QueryClient["refetchQueries"]>(),
 }));
 vi.mock("react", async importOriginal => ({
   ...await importOriginal<typeof import("react")>(),
   useEffect: (effect: () => (() => void)) => { mocks.effects.push(effect); },
 }));
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries }) }));
+vi.mock("@tanstack/react-query", async importOriginal => ({
+  ...await importOriginal<typeof import("@tanstack/react-query")>(),
+  useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries, refetchQueries: mocks.refetchQueries }),
+}));
 vi.mock("../../db/client", () => ({ startWorkMetadataRecovery: vi.fn() }));
 import { StorageRecoveryNotifications } from "./StorageRecovery";
 import { useStorageRecoveryStore } from "../../store/storage-recovery";
@@ -16,6 +21,8 @@ import { useStorageRecoveryStore } from "../../store/storage-recovery";
 let cleanup: () => void;
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.effects = [];
+  mocks.invalidateQueries.mockReset().mockResolvedValue(undefined);
+  mocks.refetchQueries.mockReset().mockResolvedValue(undefined);
   useStorageRecoveryStore.setState({ status: "idle", error: null, progress: null });
   StorageRecoveryNotifications();
   cleanup = mocks.effects[0]!();
@@ -43,9 +50,49 @@ it("coalesces rapid results and stops notifications when unmounted", async () =>
   } });
   useStorageRecoveryStore.setState({ status: "complete" });
   await vi.advanceTimersByTimeAsync(100);
-  expect(mocks.invalidateQueries.mock.calls.filter(([options]) => options.queryKey[1] === "library")).toHaveLength(1);
+  expect(mocks.invalidateQueries.mock.calls.filter(([options]) => options?.queryKey?.[1] === "library")).toHaveLength(1);
   cleanup(); mocks.invalidateQueries.mockClear();
   useStorageRecoveryStore.setState({ status: "error", error: "Unavailable" });
   await vi.advanceTimersByTimeAsync(100);
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("updates an open chapter list after recovery without reloading work metadata (pending read: %s)", async (pendingRead) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  mocks.invalidateQueries.mockImplementation((...args) => client.invalidateQueries(...args));
+  mocks.refetchQueries.mockImplementation((...args) => client.refetchQueries(...args));
+  let downloaded = false;
+  let holdNextRead = false;
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+  const readChapters = vi.fn(async () => {
+    const rows = [{ id: 1, isDownloaded: downloaded }];
+    if (holdNextRead) { holdNextRead = false; await readGate; }
+    return rows;
+  });
+  const readNovel = vi.fn(async () => ({ id: 7, name: "Stored work" }));
+  const chapters = new QueryObserver(client, { queryKey: ["novel", "detail", 7, "chapters"], queryFn: readChapters });
+  const novel = new QueryObserver(client, { queryKey: ["novel", "detail", 7], queryFn: readNovel });
+  const unsubscribeChapters = chapters.subscribe(() => undefined);
+  const unsubscribeNovel = novel.subscribe(() => undefined);
+  try {
+    await chapters.refetch(); await novel.refetch();
+    expect(chapters.getCurrentResult().data?.[0]?.isDownloaded).toBe(false);
+    readNovel.mockClear();
+    if (pendingRead) { holdNextRead = true; void chapters.refetch(); }
+    downloaded = true;
+    useStorageRecoveryStore.setState({ status: "scanning", progress: {
+      completedWorks: 1, totalWorks: 10, recoveredWorks: 1, recoveredChapters: 1, skippedWorks: 0, currentWork: "Stored work",
+    } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(chapters.getCurrentResult().data?.[0]?.isDownloaded).toBe(true);
+    expect(readNovel).not.toHaveBeenCalled();
+    expect(useStorageRecoveryStore.getState().status).toBe("scanning");
+    releaseRead();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(chapters.getCurrentResult().data?.[0]?.isDownloaded).toBe(true);
+  } finally {
+    releaseRead();
+    unsubscribeChapters(); unsubscribeNovel(); client.clear();
+  }
 });

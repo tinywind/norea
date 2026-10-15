@@ -16,6 +16,11 @@ export function StorageRecoveryNotifications() {
         void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
       }
       void queryClient.invalidateQueries({ queryKey: ["novel", "detail"], refetchType: "none" });
+      void queryClient.refetchQueries({
+        queryKey: ["novel", "detail"],
+        predicate: query => query.queryKey[3] === "chapters",
+        type: "active",
+      });
     };
     const unsubscribe = useStorageRecoveryStore.subscribe((state, previous) => {
       if (state.progress?.recoveredWorks === previous.progress?.recoveredWorks && state.status !== "complete" && state.status !== "error") return;
