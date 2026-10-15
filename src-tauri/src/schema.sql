@@ -9,6 +9,7 @@ CREATE TABLE `work_metadata_cache_state` (
   CONSTRAINT `work_metadata_cache_state_singleton` CHECK (`id` = 1)
 );
 --> statement-breakpoint
+-- Fingerprints include chapter catalogs; the bootstrap checksum invalidates earlier caches.
 CREATE TABLE `work_metadata_file_cache` (
   `plugin_id` text NOT NULL,
   `path` text NOT NULL,
