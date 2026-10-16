@@ -274,7 +274,7 @@ class AndroidScraperBridge(
         sendError(id, "scraper: expected an HTTP(S) plugin url")
         return@parseCommand
       }
-      val state = queueState(executorFromPayload(json))
+      val state = requestQueueState(executorFromPayload(json), sourceId)
       enqueue(
         state,
         AndroidScraperQueuedAction(
@@ -337,7 +337,7 @@ class AndroidScraperBridge(
     parseCommand(payload, BridgeCapabilities.SCRAPER_FETCH) { json ->
       val id = json.getString("id")
       val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
-      val state = queueState(executorFromPayload(json))
+      val state = requestQueueState(executorFromPayload(json), sourceId)
       enqueue(
         state,
         AndroidScraperQueuedAction(
@@ -357,7 +357,7 @@ class AndroidScraperBridge(
     parseCommand(payload, BridgeCapabilities.SCRAPER_EXTRACT) { json ->
       val id = json.getString("id")
       val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
-      val state = queueState(executorFromPayload(json))
+      val state = requestQueueState(executorFromPayload(json), sourceId)
       enqueue(
         state,
         AndroidScraperQueuedAction(
@@ -376,6 +376,10 @@ class AndroidScraperBridge(
     parseCommand(payload, BridgeCapabilities.SCRAPER_NAVIGATE) { json ->
       val id = json.getString("id")
       val sourceId = sourceIdFromPayload(json, id) ?: return@parseCommand
+      requestQueueState(IMMEDIATE_EXECUTOR, sourceId)
+      if (!browserVisible && promoteScraperAuthentication(queues, sourceId)) {
+        logState(queueState(IMMEDIATE_EXECUTOR), "show blocked worker for source authentication")
+      }
       val state = queueState(IMMEDIATE_EXECUTOR)
       enqueue(
         state,
@@ -589,6 +593,20 @@ class AndroidScraperBridge(
     return queues.getOrPut(key) { AndroidScraperState(key) }
   }
 
+  private fun requestQueueState(key: String, sourceId: String): AndroidScraperState {
+    val foreground = queueState(IMMEDIATE_EXECUTOR)
+    queueState(key)
+    val resumesAuthenticatedSource = key != IMMEDIATE_EXECUTOR && foreground.sourceId == sourceId
+    val replacesForegroundSource = key == IMMEDIATE_EXECUTOR && foreground.sourceId != sourceId
+    if (!browserVisible && foreground.authenticationReturnQueue != null &&
+      (resumesAuthenticatedSource || replacesForegroundSource || key == foreground.authenticationReturnQueue)) {
+      check(restoreScraperAuthentication(queues, if (resumesAuthenticatedSource) key else null)) {
+        "scraper: authentication browser is still in use"
+      }
+    }
+    return queueState(key)
+  }
+
   private fun enqueue(state: AndroidScraperState, action: AndroidScraperQueuedAction) {
     requireMainThread()
     logState(
@@ -776,6 +794,7 @@ class AndroidScraperBridge(
       destroyScraperWebView(state, existing, "source profile switch")
     }
     state.sourceId = sourceId
+    state.pendingChallengeUrl = null
   }
 
   private fun payloadUserAgent(payload: JSONObject): String? {
@@ -1005,13 +1024,13 @@ class AndroidScraperBridge(
     cancelQueuedWhere(state, "scraper: site browser closed") { it.browserAction }
     when (foregroundBlankTiming(state.activeAction?.browserAction)) {
       ForegroundBlankTiming.BEFORE_NEXT_ACTION -> {
-        state.blankBeforeNextAction = true
+        if (state.authenticationReturnQueue == null) state.blankBeforeNextAction = true
         if (state.activeAction?.browserAction == true) {
           cancelActive(state, "scraper: site browser closed")
         }
       }
       ForegroundBlankTiming.AFTER_ACTIVE_ACTION -> {
-        state.blankBeforeNextAction = true
+        if (state.authenticationReturnQueue == null) state.blankBeforeNextAction = true
       }
     }
     hideScraperSurface(state)
@@ -1397,6 +1416,13 @@ class AndroidScraperBridge(
       "runNavigate start id=$id url=$url timeoutMs=$timeoutMs",
       url,
     )
+    // Show the page that raised the challenge, including its tab-local session.
+    if (state.pendingChallengeUrl != null && webView.url == url) {
+      browserVisible = true
+      showScraper()
+      finishSuccess(state, id, true)
+      return
+    }
     hideScraperSurface(state)
     webView.stopLoading()
     webView.settings.apply {
@@ -1629,7 +1655,7 @@ class AndroidScraperBridge(
     if (fetchId != null) abortActiveFetch(state, fetchId)
     state.webView?.webViewClient = makeClient(state, null)
     state.webView?.stopLoading()
-    if (browserAction) state.blankBeforeNextAction = true
+    if (browserAction && state.authenticationReturnQueue == null) state.blankBeforeNextAction = true
     if (id == null) {
       clearTimeout(state)
       state.pendingDocumentReady = null
@@ -1811,7 +1837,12 @@ class AndroidScraperBridge(
     state.webView?.let { profileCookieManager(it).flush() }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")
     clearTimeout(state)
-    if (!state.retainExtractDocument) state.blankBeforeNextAction = true
+    val result = runCatching { JSONObject(payload) }.getOrNull()
+    state.pendingChallengeUrl = if (result?.optString("code") == "manual-action-required") {
+      result.optJSONObject("challenge")?.optString("url")?.takeIf(::isHttpUrl)
+    } else null
+    if (!state.retainExtractDocument && state.pendingChallengeUrl == null &&
+      state.authenticationReturnQueue == null) state.blankBeforeNextAction = true
     finishSuccess(state, activeId, payload)
   }
 
