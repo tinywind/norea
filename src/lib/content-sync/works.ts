@@ -59,6 +59,18 @@ async function saveCache(server: string, cache: WorkSyncCache): Promise<void> {
 }
 export async function getWorkSyncCursor(server: string): Promise<number> { return (await readCache(server)).cursor; }
 
+export async function recordDeletedWorkMetadata(server: string, entry: WorkCatalogEntry): Promise<void> {
+  const metadata = parseNovelMetadata(entry.metadata);
+  if (!entry.deleted || await contentWorkId(metadata.identity) !== entry.id) {
+    throw new Error("Server work deletion does not match its metadata.");
+  }
+  const cache = await readCache(server);
+  cache.deleted[entry.id] = true;
+  delete cache.fingerprints[entry.id];
+  delete cache.fileVersions[identityKey(metadata.identity)];
+  await saveCache(server, cache);
+}
+
 async function rememberInstalledWork(cache: WorkSyncCache, stored: InstalledNovelMetadata, hasServerCover: boolean): Promise<void> {
   const id = await contentWorkId(stored.metadata.identity);
   const identity = identityKey(stored.metadata.identity);

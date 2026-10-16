@@ -140,9 +140,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     clearSelection,
     assignCategoryMutation,
     batchDownloadMutation,
+    batchDownloadAvailability,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
-  } = useLibrarySelection(libraryFilter, sortOrder);
+  } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
@@ -429,8 +430,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 </span>
                 <div className="norea-library-selection-actions">
                   <LibraryBatchDownloadPicker
+                    available={batchDownloadAvailability.data === true}
                     onDownload={(mode) => batchDownloadMutation.mutate(mode)}
-                    preparing={batchDownloadMutation.isPending}
+                    preparing={
+                      batchDownloadMutation.isPending ||
+                      batchDownloadAvailability.isPending
+                    }
                     t={t}
                   />
                   <SelectionCategoryPicker

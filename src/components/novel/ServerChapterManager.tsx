@@ -12,6 +12,7 @@ import { describeError } from "../../lib/errors";
 import { useContentSyncStore } from "../../store/content-sync";
 import { StateView } from "../AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
+import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
 import { TextButton } from "../TextButton";
 
 interface ServerChapterManagerProps {
@@ -23,18 +24,19 @@ interface ServerChapterManagerProps {
 export function ServerChapterManager({ novel, source, active }: ServerChapterManagerProps) {
   const { t } = useTranslation();
   const server = useContentSyncStore(state => state.serverUrl);
+  const sourceServer = source?.serverUrl ?? server;
   const [managedSource, setManagedSource] = useState<ServerNovelSource | null>(null);
   const presence = useQuery({
-    queryKey: ["content-server", "manage-work", server, novel.pluginId, novel.path],
+    queryKey: ["content-server", "manage-work", sourceServer, novel.pluginId, novel.path],
     queryFn: async ({ signal }) => {
-      try { return await findServerWork(server, { pluginId: novel.pluginId, novelPath: novel.path }, signal); }
-      catch { return null; } // Background discovery must not surface server errors on the work page.
+      try { return await findServerWork(sourceServer, { pluginId: novel.pluginId, novelPath: novel.path }, signal); }
+      catch { return source ?? null; } // Background discovery must not surface server errors on the work page.
     },
-    enabled: active && !!server && !source,
+    enabled: active && !!sourceServer,
     staleTime: 30_000,
     retry: false,
   });
-  const available = source ?? presence.data;
+  const available = presence.data === undefined ? source : presence.data;
   return <>
     {available ? <TextButton size="sm" onClick={() => setManagedSource({ ...available })}>
       {t("contentSync.manageChapters")}
@@ -49,6 +51,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [confirmation, setConfirmation] = useState<readonly string[] | null>(null);
+  const [workDeletionActive, setWorkDeletionActive] = useState(false);
   const queryKey = ["content-server", source.serverUrl, "managed-chapters", source.workId];
   const chapters = useQuery({
     queryKey: [...queryKey, page],
@@ -74,36 +77,43 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
     },
   });
   usePageBackNavigation(() => {
+    if (workDeletionActive) return false;
     if (remove.isPending) return true;
     if (confirmation) setConfirmation(null);
     else onClose();
     return true;
   });
-  const unavailable = chapters.isFetching || !!chapters.error || remove.isPending;
+  const busy = remove.isPending || workDeletionActive;
+  const unavailable = chapters.isFetching || !!chapters.error || busy;
   const refresh = () => { setSelected(new Set()); remove.reset(); void chapters.refetch(); };
   const changePage = (next: number) => { setSelected(new Set()); remove.reset(); setPage(next); };
   const error = remove.error ?? chapters.error;
-  return <Modal opened onClose={onClose} fullScreen title={t("contentSync.manageChapters")}
+  const close = () => { if (!busy) onClose(); };
+  return <Modal opened onClose={close} fullScreen title={t("contentSync.manageChapters")}
     classNames={{ inner: "norea-server-management-modal", content: "norea-server-management-dialog" }}
-    closeOnEscape={!confirmation && !remove.isPending} withCloseButton={!remove.isPending}>
+    closeOnEscape={!confirmation && !busy} withCloseButton={!busy}>
     <Stack className="norea-server-management" gap="md">
       <ConsoleSectionHeader title={name} eyebrow={t("contentSync.manageChapters")}
-        actions={<TextButton onClick={onClose} disabled={remove.isPending}>{t("contentSync.backToWork")}</TextButton>} />
+        actions={<TextButton onClick={close} disabled={busy}>{t("contentSync.backToWork")}</TextButton>} />
       <ConsolePanel p="md">
         <Stack gap="xs">
           <Group gap="sm"><Badge variant="light">{t("contentSync.serverDataOnly")}</Badge>
             <Text className="norea-server-address" size="sm" c="dimmed">{source.serverUrl}</Text></Group>
           <Text size="sm">{t("contentSync.manageChaptersHint")}</Text>
+          <Group>
+            <ServerWorkDeleteButton source={source} name={name} disabled={remove.isPending || confirmation !== null}
+              onOpenChange={setWorkDeletionActive} onDeleted={onClose} />
+          </Group>
         </Stack>
       </ConsolePanel>
       <ConsolePanel className="norea-server-chapters-panel">
         <ConsoleSectionHeader title={t("contentSync.serverChapters")} count={t("contentSync.catalogCount", { count: chapters.data?.total ?? 0 })}
-          actions={<TextButton size="sm" onClick={refresh} disabled={chapters.isFetching || remove.isPending}>{t("common.refresh")}</TextButton>} />
+          actions={<TextButton size="sm" onClick={refresh} disabled={chapters.isFetching || busy}>{t("common.refresh")}</TextButton>} />
         <div className="norea-server-selection-bar">
           <Text size="sm" aria-live="polite">{t("novel.selection.selectedCount", { count: selectedIds.length })}</Text>
           <Group gap="xs" wrap="wrap">
             <TextButton size="sm" disabled={unavailable || !rows.length} onClick={() => setSelected(new Set(rows.map(chapter => chapter.id)))}>{t("contentSync.selectPage")}</TextButton>
-            <TextButton size="sm" disabled={remove.isPending || !selectedIds.length} onClick={() => setSelected(new Set())}>{t("novel.selection.clearSelected")}</TextButton>
+            <TextButton size="sm" disabled={busy || !selectedIds.length} onClick={() => setSelected(new Set())}>{t("novel.selection.clearSelected")}</TextButton>
             <TextButton size="sm" tone="danger" disabled={unavailable || !selectedIds.length} loading={remove.isPending}
               onClick={() => setConfirmation(selectedIds)}>{t("contentSync.deleteSelectedServer", { count: selectedIds.length })}</TextButton>
           </Group>

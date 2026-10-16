@@ -13,7 +13,7 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint } from "../../db/work-metadata";
-import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
+import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
   schemaVersion: 1, identity: { pluginId: "example", novelPath: "/book" },
@@ -109,6 +109,33 @@ it("keeps local metadata after server work deletion and restores only on explici
   await syncWorkMetadata("http://server", "device", true, undefined, true);
   expect(puts).toBe(1);
   expect(nativeFetch).toHaveBeenCalledWith(`http://server/api/v1/works/${id}?restore=true`, expect.objectContaining({ method: "PUT" }));
+});
+
+it("records an app-initiated work deletion without advancing past unseen changes or touching local files", async () => {
+  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  await syncWorkMetadata("http://server", "device", true);
+  const originalLocal = structuredClone(local);
+  const id = await contentWorkId(metadata().identity);
+  const key = "norea-content-works:http://server";
+  const cursor = JSON.parse(memory.get(key)!).cursor;
+  await recordDeletedWorkMetadata("http://server", { id, sequence: sequence + 10, metadata: metadata(), hasCover: false, deleted: true });
+  const saved = JSON.parse(memory.get(key)!);
+  expect(saved.cursor).toBe(cursor);
+  expect(saved.deleted[id]).toBe(true);
+  expect(saved.fingerprints[id]).toBeUndefined();
+  expect(saved.fileVersions[JSON.stringify(["example", "/book"])]).toBeUndefined();
+  remote = undefined;
+  expect(await syncWorkMetadata("http://server", "device", true)).toEqual(new Set([id]));
+  expect(puts).toBe(1);
+  expect(local).toEqual(originalLocal);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+});
+
+it("rejects invalid work deletion responses without changing the sync cache", async () => {
+  const id = await contentWorkId(metadata().identity);
+  await expect(recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: false })).rejects.toThrow("deletion");
+  await expect(recordDeletedWorkMetadata("http://server", { id: "other-work", sequence: 1, metadata: metadata(), hasCover: false, deleted: true })).rejects.toThrow("deletion");
+  expect(writeContentSyncCache).not.toHaveBeenCalled();
 });
 
 it("advances past an in-flight work record whose cover and work were deleted", async () => {

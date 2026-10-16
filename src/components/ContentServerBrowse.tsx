@@ -13,6 +13,7 @@ import { StateView } from "./AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "./ConsolePrimitives";
 import { ContentServerCover } from "./ContentServerCover";
 import { SearchBar } from "./SearchBar";
+import { ServerWorkDeleteButton } from "./ServerWorkDeleteButton";
 import { TextButton } from "./TextButton";
 
 export function ContentServerBrowse({ active }: { active: boolean }) {
@@ -25,7 +26,8 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("");
-  useEffect(() => { setSource(""); setQuery(""); setDraft(""); }, [server]);
+  const [deletingWorkId, setDeletingWorkId] = useState<string | null>(null);
+  useEffect(() => { setSource(""); setQuery(""); setDraft(""); setDeletingWorkId(null); }, [server]);
   const device = useQuery({
     queryKey: ["content-server", server, "device", deviceName],
     queryFn: () => registerContentDevice(server, deviceName),
@@ -54,6 +56,11 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
   });
   const error = device.error ?? sources.error ?? works.error ?? open.error;
   const items = works.data?.pages.flatMap(page => page.items) ?? [];
+  useEffect(() => {
+    if (deletingWorkId && !works.data?.pages.some(page => page.items.some(work => work.id === deletingWorkId))) {
+      setDeletingWorkId(null);
+    }
+  }, [deletingWorkId, works.data]);
   if (!server) return <StateView title={t("contentSync.notConfigured")} message={t("contentSync.configureHint")} />;
   return (
     <div className="norea-source-workbench">
@@ -76,14 +83,19 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
         {!error && enabled && !works.isLoading && items.length === 0 ? <StateView title={t("source.noResults")} /> : null}
         <div className="norea-source-grid">
           {items.map(work => (
-            <button type="button" className="norea-source-card" key={work.id} disabled={open.isPending} onClick={() => open.mutate(work)}>
-              <span className="norea-source-cover-frame">
-                <ContentServerCover server={server} token={device.data!} work={work} />
-                {isInLibrary(work.identity.pluginId, work.identity.novelPath) ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><LibraryAddedGlyph /></span> : null}
-              </span>
-              <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
-              <span className="norea-source-card-path">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
-            </button>
+            <article className="norea-content-server-work" key={`${server}:${work.id}`}>
+              <button type="button" className="norea-source-card" disabled={open.isPending || deletingWorkId !== null} onClick={() => open.mutate(work)}>
+                <span className="norea-source-cover-frame">
+                  <ContentServerCover server={server} token={device.data!} work={work} />
+                  {isInLibrary(work.identity.pluginId, work.identity.novelPath) ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><LibraryAddedGlyph /></span> : null}
+                </span>
+                <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
+                <span className="norea-source-card-path">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
+              </button>
+              <ServerWorkDeleteButton source={{ serverUrl: server, workId: work.id }} name={work.novel.name} compact
+                disabled={open.isPending || (deletingWorkId !== null && deletingWorkId !== work.id)}
+                onOpenChange={opened => setDeletingWorkId(current => opened ? work.id : current === work.id ? null : current)} />
+            </article>
           ))}
         </div>
         {open.isPending ? <Group p="sm"><Loader size="sm" /><Text>{t("common.loading")}</Text></Group> : null}

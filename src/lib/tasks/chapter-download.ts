@@ -1688,6 +1688,28 @@ export function getChapterDownloadStatus(
   return task ? (statusFromTask(task) ?? undefined) : undefined;
 }
 
+/** Includes reserved batch jobs before their tasks or database rows exist. */
+export function isChapterDownloadQueued(chapterId: number): boolean {
+  if (pendingBackendChapterDownloadJobsById.has(chapterId)) return true;
+  for (const state of chapterDownloadBatchStates.values()) {
+    if (
+      !state.cancelRequested &&
+      !state.cancelledChapterIds.has(chapterId) &&
+      !state.settledChapterIds.has(chapterId) &&
+      state.queuedChapterIds.has(chapterId)
+    ) {
+      return true;
+    }
+  }
+  return [
+    chapterDownloadDedupeKey(chapterId),
+    chapterMediaRepairDedupeKey(chapterId),
+  ].some((key) => {
+    const task = taskScheduler.getTaskByDedupeKey(key);
+    return task?.status === "queued" || task?.status === "running";
+  });
+}
+
 export function getChapterMediaRepairStatus(
   chapterId: number,
 ): ChapterDownloadStatus | undefined {

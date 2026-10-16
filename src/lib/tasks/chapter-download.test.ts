@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SourceTaskSpec } from "./scheduler";
+import { taskScheduler, type SourceTaskSpec } from "./scheduler";
 
 const schedulerMocks = vi.hoisted(() => ({
   batch: vi.fn((run: () => void) => run()),
@@ -131,6 +131,7 @@ import {
   enqueueChapterMediaRepair,
   discardQueuedChapterDownloads,
   getActiveChapterDownloadBatchProgress,
+  isChapterDownloadQueued,
   startChapterDownloadQueueExecutor,
   subscribeChapterDownloadBatchesSettled,
   waitForChapterDownloadQueueMutations,
@@ -187,6 +188,7 @@ function installBrowserHarness(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(taskScheduler.getTaskByDedupeKey).mockReset();
   backendQueueValues.clear();
   installBrowserHarness();
   capturedSpec = null;
@@ -291,6 +293,48 @@ beforeEach(() => {
     html: `<article class="reader-epub-content" data-epub-rendered="true"></article>`,
     mediaBytes: 0,
     storedMediaCount: 0,
+  });
+});
+
+describe("chapter download queue membership", () => {
+  it.each(["queued", "running", "succeeded", "failed", "cancelled"] as const)(
+    "uses active task state instead of retained %s history",
+    (status) => {
+      vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) =>
+        key === "chapter.download:900001" ? { status } as never : undefined,
+      );
+      expect(isChapterDownloadQueued(900001)).toBe(status === "queued" || status === "running");
+    },
+  );
+
+  it("reserves an unmaterialized batch job and releases an individually cancelled job", async () => {
+    const first = createDeferred<void>();
+    schedulerMocks.enqueueSource.mockReturnValue({ id: "reservation", promise: first.promise });
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [900002, 900003].map((id) => ({
+        id, pluginId: "source-a", chapterPath: `/chapter/${id}`, title: `Chapter ${id}`,
+      })),
+      title: "Reserved batch",
+      windowSize: 1,
+    });
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledOnce();
+    expect(isChapterDownloadQueued(900003)).toBe(true);
+
+    discardQueuedChapterDownloads([900003]);
+    expect(isChapterDownloadQueued(900003)).toBe(false);
+    expect(isChapterDownloadQueued(900002)).toBe(true);
+
+    first.resolve();
+    await handle.promise;
+    expect(isChapterDownloadQueued(900002)).toBe(false);
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an active media repair out of a new download batch", () => {
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) =>
+      key === "chapter.repairMedia:900004" ? { status: "running" } as never : undefined,
+    );
+    expect(isChapterDownloadQueued(900004)).toBe(true);
   });
 });
 

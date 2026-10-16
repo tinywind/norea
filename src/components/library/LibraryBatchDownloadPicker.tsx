@@ -12,6 +12,7 @@ interface LibraryBatchDownloadOptionConfig {
 }
 
 interface LibraryBatchDownloadPickerProps {
+  available: boolean;
   onDownload: (mode: LibraryBatchDownloadMode) => void;
   preparing: boolean;
   t: TranslateFn;
@@ -41,15 +42,17 @@ const LIBRARY_BATCH_DOWNLOAD_OPTIONS: LibraryBatchDownloadOptionConfig[] = [
 ];
 
 export function LibraryBatchDownloadPicker({
+  available,
   onDownload,
   preparing,
   t,
 }: LibraryBatchDownloadPickerProps) {
   const [opened, setOpened] = useState(false);
+  const disabled = preparing || !available;
 
   return (
     <Popover
-      opened={opened}
+      opened={opened && !disabled}
       onChange={setOpened}
       position="bottom-end"
       shadow="md"
@@ -58,11 +61,15 @@ export function LibraryBatchDownloadPicker({
       <Popover.Target>
         <IconButton
           className="norea-library-selection-icon"
-          disabled={preparing}
+          disabled={disabled}
           label={t("library.batchDownload.open")}
           onClick={() => setOpened((current) => !current)}
           size="sm"
-          title={t("library.batchDownload.open")}
+          title={t(
+            available
+              ? "library.batchDownload.open"
+              : "library.batchDownload.unavailable",
+          )}
         >
           <DownloadGlyph />
         </IconButton>
@@ -72,7 +79,7 @@ export function LibraryBatchDownloadPicker({
           {LIBRARY_BATCH_DOWNLOAD_OPTIONS.map((option) => (
             <UnstyledButton
               className="norea-library-batch-download-option"
-              disabled={preparing}
+              disabled={disabled}
               key={option.mode}
               onClick={() => {
                 onDownload(option.mode);

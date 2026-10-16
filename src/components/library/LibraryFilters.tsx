@@ -17,6 +17,8 @@ export const SORT_LABEL_KEYS: Record<LibrarySortOrder, TranslationKey> = {
   nameDesc: "library.sort.nameDesc",
   downloadedAsc: "library.sort.downloadedAsc",
   downloadedDesc: "library.sort.downloadedDesc",
+  undownloadedAsc: "library.sort.undownloadedAsc",
+  undownloadedDesc: "library.sort.undownloadedDesc",
   totalChaptersAsc: "library.sort.totalChaptersAsc",
   totalChaptersDesc: "library.sort.totalChaptersDesc",
   unreadChaptersAsc: "library.sort.unreadChaptersAsc",

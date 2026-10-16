@@ -3,8 +3,8 @@ import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useState } from "react";
 import { addNovelsToCategory } from "../../db/queries/category";
 import {
-  listChaptersByNovel,
-  type ChapterListRow,
+  listLibraryDownloadChapters,
+  type LibraryDownloadChapter,
 } from "../../db/queries/chapter";
 import {
   getNovelById,
@@ -22,10 +22,12 @@ import {
   getLibraryBatchDownloadTargets,
   type LibraryBatchDownloadMode,
 } from "./library-batch-download";
+import { useLibraryDownloadAvailability } from "./use-library-download-availability";
 
 export function useLibrarySelection(
   libraryFilter: LibraryNovelRefreshFilter,
   sortOrder: LibrarySortOrder,
+  active = true,
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -38,6 +40,10 @@ export function useLibrarySelection(
   } = libraryFilter;
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
+  );
+  const batchDownloadAvailability = useLibraryDownloadAvailability(
+    selectedIds,
+    active,
   );
   useEffect(() => {
     setSelectedIds(new Set());
@@ -67,10 +73,9 @@ export function useLibrarySelection(
   const batchDownloadMutation = useMutation({
     mutationFn: async (mode: LibraryBatchDownloadMode) => {
       const batchSources: Array<{
-        chapters: ChapterListRow[];
+        chapters: LibraryDownloadChapter[];
         novel: Pick<LibraryNovel, "id" | "name" | "path" | "pluginId">;
       }> = [];
-      let total = 0;
       const lastReadChapterByNovel =
         useReaderStore.getState().lastReadChapterByNovel;
 
@@ -78,7 +83,7 @@ export function useLibrarySelection(
         const novel = await getNovelById(novelId);
         if (!novel || novel.isLocal) continue;
 
-        const chapters = await listChaptersByNovel(novel.id);
+        const chapters = await listLibraryDownloadChapters(novel.id);
         const targetChapters = getLibraryBatchDownloadTargets(
           mode,
           chapters,
@@ -90,14 +95,11 @@ export function useLibrarySelection(
             chapters: targetChapters,
             novel,
           });
-          total += targetChapters.length;
         }
       }
 
-      if (total === 0) return 0;
-
       const chapterDownloadJobs = batchSources.flatMap(({ chapters, novel }) =>
-        chapters.map((chapter) => ({
+        getLibraryBatchDownloadTargets("all", chapters, undefined).map((chapter) => ({
           id: chapter.id,
           pluginId: novel.pluginId,
           chapterPath: chapter.path,
@@ -110,6 +112,8 @@ export function useLibrarySelection(
           title: t("tasks.task.downloadChapter", { name: chapter.name }),
         })),
       );
+      const total = chapterDownloadJobs.length;
+      if (total === 0) return 0;
 
       const handle = enqueueChapterDownloadBatch({
         jobs: chapterDownloadJobs,
@@ -117,8 +121,24 @@ export function useLibrarySelection(
         title: t("tasks.task.downloadChapterBatch", { count: total }),
         total,
       });
-      const result = await handle.promise;
-      return result.total;
+      void handle.promise
+        .finally(() =>
+          queryClient.invalidateQueries({ queryKey: ["novel", "library"] }),
+        )
+        .catch(() => undefined);
+      return total;
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["novel", "library", "batch-download"],
+      });
+    },
+    onError: (error) => {
+      notifications.show({
+        color: "red",
+        title: t("library.batchDownload.open"),
+        message: describeError(error),
+      });
     },
   });
 
@@ -178,6 +198,7 @@ export function useLibrarySelection(
     clearSelection,
     assignCategoryMutation,
     batchDownloadMutation,
+    batchDownloadAvailability,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
   };

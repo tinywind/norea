@@ -33,6 +33,7 @@ webtoons or read manga and comics page by page.
 
 - Browse and search installed reading sources.
 - Add novels to your library and organize them with categories.
+- Sort your library by undownloaded chapter count, from fewest or most first.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
 - Open TXT, Markdown, EPUB, and PDF files with installed Windows or Android builds,
   add them as chapters of the shared `local` work, and open the selected file in the reader.
@@ -46,6 +47,8 @@ webtoons or read manga and comics page by page.
 - Change themes, font size, text color, tap zones, and keyboard navigation.
 - Track reading progress, history, unread chapters, and downloaded chapters.
 - Download chapters for later reading.
+  Library batch downloads remain available whenever selected works have
+  undownloaded chapters outside the current download queue.
 - Share complete chapters through an optional [content server](docs/content-sync.md).
   Browse its works under Browse -> Content server, add them to your library, and
   download chapters without waiting for a full sync. Devices register
@@ -194,9 +197,13 @@ leaves the server copy intact. The server keeps one complete copy per chapter.
 The app checks for that copy before creating a snapshot or uploading files.
 To replace a server copy, open **Manage server data** from the work page and
 select chapters in the separate server list. Confirm **Delete from server**,
-then use **Rescan local files and sync**. Server deletion preserves local files,
-reading state, work metadata, and covers. Whole-work deletion is available only
-in the server admin console.
+then use **Sync now** or wait for the configured sync mode. Chapter deletion
+preserves local files, reading state, work metadata, and covers. To remove an
+entire server work, choose **Delete work from server** in Browse -> Content server
+or in the work's **Manage server data** page. Confirmation removes the server
+metadata, cover, and all chapters while keeping device files and personal state.
+Whole-work deletion blocks automatic reuploads until an explicit local rescan
+restores the work. The server admin console provides the same deletion action.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
 `novel.json` stores its details and a `chapters` map of source chapter numbers to

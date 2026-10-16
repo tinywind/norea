@@ -1,34 +1,47 @@
-import { type ChapterListRow } from "../../db/queries/chapter";
 import {
-  getChapterDownloadStatus,
-  type ChapterDownloadStatus,
-} from "../../lib/tasks/chapter-download";
+  listUnqueuedChapterDownloadIds,
+  type LibraryDownloadChapter,
+} from "../../db/queries/chapter";
+import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
+import { isChapterDownloadQueued } from "../../lib/tasks/chapter-download";
 export type LibraryBatchDownloadMode = "all" | "unread" | "next10" | "next30";
 
-function isActiveChapterDownloadStatus(
-  status: ChapterDownloadStatus | undefined,
-): boolean {
+function canQueueChapterDownload(chapter: LibraryDownloadChapter): boolean {
   return (
-    status?.kind === "queued" ||
-    status?.kind === "running" ||
-    status?.kind === "done"
+    !chapter.isDownloaded &&
+    !chapter.isDownloadQueued &&
+    !isChapterDownloadQueued(chapter.id)
   );
 }
 
-function canQueueChapterDownload(chapter: ChapterListRow): boolean {
-  return (
-    !chapter.isDownloaded &&
-    !isActiveChapterDownloadStatus(getChapterDownloadStatus(chapter.id))
-  );
+export async function hasLibraryBatchDownloadTargets(
+  novelIds: Iterable<number>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
+  for (const novelId of novelIds) {
+    let afterChapterId = 0;
+    for (;;) {
+      const chapterIds = await listUnqueuedChapterDownloadIds(
+        novelId,
+        afterChapterId,
+      );
+      signal?.throwIfAborted();
+      if (chapterIds.some((id) => !isChapterDownloadQueued(id))) return true;
+      if (chapterIds.length < MAX_ROUTE_QUERY_ROWS) break;
+      afterChapterId = chapterIds[chapterIds.length - 1]!;
+    }
+  }
+  return false;
 }
 
 export function getLibraryBatchDownloadTargets(
   mode: LibraryBatchDownloadMode,
-  chapters: readonly ChapterListRow[],
+  chapters: readonly LibraryDownloadChapter[],
   lastReadChapterId: number | undefined,
-): ChapterListRow[] {
+): LibraryDownloadChapter[] {
   const readingOrder = [...chapters].sort(
-    (left, right) => left.position - right.position,
+    (left, right) => left.position - right.position || left.id - right.id,
   );
   const candidates = readingOrder.filter(canQueueChapterDownload);
 

@@ -96,11 +96,14 @@ deleted; local files, work metadata, and covers remain. The next normal sync
 rechecks completed local chapters in that work and uploads missing server chapters,
 even when no local file changed. To replace content, delete the server chapter,
 then choose **Sync now** or wait for the configured sync mode. Existing complete
-server chapters are never overwritten. The app does not offer whole-work deletion
-from the server.
-Whole-work deletion in the server console removes the server folder, metadata,
-cover, and chapter index. It keeps device copies intact and blocks automatic
-metadata reuploads until an explicit rescan restores the work.
+server chapters are never overwritten.
+**Delete work from server** is available on each work in Browse -> Content server
+and in the work's **Manage server data** page. After confirmation, it removes
+the whole server work folder, metadata, cover, and chapter index, using the
+registered device key. Device files, library membership, and reading state remain
+intact. The work disappears from server browsing, and its deletion record blocks
+automatic metadata and chapter reuploads until an explicit local rescan restores
+the work. Whole-work deletion in the server console follows the same policy.
 Local deletion runs directly and cancels only the selected chapter downloads.
 It does not enter the task queue or wait for network requests or unrelated jobs.
 An in-progress local write for a selected chapter settles before its files are

@@ -12,6 +12,8 @@ export type LibrarySortOrder =
   | "nameDesc"
   | "downloadedAsc"
   | "downloadedDesc"
+  | "undownloadedAsc"
+  | "undownloadedDesc"
   | "totalChaptersAsc"
   | "totalChaptersDesc"
   | "unreadChaptersAsc"
