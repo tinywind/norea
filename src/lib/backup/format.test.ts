@@ -104,6 +104,26 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     expect(parsed).toEqual(VALID_MANIFEST);
   });
 
+  it("preserves unknown creation times for recovered chapters", () => {
+    const manifest: BackupManifest = {
+      ...VALID_MANIFEST,
+      chapters: [{ ...VALID_MANIFEST.chapters[0]!, createdAt: null, foundAt: 0 }],
+    };
+
+    expect(parseBackupManifest(encodeBackupManifest(manifest))).toEqual(manifest);
+  });
+
+  it.each(["unknown", true, {}])("rejects an invalid chapter creation time %j", (createdAt) => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      chapters: [{ ...VALID_MANIFEST.chapters[0]!, createdAt }],
+    };
+
+    expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+      /chapters contains a malformed entry/,
+    );
+  });
+
   it("rejects inline chapter bodies from earlier development builds", () => {
     const manifest = {
       ...VALID_MANIFEST,

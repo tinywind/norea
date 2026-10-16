@@ -339,6 +339,20 @@ export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMet
     FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path`);
 }
 
+export async function markWorkMetadataRefreshed(db: Database, identity: NovelMetadataV1["identity"]): Promise<void> {
+  await db.execute(`INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES($1,$2,1)
+    ON CONFLICT(plugin_id,path) DO UPDATE SET revision=revision+1`, [identity.pluginId, identity.novelPath]);
+}
+
+export async function readWorkMetadataSyncFile(identity: NovelMetadataV1["identity"], db?: Database): Promise<WorkMetadataSyncFile | null> {
+  if (!isTauriRuntime()) return null;
+  const database = db ?? await (await import("./client")).getDb();
+  const [file] = await database.select<WorkMetadataSyncFile[]>(`SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
+    FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path
+    WHERE f.plugin_id=$1 AND f.path=$2`, [identity.pluginId, identity.novelPath]);
+  return file ?? null;
+}
+
 async function persistWorkChapterDirectories(db: Database, novelId: number, chapters: { id: number; directory: string }[], registerNative = true): Promise<void> {
   await db.execute("DELETE FROM work_metadata_directory_cache WHERE novel_id=$1", [novelId]);
   for (let offset = 0; offset < chapters.length; offset += 100) {

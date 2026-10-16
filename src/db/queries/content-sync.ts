@@ -3,6 +3,7 @@ import { sqliteBoolean } from "../sqlite-value";
 import type { PackageManifest } from "../../lib/content-sync/native";
 import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
 import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
+import { reconcileImportedNovelIdentityInDb } from "./novel-identity";
 
 export async function cacheServerChapters(novelId: number, chapters: readonly ServerChapterSummary[], signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
@@ -83,16 +84,25 @@ export interface ContentSyncChapter {
 }
 
 export async function listContentSyncChapters(identities?: string[], downloadedOnly = false): Promise<ContentSyncChapter[]> {
+  return selectContentSyncChapters(identities, downloadedOnly, false);
+}
+
+export async function listContentSyncWorkChapters(workIdentities: string[]): Promise<ContentSyncChapter[]> {
+  return selectContentSyncChapters(workIdentities, true, true);
+}
+
+async function selectContentSyncChapters(identities: string[] | undefined, downloadedOnly: boolean, matchWorks: boolean): Promise<ContentSyncChapter[]> {
   if (identities?.length === 0) return [];
   if (identities && identities.length > 100) {
     const rows: ContentSyncChapter[] = [];
-    for (let offset = 0; offset < identities.length; offset += 100) rows.push(...await listContentSyncChapters(identities.slice(offset, offset + 100), downloadedOnly));
+    for (let offset = 0; offset < identities.length; offset += 100) rows.push(...await selectContentSyncChapters(identities.slice(offset, offset + 100), downloadedOnly, matchWorks));
     return rows;
   }
   const db = await getDb();
   const targets = identities?.flatMap((identity) => JSON.parse(identity) as string[]);
-  const prefix = identities ? `WITH targets(plugin_id,novel_path,chapter_path) AS (VALUES ${identities.map((_, i) => `($${i * 3 + 1},$${i * 3 + 2},$${i * 3 + 3})`).join(",")})` : "";
-  const from = identities ? "targets t JOIN novel n ON n.plugin_id=t.plugin_id AND n.path=t.novel_path JOIN chapter c ON c.novel_id=n.id AND c.path=t.chapter_path" : "chapter c JOIN novel n ON n.id=c.novel_id";
+  const columns = matchWorks ? ["plugin_id", "novel_path"] : ["plugin_id", "novel_path", "chapter_path"];
+  const prefix = identities ? `WITH targets(${columns.join(",")}) AS (VALUES ${identities.map((_, i) => `(${columns.map((_, column) => `$${i * columns.length + column + 1}`).join(",")})`).join(",")})` : "";
+  const from = identities ? `targets t JOIN novel n ON n.plugin_id=t.plugin_id AND n.path=t.novel_path JOIN chapter c ON c.novel_id=n.id${matchWorks ? "" : " AND c.path=t.chapter_path"}` : "chapter c JOIN novel n ON n.id=c.novel_id";
   const rows = await db.select<ContentSyncChapter[]>(`${prefix} SELECT
     c.id AS chapterId, n.id AS novelId, n.plugin_id AS pluginId, n.path AS novelPath,
     c.path AS chapterPath, n.name AS novelName, n.author, n.summary,
@@ -123,6 +133,12 @@ export async function importContentMetadata(manifest: PackageManifest): Promise<
     const novels = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [identity.pluginId, identity.novelPath]);
     if (!novels.length) throw new Error("Install the work metadata before downloading its chapters.");
     const novelId = novels[0]!.id;
+    const chapterNumber = chapter.chapterNumber?.trim();
+    if (identity.pluginId !== LOCAL_PLUGIN_ID && !identity.chapterPath.startsWith("norea-folder:") && chapterNumber && Number.isFinite(Number(chapterNumber))) {
+      await reconcileImportedNovelIdentityInDb(db, { pluginId: identity.pluginId, path: identity.novelPath }, [
+        { path: identity.chapterPath, chapterNumber },
+      ]);
+    }
     await db.execute(`INSERT INTO chapter(novel_id,path,name,chapter_number,position,page,content_type)
       VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(novel_id,path) DO NOTHING`,
     [novelId, identity.chapterPath, chapter.name, chapter.chapterNumber ?? null, chapter.position, chapter.page, chapter.contentType]);

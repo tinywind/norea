@@ -6,11 +6,12 @@ import type { NovelMetadataV1 } from "../work-metadata";
 const mocks = vi.hoisted(() => ({
   novel: vi.fn(), source: vi.fn(), read: vi.fn(), install: vi.fn(), cover: vi.fn(),
   plugin: vi.fn(), executor: vi.fn(), enqueue: vi.fn(), cancel: vi.fn(), sync: vi.fn(),
-  load: vi.fn(), chapters: vi.fn(), cache: vi.fn(), storedCover: vi.fn(), commit: vi.fn(),
+  load: vi.fn(), chapters: vi.fn(), cache: vi.fn(), storedCover: vi.fn(), commit: vi.fn(), syncFile: vi.fn(), canPull: vi.fn(), record: vi.fn(),
   settings: { serverUrl: "http://server", deviceName: "Tablet", lookupTimeoutSeconds: 3 },
 }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.novel }));
-vi.mock("../../db/work-metadata", () => ({ knownNovelMetadataDirectory: () => "contents/source/Book-book" }));
+vi.mock("../../db/work-metadata", () => ({ knownNovelMetadataDirectory: () => "contents/source/Book-book", readWorkMetadataSyncFile: mocks.syncFile }));
+vi.mock("./works", async original => ({ ...await original<typeof import("./works")>(), canPullWorkMetadata: mocks.canPull, recordInstalledWorkMetadata: mocks.record }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: { getState: () => mocks.settings } }));
 vi.mock("./novel-source", () => ({ readServerNovelSource: mocks.source }));
 vi.mock("./browse", () => ({ readServerCover: mocks.cover }));
@@ -42,6 +43,8 @@ beforeEach(() => {
   mocks.novel.mockResolvedValue({ id: 42, ...local.novel, pluginId: "source", path: "/book" });
   mocks.source.mockResolvedValue(null);
   mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata: structuredClone(local) });
+  mocks.syncFile.mockReset().mockResolvedValue({ pluginId: "source", path: "/book", directory: "contents/source/Book-book", fingerprint: "stored", revision: 1 });
+  mocks.canPull.mockReset().mockResolvedValue(true);
   mocks.storedCover.mockReset().mockResolvedValue(null);
   mocks.cover.mockReset().mockResolvedValue(null);
   mocks.install.mockImplementation(async (metadata, _cover, guard) => {
@@ -65,6 +68,7 @@ it("refreshes only the opened work and retains locally known chapters", async ()
   expect(contentServerRequest).toHaveBeenCalledOnce();
   expect(vi.mocked(contentServerRequest).mock.calls[0]![1]).toBe(`/works/${id}`);
   expect(mocks.install.mock.calls[0]![0]).toMatchObject({ identity: local.identity, novel: { summary: "Updated" } });
+  expect(mocks.record).toHaveBeenCalledWith("http://server", expect.objectContaining({ metadata }), false);
 });
 
 it("does not reinstall unchanged metadata when the server catalog omits locally known chapters", async () => {
@@ -89,6 +93,26 @@ it("does not replace edits made while the server request was in flight", async (
     return { id: await contentWorkId(local.identity), metadata: { ...local, novel: { ...local.novel, summary: "Server summary" } }, hasCover: false };
   });
   await expect(syncServerNovelOnOpen(42)).resolves.toBe(true);
+  expect(mocks.commit).not.toHaveBeenCalled();
+  expect(mocks.cache).toHaveBeenCalledWith(42, [chapter], undefined);
+});
+
+it("preserves metadata awaiting upload before an ordinary source work is opened", async () => {
+  mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata: { ...local, novel: { ...local.novel, summary: "Refreshed source summary" } } });
+  mocks.canPull.mockResolvedValue(false);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: await contentWorkId(local.identity), metadata: local, hasCover: false });
+  expect(await syncServerNovelOnOpen(42)).toBe(true);
+  expect(mocks.install).not.toHaveBeenCalled();
+  expect(mocks.commit).not.toHaveBeenCalled();
+  expect(mocks.cache).toHaveBeenCalledWith(42, [chapter], undefined);
+});
+
+it("preserves an unchanged source refresh completed while server metadata was loading", async () => {
+  const originalFile = await mocks.syncFile();
+  mocks.syncFile.mockResolvedValueOnce(originalFile).mockResolvedValue({ ...originalFile, revision: 2 });
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: await contentWorkId(local.identity), metadata: { ...local, novel: { ...local.novel, summary: "Server summary" } }, hasCover: false });
+  expect(await syncServerNovelOnOpen(42)).toBe(true);
+  expect(mocks.install).toHaveBeenCalledOnce();
   expect(mocks.commit).not.toHaveBeenCalled();
   expect(mocks.cache).toHaveBeenCalledWith(42, [chapter], undefined);
 });

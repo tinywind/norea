@@ -1,5 +1,5 @@
 import {
-  contentIdentity, importContentMetadata, listContentSyncChapters,
+  contentIdentity, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters,
   markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
   contentJournalHead, readContentJournal, canUploadContentChapter,
 } from "../../db/queries/content-sync";
@@ -100,7 +100,12 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     : await readContentJournal(cache.localCursor, head);
   const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
   const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
-  const rows = await listContentSyncChapters(requested, requested === undefined);
+  const changedRows = await listContentSyncChapters(requested, requested === undefined);
+  const deletedIds = Object.keys(cache.tombstones);
+  // Deletion deltas omit chapter numbers, so recheck the work to resolve folder aliases.
+  const recheckWorks = [...new Set(deletedIds.map(id => JSON.stringify((JSON.parse(id) as string[]).slice(0, 2))))];
+  const recheckRows = recheckWorks.length ? await listContentSyncWorkChapters(recheckWorks) : [];
+  const rows = [...changedRows, ...recheckRows];
   const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
   const deletedLocalWorks = new Set<string>();
   if (deletedWorks.size) {
@@ -108,10 +113,11 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
       if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
     }
   }
-  const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys())]);
-  if (!pending.size && cache.localCursor === head) return;
+  const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys()), ...recheckRows.map(identity)]);
+  if (!pending.size && cache.localCursor === head && !deletedIds.length) return;
   cache.pendingUploads = [...pending];
   cache.localCursor = head;
+  cache.tombstones = {};
   await saveCatalog(server, cache);
   let processed = 0;
   let uploaded = 0;
@@ -128,7 +134,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         reportProgress();
         continue;
       }
-      if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath])) || (cache.tombstones[id] && !rescan)) {
+      if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))) {
         if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
         delete cache.downloads[id];
         pending.delete(id);
@@ -192,14 +198,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
 }
 
 let running: Promise<void> | null = null;
-function reserveContentSync(operation: () => Promise<void>): Promise<void> {
-  const previous = running ?? Promise.resolve();
-  const reserved = previous.catch(() => undefined).then(operation).finally(() => {
-    if (running === reserved) running = null;
-  });
-  running = reserved;
-  return reserved;
-}
+let pendingSync: { uploadContent: boolean; rescan: boolean } | null = null;
 
 async function initializeDevice(serverUrl: string): Promise<string> {
   const deviceKey = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
@@ -222,6 +221,10 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     if (uploadContent) {
       await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks ?? new Set());
       await pullCatalog(serverUrl, token, cache);
+      if (Object.keys(cache.tombstones).length) {
+        // Handle deletions consumed after the first upload phase without another catalog loop.
+        await uploadLocalContent(serverUrl, token, cache, false, deletedWorks ?? new Set());
+      }
     }
     assertDevice(serverUrl, token);
     useContentSyncStore.setState({ status: "idle" });
@@ -234,8 +237,22 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
 }
 
 export function syncContentServer(uploadContent = true, rescan = false): Promise<void> {
-  if (running) return running;
-  return reserveContentSync(() => performSync(uploadContent, rescan));
+  if (pendingSync && running) {
+    pendingSync.uploadContent ||= uploadContent;
+    pendingSync.rescan ||= rescan;
+    return running;
+  }
+  const requested = { uploadContent, rescan };
+  pendingSync = requested;
+  const previous = running ?? Promise.resolve();
+  const reserved = previous.catch(() => undefined).then(() => {
+    pendingSync = null;
+    return performSync(requested.uploadContent, requested.rescan);
+  }).finally(() => {
+    if (running === reserved) running = null;
+  });
+  running = reserved;
+  return reserved;
 }
 
 export async function downloadServerChapter(entry: CatalogEntry): Promise<{ novelId: number; chapterId: number }> {

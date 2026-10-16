@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getDb, runExclusiveDatabaseOperation } from "../../db/client";
+import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
+import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
 import { useReaderStore } from "../../store/reader";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
@@ -9,6 +10,8 @@ import {
 } from "../chapter-content";
 import { clearResolvedChapterStorageDirs } from "../chapter-storage-resolution";
 import { invalidateAllNovelCoverSources } from "../novel-cover-storage";
+import { notifyWorkMetadataChanges } from "../work-metadata";
+import { prepareBackupRestore } from "./restore-plan";
 import {
   BACKUP_FORMAT_VERSION,
   encodeBackupManifest,
@@ -65,7 +68,7 @@ interface RawChapterRow {
   mediaBytes: number;
   releaseTime: string | null;
   readAt: number | null;
-  createdAt: number;
+  createdAt: number | null;
   foundAt: number;
   updatedAt: number;
 }
@@ -358,9 +361,9 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
 
 /**
  * Replace every row in the backup-relevant tables with the values
- * carried by `manifest`. Destructive; call only after the user has
- * confirmed restore. Database changes are wrapped in a transaction,
- * then browser settings are replaced after the commit succeeds.
+ * carried by `manifest`, while existing files supply authoritative metadata
+ * and download availability. File inspection precedes the native transaction;
+ * originals are never changed. Settings are replaced after commit succeeds.
  */
 export function applyBackupSnapshot(
   manifest: BackupManifest,
@@ -371,13 +374,18 @@ export function applyBackupSnapshot(
 async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
   clearResolvedChapterStorageDirs();
   await getDb();
-  await runExclusiveDatabaseOperation(() =>
-    invoke("backup_restore_snapshot", {
-      manifestJson: encodeBackupManifest(manifest),
-    }),
-  );
+  cancelWorkMetadataRecovery();
+  await runExclusiveDatabaseOperation(async db => {
+    const plan = await prepareBackupRestore(db, manifest);
+    await invoke("backup_restore_snapshot", {
+      manifestJson: encodeBackupManifest(plan.manifest),
+      cacheJson: JSON.stringify(plan.cache),
+    });
+    await restoreWorkMetadataDirectories(db);
+  });
   clearResolvedChapterStorageDirs();
   invalidateAllNovelCoverSources();
   writeBackupSettings(manifest.settings);
   await useReaderStore.persist.rehydrate();
+  notifyWorkMetadataChanges();
 }

@@ -5,11 +5,16 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest";
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
-import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
+import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, markContentInstalled, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
 import { cacheServerChapters } from "./content-sync";
+import { applyNovelMetadataToCache } from "../work-metadata";
+import { syncNovelFromSource } from "../../lib/plugins/sync-novel";
+import type { Plugin } from "../../lib/plugins/types";
+import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir, resolvedChapterStorageDir } from "../../lib/chapter-storage-resolution";
 
 let sqlite: DatabaseSync;
 beforeEach(() => {
+  clearAuthoritativeStorageDirs();
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(42,'source','/work','A work')");
@@ -32,7 +37,7 @@ beforeEach(() => {
     } catch(error) { sqlite.exec("ROLLBACK"); throw error; }
   });
 });
-afterEach(() => sqlite.close());
+afterEach(() => { sqlite.close(); clearAuthoritativeStorageDirs(); });
 
 const manifest = {
   packageVersion: 1 as const,
@@ -130,6 +135,59 @@ it("imports by source identity with new local IDs and preserves existing reading
   expect(sqlite.prepare("SELECT name,progress,bookmark FROM chapter").get()).toEqual({ name: "Opening", progress: 73, bookmark: 1 });
 });
 
+it("reuses a metadata catalog placeholder through server import and the next source refresh", async () => {
+  const db = await getDb();
+  await applyNovelMetadataToCache(db, {
+    schemaVersion: 1, identity: { pluginId: "source", novelPath: "/work" },
+    novel: { name: "A work", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+    cover: null, chapters: { "1": "Opening" },
+  });
+  const placeholder = sqlite.prepare("SELECT id,path,is_downloaded FROM chapter").get()!;
+  expect(placeholder).toMatchObject({ path: "norea-folder:1", is_downloaded: 0 });
+  const chapterId = Number(placeholder.id);
+  const directory = "contents/source/Original-work/1-Original-folder";
+  sqlite.prepare("UPDATE chapter SET progress=73,bookmark=1,unread=0,read_at=123 WHERE id=?").run(chapterId);
+  sqlite.prepare("INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory) VALUES(?,42,?)").run(chapterId, directory);
+  rememberAuthoritativeChapterStorageDir(chapterId, directory);
+
+  const imported = await importContentMetadata({ ...manifest, chapter: { ...manifest.chapter, chapterNumber: "1" } });
+  expect(imported).toEqual({ novelId: 42, chapterId });
+  expect(sqlite.prepare("SELECT id,path,progress,bookmark,unread,read_at,is_downloaded FROM chapter").all()).toEqual([
+    { id: chapterId, path: "/chapter", progress: 73, bookmark: 1, unread: 0, read_at: 123, is_downloaded: 0 },
+  ]);
+  await markContentInstalled(chapterId, "html", 512, 16);
+  const plugin = {
+    id: "source", parseNovel: async () => ({ name: "A work", path: "/work", chapters: [{ path: "/chapter", name: "Opening", chapterNumber: 1 }] }),
+  } as unknown as Plugin;
+  await expect(syncNovelFromSource(plugin, { name: "A work", path: "/work" }, { novelId: 42, notifyUpdatesIndex: false })).resolves.toMatchObject({ novelId: 42, chapterCount: 1 });
+  expect(sqlite.prepare("SELECT id,path,progress,bookmark,unread,read_at,is_downloaded,content_bytes,media_bytes FROM chapter").all()).toEqual([
+    { id: chapterId, path: "/chapter", progress: 73, bookmark: 1, unread: 0, read_at: 123, is_downloaded: 1, content_bytes: 512, media_bytes: 16 },
+  ]);
+  expect(sqlite.prepare("SELECT chapter_id,novel_id,directory FROM work_metadata_directory_cache").all()).toEqual([
+    { chapter_id: chapterId, novel_id: 42, directory },
+  ]);
+  expect(resolvedChapterStorageDir(chapterId)).toBe(directory);
+});
+
+it("retains downloaded placeholder state and its directory when adopting a source path", async () => {
+  sqlite.exec(`INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,bookmark,is_downloaded,stored_content_type,content_bytes,media_bytes)
+    VALUES(9,42,'norea-folder:1','Original','1',1,73,1,1,'html',512,16);
+    INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory) VALUES(9,42,'contents/source/work/1-Original')`);
+  expect(await importContentMetadata({ ...manifest, chapter: { ...manifest.chapter, chapterNumber: "1.0" } })).toEqual({ novelId: 42, chapterId: 9 });
+  expect(sqlite.prepare("SELECT id,path,name,progress,bookmark,is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter").all()).toEqual([
+    { id: 9, path: "/chapter", name: "Original", progress: 73, bookmark: 1, is_downloaded: 1, stored_content_type: "html", content_bytes: 512, media_bytes: 16 },
+  ]);
+  expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache WHERE chapter_id=9").get()?.directory).toBe("contents/source/work/1-Original");
+});
+
+it.each(["norea-folder:another", "/chapter"])("preserves ambiguous chapter candidates when a placeholder coexists with %s", async otherPath => {
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,is_downloaded) VALUES(9,42,'norea-folder:1','Original','1',1,73,1)");
+  sqlite.prepare("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,bookmark) VALUES(10,42,?,'Another','1',2,1)").run(otherPath);
+  const before = sqlite.prepare("SELECT * FROM chapter ORDER BY id").all();
+  await expect(importContentMetadata({ ...manifest, chapter: { ...manifest.chapter, chapterNumber: "1" } })).rejects.toThrow("ambiguous");
+  expect(sqlite.prepare("SELECT * FROM chapter ORDER BY id").all()).toEqual(before);
+});
+
 it("stores catalog data larger than WebView localStorage without crossing account keys", async () => {
   const payload = JSON.stringify({ items: "a".repeat(6 * 1024 * 1024) });
   await writeContentSyncCache("catalog:one", payload);
@@ -185,6 +243,25 @@ it("selects only requested identities through indexed novel and chapter lookup",
   const rows = await listContentSyncChapters(['["source","/work","/other"]']);
   expect(rows).toHaveLength(1);
   expect(rows[0]?.chapterPath).toBe("/other");
+});
+
+it("selects completed chapters by exact work identity regardless of recovered chapter paths", async () => {
+  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name) VALUES (43,'source','/other','Other'), (44,'another','/work','Same path');
+    INSERT INTO chapter(novel_id,path,name,position,is_downloaded) VALUES
+    (42,'/source/chapter/1','One',1,1), (42,'norea-folder:2','Two',2,1), (42,'/pending','Pending',3,0),
+    (43,'norea-folder:1','Other',1,1), (44,'/source/chapter/1','Another source',1,1)`);
+  expect(await listContentSyncWorkChapters([])).toEqual([]);
+  expect((await listContentSyncWorkChapters(['["source","/work"]'])).map(row => row.chapterPath)).toEqual([
+    "/source/chapter/1", "norea-folder:2",
+  ]);
+  expect((await listContentSyncWorkChapters(['["source","/work"]', '["source","/other"]'])).map(row => row.novelId)).toEqual([42, 42, 43]);
+});
+
+it("batches a large deleted-work recheck without including unrelated works", async () => {
+  sqlite.exec("INSERT INTO chapter(novel_id,path,name,position,is_downloaded) VALUES(42,'/one','One',1,1)");
+  const identities = Array.from({ length: 100 }, (_, index) => JSON.stringify(["source", `/missing/${index}`]));
+  identities.push('["source","/work"]');
+  expect((await listContentSyncWorkChapters(identities)).map(row => row.novelId)).toEqual([42]);
 });
 
 

@@ -58,7 +58,8 @@ export interface BackupChapter {
   mediaBytes: number;
   releaseTime: string | null;
   readAt: number | null;
-  createdAt: number;
+  /** Null when the original creation time is unknown, including recovered chapters. */
+  createdAt: number | null;
   foundAt: number;
   updatedAt: number;
 }
@@ -189,7 +190,7 @@ function isChapter(value: unknown): value is BackupChapter {
     typeof value.contentBytes === "number" &&
     typeof value.mediaBytes === "number" &&
     typeof value.updatedAt === "number" &&
-    typeof value.createdAt === "number" &&
+    (value.createdAt === null || typeof value.createdAt === "number") &&
     typeof value.foundAt === "number"
   );
 }

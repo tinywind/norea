@@ -10,6 +10,7 @@
 //! and chapter download metadata. Chapter bodies and media stay in chapter
 //! storage. Only the current manifest-only archive format is supported.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
 use std::net::Ipv4Addr;
@@ -160,12 +161,38 @@ struct BackupRestoreNovel {
     artist: Option<String>,
     status: Option<String>,
     genres: Option<String>,
+    rating: Option<f64>,
     in_library: bool,
     is_local: bool,
     created_at: i64,
     updated_at: i64,
     library_added_at: Option<i64>,
     last_read_at: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupRestoreCache {
+    files: Vec<BackupRestoreMetadataFile>,
+    chapters: Vec<BackupRestoreChapterDirectory>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupRestoreMetadataFile {
+    plugin_id: String,
+    path: String,
+    novel_id: i64,
+    directory: String,
+    fingerprint: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupRestoreChapterDirectory {
+    chapter_id: i64,
+    novel_id: i64,
+    directory: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,7 +216,9 @@ struct BackupRestoreChapter {
     media_bytes: i64,
     release_time: Option<String>,
     read_at: Option<i64>,
-    created_at: i64,
+    // Require the current-format key even when the creation time is unknown.
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    created_at: Option<i64>,
     found_at: i64,
     updated_at: i64,
 }
@@ -304,6 +333,7 @@ async fn restore_vpn_gate_server_verdicts(
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
+    cache: &BackupRestoreCache,
 ) -> Result<(), String> {
     if manifest.version != 2 {
         return Err(format!(
@@ -401,8 +431,8 @@ async fn execute_restore_snapshot(
             "INSERT INTO novel (
                 id, plugin_id, path, name, cover, summary, author, artist,
                 status, genres, in_library, is_local,
-                created_at, updated_at, library_added_at, last_read_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                created_at, updated_at, library_added_at, last_read_at, rating
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(novel.id)
         .bind(novel.plugin_id.as_str())
@@ -420,13 +450,17 @@ async fn execute_restore_snapshot(
         .bind(novel.updated_at)
         .bind(novel.library_added_at)
         .bind(novel.last_read_at)
+        .bind(novel.rating)
         .execute(&mut **tx)
         .await
         .map_err(|err| format!("backup_restore_snapshot: insert novel: {err}"))?;
     }
 
+    let stored_chapters: HashSet<_> = cache.chapters.iter()
+        .map(|chapter| (chapter.novel_id, chapter.chapter_id)).collect();
     for chapter in &manifest.chapters {
-        let restored_downloaded = chapter.is_downloaded;
+        let restored_downloaded = chapter.is_downloaded
+            && stored_chapters.contains(&(chapter.novel_id, chapter.id));
         let restored_content_bytes = if restored_downloaded {
             chapter.content_bytes
         } else {
@@ -486,6 +520,85 @@ async fn execute_restore_snapshot(
             .map_err(|err| format!("backup_restore_snapshot: insert novel_category: {err}"))?;
     }
 
+    restore_metadata_cache(tx, cache).await
+}
+
+async fn restore_metadata_cache(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    cache: &BackupRestoreCache,
+) -> Result<(), String> {
+    for table in [
+        "work_metadata_file_cache",
+        "work_metadata_directory_cache",
+        "work_metadata_reading_state",
+        "chapter_download_queue",
+        "download_cache_work",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&mut **tx)
+            .await
+            .map_err(|err| format!("backup_restore_snapshot: clear {table}: {err}"))?;
+    }
+    sqlx::query("DELETE FROM content_sync_cache WHERE cache_key LIKE 'norea-content-source:%'")
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: clear replaced novel source IDs: {err}"))?;
+    for file in &cache.files {
+        let result = sqlx::query(
+            "INSERT INTO work_metadata_file_cache(plugin_id,path,novel_id,directory,fingerprint)
+             SELECT $1,$2,$3,$4,$5 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$3 AND plugin_id=$1 AND path=$2)",
+        )
+        .bind(&file.plugin_id)
+        .bind(&file.path)
+        .bind(file.novel_id)
+        .bind(&file.directory)
+        .bind(&file.fingerprint)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: restore metadata cache: {err}"))?;
+        if result.rows_affected() != 1 {
+            return Err("backup_restore_snapshot: metadata cache identity mismatch".to_string());
+        }
+        sqlx::query(
+            "INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES($1,$2,1)
+             ON CONFLICT(plugin_id,path) DO UPDATE SET revision=revision+1",
+        )
+        .bind(&file.plugin_id)
+        .bind(&file.path)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: mark retained metadata for sync: {err}"))?;
+    }
+    for chapter in &cache.chapters {
+        let result = sqlx::query(
+            "INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory)
+             SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM chapter WHERE id=$1 AND novel_id=$2 AND is_downloaded=1)",
+        )
+        .bind(chapter.chapter_id)
+        .bind(chapter.novel_id)
+        .bind(&chapter.directory)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: restore chapter directories: {err}"))?;
+        if result.rows_affected() != 1 {
+            return Err("backup_restore_snapshot: chapter cache identity mismatch".to_string());
+        }
+    }
+    sqlx::query(
+        "INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at)
+         SELECT n.plugin_id,n.path,c.path,c.progress,c.bookmark,c.unread,c.read_at FROM chapter c JOIN novel n ON n.id=c.novel_id",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_restore_snapshot: restore reading state cache: {err}"))?;
+    sqlx::query("DELETE FROM work_metadata_dirty")
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: discard file publication: {err}"))?;
+    sqlx::query("INSERT OR IGNORE INTO work_metadata_cache_state(id) VALUES(1)")
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: initialize metadata cache: {err}"))?;
     Ok(())
 }
 
@@ -635,9 +748,12 @@ pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String>
 pub async fn backup_restore_snapshot(
     db_instances: State<'_, DbInstances>,
     manifest_json: String,
+    cache_json: String,
 ) -> Result<(), String> {
     let manifest: BackupRestoreManifest = serde_json::from_str(&manifest_json)
         .map_err(|err| format!("backup_restore_snapshot: parse manifest: {err}"))?;
+    let cache: BackupRestoreCache = serde_json::from_str(&cache_json)
+        .map_err(|err| format!("backup_restore_snapshot: parse storage cache: {err}"))?;
     let pool = {
         let instances = db_instances.0.read().await;
         match instances.get(DB_URL) {
@@ -650,7 +766,7 @@ pub async fn backup_restore_snapshot(
         .await
         .map_err(|err| format!("backup_restore_snapshot: begin transaction: {err}"))?;
 
-    if let Err(error) = execute_restore_snapshot(&mut tx, manifest).await {
+    if let Err(error) = execute_restore_snapshot(&mut tx, manifest, &cache).await {
         let _ = tx.rollback().await;
         return Err(error);
     }
@@ -915,9 +1031,70 @@ mod tests {
         )
     }
 
+    #[test]
+    fn restore_chapter_requires_a_present_nullable_creation_time() {
+        let mut chapter: serde_json::Value =
+            serde_json::from_str(&restore_chapter_json(10, false, None)).expect("parse chapter");
+        chapter["createdAt"] = serde_json::Value::Null;
+        let restored: BackupRestoreChapter =
+            serde_json::from_value(chapter.clone()).expect("parse unknown creation time");
+        assert_eq!(restored.created_at, None);
+
+        chapter.as_object_mut().expect("chapter object").remove("createdAt");
+        assert!(serde_json::from_value::<BackupRestoreChapter>(chapter.clone())
+            .unwrap_err().to_string().contains("missing field `createdAt`"));
+        for value in [serde_json::json!("unknown"), serde_json::json!(true), serde_json::json!(1.5)] {
+            chapter["createdAt"] = value;
+            assert!(serde_json::from_value::<BackupRestoreChapter>(chapter.clone()).is_err());
+        }
+    }
+
     #[tokio::test]
-    async fn restore_snapshot_keeps_download_metadata_without_chapter_bodies() {
+    async fn restore_snapshot_preserves_nullable_chapter_creation_times() {
         let pool = restore_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'demo','/n/1','Novel');
+             INSERT INTO chapter(id,novel_id,path,name,position) VALUES(10,1,'norea-folder:1','Recovered chapter',1);
+             INSERT INTO chapter(id,novel_id,path,name,position,created_at,found_at) VALUES(12,1,'/c/12','Source chapter',2,123,456);",
+        ).execute(&pool).await.expect("seed recovered and source chapters");
+        let timestamps: Vec<(i64, Option<i64>, i64, i64)> = sqlx::query_as(
+            "SELECT id,created_at,found_at,updated_at FROM chapter ORDER BY id",
+        ).fetch_all(&pool).await.expect("read original timestamps");
+        assert_eq!(timestamps[0].1, None);
+        assert_eq!(timestamps[0].2, 0);
+        let chapters: Vec<serde_json::Value> = timestamps.iter().map(|(id, created_at, found_at, updated_at)| {
+            let mut chapter: serde_json::Value = serde_json::from_str(&restore_chapter_json(*id, false, None))
+                .expect("parse chapter");
+            chapter["createdAt"] = serde_json::json!(created_at);
+            chapter["foundAt"] = serde_json::json!(found_at);
+            chapter["updatedAt"] = serde_json::json!(updated_at);
+            chapter
+        }).collect();
+        let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
+            "version": 2,
+            "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
+                "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 }],
+            "chapters": chapters, "categories": [], "novelCategories": [], "repositories": [],
+            "installedPlugins": [], "vpnGateServerVerdicts": []
+        })).expect("parse exported manifest");
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default())
+            .await.expect("restore nullable creation time");
+        tx.commit().await.expect("commit");
+
+        let restored: Vec<(i64, Option<i64>, i64, i64)> = sqlx::query_as(
+            "SELECT id,created_at,found_at,updated_at FROM chapter ORDER BY id",
+        ).fetch_all(&pool).await.expect("read restored timestamps");
+        assert_eq!(restored, timestamps);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_marks_only_inspected_files_downloaded() {
+        let pool = restore_pool().await;
+        for key in ["norea-content-source:1", "norea-content-work:http://server", "norea-content-catalog:http://server", "norea-content-device:http://server"] {
+            sqlx::query("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,'{}')")
+                .bind(key).execute(&pool).await.expect("seed sync cache");
+        }
         let json = format!(
             r#"{{
                 "version": 2,
@@ -930,11 +1107,16 @@ mod tests {
                 "repositories": []
             }}"#,
             restore_chapter_json(10, true, None),
-            restore_chapter_json(12, false, None),
+            restore_chapter_json(12, true, None),
         );
         let manifest: BackupRestoreManifest = serde_json::from_str(&json).expect("parse manifest");
+        let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
+            "files": [{ "pluginId": "demo", "path": "/n/1", "novelId": 1,
+                "directory": "contents/demo/Original", "fingerprint": "retained-fingerprint" }],
+            "chapters": [{ "chapterId": 10, "novelId": 1, "directory": "contents/demo/Original/10-Original" }]
+        })).expect("parse retained file cache");
         let mut tx = pool.begin().await.expect("begin");
-        execute_restore_snapshot(&mut tx, manifest)
+        execute_restore_snapshot(&mut tx, manifest, &cache)
             .await
             .expect("restore");
         tx.commit().await.expect("commit");
@@ -954,6 +1136,49 @@ mod tests {
                 (12, 0, 0, 0, None, 0, 40),
             ]
         );
+        let dirty: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM work_metadata_dirty")
+            .fetch_one(&pool).await.expect("read publication queue");
+        assert_eq!(dirty, 0);
+        let directories: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT chapter_id,directory FROM work_metadata_directory_cache",
+        ).fetch_all(&pool).await.expect("read retained directories");
+        assert_eq!(directories, vec![(10, "contents/demo/Original/10-Original".to_string())]);
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT revision FROM work_metadata_sync_journal WHERE plugin_id='demo' AND path='/n/1'",
+        ).fetch_one(&pool).await.expect("read retained work revision");
+        assert_eq!(pending, 1);
+        let reading: Vec<(i64, i64)> = sqlx::query_as("SELECT unread,progress FROM work_metadata_reading_state ORDER BY chapter_path")
+            .fetch_all(&pool).await.expect("read restored reading cache");
+        assert_eq!(reading, vec![(0, 40), (0, 40)]);
+        let cache_keys: Vec<String> = sqlx::query_scalar("SELECT cache_key FROM content_sync_cache ORDER BY cache_key")
+            .fetch_all(&pool).await.expect("read retained sync cache");
+        assert_eq!(cache_keys, vec!["norea-content-catalog:http://server", "norea-content-device:http://server", "norea-content-work:http://server"]);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rolls_back_when_retained_cache_is_inconsistent() {
+        let pool = restore_pool().await;
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name,rating,in_library) VALUES(99,'demo','/original','Current original',4.5,1)")
+            .execute(&pool).await.expect("seed original cache");
+        sqlx::query("INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES('demo','/original',7)")
+            .execute(&pool).await.expect("seed pending revision");
+        let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
+            "version": 2, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+            "repositories": [], "installedPlugins": [], "vpnGateServerVerdicts": []
+        })).expect("parse manifest");
+        let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
+            "files": [{ "pluginId": "demo", "path": "/original", "novelId": 99,
+                "directory": "contents/demo/Original", "fingerprint": "retained-fingerprint" }], "chapters": []
+        })).expect("parse inconsistent cache");
+        let mut tx = pool.begin().await.expect("begin");
+        assert!(execute_restore_snapshot(&mut tx, manifest, &cache).await.unwrap_err().contains("identity mismatch"));
+        tx.rollback().await.expect("rollback");
+        let original: (String, f64, i64) = sqlx::query_as("SELECT name,rating,in_library FROM novel WHERE id=99")
+            .fetch_one(&pool).await.expect("read original cache");
+        assert_eq!(original, ("Current original".to_string(), 4.5, 1));
+        let pending: i64 = sqlx::query_scalar("SELECT revision FROM work_metadata_sync_journal WHERE plugin_id='demo' AND path='/original'")
+            .fetch_one(&pool).await.expect("read original pending revision");
+        assert_eq!(pending, 7);
     }
 
     #[tokio::test]
@@ -970,7 +1195,7 @@ mod tests {
             );
             let manifest = serde_json::from_str(&json).expect("parse obsolete manifest");
             let mut tx = pool.begin().await.expect("begin");
-            let error = execute_restore_snapshot(&mut tx, manifest)
+            let error = execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default())
                 .await
                 .expect_err("reject obsolete manifest");
             assert!(

@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../db/client", () => {
   return {
     getDb: vi.fn(),
+    cancelWorkMetadataRecovery: vi.fn(),
     runExclusiveDatabaseOperation: vi.fn(
       async (run: () => Promise<unknown>) => run(),
     ),
   };
 });
+vi.mock("../../db/work-metadata", () => ({ restoreWorkMetadataDirectories: vi.fn() }));
+vi.mock("./restore-plan", () => ({ prepareBackupRestore: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -22,6 +25,8 @@ vi.mock("../../store/reader", () => ({ useReaderStore: {
 
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db/client";
+import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
+import { prepareBackupRestore } from "./restore-plan";
 import { writeStoredChapterContentMirror } from "../chapter-content-storage";
 import {
   BACKUP_FORMAT_VERSION,
@@ -51,6 +56,8 @@ beforeEach(() => {
     execute: mockExecute,
   } as never);
   invokeMock.mockResolvedValue(undefined);
+  vi.mocked(prepareBackupRestore).mockImplementation(async (_db, manifest) => ({ manifest, cache: { files: [], chapters: [] } }));
+  vi.mocked(restoreWorkMetadataDirectories).mockResolvedValue(undefined);
   writeStoredChapterContentMirrorMock.mockResolvedValue(undefined);
 });
 
@@ -306,7 +313,24 @@ describe("applyBackupSnapshot", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
       manifestJson: encodeBackupManifest(manifest),
+      cacheJson: JSON.stringify({ files: [], chapters: [] }),
     });
+    expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves nullable creation times from server metadata through export and restore", async () => {
+    primeSelect([{ ...RAW_CHAPTER, path: "norea-folder:1", createdAt: null, foundAt: 0 }]);
+    const gathered = await gatherBackupSnapshot();
+    const manifest = parseBackupManifest(encodeBackupManifest(gathered));
+
+    expect(manifest.chapters[0]).toMatchObject({ createdAt: null, foundAt: 0 });
+    await applyBackupSnapshot(manifest);
+
+    expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
+      manifestJson: encodeBackupManifest(manifest),
+      cacheJson: JSON.stringify({ files: [], chapters: [] }),
+    });
+    expect(mockExecute).not.toHaveBeenCalled();
     expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
   });
 
@@ -325,6 +349,7 @@ describe("applyBackupSnapshot", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("backup_restore_snapshot", {
       manifestJson: encodeBackupManifest(manifest),
+      cacheJson: JSON.stringify({ files: [], chapters: [] }),
     });
     expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
   });
@@ -381,6 +406,29 @@ describe("applyBackupSnapshot", () => {
 
     expect(storage.getItem("app-appearance-settings")).toBe("old");
     expect(storage.getItem("unrelated")).toBe("keep");
+  });
+
+  it("does not enter native restore when original-file inspection fails", async () => {
+    const manifest = await gatherForTest();
+    vi.mocked(prepareBackupRestore).mockRejectedValueOnce(new Error("Storage unavailable"));
+    await expect(applyBackupSnapshot(manifest)).rejects.toThrow("Storage unavailable");
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(restoreWorkMetadataDirectories).not.toHaveBeenCalled();
+  });
+
+  it("holds content sync until authoritative directories have been restored", async () => {
+    const manifest = await gatherForTest();
+    let release!: () => void;
+    vi.mocked(restoreWorkMetadataDirectories).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const restore = applyBackupSnapshot(manifest);
+    await vi.waitFor(() => expect(restoreWorkMetadataDirectories).toHaveBeenCalledOnce());
+    const synchronize = vi.fn(async () => undefined);
+    const sync = runContentStorageOperation(synchronize);
+    await Promise.resolve();
+    expect(synchronize).not.toHaveBeenCalled();
+    release();
+    await Promise.all([restore, sync]);
+    expect(synchronize).toHaveBeenCalledOnce();
   });
 
 });

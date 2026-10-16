@@ -25,6 +25,7 @@ import {
   upsertSourceChaptersInDb,
 } from "../../db/queries/chapter";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
+import { subscribeWorkMetadataChanges } from "../work-metadata";
 import { isSourceAccessRequiredError } from "./source-access";
 import { syncNovelFromSource } from "./sync-novel";
 import type { Plugin, SourceNovel } from "./types";
@@ -100,6 +101,33 @@ beforeEach(() => {
 });
 
 describe("syncNovelFromSource", () => {
+  it("queues unchanged source metadata for upload and notifies after commit", async () => {
+    mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 0 });
+    let committed = false;
+    mockedRunDatabaseTransaction.mockImplementationOnce(async run => {
+      const result = await run({ execute: mockExecute, select: mockSelect } as never);
+      committed = true;
+      return result;
+    });
+    const changed = vi.fn(() => { expect(committed).toBe(true); });
+    const unsubscribe = subscribeWorkMetadataChanges(changed);
+    try {
+      expect((await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" })).changed).toBe(false);
+      expect(mockExecute).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), ["demo", "/novel"]);
+      expect(changed).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it("does not notify an upload when the source metadata transaction fails", async () => {
+    mockedRunDatabaseTransaction.mockRejectedValueOnce(new Error("Commit failed"));
+    const changed = vi.fn();
+    const unsubscribe = subscribeWorkMetadataChanges(changed);
+    try {
+      await expect(syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" })).rejects.toThrow("Commit failed");
+      expect(changed).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
   it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("preserves the requested plugin identity %s through parsing and storage", async path => {
     const plugin = makePlugin({
       parseNovel: vi.fn(async () => ({ ...makeDetail([1]), rating: 4.5, status: "On break" })),

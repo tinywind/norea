@@ -1,5 +1,5 @@
 import { getNovelById } from "../../db/queries/novel";
-import { knownNovelMetadataDirectory } from "../../db/work-metadata";
+import { knownNovelMetadataDirectory, readWorkMetadataSyncFile } from "../../db/work-metadata";
 import { useContentSyncStore } from "../../store/content-sync";
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource } from "../plugins/sync-novel";
@@ -11,7 +11,7 @@ import { readServerCover } from "./browse";
 import { ContentServerError, contentServerRequest, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import { readServerNovelSource } from "./novel-source";
-import { contentWorkId, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
+import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFileVersion, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
 import { cacheServerChapters } from "../../db/queries/content-sync";
 import { fetchServerChapters } from "./chapters";
 
@@ -21,52 +21,63 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   const source = await readServerNovelSource(novelId);
   const server = source?.serverUrl ?? settings.serverUrl;
   if (!server) return false;
-  const novel = await getNovelById(novelId);
-  if (!novel) return false;
-  const identity = { pluginId: novel.pluginId, novelPath: novel.path };
-  const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
-  const stored = await readStoredNovelMetadata(directory);
-  if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");
-  const localCover = await readStoredNovelCover(directory, stored.metadata);
-  const expected = await workMetadataFingerprint(stored.metadata, localCover);
-  const result = await withContentServerLookup(async deadline => {
-    const token = await registerContentDevice(server, settings.deviceName, deadline);
-    deadline.throwIfAborted();
-    const ids = [source?.workId ?? await contentWorkId(identity)];
-    for (const id of ids) {
-      let entry: WorkCatalogEntry;
-      try { entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}`, token, "GET", undefined, deadline); }
-      catch (error) { if (error instanceof ContentServerError && error.status === 404) continue; throw error; }
+  return runWorkMetadataSyncOperation(server, async () => {
+    signal?.throwIfAborted();
+    const novel = await getNovelById(novelId);
+    if (!novel) return false;
+    const identity = { pluginId: novel.pluginId, novelPath: novel.path };
+    const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
+    const stored = await readStoredNovelMetadata(directory);
+    if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");
+    const localCover = await readStoredNovelCover(directory, stored.metadata);
+    const expected = await workMetadataFingerprint(stored.metadata, localCover);
+    const file = await readWorkMetadataSyncFile(identity);
+    const mayApplyMetadata = await canPullWorkMetadata(server, file, expected);
+    const result = await withContentServerLookup(async deadline => {
+      const token = await registerContentDevice(server, settings.deviceName, deadline);
       deadline.throwIfAborted();
-      const metadata = parseNovelMetadata(entry.metadata);
-      if (entry.id !== id || await contentWorkId(metadata.identity) !== id || metadata.identity.pluginId !== identity.pluginId ||
-        metadata.identity.novelPath !== identity.novelPath) {
-        throw new Error("Server work identity does not match the local work.");
+      const ids = [source?.workId ?? await contentWorkId(identity)];
+      for (const id of ids) {
+        let entry: WorkCatalogEntry;
+        try { entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}`, token, "GET", undefined, deadline); }
+        catch (error) { if (error instanceof ContentServerError && error.status === 404) continue; throw error; }
+        deadline.throwIfAborted();
+        const metadata = parseNovelMetadata(entry.metadata);
+        if (entry.id !== id || await contentWorkId(metadata.identity) !== id || metadata.identity.pluginId !== identity.pluginId ||
+          metadata.identity.novelPath !== identity.novelPath) {
+          throw new Error("Server work identity does not match the local work.");
+        }
+        const cover = entry.hasCover ? await readServerCover(server, token, id, deadline) : null;
+        deadline.throwIfAborted();
+        const chapters = await fetchServerChapters({ serverUrl: server, workId: id }, token, deadline);
+        return { metadata, cover, chapters };
       }
-      const cover = entry.hasCover ? await readServerCover(server, token, id, deadline) : null;
-      deadline.throwIfAborted();
-      const chapters = await fetchServerChapters({ serverUrl: server, workId: id }, token, deadline);
-      return { metadata, cover, chapters };
+      return null;
+    }, settings.lookupTimeoutSeconds, signal);
+    if (!result) return false;
+    signal?.throwIfAborted();
+    const local = stored.metadata;
+    const remote = result.metadata;
+    const metadata = { ...remote, chapters: { ...local.chapters, ...remote.chapters }, cover: result.cover ? remote.cover : local.cover };
+    const coverBytes = result.cover?.bytes ?? localCover;
+    let installed = false;
+    if (mayApplyMetadata && await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
+      const stored = await installStoredNovelMetadata(metadata, coverBytes ?? undefined, async (current, db) => {
+        if (signal?.aborted || !canApplyMetadata()) return false;
+        const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
+        if (signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
+        const currentFile = await readWorkMetadataSyncFile(identity, db);
+        if (signal?.aborted || !canApplyMetadata() || workMetadataFileVersion(currentFile) !== workMetadataFileVersion(file)) return false;
+      });
+      if (stored) {
+        await recordInstalledWorkMetadata(server, stored, result.cover !== null);
+        installed = true;
+      }
     }
-    return null;
-  }, settings.lookupTimeoutSeconds, signal);
-  if (!result) return false;
-  signal?.throwIfAborted();
-  const local = stored.metadata;
-  const remote = result.metadata;
-  const metadata = { ...remote, chapters: { ...local.chapters, ...remote.chapters }, cover: result.cover ? remote.cover : local.cover };
-  const coverBytes = result.cover?.bytes ?? localCover;
-  let installed = false;
-  if (await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
-    installed = await installStoredNovelMetadata(metadata, coverBytes ?? undefined, async current => {
-      if (signal?.aborted || !canApplyMetadata()) return false;
-      const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
-      if (signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
-    }) !== null;
-  }
-  signal?.throwIfAborted();
-  const chaptersChanged = await cacheServerChapters(novelId, result.chapters, signal);
-  return installed || chaptersChanged;
+    signal?.throwIfAborted();
+    const chaptersChanged = await cacheServerChapters(novelId, result.chapters, signal);
+    return installed || chaptersChanged;
+  }, signal);
 }
 
 interface ServerNovelSourceRefreshOptions {

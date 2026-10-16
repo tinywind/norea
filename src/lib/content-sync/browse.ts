@@ -6,7 +6,7 @@ import { installStoredNovelMetadata, parseNovelMetadata, type NovelMetadataV1 } 
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl } from "./client";
 import { registerContentDevice } from "./device";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
-import { contentWorkId, type WorkCatalogEntry } from "./works";
+import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters } from "../../db/queries/content-sync";
 
@@ -57,20 +57,23 @@ export async function openServerNovel(server: string, work: ServerWorkSummary): 
 
 export async function refreshServerNovel(source: ServerNovelSource, requireNewWork = false): Promise<number> {
   const server = normalizeContentServerUrl(source.serverUrl);
-  const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
-  const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token);
-  const metadata = parseNovelMetadata(entry.metadata);
-  if (entry.id !== source.workId || await contentWorkId(metadata.identity) !== source.workId) throw new Error("Server work identity does not match its metadata.");
-  const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
-  const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
-  const installed = await installStoredNovelMetadata(metadata, cover?.bytes, requireNewWork ? async current => {
-    if (current) return false;
-  } : undefined);
-  if (installed === null) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
-  const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
-  if (!novel) throw new Error("Installed server work is missing from the local index.");
-  await cacheServerChapters(novel.id, chapters);
-  await rememberServerNovelSource(novel.id, { serverUrl: server, workId: source.workId });
-  window.dispatchEvent(new Event("norea-content-state-changed"));
-  return novel.id;
+  return runWorkMetadataSyncOperation(server, async () => {
+    const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
+    const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token);
+    const metadata = parseNovelMetadata(entry.metadata);
+    if (entry.id !== source.workId || await contentWorkId(metadata.identity) !== source.workId) throw new Error("Server work identity does not match its metadata.");
+    const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
+    const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
+    const installed = await installStoredNovelMetadata(metadata, cover?.bytes, requireNewWork ? async current => {
+      if (current) return false;
+    } : undefined);
+    if (installed === null) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
+    await recordInstalledWorkMetadata(server, installed, entry.hasCover);
+    const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
+    if (!novel) throw new Error("Installed server work is missing from the local index.");
+    await cacheServerChapters(novel.id, chapters);
+    await rememberServerNovelSource(novel.id, { serverUrl: server, workId: source.workId });
+    window.dispatchEvent(new Event("norea-content-state-changed"));
+    return novel.id;
+  });
 }

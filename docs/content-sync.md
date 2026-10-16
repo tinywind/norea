@@ -43,7 +43,10 @@ All works are synchronization targets; library membership does not select the
 sync scope. Opening any work refreshes that work from the connected server in
 the background, independently of the scheduled sync mode. Saved information is
 shown immediately. This request retrieves only the selected work's metadata,
-cover, and chapter summaries, without waiting for the full catalog or downloading chapter bodies.
+cover, and chapter summaries without downloading chapter bodies. Metadata transfers
+to the same server run sequentially, so this lookup may wait for an active work
+metadata sync. Navigation cancellation also cancels a waiting lookup. Chapter file
+transfers and local source refreshes do not hold this metadata queue.
 Locally known chapters remain available when absent from the server response.
 
 For a work opened from the server catalog, an installed source plugin also
@@ -89,9 +92,12 @@ or automatically download it again. When the work is on the server or already
 linked to it, **Manage server data** opens a separate server chapter list from
 the work page. It has its own selection, pages of 100 chapters, and deletion
 confirmation naming the work and server. Only selected server chapter IDs are
-deleted; local files, work metadata, and covers remain. Automatic sync respects
-deletions. To replace content, delete it on the server, then choose **Rescan local
-files and sync**. The app does not offer whole-work deletion from the server.
+deleted; local files, work metadata, and covers remain. The next normal sync
+rechecks completed local chapters in that work and uploads missing server chapters,
+even when no local file changed. To replace content, delete the server chapter,
+then choose **Sync now** or wait for the configured sync mode. Existing complete
+server chapters are never overwritten. The app does not offer whole-work deletion
+from the server.
 Whole-work deletion in the server console removes the server folder, metadata,
 cover, and chapter index. It keeps device copies intact and blocks automatic
 metadata reuploads until an explicit rescan restores the work.
@@ -149,7 +155,12 @@ from an older database during startup.
 Work metadata and covers transfer separately from chapter files. Sync records a
 work cursor, per-work fingerprints, and local metadata/cover change revisions.
 Normal sync reads only changed work files; external edits require an explicit
-rescan. Pending local edits and failed transfers remain eligible for retry.
+rescan. Every successful source refresh advances the upload revision, even when
+the metadata is unchanged. A revision is acknowledged only after both metadata and
+cover upload succeed. Remote installations record their exact committed revision;
+local refreshes that complete during transfer stay pending. Server lookups cannot
+replace a pending local revision. Pending local edits and failed transfers remain
+eligible for retry.
 Saved metadata supports offline browsing without refetching the
 source site. Reading progress and library membership stay on each device.
 
@@ -197,8 +208,14 @@ requests can be retried after a restart. These records are scoped to the server.
 Journal sequence numbers select changes; file names, sizes, and modification
 times identify unchanged chapter snapshots without rereading their contents.
 
-The first sync establishes a baseline. Later syncs read recorded changes and
-check only affected complete chapters. The server's change-wait endpoint returns
+The first sync establishes a baseline. Later syncs read recorded local changes
+and server chapter deletions, then check affected complete chapters. Deleted
+chapter deltas do not include a chapter number, so the app rechecks completed
+chapters in the same work to match source paths and recovered folder identities.
+Those checks become durable local upload candidates before the deletion signal
+is consumed. Existing siblings skip snapshot creation and upload; failed or queued
+candidates remain pending. Whole-work deletion still requires an explicit restore.
+The server's change-wait endpoint returns
 cursor hints; the app then fetches the corresponding deltas. Before making a
 snapshot, the app checks whether the server already has a complete chapter.
 Existing copies skip local file copying and upload, including after an app-side
@@ -206,9 +223,13 @@ edit. The server retains one copy and ignores competing uploads. Missing or
 wrong-sized server files can be repaired by the next completed upload.
 
 Chapter deltas contain identities and deletion state, without package file
-inventories. The app retains cursors and tombstones instead of a full remote
-catalog snapshot. Browsing retrieves summaries in pages; a selected download
+inventories. The app retains cursors and pending deletion signals instead of a full
+remote catalog snapshot. Browsing retrieves summaries in pages; a selected download
 fetches its package manifest separately.
+
+A sync request arriving during an active pass queues another pass. Waiting requests
+coalesce and preserve upload and rescan requests, so a metadata refresh after the
+active work phase is processed before the requesting caller completes.
 
 The current development schema has one v1 bootstrap. A version or checksum
 mismatch recreates the app database, without importing previous records. Current
@@ -223,9 +244,11 @@ use one snapshot. Android copies snapshots on a separate, bounded worker so that
 the foreground storage queue can process metadata, downloads, and deletion.
 Conflicting changes during copying discard the snapshot and leave the upload pending.
 Backup restoration waits for active work operations and holds exclusive storage
-access until files and settings are ready. If file
-restoration fails after the database was replaced, restored downloads are marked
-as needing repair and are excluded from upload.
+access while inspecting original files and restoring database state. It never
+deletes or rewrites work metadata, covers, or chapter files, including files for
+works omitted from the backup. Inspection failure leaves the database unchanged;
+failure during the native restore transaction rolls it back. Only discovered
+completed chapter files are marked downloaded and eligible for upload.
 
 ## Current limits
 

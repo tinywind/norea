@@ -126,9 +126,11 @@ it("fetches a full catalog before incremental refreshes and publishes source tit
     { path: "/chapter/1", is_downloaded: 1 }, { path: "/chapter/2", is_downloaded: 0 }, { path: "/chapter/3", is_downloaded: 0 }, { path: "/chapter/4", is_downloaded: 0 },
   ]);
   vi.mocked(plugin.parseNovelSince).mockResolvedValue(detail([4]));
-  const before = sqlite.prepare("SELECT total_changes() AS count").get();
+  const before = sqlite.prepare("SELECT revision FROM work_metadata_sync_journal WHERE plugin_id='source' AND path='/book'").get() as { revision: number };
+  const writes = storage.writes;
   await syncNovelFromSource(plugin, item, { novelId: 1, chapterRefreshMode: "since" });
-  expect(sqlite.prepare("SELECT total_changes() AS count").get()).toEqual(before);
+  expect(sqlite.prepare("SELECT revision FROM work_metadata_sync_journal WHERE plugin_id='source' AND path='/book'").get()).toEqual({ revision: before.revision + 1 });
+  expect(storage.writes).toBe(writes);
 });
 
 it("installs a backed-up catalog without marking unavailable chapters downloaded or dropping known titles", async () => {

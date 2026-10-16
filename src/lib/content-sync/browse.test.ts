@@ -7,12 +7,13 @@ vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));
 vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn() }));
 vi.mock("../../db/queries/novel", () => ({ findNovelBySource: vi.fn(async () => ({ id: 42 })) }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
+vi.mock("./works", async original => ({ ...await original<typeof import("./works")>(), recordInstalledWorkMetadata: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest } from "./client";
 import { listServerWorks, openServerNovel, refreshServerNovel, serverCoverSource } from "./browse";
 import { rememberServerNovelSource } from "./novel-source";
-import { contentWorkId } from "./works";
+import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
 
 const metadata: NovelMetadataV1 = {
@@ -21,7 +22,14 @@ const metadata: NovelMetadataV1 = {
   cover: null,
   chapters: {},
 };
-beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget()); });
+const installed = {
+  metadata, directory: "contents/source/Book", coverBytes: null,
+  syncFile: { pluginId: "source", path: "/book", directory: "contents/source/Book", fingerprint: "installed", revision: 1 },
+};
+beforeEach(() => {
+  vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
+  vi.mocked(installStoredNovelMetadata).mockResolvedValue(installed);
+});
 
 it("queries a bounded page without fetching synchronization history", async () => {
   vi.mocked(contentServerRequest).mockResolvedValue({ items: [], total: 0, hasMore: false });
@@ -38,6 +46,7 @@ it("installs only the selected work and retains its origin for later downloads",
   expect(contentServerRequest).toHaveBeenCalledOnce();
   expect(contentServerRequest).toHaveBeenCalledWith("http://server", `/works/${id}`, "device");
   expect(installStoredNovelMetadata).toHaveBeenCalledWith(metadata, undefined, undefined);
+  expect(recordInstalledWorkMetadata).toHaveBeenCalledWith("http://server", installed, false);
   expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
 });
 
@@ -76,7 +85,7 @@ it("protects metadata installed concurrently while opening a new server work", a
   vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
     const current = { directory: "contents/source/Book", metadata };
     if (await guard!(current) === false) return null;
-    return current;
+    return installed;
   });
   await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).rejects.toThrow("installed while opening");
   expect(rememberServerNovelSource).not.toHaveBeenCalled();

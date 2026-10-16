@@ -38,8 +38,29 @@ compatibility requirements must be decided explicitly before implementation.
   and reading changes do not edit it. There is no update timestamp. Recovery
   restores the catalog into SQLite and marks only discovered completed files
   as downloaded.
+- Backups preserve unknown chapter creation times as `null`, including chapters
+  recovered from metadata or storage. Restoring does not invent those timestamps.
 - Content sync shares work metadata and chapter content. Library membership,
   reading progress, bookmarks, and selected reading positions remain local.
+- Backup restore preserves every existing storage file, including `novel.json`,
+  covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies
+  to works omitted from the backup as well. Restore inspects current files
+  before replacing database rows and never deletes or rewrites originals.
+- Existing `novel.json` documents supply restored work metadata and chapter
+  titles. Backup library membership, categories, progress, and bookmarks remain
+  authoritative for personal state. Works found only in storage remain cached
+  outside the restored library. A downloaded flag is restored only when a
+  completed chapter file is discovered; backed-up byte counts are discarded.
+  Current size cache entries are retained only for the same inspected directory
+  and body type. Other sizes remain available for the normal storage backfill.
+- The native restore transaction replaces database rows and installs the
+  inspected file cache together, then clears metadata publication triggers.
+  Failure rolls back that transaction. Old download jobs are discarded because
+  their database IDs no longer identify the restored rows. Content-server
+  source associations keyed by replaced novel IDs are also discarded;
+  identity-based sync and device caches are retained. Retained work files
+  receive a new sync revision so stale backup metadata cannot replace them on
+  the content server. No schema change or device database reset is required.
 - Upstream app data formats remain out of scope unless the user explicitly
   requests an importer.
 - Source plugins use their independent API version 0.2. Their contract is

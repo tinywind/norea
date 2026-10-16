@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import type Database from "@tauri-apps/plugin-sql";
+import type { WorkMetadataSyncFile } from "../db/work-metadata";
 import { androidWorkMetadataOperation } from "./android-storage";
 import { bytesToBase64, base64ToBytes } from "./base64";
 import { novelStorageRelativeDir } from "./chapter-storage-path";
@@ -9,6 +11,7 @@ import { throwIfAborted } from "./abort";
 export { parseNovelMetadata, type NovelMetadataV1 } from "./work-metadata/schema";
 
 export interface StoredNovelMetadata { directory: string; metadata: NovelMetadataV1 }
+export interface InstalledNovelMetadata extends StoredNovelMetadata { syncFile: WorkMetadataSyncFile; coverBytes: Uint8Array | null }
 export interface WorkMetadataOperation {
   operation: "list" | "chapters" | "cover" | "read" | "write" | "remove" | "register";
   path?: string;
@@ -212,17 +215,17 @@ export async function writeStoredNovelCover(directory: string, metadata: NovelMe
   return changed;
 }
 
-export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null) => Promise<void | false>): Promise<StoredNovelMetadata | null> {
+export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>): Promise<InstalledNovelMetadata | null> {
   const metadata = parseNovelMetadata(input);
   const { runDatabaseTransaction } = await import("../db/client");
-  const { applyNovelMetadataToCache, knownNovelMetadataDirectory, rememberStoredNovelMetadata } = await import("../db/work-metadata");
+  const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
   return runWorkContentStorageOperation(metadata.identity.pluginId, metadata.identity.novelPath, async () => {
     const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
     const installed = await runDatabaseTransaction(async (db) => {
       const directory = knownNovelMetadataDirectory(metadata.identity) ?? preferred;
       const existing = await readNovelMetadataForReplacement(directory, metadata.identity);
       if (existing) existing.metadata.cover = await discoverStoredNovelCover(directory, existing.metadata.cover);
-      if (await beforeInstall?.(existing) === false) return null;
+      if (await beforeInstall?.(existing, db) === false) return null;
       return withWorkMetadataRollback(async () => {
         metadata.chapters = { ...existing?.metadata.chapters, ...metadata.chapters };
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
@@ -231,13 +234,15 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
         const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory);
         await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
         await rememberStoredNovelMetadata(db, directory, metadata, true);
-        return { novelId: installedNovelId, directory };
+        const syncFile = await readWorkMetadataSyncFile(metadata.identity, db);
+        if (!syncFile) throw new Error("Installed work metadata is missing from the local index.");
+        return { novelId: installedNovelId, directory, syncFile, coverBytes: await readStoredNovelCover(directory, metadata) };
       });
     }, true);
     if (!installed) return null;
     const { notifyNovelCoverChanged } = await import("./novel-cover-storage");
     notifyNovelCoverChanged(installed.novelId, { pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath });
-    return { directory: installed.directory, metadata };
+    return { directory: installed.directory, metadata, syncFile: installed.syncFile, coverBytes: installed.coverBytes };
   });
 }
 

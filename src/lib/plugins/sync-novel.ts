@@ -1,5 +1,5 @@
 import { getDb, runDatabaseTransaction } from "../../db/client";
-import { flushWorkMetadata, knownNovelMetadataDirectory } from "../../db/work-metadata";
+import { flushWorkMetadata, knownNovelMetadataDirectory, markWorkMetadataRefreshed } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
 import { reconcileImportedNovelIdentityInDb } from "../../db/queries/novel-identity";
 import {
@@ -15,7 +15,7 @@ import {
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { markUpdatesIndexDirty } from "../updates/update-index-events";
 import { normalizeSourceAccessRequiredError } from "./source-access";
-import { readStoredNovelMetadata } from "../work-metadata";
+import { notifyWorkMetadataChanges, readStoredNovelMetadata } from "../work-metadata";
 import { isTauriRuntime } from "../tauri-runtime";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 
@@ -352,6 +352,7 @@ export async function syncNovelFromSource(
     await flushWorkMetadata(db, {
       novelId, chapters: Object.fromEntries(detail.chapters.map(chapter => [String(chapter.chapterNumber), chapter.name])),
     });
+    await markWorkMetadataRefreshed(db, { pluginId: plugin.id, novelPath: item.path });
     return {
       changedChapters: chapterMutation.rowsAffected,
       cover: optionalText(novelRow.cover) ?? cover,
@@ -360,6 +361,7 @@ export async function syncNovelFromSource(
       novelId,
     };
   });
+  notifyWorkMetadataChanges();
 
   rememberSourceDuplicateChapters(result.novelId, duplicateChapters);
 
