@@ -824,6 +824,10 @@ a {
   width: var(--norea-console-cover-width);
 }
 
+.norea-console-cover[data-fit="contain"]:has(.norea-console-cover-image) {
+  background: var(--norea-design-panel);
+}
+
 .norea-console-cover-image {
   display: block;
   height: 100%;

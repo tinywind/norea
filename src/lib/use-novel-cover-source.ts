@@ -3,6 +3,7 @@ import {
   getNovelCoverSnapshot,
   acquireCachedNovelCoverSource,
   peekCachedNovelCoverSrc,
+  persistCachedNovelCoverSource,
   subscribeNovelCoverChanges,
   type NovelCoverStorageInput,
 } from "./novel-cover-storage";
@@ -12,6 +13,7 @@ import type { Plugin } from "./plugins/types";
 export interface NovelCoverSourceInput extends NovelCoverStorageInput {
   cover: string | null;
   isLocal?: boolean | null;
+  inLibrary?: boolean | null;
 }
 
 interface NovelCoverSourceOptions {
@@ -48,6 +50,7 @@ export function useNovelCoverSource(
   useEffect(() => {
     let cancelled = false;
     let release: (() => void) | undefined;
+    let persist: (() => Promise<void>) | undefined;
     const localCover = novel.isLocal ? novel.cover?.trim() || null : null;
     const loadedPlugin =
       options.plugin ?? pluginManager.getPlugin(novel.pluginId);
@@ -76,11 +79,24 @@ export function useNovelCoverSource(
       if (cached !== undefined) setSource(cached);
       const handle = acquireCachedNovelCoverSource(novel, cacheOptions);
       release = handle.release;
+      if (novel.inLibrary && !novel.isLocal) {
+        persist = () => persistCachedNovelCoverSource(novel, cacheOptions);
+      }
       return handle.promise;
     }
     void request
       .then((resolved) => {
-        if (!cancelled) setSource(resolved);
+        if (cancelled) return;
+        setSource(resolved);
+        if (resolved) {
+          void persist?.().catch((error: unknown) => {
+            console.debug("[novel-cover] recovered cover could not be stored", {
+              error,
+              novelId: novel.id,
+              pluginId: novel.pluginId,
+            });
+          });
+        }
       })
       .catch(() => {
         if (!cancelled) setSource(null);
@@ -95,6 +111,7 @@ export function useNovelCoverSource(
     novel.cover,
     novel.id,
     novel.isLocal,
+    novel.inLibrary,
     novel.name,
     novel.path,
     novel.pluginId,

@@ -85,7 +85,7 @@ async function rawWorkMetadataOperation(input: WorkMetadataOperation): Promise<W
   return { ...result, body: result.body ? bytesToBase64(new Uint8Array(result.body)) : null };
 }
 
-export async function withWorkMetadataRollback<T>(run: () => Promise<T>): Promise<T> {
+export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options: { preserveCoverSourcesOnRollback?: boolean } = {}): Promise<T> {
   if (publicationSnapshots) return run();
   const snapshots = new Map<string, string | null>();
   publicationSnapshots = snapshots;
@@ -99,8 +99,10 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>): Promis
         await rawWorkMetadataOperation(body === null ? { operation: "remove", path } : { operation: "write", path, body });
       } catch (restoreError) { failures.push(restoreError); }
     }
-    const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
-    invalidateAllNovelCoverSources();
+    if (!options.preserveCoverSourcesOnRollback || failures.length > 1) {
+      const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
+      invalidateAllNovelCoverSources();
+    }
     if (failures.length > 1) throw new AggregateError(failures, "work metadata: publication and rollback failed");
     throw error;
   } finally { publicationSnapshots = null; }
@@ -231,7 +233,7 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
         else metadata.cover = existing?.metadata.cover ?? null;
         await writeStoredNovelMetadata(directory, metadata, false);
-        const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory);
+        const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: true });
         await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
         await rememberStoredNovelMetadata(db, directory, metadata, true);
         const syncFile = await readWorkMetadataSyncFile(metadata.identity, db);
@@ -255,10 +257,14 @@ export async function removeStoredNovelCover(directory: string, cover: NovelMeta
   }
 }
 
-export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null }): Promise<void> {
+export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null }, options: { preserveExisting?: boolean } = {}): Promise<void> {
   const { runDatabaseTransaction } = await import("../db/client");
   const { rememberStoredNovelMetadata } = await import("../db/work-metadata");
   await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
+    if (options.preserveExisting) {
+      const { cover: existing } = await workMetadataOperation({ operation: "cover", path: `${directory}/novel.json` });
+      if (existing) return;
+    }
     const { body } = await workMetadataOperation({ operation: "read", path: `${directory}/novel.json` });
     if (!body) throw new Error("work metadata: missing work for cover");
     const metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
@@ -268,6 +274,6 @@ export async function persistNovelCover(directory: string, cover: { body: Uint8A
     if (previousCover && previousCover.fileName !== cover.fileName) await removeStoredNovelCover(directory, previousCover, false);
     await writeStoredNovelMetadata(directory, metadata, false);
     await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);
-  }));
+  }, { preserveCoverSourcesOnRollback: options.preserveExisting }));
   notifyWorkMetadataChanges();
 }

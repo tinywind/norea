@@ -8,9 +8,11 @@ const storage = vi.hoisted(() => ({
   calls: [] as string[], writes: 0, failRead: false, active: 0,
 }));
 const sql = vi.hoisted(() => ({ get: vi.fn() }));
+const covers = vi.hoisted(() => ({ changed: vi.fn(), invalidated: vi.fn() }));
 vi.mock("@tauri-apps/plugin-sql", () => ({ default: sql }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("../lib/observability", () => ({ startPerformanceObservation: () => () => undefined, recordPerformanceObservation: () => undefined }));
+vi.mock("../lib/novel-cover-storage", () => ({ notifyNovelCoverChanged: covers.changed, invalidateAllNovelCoverSources: covers.invalidated }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: { root?: string; input?: { operation: string; path?: string; body?: number[] } }) => {
   if (command === "chapter_media_set_storage_root") { storage.root = args.root!; return args.root; }
   const input = args.input!;
@@ -27,7 +29,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
       return { body: files.get(input.path!) ?? null };
     }
     if (input.operation === "chapters") return { paths: [input.path!.replace("novel.json", "1-Opening/content.html")] };
-    if (input.operation === "write" || input.operation === "remove") storage.writes++;
+    if (input.operation === "write") { storage.writes++; files.set(input.path!, input.body!); }
+    if (input.operation === "remove") { storage.writes++; files.delete(input.path!); }
     return {};
   } finally { storage.active--; }
 } }));
@@ -61,6 +64,7 @@ async function promptly<T>(promise: Promise<T>): Promise<T> {
 
 beforeEach(async () => {
   vi.resetModules();
+  covers.changed.mockClear(); covers.invalidated.mockClear();
   storage.root = "old"; storage.files.clear(); storage.gates.clear(); storage.release = [];
   storage.calls = []; storage.writes = 0; storage.failRead = false; storage.active = 0;
   addWork("old", first, "First");
@@ -115,6 +119,7 @@ it("exposes recovered library works and progress while a later chapter scan is p
   expect(sqlite.isTransaction).toBe(false);
   expect(storage.writes).toBe(0);
   expect(sync).toHaveBeenCalledOnce();
+  expect(covers.changed).toHaveBeenCalledExactlyOnceWith(1, { pluginId: "source", path: "/First" });
   unsubscribe();
 });
 
@@ -153,6 +158,40 @@ it("reports recovery failure without poisoning the database or repository", asyn
   client.startWorkMetadataRecovery(true);
   await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
   expect(sqlite.prepare("SELECT name,in_library FROM novel").get()).toEqual({ name: "First", in_library: 1 });
+});
+
+it("reopens an initialized database with pending metadata and publishes it without a folder scan", async () => {
+  await client.getDb();
+  await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
+  sqlite.exec("UPDATE novel SET name='Pending title',summary='Pending summary' WHERE id=1");
+  vi.resetModules();
+  client = await import("./client");
+  state = (await import("../store/storage-recovery")).useStorageRecoveryStore;
+  storage.calls = [];
+  const db = await promptly(client.getDb());
+  expect(await db.select("SELECT name,summary FROM novel")).toEqual([{ name: "Pending title", summary: "Pending summary" }]);
+  await vi.waitFor(() => expect(sqlite.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]));
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get("old")!.get(first)!))).novel).toMatchObject({ name: "Pending title", summary: "Pending summary" });
+  expect(storage.calls).not.toContain("old:list:");
+  expect(sqlite.prepare("SELECT * FROM work_metadata_cache_state").all()).toEqual([{ id: 1 }]);
+});
+
+it("retains pending metadata and usable database access when restart publication cannot read storage", async () => {
+  await client.getDb();
+  await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
+  const original = [...storage.files.get("old")!.get(first)!];
+  sqlite.exec("UPDATE novel SET summary='Pending summary' WHERE id=1");
+  vi.resetModules();
+  client = await import("./client");
+  state = (await import("../store/storage-recovery")).useStorageRecoveryStore;
+  storage.failRead = true;
+  const db = await promptly(client.getDb());
+  await vi.waitFor(() => expect(state.getState().status).toBe("error"));
+  expect(await db.select("SELECT summary FROM novel")).toEqual([{ summary: "Pending summary" }]);
+  expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/First" }]);
+  expect(await promptly(db.select("SELECT id FROM repository"))).toHaveLength(1);
+  expect(storage.files.get("old")!.get(first)).toEqual(original);
+  expect(storage.writes).toBe(0);
 });
 
 it.each([true, undefined])("recovers the current local work without moving or rewriting its files (isLocal: %s)", async (isLocal) => {

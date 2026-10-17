@@ -23,8 +23,6 @@ function observationError(error: unknown): string {
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   if (isTauriRuntime()) {
-    await db.execute("DELETE FROM work_metadata_cache_state WHERE EXISTS (SELECT 1 FROM work_metadata_dirty)");
-    await db.execute("DELETE FROM work_metadata_dirty");
     await restoreWorkMetadataDirectories(db, false);
   }
   return db;

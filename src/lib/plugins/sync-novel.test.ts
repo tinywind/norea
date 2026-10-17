@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 
 vi.mock("../../db/client", () => ({
   getDb: vi.fn(),
@@ -74,6 +76,22 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   };
 }
 
+function applyCapturedNovelUpsert() {
+  const sqlite = new DatabaseSync(":memory:");
+  try {
+    sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+    sqlite.exec(`INSERT INTO novel(plugin_id, path, name, cover, summary, author, artist, status, genres, rating)
+      VALUES ('demo', '/novel', 'Novel', 'https://source.test/saved.jpg', 'Saved summary',
+        'Saved author', 'Saved artist', 'Completed', 'Fantasy', 4.5)`);
+    const [sql, values] = mockExecute.mock.calls[0]!;
+    const result = sqlite.prepare(sql).run(
+      Object.fromEntries(values.map((value: unknown, index: number) => [`$${index + 1}`, value])) as never,
+    );
+    const row = sqlite.prepare("SELECT name, cover, summary, author, artist, status, genres, rating FROM novel").get();
+    return { result, row };
+  } finally { sqlite.close(); }
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockExecute = vi.fn().mockResolvedValue({ rowsAffected: 0 });
@@ -101,6 +119,43 @@ beforeEach(() => {
 });
 
 describe("syncNovelFromSource", () => {
+  it.each([undefined, "", " \t\n "])("preserves stored metadata when a default source refresh returns %j", async missing => {
+    await syncNovelFromSource(makePlugin({
+      parseNovel: async () => ({
+        ...makeDetail([1]), cover: missing, summary: missing, author: missing,
+        artist: missing, status: missing, genres: missing,
+      }),
+    }), { name: "Novel", path: "/novel" });
+    const { result, row } = applyCapturedNovelUpsert();
+    expect(result.changes).toBe(0);
+    expect(row).toEqual({
+      name: "Novel", cover: "https://source.test/saved.jpg", summary: "Saved summary",
+      author: "Saved author", artist: "Saved artist", status: "Completed", genres: "Fantasy", rating: 4.5,
+    });
+  });
+
+  it("replaces stored metadata with nonempty source fields and a zero rating", async () => {
+    await syncNovelFromSource(makePlugin({
+      parseNovel: async () => ({
+        ...makeDetail([1]), name: "Updated title", cover: "https://source.test/new.jpg",
+        summary: "New summary", author: "New author", artist: "New artist",
+        status: "Ongoing", genres: "Adventure", rating: 0,
+      }),
+    }), { name: "Novel", path: "/novel" });
+    expect(applyCapturedNovelUpsert().row).toEqual({
+      name: "Updated title", cover: "https://source.test/new.jpg", summary: "New summary",
+      author: "New author", artist: "New artist", status: "Ongoing", genres: "Adventure", rating: 0,
+    });
+  });
+
+  it("keeps explicitly requested metadata replacement available", async () => {
+    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { preserveMissingMetadata: false });
+    expect(applyCapturedNovelUpsert().row).toEqual({
+      name: "Novel", cover: null, summary: null, author: null, artist: null,
+      status: null, genres: null, rating: null,
+    });
+  });
+
   it("queues unchanged source metadata for upload and notifies after commit", async () => {
     mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 0 });
     let committed = false;

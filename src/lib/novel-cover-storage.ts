@@ -66,6 +66,7 @@ export interface NovelCoverDisplayInput extends NovelCoverStorageInput {
 
 export interface NovelCoverDisplaySource {
   dispose: () => void;
+  persist?: (novel: NovelCoverStorageInput) => Promise<void>;
   src: string;
 }
 
@@ -106,6 +107,15 @@ export function resolveCachedNovelCoverSrc(
   options: NovelCoverDisplayCacheOptions = {},
 ): Promise<string | null> {
   return getOrCreateNovelCoverCacheEntry(novel, options).promise;
+}
+
+export async function persistCachedNovelCoverSource(
+  novel: NovelCoverDisplayInput,
+  options: NovelCoverDisplayCacheOptions = {},
+): Promise<void> {
+  if (novel.id <= 0 || !resolvedNovelStorageDir(novel.id)) return;
+  const entry = novelCoverDisplayCache.get(selectNovelCoverDisplayCacheKey(novel, options));
+  if (entry?.resolved) await entry.source?.persist?.(novel);
 }
 
 export function acquireCachedNovelCoverSource(
@@ -163,6 +173,7 @@ function getOrCreateNovelCoverCacheEntry(
       }
       entry.resolved = true;
       entry.source = source;
+      if (!source) novelCoverDisplayCache.delete(cacheKey);
       trimUnusedNovelCoverSources();
       return source?.src ?? null;
     },
@@ -308,6 +319,7 @@ export async function resolveNovelCoverDisplaySource(
       disposed = true;
       URL.revokeObjectURL(src);
     },
+    persist: (storedNovel) => enqueueNovelCoverSave(plugin, storedNovel, sourceUrl, false, { body, contentType }),
     src,
   };
 }
@@ -331,6 +343,7 @@ async function enqueueNovelCoverSave(
   novel: NovelCoverStorageInput,
   sourceUrl: string,
   refresh: boolean,
+  fetched?: { body: Blob; contentType: string | null },
 ): Promise<void> {
   const cacheKey = novelCoverSaveQueueKey(novel);
   const requestIdentity = novelCoverSaveRequestIdentity(novel, refresh);
@@ -350,7 +363,7 @@ async function enqueueNovelCoverSave(
   queue.pending += 1;
   const request = queue.tail.catch(() => undefined).then(async () => {
     if (queue.generations.get(requestIdentity) !== generation) return;
-    const stored = await storeNovelCoverFromSource(plugin, novel, sourceUrl, refresh);
+    const stored = await storeNovelCoverFromSource(plugin, novel, sourceUrl, refresh, fetched);
     if (stored) notifyNovelCoverChanged(novel.id, novel);
   });
   queue.tail = request;
@@ -411,9 +424,27 @@ async function storeNovelCoverFromSource(
   novel: NovelCoverStorageInput,
   sourceUrl: string,
   refresh: boolean,
+  fetched?: { body: Blob; contentType: string | null },
 ): Promise<boolean> {
   if (!refresh && (peekCachedNovelCoverSrc({ ...novel, cover: sourceUrl }) || await readStoredNovelCover(novel))) return false;
 
+  const image = fetched ?? await fetchNovelCoverForStorage(plugin, sourceUrl, refresh);
+  const body = new Uint8Array(await image.body.arrayBuffer());
+  const contentType = image.contentType;
+  const fileName = `${NOVEL_COVER_BASENAME}.${coverExtension(sourceUrl, contentType)}`;
+  await storeNovelCover(novel, {
+    body,
+    contentType: contentType?.startsWith("image/") ? contentType : coverContentType(fileName),
+    fileName,
+  }, Boolean(fetched));
+  return true;
+}
+
+async function fetchNovelCoverForStorage(
+  plugin: Plugin,
+  sourceUrl: string,
+  refresh: boolean,
+): Promise<{ body: Blob; contentType: string | null }> {
   const baseUrl = safePluginBaseUrl(plugin);
   const response = await pluginMediaFetch(sourceUrl, {
     ...(plugin.imageRequestInit ?? {}),
@@ -436,24 +467,11 @@ async function storeNovelCoverFromSource(
     );
   }
 
-  const body = new Uint8Array(await response.arrayBuffer());
-  if (body.byteLength === 0) {
+  const body = await response.blob();
+  if (body.size === 0) {
     throw new Error("novel cover: fetched cover image is empty");
   }
-
-  const fileName = `${NOVEL_COVER_BASENAME}.${coverExtension(
-    sourceUrl,
-    contentType,
-  )}`;
-  await storeNovelCover(
-    novel,
-    {
-      body,
-      contentType: contentType?.startsWith("image/") ? contentType : coverContentType(fileName),
-      fileName,
-    },
-  );
-  return true;
+  return { body, contentType };
 }
 
 export async function resolveStoredNovelCoverSrc(
@@ -498,11 +516,13 @@ async function readStoredNovelCover(
 async function storeNovelCover(
   novel: NovelCoverStorageInput,
   input: { body: Uint8Array; contentType: string | null; fileName: string },
+  preserveExisting = false,
 ): Promise<void> {
   const metadataDirectory = resolvedNovelStorageDir(novel.id);
   if (!metadataDirectory) throw new Error("novel cover: work metadata directory is not registered");
   const { persistNovelCover } = await import("./work-metadata");
-  await persistNovelCover(metadataDirectory, input);
+  if (preserveExisting) await persistNovelCover(metadataDirectory, input, { preserveExisting: true });
+  else await persistNovelCover(metadataDirectory, input);
 }
 
 export function notifyNovelCoverChanged(

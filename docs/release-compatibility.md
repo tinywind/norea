@@ -19,6 +19,9 @@ compatibility requirements must be decided explicitly before implementation.
   successful version 1 entry with the bootstrap's SQLx SHA-384 checksum.
   Reopening that schema preserves its data. Every other history resets the
   database; matching prefixes do not upgrade.
+- Reopening the current schema retains pending metadata edits. Startup restores
+  indexed work paths and publishes those edits transactionally before content
+  sync can proceed. Failed publication leaves pending edits available for retry.
 - Reset removes `norea.db` and its WAL, shared-memory, and rollback-journal
   files before creating the current schema. It does not delete chapter files,
   covers, `novel.json`, or other app files. Database access errors propagate
@@ -38,10 +41,18 @@ compatibility requirements must be decided explicitly before implementation.
   and reading changes do not edit it. There is no update timestamp. Recovery
   restores the catalog into SQLite and marks only discovered completed files
   as downloaded.
+- Source refreshes, server metadata installation, and storage recovery preserve
+  known optional metadata when incoming fields are missing, null, or blank.
+  Nonempty updates and a rating of zero still apply. Explicit local edits can
+  clear fields through their separate editing path. Recovery does not rewrite
+  original metadata files merely to fill missing fields from the database.
 - Backups preserve unknown chapter creation times as `null`, including chapters
   recovered from metadata or storage. Restoring does not invent those timestamps.
 - Content sync shares work metadata and chapter content. Library membership,
   reading progress, bookmarks, and selected reading positions remain local.
+- Work sync reads the pending server change pages and applies only the latest
+  record for each work. It advances the saved cursor after processing those
+  records; failed processing retains completed baselines for a safe retry.
 - Backup restore preserves every existing storage file, including `novel.json`,
   covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies
   to works omitted from the backup as well. Restore inspects current files

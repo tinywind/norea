@@ -28,10 +28,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
   return {};
 } }));
 
-import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads } from "./work-metadata";
+import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories } from "./work-metadata";
 import { withChapterDownloadDeletion } from "../lib/chapter-download-writes";
 import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
-import { getNovelCoverSnapshot, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
+import { clearNovelCoverDisplayCache, getNovelCoverSnapshot, peekCachedNovelCoverSrc, persistCachedNovelCoverSource, resolveCachedNovelCoverSrc, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
+import * as http from "../lib/http";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "../lib/chapter-storage-path";
 import { clearResolvedChapterStorageDirs } from "../lib/chapter-storage-resolution";
 import { syncNovelFromSource } from "../lib/plugins/sync-novel";
@@ -233,6 +234,164 @@ it("reopens the persisted cache without reading work files or rewriting chapters
   expect(storage.directories).toEqual({ "1": "contents/source/Original-book/1-Opening" });
 });
 
+it("keeps authoritative directories available until the complete startup cache is ready", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const oldDirectory = "contents/source/Original-book";
+  const newDirectory = "contents/source/Moved-book";
+  await db.execute("UPDATE work_metadata_file_cache SET directory=$1", [newDirectory]);
+  await db.execute("UPDATE work_metadata_directory_cache SET directory=$1", [`${newDirectory}/1-Opening`]);
+  let releaseFiles!: () => void;
+  let releaseChapters!: () => void;
+  let readingChapters!: () => void;
+  const filesGate = new Promise<void>(resolve => { releaseFiles = resolve; });
+  const chaptersGate = new Promise<void>(resolve => { releaseChapters = resolve; });
+  const chaptersStarted = new Promise<void>(resolve => { readingChapters = resolve; });
+  const select = db.select.bind(db);
+  const reload = vi.spyOn(db, "select").mockImplementation(async <T>(query: string, params?: unknown[]): Promise<T> => {
+    if (query.includes("FROM work_metadata_file_cache")) await filesGate;
+    if (query.includes("FROM work_metadata_directory_cache")) { readingChapters(); await chaptersGate; }
+    return select<T>(query, params);
+  });
+  const restore = restoreWorkMetadataDirectories(db, false);
+  const expectOriginalPaths = () => {
+    expect(knownNovelMetadataDirectory(fixture().identity)).toBe(oldDirectory);
+    expect(novelStorageRelativeDir({ id: 1, name: "A later title" })).toBe(oldDirectory);
+    expect(chapterStorageRelativeDir({ id: 1 }, { id: 1 })).toBe(`${oldDirectory}/1-Opening`);
+  };
+  try {
+    expectOriginalPaths();
+    releaseFiles();
+    await chaptersStarted;
+    expectOriginalPaths();
+  } finally {
+    releaseFiles();
+    releaseChapters();
+    await restore;
+    reload.mockRestore();
+  }
+  expect(knownNovelMetadataDirectory(fixture().identity)).toBe(newDirectory);
+  expect(novelStorageRelativeDir({ id: 1, name: "A later title" })).toBe(newDirectory);
+  expect(chapterStorageRelativeDir({ id: 1 }, { id: 1 })).toBe(`${newDirectory}/1-Opening`);
+  expect(storage.writes).toBe(0);
+});
+
+it("notifies existing cover consumers only when restored work directories change", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const changed = vi.fn(() => { expect(sqlite.isTransaction).toBe(false); });
+  const unsubscribe = subscribeNovelCoverChanges(changed);
+  try {
+    await restoreWorkMetadataDirectories(db, false);
+    expect(changed).not.toHaveBeenCalled();
+    await db.execute("UPDATE work_metadata_file_cache SET directory='contents/source/Moved-book'");
+    await restoreWorkMetadataDirectories(db, false);
+    expect(changed).toHaveBeenCalledExactlyOnceWith(1);
+    expect(knownNovelMetadataDirectory(fixture().identity)).toBe("contents/source/Moved-book");
+    await restoreWorkMetadataDirectories(db, false);
+    expect(changed).toHaveBeenCalledOnce();
+  } finally { unsubscribe(); }
+});
+
+it("notifies an existing work card after recovery commits its first storage directory", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/book','Disk title')");
+  save(fixture());
+  const changed = vi.fn(() => {
+    expect(sqlite.isTransaction).toBe(false);
+    expect(knownNovelMetadataDirectory(fixture().identity)).toBe("contents/source/Original-book");
+  });
+  const unsubscribe = subscribeNovelCoverChanges(changed);
+  try {
+    await initializeWorkMetadata(db);
+    expect(changed).toHaveBeenCalledExactlyOnceWith(1);
+    expect(storage.writes).toBe(0);
+  } finally { unsubscribe(); }
+});
+
+it("recovers incomplete stored metadata without erasing richer existing fields", async () => {
+  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,cover,author,artist,summary,status,genres,rating,in_library)
+    VALUES(1,'source','/book','Cached title','https://source.test/cover.jpg','Writer','Illustrator','Full summary','Ongoing','Fantasy',4.5,1)`);
+  const minimal = { identity: fixture().identity, novel: { name: "Recovered title", artist: " \t\n", summary: "" } };
+  const original = [...new TextEncoder().encode(JSON.stringify(minimal))];
+  storage.files.set(path, original);
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT name,cover,author,artist,summary,status,genres,rating,in_library FROM novel").get()).toEqual({
+    name: "Recovered title", cover: "https://source.test/cover.jpg", author: "Writer", artist: "Illustrator",
+    summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 4.5, in_library: 1,
+  });
+  expect(storage.files.get(path)).toEqual(original);
+  expect(storage.writes).toBe(0);
+});
+
+it.each(["rebuild", "rescan"])("preserves populated fields during a partial metadata %s while accepting real updates", async (mode) => {
+  const original = fixture();
+  original.novel = { ...original.novel, artist: "Illustrator", summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 4.5 };
+  save(original); await initializeWorkMetadata(db);
+  const incoming = fixture();
+  incoming.novel = { ...incoming.novel, name: "New title", author: "New writer", artist: " \t\n", rating: 0 };
+  save(incoming);
+  const bytes = storage.files.get(path);
+  if (mode === "rebuild") await initializeWorkMetadata(db, { rebuild: true });
+  else await readWorkMetadataSyncFiles(true);
+  expect(sqlite.prepare("SELECT name,author,artist,summary,status,genres,rating FROM novel").get()).toEqual({
+    name: "New title", author: "New writer", artist: "Illustrator", summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 0,
+  });
+  expect(storage.files.get(path)).toEqual(bytes);
+  expect(storage.writes).toBe(0);
+});
+
+it("publishes pending metadata after reopening instead of replacing it with the older file", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const [before] = await readWorkMetadataSyncFiles();
+  await db.execute("UPDATE novel SET name='Pending title',author=NULL,summary='Pending summary' WHERE id=1");
+  storage.lists = 0;
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT name,author,summary FROM novel").get()).toEqual({ name: "Pending title", author: null, summary: "Pending summary" });
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel).toMatchObject({ name: "Pending title", author: null, summary: "Pending summary" });
+  expect(sqlite.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]);
+  expect((await readWorkMetadataSyncFiles())[0]!.revision).toBeGreaterThan(before!.revision);
+  expect(storage.lists).toBe(0);
+});
+
+it("keeps pending metadata and the external file when restart publication detects a conflict", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  await db.execute("UPDATE novel SET name='Pending title',summary='Pending summary' WHERE id=1");
+  save({ ...fixture(), novel: { ...fixture().novel, name: "External title" } });
+  const bytes = storage.files.get(path);
+  await expect(initializeWorkMetadata(db)).rejects.toThrow("file changed");
+  expect(sqlite.prepare("SELECT name,summary FROM novel").get()).toEqual({ name: "Pending title", summary: "Pending summary" });
+  expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
+  expect(storage.files.get(path)).toEqual(bytes);
+  expect(storage.writes).toBe(0);
+  expect(sqlite.isTransaction).toBe(false);
+});
+
+it("retains pending edits during folder recovery and publishes them before the sync snapshot", async () => {
+  save({ ...fixture(), chapters: { "1": "Opening", "2": "Second" } }); await initializeWorkMetadata(db);
+  const [before] = await readWorkMetadataSyncFiles();
+  const bytes = storage.files.get(path);
+  await db.execute("UPDATE novel SET name='Pending title',author=NULL,summary='Pending summary' WHERE id=1");
+  await db.execute("DELETE FROM chapter WHERE chapter_number='2'");
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(sqlite.prepare("SELECT name,author,summary FROM novel").get()).toEqual({ name: "Pending title", author: null, summary: "Pending summary" });
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 2 });
+  expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
+  expect(storage.files.get(path)).toEqual(bytes);
+  expect(storage.writes).toBe(0);
+  const [after] = await readWorkMetadataSyncFiles();
+  expect(after!.revision).toBeGreaterThan(before!.revision);
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel).toMatchObject({ name: "Pending title", author: null, summary: "Pending summary" });
+  expect(sqlite.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]);
+});
+
+it("still applies an explicit metadata clear outside file recovery", async () => {
+  const original = fixture();
+  original.novel = { ...original.novel, artist: "Illustrator", summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 4.5 };
+  save(original); await initializeWorkMetadata(db);
+  await applyNovelMetadataToCache(db, { ...fixture(), novel: { ...fixture().novel, author: null } });
+  await flushWorkMetadata(db);
+  expect(sqlite.prepare("SELECT author,artist,summary,status,genres,rating FROM novel").get()).toEqual({ author: null, artist: null, summary: null, status: null, genres: null, rating: null });
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel.author).toBeNull();
+});
+
 it("recovers distinct local files with the same chapter number and keeps their directory identities", async () => {
   const metadata = fixture();
   metadata.identity = { pluginId: "local", novelPath: "local" };
@@ -372,6 +531,92 @@ it("tracks changed cover bytes even when the metadata descriptor is unchanged", 
   expect(await readWorkMetadataSyncFiles()).toEqual([after]);
 });
 
+it("preserves existing cover bytes and metadata when recovering a display fallback", async () => {
+  save(fixture());
+  await initializeWorkMetadata(db);
+  const directory = "contents/source/Original-book";
+  const original = new Uint8Array([8, 9]);
+  await persistNovelCover(directory, { fileName: "cover.png", contentType: "image/png", body: original });
+  const metadata = [...storage.files.get(path)!];
+  const writes = storage.writes;
+  const journal = sqlite.prepare("SELECT * FROM work_metadata_sync_journal").all();
+
+  await persistNovelCover(directory, { fileName: "cover.jpg", contentType: "image/jpeg", body: new Uint8Array([1, 2]) }, { preserveExisting: true });
+
+  expect(storage.files.get(`${directory}/cover.png`)).toEqual([...original]);
+  expect(storage.files.has(`${directory}/cover.jpg`)).toBe(false);
+  expect(storage.files.get(path)).toEqual(metadata);
+  expect(storage.writes).toBe(writes);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_sync_journal").all()).toEqual(journal);
+});
+
+it("checks for a newly installed cover after entering the recovery write transaction", async () => {
+  save(fixture());
+  await initializeWorkMetadata(db);
+  const directory = "contents/source/Original-book";
+  databaseClient.transaction.mockImplementationOnce(async (run: (database: Database) => Promise<unknown>) => {
+    storage.files.set(`${directory}/cover.png`, [7, 8, 9]);
+    sqlite.exec("BEGIN IMMEDIATE");
+    try { const result = await run(db); sqlite.exec("COMMIT"); return result; }
+    catch (error) { sqlite.exec("ROLLBACK"); throw error; }
+  });
+  const metadata = [...storage.files.get(path)!];
+  const writes = storage.writes;
+
+  await persistNovelCover(directory, { fileName: "cover.jpg", contentType: "image/jpeg", body: new Uint8Array([1, 2]) }, { preserveExisting: true });
+
+  expect(storage.files.get(`${directory}/cover.png`)).toEqual([7, 8, 9]);
+  expect(storage.files.has(`${directory}/cover.jpg`)).toBe(false);
+  expect(storage.files.get(path)).toEqual(metadata);
+  expect(storage.writes).toBe(writes);
+});
+
+it("installs a missing recovered cover and still permits an explicit cover refresh", async () => {
+  save(fixture());
+  await initializeWorkMetadata(db);
+  const directory = "contents/source/Original-book";
+  const cover = { fileName: "cover.jpg", contentType: "image/jpeg", body: new Uint8Array([1, 2]) };
+  await persistNovelCover(directory, cover, { preserveExisting: true });
+  expect(storage.files.get(`${directory}/cover.jpg`)).toEqual([1, 2]);
+
+  await persistNovelCover(directory, { ...cover, body: new Uint8Array([3, 4]) });
+  expect(storage.files.get(`${directory}/cover.jpg`)).toEqual([3, 4]);
+});
+
+it("keeps a recovered cover visible when its real publication is rolled back", async () => {
+  save(fixture());
+  await initializeWorkMetadata(db);
+  clearNovelCoverDisplayCache();
+  const metadata = [...storage.files.get(path)!];
+  const displayNovel = { id: 1, pluginId: "source", path: "/book", name: "Disk title", cover: "https://source.test/cover.jpg" };
+  const plugin = { id: "source", version: "1.0.0", url: "https://source.test/plugin.js", getBaseUrl: () => "https://source.test/" } as Plugin;
+  const options = { allowSourceFallback: true, plugin };
+  const fetch = vi.spyOn(http, "pluginMediaFetch").mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } }));
+  const revoke = vi.spyOn(URL, "revokeObjectURL");
+  try {
+    const source = await resolveCachedNovelCoverSrc(displayNovel, options);
+    expect(source).toMatch(/^blob:/);
+    const snapshot = getNovelCoverSnapshot(1);
+    storage.failOncePath = path;
+
+    await expect(persistCachedNovelCoverSource(displayNovel, options)).rejects.toThrow("disk full");
+
+    expect(storage.files.get(path)).toEqual(metadata);
+    expect(storage.files.has("contents/source/Original-book/cover.jpg")).toBe(false);
+    expect(getNovelCoverSnapshot(1)).toBe(snapshot);
+    expect(peekCachedNovelCoverSrc(displayNovel, options)).toBe(source);
+    expect(revoke).not.toHaveBeenCalledWith(source);
+
+    await persistCachedNovelCoverSource(displayNovel, options);
+    expect(storage.files.get("contents/source/Original-book/cover.jpg")).toEqual([1, 2, 3]);
+    expect(fetch).toHaveBeenCalledOnce();
+  } finally {
+    clearNovelCoverDisplayCache();
+    fetch.mockRestore();
+    revoke.mockRestore();
+  }
+});
+
 it("bootstraps work tracking before the frontend opens the database", () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/book','Book')");
   expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
@@ -435,11 +680,17 @@ it("keeps the persisted conflict baseline when files change while the app is clo
   expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel.name).toBe("External edit");
 });
 
-it("recovers interrupted dirty cache writes from authoritative files on startup", async () => {
+it("retries interrupted metadata publication without discarding the persisted edit", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   await db.execute("UPDATE novel SET name='Unpublished edit' WHERE id=1");
+  storage.failOncePath = path;
+  await expect(initializeWorkMetadata(db)).rejects.toThrow("disk full");
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Unpublished edit" });
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel.name).toBe("Disk title");
+  expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
   await initializeWorkMetadata(db);
-  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Disk title" });
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Unpublished edit" });
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel.name).toBe("Unpublished edit");
   expect(sqlite.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]);
 });
 
@@ -776,4 +1027,49 @@ it("rebuilds editable local cover cache from the cover file", async () => {
   await initializeWorkMetadata(db);
   expect(sqlite.prepare("SELECT cover FROM novel").get()).toEqual({ cover: "data:image/png;base64,AQID" });
   expect(storage.writes).toBe(0);
+});
+
+
+it("keeps recovered DB metadata through sparse server installation and reopening", async () => {
+  const rich = fixture();
+  rich.novel = {
+    ...rich.novel, author: "Cached author", artist: "Cached artist", summary: "Cached summary",
+    status: "Completed", genres: "Fantasy", rating: 4.5,
+  };
+  save(rich);
+  await initializeWorkMetadata(db);
+  const partial = fixture();
+  partial.novel = { ...partial.novel, author: null };
+  save(partial);
+  const original = [...storage.files.get(path)!];
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(storage.files.get(path)).toEqual(original);
+  expect(storage.writes).toBe(0);
+
+  const incoming = {
+    ...partial,
+    novel: { ...partial.novel, name: "Server title", summary: " \t\n ", genres: "" },
+    chapters: { "2": "New server chapter" },
+  };
+  await installStoredNovelMetadata(incoming);
+  const readFields = () => sqlite.prepare("SELECT name,author,artist,summary,status,genres,rating FROM novel").get();
+  expect(readFields()).toEqual({
+    name: "Server title", author: "Cached author", artist: "Cached artist", summary: "Cached summary",
+    status: "Completed", genres: "Fantasy", rating: 4.5,
+  });
+  expect(sqlite.prepare("SELECT name FROM chapter WHERE chapter_number='2'").get()).toEqual({ name: "New server chapter" });
+  const installedFile = [...storage.files.get(path)!];
+  const writes = storage.writes;
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(readFields()).toEqual({
+    name: "Server title", author: "Cached author", artist: "Cached artist", summary: "Cached summary",
+    status: "Completed", genres: "Fantasy", rating: 4.5,
+  });
+  expect(storage.files.get(path)).toEqual(installedFile);
+  expect(storage.writes).toBe(writes);
+
+  await applyNovelMetadataToCache(db, partial);
+  expect(readFields()).toEqual({
+    name: "Disk title", author: null, artist: null, summary: null, status: null, genres: null, rating: null,
+  });
 });

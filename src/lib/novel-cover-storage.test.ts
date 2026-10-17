@@ -10,6 +10,7 @@ import { pluginMediaFetch } from "./http";
 import {
   clearNovelCoverDisplayCache, acquireCachedNovelCoverSource, getNovelCoverSnapshot,
   invalidateAllNovelCoverSources, notifyNovelCoverChanged, peekCachedNovelCoverSrc,
+  persistCachedNovelCoverSource,
   resolveCachedNovelCoverSrc, resolveNovelCoverDisplaySource, resolveStoredNovelCoverSrc,
   saveNovelCoverFromSource, subscribeNovelCoverChanges,
 } from "./novel-cover-storage";
@@ -322,18 +323,101 @@ describe("cached novel cover display sources", () => {
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
   });
 
-  it("fetches a missing cover only for source-enabled views and retains the local lookup", async () => {
+  it("fetches a missing cover only for source-enabled views without caching a missing local file", async () => {
     const displayNovel = { ...novel, cover: "/cover.jpg" };
     const options = { allowSourceFallback: true, plugin: makePlugin() };
     await expect(resolveCachedNovelCoverSrc(displayNovel)).resolves.toBeNull();
     const remote = await resolveCachedNovelCoverSrc(displayNovel, options);
     expect(remote).toMatch(/^blob:/);
-    expect(peekCachedNovelCoverSrc(displayNovel)).toBeNull();
+    expect(peekCachedNovelCoverSrc(displayNovel)).toBeUndefined();
     expect(peekCachedNovelCoverSrc(displayNovel, options)).toBe(remote);
 
     await resolveCachedNovelCoverSrc({ ...displayNovel, cover: "/updated.jpg" }, options);
     expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
-    expect(workMetadataMock).toHaveBeenCalledOnce();
+    expect(workMetadataMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([false, true])("persists a recovered library cover once and reopens it offline (Android: %s)", async android => {
+    isAndroidRuntimeMock.mockReturnValue(android);
+    const displayNovel = { ...novel, cover: "/cover.jpg" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    const source = await resolveCachedNovelCoverSrc(displayNovel, options);
+    expect(source).toMatch(/^blob:/);
+    vi.mocked(persistNovelCover).mockImplementationOnce(async () => {
+      workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    });
+
+    await persistCachedNovelCoverSource(displayNovel, options);
+    expect(persistNovelCover).toHaveBeenCalledExactlyOnceWith(directory, {
+      body: new Uint8Array([1, 2, 3]), contentType: "image/jpeg", fileName: "cover.jpg",
+    }, { preserveExisting: true });
+    expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+
+    const local = await resolveCachedNovelCoverSrc(displayNovel, options);
+    expect(local).toContain(android ? "/__norea_android_media__/file/" : "/cover.jpg?v=");
+    await persistCachedNovelCoverSource(displayNovel, options);
+    invalidateAllNovelCoverSources();
+    pluginMediaFetchMock.mockRejectedValue(new Error("offline"));
+    await expect(resolveCachedNovelCoverSrc(displayNovel, options)).resolves.toContain(android ? "/__norea_android_media__/file/" : "/cover.jpg?v=");
+    expect(persistNovelCover).toHaveBeenCalledOnce();
+    expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("retains a transient cover across library and work home navigation before storage completes", async () => {
+    const displayNovel = { ...novel, cover: "/cover.jpg" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    const library = acquireCachedNovelCoverSource(displayNovel, options);
+    const source = await library.promise;
+    library.release();
+    const home = acquireCachedNovelCoverSource(displayNovel, options);
+    await expect(home.promise).resolves.toBe(source);
+    home.release();
+    const returned = acquireCachedNovelCoverSource(displayNovel, options);
+    await expect(returned.promise).resolves.toBe(source);
+    returned.release();
+    expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a cover installed after the fallback image was fetched", async () => {
+    const displayNovel = { ...novel, cover: "/cover.jpg" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    await resolveCachedNovelCoverSrc(displayNovel, options);
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    await persistCachedNovelCoverSource(displayNovel, options);
+    expect(persistNovelCover).not.toHaveBeenCalled();
+    expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("retains the displayed cover when recovered cover persistence fails", async () => {
+    const displayNovel = { ...novel, cover: "/cover.jpg" };
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    const source = await resolveCachedNovelCoverSrc(displayNovel, options);
+    vi.mocked(persistNovelCover).mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(persistCachedNovelCoverSource(displayNovel, options)).rejects.toThrow("storage unavailable");
+    expect(peekCachedNovelCoverSrc(displayNovel, options)).toBe(source);
+    await expect(resolveCachedNovelCoverSrc(displayNovel, options)).resolves.toBe(source);
+    expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not write a transient browse result or a work without an indexed storage directory", async () => {
+    const options = { allowSourceFallback: true, plugin: makePlugin() };
+    for (const id of [0, novel.id]) {
+      const displayNovel = { ...novel, id, cover: "/cover.jpg" };
+      vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
+      await resolveCachedNovelCoverSrc(displayNovel, options);
+      await persistCachedNovelCoverSource(displayNovel, options);
+    }
+    expect(persistNovelCover).not.toHaveBeenCalled();
+  });
+
+  it("retries a missing local cover after its work directory is registered", async () => {
+    const displayNovel = { ...novel, cover: "/cover.jpg" };
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
+    await expect(resolveCachedNovelCoverSrc(displayNovel)).resolves.toBeNull();
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue(directory);
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    await expect(resolveCachedNovelCoverSrc(displayNovel)).resolves.toContain("/cover.jpg?v=");
+    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
   });
 
   it("invalidates the shared local cover after replacement", async () => {

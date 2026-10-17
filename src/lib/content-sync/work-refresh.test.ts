@@ -71,6 +71,39 @@ it("refreshes only the opened work and retains locally known chapters", async ()
   expect(mocks.record).toHaveBeenCalledWith("http://server", expect.objectContaining({ metadata }), false);
 });
 
+it("retains known metadata when an opened work receives empty server fields", async () => {
+  const stored = {
+    ...local,
+    novel: { ...local.novel, artist: "Artist", status: "Completed", genres: "Fantasy", rating: 4.5 },
+    chapters: { "1": "Opening" },
+  };
+  const incoming = {
+    ...local,
+    novel: { ...local.novel, name: "Updated title", author: "", artist: " \t ", summary: null, status: null, genres: "", rating: null },
+    chapters: { "2": "New chapter" },
+  };
+  mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata: stored });
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: await contentWorkId(local.identity), metadata: incoming, hasCover: false });
+  expect(await syncServerNovelOnOpen(42)).toBe(true);
+  expect(mocks.commit).toHaveBeenCalledWith({
+    ...stored, novel: { ...stored.novel, name: "Updated title" },
+    chapters: { "1": "Opening", "2": "New chapter" },
+  });
+  expect(stored.novel.name).toBe("Book");
+  expect(incoming.novel.summary).toBeNull();
+});
+
+it("skips installation when a sparse server document contributes no metadata changes", async () => {
+  vi.mocked(contentServerRequest).mockResolvedValue({
+    id: await contentWorkId(local.identity),
+    metadata: { ...local, novel: { ...local.novel, author: null, summary: " \t " } },
+    hasCover: false,
+  });
+  mocks.cache.mockResolvedValue(false);
+  expect(await syncServerNovelOnOpen(42)).toBe(false);
+  expect(mocks.install).not.toHaveBeenCalled();
+});
+
 it("does not reinstall unchanged metadata when the server catalog omits locally known chapters", async () => {
   const chapters = { "1": "Opening", "2": "Second" };
   mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata: { ...local, chapters } });

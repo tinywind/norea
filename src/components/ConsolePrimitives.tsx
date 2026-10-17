@@ -22,6 +22,7 @@ import { TextButton } from "./TextButton";
 interface ConsoleCoverProps {
   alt: string;
   className?: string;
+  fit?: "cover" | "contain";
   height?: number | string;
   src: string | null;
   width?: number | string;
@@ -30,6 +31,7 @@ interface ConsoleCoverProps {
 export function ConsoleCover({
   alt,
   className,
+  fit = "cover",
   height = 72,
   src,
   width = 48,
@@ -55,6 +57,7 @@ export function ConsoleCover({
     <span
       aria-label={alt}
       className={`norea-console-cover${className ? ` ${className}` : ""}`}
+      data-fit={fit}
       style={style}
     >
       {showImage ? (
@@ -66,6 +69,7 @@ export function ConsoleCover({
           loading="lazy"
           onError={() => setFailedSrc(normalizedSrc)}
           src={normalizedSrc ?? undefined}
+          style={{ objectFit: fit }}
         />
       ) : (
         <ConsoleCoverFallback title={alt} />

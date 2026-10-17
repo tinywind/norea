@@ -1,4 +1,5 @@
 import { canonicalMetadataValue } from "../work-metadata/schema";
+import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, type WorkMetadataSyncFile } from "../../db/work-metadata";
@@ -123,71 +124,75 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
   try {
     const local = await readWorkMetadataSyncFiles(rescan);
     const byIdentity = new Map(local.map(entry => [JSON.stringify([entry.pluginId, entry.path]), entry]));
+    const latestById = new Map<string, WorkCatalogEntry>();
+    let cursor = cache.cursor;
     let more = true;
     while (more) {
-      const page = await contentServerRequest<WorkCatalogPage>(server, `/works?after=${cache.cursor}&limit=100`, token);
+      const page = await contentServerRequest<WorkCatalogPage>(server, `/works?after=${cursor}&limit=100`, token);
       assertCurrent();
-      if (page.hasMore && page.cursor <= cache.cursor) throw new Error("Work catalog cursor did not advance.");
-      for (const entry of page.items) {
-        const metadata = parseNovelMetadata(entry.metadata);
-        if (await contentWorkId(metadata.identity) !== entry.id) throw new Error("Server work identity does not match its metadata.");
-        dirty = true;
-        const identity = identityKey(metadata.identity);
-        if (entry.deleted) {
-          cache.deleted[entry.id] = true;
-          delete cache.fingerprints[entry.id];
-          delete cache.fileVersions[identity];
-          continue;
-        }
-        delete cache.deleted[entry.id];
-        const file = byIdentity.get(identity);
-        const current = file ? await readStoredNovelMetadata(file.directory) : null;
-        let expectedFingerprint: string | null = null;
-        if (current) {
-          expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
-          if (!file || !matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
-        }
-        let cover: Uint8Array | null;
-        try { cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null; }
-        catch (error) {
-          if (error instanceof ContentServerError && error.status === 404) {
-            try { await contentServerRequest<WorkCatalogEntry>(server, `/works/${entry.id}`, token); }
-            catch (currentError) {
-              if (currentError instanceof ContentServerError && currentError.status === 404) {
-                cache.deleted[entry.id] = true;
-                delete cache.fingerprints[entry.id]; delete cache.fileVersions[identity];
-                continue;
-              }
-              throw currentError;
-            }
-          }
-          throw error;
-        }
-        const installedMetadata = { ...metadata, chapters: { ...current?.metadata.chapters, ...metadata.chapters } };
-        assertCurrent();
-        const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
-        if (incomingFingerprint === expectedFingerprint) {
-          if (file) cache.fileVersions[identity] = workMetadataFileVersion(file)!;
-          continue;
-        }
-        const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest, db) => {
-          if (!isCurrent()) return false;
-          const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
-          if (!isCurrent() || latestFingerprint !== expectedFingerprint) return false;
-          const latestFile = await readWorkMetadataSyncFile(metadata.identity, db);
-          if (!isCurrent() || workMetadataFileVersion(latestFile) !== workMetadataFileVersion(file)) return false;
-        });
-        assertCurrent();
-        if (!stored) continue;
-        byIdentity.set(identity, stored.syncFile);
-        await rememberInstalledWork(cache, stored, entry.hasCover);
-        installed = true;
-      }
-      dirty ||= cache.cursor !== page.cursor;
-      cache.cursor = page.cursor;
-      await checkpoint();
+      if (page.hasMore && page.cursor <= cursor) throw new Error("Work catalog cursor did not advance.");
+      for (const entry of page.items) latestById.set(entry.id, entry);
+      cursor = page.cursor;
       more = page.hasMore;
     }
+    for (const entry of latestById.values()) {
+      const metadata = parseNovelMetadata(entry.metadata);
+      if (await contentWorkId(metadata.identity) !== entry.id) throw new Error("Server work identity does not match its metadata.");
+      dirty = true;
+      const identity = identityKey(metadata.identity);
+      if (entry.deleted) {
+        cache.deleted[entry.id] = true;
+        delete cache.fingerprints[entry.id];
+        delete cache.fileVersions[identity];
+        continue;
+      }
+      delete cache.deleted[entry.id];
+      const file = byIdentity.get(identity);
+      const current = file ? await readStoredNovelMetadata(file.directory) : null;
+      let expectedFingerprint: string | null = null;
+      if (current) {
+        expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
+        if (!file || !matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
+      }
+      let cover: Uint8Array | null;
+      try { cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null; }
+      catch (error) {
+        if (error instanceof ContentServerError && error.status === 404) {
+          try { await contentServerRequest<WorkCatalogEntry>(server, `/works/${entry.id}`, token); }
+          catch (currentError) {
+            if (currentError instanceof ContentServerError && currentError.status === 404) {
+              cache.deleted[entry.id] = true;
+              delete cache.fingerprints[entry.id]; delete cache.fileVersions[identity];
+              continue;
+            }
+            throw currentError;
+          }
+        }
+        throw error;
+      }
+      const installedMetadata = mergeIncomingNovelMetadata(current?.metadata, metadata);
+      assertCurrent();
+      const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
+      if (incomingFingerprint === expectedFingerprint) {
+        if (file) cache.fileVersions[identity] = workMetadataFileVersion(file)!;
+        continue;
+      }
+      const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest, db) => {
+        if (!isCurrent()) return false;
+        const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
+        if (!isCurrent() || latestFingerprint !== expectedFingerprint) return false;
+        const latestFile = await readWorkMetadataSyncFile(metadata.identity, db);
+        if (!isCurrent() || workMetadataFileVersion(latestFile) !== workMetadataFileVersion(file)) return false;
+      });
+      assertCurrent();
+      if (!stored) continue;
+      byIdentity.set(identity, stored.syncFile);
+      await rememberInstalledWork(cache, stored, entry.hasCover);
+      installed = true;
+    }
+    dirty ||= cache.cursor !== cursor;
+    cache.cursor = cursor;
+    await checkpoint();
     if (!upload) return new Set(Object.keys(cache.deleted));
     let uploaded = 0;
     for (const [identity, file] of byIdentity) {

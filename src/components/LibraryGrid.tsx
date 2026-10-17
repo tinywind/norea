@@ -209,7 +209,7 @@ const LibraryTableRow = memo(function LibraryTableRow({
   const downloadProgress = getDownloadPercent(novel);
   const status = getNovelStatus(novel, t);
   const hasUnread = novel.chaptersUnread > 0;
-  const coverSource = useNovelCoverSource(novel);
+  const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
 
   return (
     <LibraryInteractiveItem
@@ -226,7 +226,7 @@ const LibraryTableRow = memo(function LibraryTableRow({
           <span data-active={hasUnread} />
         )}
       </span>
-      <ConsoleCover alt={novel.name} height={42} src={coverSource} width={28} />
+      <ConsoleCover alt={novel.name} fit="contain" height={42} src={coverSource} width={28} />
       <span className="norea-library-title-cell">
         <span className="norea-library-title">{novel.name}</span>
         <span className="norea-library-subtitle">
@@ -275,7 +275,7 @@ const LibraryCard = memo(function LibraryCard({
   const status = getNovelStatus(novel, t);
   const coverOnly = displayMode === "cover-only";
   const coverWidth = displayMode === "compact" ? 100 : coverOnly ? "100%" : 128;
-  const coverSource = useNovelCoverSource(novel);
+  const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
 
   return (
     <LibraryInteractiveItem
@@ -291,6 +291,7 @@ const LibraryCard = memo(function LibraryCard({
         ) : null}
         <ConsoleCover
           alt={novel.name}
+          fit="contain"
           height={displayMode === "compact" ? 150 : 190}
           src={coverSource}
           width={coverWidth}

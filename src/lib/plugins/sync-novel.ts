@@ -77,7 +77,7 @@ function rememberSourceDuplicateChapters(
 }
 
 function optionalText(value: string | undefined | null): string | null {
-  return value ?? null;
+  return value?.trim() ? value : null;
 }
 
 function pluginChapterContentType(value: unknown): ChapterContentType {
@@ -270,7 +270,7 @@ export async function syncNovelFromSource(
     options,
   );
   options.signal?.throwIfAborted();
-  const preserveMissingMetadata = options.preserveMissingMetadata ?? false;
+  const preserveMissingMetadata = options.preserveMissingMetadata ?? true;
   const cover = optionalText(detail.cover) ?? optionalText(item.cover);
   const novelName = detail.name || item.name;
   const chapterInputs: InsertChapterInput[] = detail.chapters.map(
@@ -322,7 +322,7 @@ export async function syncNovelFromSource(
         optionalText(detail.summary),
         optionalText(detail.author),
         optionalText(detail.artist),
-        detail.status ? String(detail.status) : null,
+        optionalText(detail.status == null ? null : String(detail.status)),
         optionalText(detail.genres),
         detail.rating ?? null,
       ],

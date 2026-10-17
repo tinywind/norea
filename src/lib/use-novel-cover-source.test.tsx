@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 vi.mock("./novel-cover-storage", () => ({
   getNovelCoverSnapshot: () => 0,
   peekCachedNovelCoverSrc: () => "blob:already-loaded-cover",
+  persistCachedNovelCoverSource: vi.fn(),
   subscribeNovelCoverChanges: () => () => undefined,
   acquireCachedNovelCoverSource: vi.fn(),
 }));
