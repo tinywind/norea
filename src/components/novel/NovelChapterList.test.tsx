@@ -31,14 +31,14 @@ const chapter: ChapterListRow = {
 };
 
 describe("chapter row controls", () => {
-  it.each([false, true])(
-    "keeps selection, dragging and download actions outside the primary button (downloaded: %s)",
-    (isDownloaded) => {
+  it.each([[false, false], [true, true], [false, true]])(
+    "keeps selection and stored-body actions outside the primary button (downloaded: %s, repair: %s)",
+    (isDownloaded, mediaRepairNeeded) => {
       const $ = load(renderToStaticMarkup(
         <MantineProvider>
           <VirtualChapterList
             chapters={[
-              { ...chapter, isDownloaded, mediaRepairNeeded: isDownloaded },
+              { ...chapter, isDownloaded, mediaRepairNeeded },
               { ...chapter, id: 2, position: 2, name: "Second chapter" },
             ]}
             canDeleteDownloads
@@ -74,7 +74,7 @@ describe("chapter row controls", () => {
       expect(row.children("button.norea-novel-chapter-drag-handle")).toHaveLength(1);
       expect(row.find("input[type='checkbox']")).toHaveLength(1);
       expect(row.find(".norea-novel-chapter-actions button")).toHaveLength(
-        isDownloaded ? 2 : 1,
+        isDownloaded ? 2 : mediaRepairNeeded ? 3 : 1,
       );
     },
   );

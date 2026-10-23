@@ -6,7 +6,7 @@ import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir, 
 import { availableNovelMetadataDirectory, discoverStoredNovelCover, listStoredNovelChapters, listStoredNovelMetadata, scanStoredNovelMetadata, parseNovelMetadata, readStoredNovelCover, readStoredNovelMetadata, registerNativeWorkChapterDirectories, removeStoredNovelCover, withWorkMetadataRollback, workMetadataOperation, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
 import { isLocalCoverSource } from "../lib/local-cover";
 import { runWorkContentStorageOperation } from "../lib/content-sync/storage-operation";
-import { canAdoptChapterDownloadSnapshot, currentChapterDeletionRevision } from "../lib/chapter-download-writes";
+import { canAdoptChapterDownloadSnapshot, currentChapterDownloadRevision } from "../lib/chapter-download-writes";
 import type { StoredNovelChapter } from "../lib/work-metadata";
 import { LOCAL_PLUGIN_ID } from "../lib/plugins/types";
 import { throwIfAborted } from "../lib/abort";
@@ -68,12 +68,12 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
   return row.id;
 }
 
-export async function scanStoredNovelChaptersToCache(db: Database, novelId: number, directory: string, snapshot?: { chapters: StoredNovelChapter[]; deletionRevision: number; deferNativeRegistration?: boolean }): Promise<void> {
+export async function scanStoredNovelChaptersToCache(db: Database, novelId: number, directory: string, snapshot?: { chapters: StoredNovelChapter[]; downloadRevision: number; deferNativeRegistration?: boolean }): Promise<void> {
   const discovered = snapshot?.chapters ?? await listStoredNovelChapters(directory);
   const [novel] = await db.select<{ pluginId: string }[]>("SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
   const isLocal = novel?.pluginId === LOCAL_PLUGIN_ID;
-  const cached = await db.select<{ id: number; path: string; name: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null }[]>(
-    `SELECT c.id,c.path,c.name,c.chapter_number AS chapterNumber,c.position,d.directory,c.is_downloaded AS isDownloaded,c.stored_content_type AS storedContentType FROM chapter c
+  const cached = await db.select<{ id: number; path: string; name: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null; mediaRepairNeeded: number }[]>(
+    `SELECT c.id,c.path,c.name,c.chapter_number AS chapterNumber,c.position,d.directory,c.is_downloaded AS isDownloaded,c.stored_content_type AS storedContentType,c.media_repair_needed AS mediaRepairNeeded FROM chapter c
     LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1`, [novelId]);
   const byDirectory = new Map(cached.filter((row) => row.directory).map((row) => [row.directory, row]));
   const byPath = new Map(cached.map((row) => [row.path, row]));
@@ -90,7 +90,7 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
   }
   const directories: { id: number; directory: string }[] = [];
   const used = new Set<number>();
-  const updates = new Map<StoredNovelChapter["contentType"], number[]>();
+  const updates = new Map<string, { contentType: StoredNovelChapter["contentType"]; mediaComplete: boolean; ids: number[] }>();
   const inserts: { path: string; chapter: StoredNovelChapter; position: number; directory: string }[] = [];
   const insertedPaths = new Set<string>();
   for (const [index, chapter] of discovered.entries()) {
@@ -105,16 +105,18 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
     if ((matched && used.has(matched.id)) || (!isLocal && !exact && (numbered.length > 1 || discoveredCounts.get(number)! > 1))) continue;
     if (snapshot && matched?.isDownloaded && matched.directory && matched.directory !== absoluteDirectory) continue;
     const id = matched?.id;
-    if (id !== undefined && snapshot && !canAdoptChapterDownloadSnapshot(id, snapshot.deletionRevision)) continue;
+    if (id !== undefined && snapshot && !canAdoptChapterDownloadSnapshot(id, snapshot.downloadRevision)) continue;
     if (id === undefined) {
       if (!insertedPaths.has(recoveredPath)) {
         inserts.push({ path: recoveredPath, chapter, position: index + 1, directory: absoluteDirectory });
         insertedPaths.add(recoveredPath);
       }
       continue;
-    } else if (!matched?.isDownloaded || matched.storedContentType !== chapter.contentType) {
-      const ids = updates.get(chapter.contentType) ?? [];
-      ids.push(id); updates.set(chapter.contentType, ids);
+    } else if (Boolean(matched?.isDownloaded) !== chapter.mediaComplete || matched?.storedContentType !== chapter.contentType
+      || Boolean(matched?.mediaRepairNeeded) === chapter.mediaComplete) {
+      const key = `${chapter.contentType}:${chapter.mediaComplete}`;
+      const update = updates.get(key) ?? { contentType: chapter.contentType, mediaComplete: chapter.mediaComplete, ids: [] };
+      update.ids.push(id); updates.set(key, update);
     }
     used.add(id);
     directories.push({ id, directory: absoluteDirectory });
@@ -124,12 +126,12 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
     const params: unknown[] = [novelId];
     const values = batch.map(({ path, chapter, position }) => {
       const first = params.length + 1;
-      params.push(path, chapter.name, chapter.chapterNumber, position, chapter.contentType);
-      return `(${Array.from({ length: 5 }, (_, index) => `$${first + index}`).join(",")})`;
+      params.push(path, chapter.name, chapter.chapterNumber, position, chapter.contentType, chapter.mediaComplete ? 1 : 0);
+      return `(${Array.from({ length: 6 }, (_, index) => `$${first + index}`).join(",")})`;
     });
-    await db.execute(`WITH discovered(path,name,number,position,type) AS (VALUES ${values.join(",")})
-      INSERT INTO chapter(novel_id,path,name,chapter_number,position,content_type,stored_content_type,is_downloaded,progress,bookmark,unread,read_at)
-      SELECT n.id,d.path,d.name,d.number,d.position,d.type,d.type,1,COALESCE(state.progress,0),COALESCE(state.bookmark,0),COALESCE(state.unread,1),state.read_at
+    await db.execute(`WITH discovered(path,name,number,position,type,complete) AS (VALUES ${values.join(",")})
+      INSERT INTO chapter(novel_id,path,name,chapter_number,position,content_type,stored_content_type,is_downloaded,media_repair_needed,progress,bookmark,unread,read_at)
+      SELECT n.id,d.path,d.name,d.number,d.position,d.type,d.type,d.complete,1-d.complete,COALESCE(state.progress,0),COALESCE(state.bookmark,0),COALESCE(state.unread,1),state.read_at
       FROM discovered d JOIN novel n ON n.id=$1 LEFT JOIN work_metadata_reading_state state
       ON state.plugin_id=n.plugin_id AND state.novel_path=n.path AND state.chapter_path=d.path`, params);
   }
@@ -143,11 +145,11 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
       directories.push({ id, directory: inserted.directory });
     }
   }
-  for (const [contentType, ids] of updates) {
+  for (const { contentType, mediaComplete, ids } of updates.values()) {
     for (let offset = 0; offset < ids.length; offset += 100) {
-      const batch = ids.slice(offset, offset + 100).filter((id) => !snapshot || canAdoptChapterDownloadSnapshot(id, snapshot.deletionRevision));
+      const batch = ids.slice(offset, offset + 100).filter((id) => !snapshot || canAdoptChapterDownloadSnapshot(id, snapshot.downloadRevision));
       if (batch.length === 0) continue;
-      await db.execute(`UPDATE chapter SET is_downloaded=1,stored_content_type=$1 WHERE id IN (${batch.map((_, index) => `$${index + 2}`).join(",")})`, [contentType, ...batch]);
+      await db.execute(`UPDATE chapter SET is_downloaded=$2,media_repair_needed=1-$2,stored_content_type=$1 WHERE id IN (${batch.map((_, index) => `$${index + 3}`).join(",")})`, [contentType, mediaComplete ? 1 : 0, ...batch]);
     }
   }
   const retained = cached.filter((row) => row.directory && !used.has(row.id)).map((row) => ({ id: row.id, directory: row.directory! }));
@@ -163,23 +165,14 @@ export async function refreshStoredNovelChapterDownloads(novelId: number): Promi
   const [work] = await db.select<{ directory: string }[]>(
     "SELECT directory FROM work_metadata_file_cache WHERE novel_id=$1", [novelId]);
   if (!work) return;
-  const deletionRevision = currentChapterDeletionRevision();
-  const completed = await db.select<{ id: number; name: string; chapterNumber: string | null; position: number; directory: string | null; contentType: "html" | "pdf" }[]>(
-    `SELECT c.id,c.name,c.chapter_number AS chapterNumber,c.position,d.directory,c.stored_content_type AS contentType
-    FROM chapter c LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id
-    WHERE c.novel_id=$1 AND c.is_downloaded=1 AND c.stored_content_type IN ('html','pdf')`, [novelId]);
+  const downloadRevision = currentChapterDownloadRevision();
   rememberResolvedNovelStorageDir(novelId, work.directory);
-  const cachedFiles = completed.map((chapter) => ({
-    ...chapter,
-    directory: chapter.directory ?? chapterStorageRelativeDir({ id: novelId }, chapter),
-  })).filter((chapter) => chapter.directory.startsWith(`${work.directory}/`))
-    .map((chapter) => `${chapter.directory}/content.${chapter.contentType}`);
-  const chapters = await listStoredNovelChapters(work.directory, cachedFiles);
+  const chapters = await listStoredNovelChapters(work.directory);
   await runDatabaseTransaction(async (transaction) => {
     const [current] = await transaction.select<{ directory: string }[]>(
       "SELECT f.directory FROM work_metadata_file_cache f JOIN novel n ON n.id=f.novel_id WHERE n.id=$1", [novelId]);
     if (current?.directory !== work.directory) return;
-    await scanStoredNovelChaptersToCache(transaction, novelId, work.directory, { chapters, deletionRevision });
+    await scanStoredNovelChaptersToCache(transaction, novelId, work.directory, { chapters, downloadRevision });
   });
 }
 
@@ -251,7 +244,7 @@ export async function initializeWorkMetadata(db: Database, options: {
     progress.currentWork = entry.metadata.novel.name;
     report();
     const previous = baselines.get(keyFor(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath));
-    const deletionRevision = currentChapterDeletionRevision();
+    const downloadRevision = currentChapterDownloadRevision();
     const chapters = await listStoredNovelChapters(entry.directory);
     const cover = entry.metadata.novel.isLocal ? await readStoredNovelCover(entry.directory, entry.metadata) : null;
     const restored = await run(async () => {
@@ -267,7 +260,7 @@ export async function initializeWorkMetadata(db: Database, options: {
         const novelId = metadataChanged && existing ? existing.id : await applyNovelMetadataToCache(db, entry.metadata, entry.directory, {
           storedCover: cover, addToLibrary: true, preserveMissingMetadata: true, preserveCachedNovel: Boolean(pendingWork),
         });
-        await scanStoredNovelChaptersToCache(db, novelId, entry.directory, { chapters, deletionRevision, deferNativeRegistration: true });
+        await scanStoredNovelChaptersToCache(db, novelId, entry.directory, { chapters, downloadRevision, deferNativeRegistration: true });
         if (!metadataChanged && !pendingWork) await rememberStoredNovelMetadata(db, entry.directory, entry.metadata, options.rebuild);
         if (!pendingWork) await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]);
         const mapped = await db.select<{ id: number; directory: string }[]>("SELECT chapter_id AS id,directory FROM work_metadata_directory_cache WHERE novel_id=$1", [novelId]);
@@ -373,13 +366,18 @@ export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMet
   if (rescan) {
     const entries = await listStoredNovelMetadata();
     for (const entry of entries) {
-      await runWorkContentStorageOperation(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath, () => runDatabaseTransaction(async transaction => {
-        const current = await readStoredNovelMetadata(entry.directory);
-        if (!current) return;
-        await applyNovelMetadataToCache(transaction, current.metadata, current.directory, { preserveMissingMetadata: true });
-        await rememberStoredNovelMetadata(transaction, current.directory, current.metadata, true);
-        await transaction.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [current.metadata.identity.pluginId, current.metadata.identity.novelPath]);
-      }, true));
+      await runWorkContentStorageOperation(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath, async () => {
+        const downloadRevision = currentChapterDownloadRevision();
+        const chapters = await listStoredNovelChapters(entry.directory);
+        await runDatabaseTransaction(async transaction => {
+          const current = await readStoredNovelMetadata(entry.directory);
+          if (!current) return;
+          const novelId = await applyNovelMetadataToCache(transaction, current.metadata, current.directory, { preserveMissingMetadata: true });
+          await scanStoredNovelChaptersToCache(transaction, novelId, current.directory, { chapters, downloadRevision });
+          await rememberStoredNovelMetadata(transaction, current.directory, current.metadata, true);
+          await transaction.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [current.metadata.identity.pluginId, current.metadata.identity.novelPath]);
+        }, true);
+      });
     }
   }
   return db.select<WorkMetadataSyncFile[]>(`SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision

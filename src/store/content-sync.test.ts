@@ -34,6 +34,13 @@ it("defaults chapter lookup to three seconds and persists a bounded timeout", as
   expect(useContentSyncStore.getState().lookupTimeoutSeconds).toBe(3);
 });
 
+it("prefers complete chapters and persists the selected upload conflict policy", async () => {
+  expect(useContentSyncStore.getState().uploadConflictPolicy).toBe("prefer-complete");
+  useContentSyncStore.getState().setUploadConflictPolicy("replace-server");
+  await useContentSyncStore.persist.rehydrate();
+  expect(useContentSyncStore.getState().uploadConflictPolicy).toBe("replace-server");
+});
+
 it("discards settings from a different schema without translating automatic sync", async () => {
   storage.set("norea-content-server", JSON.stringify({ state: { serverUrl: "http://server", deviceName: "Tablet", autoSync: true }, version: 0 }));
   const error = vi.spyOn(console, "error").mockImplementation(() => undefined);

@@ -7,6 +7,9 @@ const storage = vi.hoisted(() => ({
   gates: new Map<string, Promise<void>>(), release: [] as (() => void)[],
   calls: [] as string[], writes: 0, failRead: false, active: 0,
 }));
+vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterContentArtifacts: async (input: { preferredChapterDir: string; preferredContentFileName: string }) => ({
+  status: "present", contentFile: `${input.preferredChapterDir}/${input.preferredContentFileName}`, contentBytes: 1, mediaBytes: 0, mediaComplete: true,
+}) }));
 const sql = vi.hoisted(() => ({ get: vi.fn() }));
 const covers = vi.hoisted(() => ({ changed: vi.fn(), invalidated: vi.fn() }));
 vi.mock("@tauri-apps/plugin-sql", () => ({ default: sql }));

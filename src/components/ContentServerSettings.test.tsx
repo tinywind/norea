@@ -22,7 +22,7 @@ vi.mock("../lib/content-sync/sync", () => ({ syncContentServer: mocks.sync }));
 
 import { ContentServerSettings } from "./ContentServerSettings";
 
-interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number) => void; value?: unknown; disabled?: boolean; "aria-label"?: string }
+interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number | string) => void; value?: unknown; disabled?: boolean; "aria-label"?: string }
 function controls(node: ReactNode): ReactElement<ControlProps>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -36,8 +36,18 @@ beforeEach(() => {
   mocks.refetchName.mockResolvedValue({ data: "TB320FC" });
   mocks.state = { serverUrl: "http://server", deviceName: "Phone", syncMode: "manual", syncIntervalMinutes: 15,
     lookupTimeoutSeconds: 3, setLookupTimeoutSeconds: vi.fn(),
+    uploadConflictPolicy: "prefer-complete", setUploadConflictPolicy: vi.fn(),
     status: "syncing", error: null, blocked: false, setServerUrl: mocks.save,
     setDeviceName: vi.fn(), setSyncMode: vi.fn(), setSyncIntervalMinutes: vi.fn() };
+});
+
+it("lets the user choose upload conflict handling without starting a sync", () => {
+  const policy = controls(ContentServerSettings()).find(element => element.props["aria-label"] === "contentSync.uploadConflictPolicy");
+  expect(policy).toBeDefined();
+  expect(policy!.props.value).toBe("prefer-complete");
+  policy!.props.onChange!("replace-server");
+  expect(mocks.state.setUploadConflictPolicy).toHaveBeenCalledWith("replace-server");
+  expect(mocks.sync).not.toHaveBeenCalled();
 });
 
 it("shows the system name without a configured server and keeps custom names while it loads", () => {

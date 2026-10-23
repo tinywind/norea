@@ -1,14 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { load } from "cheerio";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChapterMediaElementPatch } from "../../lib/chapter-media";
 
 type MediaListener = (event: { chapterId: number; patches: ChapterMediaElementPatch[] }) => void;
-const subscriptions = vi.hoisted(() => ({ media: new Set<MediaListener>() }));
+type PartialListener = (event: { chapterId: number; html: string }) => void;
+const subscriptions = vi.hoisted(() => ({ media: new Set<MediaListener>(), partial: new Set<PartialListener>() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   subscribeChapterDownloads: () => () => undefined,
-  subscribeChapterPartialContentUpdates: () => () => undefined,
+  subscribeChapterPartialContentUpdates: (listener: PartialListener) => {
+    subscriptions.partial.add(listener);
+    return () => subscriptions.partial.delete(listener);
+  },
   subscribeChapterMediaPatches: (listener: MediaListener) => {
     subscriptions.media.add(listener);
     return () => subscriptions.media.delete(listener);
@@ -19,7 +24,16 @@ vi.mock("../../lib/chapter-media", async original => ({
   resolveLocalChapterMediaPatches: vi.fn(async (patches: ChapterMediaElementPatch[]) => patches),
 }));
 
+vi.mock("../../db/queries/chapter", () => ({
+  getChapterById: vi.fn(),
+  markChapterOpened: vi.fn().mockResolvedValue(undefined),
+  updateChapterProgress: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { markChapterOpened } from "../../db/queries/chapter";
+import { useReaderStore } from "../../store/reader";
 import { resolveLocalChapterMediaPatches } from "../../lib/chapter-media";
+import { useReaderPersistence } from "./use-reader-persistence";
 import { useReaderChapterDocument } from "./use-reader-chapter-document";
 
 let root: Root | undefined;
@@ -29,6 +43,16 @@ function mountNullRenderer() {
   const document = {
     nodeType: 9, activeElement: null, body: null as unknown,
     documentElement: { nodeName: "HTML" },
+    createElement() {
+      let html = "";
+      return {
+        set innerHTML(value: string) { html = value; },
+        get content() {
+          const $ = load(html);
+          return { textContent: $.root().text(), querySelector: (selector: string) => $(selector).get(0) };
+        },
+      };
+    },
     addEventListener() {}, removeEventListener() {},
   };
   const container = {
@@ -50,10 +74,52 @@ afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = undefined;
   subscriptions.media.clear();
+  subscriptions.partial.clear();
   queryClient.clear();
+  useReaderStore.setState({ lastReadChapterByNovel: {} });
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+it("enables progress and history for a saved body with incomplete media after rejecting streamed content", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  root = mountNullRenderer();
+  let current: ReturnType<typeof useReaderChapterDocument> | undefined;
+  const openedChapterRef = { current: null as number | null };
+  const chapter = {
+    id: 31, novelId: 37, name: "Incomplete media", chapterNumber: "1", position: 1,
+    contentType: "html" as const, isDownloaded: false,
+  };
+  const novel = { id: 37, name: "Stored work", path: "/work", pluginId: "source", sourceNovelId: "work" };
+  const contentRef = { current: null };
+  function Probe({ content }: { content: string | null }) {
+    const storedChapter = { ...chapter, content, mediaRepairNeeded: content !== null };
+    useReaderPersistence(storedChapter, openedChapterRef);
+    current = useReaderChapterDocument({
+      chapterId: chapter.id, chapter: storedChapter, currentNovel: novel, bionicReading: false, contentRef,
+    });
+    return null;
+  }
+  const render = (content: string | null) => act(async () => {
+    root!.render(<QueryClientProvider client={queryClient}><Probe content={content} /></QueryClientProvider>);
+  });
+  await render(null);
+  await act(async () => {
+    for (const listener of subscriptions.partial) listener({ chapterId: chapter.id, html: "<p>Streaming body</p>" });
+  });
+  expect(current!.content).toBe("<p>Streaming body</p>");
+  expect(current!.readerProgressPersistenceReady).toBe(false);
+  expect(current!.showMediaRepair).toBe(false);
+  expect(markChapterOpened).not.toHaveBeenCalled();
+  expect(useReaderStore.getState().lastReadChapterByNovel[chapter.novelId]).toBeUndefined();
+
+  await render("<p>Saved final body</p>");
+  expect(current!.content).toBe("<p>Saved final body</p>");
+  expect(current!.readerProgressPersistenceReady).toBe(true);
+  expect(current!.showMediaRepair).toBe(true);
+  expect(markChapterOpened).toHaveBeenCalledExactlyOnceWith(chapter.id);
+  expect(useReaderStore.getState().lastReadChapterByNovel[chapter.novelId]).toBe(chapter.id);
 });
 
 it("uses the plugin novel ID for reader media and refreshes both context and patch subscriptions when it changes", async () => {

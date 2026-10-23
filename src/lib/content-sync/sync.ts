@@ -9,7 +9,7 @@ import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
 import {
   contentServerRequest, normalizeContentServerUrl, ContentServerError,
 } from "./client";
-import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity } from "./native";
+import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity, type UploadConflictPolicy } from "./native";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
 import { registerContentDevice } from "./device";
@@ -24,8 +24,9 @@ interface CatalogCache {
   excluded: string[];
   pendingUploads: string[];
   localCursor?: number;
+  uploadConflictPolicy?: UploadConflictPolicy;
 }
-interface CatalogChangesPage { items: { identity: ContentIdentity; deleted: boolean; sequence: number }[]; cursor: number; hasMore: boolean }
+interface CatalogChangesPage { items: { identity: ContentIdentity; deleted: boolean; complete: boolean; sequence: number }[]; cursor: number; hasMore: boolean }
 function saveCache(key: string, value: unknown): Promise<void> { return writeContentSyncCache(key, JSON.stringify(value)); }
 async function catalogCache(server: string): Promise<CatalogCache> {
   const saved = await readContentSyncCache(`norea-content-catalog:${server}`);
@@ -94,9 +95,9 @@ async function pullCatalog(server: string, token: string | null, cache: CatalogC
   }
 }
 
-async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>): Promise<void> {
+async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>, conflictPolicy: UploadConflictPolicy): Promise<void> {
   const head = await contentJournalHead();
-  const changes = cache.localCursor === undefined || rescan ? null
+  const changes = cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
     : await readContentJournal(cache.localCursor, head);
   const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
   const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
@@ -117,6 +118,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
   if (!pending.size && cache.localCursor === head && !deletedIds.length) return;
   cache.pendingUploads = [...pending];
   cache.localCursor = head;
+  cache.uploadConflictPolicy = conflictPolicy;
   cache.tombstones = {};
   await saveCatalog(server, cache);
   let processed = 0;
@@ -150,7 +152,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         const existing = await findUploadedChapter(server, token, row, activity.signal);
         activity.signal.throwIfAborted();
         assertDevice(server, token);
-        if (existing) {
+        if (existing && (conflictPolicy === "keep-server" || (conflictPolicy === "prefer-complete" && existing.complete))) {
           cache.downloads[id] = true;
           pending.delete(id);
           continue;
@@ -162,7 +164,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
           if (!await canUploadContentChapter(row.chapterId)) return;
           activity.signal.throwIfAborted();
           await uploadContentChapter({
-            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal,
+            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal, conflictPolicy,
             manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath, chapterPath: row.chapterPath },
               novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
               chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
@@ -208,7 +210,7 @@ async function initializeDevice(serverUrl: string): Promise<string> {
 }
 
 async function performSync(uploadContent = true, rescan = false): Promise<void> {
-  const { serverUrl } = useContentSyncStore.getState();
+  const { serverUrl, uploadConflictPolicy } = useContentSyncStore.getState();
   if (!serverUrl) return;
   useContentSyncStore.setState({ status: "syncing", error: null, blocked: false, progress: null });
   try {
@@ -219,11 +221,11 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     const deletedWorks = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
-      await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks ?? new Set());
+      await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks ?? new Set(), uploadConflictPolicy);
       await pullCatalog(serverUrl, token, cache);
       if (Object.keys(cache.tombstones).length) {
         // Handle deletions consumed after the first upload phase without another catalog loop.
-        await uploadLocalContent(serverUrl, token, cache, false, deletedWorks ?? new Set());
+        await uploadLocalContent(serverUrl, token, cache, false, deletedWorks ?? new Set(), uploadConflictPolicy);
       }
     }
     assertDevice(serverUrl, token);
@@ -262,6 +264,7 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
 export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
   options?.signal?.throwIfAborted();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
+  if (!entry.complete) throw new Error("Incomplete server chapters cannot be downloaded.");
   const token = options?.token ?? await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
   const target = options?.target ?? entry.manifest.identity;
   const imported = options ? undefined : await importContentMetadata(entry.manifest);

@@ -24,6 +24,7 @@ export function ContentServerSettings() {
     staleTime: Infinity,
   });
   const syncMode = useContentSyncStore((state) => state.syncMode);
+  const uploadConflictPolicy = useContentSyncStore((state) => state.uploadConflictPolicy);
   const syncIntervalMinutes = useContentSyncStore((state) => state.syncIntervalMinutes);
   const lookupTimeoutSeconds = useContentSyncStore((state) => state.lookupTimeoutSeconds);
   const status = useContentSyncStore((state) => state.status);
@@ -33,6 +34,7 @@ export function ContentServerSettings() {
   const setServerUrl = useContentSyncStore((state) => state.setServerUrl);
   const setDeviceName = useContentSyncStore((state) => state.setDeviceName);
   const setSyncMode = useContentSyncStore((state) => state.setSyncMode);
+  const setUploadConflictPolicy = useContentSyncStore((state) => state.setUploadConflictPolicy);
   const setSyncIntervalMinutes = useContentSyncStore((state) => state.setSyncIntervalMinutes);
   const setLookupTimeoutSeconds = useContentSyncStore((state) => state.setLookupTimeoutSeconds);
   const [urlDraft, setUrlDraft] = useState(serverUrl);
@@ -116,6 +118,17 @@ export function ContentServerSettings() {
             {t("contentSync.rescan")}
           </TextButton>
         </SettingsInlineControls>
+      </SettingsFieldRow>
+      <SettingsFieldRow label={t("contentSync.uploadConflictPolicy")} description={t("contentSync.uploadConflictDescription")}>
+        <Select aria-label={t("contentSync.uploadConflictPolicy")} value={uploadConflictPolicy} allowDeselect={false}
+          data={[
+            { value: "prefer-complete", label: t("contentSync.preferComplete") },
+            { value: "keep-server", label: t("contentSync.keepServer") },
+            { value: "replace-server", label: t("contentSync.replaceServer") },
+          ]}
+          onChange={(value) => {
+            if (value === "prefer-complete" || value === "keep-server" || value === "replace-server") setUploadConflictPolicy(value);
+          }} />
       </SettingsFieldRow>
       {status === "syncing" || progress ? (
         <div className="norea-settings-feedback" role="status">

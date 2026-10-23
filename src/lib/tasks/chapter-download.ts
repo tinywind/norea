@@ -1337,15 +1337,12 @@ export function enqueueChapterMediaRepair(
       const storedContentType = storedChapterContentType(
         normalizeChapterContentType(chapter.contentType),
       );
-      const content = chapter.isDownloaded
-        ? await readStoredChapterContentMirror(chapter.id)
-        : null;
+      const content = await readStoredChapterContentMirror(chapter.id);
       if (
-        !chapter.isDownloaded ||
         !isHtmlLikeChapterContentType(storedContentType) ||
         !content
       ) {
-        setDetail("No downloaded media to repair");
+        setDetail("No stored media to repair");
         reportProgress(
           { current: progressTotal, total: progressTotal },
           { force: true },

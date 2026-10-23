@@ -4,6 +4,13 @@ import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const storage = vi.hoisted(() => ({ files: new Map<string, number[]>(), readGates: new Map<string, Promise<void>>(), fail: false, failOncePath: "", failReadPath: "", lists: 0, reads: 0, chapterLists: 0, skippedDirectories: [] as string[], chapterScan: undefined as Promise<void> | undefined, chapters: new Map<string, string[]>(), writes: 0, directories: {} as Record<string, string> }));
+const mediaInspections = vi.hoisted(() => new Map<string, boolean>());
+const mediaInspectionHooks = vi.hoisted(() => new Map<string, () => Promise<void>>());
+vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterContentArtifacts: async (input: { preferredChapterDir: string; preferredContentFileName: string }) => {
+  const mediaComplete = mediaInspections.get(input.preferredChapterDir) ?? true;
+  await mediaInspectionHooks.get(input.preferredChapterDir)?.();
+  return { status: "present", contentFile: `${input.preferredChapterDir}/${input.preferredContentFileName}`, contentBytes: 1, mediaBytes: 0, mediaComplete };
+} }));
 const databaseClient = vi.hoisted(() => ({ transaction: vi.fn(), get: vi.fn() }));
 vi.mock("./client", () => ({ runDatabaseTransaction: databaseClient.transaction, getDb: databaseClient.get }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
@@ -29,7 +36,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
 } }));
 
 import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories } from "./work-metadata";
-import { withChapterDownloadDeletion } from "../lib/chapter-download-writes";
+import { withChapterDownloadDeletion, withChapterDownloadWrite } from "../lib/chapter-download-writes";
+import { adoptStoredChapterContentMetadata } from "./queries/chapter";
 import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
 import { clearNovelCoverDisplayCache, getNovelCoverSnapshot, peekCachedNovelCoverSrc, persistCachedNovelCoverSource, resolveCachedNovelCoverSrc, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
 import * as http from "../lib/http";
@@ -54,6 +62,8 @@ function fixture(): NovelMetadataV1 { return {
 function save(metadata: NovelMetadataV1) { storage.files.set(path, [...new TextEncoder().encode(JSON.stringify(metadata))]); }
 
 beforeEach(() => {
+  mediaInspections.clear();
+  mediaInspectionHooks.clear();
   storage.readGates.clear();
   storage.chapterLists = 0; storage.skippedDirectories = []; storage.chapterScan = undefined;
   storage.files.clear(); storage.chapters.clear(); storage.chapters.set(path, ["contents/source/book/1/content.html"]); storage.writes = 0; storage.fail = false; storage.failOncePath = ""; storage.failReadPath = ""; storage.lists = 0; storage.reads = 0; storage.directories = {};
@@ -493,20 +503,20 @@ it("discovers uncached chapter files in one work without reading bodies or other
     { path: "norea-folder:3", is_downloaded: 1, stored_content_type: "pdf", position: 3 },
   ]);
   expect(storage.chapterLists).toBe(1);
-  expect(storage.skippedDirectories).toEqual(["contents/source/book/1"]);
+  expect(storage.skippedDirectories).toEqual([]);
   expect(storage.lists).toBe(0);
   expect(storage.reads).toBe(0);
   expect(storage.writes).toBe(0);
   expect(chapterStorageRelativeDir({ id: 1 }, { id: 3 })).toBe("contents/source/book/3");
 });
 
-it("does not restore a downloaded flag after deletion during a folder scan", async () => {
+it.each(["work", "sync"])("does not restore a downloaded flag after deletion during a %s scan", async (scan) => {
   save(fixture()); await initializeWorkMetadata(db);
   sqlite.exec("UPDATE chapter SET is_downloaded=0 WHERE id=1");
   let finishScan!: () => void;
   storage.chapterScan = new Promise<void>((resolve) => { finishScan = resolve; });
   storage.chapterLists = 0;
-  const refresh = refreshStoredNovelChapterDownloads(1);
+  const refresh = scan === "work" ? refreshStoredNovelChapterDownloads(1) : readWorkMetadataSyncFiles(true);
   await vi.waitFor(() => expect(storage.chapterLists).toBe(1));
   await withChapterDownloadDeletion([1], async () => {
     sqlite.exec("UPDATE chapter SET is_downloaded=0 WHERE id=1");
@@ -518,7 +528,33 @@ it("does not restore a downloaded flag after deletion during a folder scan", asy
   expect(sqlite.prepare("SELECT is_downloaded FROM chapter WHERE id=1").get()).toEqual({ is_downloaded: 0 });
 });
 
-it("skips completed app downloads without requiring a previous folder discovery", async () => {
+it.each(["work", "sync"])("keeps a repair completed after an incomplete snapshot during a %s scan", async (scan) => {
+  mediaInspections.set("contents/source/book/1", false);
+  save(fixture()); await initializeWorkMetadata(db);
+  storage.chapters.set(path, ["contents/source/book/1/content.html", "contents/source/book/2/content.html"]);
+  let finishScan!: () => void;
+  let inspectingSecondChapter!: () => void;
+  const scanGate = new Promise<void>(resolve => { finishScan = resolve; });
+  const scanStarted = new Promise<void>(resolve => { inspectingSecondChapter = resolve; });
+  mediaInspectionHooks.set("contents/source/book/2", async () => {
+    inspectingSecondChapter();
+    await scanGate;
+  });
+  const refresh = scan === "work" ? refreshStoredNovelChapterDownloads(1) : readWorkMetadataSyncFiles(true);
+  await scanStarted;
+
+  await withChapterDownloadWrite(1, undefined, async () => {
+    mediaInspections.set("contents/source/book/1", true);
+    await adoptStoredChapterContentMetadata(1, 1, 8, "html", false);
+  });
+  finishScan();
+  await refresh;
+
+  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,media_bytes FROM chapter WHERE id=1").get())
+    .toEqual({ is_downloaded: 1, media_repair_needed: 0, media_bytes: 8 });
+});
+
+it("reinspects completed app downloads without requiring a previous folder discovery", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   const add = sqlite.prepare("INSERT INTO chapter(novel_id,path,name,chapter_number,position,is_downloaded,stored_content_type) VALUES(1,?,?,?, ?,1,'html')");
   const files = ["contents/source/book/1/content.html"];
@@ -531,9 +567,35 @@ it("skips completed app downloads without requiring a previous folder discovery"
   storage.chapterLists = 0;
   await refreshStoredNovelChapterDownloads(1);
   expect(storage.chapterLists).toBe(1);
-  expect(storage.skippedDirectories).toHaveLength(1001);
-  expect(storage.skippedDirectories).toContain("contents/source/book/1001");
+  expect(storage.skippedDirectories).toEqual([]);
   expect(sqlite.prepare("SELECT is_downloaded FROM chapter WHERE chapter_number='1002'").get()).toEqual({ is_downloaded: 1 });
+});
+
+it.each(["work", "sync"])("updates completeness on every %s scan while preserving chapter identity and originals", async (scan) => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const originalFiles = structuredClone(storage.files);
+  const rescan = () => scan === "work" ? refreshStoredNovelChapterDownloads(1) : readWorkMetadataSyncFiles(true);
+  const current = () => sqlite.prepare("SELECT id,is_downloaded,media_repair_needed,stored_content_type FROM chapter WHERE id=1").get();
+  expect(current()).toEqual({ id: 1, is_downloaded: 1, media_repair_needed: 0, stored_content_type: "html" });
+
+  mediaInspections.set("contents/source/book/1", false);
+  await rescan();
+  expect(current()).toEqual({ id: 1, is_downloaded: 0, media_repair_needed: 1, stored_content_type: "html" });
+
+  mediaInspections.set("contents/source/book/1", true);
+  await rescan();
+  expect(current()).toEqual({ id: 1, is_downloaded: 1, media_repair_needed: 0, stored_content_type: "html" });
+  expect(storage.files).toEqual(originalFiles);
+  expect(storage.writes).toBe(0);
+});
+
+it("recovers incomplete chapter bodies with a repair flag", async () => {
+  mediaInspections.set("contents/source/book/1", false);
+  save(fixture()); await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,stored_content_type FROM chapter").get())
+    .toEqual({ is_downloaded: 0, media_repair_needed: 1, stored_content_type: "html" });
+  expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache").get())
+    .toEqual({ directory: "contents/source/book/1" });
 });
 
 it("restores a thousand cached download flags with bounded database round trips", async () => {
@@ -710,6 +772,42 @@ it("discovers external work files and metadata changes only on an explicit sync 
   expect(files).toHaveLength(2);
   expect(sqlite.prepare("SELECT name FROM novel WHERE path='/book'").get()).toEqual({ name: "External edit" });
   expect(storage.writes).toBe(0);
+});
+
+it("recovers incomplete chapter bodies in newly discovered works during a sync rescan", async () => {
+  await initializeWorkMetadata(db);
+  save(fixture());
+  mediaInspections.set("contents/source/book/1", false);
+
+  expect(await readWorkMetadataSyncFiles()).toEqual([]);
+  expect(await readWorkMetadataSyncFiles(true)).toHaveLength(1);
+
+  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,stored_content_type FROM chapter").get())
+    .toEqual({ is_downloaded: 0, media_repair_needed: 1, stored_content_type: "html" });
+  expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache").get())
+    .toEqual({ directory: "contents/source/book/1" });
+  expect(storage.directories["1"]).toBe("contents/source/book/1");
+  expect(storage.writes).toBe(0);
+});
+
+it("keeps metadata edits published while an explicit sync rescan inspects chapter files", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  let finishScan!: () => void;
+  storage.chapterScan = new Promise<void>(resolve => { finishScan = resolve; });
+  storage.chapterLists = 0;
+  const rescan = readWorkMetadataSyncFiles(true);
+  await vi.waitFor(() => expect(storage.chapterLists).toBe(1));
+
+  await db.execute("UPDATE novel SET name='Edited while scanning' WHERE id=1");
+  await flushWorkMetadata(db);
+  finishScan();
+  await rescan;
+
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Edited while scanning" });
+  await db.execute("UPDATE novel SET name='Edited after scanning' WHERE id=1");
+  await expect(flushWorkMetadata(db)).resolves.toBeUndefined();
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).novel.name)
+    .toBe("Edited after scanning");
 });
 
 it("does not repeatedly scan an initialized empty library", async () => {

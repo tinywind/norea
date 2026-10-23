@@ -10,6 +10,8 @@ export interface ContentIdentity {
   chapterPath: string;
 }
 
+export type UploadConflictPolicy = "prefer-complete" | "keep-server" | "replace-server";
+
 export interface PackageManifest {
   packageVersion: 1;
   layout: "chapter-files";
@@ -24,6 +26,7 @@ export interface CatalogEntry {
   id: string;
   revision: string;
   fileBytes: number;
+  complete: boolean;
   manifest: PackageManifest;
   deleted: boolean;
   sequence: number;
@@ -55,6 +58,7 @@ export async function uploadContentChapter(input: {
   serverUrl: string;
   token: string;
   chapterId: number;
+  conflictPolicy: UploadConflictPolicy;
   manifest: Omit<PackageManifest, "layout" | "files" | "bodyPath">;
   storageDir: string;
   stagePath: string;
@@ -64,6 +68,7 @@ export async function uploadContentChapter(input: {
     input.signal?.throwIfAborted();
     return await invoke<CatalogEntry>("content_sync_upload", {
       serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
+      conflictPolicy: input.conflictPolicy,
       storageDir: input.storageDir, stagePath: input.stagePath,
     });
   } catch (error) {

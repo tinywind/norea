@@ -1,7 +1,6 @@
 export interface ReaderProgressPersistenceState {
   activeContent: string | null;
   chapterId: number | null | undefined;
-  isDownloaded: boolean;
   requestedChapterId: number;
   storedContent: string | null;
 }
@@ -9,14 +8,12 @@ export interface ReaderProgressPersistenceState {
 export function isReaderProgressPersistenceReady({
   activeContent,
   chapterId,
-  isDownloaded,
   requestedChapterId,
   storedContent,
 }: ReaderProgressPersistenceState): boolean {
   return (
     requestedChapterId > 0 &&
     chapterId === requestedChapterId &&
-    isDownloaded &&
     storedContent !== null &&
     storedContent.length > 0 &&
     activeContent === storedContent

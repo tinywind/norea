@@ -534,14 +534,14 @@ describe("setChapterBookmark", () => {
 });
 
 describe("saveChapterContentMetadata", () => {
-  it("preserves media repair state when adopting readable final content", async () => {
+  it("marks readable incomplete content for repair without marking it downloaded", async () => {
     mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
 
     await adoptStoredChapterContentMetadata(7, 120, 48, "html", true);
 
     const [sql, params] = mockExecute.mock.calls[0]!;
     expect(sql).toContain("media_repair_needed = $5");
-    expect(sql).toContain("is_downloaded  = 1");
+    expect(sql).toContain("is_downloaded  = 1 - $5");
     expect(params).toEqual([7, 120, 48, "html", 1]);
   });
 

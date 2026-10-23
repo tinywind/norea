@@ -29,6 +29,7 @@ export interface StoredChapterArtifactsInspection {
   contentFile: string | null;
   contentBytes: number;
   mediaBytes: number;
+  mediaComplete: boolean;
 }
 
 const CHAPTER_PARTIAL_CONTENT_FILE = ".chapter-content.partial";

@@ -39,6 +39,26 @@ Sync preserves existing library membership; add a server work to the library
 from its detail page. Sync now uploads complete local chapters and updates the
 remote catalog independently of browsing or selected chapter downloads.
 
+Settings > Data > Content server includes **Upload conflicts**:
+
+- **Prefer complete chapters** (default) replaces an incomplete server chapter
+  with a complete app chapter. Equal completeness keeps the server copy.
+- **Keep server data** preserves an existing server copy.
+- **Replace with app data** replaces the server chapter with the uploaded copy.
+
+Changing this setting makes the next sync recheck local chapters, including
+chapters previously skipped. A sync already running uses its selected policy.
+The server applies the policy again when publishing the upload, so concurrent
+uploads or deletions cannot silently replace a newer copy.
+
+Upload and folder indexing record completeness from the media inventory: every
+asset declared in `manifest.json` must exist in `media.zip`. Cached completion,
+status, and byte counts do not establish completeness. Safe extra ZIP entries
+are allowed. A body-only chapter without a media manifest has no declared assets.
+Valid incomplete chapters remain indexed but are excluded from server downloads;
+invalid manifests and unsafe archives are rejected. App folder scans use the
+same rule and mark incomplete chapters as needing media repair.
+
 All works are synchronization targets; library membership does not select the
 sync scope. Opening any work refreshes that work from the connected server in
 the background, independently of the scheduled sync mode. Saved information is
@@ -62,9 +82,8 @@ original source identity metadata; folder names cannot establish work identity.
 Before a chapter download, Norea checks the cached download state in SQLite and
 skips completed chapters. For pending chapters, each download batch lists the
 work's chapter folders once and restores missing download flags and chapter
-rows before contacting the server. Known completed folders are skipped; only
-uncached folders are checked for final body filenames and sizes,
-without reading bodies or finalizing media archives. Deletions during this scan
+rows before contacting the server. Each discovered folder is checked for its
+body and declared ZIP assets without finalizing or rewriting media. Deletions during this scan
 cannot restore stale download flags. Detailed content recovery remains part of
 opening stored content and explicit storage rescans.
 For an unfinished chapter, Norea asks the server for that chapter. Matching files
@@ -94,9 +113,8 @@ the work page. It has its own selection, pages of 100 chapters, and deletion
 confirmation naming the work and server. Only selected server chapter IDs are
 deleted; local files, work metadata, and covers remain. The next normal sync
 rechecks completed local chapters in that work and uploads missing server chapters,
-even when no local file changed. To replace content, delete the server chapter,
-then choose **Sync now** or wait for the configured sync mode. Existing complete
-server chapters are never overwritten.
+even when no local file changed. To replace existing complete chapters, select
+**Replace with app data** under Upload conflicts, then choose **Sync now**.
 **Delete work from server** is available on each work in Browse -> Content server
 and in the work's **Manage server data** page. After confirmation, it removes
 the whole server work folder, metadata, cover, and chapter index, using the
@@ -224,11 +242,12 @@ candidates remain pending. Whole-work deletion still requires an explicit restor
 The server's change-wait endpoint returns
 cursor hints; the app then fetches the corresponding deltas. Before making a
 snapshot, the app checks whether the server already has a complete chapter.
-Existing copies skip local file copying and upload, including after an app-side
-edit. The server retains one copy and ignores competing uploads. Missing or
-wrong-sized server files can be repaired by the next completed upload.
+The selected conflict policy determines whether an existing copy skips local
+file copying or receives an upload. The server retains one copy and records its
+verified completeness. Missing or wrong-sized server files can be repaired by
+the next completed upload.
 
-Chapter deltas contain identities and deletion state, without package file
+Chapter deltas contain identities, completeness, and deletion state, without package file
 inventories. The app retains cursors and pending deletion signals instead of a full
 remote catalog snapshot. Browsing retrieves summaries in pages; a selected download
 fetches its package manifest separately.
@@ -265,7 +284,7 @@ the selected sync mode.
 
 Edits made directly to downloaded files outside Norea are not database changes.
 Use Rescan local files and sync after those edits. This explicit scan checks all
-complete local chapters and can take time for large libraries. Android uses a
+local chapter folders and can take time for large libraries. Android uses a
 cache snapshot to read SAF files, so staging also needs free device storage.
 Transfers stream the saved body and media without conversion.
 The legacy ZIP decoder still reads HTML into memory when converting old package

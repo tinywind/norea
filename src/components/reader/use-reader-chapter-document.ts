@@ -102,7 +102,6 @@ type ReaderChapterDocument = Pick<
   | "position"
   | "content"
   | "contentType"
-  | "isDownloaded"
   | "mediaRepairNeeded"
 >;
 type ReaderNovelDocument = Pick<
@@ -260,22 +259,12 @@ export function useReaderChapterDocument({
       if (htmlLikeContent && !hasRenderableReaderHtml(chapterContentHtml)) {
         return current?.chapterId === chapter.id ? current : null;
       }
-      if (
-        htmlLikeContent &&
-        current?.chapterId === chapter.id &&
-        !chapter.isDownloaded
-      ) {
-        return current;
-      }
       if (!current || current.chapterId !== chapter.id) {
         return {
           chapterId: chapter.id,
           contentType: chapter.contentType,
           html: chapterContentHtml,
         };
-      }
-      if (htmlLikeContent && !chapter.isDownloaded) {
-        return current;
       }
       if (
         current.contentType === chapter.contentType &&
@@ -292,7 +281,6 @@ export function useReaderChapterDocument({
   }, [
     chapter?.id,
     chapter?.contentType,
-    chapter?.isDownloaded,
     chapterContentHtml,
     chapterId,
   ]);
@@ -310,7 +298,6 @@ export function useReaderChapterDocument({
   const readerProgressPersistenceReady = isReaderProgressPersistenceReady({
     activeContent: activeReaderHtml,
     chapterId: chapter?.id,
-    isDownloaded: chapter?.isDownloaded === true,
     requestedChapterId: chapterId,
     storedContent: chapterContentHtml,
   });
@@ -352,7 +339,7 @@ export function useReaderChapterDocument({
   const showMediaRepair = useMemo(
     () =>
       Boolean(
-        chapter?.isDownloaded &&
+        chapter?.content &&
         currentNovel?.pluginId !== LOCAL_PLUGIN_ID &&
         activeContentType &&
         isHtmlLikeChapterContentType(activeContentType) &&
@@ -366,7 +353,7 @@ export function useReaderChapterDocument({
     [
       activeContentType,
       activeReaderHtml,
-      chapter?.isDownloaded,
+      chapter?.content,
       chapter?.mediaRepairNeeded,
       currentNovel?.pluginId,
       remoteMediaError,

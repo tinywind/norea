@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { normalizeContentServerUrl } from "../lib/content-sync/client";
+import type { UploadConflictPolicy } from "../lib/content-sync/native";
 
 export type ContentSyncMode = "manual" | "periodic" | "changes";
 
@@ -8,6 +9,7 @@ interface ContentSyncStore {
   serverUrl: string;
   deviceName: string;
   syncMode: ContentSyncMode;
+  uploadConflictPolicy: UploadConflictPolicy;
   syncIntervalMinutes: number;
   lookupTimeoutSeconds: number;
   status: "idle" | "syncing" | "error";
@@ -18,6 +20,7 @@ interface ContentSyncStore {
   setServerUrl: (url: string) => void;
   setDeviceName: (name: string) => void;
   setSyncMode: (mode: ContentSyncMode) => void;
+  setUploadConflictPolicy: (policy: UploadConflictPolicy) => void;
   setSyncIntervalMinutes: (minutes: number) => void;
   setLookupTimeoutSeconds: (seconds: number) => void;
 }
@@ -25,6 +28,7 @@ interface ContentSyncStore {
 export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => ({
   serverUrl: "", deviceName: "", syncMode: "manual", syncIntervalMinutes: 15, status: "idle", error: null, blocked: false,
   deviceKey: null, progress: null,
+  uploadConflictPolicy: "prefer-complete",
   lookupTimeoutSeconds: 3,
   setServerUrl: (value) => {
     const serverUrl = value.trim() ? normalizeContentServerUrl(value) : "";
@@ -34,10 +38,11 @@ export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => (
   },
   setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() }),
   setSyncMode: (syncMode) => set({ syncMode }),
+  setUploadConflictPolicy: (uploadConflictPolicy) => set({ uploadConflictPolicy }),
   setSyncIntervalMinutes: (minutes) => set({ syncIntervalMinutes: Number.isFinite(minutes) ? Math.min(1440, Math.max(1, Math.round(minutes))) : 15 }),
   setLookupTimeoutSeconds: (seconds) => set({ lookupTimeoutSeconds: Number.isFinite(seconds) ? Math.min(120, Math.max(1, Math.round(seconds))) : 3 }),
 }), {
   name: "norea-content-server",
   version: 1,
-  partialize: ({ serverUrl, deviceName, syncMode, syncIntervalMinutes, lookupTimeoutSeconds }) => ({ serverUrl, deviceName, syncMode, syncIntervalMinutes, lookupTimeoutSeconds }),
+  partialize: ({ serverUrl, deviceName, syncMode, syncIntervalMinutes, lookupTimeoutSeconds, uploadConflictPolicy }) => ({ serverUrl, deviceName, syncMode, syncIntervalMinutes, lookupTimeoutSeconds, uploadConflictPolicy }),
 }));

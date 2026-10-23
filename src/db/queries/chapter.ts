@@ -923,13 +923,13 @@ export async function adoptStoredChapterContentMetadata(
        media_repair_needed = $5,
        media_bytes_checked_at = unixepoch(),
        stored_content_type = COALESCE($4, stored_content_type),
-       is_downloaded  = 1
+       is_downloaded  = 1 - $5
      WHERE id = $1
        AND (content_bytes IS NOT $2
          OR media_bytes IS NOT $3
          OR media_repair_needed IS NOT $5
          OR ($4 IS NOT NULL AND stored_content_type IS NOT $4)
-         OR is_downloaded IS NOT 1)`,
+         OR is_downloaded IS NOT (1 - $5))`,
     [
       chapterId,
       contentBytes,

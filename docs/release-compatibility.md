@@ -42,6 +42,14 @@ compatibility requirements must be decided explicitly before implementation.
   after local imports, edits, deletions, and reordering. There is no update timestamp. Recovery
   restores the catalog into SQLite and marks only discovered completed files
   as downloaded.
+- Chapter completeness is derived from `manifest.json` and the actual
+  `media.zip` inventory. Every declared asset must be present; cached completion
+  and per-asset status flags do not override the files. Folder recovery and
+  backup restore retain incomplete chapter rows with media repair required and
+  the downloaded flag cleared. Inspection does not rewrite the original files.
+  Content-server uploads and folder scans persist this result in the catalog;
+  incomplete copies are unavailable for download. Upload conflicts follow the
+  app's selected policy, checked again when the server publishes the files.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.
   Nonempty updates and a rating of zero still apply. Explicit local edits can

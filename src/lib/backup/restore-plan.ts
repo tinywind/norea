@@ -100,7 +100,7 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
         chapter = addChapter(original?.chapterPath ?? recoveredPath, metadata.chapters[stored.chapterNumber] ?? stored.name, stored.chapterNumber, chapters.length + 1, stored.contentType);
         indexChapter(chapter);
       }
-      chapter.isDownloaded = true;
+      chapter.isDownloaded = stored.mediaComplete;
       chapter.contentType = stored.contentType;
       const original = cachedByDirectory.get(chapterKey(pluginId, novelPath, absoluteDirectory));
       if (original?.storedContentType === stored.contentType) {

@@ -517,6 +517,7 @@ describe("android storage bridge facade", () => {
         contentBytes: 12,
         contentFile: "contents/demo/novel-1/1/content.html",
         mediaBytes: 3,
+        mediaComplete: true,
         ok: true,
         status: "present",
       }),
@@ -526,6 +527,7 @@ describe("android storage bridge facade", () => {
       contentBytes: 12,
       contentFile: "contents/demo/novel-1/1/content.html",
       mediaBytes: 3,
+      mediaComplete: true,
       status: "present",
     });
   });

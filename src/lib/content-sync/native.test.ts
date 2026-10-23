@@ -10,7 +10,7 @@ vi.mock("../android-storage", () => ({ snapshotAndroidContentChapter: vi.fn(), i
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: vi.fn() }));
 const identity = { pluginId: "source", novelId: "book", novelPath: "/book" };
 const entry: CatalogEntry = {
-  id: "chapter", revision: "upload", fileBytes: 18, deleted: false, sequence: 1,
+  id: "chapter", revision: "upload", fileBytes: 18, complete: true, deleted: false, sequence: 1,
   manifest: {
     packageVersion: 1, layout: "chapter-files", identity: { ...identity, chapterPath: "/one" },
     novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" },
@@ -33,13 +33,13 @@ it("fingerprints and uploads one Android snapshot instead of copying the chapter
   const storageDir = "contents/source/book/1";
   await withContentChapterStage({ storageDir, identity }, async stagePath => {
     expect(await fingerprintContentChapter({ storageDir, stagePath })).toBe("snapshot-fingerprint");
-    await uploadContentChapter({ storageDir, stagePath, serverUrl: "http://server", token: "token", chapterId: 1,
+    await uploadContentChapter({ storageDir, stagePath, serverUrl: "http://server", token: "token", chapterId: 1, conflictPolicy: "replace-server",
       manifest: { packageVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/one" },
         novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } });
   });
   expect(snapshotAndroidContentChapter).toHaveBeenCalledExactlyOnceWith(storageDir, "/cache/content-sync/one");
   expect(invoke).toHaveBeenCalledWith("content_sync_fingerprint", { storageDir, stagePath: "/cache/content-sync/one" });
-  expect(invoke).toHaveBeenCalledWith("content_sync_upload", expect.objectContaining({ stagePath: "/cache/content-sync/one" }));
+  expect(invoke).toHaveBeenCalledWith("content_sync_upload", expect.objectContaining({ stagePath: "/cache/content-sync/one", conflictPolicy: "replace-server" }));
   expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(["content_sync_remove_stage", { stagePath: "/cache/content-sync/one" }]);
 });
 
@@ -68,7 +68,7 @@ it.each([true, false])("discards a snapshot invalidated by a new download before
 
 it("preserves native HTTP status and server rejection details for sync recovery", async () => {
   vi.mocked(invoke).mockRejectedValue("content sync: server returned 403: Device is blocked");
-  await expect(uploadContentChapter({ storageDir: "contents/source/book/1", stagePath: "/stage", serverUrl: "http://server", token: "token", chapterId: 1,
+  await expect(uploadContentChapter({ storageDir: "contents/source/book/1", stagePath: "/stage", serverUrl: "http://server", token: "token", chapterId: 1, conflictPolicy: "replace-server",
     manifest: { packageVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/one" }, novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } }))
     .rejects.toMatchObject({ status: 403, message: "Device is blocked" });
 });

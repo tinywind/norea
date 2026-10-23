@@ -77,11 +77,55 @@ it("skips local snapshots and uploads when a complete server chapter exists", as
   vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
-    ? Promise.resolve(Response.json({ id: "existing", deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
+    ? Promise.resolve(Response.json({ id: "existing", deleted: false, complete: true, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
   await syncContentServer(true, true);
   expect(native.stage).not.toHaveBeenCalled();
   expect(fingerprintContentChapter).not.toHaveBeenCalled();
   expect(uploadContentChapter).not.toHaveBeenCalled();
+});
+
+it("rechecks unchanged local chapters after switching from keeping server data to replacing it", async () => {
+  const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false };
+  vi.mocked(listContentSyncChapters).mockImplementation(async ids => !ids || ids.length ? [row] as never : []);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
+    ? Promise.resolve(Response.json({ id: "existing", complete: true, deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
+  useContentSyncStore.setState({ uploadConflictPolicy: "keep-server" });
+  await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  useContentSyncStore.setState({ uploadConflictPolicy: "replace-server" });
+  await syncContentServer();
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: "replace-server" }));
+});
+
+it("uploads a complete local chapter over an incomplete server copy when preferring complete chapters", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
+    ? Promise.resolve(Response.json({ id: "existing", complete: false, deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
+  await syncContentServer();
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: "prefer-complete" }));
+});
+
+it("keeps the conflict policy captured at sync start when settings change during metadata transfer", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
+    ? Promise.resolve(Response.json({ id: "existing", complete: true, deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
+  vi.mocked(syncWorkMetadata).mockImplementationOnce(async () => {
+    useContentSyncStore.getState().setUploadConflictPolicy("replace-server");
+    return new Set();
+  });
+  await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  await syncContentServer();
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: "replace-server" }));
+});
+
+it("rejects an incomplete server chapter before importing its metadata or files", async () => {
+  await expect(downloadServerChapter({ deleted: false, complete: false } as never)).rejects.toThrow("Incomplete server chapters cannot be downloaded.");
+  expect(importContentMetadata).not.toHaveBeenCalled();
+  expect(native.download).not.toHaveBeenCalled();
 });
 
 it("defers queued chapters without delaying completed chapters, then retries them after the queue clears", async () => {
@@ -132,7 +176,7 @@ it("rechecks persisted completion and queue state after preparing the upload sna
 
 it("rechecks a persisted server deletion without a rescan or a new local journal entry", async () => {
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
   await syncContentServer();
   expect(listContentSyncChapters).toHaveBeenCalledWith([], false);
   expect(listContentSyncWorkChapters).toHaveBeenCalledExactlyOnceWith(['["p","n"]']);
@@ -145,7 +189,7 @@ it("rechecks a persisted server deletion without a rescan or a new local journal
 
 it("allows a local content change to upload a chapter previously deleted on the server", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   changed('content:["p","n","c"]', null);
   await syncContentServer();
   expect(uploadContentChapter).toHaveBeenCalledOnce();
@@ -163,7 +207,7 @@ it("skips every local chapter belonging to a deleted server work", async () => {
 it("queues a remote deletion before advancing the catalog checkpoint without local changes", async () => {
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 10, mediaBytes: 0 };
-  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/changes?") ? Promise.resolve(Response.json({
@@ -171,7 +215,7 @@ it("queues a remote deletion before advancing the catalog checkpoint without loc
     cursor: 1, hasMore: false,
   })) : original(url, init));
   vi.mocked(uploadContentChapter).mockImplementationOnce(async () => {
-    expect(JSON.parse(memory.get(key)!)).toMatchObject({ cursor: 1, localCursor: 0, tombstones: {}, pendingUploads: ['["p","n","c"]'] });
+    expect(JSON.parse(memory.get(key)!)).toMatchObject({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, pendingUploads: ['["p","n","c"]'] });
     return {} as never;
   });
   await syncContentServer();
@@ -183,7 +227,7 @@ it.each([false, true])("handles a deletion discovered only in the final catalog 
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c",
     novelName: "Novel", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false };
-  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   let catalogRequests = 0;
   const original = vi.mocked(appFetch).getMockImplementation()!;
@@ -204,7 +248,7 @@ it.each([false, true])("handles a deletion discovered only in the final catalog 
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chapterId: 1 }));
   expect(listContentSyncWorkChapters).toHaveBeenCalledExactlyOnceWith(['["p","n"]']);
   expect(JSON.parse(memory.get(key)!)).toMatchObject({
-    cursor: 1, localCursor: 0, tombstones: {}, pendingUploads: failUpload ? ['["p","n","c"]'] : [],
+    cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, pendingUploads: failUpload ? ['["p","n","c"]'] : [],
   });
 });
 
@@ -216,11 +260,11 @@ it.each([
   const chapters = [1, 2].map(chapterId => ({ chapterId, novelId: 1, pluginId: "p", sourceNovelId: "n", position: chapterId, novelPath: "/work",
     chapterPath: chapterId === 1 ? localPath : "/chapter/2", chapterNumber: String(chapterId),
     novelName: "Novel", chapterName: `Chapter ${chapterId}`, isDownloaded: true, mediaRepairNeeded: false }));
-  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, tombstones: { [JSON.stringify(["p", "/work", remotePath])]: true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { [JSON.stringify(["p", "/work", remotePath])]: true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue(chapters as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?") && new URL(String(url)).searchParams.get("chapterPath") === "/chapter/2"
-    ? Promise.resolve(Response.json({ id: "existing", deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/chapter/2" }, chapter: { chapterNumber: "2" } } })) : original(url, init));
+    ? Promise.resolve(Response.json({ id: "existing", deleted: false, complete: true, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/chapter/2" }, chapter: { chapterNumber: "2" } } })) : original(url, init));
   await syncContentServer();
   expect(listContentSyncWorkChapters).toHaveBeenCalledExactlyOnceWith(['["p","/work"]']);
   expect(native.stage).toHaveBeenCalledOnce();
@@ -234,7 +278,7 @@ it("retains the resolved local identity after a deleted chapter upload fails", a
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "/work", chapterPath: "norea-folder:1", chapterNumber: "1",
     novelName: "Novel", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false };
-  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, tombstones: { '["p","/work","/chapter/1"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","/work","/chapter/1"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   vi.mocked(uploadContentChapter).mockRejectedValueOnce(new Error("offline"));
   await expect(syncContentServer()).rejects.toThrow("offline");
@@ -250,7 +294,7 @@ it("retains the resolved local identity after a deleted chapter upload fails", a
 
 it("does not restore a whole work while processing its deleted chapter signals", async () => {
   const key = "norea-content-catalog:http://localhost:7788";
-  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   vi.mocked(syncWorkMetadata).mockResolvedValue(new Set(["work-id"]));
   await syncContentServer();
@@ -338,7 +382,7 @@ it("shows and saves upload progress before a large batch finishes", async () => 
 it("does not mark a failed native import downloaded and preserves readable directory names", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
   vi.mocked(native.download).mockRejectedValueOnce(new Error("invalid checksum"));
-  await expect(downloadServerChapter({ id: "server-id", deleted: false, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" } } } as never)).rejects.toThrow("invalid checksum");
+  await expect(downloadServerChapter({ id: "server-id", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" } } } as never)).rejects.toThrow("invalid checksum");
   expect(markContentInstalled).not.toHaveBeenCalled();
   expect(vi.mocked(native.download).mock.calls[0]![0]).toMatchObject({ chapterId: 91, storageDir: "contents/source/work/1" });
 });
@@ -347,7 +391,7 @@ it("skips a recovered chapter already stored under the exact-work server identit
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "norea-folder:1", chapterNumber: "1", novelName: "Novel", chapterName: "One", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
-    ? Promise.resolve(Response.json({ deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/chapter/1" }, chapter: { chapterNumber: "1" } } })) : original(url, init));
+    ? Promise.resolve(Response.json({ deleted: false, complete: true, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/chapter/1" }, chapter: { chapterNumber: "1" } } })) : original(url, init));
   await syncContentServer();
   expect(uploadContentChapter).not.toHaveBeenCalled();
   const lookup = vi.mocked(appFetch).mock.calls.find(([url]) => String(url).includes("/catalog/chapter?"));
@@ -358,7 +402,7 @@ it.each(["norea-folder:1", "/other-chapter/1", "/chapter/1"])("resolves a source
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "/chapter/1", chapterNumber: "1", novelName: "Novel", chapterName: "One", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
-    ? Promise.resolve(Response.json({ deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: remotePath }, chapter: { chapterNumber: remotePath === "/chapter/1" ? null : "1" } } })) : original(url, init));
+    ? Promise.resolve(Response.json({ deleted: false, complete: true, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: remotePath }, chapter: { chapterNumber: remotePath === "/chapter/1" ? null : "1" } } })) : original(url, init));
   if (remotePath.startsWith("norea-folder:") || remotePath === "/chapter/1") {
     await syncContentServer();
     expect(uploadContentChapter).not.toHaveBeenCalled();
@@ -439,7 +483,7 @@ it("downloads a selected origin chapter without full catalogs or foreground sync
   useContentSyncStore.setState({ status: "syncing" });
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
   vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
-  const entry = { id: "one", deleted: false, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://origin-server")).resolves.toEqual({ novelId: 90, chapterId: 91 });
   expect(native.download).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: "http://origin-server" }));
   expect(syncWorkMetadata).not.toHaveBeenCalled();
@@ -457,7 +501,7 @@ it.each(["before transfer", "before installation"])("rejects a different source 
   if (phase === "before transfer") vi.mocked(listContentSyncChapters).mockResolvedValue([other] as never);
   else vi.mocked(listContentSyncChapters).mockResolvedValueOnce([row] as never).mockResolvedValue([other] as never);
   native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
-  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target })).rejects.toThrow("novel ID");
   expect(native.install).not.toHaveBeenCalled();
   expect(markContentInstalled).not.toHaveBeenCalled();
@@ -467,7 +511,7 @@ it("installs a scanned chapter into the existing source chapter of the same work
   const target = { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" };
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, pluginId: target.pluginId, sourceNovelId: target.novelId, novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
   vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 20 });
-  const entry = { id: "scanned", deleted: false, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "norea-folder:1" }, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "scanned", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "norea-folder:1" }, chapter: { contentType: "html" } } } as never;
   expect(await downloadServerChapterFromServer(entry, "http://origin", { token: "registered", target })).toEqual({ novelId: 3, chapterId: 7 });
   expect(importContentMetadata).not.toHaveBeenCalled();
   expect(appFetch).not.toHaveBeenCalled();
@@ -501,7 +545,7 @@ it("keeps selected downloads usable while the background work catalog is still t
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
   vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
-  const entry = { id: "one", deleted: false, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
   try {
     await downloadServerChapter(entry);
     expect(markContentInstalled).toHaveBeenCalledWith(91, "html", 10, 0);
@@ -596,7 +640,7 @@ it("keeps work metadata usable while a selected package download waits for the s
   vi.mocked(native.download).mockImplementationOnce(() => new Promise(resolve => {
     release = () => resolve({ contentBytes: 10, mediaBytes: 0 });
   }));
-  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   const downloading = downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   let completed = false;
@@ -616,7 +660,7 @@ it("uses the current chapter folder when metadata changes during the transfer", 
   vi.mocked(listContentSyncChapters).mockResolvedValueOnce([row] as never)
     .mockResolvedValue([{ ...row, novelName: "After" }] as never);
   native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
-  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   await downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
   expect(native.install).toHaveBeenCalledExactlyOnceWith("contents/source/work/1");
   expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 0);
@@ -631,7 +675,7 @@ it("does not publish a cancelled package after its transfer finishes", async () 
     controller.abort(reason);
     return { contentBytes: 10, mediaBytes: 0 };
   });
-  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target, signal: controller.signal })).rejects.toBe(reason);
   expect(native.install).not.toHaveBeenCalled();
   expect(markContentInstalled).not.toHaveBeenCalled();

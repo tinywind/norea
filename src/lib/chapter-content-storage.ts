@@ -14,7 +14,6 @@ import {
   storedChapterContentType,
   type ChapterContentType,
 } from "./chapter-content";
-import { chapterMediaRepairNeeded } from "./chapter-media-state";
 import {
   chapterContentRelativePath,
   chapterPartialContentRelativePath,
@@ -69,6 +68,7 @@ export type StoredChapterArtifacts =
       contentFile: string;
       contentBytes: number;
       mediaBytes: number;
+      mediaComplete: boolean;
     };
 
 export interface ReconciledStoredChapterContent {
@@ -205,6 +205,7 @@ function normalizeStoredChapterArtifacts(
     contentFile: value.contentFile,
     contentBytes: Math.max(0, value.contentBytes),
     mediaBytes: Math.max(0, value.mediaBytes),
+    mediaComplete: value.mediaComplete === true,
   };
 }
 
@@ -255,14 +256,12 @@ async function reconcileStoredChapterStorageRow(
         };
       }
     }
-    // Final content stays authoritative even when some of its media is remote.
-    // Restore the repair affordance without invalidating readable legacy files.
     await adoptStoredChapterContentMetadata(
       row.chapterId,
       artifacts.contentBytes,
       artifacts.mediaBytes,
       contentType,
-      chapterMediaRepairNeeded(content, contentType, artifacts.mediaBytes),
+      !artifacts.mediaComplete,
     );
   } else if (
     sqliteBoolean(row.isDownloaded) ||

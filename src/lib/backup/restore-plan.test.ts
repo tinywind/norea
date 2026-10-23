@@ -25,6 +25,10 @@ import type { BackupManifest } from "./format";
 
 const first = "contents/source/book";
 const absent = "contents/local/local";
+const mediaInspections = vi.hoisted(() => new Map<string, boolean>());
+vi.mock("../chapter-content/storage-platform", () => ({ inspectChapterContentArtifacts: async (input: { preferredChapterDir: string; preferredContentFileName: string }) => ({
+  status: "present", contentFile: `${input.preferredChapterDir}/${input.preferredContentFileName}`, contentBytes: 1, mediaBytes: 0, mediaComplete: mediaInspections.get(input.preferredChapterDir) ?? true,
+}) }));
 const db = { select: vi.fn() } as unknown as Database;
 
 function save(path: string, value: unknown) {
@@ -42,6 +46,7 @@ function manifest(): BackupManifest {
 }
 
 beforeEach(() => {
+  mediaInspections.clear();
   storage.files.clear(); storage.failPath = ""; storage.mutations = 0;
   vi.mocked(db.select).mockResolvedValue([]);
   save(`${first}/novel.json`, { schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book" }, novel: {
@@ -68,6 +73,16 @@ it("keeps every original byte and uses current metadata while restoring library 
   expect(plan.cache.chapters).toContainEqual({ chapterId: 1, novelId: 1, directory: `${first}/1` });
   expect(storage.files).toEqual(originalFiles);
   expect(snapshot).toEqual(before);
+  expect(storage.mutations).toBe(0);
+});
+
+it("preserves incomplete chapter files while clearing backed-up download state", async () => {
+  mediaInspections.set(`${first}/1`, false);
+  const originalFiles = structuredClone(storage.files);
+  const plan = await prepareBackupRestore(db, manifest());
+  expect(plan.manifest.chapters[0]).toMatchObject({ isDownloaded: false, contentType: "html" });
+  expect(plan.cache.chapters).toContainEqual({ chapterId: 1, novelId: 1, directory: `${first}/1` });
+  expect(storage.files).toEqual(originalFiles);
   expect(storage.mutations).toBe(0);
 });
 

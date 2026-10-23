@@ -387,7 +387,7 @@ function ChapterListItem({
             <DownloadGlyph />
           </IconButton>
         ) : null}
-        {chapter.isDownloaded && chapter.mediaRepairNeeded ? (
+        {chapter.mediaRepairNeeded ? (
           <IconButton
             className="norea-novel-icon-button"
             data-busy={repairBusy ? "true" : undefined}
@@ -406,7 +406,7 @@ function ChapterListItem({
             )}
           </IconButton>
         ) : null}
-        {chapter.isDownloaded && canDeleteDownload ? (
+        {(chapter.isDownloaded || chapter.mediaRepairNeeded) && canDeleteDownload ? (
           <IconButton
             className="norea-novel-icon-button"
             data-busy={deleteBusy ? "true" : undefined}

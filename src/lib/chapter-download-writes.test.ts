@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  canAdoptChapterDownloadSnapshot,
+  currentChapterDownloadRevision,
   waitForChapterDownloadWrites,
   withChapterDownloadDeletion,
   withChapterDownloadWrite,
@@ -16,6 +18,23 @@ function deferred<T>() {
 }
 
 describe("chapter download writes", () => {
+  it("rejects snapshots overlapping a write while allowing unaffected chapters and later scans", async () => {
+    const before = currentChapterDownloadRevision();
+    const localWrite = deferred<void>();
+    const write = withChapterDownloadWrite(42, undefined, () => localWrite.promise);
+    const during = currentChapterDownloadRevision();
+    expect(canAdoptChapterDownloadSnapshot(42, before)).toBe(false);
+    expect(canAdoptChapterDownloadSnapshot(42, during)).toBe(false);
+    expect(canAdoptChapterDownloadSnapshot(43, before)).toBe(true);
+
+    localWrite.resolve();
+    await write;
+
+    expect(canAdoptChapterDownloadSnapshot(42, before)).toBe(false);
+    expect(canAdoptChapterDownloadSnapshot(42, during)).toBe(false);
+    expect(canAdoptChapterDownloadSnapshot(42, currentChapterDownloadRevision())).toBe(true);
+  });
+
   it("blocks new writes only for chapters being deleted", async () => {
     const remove = deferred<void>();
     const events: string[] = [];

@@ -2556,7 +2556,7 @@ describe("enqueueChapterMediaRepair", () => {
     expect(setDetail).toHaveBeenCalledWith("1 media assets repaired");
   });
 
-  it("repairs stored resource-plan media without page capture", async () => {
+  it.each([false, true])("repairs stored resource-plan media without page capture (complete: %s)", async isDownloaded => {
     const setDetail = vi.fn();
     const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
     pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
@@ -2573,7 +2573,8 @@ describe("enqueueChapterMediaRepair", () => {
       contentType: "epub",
       sourceContentType: "epub",
       id: 7,
-      isDownloaded: true,
+      isDownloaded,
+      mediaRepairNeeded: true,
       name: "Chapter 7",
       novelId: 11,
       path: "/chapter/7",

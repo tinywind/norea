@@ -226,6 +226,7 @@ interface AndroidChapterArtifactsResponse extends AndroidStorageResponse {
   contentFile?: string;
   contentBytes?: number;
   mediaBytes?: number;
+  mediaComplete?: boolean;
 }
 
 interface AndroidChapterStorageDirsResponse extends AndroidStorageResponse {
@@ -241,6 +242,7 @@ export interface AndroidChapterArtifacts {
   contentFile: string | null;
   contentBytes: number;
   mediaBytes: number;
+  mediaComplete: boolean;
 }
 
 export interface AndroidChapterStorageLookupInput {
@@ -675,6 +677,7 @@ export async function inspectAndroidChapterArtifacts(input: AndroidChapterStorag
     contentFile: response.contentFile ?? null,
     contentBytes: response.contentBytes ?? 0,
     mediaBytes: response.mediaBytes ?? 0,
+    mediaComplete: response.mediaComplete === true,
   };
 }
 

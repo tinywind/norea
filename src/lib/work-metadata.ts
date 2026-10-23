@@ -3,6 +3,7 @@ import type Database from "@tauri-apps/plugin-sql";
 import type { WorkMetadataSyncFile } from "../db/work-metadata";
 import { androidWorkMetadataOperation } from "./android-storage";
 import { bytesToBase64, base64ToBytes } from "./base64";
+import { inspectChapterContentArtifacts } from "./chapter-content/storage-platform";
 import { novelStorageRelativeDir } from "./chapter-storage-path";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
@@ -152,14 +153,14 @@ export interface StoredNovelChapter {
   chapterNumber: string;
   name: string;
   contentType: "html" | "pdf";
+  mediaComplete: boolean;
 }
 
-export async function listStoredNovelChapters(directory: string, cachedChapterFiles: string[] = []): Promise<StoredNovelChapter[]> {
-  const skipChapterDirectories = cachedChapterFiles.map((path) => path.slice(0, path.lastIndexOf("/")));
-  const { paths = [] } = await workMetadataOperation({ operation: "chapters", path: `${directory}/novel.json`, skipChapterDirectories });
+export async function listStoredNovelChapters(directory: string): Promise<StoredNovelChapter[]> {
+  const { paths = [] } = await workMetadataOperation({ operation: "chapters", path: `${directory}/novel.json` });
   const chapters: StoredNovelChapter[] = [];
   const seen = new Set<string>();
-  for (const path of [...paths, ...cachedChapterFiles]) {
+  for (const path of paths) {
     if (!path.startsWith(`${directory}/`)) throw new Error("work metadata: invalid chapter location");
     const parts = path.slice(directory.length + 1).split("/");
     const [child, fileName] = parts;
@@ -167,7 +168,15 @@ export async function listStoredNovelChapters(directory: string, cachedChapterFi
     const match = /^(\d+(?:\.\d+)?)$/.exec(child!);
     if (!match || String(Number(match[1])) !== child || seen.has(child!)) continue;
     seen.add(child!);
-    chapters.push({ directory: child!, chapterNumber: match[1]!, name: match[1]!, contentType: fileName === "content.pdf" ? "pdf" : "html" });
+    const artifacts = await inspectChapterContentArtifacts({
+      preferredChapterDir: `${directory}/${child}`,
+      sourceDir: directory.slice(0, directory.lastIndexOf("/")),
+      novelDirectoryName: directory.slice(directory.lastIndexOf("/") + 1),
+      chapterDirectoryName: child!,
+      preferredContentFileName: fileName!,
+    });
+    if (artifacts.status !== "present") continue;
+    chapters.push({ directory: child!, chapterNumber: match[1]!, name: match[1]!, contentType: artifacts.contentFile?.endsWith(".pdf") ? "pdf" : "html", mediaComplete: artifacts.mediaComplete === true });
   }
   return chapters.sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber) || a.directory.localeCompare(b.directory));
 }

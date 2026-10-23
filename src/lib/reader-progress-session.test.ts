@@ -9,13 +9,12 @@ describe("reader progress persistence readiness", () => {
 
   it.each([
     {
-      name: "a chapter that is still downloading",
+      name: "a streamed chapter without a stored final body",
       state: {
         activeContent: finalHtml,
         chapterId: 7,
-        isDownloaded: false,
         requestedChapterId: 7,
-        storedContent: finalHtml,
+        storedContent: null,
       },
     },
     {
@@ -23,7 +22,6 @@ describe("reader progress persistence readiness", () => {
       state: {
         activeContent: "<p>Partial</p>",
         chapterId: 7,
-        isDownloaded: true,
         requestedChapterId: 7,
         storedContent: finalHtml,
       },
@@ -33,7 +31,6 @@ describe("reader progress persistence readiness", () => {
       state: {
         activeContent: finalHtml,
         chapterId: 7,
-        isDownloaded: true,
         requestedChapterId: 8,
         storedContent: finalHtml,
       },
@@ -43,7 +40,6 @@ describe("reader progress persistence readiness", () => {
       state: {
         activeContent: finalHtml,
         chapterId: 7,
-        isDownloaded: true,
         requestedChapterId: 7,
         storedContent: null,
       },
@@ -57,7 +53,6 @@ describe("reader progress persistence readiness", () => {
       isReaderProgressPersistenceReady({
         activeContent: finalHtml,
         chapterId: 7,
-        isDownloaded: true,
         requestedChapterId: 7,
         storedContent: finalHtml,
       }),

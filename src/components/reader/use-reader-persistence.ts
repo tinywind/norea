@@ -6,7 +6,6 @@ import {
   markChapterOpened,
   updateChapterProgress,
   type ChapterListRow,
-  type ChapterRow,
 } from "../../db/queries/chapter";
 import {
   chapterDetailQueryKey,
@@ -15,6 +14,7 @@ import {
   invalidateReaderProgressQueries,
   novelChaptersQueryKey,
 } from "../../lib/reader-query-invalidation";
+import type { ReaderChapterRow } from "../../lib/reader-chapter";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { useLibraryStore } from "../../store/library";
 import { useReaderStore } from "../../store/reader";
@@ -26,7 +26,7 @@ interface ReaderProgressUpdate {
   progress: number;
 }
 export function useReaderPersistence(
-  chapter: Pick<ChapterRow, "id" | "novelId" | "isDownloaded"> | undefined,
+  chapter: Pick<ReaderChapterRow, "id" | "novelId" | "content"> | undefined,
   openedChapterRef: RefObject<number | null>,
 ) {
   const queryClient = useQueryClient();
@@ -118,7 +118,7 @@ export function useReaderPersistence(
   useEffect(() => {
     if (
       !chapter ||
-      !chapter.isDownloaded ||
+      !chapter.content ||
       openedChapterRef.current === chapter.id
     ) {
       return;

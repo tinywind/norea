@@ -193,11 +193,11 @@ only after every listed file arrives with its declared size. Transfers check
 file names, sizes, and completion without computing or comparing chapter-file
 SHA-256 hashes. Downloads support only the current original-file format.
 Deleting a local download
-leaves the server copy intact. The server keeps one complete copy per chapter.
-The app checks for that copy before creating a snapshot or uploading files.
-To replace a server copy, open **Manage server data** from the work page and
-select chapters in the separate server list. Confirm **Delete from server**,
-then use **Sync now** or wait for the configured sync mode. Chapter deletion
+leaves the server copy intact. The server keeps one copy per chapter and records
+whether its ZIP contains every asset declared in the media manifest.
+Under **Settings > Data > Content server > Upload conflicts**, choose whether to
+prefer complete chapters, keep server data, or replace it with app data.
+Then use **Sync now** to apply the selected policy. Chapter deletion
 preserves local files, reading state, work metadata, and covers. To remove an
 entire server work, choose **Delete work from server** in Browse -> Content server
 or in the work's **Manage server data** page. Confirmation removes the server
@@ -229,7 +229,8 @@ plugin repository indexes. The server uses its configured data directory for
 content storage and scanning; the console does not select additional folders.
 Scanning requires valid `novel.json` work metadata and discovers chapters from
 their folders and files without contacting source sites or requiring installed
-plugins. Unsupported or incomplete files are skipped; original files are
+plugins. Incomplete chapters are recorded but excluded from downloads;
+unsupported files are skipped. Original files are
 preserved. Works and their covers remain
 available even when none of their chapters can be imported. The console offers
 cover grids, a list view, and full metadata inspection.

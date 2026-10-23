@@ -206,7 +206,7 @@ beforeEach(() => {
   mockedReconcileStoredChapterContent.mockImplementation(async (chapterId) =>
     chapterId === 11
       ? {
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile: "contents/source-a/a-novel/1/content.html",
           contentBytes: 100,
           mediaBytes: 20,
@@ -658,13 +658,14 @@ describe("executeNovelMerge", () => {
     let finishSecondReconciliation!: () => void;
     const secondReconciliation = new Promise<{
       status: "present";
+      mediaComplete: boolean;
       contentFile: string;
       contentBytes: number;
       mediaBytes: number;
     }>((resolve) => {
       finishSecondReconciliation = () => {
         resolve({
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile:
             "contents/source-a/a-novel/2/content.html",
           contentBytes: 100,

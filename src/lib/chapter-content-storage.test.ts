@@ -128,7 +128,7 @@ beforeEach(() => {
   invokeMock.mockImplementation(async (command) => {
     if (command === "chapter_content_mirror_inspect") {
       return {
-        status: "present",
+        status: "present", mediaComplete: true,
         contentFile: "contents/demo/1/1/content.html",
         contentBytes: 10,
         mediaBytes: 0,
@@ -137,7 +137,7 @@ beforeEach(() => {
     return undefined;
   });
   inspectAndroidChapterArtifactsMock.mockResolvedValue({
-    status: "present",
+    status: "present", mediaComplete: true,
     contentFile: "contents/demo/1/1/content.html",
     contentBytes: 10,
     mediaBytes: 0,
@@ -154,7 +154,7 @@ describe("chapter content storage", () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile:
             "contents/demo/1/1/content.html",
           contentBytes: 13,
@@ -194,7 +194,7 @@ describe("chapter content storage", () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile:
             "contents/demo/1/1/content.html",
           contentBytes: 0,
@@ -221,7 +221,7 @@ describe("chapter content storage", () => {
     ]);
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
-      status: "present",
+      status: "present", mediaComplete: true,
       contentFile: expect.stringContaining("content.html"),
     });
     expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
@@ -244,7 +244,7 @@ describe("chapter content storage", () => {
     ]);
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
-      status: "present",
+      status: "present", mediaComplete: true,
       contentFile: expect.stringContaining("content.html"),
       contentBytes: 10,
       mediaBytes: 0,
@@ -259,7 +259,7 @@ describe("chapter content storage", () => {
   });
 
   it.each([0, 1])(
-    "restores media repair metadata from final HTML for downloaded flag %s",
+    "restores repair metadata from artifact inspection for downloaded flag %s",
     async (isDownloaded) => {
       const storedHtml =
         '<img src="media/local.webp"><img src="https://cdn.example/panel.webp">';
@@ -269,7 +269,7 @@ describe("chapter content storage", () => {
       invokeMock.mockImplementation(async (command) => {
         if (command === "chapter_content_mirror_inspect") {
           return {
-            status: "present",
+            status: "present", mediaComplete: false,
             contentFile: "contents/demo/1/1/content.html",
             contentBytes: 82,
             mediaBytes: 1024,
@@ -299,12 +299,12 @@ describe("chapter content storage", () => {
     },
   );
 
-  it("clears stale repair metadata when final HTML contains only local media", async () => {
+  it("clears stale repair metadata when all manifest assets are stored", async () => {
     selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 1 })]);
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
@@ -317,7 +317,7 @@ describe("chapter content storage", () => {
     });
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
-      status: "present",
+      status: "present", mediaComplete: true,
     });
 
     expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
@@ -325,11 +325,11 @@ describe("chapter content storage", () => {
     );
   });
 
-  it("marks local image references for repair when the chapter has no stored media", async () => {
+  it("marks missing declared assets for repair even when a body is readable", async () => {
     selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 0 })]);
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") return {
-        status: "present", contentFile: "contents/demo/1/1/content.html", contentBytes: 48, mediaBytes: 0,
+        status: "present", mediaComplete: false, contentFile: "contents/demo/1/1/content.html", contentBytes: 48, mediaBytes: 0,
       };
       if (command === "chapter_content_mirror_read_file") return '<img src="norea-media://reader-asset/panel.png">';
       return undefined;
@@ -344,7 +344,7 @@ describe("chapter content storage", () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
@@ -365,7 +365,7 @@ describe("chapter content storage", () => {
 
   it("does not load a binary PDF during metadata reconciliation", async () => {
     invokeMock.mockResolvedValueOnce({
-      status: "present",
+      status: "present", mediaComplete: true,
       contentFile: "contents/demo/1/1/content.pdf",
       contentBytes: 4096,
       mediaBytes: 0,
@@ -383,7 +383,7 @@ describe("chapter content storage", () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present",
+          status: "present", mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
@@ -534,7 +534,7 @@ describe("chapter content storage", () => {
       inspectionCount += 1;
       if (inspectionCount === 1) throw new Error("interrupted finalization");
       return {
-        status: "present",
+        status: "present", mediaComplete: true,
         contentFile: "contents/demo/1/2/content.html",
         contentBytes: 12,
         mediaBytes: 8,
