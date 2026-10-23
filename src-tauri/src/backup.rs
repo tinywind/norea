@@ -461,14 +461,14 @@ async fn execute_restore_snapshot(
     let stored_chapters: HashSet<_> = cache.chapters.iter()
         .map(|chapter| (chapter.novel_id, chapter.chapter_id)).collect();
     for chapter in &manifest.chapters {
-        let restored_downloaded = chapter.is_downloaded
-            && stored_chapters.contains(&(chapter.novel_id, chapter.id));
-        let restored_content_bytes = if restored_downloaded {
+        let restored_body = stored_chapters.contains(&(chapter.novel_id, chapter.id));
+        let restored_downloaded = chapter.is_downloaded && restored_body;
+        let restored_content_bytes = if restored_body {
             chapter.content_bytes
         } else {
             0
         };
-        let restored_media_bytes = if restored_downloaded {
+        let restored_media_bytes = if restored_body {
             chapter.media_bytes
         } else {
             0
@@ -495,9 +495,9 @@ async fn execute_restore_snapshot(
         .bind(bool_to_int(restored_downloaded))
         .bind(restored_content_bytes)
         .bind(restored_media_bytes)
-        .bind(0_i64)
+        .bind(bool_to_int(restored_body && !restored_downloaded))
         .bind(chapter.source_content_type.as_str())
-        .bind(if restored_downloaded {
+        .bind(if restored_body {
             Some(chapter.content_type.as_str())
         } else {
             None
@@ -574,7 +574,7 @@ async fn restore_metadata_cache(
     for chapter in &cache.chapters {
         let result = sqlx::query(
             "INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory)
-             SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM chapter WHERE id=$1 AND novel_id=$2 AND is_downloaded=1)",
+             SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM chapter WHERE id=$1 AND novel_id=$2 AND stored_content_type IS NOT NULL)",
         )
         .bind(chapter.chapter_id)
         .bind(chapter.novel_id)
@@ -1088,6 +1088,42 @@ mod tests {
             "SELECT id,created_at,found_at,updated_at FROM chapter ORDER BY id",
         ).fetch_all(&pool).await.expect("read restored timestamps");
         assert_eq!(restored, timestamps);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_keeps_incomplete_chapter_bodies_and_directory_mappings() {
+        let pool = restore_pool().await;
+        let json = format!(
+            r#"{{
+                "version": 2,
+                "installedPlugins": [],
+                "vpnGateServerVerdicts": [],
+                "novels": [{{"id":1,"pluginId":"demo","path":"/n/1","name":"Novel","inLibrary":true,"isLocal":false,"createdAt":1,"updatedAt":1}}],
+                "chapters": [{}],
+                "categories": [],
+                "novelCategories": [],
+                "repositories": []
+            }}"#,
+            restore_chapter_json(10, false, None),
+        );
+        let manifest: BackupRestoreManifest = serde_json::from_str(&json).expect("parse manifest");
+        let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
+            "files": [{ "pluginId": "demo", "path": "/n/1", "novelId": 1,
+                "directory": "contents/demo/book", "fingerprint": "retained-fingerprint" }],
+            "chapters": [{ "chapterId": 10, "novelId": 1, "directory": "contents/demo/book/10" }]
+        })).expect("parse retained file cache");
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest, &cache).await.expect("restore");
+        tx.commit().await.expect("commit");
+
+        let row: (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT is_downloaded,media_repair_needed,stored_content_type FROM chapter WHERE id=10",
+        ).fetch_one(&pool).await.expect("read chapter");
+        assert_eq!(row, (0, 1, Some("html".to_string())));
+        let directory: String = sqlx::query_scalar(
+            "SELECT directory FROM work_metadata_directory_cache WHERE chapter_id=10",
+        ).fetch_one(&pool).await.expect("read retained directory");
+        assert_eq!(directory, "contents/demo/book/10");
     }
 
     #[tokio::test]

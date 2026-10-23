@@ -1,11 +1,15 @@
 package io.github.tinywind.norea
 
 import java.io.EOFException
+import java.io.File
+import java.io.RandomAccessFile
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipException
+import java.util.zip.ZipFile
+import java.util.Locale
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
@@ -20,11 +24,6 @@ internal const val CHAPTER_MEDIA_ARCHIVE_TEMP_FILE = "media.zip.tmp.zip"
 internal const val CHAPTER_MEDIA_MANIFEST_BACKUP_FILE = "manifest.json.bak"
 internal const val CHAPTER_MEDIA_MANIFEST_FILE = "manifest.json"
 internal const val CHAPTER_MEDIA_MANIFEST_TEMP_FILE = "manifest.json.tmp"
-
-internal fun resolvedAndroidFinalChapterMediaBytes(
-  finalizedMediaBytes: Long?,
-  existingArchiveBytes: Long?,
-): Long = (finalizedMediaBytes ?: existingArchiveBytes ?: 0L).coerceAtLeast(0L)
 
 internal fun androidChapterMediaArchiveStagingFileName(
   recoverySourceFileName: String?,
@@ -129,6 +128,137 @@ internal fun androidChapterMediaStoredFiles(
   }.sortedBy(AndroidChapterMediaStoredFile::fileName)
   requireAndroidChapterMediaStoredFiles(storedFiles)
   return storedFiles
+}
+
+internal data class AndroidChapterMediaDeclaredFile(val fileName: String, val path: String)
+
+private fun isSafeAndroidChapterMediaArchivePath(path: String): Boolean {
+  if (path.isEmpty() || path.any { it == '\\' || it == ':' || it == '\u0000' }) return false
+  return path.split('/').all { part ->
+    val device = part.substringBefore('.').uppercase(Locale.ROOT)
+    part.isNotEmpty() && part != "." && part != ".." && !part.endsWith('.') && !part.endsWith(' ') &&
+      part.none { it.isISOControl() || it in "<>\"|?*" } &&
+      device !in setOf("CON", "PRN", "AUX", "NUL") &&
+      !(device.length == 4 && (device.startsWith("COM") || device.startsWith("LPT")) && device[3] in '1'..'9')
+  }
+}
+
+internal fun androidChapterMediaDeclaredFileNames(
+  manifestFiles: List<AndroidChapterMediaDeclaredFile>,
+): Set<String> {
+  require(manifestFiles.size <= ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) {
+    "Chapter media manifest has too many files."
+  }
+  val names = linkedSetOf<String>()
+  val foldedNames = mutableSetOf<String>()
+  for (file in manifestFiles) {
+    require(isSafeAndroidChapterMediaFileName(file.fileName) &&
+      file.fileName.all { it.code < 128 } && isSafeAndroidChapterMediaArchivePath(file.fileName)) {
+      "Chapter media manifest contains an unsafe file name."
+    }
+    require(file.path.isEmpty() || file.path == "media/${file.fileName}") {
+      "Chapter media manifest path does not match its file name."
+    }
+    require(foldedNames.add(file.fileName.lowercase(Locale.ROOT))) {
+      "Chapter media manifest contains a duplicate file name."
+    }
+    names.add(file.fileName)
+  }
+  return names
+}
+
+private fun validateAndroidChapterMediaArchiveEntryKinds(file: File, archive: ZipFile) {
+  require(file.length() in 22L..(512L * 1024L * 1024L)) {
+    "Chapter media archive size is invalid."
+  }
+  fun unsignedShort(bytes: ByteArray, offset: Int): Int =
+    (bytes[offset].toInt() and 255) or ((bytes[offset + 1].toInt() and 255) shl 8)
+  fun unsignedInt(bytes: ByteArray, offset: Int): Long =
+    unsignedShort(bytes, offset).toLong() or (unsignedShort(bytes, offset + 2).toLong() shl 16)
+
+  RandomAccessFile(file, "r").use { input ->
+    val tail = ByteArray(minOf(input.length(), 65_557L).toInt())
+    input.seek(input.length() - tail.size)
+    input.readFully(tail)
+    val end = (tail.size - 22 downTo 0).firstOrNull { offset ->
+      unsignedInt(tail, offset) == 0x06054b50L &&
+        offset + 22 + unsignedShort(tail, offset + 20) == tail.size
+    } ?: throw IllegalArgumentException("Chapter media archive has no valid end record.")
+    val entryCount = unsignedShort(tail, end + 10)
+    require(unsignedShort(tail, end + 4) == 0 && unsignedShort(tail, end + 6) == 0 &&
+      unsignedShort(tail, end + 8) == entryCount && entryCount != 0xffff &&
+      entryCount == archive.size()) {
+      "Chapter media archive has unsupported directory metadata."
+    }
+    val directorySize = unsignedInt(tail, end + 12)
+    val directoryOffset = unsignedInt(tail, end + 16)
+    val directoryEnd = directoryOffset + directorySize
+    require(directoryEnd == input.length() - tail.size + end) {
+      "Chapter media archive directory is invalid."
+    }
+    input.seek(directoryOffset)
+    val entries = archive.entries()
+    repeat(entryCount) {
+      require(input.filePointer + 46 <= directoryEnd) {
+        "Chapter media archive directory entry is truncated."
+      }
+      val header = ByteArray(46)
+      input.readFully(header)
+      require(unsignedInt(header, 0) == 0x02014b50L && unsignedShort(header, 34) == 0 &&
+        unsignedShort(header, 8) and 1 == 0 && unsignedInt(header, 42) < directoryOffset) {
+        "Chapter media archive entry metadata is invalid."
+      }
+      val attributes = unsignedInt(header, 38)
+      val mode = (attributes ushr 16).toInt() and 0xf000
+      val entry = entries.nextElement()
+      require(if (entry.isDirectory) mode == 0 || mode == 0x4000
+        else (mode == 0 || mode == 0x8000) && attributes and 0x10L == 0L) {
+        "Chapter media archive contains a non-regular entry."
+      }
+      val next = input.filePointer + unsignedShort(header, 28) +
+        unsignedShort(header, 30) + unsignedShort(header, 32)
+      require(next <= directoryEnd) { "Chapter media archive entry exceeds its directory." }
+      input.seek(next)
+    }
+    require(input.filePointer == directoryEnd) {
+      "Chapter media archive directory length is invalid."
+    }
+  }
+}
+
+internal fun validateAndroidChapterMediaInventory(
+  declaredNames: Set<String>,
+  archive: ZipFile,
+  archiveFile: File,
+) {
+  require(archive.size() <= ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) {
+    "Chapter media archive has too many files."
+  }
+  validateAndroidChapterMediaArchiveEntryKinds(archiveFile, archive)
+  val names = mutableSetOf<String>()
+  val foldedNames = mutableSetOf<String>()
+  var totalBytes = 0L
+  for (entry in archive.entries()) {
+    val name = entry.name
+    require(isSafeAndroidChapterMediaArchivePath(if (entry.isDirectory) name.removeSuffix("/") else name)) {
+      "Chapter media archive contains an unsafe entry."
+    }
+    require(foldedNames.add(name.lowercase(Locale.ROOT))) {
+      "Chapter media archive contains a duplicate entry."
+    }
+    require(entry.size >= 0L) { "Chapter media archive entry size is invalid." }
+    totalBytes = Math.addExact(totalBytes, entry.size)
+    require(totalBytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+      "Chapter media archive exceeds the total byte limit."
+    }
+    if (!entry.isDirectory) {
+      archive.getInputStream(entry).use { }
+      names.add(name)
+    }
+  }
+  require(names.containsAll(declaredNames)) {
+    "Chapter media archive is missing a declared manifest entry."
+  }
 }
 
 internal fun validateAndroidChapterMediaLooseFiles(

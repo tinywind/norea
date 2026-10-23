@@ -19,6 +19,7 @@ pub struct ChapterContentInspection {
     pub(super) content_file: Option<String>,
     pub(super) content_bytes: u64,
     pub(super) media_bytes: u64,
+    pub(super) media_complete: bool,
 }
 
 

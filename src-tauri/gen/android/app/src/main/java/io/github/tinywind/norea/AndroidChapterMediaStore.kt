@@ -107,11 +107,11 @@ internal class AndroidChapterMediaStore(
     )
   }
 
-  private fun readChapterMediaManifestDocument(
+  private fun readChapterMediaManifestJson(
     rootUri: String,
     relativePath: String,
     document: DocumentFile,
-  ): ChapterMediaManifest? {
+  ): JSONObject? {
     if (!document.isFile) return null
     if (!document.canRead()) {
       throw IllegalStateException("Android chapter media manifest is not readable.")
@@ -125,9 +125,68 @@ internal class AndroidChapterMediaStore(
       return null
     }
     return try {
-      parseChapterMediaManifest(JSONObject(raw))
+      JSONObject(raw)
     } catch (_: Exception) {
       null
+    }
+  }
+
+  private fun readChapterMediaManifestDocument(
+    rootUri: String,
+    relativePath: String,
+    document: DocumentFile,
+  ): ChapterMediaManifest? {
+    val json = readChapterMediaManifestJson(rootUri, relativePath, document) ?: return null
+    return try {
+      parseChapterMediaManifest(json)
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  fun isChapterMediaComplete(
+    rootUri: String,
+    directory: DocumentFile,
+    relativeDir: String,
+  ): Boolean {
+    val archive = storage.findStorageChild(directory, CHAPTER_MEDIA_ARCHIVE_FILE)
+    val document = storage.findStorageChild(directory, CHAPTER_MEDIA_MANIFEST_FILE)
+      ?: return archive == null
+    val manifest = readChapterMediaManifestJson(
+      rootUri, "$relativeDir/$CHAPTER_MEDIA_MANIFEST_FILE", document,
+    ) ?: return false
+    val declaredNames = try {
+      require((manifest.opt("version") as? Number)?.toDouble() == 1.0) {
+        "Chapter media manifest version is unsupported."
+      }
+      val files = manifest.optJSONObject("media")?.optJSONArray("files")
+        ?: return false
+      androidChapterMediaDeclaredFileNames((0 until files.length()).map { index ->
+        val file = files.optJSONObject(index) ?: throw IllegalArgumentException("Invalid media declaration.")
+        AndroidChapterMediaDeclaredFile(
+          fileName = file.opt("fileName") as? String ?: throw IllegalArgumentException("Invalid media file name."),
+          path = file.opt("path") as? String ?: throw IllegalArgumentException("Invalid media path."),
+        )
+      })
+    } catch (_: IllegalArgumentException) {
+      return false
+    }
+    if (archive == null) return declaredNames.isEmpty()
+    if (!archive.isFile || archive.length() > 512L * BYTES_PER_MIB) return false
+    require(archive.canRead()) { "Android chapter media archive is not readable." }
+    return try {
+      storage.inspectChapterMediaZip(rootUri, "$relativeDir/$CHAPTER_MEDIA_ARCHIVE_FILE", archive) { zip, file ->
+        validateAndroidChapterMediaInventory(declaredNames, zip, file)
+      }
+      true
+    } catch (_: IllegalArgumentException) {
+      false
+    } catch (_: ArithmeticException) {
+      false
+    } catch (_: EOFException) {
+      false
+    } catch (_: ZipException) {
+      false
     }
   }
 

@@ -1,8 +1,6 @@
 //! Authoritative chapter content mirrors and their inspection.
 
-use super::archives::finalize_chapter_media_artifacts;
 use super::chapter_media_blocking;
-use super::manifest::ChapterMediaFinalization;
 use super::paths::{
     chapter_number_segment, content_chapter_dir_at, content_chapter_dirs_matching_identity,
     content_chapter_dirs_matching_segments, content_chapter_relative_dir, ensure_contents_nomedia,
@@ -76,22 +74,23 @@ pub(super) fn inspect_content_chapter_dir(
         ));
     }
     let content_bytes = content_metadata.len();
-    let media_bytes = match finalize_chapter_media_artifacts(root, chapter_dir)? {
-        ChapterMediaFinalization::Incomplete(reason) => {
+    let media_complete = match crate::content_sync::validate_chapter_media(chapter_dir) {
+        Ok(()) => true,
+        Err(reason) => {
             log::warn!(
                 "[chapter-media] stored chapter is incomplete dir={} reason={reason}",
                 chapter_dir.display()
             );
-            stored_media_archive_bytes(chapter_dir)
+            false
         }
-        ChapterMediaFinalization::ManifestMissing => stored_media_archive_bytes(chapter_dir),
-        ChapterMediaFinalization::Ready(media_bytes) => media_bytes,
     };
+    let media_bytes = stored_media_archive_bytes(chapter_dir);
     Ok(Some(ChapterContentInspection {
         status: "present".to_string(),
         content_file: Some(relative_storage_path(root, &content_path)?),
         content_bytes,
         media_bytes,
+        media_complete,
     }))
 }
 
@@ -138,6 +137,7 @@ fn chapter_content_mirror_inspect_sync(
             content_file: None,
             content_bytes: 0,
             media_bytes: 0,
+            media_complete: false,
         }),
         1 => Ok(matches.remove(0)),
         _ => Err(format!(
@@ -473,6 +473,78 @@ pub async fn chapter_content_mirror_read_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_inventory_archive(directory: &Path, names: &[&str]) {
+        use std::io::Write;
+        let file = fs::File::create(directory.join(MEDIA_ARCHIVE_FILE)).expect("create archive");
+        let mut zip = zip::ZipWriter::new(file);
+        for name in names {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).expect("start entry");
+            zip.write_all(b"image").expect("write entry");
+        }
+        zip.finish().expect("finish archive");
+    }
+
+    fn write_inventory_manifest(directory: &Path, complete: bool, status: &str) {
+        fs::write(directory.join("manifest.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "updatedAt": 1,
+            "complete": complete,
+            "media": { "files": [
+                { "fileName": "first.png", "path": "", "bytes": 0, "sourceUrl": "https://site/first.png", "contentType": "image/png", "status": status, "updatedAt": 1 },
+                { "fileName": "second.png", "path": "media/second.png", "bytes": 999, "sourceUrl": "https://site/second.png", "contentType": "image/png", "status": status, "updatedAt": 1 }
+            ] }
+        })).expect("serialize manifest")).expect("write manifest");
+    }
+
+    #[test]
+    fn stored_chapter_inspection_uses_every_declared_zip_entry_without_rewriting_files() {
+        let root = tempfile::tempdir().expect("storage");
+        let directory = root.path().join("chapter");
+        fs::create_dir(&directory).expect("chapter directory");
+        fs::write(directory.join("content.html"), b"body").expect("body");
+        write_inventory_manifest(&directory, false, "remote");
+        write_inventory_archive(&directory, &["first.png", "second.png", "extra.png"]);
+        let original = fs::read(directory.join("manifest.json")).expect("manifest");
+        let inspect = || inspect_content_chapter_dir(root.path(), &directory, "content.html")
+            .expect("inspect chapter").expect("body present");
+
+        assert!(inspect().media_complete);
+        write_inventory_archive(&directory, &["first.png"]);
+        assert!(!inspect().media_complete);
+        write_inventory_archive(&directory, &["first.png", "second.png"]);
+        assert!(inspect().media_complete);
+        assert_eq!(fs::read(directory.join("manifest.json")).expect("unchanged manifest"), original);
+
+        write_inventory_manifest(&directory, true, "stored");
+        fs::remove_file(directory.join(MEDIA_ARCHIVE_FILE)).expect("remove archive");
+        fs::create_dir(directory.join("media")).expect("loose directory");
+        fs::write(directory.join("media/first.png"), b"image").expect("loose first");
+        fs::write(directory.join("media/second.png"), b"image").expect("loose second");
+        assert!(!inspect().media_complete);
+        assert!(!directory.join(MEDIA_ARCHIVE_FILE).exists());
+        assert!(directory.join("media/first.png").is_file());
+    }
+
+    #[test]
+    fn stored_chapter_inspection_rejects_invalid_artifacts_and_accepts_body_only_content() {
+        let root = tempfile::tempdir().expect("storage");
+        let directory = root.path().join("chapter");
+        fs::create_dir(&directory).expect("chapter directory");
+        fs::write(directory.join("content.pdf"), b"pdf").expect("body");
+        let inspect = || inspect_content_chapter_dir(root.path(), &directory, "content.pdf")
+            .expect("inspect chapter").expect("body present");
+
+        assert!(inspect().media_complete);
+        write_inventory_archive(&directory, &["first.png"]);
+        assert!(!inspect().media_complete);
+        fs::write(directory.join("manifest.json"), b"{\"version\":1,\"complete\":true}").expect("bad manifest");
+        assert!(!inspect().media_complete);
+        write_inventory_manifest(&directory, true, "stored");
+        fs::write(directory.join(MEDIA_ARCHIVE_FILE), b"not a zip").expect("bad archive");
+        assert!(!inspect().media_complete);
+        assert_eq!(inspect().status, "present");
+    }
 
     #[test]
     fn content_cleanup_only_removes_current_body_files() {

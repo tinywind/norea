@@ -36,25 +36,18 @@ internal class AndroidChapterArtifactInspector(
       } ?: return null
       require(content.canRead()) { "Android storage content file is not readable: $relativeDir" }
       val contentName = content.name ?: preferredName
-      val finalizedMediaBytes = mediaStore.finalizeChapterMediaArtifacts(
-        rootUri,
-        directory,
-        relativeDir,
-        allowMissingManifest = true,
-      )
-      val existingArchiveBytes = storage.findStorageChild(directory, CHAPTER_MEDIA_ARCHIVE_FILE)
+      val mediaComplete = mediaStore.isChapterMediaComplete(rootUri, directory, relativeDir)
+      val archiveBytes = storage.findStorageChild(directory, CHAPTER_MEDIA_ARCHIVE_FILE)
         ?.takeIf { it.isFile }
         ?.length()
-      val archiveBytes = resolvedAndroidFinalChapterMediaBytes(
-        finalizedMediaBytes,
-        existingArchiveBytes,
-      )
+        ?.coerceAtLeast(0L) ?: 0L
       return JSONObject()
         .put("ok", true)
         .put("status", "present")
         .put("contentFile", "$relativeDir/$contentName")
         .put("contentBytes", content.length().coerceAtLeast(0L))
         .put("mediaBytes", archiveBytes)
+        .put("mediaComplete", mediaComplete)
     }
 
     storage.storageDocumentAt(rootUri, preferredChapterDir)?.let { preferred ->
@@ -96,6 +89,7 @@ internal class AndroidChapterArtifactInspector(
         .put("status", "missing")
         .put("contentBytes", 0)
         .put("mediaBytes", 0)
+        .put("mediaComplete", false)
       1 -> matches.single()
       else -> throw IllegalStateException(
         "Multiple stored chapter folders match source identity $chapterDirectoryName",

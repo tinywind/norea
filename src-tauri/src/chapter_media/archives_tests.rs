@@ -1,4 +1,3 @@
-use super::super::content::inspect_content_chapter_dir;
 use super::super::manifest::parse_chapter_media_archive_manifest;
 use super::super::paths::{
     CHAPTER_MEDIA_MANIFEST_FILE, CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
@@ -17,6 +16,15 @@ use std::{
     sync::Arc,
 };
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
+
+fn finalize_and_inspect_content_chapter_dir(
+    root: &Path,
+    chapter_dir: &Path,
+    preferred_file_name: &str,
+) -> Result<Option<super::super::types::ChapterContentInspection>, String> {
+    finalize_chapter_media_artifacts(root, chapter_dir)?;
+    super::super::content::inspect_content_chapter_dir(root, chapter_dir, preferred_file_name)
+}
 
 #[test]
 fn write_chapter_media_manifest_replaces_existing_manifest() {
@@ -184,7 +192,7 @@ fn chapter_media_recovery_archives_complete_loose_media_before_adoption() {
         ]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -223,7 +231,7 @@ fn chapter_media_recovery_adopts_final_content_with_missing_stored_media() {
         serde_json::json!([stored_manifest_file("page.png", 5)]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("adopt final content");
 
@@ -255,7 +263,7 @@ fn chapter_media_recovery_adopts_final_content_with_unexpected_loose_files() {
         serde_json::json!([stored_manifest_file("page.png", 5)]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("adopt final content");
 
@@ -290,7 +298,7 @@ fn chapter_media_recovery_rejects_a_chapter_directory_symlink_escape() {
     );
     symlink(&external_chapter_dir, &chapter_dir).expect("create chapter symlink");
 
-    let error = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let error = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect_err("reject chapter symlink escape");
 
     assert!(error.contains("symbolic link"));
@@ -322,7 +330,7 @@ fn chapter_media_recovery_combines_existing_archive_and_loose_media() {
         ]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -371,7 +379,7 @@ fn chapter_media_recovery_removes_partial_loose_copy_of_a_complete_archive() {
         ]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -413,7 +421,7 @@ fn chapter_media_recovery_restores_an_interrupted_manifest_backup() {
     )
     .expect("write backup manifest");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -451,7 +459,7 @@ fn chapter_media_recovery_prefers_valid_manifest_temp_over_valid_final() {
     )
     .expect("write temp manifest");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -484,7 +492,7 @@ fn chapter_media_recovery_uses_backup_when_the_final_manifest_is_invalid() {
     fs::copy(&manifest_path, &backup_path).expect("copy recovery manifest");
     fs::write(&manifest_path, b"invalid manifest").expect("corrupt final manifest");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -514,7 +522,7 @@ fn chapter_media_recovery_restores_an_interrupted_manifest_rollback() {
     let rollback_path = chapter_media_manifest_rollback_path(&manifest_path);
     fs::rename(&manifest_path, &rollback_path).expect("stage manifest rollback");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -549,7 +557,7 @@ fn chapter_media_recovery_publishes_a_valid_interrupted_archive_temp() {
     write_test_media_archive(&chapter_dir, &[("old.png", b"old"), ("new.png", b"newer")]);
     fs::rename(&archive_path, &temp_path).expect("move new archive to temp");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -586,7 +594,7 @@ fn chapter_media_recovery_publishes_exact_temp_when_all_slots_exist() {
     fs::rename(&archive_path, &temp_path).expect("stage exact archive temp");
     write_test_media_archive(&chapter_dir, &[]);
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -621,7 +629,7 @@ fn chapter_media_recovery_combines_archive_backup_with_loose_media() {
     write_test_media_archive(&chapter_dir, &[("old.png", b"old")]);
     fs::rename(&archive_path, &backup_path).expect("move archive to backup");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -658,7 +666,7 @@ fn chapter_media_recovery_combines_archive_rollback_with_loose_media() {
     write_test_media_archive(&chapter_dir, &[]);
     fs::rename(&archive_path, &backup_path).expect("stage incomplete archive backup");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -693,7 +701,7 @@ fn chapter_media_recovery_adopts_final_content_with_incomplete_archive_candidate
     fs::rename(&archive_path, &backup_path).expect("move archive to backup");
     fs::copy(&backup_path, &temp_path).expect("copy partial archive temp");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("adopt final content");
 
@@ -718,7 +726,7 @@ fn chapter_media_recovery_finishes_from_an_existing_valid_archive() {
         serde_json::json!([stored_manifest_file("page.png", 5)]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -746,7 +754,7 @@ fn chapter_media_recovery_does_not_reopen_a_structurally_complete_archive() {
         serde_json::json!([stored_manifest_file("page.png", 5)]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("completed chapter");
 
@@ -772,7 +780,7 @@ fn chapter_media_recovery_cleans_stale_archive_publication_files() {
     fs::copy(&archive_path, &backup_path).expect("copy stale archive backup");
     fs::write(&temp_path, b"invalid temp").expect("write stale archive temp");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -800,7 +808,7 @@ fn chapter_media_recovery_cleans_stale_manifest_publication_files() {
             .expect("write stale manifest publication file");
     }
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -868,7 +876,7 @@ fn chapter_media_recovery_completes_remote_only_manifest_without_an_archive() {
         serde_json::json!([remote_manifest_file("fallback.png")]),
     );
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("recovered chapter");
 
@@ -890,7 +898,7 @@ fn chapter_media_recovery_keeps_manifestless_current_content_present() {
     fs::create_dir_all(&chapter_dir).expect("create chapter dir");
     fs::write(chapter_dir.join("content.html"), b"chapter").expect("write content");
 
-    let inspection = inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
+    let inspection = finalize_and_inspect_content_chapter_dir(dir.path(), &chapter_dir, "content.html")
         .expect("inspect chapter")
         .expect("manifestless chapter");
 

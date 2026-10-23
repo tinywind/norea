@@ -18,6 +18,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 
 private const val EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY = "com.android.externalstorage.documents"
 private const val TAG = "NoreaStorage"
@@ -302,6 +303,48 @@ internal class AndroidStorageDocuments(private val context: Context) {
         error,
       )
       null
+    }
+  }
+
+  fun <T> inspectChapterMediaZip(
+    rootUri: String,
+    relativePath: String,
+    document: DocumentFile,
+    inspect: (ZipFile, File) -> T,
+  ): T {
+    val direct = externalStorageFile(rootUri, relativePath)?.takeIf { it.isFile }
+    val directArchive = direct?.let { file ->
+      try {
+        ZipFile(file)
+      } catch (error: Exception) {
+        if (error !is IOException && error !is SecurityException) throw error
+        Log.w(TAG, "Android chapter media direct read failed. path=$relativePath file=${file.absolutePath}", error)
+        null
+      }
+    }
+    if (direct != null && directArchive != null) return directArchive.use { inspect(it, direct) }
+    val temporary = File.createTempFile("chapter-media-", ".zip", context.cacheDir)
+    try {
+      val input = openStorageInputStream(rootUri, relativePath, document)
+        ?: throw IOException("Cannot open Android chapter media archive.")
+      input.use { source ->
+        temporary.outputStream().use { target ->
+          val buffer = ByteArray(DEFAULT_STORAGE_COPY_BUFFER_BYTES)
+          var copied = 0L
+          while (true) {
+            val count = source.read(buffer)
+            if (count < 0) break
+            copied += count
+            require(copied <= 512L * BYTES_PER_MIB) {
+              "Chapter media archive exceeds the byte limit."
+            }
+            target.write(buffer, 0, count)
+          }
+        }
+      }
+      return ZipFile(temporary).use { inspect(it, temporary) }
+    } finally {
+      temporary.delete()
     }
   }
 

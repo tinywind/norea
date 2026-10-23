@@ -19,6 +19,14 @@ const MAX_FILES: usize = 10_000;
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UploadConflictPolicy {
+    PreferComplete,
+    KeepServer,
+    ReplaceServer,
+}
+
 fn failure(error: impl std::fmt::Display) -> String {
     format!("content sync: {error}")
 }
@@ -97,17 +105,13 @@ fn media_files(manifest: &Value) -> Result<Vec<String>, String> {
         let name = file["fileName"]
             .as_str()
             .ok_or_else(|| failure("invalid media filename"))?;
-        if file["status"] == "remote" {
-            return Err(failure(format!("media asset is not downloaded: {name}")));
-        }
         safe_path(name)?;
         if name.contains('/')
             || !name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
             || !names.insert(name.to_ascii_lowercase())
-            || file["status"] != "stored"
-            || file["path"] != format!("media/{name}")
+            || (file["path"] != "" && file["path"] != format!("media/{name}"))
         {
             return Err(failure(format!("invalid or duplicate media entry: {name}")));
         }
@@ -116,8 +120,17 @@ fn media_files(manifest: &Value) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
-fn validate_chapter_media(source: &Path) -> Result<(), String> {
-    if !source.join("manifest.json").is_file() {
+pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
+    for name in ["manifest.json", "media.zip"] {
+        match fs::symlink_metadata(source.join(name)) {
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                return Err(failure("invalid chapter media artifact"));
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(failure(error)),
+            _ => {}
+        }
+    }
+    if !source.join("manifest.json").exists() {
         return if source.join("media.zip").exists() {
             Err(failure("chapter media manifest is missing"))
         } else {
@@ -131,20 +144,34 @@ fn validate_chapter_media(source: &Path) -> Result<(), String> {
     if media.is_empty() && !source.join("media.zip").is_file() {
         return Ok(());
     }
-    let mut archive = ZipArchive::new(File::open(source.join("media.zip")).map_err(failure)?).map_err(failure)?;
-    if archive.len() != media.len() {
-        return Err(failure("media archive inventory does not match its manifest"));
+    let zip_file = File::open(source.join("media.zip")).map_err(failure)?;
+    if zip_file.metadata().map_err(failure)?.len() > MAX_MEDIA_ZIP_BYTES {
+        return Err(failure("chapter media archive exceeds byte limit"));
+    }
+    let mut archive = ZipArchive::new(zip_file).map_err(failure)?;
+    if archive.len() > MAX_FILES {
+        return Err(failure("too many chapter media files"));
     }
     let mut media_bytes = 0;
-    for name in media {
-        let file = archive.by_name(&name).map_err(failure)?;
-        if file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+    let mut found = HashSet::new();
+    let mut names = HashSet::new();
+    for index in 0..archive.len() {
+        let file = archive.by_index(index).map_err(failure)?;
+        let directory = file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o040000);
+        let name = file.name().strip_suffix('/').unwrap_or(file.name());
+        safe_path(name)?;
+        if file.unix_mode().is_some_and(|mode| mode & 0o170000 != 0 && mode & 0o170000 != if directory { 0o040000 } else { 0o100000 })
+            || !names.insert(name.to_lowercase()) {
             return Err(failure("invalid chapter media artifact"));
         }
         if file.size() > MAX_EXPANDED_BYTES - media_bytes {
             return Err(failure("chapter media exceeds byte limit"));
         }
         media_bytes += file.size();
+        if !directory { found.insert(file.name().to_string()); }
+    }
+    if media.iter().any(|name| !found.contains(name)) {
+        return Err(failure("chapter media archive is incomplete"));
     }
     Ok(())
 }
@@ -486,12 +513,13 @@ pub async fn content_sync_upload(
     storage_dir: String,
     stage_path: String,
     manifest: Value,
+    conflict_policy: UploadConflictPolicy,
 ) -> Result<Value, String> {
     let stage = checked_stage(&app, &stage_path)?;
     safe_path(&storage_dir)?;
     let source = stage.join("source");
     tauri::async_runtime::spawn_blocking(move || {
-        upload_chapter_files(&source, manifest, &server_url, &token)
+        upload_chapter_files(&source, manifest, &server_url, &token, conflict_policy)
     })
     .await
     .map_err(failure)?
@@ -530,7 +558,7 @@ fn checked_response(mut response: reqwest::blocking::Response) -> Result<reqwest
     Err(failure(format!("server returned {}: {detail}", status.as_u16())))
 }
 
-fn upload_chapter_files(source: &Path, metadata: Value, server_url: &str, token: &str) -> Result<Value, String> {
+fn upload_chapter_files(source: &Path, metadata: Value, server_url: &str, token: &str, conflict_policy: UploadConflictPolicy) -> Result<Value, String> {
     let manifest = chapter_file_manifest(source, metadata)?;
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("metadata", serde_json::to_string(&manifest).map_err(failure)?);
@@ -541,7 +569,13 @@ fn upload_chapter_files(source: &Path, metadata: Value, server_url: &str, token:
             .file_name(path.to_string());
         form = form.part(path.to_string(), part);
     }
-    let response = checked_response(http_client()?.post(endpoint(server_url, "chapter-files")?)
+    let mut url = endpoint(server_url, "chapter-files")?;
+    url.query_pairs_mut().append_pair("conflictPolicy", match conflict_policy {
+        UploadConflictPolicy::PreferComplete => "prefer-complete",
+        UploadConflictPolicy::KeepServer => "keep-server",
+        UploadConflictPolicy::ReplaceServer => "replace-server",
+    });
+    let response = checked_response(http_client()?.post(url)
         .bearer_auth(token).multipart(form).send().map_err(failure)?)?;
     serde_json::from_reader(response.take(16 * 1024 * 1024)).map_err(failure)
 }
@@ -756,6 +790,28 @@ mod tests {
     }
 
     #[test]
+    fn chapter_media_inventory_allows_safe_extra_directories_and_nested_files() {
+        let root = workspace();
+        fs::write(root.path().join("manifest.json"), json!({"version":1,"media":{"files":[
+            {"fileName":"page.png","path":"media/page.png"}]}}).to_string()).unwrap();
+        let mut writer = ZipWriter::new(File::create(root.path().join("media.zip")).unwrap());
+        writer.start_file("page.png", SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"image").unwrap();
+        writer.add_directory("extras/", SimpleFileOptions::default()).unwrap();
+        writer.start_file("extras/extra.txt", SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"extra").unwrap();
+        writer.finish().unwrap();
+        validate_chapter_media(root.path()).unwrap();
+
+        let mut archive = original_media_archive();
+        let central = archive.windows(4).position(|bytes| bytes == b"PK\x01\x02").unwrap();
+        archive[central + 5] = 0;
+        archive[central + 38..central + 42].copy_from_slice(&0x10u32.to_le_bytes());
+        fs::write(root.path().join("media.zip"), archive).unwrap();
+        assert!(validate_chapter_media(root.path()).is_err());
+    }
+
+    #[test]
     fn chapter_file_transfer_validates_stored_media_without_a_completion_marker() {
         let root = workspace();
         fs::write(root.path().join("content.html"), b"<img src=\"norea-media://reader-asset/page.png\">").unwrap();
@@ -777,13 +833,14 @@ mod tests {
     }
 
     #[test]
-    fn chapter_file_transfer_reports_remote_assets_even_with_a_completion_marker() {
+    fn chapter_file_transfer_requires_archive_entries_even_with_a_completion_marker() {
         let root = workspace();
         fs::write(root.path().join("content.html"), b"<img src=\"https://example.com/page.png\">").unwrap();
         fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":[
             {"fileName":"page.png","path":"","status":"remote","bytes":0}]}}).to_string()).unwrap();
-        let error = chapter_file_manifest(root.path(), metadata()).unwrap_err();
-        assert!(error.contains("media asset is not downloaded: page.png"), "{error}");
+        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+        fs::write(root.path().join("media.zip"), original_media_archive()).unwrap();
+        chapter_file_manifest(root.path(), metadata()).unwrap();
     }
 
     #[test]
@@ -863,7 +920,9 @@ mod tests {
         fs::write(root.path().join("content.html"), b"<p>Original</p>").unwrap();
         let archive = original_media_archive();
         fs::write(root.path().join("media.zip"), &archive).unwrap();
-        for files in [json!([]), json!([{"fileName":"missing.png","path":"media/missing.png","status":"stored","bytes":5}])] {
+        fs::write(root.path().join("manifest.json"), json!({"version":1,"media":{"files":[]}}).to_string()).unwrap();
+        chapter_file_manifest(root.path(), metadata()).unwrap();
+        for files in [json!([{"fileName":"missing.png","path":"media/missing.png","status":"stored","bytes":5}])] {
             fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":files}}).to_string()).unwrap();
             assert!(chapter_file_manifest(root.path(), metadata()).is_err());
             assert_eq!(fs::read(root.path().join("media.zip")).unwrap(), archive);
@@ -902,7 +961,7 @@ mod tests {
                 }
                 let head = String::from_utf8(head).unwrap();
                 let response = if index == 0 {
-                    assert!(head.starts_with("POST /api/v1/chapter-files HTTP/1.1"));
+                    assert!(head.starts_with("POST /api/v1/chapter-files?conflictPolicy=replace-server HTTP/1.1"));
                     assert!(head.to_ascii_lowercase().contains("content-type: multipart/form-data; boundary="));
                     let length = head.lines().find_map(|line| {
                         let (name, value) = line.split_once(':')?;
@@ -926,7 +985,7 @@ mod tests {
                 connection.write_all(&response).unwrap();
             }
         });
-        let uploaded = upload_chapter_files(&source, metadata(), &server, "device").unwrap();
+        let uploaded = upload_chapter_files(&source, metadata(), &server, "device", UploadConflictPolicy::ReplaceServer).unwrap();
         assert_eq!(uploaded, entry);
         let destination = root.path().join("downloaded");
         let installed = root.path().join("contents/fixture/Work/1-Chapter");
