@@ -91,7 +91,7 @@ export async function writeChapterMediaManifest({
       : {}),
     ...(context.novelId ? { novelId: context.novelId } : {}),
     ...(context.novelName ? { novelName: context.novelName } : {}),
-    ...(context.novelPath ? { novelPath: context.novelPath } : {}),
+    ...(context.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context.sourceId ? { sourceId: context.sourceId } : {}),
   });
 }
@@ -122,7 +122,7 @@ export async function readChapterMediaManifest(
       : {}),
     ...(context.novelId ? { novelId: context.novelId } : {}),
     ...(context.novelName ? { novelName: context.novelName } : {}),
-    ...(context.novelPath ? { novelPath: context.novelPath } : {}),
+    ...(context.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context.sourceId ? { sourceId: context.sourceId } : {}),
   });
   return parseChapterMediaManifest(raw);
@@ -169,7 +169,7 @@ export async function getStoredChapterMediaBytes(
       : {}),
     ...(context?.novelId ? { novelId: context.novelId } : {}),
     ...(context?.novelName ? { novelName: context.novelName } : {}),
-    ...(context?.novelPath ? { novelPath: context.novelPath } : {}),
+    ...(context?.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context?.sourceId ? { sourceId: context.sourceId } : {}),
   });
 }
@@ -182,7 +182,7 @@ function chapterMediaStoreArgs({
   fileName,
   novelId,
   novelName,
-  novelPath,
+  sourceNovelId,
   sourceId,
 }: Omit<ChapterMediaStoreInput, "body" | "contentType">): Record<
   string,
@@ -196,7 +196,7 @@ function chapterMediaStoreArgs({
     fileName,
     ...(novelId ? { novelId } : {}),
     ...(novelName ? { novelName } : {}),
-    ...(novelPath ? { novelPath } : {}),
+    ...(sourceNovelId ? { sourceNovelId } : {}),
     ...(sourceId ? { sourceId } : {}),
   };
 }
@@ -271,7 +271,7 @@ export async function storeChapterMedia({
   fileName,
   novelId,
   novelName,
-  novelPath,
+  sourceNovelId,
   sourceId,
 }: ChapterMediaStoreInput): Promise<string> {
   const outputSrc = localChapterMediaOutputSrc(fileName);
@@ -283,7 +283,7 @@ export async function storeChapterMedia({
       chapterPosition,
       novelId,
       novelName,
-      novelPath,
+      sourceNovelId,
       sourceId,
     };
     const relativePath = androidChapterMediaRelativePathForContext(
@@ -307,7 +307,7 @@ export async function storeChapterMedia({
     fileName,
     novelId,
     novelName,
-    novelPath,
+    sourceNovelId,
     sourceId,
   });
   return outputSrc;
@@ -320,7 +320,7 @@ export async function archiveChapterMediaCache({
   chapterPosition,
   novelId,
   novelName,
-  novelPath,
+  sourceNovelId,
   sourceId,
 }: ChapterMediaArchiveInput): Promise<number> {
   if (isAndroidRuntime()) {
@@ -331,7 +331,7 @@ export async function archiveChapterMediaCache({
       chapterPosition,
       novelId,
       novelName,
-      novelPath,
+      sourceNovelId,
       sourceId,
     };
     return archiveAndroidStorageDirectory(
@@ -346,7 +346,7 @@ export async function archiveChapterMediaCache({
     ...(chapterPosition ? { chapterPosition } : {}),
     ...(novelId ? { novelId } : {}),
     ...(novelName ? { novelName } : {}),
-    ...(novelPath ? { novelPath } : {}),
+    ...(sourceNovelId ? { sourceNovelId } : {}),
     ...(sourceId ? { sourceId } : {}),
   });
 }
@@ -379,7 +379,7 @@ export async function prepareChapterMediaWorkspace(
       : {}),
     ...(context.novelId ? { novelId: context.novelId } : {}),
     ...(context.novelName ? { novelName: context.novelName } : {}),
-    ...(context.novelPath ? { novelPath: context.novelPath } : {}),
+    ...(context.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context.sourceId ? { sourceId: context.sourceId } : {}),
   });
 }
@@ -433,7 +433,7 @@ function chapterMediaInvokeArgs(
       : {}),
     ...(context?.novelId ? { novelId: context.novelId } : {}),
     ...(context?.novelName ? { novelName: context.novelName } : {}),
-    ...(context?.novelPath ? { novelPath: context.novelPath } : {}),
+    ...(context?.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context?.sourceId ? { sourceId: context.sourceId } : {}),
   };
 }
@@ -517,8 +517,8 @@ export async function pruneChapterMedia(
     ...(resolvedContext?.novelName
       ? { novelName: resolvedContext.novelName }
       : {}),
-    ...(resolvedContext?.novelPath
-      ? { novelPath: resolvedContext.novelPath }
+    ...(resolvedContext?.sourceNovelId
+      ? { sourceNovelId: resolvedContext.sourceNovelId }
       : {}),
     ...(resolvedContext?.sourceId
       ? { sourceId: resolvedContext.sourceId }
@@ -567,8 +567,8 @@ export async function clearChapterMedia(
     ...(resolvedContext?.novelName
       ? { novelName: resolvedContext.novelName }
       : {}),
-    ...(resolvedContext?.novelPath
-      ? { novelPath: resolvedContext.novelPath }
+    ...(resolvedContext?.sourceNovelId
+      ? { sourceNovelId: resolvedContext.sourceNovelId }
       : {}),
     ...(resolvedContext?.sourceId
       ? { sourceId: resolvedContext.sourceId }

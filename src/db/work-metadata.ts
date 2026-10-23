@@ -1,6 +1,6 @@
 import type Database from "@tauri-apps/plugin-sql";
 import { base64ToBytes, bytesToBase64 } from "../lib/base64";
-import { chapterStorageRelativeDir } from "../lib/chapter-storage-path";
+import { chapterStorageDirectoryName, chapterStorageRelativeDir } from "../lib/chapter-storage-path";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir, rememberResolvedNovelStorageDir, resolvedNovelStorageDir } from "../lib/chapter-storage-resolution";
 import { availableNovelMetadataDirectory, discoverStoredNovelCover, listStoredNovelChapters, listStoredNovelMetadata, scanStoredNovelMetadata, parseNovelMetadata, readStoredNovelCover, readStoredNovelMetadata, registerNativeWorkChapterDirectories, removeStoredNovelCover, withWorkMetadataRollback, workMetadataOperation, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
@@ -18,13 +18,18 @@ const keyFor = (pluginId: string, path: string) => JSON.stringify([pluginId, pat
 
 export async function applyNovelMetadataToCache(db: Database, metadata: NovelMetadataV1, directory?: string, options?: { storedCover?: Uint8Array | null; addToLibrary?: boolean; preserveMissingMetadata?: boolean; preserveCachedNovel?: boolean }): Promise<number> {
   metadata = parseNovelMetadata(metadata);
+  const [storedIdentity] = await db.select<{ sourceNovelId: string | null }[]>(
+    "SELECT source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
+  if (storedIdentity?.sourceNovelId && storedIdentity.sourceNovelId !== metadata.identity.novelId) {
+    throw new Error("work metadata: plugin-owned novel ID changed");
+  }
   const n = metadata.novel;
   const localCover = options?.storedCover !== undefined ? options.storedCover : n.isLocal && directory ? await readStoredNovelCover(directory, metadata) : null;
   const cover = localCover && metadata.cover?.contentType ? `data:${metadata.cover.contentType};base64,${bytesToBase64(localCover)}` : null;
   const optionalText = (value: string | null) => options?.preserveMissingMetadata && !value?.trim() ? null : value;
-  await db.execute(`INSERT INTO novel (plugin_id,path,name,cover,author,artist,summary,status,genres,rating,is_local,in_library,library_added_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-    ON CONFLICT(plugin_id,path) DO UPDATE SET name=excluded.name,
+  await db.execute(`INSERT INTO novel (plugin_id,path,name,cover,author,artist,summary,status,genres,rating,is_local,in_library,library_added_at,source_novel_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$16)
+    ON CONFLICT(plugin_id,path) DO UPDATE SET name=excluded.name,source_novel_id=excluded.source_novel_id,
     cover=CASE WHEN excluded.is_local=1 THEN CASE WHEN $14=1 THEN COALESCE(excluded.cover,novel.cover) ELSE excluded.cover END ELSE novel.cover END,
     author=CASE WHEN $14=1 THEN COALESCE(excluded.author,novel.author) ELSE excluded.author END,
     artist=CASE WHEN $14=1 THEN COALESCE(excluded.artist,novel.artist) ELSE excluded.artist END,
@@ -32,10 +37,10 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
     status=CASE WHEN $14=1 THEN COALESCE(excluded.status,novel.status) ELSE excluded.status END,
     genres=CASE WHEN $14=1 THEN COALESCE(excluded.genres,novel.genres) ELSE excluded.genres END,
     rating=CASE WHEN $14=1 THEN COALESCE(excluded.rating,novel.rating) ELSE excluded.rating END,is_local=excluded.is_local WHERE $15=0`,
-  [metadata.identity.pluginId, metadata.identity.novelPath, n.name, cover, optionalText(n.author), optionalText(n.artist), optionalText(n.summary), optionalText(n.status), optionalText(n.genres), n.rating, n.isLocal ? 1 : 0, options?.addToLibrary ? 1 : 0, options?.addToLibrary ? Date.now() : null, options?.preserveMissingMetadata ? 1 : 0, options?.preserveCachedNovel ? 1 : 0]);
+  [metadata.identity.pluginId, metadata.identity.novelPath, n.name, cover, optionalText(n.author), optionalText(n.artist), optionalText(n.summary), optionalText(n.status), optionalText(n.genres), n.rating, n.isLocal ? 1 : 0, options?.addToLibrary ? 1 : 0, options?.addToLibrary ? Date.now() : null, options?.preserveMissingMetadata ? 1 : 0, options?.preserveCachedNovel ? 1 : 0, metadata.identity.novelId]);
   const [row] = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
   if (!row) throw new Error("work metadata: cache identity missing");
-  if (!n.isLocal && Object.keys(metadata.chapters).length) {
+  if (Object.keys(metadata.chapters).length) {
     const existing = await db.select<{ path: string; chapterNumber: string | null }[]>("SELECT path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [row.id]);
     const pathsByNumber = new Map<string, string[]>();
     for (const chapter of existing) {
@@ -48,7 +53,7 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
       .filter(chapter => chapter.paths.length <= 1);
     for (let offset = 0; offset < chapters.length; offset += 100) {
       const batch = chapters.slice(offset, offset + 100);
-      const params = batch.flatMap(chapter => [row.id, chapter.paths[0] ?? `norea-folder:${chapter.number}`, chapter.name, chapter.number, chapter.position]);
+      const params = batch.flatMap(chapter => [row.id, chapter.paths[0] ?? `${n.isLocal ? "local-folder" : "norea-folder"}:${chapter.number}`, chapter.name, chapter.number, chapter.position]);
       await db.execute(`WITH catalog(novel_id,path,name,number,position) AS (VALUES
         ${batch.map((_, index) => `(${Array.from({ length: 5 }, (_, column) => `$${index * 5 + column + 1}`).join(",")})`).join(",")})
         INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,bookmark,unread,read_at)
@@ -94,9 +99,7 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
     const exact = byDirectory.get(absoluteDirectory) ?? byPath.get(recoveredPath);
     const number = Number(chapter.chapterNumber);
     const numbered = byNumber.get(number) ?? [];
-    const candidates = isLocal ? numbered.filter((row) => !row.directory && chapterStorageRelativeDir({}, {
-      name: row.name, chapterNumber: row.chapterNumber, position: row.position,
-    }).endsWith(`/${chapter.directory}`)) : numbered;
+    const candidates = isLocal ? numbered.filter((row) => !row.directory && chapterStorageDirectoryName({ chapterNumber: row.chapterNumber, position: row.position }) === chapter.directory) : numbered;
     const matched = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
     if (isLocal && !exact && candidates.length > 1) continue;
     if ((matched && used.has(matched.id)) || (!isLocal && !exact && (numbered.length > 1 || discoveredCounts.get(number)! > 1))) continue;
@@ -383,12 +386,12 @@ export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMet
     FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path`);
 }
 
-export async function markWorkMetadataRefreshed(db: Database, identity: NovelMetadataV1["identity"]): Promise<void> {
+export async function markWorkMetadataRefreshed(db: Database, identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">): Promise<void> {
   await db.execute(`INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES($1,$2,1)
     ON CONFLICT(plugin_id,path) DO UPDATE SET revision=revision+1`, [identity.pluginId, identity.novelPath]);
 }
 
-export async function readWorkMetadataSyncFile(identity: NovelMetadataV1["identity"], db?: Database): Promise<WorkMetadataSyncFile | null> {
+export async function readWorkMetadataSyncFile(identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">, db?: Database): Promise<WorkMetadataSyncFile | null> {
   if (!isTauriRuntime()) return null;
   const database = db ?? await (await import("./client")).getDb();
   const [file] = await database.select<WorkMetadataSyncFile[]>(`SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
@@ -397,7 +400,7 @@ export async function readWorkMetadataSyncFile(identity: NovelMetadataV1["identi
   return file ?? null;
 }
 
-async function persistWorkChapterDirectories(db: Database, novelId: number, chapters: { id: number; directory: string }[], registerNative = true): Promise<void> {
+export async function persistWorkChapterDirectories(db: Database, novelId: number, chapters: { id: number; directory: string }[], registerNative = true): Promise<void> {
   await db.execute("DELETE FROM work_metadata_directory_cache WHERE novel_id=$1", [novelId]);
   for (let offset = 0; offset < chapters.length; offset += 100) {
     const params: unknown[] = [];
@@ -416,12 +419,12 @@ async function persistWorkChapterDirectories(db: Database, novelId: number, chap
   }
 }
 
-export function knownNovelMetadataDirectory(identity: NovelMetadataV1["identity"]): string | undefined {
+export function knownNovelMetadataDirectory(identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">): string | undefined {
   return knownFiles.get(keyFor(identity.pluginId, identity.novelPath))?.directory;
 }
 
 interface CachedNovel {
-  id: number; pluginId: string; path: string; name: string; cover: string | null;
+  id: number; pluginId: string; sourceNovelId: string | null; path: string; name: string; cover: string | null;
   author: string | null; artist: string | null; summary: string | null; status: string | null; genres: string | null; rating: number | null; isLocal: number;
 }
 
@@ -463,14 +466,14 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
       previous.cover = await discoverStoredNovelCover(known.directory, previous.cover);
       if (await storedNovelMetadataFingerprint(previous) !== known.fingerprint) throw new Error("work metadata: file changed outside the cache; reload before editing");
     }
-    const [novel] = await db.select<CachedNovel[]>(`SELECT id,plugin_id AS pluginId,path,name,cover,author,artist,summary,status,genres,rating,is_local AS isLocal FROM novel WHERE plugin_id=$1 AND path=$2`, [identity.pluginId, identity.path]);
+    const [novel] = await db.select<CachedNovel[]>(`SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path,name,cover,author,artist,summary,status,genres,rating,is_local AS isLocal FROM novel WHERE plugin_id=$1 AND path=$2`, [identity.pluginId, identity.path]);
     if (!novel) {
       if (known) await workMetadataOperation({ operation: "remove", path: `${known.directory}/novel.json` });
       await db.execute("DELETE FROM work_metadata_directory_cache WHERE novel_id IN (SELECT novel_id FROM work_metadata_file_cache WHERE plugin_id=$1 AND path=$2)", [identity.pluginId, identity.path]);
       await db.execute("DELETE FROM work_metadata_file_cache WHERE plugin_id=$1 AND path=$2", [identity.pluginId, identity.path]);
       knownFiles.delete(key); continue;
     }
-    const directory = known?.directory ?? await availableNovelMetadataDirectory({ identity: { pluginId: novel.pluginId, novelPath: novel.path }, novel: { ...novel, isLocal: Boolean(novel.isLocal) } });
+    const directory = known?.directory ?? await availableNovelMetadataDirectory({ identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path }, novel: { ...novel, isLocal: Boolean(novel.isLocal) } });
     const chapters = await db.select<{ id: number; name: string; chapterNumber: string | null; position: number }[]>(
       "SELECT id,name,chapter_number AS chapterNumber,position FROM chapter WHERE novel_id=$1 ORDER BY position,id", [novel.id]);
     const cachedDirectories = await db.select<{ id: number; directory: string }[]>("SELECT chapter_id AS id,directory FROM work_metadata_directory_cache WHERE novel_id=$1", [novel.id]);
@@ -481,8 +484,8 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
       if (previousDirectory) return { id: chapter.id, directory: previousDirectory };
       const child = chapterStorageRelativeDir(novel, { ...chapter, id: undefined }).split("/").at(-1)!;
       const preferred = `${directory}/${child}`;
-      let target = preferred; let suffix = 1;
-      while (used.has(target.toLowerCase())) target = `${preferred}-${suffix++}`;
+      const target = preferred;
+      if (used.has(target.toLowerCase())) throw new Error("work metadata: chapter sequence is already assigned");
       used.add(target.toLowerCase());
       return { id: chapter.id, directory: target };
     });
@@ -496,9 +499,11 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
       cover = { fileName: `cover.${extension}`, contentType };
       localCoverBytes = base64ToBytes(encoded!);
     }
-    const metadata = parseNovelMetadata({ schemaVersion: 1, identity: { pluginId: novel.pluginId, novelPath: novel.path },
+    const metadata = parseNovelMetadata({ schemaVersion: 1, identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path },
       novel: { name: novel.name, author: novel.author, artist: novel.artist, summary: novel.summary, status: novel.status, genres: novel.genres, rating: novel.rating, isLocal: Boolean(novel.isLocal) },
-      cover, chapters: { ...previous?.chapters, ...(fetched?.novelId === novel.id ? fetched.chapters : {}) } });
+      cover, chapters: novel.isLocal
+        ? Object.fromEntries(chapters.map(chapter => [chapterStorageDirectoryName(chapter), chapter.name]))
+        : { ...previous?.chapters, ...(fetched?.novelId === novel.id ? fetched.chapters : {}) } });
     const coverChanged = localCoverBytes ? await writeStoredNovelCover(directory, metadata, localCoverBytes) : false;
     await writeStoredNovelMetadata(directory, metadata);
     if (!cover && previous?.cover) await removeStoredNovelCover(directory, previous.cover);

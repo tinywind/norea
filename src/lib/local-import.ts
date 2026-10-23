@@ -522,6 +522,7 @@ function singleChapterConversion(
     analysis,
     novel: {
       name: analysis.title,
+      novelId: "local",
       path: analysis.pathKey,
       chapters: [
         {
@@ -593,6 +594,7 @@ async function convertEpub(
       },
       novel: {
         name: epub.title,
+        novelId: "local",
         path: analysis.pathKey,
         author: epub.author,
         chapters: [

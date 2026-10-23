@@ -72,7 +72,7 @@ describe("cacheLocalImportedChapterMedia", () => {
       ],
       novelId: 7,
       novelName: "Local Book",
-      novelPath: "local:markdown:hash",
+      sourceNovelId: "local",
     });
 
     expect(cacheHtmlChapterMediaMock).toHaveBeenCalledWith(
@@ -107,7 +107,7 @@ describe("cacheLocalImportedChapterMedia", () => {
       ],
       novelId: 7,
       novelName: "Local Book",
-      novelPath: "local:markdown:hash",
+      sourceNovelId: "local",
     });
 
     expect(cacheHtmlChapterMediaMock).not.toHaveBeenCalled();
@@ -151,7 +151,7 @@ describe("cacheLocalImportedChapterMedia", () => {
       ],
       novelId: 7,
       novelName: "Local Book",
-      novelPath: "local:epub:hash",
+      sourceNovelId: "local",
     });
 
     expect(storeEmbeddedChapterMediaMock).toHaveBeenCalledWith(
@@ -212,7 +212,7 @@ describe("cacheLocalImportedChapterMedia", () => {
       ],
       novelId: 7,
       novelName: "Local Book",
-      novelPath: "local:pdf:hash",
+      sourceNovelId: "local",
     });
 
     expect(storeEmbeddedChapterMediaMock).toHaveBeenCalledWith(

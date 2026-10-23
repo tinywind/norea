@@ -37,8 +37,9 @@ compatibility requirements must be decided explicitly before implementation.
 ## Other Formats
 
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
-  to titles. Source metadata fetches merge this catalog; downloads, deletions,
-  and reading changes do not edit it. There is no update timestamp. Recovery
+  to titles. Source metadata fetches merge this catalog; downloads, download deletions,
+  and reading changes do not edit it. Local works publish their chapter titles
+  after local imports, edits, deletions, and reordering. There is no update timestamp. Recovery
   restores the catalog into SQLite and marks only discovered completed files
   as downloaded.
 - Source refreshes, server metadata installation, and storage recovery preserve
@@ -76,6 +77,18 @@ compatibility requirements must be decided explicitly before implementation.
   requests an importer.
 - Source plugins use their independent API version 0.2. Their contract is
   documented in [docs/plugins/contract.md](./plugins/contract.md).
+
+## Plugin-owned storage IDs
+
+The current file and package format requires `identity.novelId`, supplied by the
+source plugin. Files live under `contents/<pluginId>/<novelId>/<chapterNumber>/`.
+Titles and host-generated hashes are excluded from directory names. The app
+caches the plugin-owned work ID in `novel.source_novel_id` and includes it in metadata,
+chapter manifests, and backup snapshots. Invalid, changed, or conflicting IDs
+are rejected. The database bootstrap checksum changes with the new cache column.
+Earlier title-based folders and metadata without the plugin-owned ID are not
+imported or converted. Existing original files remain untouched. Use current
+plugins, app, and server together; earlier development backups are unsupported.
 
 ## Storage Changes
 

@@ -66,6 +66,7 @@ export interface ContentSyncChapter {
   novelId: number;
   pluginId: string;
   novelPath: string;
+  sourceNovelId: string | null;
   chapterPath: string;
   novelName: string;
   author: string | null;
@@ -104,7 +105,7 @@ async function selectContentSyncChapters(identities: string[] | undefined, downl
   const prefix = identities ? `WITH targets(${columns.join(",")}) AS (VALUES ${identities.map((_, i) => `(${columns.map((_, column) => `$${i * columns.length + column + 1}`).join(",")})`).join(",")})` : "";
   const from = identities ? `targets t JOIN novel n ON n.plugin_id=t.plugin_id AND n.path=t.novel_path JOIN chapter c ON c.novel_id=n.id${matchWorks ? "" : " AND c.path=t.chapter_path"}` : "chapter c JOIN novel n ON n.id=c.novel_id";
   const rows = await db.select<ContentSyncChapter[]>(`${prefix} SELECT
-    c.id AS chapterId, n.id AS novelId, n.plugin_id AS pluginId, n.path AS novelPath,
+    c.id AS chapterId, n.id AS novelId, n.plugin_id AS pluginId, n.path AS novelPath, n.source_novel_id AS sourceNovelId,
     c.path AS chapterPath, n.name AS novelName, n.author, n.summary,
     n.is_local AS isLocal,
     c.name AS chapterName, c.chapter_number AS chapterNumber, c.position, c.page,
@@ -130,8 +131,9 @@ export async function canUploadContentChapter(chapterId: number): Promise<boolea
 export async function importContentMetadata(manifest: PackageManifest): Promise<{ novelId: number; chapterId: number }> {
   return runDatabaseTransaction(async (db) => {
     const { identity, chapter } = manifest;
-    const novels = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [identity.pluginId, identity.novelPath]);
+    const novels = await db.select<{ id: number; sourceNovelId: string | null }[]>("SELECT id,source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2", [identity.pluginId, identity.novelPath]);
     if (!novels.length) throw new Error("Install the work metadata before downloading its chapters.");
+    if (novels[0]!.sourceNovelId !== identity.novelId) throw new Error("Server chapter novel ID does not match the installed work.");
     const novelId = novels[0]!.id;
     const chapterNumber = chapter.chapterNumber?.trim();
     if (identity.pluginId !== LOCAL_PLUGIN_ID && !identity.chapterPath.startsWith("norea-folder:") && chapterNumber && Number.isFinite(Number(chapterNumber))) {

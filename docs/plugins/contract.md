@@ -590,7 +590,8 @@ when the source needs one. Without it, the host resolves paths against
 hosts are not accidentally prefixed with the source's base URL.
 
 `ChapterItem.chapterNumber` is a stable source-owned order key unique within a
-novel. `ChapterItem.path` may be an absolute URL, relative path, or opaque
+novel. It must be a nonnegative decimal number; fractions are supported.
+`ChapterItem.path` may be an absolute URL, relative path, or opaque
 encoded payload. Secrets must remain in private plugin inputs or request init
 objects and must not be written into paths or stored content.
 
@@ -598,12 +599,25 @@ objects and must not be written into paths or stored content.
 a source-relative path such as `/novel/123456` or
 `/webtoon/list?titleId=650305`, or an opaque plugin identifier. It must exclude
 the source base URL. The app copies this value unchanged into work identity,
-lookup, parsing, and storage, preserving query strings, fragments, and encoding.
+lookup, parsing, and metadata, preserving query strings, fragments, and encoding.
 Plugins accept that same identifier in `parseNovel`, `parseNovelSince`, and
 `parsePage`, and resolve source requests against their current `getBaseUrl()`.
 Changing the source domain therefore keeps the work identity.
 The requested item's path remains the stored identity; the `SourceNovel.path`
 returned by parsing does not rename it.
+
+`SourceNovel.novelId` is required from both `parseNovel` and `parseNovelSince`.
+The plugin owns its stability and uniqueness within that plugin, including
+case-insensitive filesystems. Return the site's work ID, or a plugin-owned
+composite ID when one source needs multiple keys. The host stores it verbatim:
+`contents/<pluginId>/<novelId>/<chapterNumber>/`. Work and chapter titles do not
+participate in paths, and source paths remain separate. The ID must be a single
+portable directory name of at most 240 UTF-8 bytes. Leading dots or spaces,
+trailing dots or spaces, control characters, `<>:"/\\|?*`, Windows reserved
+names, and `.tmp`, `.bak`, `.part`, `.partial`, or `.norea-sync-backup` suffixes
+are invalid. The host rejects missing or unsafe IDs, collisions with another
+source path, and changes to an existing work's ID. No host hash or sanitized
+source-path fallback is generated.
 
 `SourceNovel.status` is an optional source-provided string. `SourceNovel.rating`
 is an optional finite number from 0 to 5. The host stores both with the work

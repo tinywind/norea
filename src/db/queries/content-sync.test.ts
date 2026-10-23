@@ -17,7 +17,7 @@ beforeEach(() => {
   clearAuthoritativeStorageDirs();
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
-  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(42,'source','/work','A work')");
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(42,'source','work','/work','A work')");
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),
     execute: async (sql: string, params: unknown[] = []) => {
@@ -42,7 +42,7 @@ afterEach(() => { sqlite.close(); clearAuthoritativeStorageDirs(); });
 const manifest = {
   packageVersion: 1 as const,
   layout: "chapter-files" as const,
-  identity: { pluginId: "source", novelPath: "/work", chapterPath: "/chapter" },
+  identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" },
   novel: { name: "A work", isLocal: false },
   chapter: { name: "Opening", position: 1, contentType: "html" as const, page: "1" },
   bodyPath: "content.html", files: [],
@@ -138,14 +138,14 @@ it("imports by source identity with new local IDs and preserves existing reading
 it("reuses a metadata catalog placeholder through server import and the next source refresh", async () => {
   const db = await getDb();
   await applyNovelMetadataToCache(db, {
-    schemaVersion: 1, identity: { pluginId: "source", novelPath: "/work" },
+    schemaVersion: 1, identity: { pluginId: "source", novelId: "work", novelPath: "/work" },
     novel: { name: "A work", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
     cover: null, chapters: { "1": "Opening" },
   });
   const placeholder = sqlite.prepare("SELECT id,path,is_downloaded FROM chapter").get()!;
   expect(placeholder).toMatchObject({ path: "norea-folder:1", is_downloaded: 0 });
   const chapterId = Number(placeholder.id);
-  const directory = "contents/source/Original-work/1-Original-folder";
+  const directory = "contents/source/Original-work/1";
   sqlite.prepare("UPDATE chapter SET progress=73,bookmark=1,unread=0,read_at=123 WHERE id=?").run(chapterId);
   sqlite.prepare("INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory) VALUES(?,42,?)").run(chapterId, directory);
   rememberAuthoritativeChapterStorageDir(chapterId, directory);
@@ -157,7 +157,7 @@ it("reuses a metadata catalog placeholder through server import and the next sou
   ]);
   await markContentInstalled(chapterId, "html", 512, 16);
   const plugin = {
-    id: "source", parseNovel: async () => ({ name: "A work", path: "/work", chapters: [{ path: "/chapter", name: "Opening", chapterNumber: 1 }] }),
+    id: "source", parseNovel: async () => ({ novelId: "work", name: "A work", path: "/work", chapters: [{ path: "/chapter", name: "Opening", chapterNumber: 1 }] }),
   } as unknown as Plugin;
   await expect(syncNovelFromSource(plugin, { name: "A work", path: "/work" }, { novelId: 42, notifyUpdatesIndex: false })).resolves.toMatchObject({ novelId: 42, chapterCount: 1 });
   expect(sqlite.prepare("SELECT id,path,progress,bookmark,unread,read_at,is_downloaded,content_bytes,media_bytes FROM chapter").all()).toEqual([
@@ -172,12 +172,12 @@ it("reuses a metadata catalog placeholder through server import and the next sou
 it("retains downloaded placeholder state and its directory when adopting a source path", async () => {
   sqlite.exec(`INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,bookmark,is_downloaded,stored_content_type,content_bytes,media_bytes)
     VALUES(9,42,'norea-folder:1','Original','1',1,73,1,1,'html',512,16);
-    INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory) VALUES(9,42,'contents/source/work/1-Original')`);
+    INSERT INTO work_metadata_directory_cache(chapter_id,novel_id,directory) VALUES(9,42,'contents/source/work/1')`);
   expect(await importContentMetadata({ ...manifest, chapter: { ...manifest.chapter, chapterNumber: "1.0" } })).toEqual({ novelId: 42, chapterId: 9 });
   expect(sqlite.prepare("SELECT id,path,name,progress,bookmark,is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter").all()).toEqual([
     { id: 9, path: "/chapter", name: "Original", progress: 73, bookmark: 1, is_downloaded: 1, stored_content_type: "html", content_bytes: 512, media_bytes: 16 },
   ]);
-  expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache WHERE chapter_id=9").get()?.directory).toBe("contents/source/work/1-Original");
+  expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache WHERE chapter_id=9").get()?.directory).toBe("contents/source/work/1");
 });
 
 it.each(["norea-folder:another", "/chapter"])("preserves ambiguous chapter candidates when a placeholder coexists with %s", async otherPath => {

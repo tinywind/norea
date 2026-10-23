@@ -60,6 +60,7 @@ export const novelTable = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     pluginId: text("plugin_id").notNull(),
+    sourceNovelId: text("source_novel_id"),
     path: text("path").notNull(),
     name: text("name").notNull(),
     cover: text("cover"),
@@ -89,6 +90,7 @@ export const novelTable = sqliteTable(
       t.pluginId,
       t.path,
     ),
+    pluginSourceIdUniq: uniqueIndex("novel_plugin_source_id_uniq").on(t.pluginId, sql`lower(${t.sourceNovelId})`),
     inLibraryIdx: index("novel_in_library_idx").on(t.inLibrary),
   }),
 );

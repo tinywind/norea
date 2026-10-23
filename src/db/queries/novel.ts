@@ -615,6 +615,7 @@ export async function listLibraryNovelRefreshTargets(
  */
 export interface NovelDetailRecord {
   id: number;
+  sourceNovelId: string | null;
   pluginId: string;
   pluginName?: string | null;
   path: string;
@@ -642,6 +643,7 @@ interface RawNovelDetail extends Omit<NovelDetailRecord, "inLibrary" | "isLocal"
 const SELECT_NOVEL_DETAIL_FIELDS = `
   SELECT
     n.id,
+    n.source_novel_id AS sourceNovelId,
     n.plugin_id      AS pluginId,
     ip.name          AS pluginName,
     n.path,
@@ -1138,10 +1140,11 @@ export async function upsertLocalNovel(
       : [];
     const novelResult = await db.execute(
       `INSERT INTO novel
-           (plugin_id, path, name, cover, summary, author, artist, status, genres, in_library, is_local, library_added_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 1, unixepoch())
+           (plugin_id, path, name, cover, summary, author, artist, status, genres, in_library, is_local, library_added_at, source_novel_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 1, unixepoch(), $2)
          ON CONFLICT(plugin_id, path) DO UPDATE SET
            name             = excluded.name,
+           source_novel_id  = excluded.source_novel_id,
            cover            = excluded.cover,
            summary          = excluded.summary,
            author           = excluded.author,
@@ -1153,7 +1156,8 @@ export async function upsertLocalNovel(
            library_added_at = COALESCE(library_added_at, unixepoch()),
            updated_at       = unixepoch()
           WHERE
-            name IS NOT excluded.name
+            source_novel_id IS NOT excluded.source_novel_id
+            OR name IS NOT excluded.name
             OR cover IS NOT excluded.cover
             OR summary IS NOT excluded.summary
             OR author IS NOT excluded.author

@@ -968,17 +968,8 @@ function enqueueChapterDownloadForExecutor(
           job.pluginId,
           executor ?? "immediate",
         );
-        const novel =
-          job.novelPath && job.novelName && job.novelId
-            ? {
-                id: job.novelId,
-                name: job.novelName,
-                path: job.novelPath,
-                pluginId: job.pluginId,
-              }
-            : job.novelId
-              ? await getNovelById(job.novelId)
-              : null;
+        const novel = await getNovelById(chapter.novelId);
+        if (!novel) throw missingLocalChapterError(job);
         const contentType = normalizeChapterContentType(
           chapter.sourceContentType ?? job.contentType ?? chapter.contentType,
         );
@@ -1009,7 +1000,7 @@ function enqueueChapterDownloadForExecutor(
           chapterPosition: chapter.position,
           novelId: novel?.id ?? chapter.novelId,
           novelName: novel?.name ?? job.novelName,
-          novelPath: novel?.path ?? job.novelPath,
+          sourceNovelId: novel?.sourceNovelId,
           sourceId: job.pluginId,
         };
         const persistPartialHtml = async (
@@ -1181,7 +1172,7 @@ function enqueueChapterDownloadForExecutor(
               html,
               novelId: chapter.novelId,
               novelName: novel?.name ?? job.novelName,
-              novelPath: novel?.path ?? job.novelPath,
+              sourceNovelId: novel?.sourceNovelId,
               onHtmlUpdate: liveReaderUpdates
                 ? (partialHtml) =>
                     persistAndEmitPartialHtml(
@@ -1233,7 +1224,7 @@ function enqueueChapterDownloadForExecutor(
             chapterPosition: chapter.position,
             novelId: novel?.id ?? chapter.novelId,
             novelName: novel?.name ?? job.novelName,
-            novelPath: novel?.path ?? job.novelPath,
+            sourceNovelId: novel?.sourceNovelId,
             sourceId: job.pluginId,
           }));
         }
@@ -1453,7 +1444,7 @@ export function enqueueChapterMediaRepair(
         chapterPosition: chapter.position,
         novelId: novel?.id ?? chapter.novelId,
         novelName: novel?.name,
-        novelPath: novel?.path,
+        sourceNovelId: novel?.sourceNovelId,
         sourceId: job.pluginId,
       };
       if (
@@ -1487,7 +1478,7 @@ export function enqueueChapterMediaRepair(
         html: repairHtml,
         novelId: storageContext.novelId,
         novelName: storageContext.novelName,
-        novelPath: storageContext.novelPath,
+        sourceNovelId: storageContext.sourceNovelId,
         onHtmlUpdate: async (partialHtml) => {
           const protectedPartialHtml = protectRemoteChapterMediaForPartialHtml(
             partialHtml,

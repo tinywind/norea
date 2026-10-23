@@ -107,7 +107,7 @@ type ReaderChapterDocument = Pick<
 >;
 type ReaderNovelDocument = Pick<
   NovelDetailRecord,
-  "id" | "name" | "path" | "pluginId"
+  "id" | "name" | "path" | "pluginId" | "sourceNovelId"
 >;
 interface ReaderChapterDocumentOptions {
   chapterId: number;
@@ -171,7 +171,7 @@ export function useReaderChapterDocument({
           chapterPosition: chapter.position,
           novelId: currentNovel?.id ?? chapter.novelId,
           novelName: currentNovel?.name,
-          novelPath: currentNovel?.path,
+          sourceNovelId: currentNovel?.sourceNovelId,
           sourceId: currentNovel?.pluginId,
         });
         logReaderMediaPipeline("media-patch-resolved", {
@@ -221,7 +221,7 @@ export function useReaderChapterDocument({
     chapter?.position,
     currentNovel?.id,
     currentNovel?.name,
-    currentNovel?.path,
+    currentNovel?.sourceNovelId,
     currentNovel?.pluginId,
     readerDocument?.chapterId,
   ]);
@@ -330,7 +330,7 @@ export function useReaderChapterDocument({
             chapterPosition: chapter.position,
             novelId: currentNovel.id,
             novelName: currentNovel.name,
-            novelPath: currentNovel.path,
+            sourceNovelId: currentNovel.sourceNovelId,
             sourceId: currentNovel.pluginId,
           }
         : undefined,
@@ -342,7 +342,7 @@ export function useReaderChapterDocument({
       chapter?.position,
       currentNovel?.id,
       currentNovel?.name,
-      currentNovel?.path,
+      currentNovel?.sourceNovelId,
       currentNovel?.pluginId,
     ],
   );

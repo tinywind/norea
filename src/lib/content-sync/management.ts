@@ -6,7 +6,7 @@ import { registerContentDevice } from "./device";
 import type { ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 
-export async function findServerWork(serverUrl: string, identity: NovelMetadataV1["identity"], signal?: AbortSignal): Promise<ServerNovelSource | null> {
+export async function findServerWork(serverUrl: string, identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">, signal?: AbortSignal): Promise<ServerNovelSource | null> {
   const settings = useContentSyncStore.getState();
   return withContentServerLookup(async deadline => {
     const workId = await contentWorkId(identity);

@@ -27,6 +27,7 @@ import {
 } from "./format";
 interface RawNovelRow {
   id: number;
+  sourceNovelId: string | null;
   pluginId: string;
   path: string;
   name: string;
@@ -108,6 +109,7 @@ const SELECT_NOVELS = `
   SELECT
     id,
     plugin_id      AS pluginId,
+    source_novel_id AS sourceNovelId,
     path,
     name,
     cover,
@@ -247,6 +249,7 @@ function toNovel(row: RawNovelRow): BackupNovel {
   return {
     id: row.id,
     pluginId: row.pluginId,
+    sourceNovelId: row.sourceNovelId,
     path: row.path,
     name: row.name,
     cover: row.cover,

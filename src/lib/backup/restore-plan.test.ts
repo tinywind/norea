@@ -23,15 +23,15 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
 import { prepareBackupRestore } from "./restore-plan";
 import type { BackupManifest } from "./format";
 
-const first = "contents/source/Current-title";
-const absent = "contents/local/Local-original";
+const first = "contents/source/book";
+const absent = "contents/local/local";
 const db = { select: vi.fn() } as unknown as Database;
 
 function save(path: string, value: unknown) {
   storage.files.set(path, [...new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value, null, 2))]);
 }
 function manifest(): BackupManifest {
-  return { version: 2, exportedAt: 1, novels: [{ id: 1, pluginId: "source", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
+  return { version: 2, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
     summary: "Stale summary", author: "Old author", artist: null, status: null, genres: null, inLibrary: true, isLocal: false,
     createdAt: 1, updatedAt: 1, libraryAddedAt: 42, lastReadAt: 73 }],
     chapters: [1, 2].map(number => ({ id: number, novelId: 1, path: `/chapter/${number}`, name: `Old chapter ${number}`, chapterNumber: String(number), position: number,
@@ -44,15 +44,15 @@ function manifest(): BackupManifest {
 beforeEach(() => {
   storage.files.clear(); storage.failPath = ""; storage.mutations = 0;
   vi.mocked(db.select).mockResolvedValue([]);
-  save(`${first}/novel.json`, { schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" }, novel: {
+  save(`${first}/novel.json`, { schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book" }, novel: {
     name: "Current title", summary: "Current summary", author: "Current author", rating: 4.5,
   }, cover: { fileName: "cover.png", contentType: "image/png" }, chapters: { "1": "Current opening", "2": "Only in the catalog", "3": "New chapter" } });
   storage.files.set(`${first}/cover.png`, [1, 4, 8, 0]);
-  save(`${first}/1-Opening/content.html`, "<p>The original chapter</p>");
-  storage.files.set(`${first}/1-Opening/media.zip`, [8, 9, 10]);
-  save(`${first}/1-Opening/manifest.json`, '{ "original": true }');
-  save(`${absent}/novel.json`, { identity: { pluginId: "local", novelPath: "local" }, novel: { name: "Local originals", isLocal: true }, cover: null });
-  save(`${absent}/1-Preserved/content.pdf`, "%PDF preserved bytes");
+  save(`${first}/1/content.html`, "<p>The original chapter</p>");
+  storage.files.set(`${first}/1/media.zip`, [8, 9, 10]);
+  save(`${first}/1/manifest.json`, '{ "original": true }');
+  save(`${absent}/novel.json`, { identity: { pluginId: "local", novelId: "local", novelPath: "local" }, novel: { name: "Local originals", isLocal: true }, cover: null });
+  save(`${absent}/1/content.pdf`, "%PDF preserved bytes");
 });
 
 it("keeps every original byte and uses current metadata while restoring library and reading state", async () => {
@@ -65,7 +65,7 @@ it("keeps every original byte and uses current metadata while restoring library 
   expect(plan.manifest.chapters[0]).toMatchObject({ id: 1, path: "/chapter/1", name: "Current opening", isDownloaded: true,
     page: "5", progress: 64, bookmark: true, unread: false, readAt: 70 });
   expect(plan.manifest.novelCategories).toEqual(snapshot.novelCategories);
-  expect(plan.cache.chapters).toContainEqual({ chapterId: 1, novelId: 1, directory: `${first}/1-Opening` });
+  expect(plan.cache.chapters).toContainEqual({ chapterId: 1, novelId: 1, directory: `${first}/1` });
   expect(storage.files).toEqual(originalFiles);
   expect(snapshot).toEqual(before);
   expect(storage.mutations).toBe(0);
@@ -76,7 +76,7 @@ it("retains works omitted from the backup without adding them to the restored li
   const retained = plan.manifest.novels.find(novel => novel.pluginId === "local")!;
   expect(retained).toMatchObject({ name: "Local originals", inLibrary: false, libraryAddedAt: null });
   expect(plan.manifest.chapters.find(chapter => chapter.novelId === retained.id)).toMatchObject({
-    path: "local-folder:1-Preserved", isDownloaded: true, contentType: "pdf", progress: 0, bookmark: false,
+    path: "local-folder:1", isDownloaded: true, contentType: "pdf", progress: 0, bookmark: false,
   });
   expect(plan.cache.files).toHaveLength(2);
   expect(storage.mutations).toBe(0);
@@ -95,7 +95,7 @@ it("preserves backed-up creation times and leaves newly recovered chapter times 
   ]);
   expect(plan.manifest.chapters.slice(2).map(chapter => ({ path: chapter.path, createdAt: chapter.createdAt, foundAt: chapter.foundAt }))).toEqual([
     { path: "norea-folder:3", createdAt: null, foundAt: 0 },
-    { path: "local-folder:1-Preserved", createdAt: null, foundAt: 0 },
+    { path: "local-folder:1", createdAt: null, foundAt: 0 },
   ]);
   expect(storage.mutations).toBe(0);
 });
@@ -116,8 +116,8 @@ it("marks only discovered complete chapter files downloaded and discards stale b
 });
 
 it("retains current byte counts only for the exact inspected directory and content type", async () => {
-  vi.mocked(db.select).mockResolvedValue([{ pluginId: "source", novelPath: "/book", chapterPath: "/chapter/1",
-    directory: `${first}/1-Opening`, storedContentType: "html", contentBytes: 28, mediaBytes: 3 }]);
+  vi.mocked(db.select).mockResolvedValue([{ pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/chapter/1",
+    directory: `${first}/1`, storedContentType: "html", contentBytes: 28, mediaBytes: 3 }]);
   const plan = await prepareBackupRestore(db, manifest());
   expect(plan.manifest.chapters[0]).toMatchObject({ isDownloaded: true, contentBytes: 28, mediaBytes: 3 });
   expect(plan.manifest.chapters[1]).toMatchObject({ isDownloaded: false, contentBytes: 0, mediaBytes: 0 });
@@ -125,18 +125,40 @@ it("retains current byte counts only for the exact inspected directory and conte
 
 it("matches distinct local chapters by retained directories without mixing bookmarks", async () => {
   const snapshot = manifest();
-  snapshot.novels[0] = { ...snapshot.novels[0]!, pluginId: "local", path: "local", isLocal: true };
-  snapshot.chapters = snapshot.chapters.map((chapter, index) => ({ ...chapter, name: "Old name", chapterNumber: "1", bookmark: index === 0, progress: index * 70 }));
-  save(`${absent}/1-Second/content.html`, "Second file");
+  snapshot.novels[0] = { ...snapshot.novels[0]!, pluginId: "local", sourceNovelId: "local", path: "local", isLocal: true };
+  snapshot.chapters = snapshot.chapters.map((chapter, index) => ({ ...chapter, name: "Old name", chapterNumber: String(index + 1), bookmark: index === 0, progress: index * 70 }));
+  save(`${absent}/2/content.html`, "Second file");
   vi.mocked(db.select).mockResolvedValue([
-    { pluginId: "local", novelPath: "local", chapterPath: "/chapter/1", directory: `${absent}/1-Preserved` },
-    { pluginId: "local", novelPath: "local", chapterPath: "/chapter/2", directory: `${absent}/1-Second` },
+    { pluginId: "local", novelId: "local", novelPath: "local", chapterPath: "/chapter/1", directory: `${absent}/1` },
+    { pluginId: "local", novelId: "local", novelPath: "local", chapterPath: "/chapter/2", directory: `${absent}/2` },
   ]);
   const plan = await prepareBackupRestore(db, snapshot);
   expect(plan.manifest.chapters.slice(0, 2)).toMatchObject([
     { id: 1, isDownloaded: true, contentType: "pdf", bookmark: true, progress: 0 },
     { id: 2, isDownloaded: true, contentType: "html", bookmark: false, progress: 70 },
   ]);
+});
+
+it("restores local titles from the current disk catalog while retaining backup reading state", async () => {
+  const snapshot = manifest();
+  snapshot.novels[0] = { ...snapshot.novels[0]!, pluginId: "local", sourceNovelId: "local", path: "local", isLocal: true };
+  snapshot.chapters = [{ ...snapshot.chapters[0]!, name: "Old local title" }];
+  save(`${absent}/novel.json`, {
+    identity: { pluginId: "local", novelId: "local", novelPath: "local" },
+    novel: { name: "Local originals", isLocal: true },
+    chapters: { "1": "New local title", "2": "Catalog without a body" },
+  });
+  const originalFiles = structuredClone(storage.files);
+  const plan = await prepareBackupRestore(db, snapshot);
+  const local = plan.manifest.chapters.filter(chapter => chapter.novelId === 1);
+  expect(local.find(chapter => chapter.id === 1)).toMatchObject({
+    name: "New local title", isDownloaded: true, contentType: "pdf", progress: 64, bookmark: true, unread: false, readAt: 70,
+  });
+  expect(local.find(chapter => chapter.chapterNumber === "2")).toMatchObject({
+    path: "local-folder:2", name: "Catalog without a body", isDownloaded: false,
+  });
+  expect(storage.files).toEqual(originalFiles);
+  expect(storage.mutations).toBe(0);
 });
 
 it("fails before native restore when originals cannot be inspected", async () => {

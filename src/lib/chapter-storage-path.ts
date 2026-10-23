@@ -1,3 +1,4 @@
+import { isStorageId } from "./storage-id";
 import { resolvedChapterStorageDir, resolvedNovelStorageDir } from "./chapter-storage-resolution";
 
 export const CONTENTS_ROOT_DIR = "contents";
@@ -7,6 +8,7 @@ export interface ChapterStorageNovelPathInput {
   name?: string | null;
   path?: string | null;
   pluginId?: string | null;
+  sourceNovelId?: string | null;
 }
 
 export interface ChapterStorageChapterPathInput {
@@ -26,56 +28,28 @@ function safeSegment(value: string | null | undefined, fallback: string): string
     : sanitized;
 }
 
-function isUnsafeUnicodeFormat(ch: string): boolean {
-  const code = ch.codePointAt(0) ?? 0;
-  return (
-    code === 0x180e ||
-    (code >= 0x200b && code <= 0x200f) ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2060 && code <= 0x206f) ||
-    code === 0xfeff
-  );
+export function chapterStorageDirectoryName(chapter: ChapterStorageChapterPathInput): string {
+  const value = chapter.chapterNumber ?? (chapter.position != null && chapter.position > 0 ? chapter.position : undefined);
+  if (typeof value === "string" && !/^\d+(?:\.\d+)?$/.test(value)) throw new Error("Chapter storage sequence must be a decimal number.");
+  const number = Number(value);
+  if (value == null || String(value).trim() === "" || !Number.isFinite(number) || number < 0) {
+    throw new Error("Chapter storage sequence must be a nonnegative number.");
+  }
+  const sequence = String(number);
+  if (!/^\d+(?:\.\d+)?$/.test(sequence)) throw new Error("Chapter storage sequence must use decimal notation.");
+  return sequence;
 }
 
-function safeLabelSegment(value: string | null | undefined, fallback: string) {
-  const raw = value?.trim() || fallback;
-  const sanitized = [...raw]
-    .map((ch) =>
-      /[\s/:*?"<>|\\]/.test(ch) || isUnsafeUnicodeFormat(ch) ? "-" : ch,
-    )
-    .join("")
-    .replace(/^[.-]+|[.-]+$/g, "")
-    .slice(0, 96);
-  return sanitized === "" || sanitized === "." || sanitized === ".."
-    ? fallback
-    : sanitized;
-}
-
-function chapterNumberSegment(chapter: ChapterStorageChapterPathInput): string {
-  const fallback =
-    chapter.position && chapter.position > 0
-      ? String(chapter.position)
-      : String(chapter.id ?? "chapter");
-  return safeSegment(chapter.chapterNumber, fallback);
-}
-
-export function chapterStorageIdentityPrefix(
-  chapter: ChapterStorageChapterPathInput,
-): string {
-  return `${chapterNumberSegment(chapter)}-`;
-}
-
-export function novelStorageIdentitySuffix(
-  novel: ChapterStorageNovelPathInput,
-): string {
-  const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
-  return `-${novelAddress}`;
+export function novelStorageDirectoryName(novel: ChapterStorageNovelPathInput): string {
+  if (!isStorageId(novel.sourceNovelId)) throw new Error("Plugin-owned novel ID is required for storage.");
+  return novel.sourceNovelId;
 }
 
 export function sourceStorageRelativeDir(
   novel: ChapterStorageNovelPathInput,
 ): string {
-  return `${CONTENTS_ROOT_DIR}/${safeSegment(novel.pluginId, "source")}`;
+  if (!isStorageId(novel.pluginId) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(novel.pluginId)) throw new Error("Plugin ID is required for storage.");
+  return `${CONTENTS_ROOT_DIR}/${novel.pluginId}`;
 }
 
 export function chapterStorageRelativeDir(
@@ -84,11 +58,7 @@ export function chapterStorageRelativeDir(
 ): string {
   const resolved = resolvedChapterStorageDir(chapter.id);
   if (resolved) return resolved;
-  const chapterSegment = `${chapterNumberSegment(chapter)}-${safeLabelSegment(
-    chapter.name,
-    "chapter",
-  )}`;
-  return `${novelStorageRelativeDir(novel)}/${chapterSegment}`;
+  return `${novelStorageRelativeDir(novel)}/${chapterStorageDirectoryName(chapter)}`;
 }
 
 export function novelStorageRelativeDir(
@@ -96,9 +66,7 @@ export function novelStorageRelativeDir(
 ): string {
   const resolved = resolvedNovelStorageDir(novel.id);
   if (resolved) return resolved;
-  const novelAddress = safeSegment(novel.path, String(novel.id ?? "novel"));
-  const novelSegment = `${safeLabelSegment(novel.name, "novel")}-${novelAddress}`;
-  return `${sourceStorageRelativeDir(novel)}/${novelSegment}`;
+  return `${sourceStorageRelativeDir(novel)}/${novelStorageDirectoryName(novel)}`;
 }
 
 export function novelCoverRelativePath(

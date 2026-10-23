@@ -14,10 +14,10 @@ import { type ChapterMediaStorageContext } from "./types";
 export function hasStorageContext(
   context: ChapterMediaStorageContext | null | undefined,
 ): context is ChapterMediaStorageContext & {
-  novelPath: string;
+  sourceNovelId: string;
   sourceId: string;
 } {
-  return !!context?.novelPath?.trim() && !!context.sourceId?.trim();
+  return !!context?.sourceNovelId?.trim() && !!context.sourceId?.trim();
 }
 
 export function storageNovelPathInput(
@@ -26,8 +26,8 @@ export function storageNovelPathInput(
   return {
     id: context.novelId,
     name: context.novelName,
-    path: context.novelPath,
     pluginId: context.sourceId,
+    sourceNovelId: context.sourceNovelId,
   };
 }
 
@@ -56,7 +56,7 @@ export async function storageContextForChapter(
     chapterPosition: chapter.position,
     novelId: novel.id,
     novelName: novel.name,
-    novelPath: novel.path,
+    sourceNovelId: novel.sourceNovelId,
     sourceId: novel.pluginId,
   };
 }
@@ -153,7 +153,7 @@ export function chapterMediaManifestLogContext(
     manifestPath: androidChapterMediaManifestRelativePath(context),
     novelId: context.novelId,
     novelName: context.novelName,
-    novelPath: context.novelPath,
+    sourceNovelId: context.sourceNovelId,
     sourceId: context.sourceId,
   };
 }

@@ -14,7 +14,7 @@ export interface CacheChapterMediaOptions {
   html: string;
   novelId?: number;
   novelName?: string | null;
-  novelPath?: string | null;
+  sourceNovelId?: string | null;
   onHtmlUpdate?: (html: string) => Promise<void> | void;
   onMediaPatch?: (patches: ChapterMediaElementPatch[]) => Promise<void> | void;
   onProgress?: (progress: { current: number; total: number }) => void;
@@ -72,7 +72,7 @@ export interface ChapterMediaStoreInput {
   fileName: string;
   novelId?: number;
   novelName?: string | null;
-  novelPath?: string | null;
+  sourceNovelId?: string | null;
   sourceId?: string;
 }
 
@@ -83,7 +83,7 @@ export interface ChapterMediaArchiveInput {
   chapterPosition?: number | null;
   novelId?: number;
   novelName?: string | null;
-  novelPath?: string | null;
+  sourceNovelId?: string | null;
   sourceId?: string;
 }
 
@@ -94,7 +94,7 @@ export interface ChapterMediaStorageContext {
   chapterPosition?: number | null;
   novelId?: number | null;
   novelName?: string | null;
-  novelPath?: string | null;
+  sourceNovelId?: string | null;
   sourceId?: string | null;
 }
 

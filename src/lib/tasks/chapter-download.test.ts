@@ -265,9 +265,18 @@ beforeEach(() => {
     contentType: "text",
     sourceContentType: "text",
     id: 7,
+    novelId: 11,
+    chapterNumber: "7",
+    name: "Chapter 7",
+    path: "/chapter/7",
+    position: 7,
     isDownloaded: false,
   } as never);
-  vi.mocked(getNovelById).mockResolvedValue(null);
+  vi.mocked(getNovelById).mockReset().mockResolvedValue({
+    id: 11, pluginId: "source-a", sourceNovelId: "novel", path: "/novel", name: "Novel",
+    cover: null, summary: null, author: null, artist: null, status: null, genres: null, rating: null,
+    inLibrary: true, isLocal: false, createdAt: 1, updatedAt: 1, libraryAddedAt: 1, lastReadAt: null,
+  });
   vi.mocked(refreshStoredNovelChapterDownloads).mockReset().mockResolvedValue(undefined);
   vi.mocked(getStoredChapterMediaBytes).mockResolvedValue(3);
   vi.mocked(hasRemoteChapterMedia).mockReturnValue(true);
@@ -937,7 +946,7 @@ describe("startChapterDownloadQueueExecutor", () => {
         chapterName: `Chapter ${id}`,
         novelId: 11,
         novelName: "Novel",
-        novelPath: "/novel",
+        sourceNovelId: "novel",
         title: `Chapter ${id}`,
       };
     });
@@ -1452,8 +1461,7 @@ describe("enqueueChapterDownload", () => {
     });
     void runPromise.catch(() => undefined);
 
-    await flushMicrotasks();
-    expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(pluginMocks.loadInstalledFromDb).toHaveBeenCalledTimes(1));
 
     controller.abort(new DOMException("Task was paused.", "AbortError"));
 
@@ -2475,6 +2483,8 @@ describe("enqueueChapterMediaRepair", () => {
       id: 11,
       name: "Novel",
       path: "/novel",
+      sourceNovelId: "novel",
+      pluginId: "source-a",
     } as never);
     vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({
       html: repairedHtml,
@@ -2573,6 +2583,8 @@ describe("enqueueChapterMediaRepair", () => {
       id: 11,
       name: "Novel",
       path: "/novel",
+      sourceNovelId: "novel",
+      pluginId: "source-a",
     } as never);
     vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({
       html: storedHtml,
@@ -2644,6 +2656,8 @@ describe("enqueueChapterMediaRepair", () => {
       id: 11,
       name: "Novel",
       path: "/novel",
+      sourceNovelId: "novel",
+      pluginId: "source-a",
     } as never);
 
     enqueueChapterMediaRepair({

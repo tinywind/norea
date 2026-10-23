@@ -138,7 +138,7 @@ export async function cacheHtmlChapterMedia({
   html,
   novelId,
   novelName,
-  novelPath,
+  sourceNovelId,
   onHtmlUpdate,
   onMediaPatch,
   onProgress,
@@ -184,7 +184,7 @@ export async function cacheHtmlChapterMedia({
     chapterPosition,
     novelId,
     novelName,
-    novelPath,
+    sourceNovelId,
     sourceId,
   };
   const mediaContextUrl = contextUrl ?? baseUrl ?? undefined;
@@ -455,7 +455,7 @@ export async function cacheHtmlChapterMedia({
                 chapterPosition,
                 novelId,
                 novelName,
-                novelPath,
+                sourceNovelId,
                 sourceId,
               },
               bodyHandle,
@@ -476,7 +476,7 @@ export async function cacheHtmlChapterMedia({
               chapterPosition,
               novelId,
               novelName,
-              novelPath,
+              sourceNovelId,
               sourceId,
             }),
           );
@@ -596,7 +596,7 @@ export async function cacheHtmlChapterMedia({
         chapterPosition,
         novelId,
         novelName,
-        novelPath,
+        sourceNovelId,
         sourceId,
       }),
     );
@@ -628,7 +628,7 @@ export async function storeEmbeddedChapterMedia({
   html,
   novelId,
   novelName,
-  novelPath,
+  sourceNovelId,
   resources,
   signal,
   sourceId,
@@ -640,7 +640,7 @@ export async function storeEmbeddedChapterMedia({
   html: string;
   novelId?: number | null;
   novelName?: string | null;
-  novelPath?: string | null;
+  sourceNovelId?: string | null;
   resources: EmbeddedChapterMediaResource[];
   signal?: AbortSignal;
   sourceId?: string | null;
@@ -670,7 +670,7 @@ export async function storeEmbeddedChapterMedia({
     chapterPosition,
     novelId,
     novelName,
-    novelPath,
+    sourceNovelId,
     sourceId,
   };
   await withChapterDownloadWrite(chapterId, signal, () =>
@@ -694,7 +694,7 @@ export async function storeEmbeddedChapterMedia({
         fileName,
         novelId: novelId ?? undefined,
         novelName,
-        novelPath,
+        sourceNovelId,
         sourceId: sourceId ?? undefined,
       }),
     );
@@ -724,7 +724,7 @@ export async function storeEmbeddedChapterMedia({
         chapterPosition,
         novelId: novelId ?? undefined,
         novelName,
-        novelPath,
+        sourceNovelId,
         sourceId: sourceId ?? undefined,
       }),
     );

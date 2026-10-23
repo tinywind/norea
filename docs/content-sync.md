@@ -136,16 +136,19 @@ cursor hints.
 ## Storage and compatibility
 
 Plugin ID, novel path, and chapter path identify content across devices. Existing
-numeric database IDs remain device-local. Downloaded chapters use the existing
-readable directory rules; synchronization does not rename existing folders.
+numeric database IDs remain device-local. The plugin supplies a stable, unique
+`novelId`. Both app and server store files under
+`contents/<pluginId>/<novelId>/<chapterNumber>/`, without work or chapter titles
+in directory names. Invalid IDs and collisions are rejected. This development
+format does not convert earlier title-based directories.
 
 Each work folder stores an authoritative `novel.json` and its cover image.
 No cover sidecar or source cover URL is generated or transferred. Readers require
 only the plugin ID, source path, and work name; optional fields may be absent and
 unknown fields are ignored. The document stores work information, including source rating,
-without chapter lists or update timestamps. Work paths exclude the source base URL
-and retain identity query parameters. Chapter folders supply downloaded chapter
-numbers and titles. Source and server chapter lists are cached separately.
+with a chapter-number-to-title catalog and no update timestamp. Work paths
+exclude the source base URL and retain identity query parameters. Numeric chapter
+folders supply downloaded chapter availability; the catalog supplies titles. Source and server chapter lists are cached separately.
 SQLite keeps a queryable metadata cache and local
 reading state. Normal startup reuses this cache and restores directory mappings
 without reading every metadata file or rewriting chapter rows. The first cache

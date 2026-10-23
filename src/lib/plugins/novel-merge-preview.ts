@@ -2,6 +2,7 @@ import { enqueueSourceTask } from "../tasks/source-tasks";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import type { TaskHandle } from "../tasks/scheduler";
 import { isKnownChapterContentType } from "../chapter-content";
+import { isStorageId } from "../storage-id";
 import { isRecord } from "../type-guards";
 import {
   NovelStatus,
@@ -54,6 +55,7 @@ export function validateNovelMergeTargetPreview(value: unknown): SourceNovel {
       "Target preview is missing its novel name or path.",
     );
   }
+  if (!isStorageId(value.novelId)) throw new NovelMergePreviewValidationError("Target preview has an invalid novel ID.");
   if (!Array.isArray(value.chapters)) {
     throw new NovelMergePreviewValidationError(
       "Target preview did not return a chapter list.",

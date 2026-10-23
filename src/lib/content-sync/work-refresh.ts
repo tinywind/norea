@@ -26,7 +26,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     signal?.throwIfAborted();
     const novel = await getNovelById(novelId);
     if (!novel) return false;
-    const identity = { pluginId: novel.pluginId, novelPath: novel.path };
+    const identity = { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path };
     const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
     const stored = await readStoredNovelMetadata(directory);
     if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");

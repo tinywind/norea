@@ -27,9 +27,9 @@ import {
   type StoredChapterArtifactsInspection,
 } from "./chapter-content/storage-platform";
 import {
-  chapterStorageIdentityPrefix,
+  chapterStorageDirectoryName,
   chapterStorageRelativeDir,
-  novelStorageIdentitySuffix,
+  novelStorageDirectoryName,
   sourceStorageRelativeDir,
 } from "./chapter-storage-path";
 import {
@@ -52,6 +52,7 @@ interface ChapterStorageRow {
   novelId: number;
   novelName: string;
   novelPath: string;
+  sourceNovelId: string | null;
   pluginId: string;
   position: number;
 }
@@ -102,6 +103,7 @@ const SELECT_CHAPTER_STORAGE_ROW = `
     c.media_bytes AS mediaBytes,
     n.plugin_id AS pluginId,
     n.path AS novelPath,
+    n.source_novel_id AS sourceNovelId,
     n.name AS novelName
   FROM chapter c
   JOIN novel n ON n.id = c.novel_id
@@ -135,6 +137,7 @@ function storageMetadata(
       id: row.novelId,
       pluginId: row.pluginId,
       path: row.novelPath,
+      sourceNovelId: row.sourceNovelId,
       name: row.novelName,
     },
     chapter: {
@@ -176,8 +179,8 @@ function artifactLookupInput(metadata: ReturnType<typeof storageMetadata>) {
       metadata.chapter,
     ),
     sourceDir: sourceStorageRelativeDir(metadata.novel),
-    novelIdentitySuffix: novelStorageIdentitySuffix(metadata.novel),
-    chapterIdentityPrefix: chapterStorageIdentityPrefix(metadata.chapter),
+    novelDirectoryName: novelStorageDirectoryName(metadata.novel),
+    chapterDirectoryName: chapterStorageDirectoryName(metadata.chapter),
     preferredContentFileName:
       preferredContentFile.split("/").at(-1) ?? "content.html",
   };

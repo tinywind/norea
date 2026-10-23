@@ -48,7 +48,7 @@ it("puts files from library and system open in one local work and selects the op
     { id: expect.any(Number), novel_id: opened.novelId, name: "First", position: 1, chapter_number: "1" },
     { id: opened.chapterId, novel_id: opened.novelId, name: "Second", position: 2, chapter_number: "2" },
   ]);
-  expect(cacheLocalImportedChapterMedia).toHaveBeenLastCalledWith(expect.objectContaining({ novelName: "local", novelPath: "local" }));
+  expect(cacheLocalImportedChapterMedia).toHaveBeenLastCalledWith(expect.objectContaining({ novelName: "local", sourceNovelId: "local" }));
 });
 
 it("reopens the same file without duplicating it, changing its order or resetting reading state", async () => {

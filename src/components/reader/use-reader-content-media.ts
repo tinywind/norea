@@ -75,7 +75,7 @@ export function useReaderContentMedia({
             localMediaContext.chapterPosition ?? "",
             localMediaContext.novelId ?? "",
             localMediaContext.novelName ?? "",
-            localMediaContext.novelPath ?? "",
+            localMediaContext.sourceNovelId ?? "",
             localMediaContext.sourceId ?? "",
           ].join("\u0000")
         : "",
@@ -86,7 +86,7 @@ export function useReaderContentMedia({
       localMediaContext?.chapterPosition,
       localMediaContext?.novelId,
       localMediaContext?.novelName,
-      localMediaContext?.novelPath,
+      localMediaContext?.sourceNovelId,
       localMediaContext?.sourceId,
     ],
   );

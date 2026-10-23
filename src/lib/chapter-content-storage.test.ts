@@ -103,6 +103,7 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
     novelCreatedAt: 1_700_000_000,
     novelId: 1,
     novelName: "Sample Novel",
+    sourceNovelId: "1",
     novelPath: "/n/1",
     novelUpdatedAt: 1_700_000_000,
     page: "1",
@@ -128,7 +129,7 @@ beforeEach(() => {
     if (command === "chapter_content_mirror_inspect") {
       return {
         status: "present",
-        contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+        contentFile: "contents/demo/1/1/content.html",
         contentBytes: 10,
         mediaBytes: 0,
       };
@@ -137,7 +138,7 @@ beforeEach(() => {
   });
   inspectAndroidChapterArtifactsMock.mockResolvedValue({
     status: "present",
-    contentFile: "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+    contentFile: "contents/demo/1/1/content.html",
     contentBytes: 10,
     mediaBytes: 0,
   });
@@ -155,7 +156,7 @@ describe("chapter content storage", () => {
         return {
           status: "present",
           contentFile:
-            "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+            "contents/demo/1/1/content.html",
           contentBytes: 13,
           mediaBytes: 0,
         };
@@ -195,7 +196,7 @@ describe("chapter content storage", () => {
         return {
           status: "present",
           contentFile:
-            "contents/demo/Sample-Novel-n-1/1-Chapter-1/content.html",
+            "contents/demo/1/1/content.html",
           contentBytes: 0,
           mediaBytes: 0,
         };
@@ -269,7 +270,7 @@ describe("chapter content storage", () => {
         if (command === "chapter_content_mirror_inspect") {
           return {
             status: "present",
-            contentFile: "contents/demo/renamed/1-Chapter/content.html",
+            contentFile: "contents/demo/1/1/content.html",
             contentBytes: 82,
             mediaBytes: 1024,
           };
@@ -290,7 +291,7 @@ describe("chapter content storage", () => {
       expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
       expect(invokeMock).toHaveBeenCalledWith(
         "chapter_content_mirror_read_file",
-        { contentFile: "contents/demo/renamed/1-Chapter/content.html" },
+        { contentFile: "contents/demo/1/1/content.html" },
       );
       expect(invokeMock.mock.calls.filter(
         ([command]) => command === "chapter_content_mirror_read_file",
@@ -304,7 +305,7 @@ describe("chapter content storage", () => {
       if (command === "chapter_content_mirror_inspect") {
         return {
           status: "present",
-          contentFile: "contents/demo/novel/chapter/content.html",
+          contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
         };
@@ -328,7 +329,7 @@ describe("chapter content storage", () => {
     selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 0 })]);
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") return {
-        status: "present", contentFile: "contents/demo/novel/chapter/content.html", contentBytes: 48, mediaBytes: 0,
+        status: "present", contentFile: "contents/demo/1/1/content.html", contentBytes: 48, mediaBytes: 0,
       };
       if (command === "chapter_content_mirror_read_file") return '<img src="norea-media://reader-asset/panel.png">';
       return undefined;
@@ -344,7 +345,7 @@ describe("chapter content storage", () => {
       if (command === "chapter_content_mirror_inspect") {
         return {
           status: "present",
-          contentFile: "contents/demo/novel/chapter/content.html",
+          contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
         };
@@ -365,7 +366,7 @@ describe("chapter content storage", () => {
   it("does not load a binary PDF during metadata reconciliation", async () => {
     invokeMock.mockResolvedValueOnce({
       status: "present",
-      contentFile: "contents/demo/novel/chapter/content.pdf",
+      contentFile: "contents/demo/1/1/content.pdf",
       contentBytes: 4096,
       mediaBytes: 0,
     });
@@ -383,7 +384,7 @@ describe("chapter content storage", () => {
       if (command === "chapter_content_mirror_inspect") {
         return {
           status: "present",
-          contentFile: "contents/demo/novel/chapter/content.html",
+          contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
         };
@@ -534,7 +535,7 @@ describe("chapter content storage", () => {
       if (inspectionCount === 1) throw new Error("interrupted finalization");
       return {
         status: "present",
-        contentFile: "contents/demo/Sample-Novel-n-1/2-Chapter-2/content.html",
+        contentFile: "contents/demo/1/2/content.html",
         contentBytes: 12,
         mediaBytes: 8,
       };

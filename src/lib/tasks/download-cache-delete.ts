@@ -10,9 +10,9 @@ import {
   listAndroidChapterStorageDirs,
 } from "../android-storage";
 import {
-  chapterStorageIdentityPrefix,
+  chapterStorageDirectoryName,
   chapterStorageRelativeDir,
-  novelStorageIdentitySuffix,
+  novelStorageDirectoryName,
   sourceStorageRelativeDir,
 } from "../chapter-storage-path";
 import { forgetResolvedChapterStorageDir, resolvedChapterStorageDir } from "../chapter-storage-resolution";
@@ -212,8 +212,8 @@ async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
     const chapterDirs = knownDirectory ? [knownDirectory] : await listAndroidChapterStorageDirs({
       preferredChapterDir,
       sourceDir: sourceStorageRelativeDir(novel),
-      novelIdentitySuffix: novelStorageIdentitySuffix(novel),
-      chapterIdentityPrefix: chapterStorageIdentityPrefix(chapter),
+      novelDirectoryName: novelStorageDirectoryName(novel),
+      chapterDirectoryName: chapterStorageDirectoryName(chapter),
     });
     if (chapterDirs.length > 1) {
       throw new Error(

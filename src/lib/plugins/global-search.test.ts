@@ -24,9 +24,9 @@ function makePlugin(
     getBaseUrl: () => `https://${id}.test`,
     popularNovels: () => Promise.resolve([]),
     parseNovel: () =>
-      Promise.resolve({ name: "", path: "", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "", path: "", chapters: [] }),
     parseNovelSince: () =>
-      Promise.resolve({ name: "", path: "", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "", path: "", chapters: [] }),
     getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: searchImpl,
   };

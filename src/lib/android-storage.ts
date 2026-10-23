@@ -54,8 +54,8 @@ interface AndroidStorageBridge {
     rootUri: string,
     preferredChapterDir: string,
     sourceDir: string,
-    novelIdentitySuffix: string,
-    chapterIdentityPrefix: string,
+    novelDirectoryName: string,
+    chapterDirectoryName: string,
     preferredContentFileName: string,
   ) => void;
   finalizeChapterStorageTransfer: (
@@ -67,8 +67,8 @@ interface AndroidStorageBridge {
     rootUri: string,
     preferredChapterDir: string,
     sourceDir: string,
-    novelIdentitySuffix: string,
-    chapterIdentityPrefix: string,
+    novelDirectoryName: string,
+    chapterDirectoryName: string,
   ) => string;
   prepareReaderMediaCache?: (
     rootUri: string,
@@ -116,6 +116,7 @@ interface AndroidStorageBridge {
     rootUri: string,
     relativePath: string,
     newName: string,
+    allowMissing: boolean,
   ) => void;
   removeChapterStorageDirectory: (
     requestId: string,
@@ -245,8 +246,8 @@ export interface AndroidChapterArtifacts {
 export interface AndroidChapterStorageLookupInput {
   preferredChapterDir: string;
   sourceDir: string;
-  novelIdentitySuffix: string;
-  chapterIdentityPrefix: string;
+  novelDirectoryName: string;
+  chapterDirectoryName: string;
 }
 
 export interface AndroidContentUriDescriptor {
@@ -657,8 +658,8 @@ export async function inspectAndroidChapterArtifacts(input: AndroidChapterStorag
         root,
         input.preferredChapterDir,
         input.sourceDir,
-        input.novelIdentitySuffix,
-        input.chapterIdentityPrefix,
+        input.novelDirectoryName,
+        input.chapterDirectoryName,
         input.preferredContentFileName,
       );
     } catch (error) {
@@ -686,8 +687,8 @@ export async function listAndroidChapterStorageDirs(
       root,
       input.preferredChapterDir,
       input.sourceDir,
-      input.novelIdentitySuffix,
-      input.chapterIdentityPrefix,
+      input.novelDirectoryName,
+      input.chapterDirectoryName,
     ),
   );
   return [...new Set(response.chapterDirs ?? [])];
@@ -978,11 +979,12 @@ export async function rollbackAndroidStorageRestore(
 export async function renameAndroidStoragePath(
   relativePath: string,
   newName: string,
+  allowMissing = false,
 ): Promise<void> {
   const root = await androidStorageRoot();
   const bridge = androidStorageBridge();
   await runAndroidStorageOperation((requestId) =>
-    bridge.renamePath(requestId, root, relativePath, newName),
+    bridge.renamePath(requestId, root, relativePath, newName, allowMissing),
   );
 }
 

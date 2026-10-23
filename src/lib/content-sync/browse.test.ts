@@ -17,14 +17,14 @@ import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
 
 const metadata: NovelMetadataV1 = {
-  schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
+  schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
   novel: { name: "Book", author: null, artist: null, summary: null, status: null, rating: null, genres: null, isLocal: false },
   cover: null,
   chapters: {},
 };
 const installed = {
-  metadata, directory: "contents/source/Book", coverBytes: null,
-  syncFile: { pluginId: "source", path: "/book", directory: "contents/source/Book", fingerprint: "installed", revision: 1 },
+  metadata, directory: "contents/source/book", coverBytes: null,
+  syncFile: { pluginId: "source", path: "/book", directory: "contents/source/book", fingerprint: "installed", revision: 1 },
 };
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
@@ -83,7 +83,7 @@ it("protects metadata installed concurrently while opening a new server work", a
   vi.mocked(findNovelBySource).mockResolvedValueOnce(null);
   vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
   vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
-    const current = { directory: "contents/source/Book", metadata };
+    const current = { directory: "contents/source/book", metadata };
     if (await guard!(current) === false) return null;
     return installed;
   });

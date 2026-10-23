@@ -8,7 +8,7 @@ import { runWorkContentStorageOperation } from "./storage-operation";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../android-storage", () => ({ snapshotAndroidContentChapter: vi.fn(), installAndroidContentChapter: vi.fn() }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: vi.fn() }));
-const identity = { pluginId: "source", novelPath: "/book" };
+const identity = { pluginId: "source", novelId: "book", novelPath: "/book" };
 const entry: CatalogEntry = {
   id: "chapter", revision: "upload", fileBytes: 18, deleted: false, sequence: 1,
   manifest: {
@@ -30,11 +30,11 @@ beforeEach(() => {
 });
 
 it("fingerprints and uploads one Android snapshot instead of copying the chapter twice", async () => {
-  const storageDir = "contents/source/Book/1-One";
+  const storageDir = "contents/source/book/1";
   await withContentChapterStage({ storageDir, identity }, async stagePath => {
     expect(await fingerprintContentChapter({ storageDir, stagePath })).toBe("snapshot-fingerprint");
     await uploadContentChapter({ storageDir, stagePath, serverUrl: "http://server", token: "token", chapterId: 1,
-      manifest: { packageVersion: 1, identity: { pluginId: "source", novelPath: "/book", chapterPath: "/one" },
+      manifest: { packageVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/one" },
         novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } });
   });
   expect(snapshotAndroidContentChapter).toHaveBeenCalledExactlyOnceWith(storageDir, "/cache/content-sync/one");
@@ -44,7 +44,7 @@ it("fingerprints and uploads one Android snapshot instead of copying the chapter
 });
 
 it("removes the private snapshot after a failed transfer", async () => {
-  await expect(withContentChapterStage({ storageDir: "contents/source/Book/1-One", identity }, async () => {
+  await expect(withContentChapterStage({ storageDir: "contents/source/book/1", identity }, async () => {
     throw new Error("server offline");
   })).rejects.toThrow("server offline");
   expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
@@ -60,7 +60,7 @@ it.each([true, false])("discards a snapshot invalidated by a new download before
   });
   vi.mocked(snapshotAndroidContentChapter).mockImplementationOnce(async () => { controller.abort(); });
   const upload = vi.fn();
-  await expect(withContentChapterStage({ storageDir: "contents/source/Book/1-One", identity, signal: controller.signal }, upload))
+  await expect(withContentChapterStage({ storageDir: "contents/source/book/1", identity, signal: controller.signal }, upload))
     .rejects.toMatchObject({ name: "AbortError" });
   expect(upload).not.toHaveBeenCalled();
   expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
@@ -68,14 +68,14 @@ it.each([true, false])("discards a snapshot invalidated by a new download before
 
 it("preserves native HTTP status and server rejection details for sync recovery", async () => {
   vi.mocked(invoke).mockRejectedValue("content sync: server returned 403: Device is blocked");
-  await expect(uploadContentChapter({ storageDir: "contents/source/Book/1-One", stagePath: "/stage", serverUrl: "http://server", token: "token", chapterId: 1,
-    manifest: { packageVersion: 1, identity: { pluginId: "source", novelPath: "/book", chapterPath: "/one" }, novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } }))
+  await expect(uploadContentChapter({ storageDir: "contents/source/book/1", stagePath: "/stage", serverUrl: "http://server", token: "token", chapterId: 1,
+    manifest: { packageVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/one" }, novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } }))
     .rejects.toMatchObject({ status: 403, message: "Device is blocked" });
 });
 
 it("releases the Windows work lock after the snapshot, before transferring it", async () => {
   vi.mocked(isAndroidRuntime).mockReturnValue(false);
-  const storageDir = "contents/source/Book/1-One";
+  const storageDir = "contents/source/book/1";
   await withContentChapterStage({ storageDir, identity }, async () => {
     expect(invoke).toHaveBeenCalledWith("content_sync_snapshot", { storageDir, stagePath: "/cache/content-sync/one" });
     await runWorkContentStorageOperation(identity.pluginId, identity.novelPath, async () => undefined);
@@ -85,7 +85,7 @@ it("releases the Windows work lock after the snapshot, before transferring it", 
 
 it.each([true, false])("stages a download before publishing it and always removes the stage (Android: %s)", async android => {
   vi.mocked(isAndroidRuntime).mockReturnValue(android);
-  const storageDir = "contents/source/Book/1-One";
+  const storageDir = "contents/source/book/1";
   await withDownloadedContentChapter({ serverUrl: "http://server", entry, storageDir, chapterId: 1 }, async (_sizes, install) => {
     expect(invoke).toHaveBeenCalledWith("content_sync_download", expect.objectContaining({ entry, storageDir, stagePath: "/cache/content-sync/one" }));
     expect(invoke).not.toHaveBeenCalledWith("content_sync_install", expect.anything());
@@ -110,7 +110,7 @@ it("settles a cancelled transfer immediately and cleans its private files after 
   const apply = vi.fn();
   let error: unknown;
   let settled = false;
-  const input = { serverUrl: "http://server", entry, storageDir: "contents/source/Book/1-One", chapterId: 1, signal: controller.signal };
+  const input = { serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1, signal: controller.signal };
   const download = withDownloadedContentChapter(input, apply).catch(reason => { error = reason; }).finally(() => { settled = true; });
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   controller.abort(new DOMException("Deleted", "AbortError"));

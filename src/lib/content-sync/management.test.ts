@@ -9,7 +9,7 @@ vi.mock("./client", async importOriginal => ({ ...await importOriginal<typeof im
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("./works", async original => ({ ...await original<typeof import("./works")>(), contentWorkId: vi.fn(async () => "work-id"), recordDeletedWorkMetadata: vi.fn() }));
 const source = { serverUrl: "http://original-server", workId: "work-id" };
-const identity = { pluginId: "plugin", novelPath: "/work" };
+const identity = { pluginId: "plugin", novelId: "work", novelPath: "/work" };
 const deletedWork = { id: "work-id", deleted: true, metadata: { identity } } as WorkCatalogEntry;
 beforeEach(() => {
   vi.clearAllMocks();

@@ -1,3 +1,4 @@
+import { isStorageId } from "../storage-id";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
 
 export const MAX_NOVEL_METADATA_BYTES = 16 * 1024 * 1024;
@@ -5,7 +6,7 @@ export const MAX_NOVEL_COVER_BYTES = 10 * 1024 * 1024;
 
 export interface NovelMetadataV1 {
   schemaVersion: 1;
-  identity: { pluginId: string; novelPath: string };
+  identity: { pluginId: string; novelId: string; novelPath: string };
   novel: {
     name: string;
     author: string | null;
@@ -46,6 +47,7 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
   }
   const identity = record(value.identity);
   text(identity.pluginId); text(identity.novelPath);
+  if (!isStorageId(identity.pluginId) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(identity.pluginId) || !isStorageId(identity.novelId)) throw new Error("work metadata: invalid plugin or novel ID");
   if ((identity.novelPath as string).startsWith("norea-folder:")) throw new Error("work metadata: source work identity required");
   if (/^(?:https?:)?\/\//i.test(identity.novelPath as string)) throw new Error("work metadata: work identity must exclude the base URL");
   const novel = record(value.novel);
@@ -56,7 +58,7 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
   const chapters: NovelMetadataV1["chapters"] = {};
   if (value.chapters !== undefined) {
     for (const [number, name] of Object.entries(record(value.chapters))) {
-      if (!Number.isFinite(Number(number)) || String(Number(number)) !== number) throw new Error("work metadata: invalid chapter number");
+      if (!/^\d+(?:\.\d+)?$/.test(number) || !Number.isFinite(Number(number)) || String(Number(number)) !== number) throw new Error("work metadata: invalid chapter number");
       text(name);
       chapters[number] = name as string;
     }
@@ -73,7 +75,7 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
   const parsed = value as unknown as NovelMetadataV1;
   return {
     schemaVersion: 1,
-    identity: { pluginId: parsed.identity.pluginId, novelPath: parsed.identity.novelPath },
+    identity: { pluginId: parsed.identity.pluginId, novelId: parsed.identity.novelId, novelPath: parsed.identity.novelPath },
     novel: {
       name: parsed.novel.name, author: parsed.novel.author ?? null,
       artist: parsed.novel.artist ?? null, summary: parsed.novel.summary ?? null, status: parsed.novel.status ?? null,

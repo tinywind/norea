@@ -34,22 +34,20 @@ export async function registerNativeWorkChapterDirectories(directories: Record<s
 }
 
 export async function availableNovelMetadataDirectory(metadata: Pick<NovelMetadataV1, "identity" | "novel">): Promise<string> {
-  const preferred = novelStorageRelativeDir({ pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath, name: metadata.novel.name });
+  const preferred = novelStorageRelativeDir({ pluginId: metadata.identity.pluginId, sourceNovelId: metadata.identity.novelId, path: metadata.identity.novelPath, name: metadata.novel.name });
   const { body } = await workMetadataOperation({ operation: "read", path: `${preferred}/novel.json` });
   if (!body) return preferred;
   const existing: unknown = JSON.parse(new TextDecoder().decode(base64ToBytes(body)));
   if (hasWorkIdentity(existing, metadata.identity)) return preferred;
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([metadata.identity.pluginId, metadata.identity.novelPath])));
-  const segments = preferred.split("/");
-  segments[2] = `${segments[2]!.slice(0, 150)}-${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-  return segments.join("/");
+  throw new Error("work metadata: plugin-owned novel ID is already assigned to another work");
 }
 
 function hasWorkIdentity(value: unknown, expected: NovelMetadataV1["identity"]): boolean {
   if (!value || typeof value !== "object" || !("identity" in value)) return false;
   const identity = value.identity;
   return Boolean(identity && typeof identity === "object" && "pluginId" in identity && "novelPath" in identity &&
-    identity.pluginId === expected.pluginId && identity.novelPath === expected.novelPath);
+    identity.pluginId === expected.pluginId && identity.novelPath === expected.novelPath &&
+    "novelId" in identity && identity.novelId === expected.novelId);
 }
 
 async function readNovelMetadataForReplacement(directory: string, identity: NovelMetadataV1["identity"]): Promise<(StoredNovelMetadata & { document: unknown }) | null> {
@@ -137,10 +135,11 @@ export async function* scanStoredNovelMetadata(
       onInspected?.(path, true);
       continue;
     }
-    const identity = JSON.stringify(metadata.identity);
+    const directory = path.slice(0, -"/novel.json".length);
+    if (directory !== `contents/${metadata.identity.pluginId}/${metadata.identity.novelId}`) { onInspected?.(path, true); continue; }
+    const identity = JSON.stringify([metadata.identity.pluginId, metadata.identity.novelPath]);
     if (identities.has(identity)) throw new Error(`work metadata: duplicate work ${path}`);
     identities.add(identity);
-    const directory = path.slice(0, -"/novel.json".length);
     metadata.cover = await discoverStoredNovelCover(directory, metadata.cover);
     throwIfAborted(signal, "Storage recovery cancelled.");
     onInspected?.(path, false);
@@ -165,10 +164,10 @@ export async function listStoredNovelChapters(directory: string, cachedChapterFi
     const parts = path.slice(directory.length + 1).split("/");
     const [child, fileName] = parts;
     if (parts.length !== 2 || !safeMetadataChild(child!) || !["content.html", "content.pdf"].includes(fileName!)) throw new Error("work metadata: invalid chapter file");
-    const match = /^(\d+(?:\.\d+)?)-(.+)$/.exec(child!);
-    if (!match || seen.has(child!)) continue;
+    const match = /^(\d+(?:\.\d+)?)$/.exec(child!);
+    if (!match || String(Number(match[1])) !== child || seen.has(child!)) continue;
     seen.add(child!);
-    chapters.push({ directory: child!, chapterNumber: match[1]!, name: match[2]!, contentType: fileName === "content.pdf" ? "pdf" : "html" });
+    chapters.push({ directory: child!, chapterNumber: match[1]!, name: match[1]!, contentType: fileName === "content.pdf" ? "pdf" : "html" });
   }
   return chapters.sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber) || a.directory.localeCompare(b.directory));
 }

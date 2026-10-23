@@ -166,6 +166,8 @@ export interface ChapterItem {
 }
 
 export interface SourceNovel extends NovelItem {
+  /** Stable plugin-owned ID used verbatim as the work directory name. */
+  novelId: string;
   /** Comma- or pipe-delimited genre string. UI splits/normalizes. */
   genres?: string;
   summary?: string;

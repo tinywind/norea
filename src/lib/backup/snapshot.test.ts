@@ -106,6 +106,7 @@ function installLocalStorage(initial: Record<string, string>): Storage {
 const RAW_NOVEL = {
   id: 1,
   pluginId: "demo",
+  sourceNovelId: "1",
   path: "/n/1",
   name: "Sample Novel",
   cover: null,

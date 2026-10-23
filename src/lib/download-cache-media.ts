@@ -73,7 +73,7 @@ export async function backfillDownloadCacheMediaBytes(
         chapterPosition: candidate.position,
         novelId: candidate.novelId,
         novelName: candidate.novelName,
-        novelPath: candidate.novelPath,
+        sourceNovelId: candidate.sourceNovelId,
         sourceId: candidate.pluginId,
       });
       const result = await updateDownloadCacheChapterMediaBytes(

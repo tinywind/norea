@@ -12,7 +12,7 @@ interface WorkSyncCache { cursor: number; fingerprints: Record<string, string>; 
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const workSyncQueues = new Map<string, Promise<unknown>>();
 const cacheKey = (server: string) => `norea-content-works:${server}`;
-const identityKey = (identity: NovelMetadataV1["identity"]) => JSON.stringify([identity.pluginId, identity.novelPath]);
+const identityKey = (identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">) => JSON.stringify([identity.pluginId, identity.novelPath]);
 export const workMetadataFileVersion = (file: WorkMetadataSyncFile | null | undefined): string | null => file ? JSON.stringify([file.directory, file.fingerprint, file.revision]) : null;
 
 function matchesSyncedWork(cache: WorkSyncCache, id: string, file: WorkMetadataSyncFile, fingerprint: string): boolean {
@@ -44,7 +44,7 @@ export async function runWorkMetadataSyncOperation<T>(server: string, operation:
 async function hash(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer)), byte => byte.toString(16).padStart(2, "0")).join("");
 }
-export function contentWorkId(identity: NovelMetadataV1["identity"]): Promise<string> {
+export function contentWorkId(identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">): Promise<string> {
   return hash(new TextEncoder().encode(JSON.stringify([identity.pluginId, identity.novelPath])));
 }
 

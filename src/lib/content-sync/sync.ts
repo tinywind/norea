@@ -35,7 +35,7 @@ function saveCatalog(server: string, cache: CatalogCache): Promise<void> { retur
 function identity(row: ContentSyncChapter): string { return contentIdentity(row.pluginId, row.novelPath, row.chapterPath); }
 function storageDir(row: ContentSyncChapter): string {
   return resolvedChapterStorageDir(row.chapterId) ?? chapterStorageRelativeDir(
-    { id: row.novelId, pluginId: row.pluginId, path: row.novelPath, name: row.novelName },
+    { id: row.novelId, pluginId: row.pluginId, path: row.novelPath, sourceNovelId: row.sourceNovelId, name: row.novelName },
     { id: row.chapterId, name: row.chapterName, chapterNumber: row.chapterNumber, position: row.position },
   );
 }
@@ -43,7 +43,7 @@ async function contentFingerprint(row: ContentSyncChapter, stagePath: string): P
   return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
-async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber">, signal?: AbortSignal): Promise<CatalogEntry | null> {
+async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber" | "sourceNovelId">, signal?: AbortSignal): Promise<CatalogEntry | null> {
   const local = { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath };
   const recovered = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(row.chapterPath);
   const chapterNumber = row.chapterNumber ?? recovered?.[1];
@@ -59,7 +59,7 @@ async function findUploadedChapter(server: string, token: string, row: Pick<Cont
   const sameChapter = remote.chapterPath === row.chapterPath ||
     ((recovered || /^norea-folder:\d+(?:\.\d+)?$/.test(remote.chapterPath)) &&
       entry.manifest.chapter.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
-  if (entry.deleted || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath ||
+  if (entry.deleted || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath || remote.novelId !== row.sourceNovelId ||
     !remote.chapterPath || !sameChapter) {
     throw new Error("Content server upload identity does not match the requested chapter.");
   }
@@ -163,7 +163,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
           activity.signal.throwIfAborted();
           await uploadContentChapter({
             serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal,
-            manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath },
+            manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath, chapterPath: row.chapterPath },
               novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
               chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
           });
@@ -269,6 +269,7 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
     const row = (await listContentSyncChapters([contentIdentity(target.pluginId, target.novelPath, target.chapterPath)]))
       .find((item) => !imported || item.chapterId === imported.chapterId);
     if (!row) throw new Error("Downloaded chapter metadata is missing.");
+    if (entry.manifest.identity.novelId !== row.sourceNovelId) throw new Error("Server chapter novel ID does not match the local work.");
     return row;
   };
   const row = await findTarget();

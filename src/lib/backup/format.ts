@@ -11,12 +11,14 @@
  * preserving upstream backup zip compatibility.
  */
 
+import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
 
 export const BACKUP_FORMAT_VERSION = 2 as const;
 
 export interface BackupNovel {
   id: number;
+  sourceNovelId: string | null;
   pluginId: string;
   path: string;
   name: string;
@@ -153,6 +155,7 @@ function isNovel(value: unknown): value is BackupNovel {
   return (
     typeof value.id === "number" &&
     typeof value.pluginId === "string" &&
+    (value.sourceNovelId === null || isStorageId(value.sourceNovelId)) &&
     typeof value.path === "string" &&
     typeof value.name === "string" &&
     typeof value.inLibrary === "boolean" &&

@@ -44,7 +44,7 @@ export async function importLocalFileToLibrary(
     chapters,
     novelId: result.novelId,
     novelName: LOCAL_NOVEL_NAME,
-    novelPath: LOCAL_NOVEL_PATH,
+    sourceNovelId: LOCAL_NOVEL_PATH,
   });
   return result;
 }

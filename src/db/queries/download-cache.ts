@@ -81,6 +81,7 @@ interface RawDownloadCacheChapter
 
 export interface DownloadCacheMediaBackfillCandidate {
   id: number;
+  sourceNovelId: string | null;
   chapterName: string;
   chapterNumber: string | null;
   novelId: number;
@@ -296,6 +297,7 @@ export async function listDownloadCacheMediaBackfillCandidates(
     `SELECT
        c.id,
        c.name           AS chapterName,
+       n.source_novel_id AS sourceNovelId,
        c.chapter_number AS chapterNumber,
        c.novel_id       AS novelId,
        c.position,

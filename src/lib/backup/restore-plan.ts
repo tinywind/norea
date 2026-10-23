@@ -1,7 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
 import { storedNovelMetadataFingerprint } from "../../db/work-metadata";
 import { bytesToBase64 } from "../base64";
-import { chapterStorageRelativeDir } from "../chapter-storage-path";
+import { chapterStorageDirectoryName } from "../chapter-storage-path";
 import { listStoredNovelChapters, listStoredNovelMetadata, readStoredNovelCover, type StoredNovelChapter } from "../work-metadata";
 import type { BackupChapter, BackupManifest, BackupNovel } from "./format";
 
@@ -47,7 +47,7 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
     const { pluginId, novelPath } = metadata.identity;
     let novel = byIdentity.get(identityKey(pluginId, novelPath));
     if (!novel) {
-      novel = { id: nextNovelId++, pluginId, path: novelPath, name: metadata.novel.name, cover: null,
+      novel = { id: nextNovelId++, pluginId, sourceNovelId: metadata.identity.novelId, path: novelPath, name: metadata.novel.name, cover: null,
         summary: null, author: null, artist: null, status: null, genres: null, inLibrary: false, isLocal: metadata.novel.isLocal,
         createdAt: now, updatedAt: now, libraryAddedAt: null, lastReadAt: null };
       plan.manifest.novels.push(novel);
@@ -55,7 +55,7 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
     }
     // A restored data URL must not later overwrite the retained cover file.
     const cover = await readStoredNovelCover(directory, metadata);
-    Object.assign(novel, metadata.novel, { cover: cover && metadata.cover
+    Object.assign(novel, metadata.novel, { sourceNovelId: metadata.identity.novelId, cover: cover && metadata.cover
       ? `data:${metadata.cover.contentType};base64,${bytesToBase64(cover)}` : null });
     const chapters = chaptersByNovel.get(novel.id) ?? [];
     chaptersByNovel.set(novel.id, chapters);
@@ -78,12 +78,10 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
       byNumber.set(number, [...(byNumber.get(number) ?? []), chapter]);
     };
     for (const chapter of chapters) indexChapter(chapter);
-    if (!metadata.novel.isLocal) {
-      for (const [index, [number, name]] of Object.entries(metadata.chapters).sort(([a], [b]) => Number(a) - Number(b)).entries()) {
-        const matches = byNumber.get(Number(number)) ?? [];
-        if (matches.length === 1) { matches[0]!.name = name; matches[0]!.position = index + 1; }
-        if (matches.length === 0) indexChapter(addChapter(`norea-folder:${number}`, name, number, index + 1));
-      }
+    for (const [index, [number, name]] of Object.entries(metadata.chapters).sort(([a], [b]) => Number(a) - Number(b)).entries()) {
+      const matches = byNumber.get(Number(number)) ?? [];
+      if (matches.length === 1) { matches[0]!.name = name; matches[0]!.position = index + 1; }
+      if (matches.length === 0) indexChapter(addChapter(`${metadata.novel.isLocal ? "local-folder" : "norea-folder"}:${number}`, name, number, index + 1));
     }
     const storedChapters = await listStoredNovelChapters(directory);
     const storedCounts = new Map<number, number>();
@@ -118,5 +116,5 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
 }
 
 function localDirectoryMatches(chapter: BackupChapter, stored: StoredNovelChapter): boolean {
-  return chapterStorageRelativeDir({}, { name: chapter.name, chapterNumber: chapter.chapterNumber, position: chapter.position }).endsWith(`/${stored.directory}`);
+  return chapterStorageDirectoryName(chapter) === stored.directory;
 }

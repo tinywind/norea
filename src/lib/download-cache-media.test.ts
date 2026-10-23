@@ -53,6 +53,7 @@ describe("download cache media backfill", () => {
         novelId: 3,
         novelName: "Novel",
         novelPath: "/novel",
+        sourceNovelId: "novel",
         pluginId: "source",
         position: 1,
         updatedAt: 100,

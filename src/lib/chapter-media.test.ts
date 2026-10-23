@@ -209,7 +209,7 @@ it("requires the current native media store command", async () => {
     chapterId: 42,
     fileName: "page.png",
     novelId: 7,
-    novelPath: "/novel",
+    sourceNovelId: "novel",
     sourceId: "demo",
   })).rejects.toThrow("unknown command: chapter_media_store_handle");
   expect(invokeMock).toHaveBeenCalledWith("native_stream_cancel", { handle: "media-1" });
@@ -366,7 +366,7 @@ describe("cacheHtmlChapterMedia", () => {
       ].join(""),
       novelId: 9,
       novelName: "Sample Novel",
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       shouldYield: () => shouldYield,
       sourceId: "demo",
     });
@@ -425,7 +425,7 @@ describe("cacheHtmlChapterMedia", () => {
       ].join(""),
       novelId: 9,
       novelName: "Sample Novel",
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       sourceId: "demo",
     });
 
@@ -461,7 +461,7 @@ describe("cacheHtmlChapterMedia", () => {
         fileName: "0001-page.png",
         novelId: 9,
         novelName: "Sample Novel",
-        novelPath: "/novel/sample",
+        sourceNovelId: "novel",
         sourceId: "demo",
       }),
     );
@@ -476,7 +476,7 @@ describe("cacheHtmlChapterMedia", () => {
         fileName: "0002-cover.webp",
         novelId: 9,
         novelName: "Sample Novel",
-        novelPath: "/novel/sample",
+        sourceNovelId: "novel",
         sourceId: "demo",
       }),
     );
@@ -489,7 +489,7 @@ describe("cacheHtmlChapterMedia", () => {
         chapterPosition: 1,
         novelId: 9,
         novelName: "Sample Novel",
-        novelPath: "/novel/sample",
+        sourceNovelId: "novel",
         sourceId: "demo",
       }),
     );
@@ -546,7 +546,7 @@ describe("cacheHtmlChapterMedia", () => {
       chapterId: 42,
       html: `<img src="/page.png">`,
       novelId: 9,
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       sourceId: "demo",
     });
 
@@ -565,7 +565,7 @@ describe("cacheHtmlChapterMedia", () => {
       fileName: "0001-page.png",
       handle: "media-1",
       novelId: 9,
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       sourceId: "demo",
     });
     expect(result.html).toContain(
@@ -600,7 +600,7 @@ describe("cacheHtmlChapterMedia", () => {
       chapterId: 42,
       html: `<img src="/page.png">`,
       novelId: 9,
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       scraperExecutor: "pool:1",
       sourceId: "demo",
     });
@@ -611,7 +611,7 @@ describe("cacheHtmlChapterMedia", () => {
       fileName: "0001-page.png",
       handle: "captured-media-1",
       novelId: 9,
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       sourceId: "demo",
     });
     expect(invokeMock).not.toHaveBeenCalledWith(
@@ -673,7 +673,7 @@ describe("cacheHtmlChapterMedia", () => {
         (_, index) => `<img src="/page-${index + 1}.png">`,
       ).join(""),
       novelId: 9,
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       scraperExecutor: "pool:1",
       sourceId: "demo",
     });
@@ -739,7 +739,7 @@ describe("cacheHtmlChapterMedia", () => {
         (_, index) => `<img src="/page-${index + 1}.png">`,
       ).join(""),
       novelId: 9,
-      novelPath: "/novel/sample",
+      sourceNovelId: "novel",
       onProgress: () => {
         throw progressError;
       },
@@ -2304,11 +2304,11 @@ describe("cacheHtmlChapterMedia", () => {
       html: `<img src="https://source.test/current.png">`,
       novelId: 7,
       novelName: "Novel",
-      novelPath: "novel/path",
+      sourceNovelId: "novel",
       sourceId: "source-a",
     });
 
-    const preferredDir = "contents/source-a/Novel-novel-path/1-Chapter";
+    const preferredDir = "contents/source-a/novel/1";
     const deletedPaths = [
       ...androidStorageMocks.deleteAndroidStoragePath.mock.calls.map(
         ([path]) => path,
@@ -2499,9 +2499,9 @@ describe("cacheHtmlChapterMedia", () => {
       updatedAt: 1,
       version: 1,
     };
-    const preferredDir = "contents/source-a/Novel-novel-path/1-Chapter/media";
+    const preferredDir = "contents/source-a/novel/1/media";
     const preferredArchive =
-      "contents/source-a/Novel-novel-path/1-Chapter/media.zip";
+      "contents/source-a/novel/1/media.zip";
 
     pluginMediaFetchMock.mockImplementation(async (url) => {
       const bytes = String(url).includes("page-1")
@@ -2540,7 +2540,7 @@ describe("cacheHtmlChapterMedia", () => {
       ].join(""),
       novelId: 7,
       novelName: "Novel",
-      novelPath: "novel/path",
+      sourceNovelId: "novel",
       repair: true,
       sourceId: "source-a",
     });
@@ -2586,7 +2586,7 @@ describe("cacheHtmlChapterMedia", () => {
       version: 1,
     };
     const preferredArchive =
-      "contents/source-a/Novel-novel-path/1-Chapter/media.zip";
+      "contents/source-a/novel/1/media.zip";
 
     pluginMediaFetchMock.mockResolvedValue(
       new Response(new Uint8Array([1, 2, 3, 4]), {
@@ -2625,7 +2625,7 @@ describe("cacheHtmlChapterMedia", () => {
       ].join(""),
       novelId: 7,
       novelName: "Novel",
-      novelPath: "novel/path",
+      sourceNovelId: "novel",
       repair: true,
       sourceId: "source-a",
     });
@@ -2666,12 +2666,12 @@ describe("cacheHtmlChapterMedia", () => {
       html: `<img src="https://source.test/page-1.jpg">`,
       novelId: 7,
       novelName: "Novel",
-      novelPath: "novel/path",
+      sourceNovelId: "novel",
       sourceId: "source-a",
     });
 
     expect(androidStorageMocks.writeAndroidStorageBytes).toHaveBeenCalledWith(
-      "contents/source-a/Novel-novel-path/1-Chapter/media/0001-page-1.jpg",
+      "contents/source-a/novel/1/media/0001-page-1.jpg",
       new Uint8Array([1, 2, 3]),
       "image/jpeg",
     );
@@ -2878,11 +2878,11 @@ describe("clearChapterMedia", () => {
       chapterPosition: 1,
       novelId: 7,
       novelName: "Novel",
-      novelPath: "novel/path",
+      sourceNovelId: "novel",
       sourceId: "source-a",
     });
 
-    const preferredDir = "contents/source-a/Novel-novel-path/1-Chapter";
+    const preferredDir = "contents/source-a/novel/1";
     const deletedPaths = [
       ...androidStorageMocks.deleteAndroidStoragePath.mock.calls.map(
         ([path]) => path,
@@ -3139,14 +3139,14 @@ describe("resolveLocalChapterMedia", () => {
 
     const html = await resolveLocalChapterMedia(
       `<img src="norea-media://reader-asset/page.png">`,
-      { chapterId: 95, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
+      { chapterId: 95, chapterNumber: "95", novelId: 7, novelName: "Novel", sourceNovelId: "novel", sourceId: "demo" },
     );
 
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "contents/demo/Novel-novel/95-chapter/media",
-      "contents/demo/Novel-novel/95-chapter/media.zip",
+      "contents/demo/novel/95/media",
+      "contents/demo/novel/95/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(html).toMatch(
@@ -3281,7 +3281,7 @@ describe("resolveLocalChapterMediaPatches", () => {
           },
         },
       ],
-      { chapterId: 42, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
+      { chapterId: 42, chapterNumber: "42", novelId: 7, novelName: "Novel", sourceNovelId: "novel", sourceId: "demo" },
     );
 
     expect(androidStorageMocks.readAndroidStorageDataUrl).not.toHaveBeenCalled();
@@ -3291,8 +3291,8 @@ describe("resolveLocalChapterMediaPatches", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "contents/demo/Novel-novel/42-chapter/media",
-      "contents/demo/Novel-novel/42-chapter/media.zip",
+      "contents/demo/novel/42/media",
+      "contents/demo/novel/42/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(patches).toHaveLength(2);
@@ -3338,14 +3338,14 @@ describe("resolveLocalChapterMediaPatches", () => {
           },
         },
       ],
-      { chapterId: 27, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
+      { chapterId: 27, chapterNumber: "27", novelId: 7, novelName: "Novel", sourceNovelId: "novel", sourceId: "demo" },
     );
 
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "contents/demo/Novel-novel/27-chapter/media",
-      "contents/demo/Novel-novel/27-chapter/media.zip",
+      "contents/demo/novel/27/media",
+      "contents/demo/novel/27/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(patches[0]?.attributes.src).toMatch(
@@ -3378,7 +3378,7 @@ describe("resolveLocalChapterMediaPatches", () => {
         chapterPosition: 7,
         novelId: 1,
         novelName: "Novel",
-        novelPath: "novel/path",
+        sourceNovelId: "novel",
         sourceId: "source-a",
       },
     );
@@ -3386,8 +3386,8 @@ describe("resolveLocalChapterMediaPatches", () => {
     expect(
       androidStorageMocks.prepareAndroidReaderMediaCache,
     ).toHaveBeenCalledWith(
-      "contents/source-a/Novel-novel-path/7-Chapter/media",
-      "contents/source-a/Novel-novel-path/7-Chapter/media.zip",
+      "contents/source-a/novel/7/media",
+      "contents/source-a/novel/7/media.zip",
       expect.stringMatching(/^\d+-[a-z0-9]+$/),
     );
     expect(patches[0]?.attributes.src).toMatch(
@@ -3398,7 +3398,7 @@ describe("resolveLocalChapterMediaPatches", () => {
   it("leaves scoped Android reader media URLs as resolved resources", async () => {
     vi.stubGlobal("navigator", { userAgent: "Android" });
 
-    const scoped = "norea-media://reader-asset/~cache/42-abcd/page.png";
+    const scoped = "norea-media://reader-asset/~cache/42/page.png";
     const patches = await resolveLocalChapterMediaPatches(
       [
         {
@@ -3407,7 +3407,7 @@ describe("resolveLocalChapterMediaPatches", () => {
           sourceAttributes: { src: scoped },
         },
       ],
-      { chapterId: 42, novelId: 7, novelName: "Novel", novelPath: "/novel", sourceId: "demo" },
+      { chapterId: 42, chapterNumber: "42", novelId: 7, novelName: "Novel", sourceNovelId: "novel", sourceId: "demo" },
     );
 
     expect(

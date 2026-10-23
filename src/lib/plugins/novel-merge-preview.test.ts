@@ -18,6 +18,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
   it("parses the selected target without importing it", async () => {
     const targetNovel = {
       name: "Target novel",
+      novelId: "target",
       path: "/novel/target",
       chapters: [
         { name: "Chapter 1", path: "/chapter/1", chapterNumber: 1 },
@@ -97,6 +98,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
     expect(() =>
       validateNovelMergeTargetPreview({
         name: "Broken target",
+        novelId: "broken",
         path: "/broken",
         chapters: null,
       }),
@@ -107,6 +109,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
     expect(() =>
       validateNovelMergeTargetPreview({
         name: "Broken target",
+        novelId: "broken",
         path: "/broken",
         chapters: [
           { name: "Chapter", path: "/chapter", chapterNumber: Infinity },
@@ -119,6 +122,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
     expect(() =>
       validateNovelMergeTargetPreview({
         name: "Broken target",
+        novelId: "broken",
         path: "/broken",
         chapters: [
           {
@@ -136,6 +140,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
     expect(() =>
       validateNovelMergeTargetPreview({
         name: "Broken target",
+        novelId: "broken",
         path: "/broken",
         chapters: [
           { name: "First", path: "/chapter/1", chapterNumber: 1 },
@@ -149,6 +154,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
     expect(() =>
       validateNovelMergeTargetPreview({
         name: "Broken target",
+        novelId: "broken",
         path: "/broken",
         cover: 42,
         chapters: [],

@@ -17,6 +17,7 @@ import { markUpdatesIndexDirty } from "../updates/update-index-events";
 import { normalizeSourceAccessRequiredError } from "./source-access";
 import { notifyWorkMetadataChanges, readStoredNovelMetadata } from "../work-metadata";
 import { isTauriRuntime } from "../tauri-runtime";
+import { isStorageId } from "../storage-id";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 
 export interface SyncNovelFromSourceOptions {
@@ -123,7 +124,7 @@ function assertSourceChapters(
 
   for (const chapter of chapters) {
     const chapterNumber = chapter.chapterNumber;
-    if (typeof chapterNumber !== "number" || !Number.isFinite(chapterNumber)) {
+    if (typeof chapterNumber !== "number" || !Number.isFinite(chapterNumber) || !/^\d+(?:\.\d+)?$/.test(String(chapterNumber))) {
       throw new Error(
         `Plugin '${pluginId}' ${method} returned a chapter without a finite numeric chapterNumber.`,
       );
@@ -162,6 +163,7 @@ function assertSourceNovel(
   method: string,
   detail: SourceNovel,
 ): { detail: SourceNovel; duplicateChapters: SourceDuplicateChapterInfo[] } {
+  if (!isStorageId(detail.novelId)) throw new Error(`Plugin '${pluginId}' ${method} returned an invalid novel ID.`);
   if (detail.rating !== undefined && (
     !Number.isFinite(detail.rating) || detail.rating < 0 || detail.rating > 5
   )) {
@@ -292,11 +294,17 @@ export async function syncNovelFromSource(
       pluginId: plugin.id, path: item.path, name: item.name,
     }, chapterInputs);
     options.signal?.throwIfAborted();
+    const [storedIdentity] = await db.select<{ sourceNovelId: string | null }[]>(
+      "SELECT source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2", [plugin.id, item.path]);
+    if (storedIdentity?.sourceNovelId && storedIdentity.sourceNovelId !== detail.novelId) {
+      throw new Error(`Plugin '${plugin.id}' changed a stored novel ID.`);
+    }
     const novelResult = await db.execute(
-      `INSERT INTO novel (plugin_id, path, name, cover, summary, author, artist, status, genres, rating)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO novel (plugin_id, path, name, cover, summary, author, artist, status, genres, rating, source_novel_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT(plugin_id, path) DO UPDATE SET
          name = excluded.name,
+         source_novel_id = excluded.source_novel_id,
          ${metadataAssignment("cover", preserveMissingMetadata)},
          ${metadataAssignment("summary", preserveMissingMetadata)},
          ${metadataAssignment("author", preserveMissingMetadata)},
@@ -306,7 +314,8 @@ export async function syncNovelFromSource(
          ${metadataAssignment("rating", preserveMissingMetadata)},
          updated_at = unixepoch()
         WHERE
-          name IS NOT excluded.name
+          source_novel_id IS NOT excluded.source_novel_id
+          OR name IS NOT excluded.name
           OR ${metadataChangedClause("cover", preserveMissingMetadata)}
           OR ${metadataChangedClause("summary", preserveMissingMetadata)}
           OR ${metadataChangedClause("author", preserveMissingMetadata)}
@@ -325,6 +334,7 @@ export async function syncNovelFromSource(
         optionalText(detail.status == null ? null : String(detail.status)),
         optionalText(detail.genres),
         detail.rating ?? null,
+        detail.novelId,
       ],
     );
 

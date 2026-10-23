@@ -17,6 +17,7 @@ import {
   prepareAndroidChapterStorageTransfer,
   prepareAndroidReaderMediaCache,
   readAndroidStorageText,
+  renameAndroidStoragePath,
   readAndroidStorageZipEntriesDataUrls,
   removeAndroidChapterStorageDirectory,
   rollbackAndroidChapterStorageTransfer,
@@ -39,6 +40,7 @@ type TestBridge = {
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
   readText?: ReturnType<typeof vi.fn>;
+  renamePath?: ReturnType<typeof vi.fn>;
   readZipEntriesBase64?: ReturnType<typeof vi.fn>;
   removeChapterStorageDirectory?: ReturnType<typeof vi.fn>;
   rollbackChapterStorageTransfer?: ReturnType<typeof vi.fn>;
@@ -344,6 +346,20 @@ describe("android storage bridge facade", () => {
     );
   });
 
+  it.each([undefined, true])("passes an explicit missing-source policy to Android renames (allowMissing: %s)", async allowMissing => {
+    const root = "content://tree/primary%3ANoreaRename";
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    const renamePath = vi.fn((requestId: string) => {
+      queueMicrotask(() => window.__noreaResolveAndroidStorageOperation?.(requestId, JSON.stringify({ ok: true })));
+    });
+    invokeMock.mockResolvedValue(root);
+    installBridge({ ensureNoMedia, renamePath });
+    await renameAndroidStoragePath("contents/local/local/1", "2", allowMissing);
+    expect(renamePath).toHaveBeenCalledExactlyOnceWith(
+      expect.any(String), root, "contents/local/local/1", "2", allowMissing ?? false,
+    );
+  });
+
   it("deletes several storage paths through one deletePaths bridge call", async () => {
     const root = "content://tree/primary%3ANoreaDelete";
     const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
@@ -465,9 +481,9 @@ describe("android storage bridge facade", () => {
     installBridge({ ensureNoMedia, inspectChapterArtifacts });
 
     const inspection = inspectAndroidChapterArtifacts({
-      chapterIdentityPrefix: "1-",
-      novelIdentitySuffix: "-novel-1",
-      preferredChapterDir: "contents/demo/Novel-novel-1/1-Chapter",
+      chapterDirectoryName: "1",
+      novelDirectoryName: "novel-1",
+      preferredChapterDir: "contents/demo/novel-1/1",
       preferredContentFileName: "content.html",
       sourceDir: "contents/demo",
     });
@@ -476,10 +492,10 @@ describe("android storage bridge facade", () => {
     expect(inspectChapterArtifacts).toHaveBeenCalledWith(
       expect.any(String),
       root,
-      "contents/demo/Novel-novel-1/1-Chapter",
+      "contents/demo/novel-1/1",
       "contents/demo",
-      "-novel-1",
-      "1-",
+      "novel-1",
+      "1",
       "content.html",
     );
 
@@ -499,7 +515,7 @@ describe("android storage bridge facade", () => {
       requestId,
       JSON.stringify({
         contentBytes: 12,
-        contentFile: "contents/demo/Novel-novel-1/1-Chapter/content.html",
+        contentFile: "contents/demo/novel-1/1/content.html",
         mediaBytes: 3,
         ok: true,
         status: "present",
@@ -508,7 +524,7 @@ describe("android storage bridge facade", () => {
 
     await expect(inspection).resolves.toEqual({
       contentBytes: 12,
-      contentFile: "contents/demo/Novel-novel-1/1-Chapter/content.html",
+      contentFile: "contents/demo/novel-1/1/content.html",
       mediaBytes: 3,
       status: "present",
     });

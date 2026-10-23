@@ -2,7 +2,7 @@
 
 ## Contract
 
-`contents/<source>/<work>/novel.json` is the authoritative, portable description
+`contents/<pluginId>/<novelId>/novel.json` is the authoritative, portable description
 of a work, including its saved chapter catalog. Recovery caches the catalog in
 SQLite and matches completed chapter files by their source chapter numbers.
 The app database retains queryable metadata as a rebuildable cache. Files win
@@ -14,11 +14,11 @@ retained. A schema checksum mismatch recreates the app database while leaving
 files on disk. The server requires a fresh state volume for an incompatible
 schema. The independent source-plugin API remains 0.2.
 
-The work identity uses the plugin ID and its source path without the base URL,
+The work identity stores the plugin ID, the plugin-owned `novelId`, and its source path without the base URL,
 for example `/novel/123456`. Absolute HTTP URLs, protocol-relative URLs, and
 `norea-folder:` work identities are invalid. Existing folders without valid
 `novel.json` are skipped by the content server; no title or work URL is guessed.
-Chapter folders named `<number>-<title>` are discovered from completed
+Chapter folders named `<number>` are discovered from completed
 `content.html` or `content.pdf` files. A nonempty final body remains readable
 even when a media manifest is incomplete or malformed, or a partial artifact
 remains. Server package completeness is checked separately. A matching cached
@@ -34,7 +34,7 @@ An uninitialized cache, explicit rescan, or failed-write recovery reads the
 authoritative files. Changes made outside the app require a rescan; writes check
 the previous file fingerprint to avoid overwriting external edits.
 
-Readers require only `identity.pluginId`, `identity.novelPath`, and `novel.name`.
+Readers require `identity.pluginId`, `identity.novelId`, `identity.novelPath`, and `novel.name`.
 `schemaVersion` defaults to 1 when absent; an explicit unsupported version is
 rejected. Other missing values default to null, with `isLocal` defaulting to false
 and `chapters` defaulting to an empty map.
@@ -45,7 +45,7 @@ The normalized document written by the app and server is:
 ```typescript
 interface NovelMetadataV1 {
   schemaVersion: 1;
-  identity: { pluginId: string; novelPath: string };
+  identity: { pluginId: string; novelId: string; novelPath: string };
   novel: {
     name: string;
     author: string | null;
@@ -81,9 +81,11 @@ Metadata is written atomically through a temporary sibling file and rename.
 Identical metadata and cover bytes do not trigger file writes.
 The metadata document has no update timestamp. `chapters` maps canonical numeric
 source chapter keys to exact titles, including fractional chapter numbers. The
-app writes this map only after source metadata fetches. The first fetch retrieves
-the full source list; incremental fetches merge titles without dropping earlier
-entries. Downloads, deletions, and reading changes never regenerate this map.
+app writes this map after source metadata fetches. For local works, local import,
+chapter edits, deletion, and reordering publish the current chapter titles instead.
+For source works, the first fetch retrieves the full list and incremental fetches
+merge titles without dropping earlier entries. Downloads, download deletions,
+and reading changes never regenerate a source work's chapter map.
 Restoring a backup creates the complete cached catalog, then marks only discovered
 completed chapter files as downloaded. Completed folders missing from the catalog
 are still recovered. Source chapter URLs are not stored in this map; a source
@@ -95,8 +97,18 @@ remain errors. Updates require matching plugin ID and work path. Scans never rew
 documents; publication writes only the normalized current fields.
 Invalid metadata is never converted into an empty work. Identity,
 directory traversal, and size limits are
-validated at both import boundaries. Renaming a title retains the existing work
-directory when its identity already exists.
+validated at both import boundaries. Storage uses `contents/<pluginId>/<novelId>/<chapterNumber>/` in both applications.
+The plugin supplies a stable, unique `novelId` for each work; the host neither
+hashes it nor derives it from the source path or title. IDs must be portable
+single directory names of at most 240 UTF-8 bytes. Hidden names, control
+characters, path separators, Windows reserved names, trailing dots or spaces,
+and unfinished-file suffixes are rejected. Reusing an ID for another source
+path or changing a saved work's ID is rejected.
+Titles remain in `novel.json`; recovery uses its chapter catalog for titles and
+uses the chapter number when the catalog has no title. Chapter directory names
+are canonical nonnegative decimal numbers, including fractions. A chapter with
+no source number uses its positive position. Renaming a title leaves the path
+unchanged.
 
 ## Server and synchronization
 
@@ -122,7 +134,7 @@ downloads so catalog-only works display their covers in the app.
   containing only `id` and `fileBytes`. Inspect fetches the full chapter details.
   Chapters without stored bodies have a null entry and cannot be deleted or read.
 
-Metadata and covers are stored in readable work folders. SQLite indexes these
+Metadata and covers are stored in plugin-owned ID folders. SQLite indexes these
 files and keeps durable change cursors; the files can rebuild the work catalog.
 Metadata-only works are valid. Covers update the work change cursor as well.
 The sync client records local metadata/cover fingerprints and its remote work

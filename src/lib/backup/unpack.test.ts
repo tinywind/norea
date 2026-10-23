@@ -25,6 +25,7 @@ function makeLeanManifest(): BackupManifest {
       {
         id: 1,
         pluginId: "demo",
+        sourceNovelId: "1",
         path: "/n/1",
         name: "Sample Novel",
         cover: null,

@@ -60,6 +60,7 @@ type EditableLocalNovel = Pick<
   | "name"
   | "path"
   | "pluginId"
+  | "sourceNovelId"
   | "isLocal"
   | "cover"
   | "summary"

@@ -30,7 +30,7 @@ import { syncServerNovelOnOpen, refreshServerNovelFromSource } from "./work-refr
 
 const chapter = { chapterPath: "/chapter/1", name: "One", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const, releaseTime: null, directory: "1-One" };
 const local: NovelMetadataV1 = {
-  schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book" },
+  schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
   novel: { name: "Book", author: "Author", artist: null, summary: "Local summary", status: null, rating: null, genres: null, isLocal: false },
   cover: null,
   chapters: {},

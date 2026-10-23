@@ -25,8 +25,8 @@ const workMetadataMock = vi.mocked(workMetadataOperation);
 const pluginMediaFetchMock = vi.mocked(pluginMediaFetch);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
-const novel = { id: 7, name: "Sample Novel", path: "/novel", pluginId: "demo" };
-const directory = "contents/demo/Sample-Novel-novel";
+const novel = { id: 7, name: "Sample Novel", path: "/novel", sourceNovelId: "novel", pluginId: "demo" };
+const directory = "contents/demo/novel";
 function coverVersion(): string {
   const snapshot = getNovelCoverSnapshot(novel.id);
   return snapshot ? `1-${snapshot}` : "1";
@@ -43,9 +43,9 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
     getBaseUrl: () => "https://source.test/books/",
     popularNovels: () => Promise.resolve([]),
     parseNovel: () =>
-      Promise.resolve({ name: "Sample Novel", path: "/novel", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "Sample Novel", path: "/novel", chapters: [] }),
     parseNovelSince: () =>
-      Promise.resolve({ name: "Sample Novel", path: "/novel", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "Sample Novel", path: "/novel", chapters: [] }),
     getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
     ...overrides,
@@ -261,7 +261,7 @@ describe("cached novel cover display sources", () => {
     const second = await resolveCachedNovelCoverSrc(displayNovel, { plugin });
 
     expect(first).toBe(
-      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
+      `http://norea-media.localhost/contents/demo/novel/cover.jpg?v=${coverVersion()}`,
     );
     expect(cached).toBe(first);
     expect(second).toBe(first);
@@ -582,7 +582,7 @@ describe("resolveNovelCoverDisplaySource", () => {
     );
 
     expect(resolved?.src).toBe(
-      `http://norea-media.localhost/contents/demo/Sample-Novel-novel/cover.jpg?v=${coverVersion()}`,
+      `http://norea-media.localhost/contents/demo/novel/cover.jpg?v=${coverVersion()}`,
     );
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
     expect(persistNovelCover).not.toHaveBeenCalled();

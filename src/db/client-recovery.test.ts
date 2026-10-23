@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
       if (storage.failRead) throw new Error("Storage is unavailable");
       return { body: files.get(input.path!) ?? null };
     }
-    if (input.operation === "chapters") return { paths: [input.path!.replace("novel.json", "1-Opening/content.html")] };
+    if (input.operation === "chapters") return { paths: [input.path!.replace("novel.json", "1/content.html")] };
     if (input.operation === "write") { storage.writes++; files.set(input.path!, input.body!); }
     if (input.operation === "remove") { storage.writes++; files.delete(input.path!); }
     return {};
@@ -38,13 +38,13 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
 let sqlite: DatabaseSync;
 let client: typeof import("./client");
 let state: typeof import("../store/storage-recovery").useStorageRecoveryStore;
-const first = "contents/source/First/novel.json";
-const second = "contents/source/Second/novel.json";
+const first = "contents/source/first/novel.json";
+const second = "contents/source/second/novel.json";
 
 function addWork(root: string, path: string, name: string) {
   const files = storage.files.get(root) ?? new Map<string, number[]>();
   files.set(path, [...new TextEncoder().encode(JSON.stringify({
-    identity: { pluginId: "source", novelPath: `/${name}` }, novel: { name },
+    identity: { pluginId: "source", novelId: path.split("/").at(-2), novelPath: `/${name}` }, novel: { name },
   }))]);
   storage.files.set(root, files);
 }
@@ -195,9 +195,9 @@ it("retains pending metadata and usable database access when restart publication
 });
 
 it.each([true, undefined])("recovers the current local work without moving or rewriting its files (isLocal: %s)", async (isLocal) => {
-  const localPath = "contents/local/local-local/novel.json";
+  const localPath = "contents/local/local/novel.json";
   storage.files.set("old", new Map([[localPath, [...new TextEncoder().encode(JSON.stringify({
-    identity: { pluginId: "local", novelPath: "local" }, novel: { name: "local", isLocal },
+    identity: { pluginId: "local", novelId: "local", novelPath: "local" }, novel: { name: "local", isLocal },
   }))]]]));
   const original = [...storage.files.get("old")!.get(localPath)!];
   await client.getDb();

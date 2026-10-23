@@ -112,6 +112,7 @@ const mockedCancelNovelChapterDownloadWork = vi.mocked(
 const sourceNovel = {
   id: 1,
   pluginId: "source-a",
+  sourceNovelId: "a-novel",
   pluginName: "Source A",
   path: "/a-novel",
   name: "Novel A",
@@ -134,6 +135,7 @@ const targetNovel = {
   ...sourceNovel,
   id: 2,
   pluginId: "source-b",
+  sourceNovelId: "b-novel",
   pluginName: "Source B",
   path: "/b-novel",
   name: "Novel B",
@@ -205,7 +207,7 @@ beforeEach(() => {
     chapterId === 11
       ? {
           status: "present",
-          contentFile: "contents/source-a/Novel-A-a-novel/1-A-Chapter-1/content.html",
+          contentFile: "contents/source-a/a-novel/1/content.html",
           contentBytes: 100,
           mediaBytes: 20,
         }
@@ -223,11 +225,11 @@ beforeEach(() => {
         entryId: "11",
         outcome: "copiedSource",
         sourceRelativeDir:
-          "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+          "contents/source-a/a-novel/1",
         targetRelativeDir:
-          "contents/source-b/Novel-B-b-novel/1-B-Chapter-1",
+          "contents/source-b/b-novel/1",
         contentFile:
-          "contents/source-b/Novel-B-b-novel/1-B-Chapter-1/content.html",
+          "contents/source-b/b-novel/1/content.html",
         contentBytes: 100,
         mediaBytes: 20,
         replacedTarget: false,
@@ -263,9 +265,9 @@ describe("executeNovelMerge", () => {
       {
         entryId: "11",
         sourceRelativeDir:
-          "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+          "contents/source-a/a-novel/1",
         targetRelativeDir:
-          "contents/source-b/Novel-B-b-novel/1-B-Chapter-1",
+          "contents/source-b/b-novel/1",
       },
     ]);
     expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(
@@ -298,7 +300,7 @@ describe("executeNovelMerge", () => {
     ).toBeLessThan(mockedApplyNovelMergeInDb.mock.invocationCallOrder[0] ?? Infinity);
     expect(mockedFinalizeChapterStorageTransfer).toHaveBeenCalled();
     expect(mockedRemoveChapterStorageDirectory).toHaveBeenCalledWith(
-      "contents/source-a/Novel-A-a-novel",
+      "contents/source-a/a-novel",
     );
     expect(result).toMatchObject({ targetNovelId: 2, chapterIdMap: { 11: 21 } });
   });
@@ -330,7 +332,7 @@ describe("executeNovelMerge", () => {
     expect(mockedApplyNovelMergeInDb).toHaveBeenCalled();
     expect(mockedPrepareChapterStorageTransfer).toHaveBeenCalled();
     expect(mockedRemoveChapterStorageDirectory).toHaveBeenCalledWith(
-      "contents/source-a/Novel-A-a-novel",
+      "contents/source-a/a-novel",
     );
   });
 
@@ -370,11 +372,11 @@ describe("executeNovelMerge", () => {
           entryId: "11",
           outcome: "keptTarget",
           sourceRelativeDir:
-            "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+            "contents/source-a/a-novel/1",
           targetRelativeDir:
-            "contents/source-b/Novel-B-b-novel/1-B-Chapter-1",
+            "contents/source-b/b-novel/1",
           contentFile:
-            "contents/source-b/Novel-B-b-novel/1-B-Chapter-1/content.pdf",
+            "contents/source-b/b-novel/1/content.pdf",
           contentBytes: 900,
           mediaBytes: 0,
           replacedTarget: false,
@@ -418,9 +420,9 @@ describe("executeNovelMerge", () => {
           entryId: "11",
           outcome: "keptTarget",
           sourceRelativeDir:
-            "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+            "contents/source-a/a-novel/1",
           targetRelativeDir:
-            "contents/source-b/Novel-B-b-novel/1-B-Chapter-1",
+            "contents/source-b/b-novel/1",
           contentFile: null,
           contentBytes: 900,
           mediaBytes: 0,
@@ -462,11 +464,11 @@ describe("executeNovelMerge", () => {
           entryId: "11",
           outcome: "keptTarget",
           sourceRelativeDir:
-            "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+            "contents/source-a/a-novel/1",
           targetRelativeDir:
-            "contents/source-b/Novel-B-b-novel/1-B-Chapter-1",
+            "contents/source-b/b-novel/1",
           contentFile:
-            "contents/source-b/Novel-B-b-novel/1-B-Chapter-1/content.pdf",
+            "contents/source-b/b-novel/1/content.pdf",
           contentBytes: 900,
           mediaBytes: 0,
           replacedTarget: false,
@@ -490,7 +492,7 @@ describe("executeNovelMerge", () => {
       expect.objectContaining({
         entryId: "11",
         sourceRelativeDir:
-          "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+          "contents/source-a/a-novel/1",
       }),
     ]);
     expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(
@@ -541,7 +543,7 @@ describe("executeNovelMerge", () => {
               ...entries[0]!,
               outcome: "copiedSource",
               contentFile:
-                "contents/source-b/Novel-B-b-novel/1-B-Chapter-1/content.html",
+                "contents/source-b/b-novel/1/content.html",
               contentBytes: 100,
               mediaBytes: 20,
               replacedTarget: false,
@@ -577,9 +579,9 @@ describe("executeNovelMerge", () => {
           entryId: "11",
           outcome: "sourceNotDownloaded",
           sourceRelativeDir:
-            "contents/source-a/Novel-A-a-novel/1-A-Chapter-1",
+            "contents/source-a/a-novel/1",
           targetRelativeDir:
-            "contents/source-b/Novel-B-b-novel/1-B-Chapter-1",
+            "contents/source-b/b-novel/1",
           contentFile: null,
           contentBytes: 0,
           mediaBytes: 0,
@@ -664,7 +666,7 @@ describe("executeNovelMerge", () => {
         resolve({
           status: "present",
           contentFile:
-            "contents/source-a/Novel-A-a-novel/2-A-Chapter-2/content.html",
+            "contents/source-a/a-novel/2/content.html",
           contentBytes: 100,
           mediaBytes: 20,
         });

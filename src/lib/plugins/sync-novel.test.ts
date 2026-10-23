@@ -45,6 +45,7 @@ let mockSelect: ReturnType<typeof vi.fn>;
 
 function makeDetail(chapterNumbers: number[]): SourceNovel {
   return {
+    novelId: "novel",
     name: "Novel",
     path: "/novel",
     chapters: chapterNumbers.map((chapterNumber) => ({
@@ -80,9 +81,9 @@ function applyCapturedNovelUpsert() {
   const sqlite = new DatabaseSync(":memory:");
   try {
     sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
-    sqlite.exec(`INSERT INTO novel(plugin_id, path, name, cover, summary, author, artist, status, genres, rating)
+    sqlite.exec(`INSERT INTO novel(plugin_id, path, name, cover, summary, author, artist, status, genres, rating, source_novel_id)
       VALUES ('demo', '/novel', 'Novel', 'https://source.test/saved.jpg', 'Saved summary',
-        'Saved author', 'Saved artist', 'Completed', 'Fantasy', 4.5)`);
+        'Saved author', 'Saved artist', 'Completed', 'Fantasy', 4.5, 'novel')`);
     const [sql, values] = mockExecute.mock.calls[0]!;
     const result = sqlite.prepare(sql).run(
       Object.fromEntries(values.map((value: unknown, index: number) => [`$${index + 1}`, value])) as never,
@@ -95,7 +96,7 @@ function applyCapturedNovelUpsert() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockExecute = vi.fn().mockResolvedValue({ rowsAffected: 0 });
-  mockSelect = vi.fn().mockResolvedValue([{ id: 7, inLibrary: 0 }]);
+  mockSelect = vi.fn().mockResolvedValue([{ id: 7, sourceNovelId: "novel", inLibrary: 0 }]);
   mockedGetDb.mockResolvedValue({
     execute: mockExecute,
     select: mockSelect,
@@ -195,7 +196,7 @@ describe("syncNovelFromSource", () => {
     expect(sql).toContain("genres, rating");
     expect(values).toEqual([
       "demo", path, "Novel", null, null,
-      null, null, "On break", null, 4.5,
+      null, null, "On break", null, 4.5, "novel",
     ]);
     expect(mockSelect).toHaveBeenCalledWith(expect.any(String), ["demo", path]);
   });
@@ -465,7 +466,7 @@ describe("syncNovelFromSource", () => {
   });
 
   it("stores the resolved novel cover when the synced novel is in the library", async () => {
-    mockSelect.mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
+    mockSelect.mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
     const plugin = makePlugin({
       parseNovel: vi.fn(() =>
         Promise.resolve({
@@ -493,13 +494,13 @@ describe("syncNovelFromSource", () => {
       "https://source.test/cover.jpg",
       { refresh: false },
     );
-    expect(mockSelect.mock.calls[0]?.[0]).toContain(
+    expect(mockSelect.mock.calls[1]?.[0]).toContain(
       "in_library AS inLibrary",
     );
   });
 
   it("stores the preserved database cover when an update omits cover metadata", async () => {
-    mockSelect.mockResolvedValueOnce([
+    mockSelect.mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([
       {
         cover: "https://source.test/preserved-cover.jpg",
         id: 7,
@@ -533,7 +534,7 @@ describe("syncNovelFromSource", () => {
       "https://source.test/preserved-cover.jpg",
       { refresh: false },
     );
-    expect(mockSelect.mock.calls[0]?.[0]).toContain("SELECT id, cover");
+    expect(mockSelect.mock.calls[1]?.[0]).toContain("SELECT id, cover");
   });
 
   it("does not persist a cover when opening a novel outside the library", async () => {
@@ -567,7 +568,7 @@ describe("syncNovelFromSource", () => {
   });
 
   it("propagates a source access challenge from cover storage", async () => {
-    mockSelect.mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
+    mockSelect.mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
     mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
       Object.assign(new Error("Complete the Cloudflare check."), {
         challenge: {

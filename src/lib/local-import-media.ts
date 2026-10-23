@@ -17,14 +17,14 @@ interface CacheLocalImportedChapterMediaInput {
   chapters: LocalNovelImportChapterInput[];
   novelId: number;
   novelName: string;
-  novelPath: string;
+  sourceNovelId: string;
 }
 
 export async function cacheLocalImportedChapterMedia({
   chapters,
   novelId,
   novelName,
-  novelPath,
+  sourceNovelId,
 }: CacheLocalImportedChapterMediaInput): Promise<void> {
   const cacheableChapters = chapters.filter(
     (chapter) =>
@@ -53,7 +53,7 @@ export async function cacheLocalImportedChapterMedia({
       chapterPosition: row.position,
       novelId,
       novelName,
-      novelPath,
+      sourceNovelId: sourceNovelId,
       sourceId: LOCAL_PLUGIN_ID,
     };
 
@@ -69,7 +69,7 @@ export async function cacheLocalImportedChapterMedia({
         html: content,
         novelId,
         novelName,
-        novelPath,
+        sourceNovelId: sourceNovelId,
         resources: [
           {
             bytes: resource.bytes,
@@ -97,7 +97,7 @@ export async function cacheLocalImportedChapterMedia({
         html: content,
         novelId,
         novelName,
-        novelPath,
+        sourceNovelId: sourceNovelId,
         resources: mediaResources.map((resource) => ({
           bytes: resource.bytes,
           contentType: resource.mediaType,
@@ -136,7 +136,7 @@ export async function cacheLocalImportedChapterMedia({
       html: content,
       novelId,
       novelName,
-      novelPath,
+      sourceNovelId: sourceNovelId,
       sourceId: LOCAL_PLUGIN_ID,
     });
     await saveStoredChapterContent(row.id, media.html, contentType, {

@@ -13,7 +13,7 @@ export interface ContentIdentity {
 export interface PackageManifest {
   packageVersion: 1;
   layout: "chapter-files";
-  identity: ContentIdentity;
+  identity: ContentIdentity & { novelId: string };
   novel: { name: string; author?: string | null; summary?: string | null; isLocal: boolean };
   chapter: { name: string; position: number; chapterNumber?: string | null; contentType: "html" | "text" | "markdown" | "pdf"; page: string };
   bodyPath: string;

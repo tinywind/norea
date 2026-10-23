@@ -16,7 +16,7 @@ import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadat
 import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
-  schemaVersion: 1, identity: { pluginId: "example", novelPath: "/book" },
+  schemaVersion: 1, identity: { pluginId: "example", novelId: "book", novelPath: "/book" },
   novel: { name, author: "Author", artist: null, summary: "Summary", status: "Ongoing", rating: 4.5, genres: "Fantasy", isLocal: false },
   cover: { fileName: "cover.png", contentType: "image/png" },
   chapters: {},
@@ -53,7 +53,7 @@ beforeEach(() => {
   vi.mocked(installStoredNovelMetadata).mockImplementation(async (value, cover, beforeInstall) => {
     const current = local.find(entry => entry.metadata.identity.pluginId === value.identity.pluginId && entry.metadata.identity.novelPath === value.identity.novelPath);
     if (await beforeInstall?.(current ?? null) === false) return null;
-    const installed = { directory: current?.directory ?? `contents/example/${value.novel.name}-book`, metadata: structuredClone(value) };
+    const installed = { directory: current?.directory ?? `contents/${value.identity.pluginId}/${value.identity.novelId}`, metadata: structuredClone(value) };
     const coverBytes = cover ?? (current ? await readStoredNovelCover(current.directory, current.metadata) : null);
     if (!cover) installed.metadata.cover = current?.metadata.cover ?? null;
     revisions.set(installed.directory, (revisions.get(installed.directory) ?? (current ? 1 : 0)) + 1);
@@ -75,7 +75,7 @@ beforeEach(() => {
 
 it("uploads metadata and cover without any downloaded chapter and skips unchanged uploads", async () => {
   const chapters = { "1": "Opening", "2": "Not downloaded", "1000": "Latest chapter" };
-  local = [{ directory: "contents/example/Book-book", metadata: { ...metadata(), chapters } }];
+  local = [{ directory: "contents/example/book", metadata: { ...metadata(), chapters } }];
   await syncWorkMetadata("http://server", "device", true);
   expect(remote?.chapters).toEqual(chapters);
   expect(remote).not.toHaveProperty("updatedAt");
@@ -97,7 +97,7 @@ it("retains populated local fields during a sparse server catalog update", async
   const saved = metadata();
   saved.novel.artist = "Saved artist";
   saved.chapters = { "1": "Opening" };
-  local = [{ directory: "contents/example/Book-book", metadata: saved }];
+  local = [{ directory: "contents/example/book", metadata: saved }];
   await syncWorkMetadata("http://server", "device", true);
   remote = {
     ...metadata("New title"),
@@ -120,7 +120,7 @@ it("retains populated local fields during a sparse server catalog update", async
 });
 
 it("keeps local metadata after server work deletion and restores only on explicit rescan", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   const original = vi.mocked(nativeFetch).getMockImplementation()!;
   const id = await contentWorkId(metadata().identity);
   vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
@@ -138,7 +138,7 @@ it("keeps local metadata after server work deletion and restores only on explici
 });
 
 it("records an app-initiated work deletion without advancing past unseen changes or touching local files", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   const originalLocal = structuredClone(local);
   const id = await contentWorkId(metadata().identity);
@@ -178,7 +178,7 @@ it("advances past an in-flight work record whose cover and work were deleted", a
 });
 
 it("does not grant restore permission to active works during a rescan", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true, undefined, true);
   const writes = vi.mocked(nativeFetch).mock.calls.filter(([, init]) => init?.method === "PUT");
   expect(writes.length).toBeGreaterThan(0);
@@ -186,7 +186,7 @@ it("does not grant restore permission to active works during a rescan", async ()
 });
 
 it("does not traverse work files or read covers during an unchanged sync", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   await syncWorkMetadata("http://server", "device", true);
   vi.mocked(listStoredNovelMetadata).mockClear();
@@ -207,8 +207,8 @@ it("does not enumerate an empty local store during a normal sync", async () => {
 });
 
 it("reads only the changed work on an incremental upload", async () => {
-  const other = metadata("Other"); other.identity.novelPath = "/other";
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }, { directory: "contents/example/Other-other", metadata: other }];
+  const other = metadata("Other"); other.identity.novelPath = "/other"; other.identity.novelId = "other";
+  local = [{ directory: "contents/example/book", metadata: metadata() }, { directory: "contents/example/other", metadata: other }];
   await syncWorkMetadata("http://server", "device", true);
   await syncWorkMetadata("http://server", "device", true);
   local[0].metadata.novel.name = "Changed locally";
@@ -217,13 +217,13 @@ it("reads only the changed work on an incremental upload", async () => {
   vi.mocked(readStoredNovelCover).mockClear();
   await syncWorkMetadata("http://server", "device", true);
   expect(listStoredNovelMetadata).not.toHaveBeenCalled();
-  expect(readStoredNovelMetadata).toHaveBeenCalledExactlyOnceWith("contents/example/Book-book");
-  expect(readStoredNovelCover).toHaveBeenCalledExactlyOnceWith("contents/example/Book-book", local[0].metadata);
+  expect(readStoredNovelMetadata).toHaveBeenCalledExactlyOnceWith("contents/example/book");
+  expect(readStoredNovelCover).toHaveBeenCalledExactlyOnceWith("contents/example/book", local[0].metadata);
   expect(remote?.novel.name).toBe("Changed locally");
 });
 
 it("retries a cover upload after metadata publication succeeds but cover publication fails", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   const request = vi.mocked(nativeFetch).getMockImplementation()!;
   let fail = true;
   vi.mocked(nativeFetch).mockImplementation((input, init) => {
@@ -238,7 +238,7 @@ it("retries a cover upload after metadata publication succeeds but cover publica
 });
 
 it("uploads changed cover bytes with an unchanged metadata document", async () => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   await syncWorkMetadata("http://server", "device", true);
@@ -249,7 +249,7 @@ it("uploads changed cover bytes with an unchanged metadata document", async () =
 });
 
 it("uploads a successful source refresh even when its metadata and cover are unchanged", async () => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   revisions.set(directory, 2);
@@ -263,7 +263,7 @@ it("uploads a successful source refresh even when its metadata and cover are unc
 });
 
 it.each(["metadata", "cover"])("keeps an unchanged refresh pending after its %s upload fails", async failedPart => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   revisions.set(directory, 2);
@@ -282,7 +282,7 @@ it.each(["metadata", "cover"])("keeps an unchanged refresh pending after its %s 
 });
 
 it("requires another upload for a refresh completed during an unchanged metadata upload", async () => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   revisions.set(directory, 2);
@@ -304,7 +304,7 @@ it("requires another upload for a refresh completed during an unchanged metadata
 });
 
 it("retains a local change made while an upload is in flight for the next sync", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   const request = vi.mocked(nativeFetch).getMockImplementation()!;
   let edit = true;
   vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
@@ -324,7 +324,7 @@ it("retains a local change made while an upload is in flight for the next sync",
 });
 
 it("reads authoritative files and covers on an explicit rescan", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   await syncWorkMetadata("http://server", "device", true);
   localCovers.set(local[0].directory, new Uint8Array([9]));
@@ -348,15 +348,15 @@ it("does not reread or upload a remotely installed work in the next unchanged sy
 
 it("acknowledges the actual revision when a removed work retains its old sync journal", async () => {
   remote = metadata(); remoteCover = new Uint8Array([4]); sequence = 2;
-  revisions.set("contents/example/Book-book", 40);
+  revisions.set("contents/example/book", 40);
   await syncWorkMetadata("http://server", "device", false);
-  expect(revisions.get("contents/example/Book-book")).toBe(41);
+  expect(revisions.get("contents/example/book")).toBe(41);
   await syncWorkMetadata("http://server", "device", true);
   expect(puts).toBe(0);
 });
 
 it("accepts a later server revision after an opened work records its remote installation", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   const opened = metadata("Opened server revision");
   await runWorkMetadataSyncOperation("http://server", async () => {
@@ -433,7 +433,7 @@ it("installs a server work and cover before any chapter download", async () => {
 });
 
 it("rejects inferred work identities instead of merging folder-name aliases", async () => {
-  remote = { ...metadata(), identity: { pluginId: "example", novelPath: "norea-folder:Book-book" } };
+  remote = { ...metadata(), identity: { pluginId: "example", novelId: "book", novelPath: "norea-folder:Book-book" } };
   sequence = 1;
   await expect(syncWorkMetadata("http://server", "device", false)).rejects.toThrow();
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
@@ -450,7 +450,7 @@ it("preserves a local metadata edit when an older remote update arrives", async 
 });
 
 it("protects a refreshed local document until its newer metadata is uploaded", async () => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   local[0].metadata.novel.summary = "Refreshed source summary";
@@ -464,7 +464,7 @@ it("protects a refreshed local document until its newer metadata is uploaded", a
 });
 
 it("keeps an unchanged source refresh that completed during a remote cover download", async () => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   remote = metadata("Remote edit"); sequence++;
@@ -490,7 +490,7 @@ it("does not advance the cursor or install metadata when its cover download fail
 });
 
 it("preserves edits made while the remote cover is downloading", async () => {
-  local = [{ directory: "contents/example/Book-book", metadata: metadata() }];
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   remote = metadata("Remote edit"); sequence++;
   const request = vi.mocked(nativeFetch).getMockImplementation()!;
@@ -504,7 +504,7 @@ it("preserves edits made while the remote cover is downloading", async () => {
 
 it("saves each installed baseline before a later item in the page fails", async () => {
   const first = metadata();
-  const second = metadata("Second"); second.identity.novelPath = "/second";
+  const second = metadata("Second"); second.identity.novelPath = "/second"; second.identity.novelId = "second";
   const firstId = await contentWorkId(first.identity);
   vi.mocked(nativeFetch).mockImplementation(async input => {
     const url = String(input);
@@ -524,7 +524,7 @@ it("saves each installed baseline before a later item in the page fails", async 
 
 it("uses the local file index and checkpoints a work page instead of every installed work", async () => {
   const entries = await Promise.all(Array.from({ length: 100 }, async (_, index) => {
-    const value = metadata(`Book ${index}`); value.identity.novelPath = `/book-${index}`;
+    const value = metadata(`Book ${index}`); value.identity.novelPath = `/book-${index}`; value.identity.novelId = `book-${index}`;
     return { id: await contentWorkId(value.identity), sequence: index + 1, metadata: value, hasCover: false };
   }));
   vi.mocked(nativeFetch).mockResolvedValue(Response.json({ items: entries, cursor: 100, hasMore: false }));
@@ -568,7 +568,7 @@ it.each([false, true])("installs only the latest metadata and cover revision of 
 });
 
 it.each([false, true])("does not replay an old missing-cover revision over an acknowledged upload (separate pages: %s)", async separatePages => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   const id = await contentWorkId(metadata().identity);
@@ -598,7 +598,7 @@ it.each([false, true])("does not replay an old missing-cover revision over an ac
 });
 
 it("retains a source refresh completed while later history pages are loading", async () => {
-  const directory = "contents/example/Book-book";
+  const directory = "contents/example/book";
   local = [{ directory, metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   const id = await contentWorkId(metadata().identity);
@@ -619,7 +619,7 @@ it("retains a source refresh completed while later history pages are loading", a
 
 it("keeps the previous cursor after an installation fails across gathered pages and retries unfinished works", async () => {
   const first = metadata();
-  const second = metadata("Second"); second.identity.novelPath = "/second";
+  const second = metadata("Second"); second.identity.novelPath = "/second"; second.identity.novelId = "second";
   const firstId = await contentWorkId(first.identity);
   const secondId = await contentWorkId(second.identity);
   const entries = [

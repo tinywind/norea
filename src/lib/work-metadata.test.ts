@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseNovelMetadata } from "./work-metadata";
 
 export function metadataFixture() {
-  return { schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
+  return { schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book?exact=1" },
     novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
     cover: null, chapters: {} };
 }
@@ -19,13 +19,13 @@ describe("portable work metadata", () => {
 
   it("restores minimal metadata and ignores unrelated fields and source cover URLs", () => {
     const parsed = parseNovelMetadata({
-      identity: { pluginId: "source", novelPath: "/book?exact=1", sourceUrl: "https://removed.test" },
+      identity: { pluginId: "source", novelId: "book", novelPath: "/book?exact=1", sourceUrl: "https://removed.test" },
       novel: { name: "Book", cover: "https://removed.test/cover.jpg" },
       cover: { fileName: "cover.jpg", sourceUrl: "https://removed.test/cover.jpg" },
       updatedAt: 123, inLibrary: true,
     });
     expect(parsed).toEqual({
-      schemaVersion: 1, identity: { pluginId: "source", novelPath: "/book?exact=1" },
+      schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book?exact=1" },
       novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
       cover: { fileName: "cover.jpg", contentType: "image/jpeg" },
       chapters: {},
@@ -33,7 +33,7 @@ describe("portable work metadata", () => {
   });
 
   it("restores minimal metadata without optional properties", () => {
-    const parsed = parseNovelMetadata({ identity: { pluginId: "source", novelPath: "/book" }, novel: { name: "Book" } });
+    const parsed = parseNovelMetadata({ identity: { pluginId: "source", novelId: "book", novelPath: "/book" }, novel: { name: "Book" } });
     expect(parsed.identity.novelPath).toBe("/book");
     expect(parsed.cover).toBeNull();
     expect(parsed.novel.author).toBeNull();
@@ -43,7 +43,7 @@ describe("portable work metadata", () => {
     expect(() => parseNovelMetadata(input)).toThrow();
   });
   it.each(["https://example.com/novel/1", "http://example.com/novel/1", "//example.com/novel/1"])("rejects base URLs in work identity %s", (novelPath) => {
-    expect(() => parseNovelMetadata({ ...metadataFixture(), identity: { pluginId: "source", novelPath } })).toThrow();
+    expect(() => parseNovelMetadata({ ...metadataFixture(), identity: { pluginId: "source", novelId: "book", novelPath } })).toThrow();
   });
   it.each([-1, 5.1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid rating %s", (rating) => {
     const input = metadataFixture();
