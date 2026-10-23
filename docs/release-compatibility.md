@@ -98,9 +98,12 @@ Titles and host-generated hashes are excluded from directory names. The app
 caches the plugin-owned work ID in `novel.source_novel_id` and includes it in metadata,
 chapter manifests, and backup snapshots. Invalid, changed, or conflicting IDs
 are rejected. The database bootstrap checksum changes with the new cache column.
-Earlier title-based folders and metadata without the plugin-owned ID are not
-imported or converted. Existing original files remain untouched. Use current
-plugins, app, and server together; earlier development backups are unsupported.
+Runtime recovery does not import or convert earlier title-based folders or
+metadata without the plugin-owned ID. It leaves those original files untouched.
+Explicitly requested offline conversions follow the preservation and validation
+checks in [Content folder recovery](./test-support/storage-folder-recovery.md).
+Use current plugins, app, and server together; earlier development backups are
+unsupported.
 
 ## Storage Changes
 

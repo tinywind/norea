@@ -230,6 +230,38 @@ it("rebuilds work metadata and completed chapter folders without a DB seed", asy
   expect(chapterStorageRelativeDir({ id: 1, name: "Renamed" }, { id: 1, name: "Renamed" })).toBe("contents/source/book/1");
 });
 
+it("recovers identical plugin-owned IDs in separate sources with complete catalogs and media states", async () => {
+  const works = ["source-one", "source-two"].map((pluginId): NovelMetadataV1 => ({
+    ...fixture(),
+    identity: { pluginId, novelId: "123-%42ook", novelPath: "/works/123" },
+    novel: { ...fixture().novel, name: pluginId, artist: "Artist", summary: "Full summary", status: "Completed", genres: "Fantasy", rating: 0 },
+    chapters: { "1": `${pluginId}: opening`, "2.5": `${pluginId}: interlude`, "3": `${pluginId}: not downloaded` },
+  }));
+  for (const metadata of works) {
+    const directory = `contents/${metadata.identity.pluginId}/${metadata.identity.novelId}`;
+    storage.files.set(`${directory}/novel.json`, [...new TextEncoder().encode(JSON.stringify(metadata))]);
+    storage.chapters.set(`${directory}/novel.json`, [`${directory}/1/content.html`, `${directory}/2.5/content.html`]);
+    mediaInspections.set(`${directory}/2.5`, false);
+  }
+  await initializeWorkMetadata(db);
+  for (const metadata of works) {
+    const novel = sqlite.prepare("SELECT * FROM novel WHERE plugin_id=?").get(metadata.identity.pluginId) as { id: number };
+    expect(novel).toMatchObject({ source_novel_id: metadata.identity.novelId, path: metadata.identity.novelPath,
+      name: metadata.novel.name, author: "Writer", artist: "Artist", summary: "Full summary", status: "Completed", genres: "Fantasy", rating: 0, in_library: 1 });
+    expect(sqlite.prepare(`SELECT chapter_number,name,is_downloaded,media_repair_needed FROM chapter
+      WHERE novel_id=? ORDER BY position`).all(novel.id)).toEqual([
+      { chapter_number: "1", name: metadata.chapters["1"], is_downloaded: 1, media_repair_needed: 0 },
+      { chapter_number: "2.5", name: metadata.chapters["2.5"], is_downloaded: 0, media_repair_needed: 1 },
+      { chapter_number: "3", name: metadata.chapters["3"], is_downloaded: 0, media_repair_needed: 0 },
+    ]);
+    expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache WHERE novel_id=? ORDER BY directory").all(novel.id)).toEqual([
+      { directory: `contents/${metadata.identity.pluginId}/${metadata.identity.novelId}/1` },
+      { directory: `contents/${metadata.identity.pluginId}/${metadata.identity.novelId}/2.5` },
+    ]);
+  }
+  expect(storage.writes).toBe(0);
+});
+
 it("restores the full catalog with exact titles and only marks discovered bodies downloaded", async () => {
   save({ ...fixture(), chapters: { "1": "Opening: a question?", "2": "Not downloaded", "3": "The final chapter" } });
   storage.chapters.set(path, ["contents/source/book/1/content.html", "contents/source/book/3/content.html", "contents/source/book/4/content.html"]);

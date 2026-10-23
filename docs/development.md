@@ -15,6 +15,8 @@ workflow in one place.
 - `docs/plugins/contract.md` defines the source plugin compatibility contract.
 - `docs/test-support/fixture-plugin-smoke.md` defines manual fixture coverage
   for HTML, plain text, PDF, and chapter media downloads.
+- [Content folder recovery](./test-support/storage-folder-recovery.md) describes
+  fresh database recovery checks for the server and Waydroid app.
 
 ## Build and Test Environment
 
