@@ -22,7 +22,7 @@ pub async fn chapter_media_total_size(
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
-    novel_path: Option<String>,
+    source_novel_id: Option<String>,
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
@@ -35,7 +35,7 @@ pub async fn chapter_media_total_size(
             novel_id,
             source_id,
             novel_name,
-            novel_path,
+            source_novel_id,
             chapter_number,
             chapter_name,
             chapter_position,
@@ -51,7 +51,7 @@ fn chapter_media_total_size_sync(
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
-    novel_path: Option<String>,
+    source_novel_id: Option<String>,
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
@@ -68,7 +68,7 @@ fn chapter_media_total_size_sync(
                 &root,
                 novel_id,
                 source_id.as_deref(),
-                novel_path.as_deref(),
+                source_novel_id.as_deref(),
                 novel_name.as_deref(),
                 chapter_id,
                 chapter_number.as_deref(),
@@ -188,7 +188,7 @@ pub async fn chapter_media_prune(
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
-    novel_path: Option<String>,
+    source_novel_id: Option<String>,
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
@@ -200,7 +200,7 @@ pub async fn chapter_media_prune(
             novel_id,
             source_id,
             novel_name,
-            novel_path,
+            source_novel_id,
             chapter_number,
             chapter_name,
             chapter_position,
@@ -215,7 +215,7 @@ fn chapter_media_prune_sync(
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
-    novel_path: Option<String>,
+    source_novel_id: Option<String>,
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
@@ -225,7 +225,7 @@ fn chapter_media_prune_sync(
             &root,
             novel_id,
             source_id.as_deref(),
-            novel_path.as_deref(),
+            source_novel_id.as_deref(),
             novel_name.as_deref(),
             chapter_id,
             chapter_number.as_deref(),
@@ -245,7 +245,7 @@ pub async fn chapter_media_clear(
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
-    novel_path: Option<String>,
+    source_novel_id: Option<String>,
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
@@ -257,7 +257,7 @@ pub async fn chapter_media_clear(
             novel_id,
             source_id,
             novel_name,
-            novel_path,
+            source_novel_id,
             chapter_number,
             chapter_name,
             chapter_position,
@@ -272,7 +272,7 @@ fn chapter_media_clear_sync<R: Runtime>(
     novel_id: Option<i64>,
     source_id: Option<String>,
     novel_name: Option<String>,
-    novel_path: Option<String>,
+    source_novel_id: Option<String>,
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
@@ -282,7 +282,7 @@ fn chapter_media_clear_sync<R: Runtime>(
             &root,
             novel_id,
             source_id.as_deref(),
-            novel_path.as_deref(),
+            source_novel_id.as_deref(),
             novel_name.as_deref(),
             chapter_id,
             chapter_number.as_deref(),
@@ -309,16 +309,16 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
 ) -> Result<(), String> {
     for root in media_roots_for_lookup(app)? {
         let mut chapter_dirs = HashSet::new();
-        if let (Some(novel_id), Some(source_id), Some(novel_path)) = (
+        if let (Some(novel_id), Some(source_id), Some(source_novel_id)) = (
             context.novel_id,
             context.source_id.as_deref(),
-            context.novel_path.as_deref(),
+            context.source_novel_id.as_deref(),
         ) {
             let identity_dirs = content_chapter_dirs_matching_identity(
                 &root,
                 source_id,
                 novel_id,
-                novel_path,
+                source_novel_id,
                 context.chapter_id,
                 context.chapter_number.as_deref(),
                 context.chapter_position,
@@ -333,7 +333,7 @@ pub(crate) fn clear_downloaded_chapter_artifacts<R: Runtime>(
                 &root,
                 source_id,
                 novel_id,
-                Some(novel_path),
+                Some(source_novel_id),
                 context.novel_name.as_deref(),
                 context.chapter_id,
                 context.chapter_number.as_deref(),
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn clear_storage_only_removes_current_contents() {
         let root = tempfile::tempdir().expect("temporary storage");
-        fs::create_dir_all(root.path().join("contents/demo/Novel/1-Chapter")).expect("create contents");
+        fs::create_dir_all(root.path().join("contents/demo/novel-id/1")).expect("create contents");
         fs::create_dir_all(root.path().join("42")).expect("create obsolete directory");
         fs::write(root.path().join("storage-manifest.json"), b"obsolete").expect("write obsolete manifest");
 

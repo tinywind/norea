@@ -246,8 +246,8 @@ internal class AndroidStorageBridge(
     rootUri: String,
     preferredChapterDir: String,
     sourceDir: String,
-    novelIdentitySuffix: String,
-    chapterIdentityPrefix: String,
+    novelDirectoryName: String,
+    chapterDirectoryName: String,
     preferredContentFileName: String,
   ) {
     storageExecutors.foreground.execute {
@@ -257,8 +257,8 @@ internal class AndroidStorageBridge(
           rootUri,
           preferredChapterDir,
           sourceDir,
-          novelIdentitySuffix,
-          chapterIdentityPrefix,
+          novelDirectoryName,
+          chapterDirectoryName,
           preferredContentFileName,
         ),
       )
@@ -269,16 +269,16 @@ internal class AndroidStorageBridge(
     rootUri: String,
     preferredChapterDir: String,
     sourceDir: String,
-    novelIdentitySuffix: String,
-    chapterIdentityPrefix: String,
+    novelDirectoryName: String,
+    chapterDirectoryName: String,
     preferredContentFileName: String,
   ): String = storageResponse {
     chapterInspector.inspectChapterArtifacts(
       rootUri,
       preferredChapterDir,
       sourceDir,
-      novelIdentitySuffix,
-      chapterIdentityPrefix,
+      novelDirectoryName,
+      chapterDirectoryName,
       preferredContentFileName,
     )
   }
@@ -352,9 +352,12 @@ internal class AndroidStorageBridge(
     rootUri: String,
     preferredChapterDir: String,
     sourceDir: String,
-    novelIdentitySuffix: String,
-    chapterIdentityPrefix: String,
+    novelDirectoryName: String,
+    chapterDirectoryName: String,
   ): String = storageResponse {
+    require(isAndroidStorageId(novelDirectoryName) && isAndroidChapterDirectoryName(chapterDirectoryName)) {
+      "Android chapter storage identity is invalid."
+    }
     val root = storage.storageRoot(rootUri)
     require(root.canRead()) { "Android storage folder is not readable." }
     val chapterDirs = linkedSetOf<String>()
@@ -375,12 +378,12 @@ internal class AndroidStorageBridge(
       require(source.canRead()) { "Android storage source path is not readable: $sourceDir" }
       for (novel in source.listFiles()) {
         val novelName = novel.name ?: continue
-        if (!novelName.endsWith(novelIdentitySuffix)) continue
+        if (novelName != novelDirectoryName) continue
         require(novel.isDirectory) { "Android storage novel path is not a folder: $novelName" }
         require(novel.canRead()) { "Android storage novel path is not readable: $novelName" }
         for (chapter in novel.listFiles()) {
           val chapterName = chapter.name ?: continue
-          if (!chapterName.startsWith(chapterIdentityPrefix)) continue
+          if (chapterName != chapterDirectoryName) continue
           require(chapter.isDirectory) {
             "Android storage chapter path is not a folder: $chapterName"
           }
@@ -604,12 +607,16 @@ internal class AndroidStorageBridge(
     rootUri: String,
     relativePath: String,
     newName: String,
+    allowMissing: Boolean,
   ) {
     submitStorageOperation(requestId) {
       val safeNewName = storage.safeStorageSegments(newName).singleOrNull()
         ?: throw IllegalArgumentException("Android storage target name is invalid: $newName")
       val document = storage.storageDocumentAt(rootUri, relativePath)
-        ?: throw IllegalArgumentException("Android storage path not found: $relativePath")
+      if (document == null) {
+        if (allowMissing) return@submitStorageOperation JSONObject().put("ok", true)
+        throw IllegalArgumentException("Android storage path not found: $relativePath")
+      }
       val parentPath = storage.safeStorageSegments(relativePath).dropLast(1).joinToString("/")
       val parent = if (parentPath.isEmpty()) {
         storage.storageRoot(rootUri)

@@ -19,8 +19,10 @@ internal class AndroidWorkMetadataStorage(
       val paths = JSONArray()
       val contents = storage.storageDocumentAt(root, "contents") ?: return result.put("paths", paths)
       for (source in storage.listStorageChildren(contents).filter { it.isDirectory }) {
+        if (!isAndroidPluginStorageId(source.name)) continue
         val sourceDir = storage.storageChildDocumentFile(source) ?: continue
         for (work in storage.listStorageChildren(sourceDir).filter { it.isDirectory }) {
+          if (!isAndroidStorageId(work.name)) continue
           paths.put("contents/${source.name}/${work.name}/novel.json")
         }
       }
@@ -28,10 +30,10 @@ internal class AndroidWorkMetadataStorage(
     }
     val path = input.getString("path")
     val parts = path.split('/')
-    require(parts.size == 4 && parts[0] == "contents" && parts.all {
-      it.isNotEmpty() && it != "." && it != ".." && !it.endsWith('.') && !it.endsWith(' ') &&
-        it.none { c -> c.code < 32 || c in "<>:\"/\\|?*" }
-    }) { "Work metadata path is invalid." }
+    require(parts.size == 4 && parts[0] == "contents" && parts.all(::isAndroidStorageId) &&
+      isAndroidPluginStorageId(parts[1])) {
+      "Work metadata path is invalid."
+    }
     if (input.getString("operation") == "chapters") {
       require(parts.last() == "novel.json") { "Chapter scan requires a work path." }
       val paths = JSONArray()
@@ -41,7 +43,7 @@ internal class AndroidWorkMetadataStorage(
       val work = storage.storageDocumentAt(root, workPath) ?: return result.put("paths", paths)
       for (child in storage.listStorageChildren(work).filter { it.isDirectory }) {
         if ("$workPath/${child.name}" in skippedDirectories) continue
-        if (!Regex("[0-9]+(?:\\.[0-9]+)?-.+").matches(child.name)) continue
+        if (!isAndroidChapterDirectoryName(child.name)) continue
         val chapter = storage.storageChildDocumentFile(child) ?: continue
         val files = storage.listStorageChildren(chapter).associateBy { it.name }
         for (name in listOf("content.pdf", "content.html")) {

@@ -201,134 +201,98 @@ pub(super) fn safe_media_relative_path(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn is_unsafe_unicode_format(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{206F}'
-            | '\u{FEFF}'
-    )
-}
-
-fn safe_label_segment(value: Option<&str>, fallback: &str) -> String {
-    let raw = value.map(str::trim).filter(|value| !value.is_empty());
-    let sanitized = raw
-        .unwrap_or(fallback)
-        .chars()
-        .map(|ch| {
-            if ch.is_control()
-                || ch.is_whitespace()
-                || is_unsafe_unicode_format(ch)
-                || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
-            {
-                '-'
-            } else {
-                ch
-            }
-        })
-        .collect::<String>()
-        .trim_matches(['-', '.'])
-        .chars()
-        .take(96)
-        .collect::<String>();
-
-    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
-        fallback.to_string()
-    } else {
-        sanitized
+pub(super) fn is_storage_id(value: &str) -> bool {
+    if value.is_empty() || value.len() > 240 || value.starts_with(['.', ' '])
+        || value.ends_with(['.', ' '])
+        || value.chars().any(|ch| ch < '\u{0020}' || "<>:\"/\\|?*".contains(ch))
+    {
+        return false;
     }
+    let lower = value.to_ascii_lowercase();
+    if [".tmp", ".bak", ".part", ".partial", ".norea-sync-backup"]
+        .iter().any(|suffix| lower.ends_with(suffix))
+    {
+        return false;
+    }
+    let device = lower.split('.').next().unwrap_or_default();
+    !matches!(device, "con" | "prn" | "aux" | "nul")
+        && !(device.len() == 4
+            && (device.starts_with("com") || device.starts_with("lpt"))
+            && device.as_bytes()[3].is_ascii_digit())
 }
 
-fn novel_folder_segment(
-    novel_name: Option<&str>,
-    novel_path: Option<&str>,
-    novel_id: i64,
-) -> String {
-    let novel_address = safe_segment(novel_path.unwrap_or_default(), &novel_id.to_string());
-    format!(
-        "{}-{novel_address}",
-        safe_label_segment(novel_name, "novel")
-    )
+pub(super) fn is_plugin_storage_id(value: &str) -> bool {
+    is_storage_id(value) && value.split('-').all(|part| !part.is_empty()
+        && part.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()))
 }
 
 pub(super) fn content_novel_dir_at(
     root: &Path,
     source_id: &str,
-    novel_id: i64,
-    novel_path: Option<&str>,
-    novel_name: Option<&str>,
+    _novel_id: i64,
+    source_novel_id: Option<&str>,
+    _novel_name: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let has_novel_path = novel_path.is_some_and(|path| !path.trim().is_empty());
-    if novel_id < 0 || (novel_id == 0 && !has_novel_path) {
-        return Err("chapter media: invalid novel id".to_string());
+    if !is_plugin_storage_id(source_id) {
+        return Err("chapter media: invalid plugin id".to_string());
     }
-    let source_id = safe_segment(source_id, "source");
-    let novel_segment = novel_folder_segment(novel_name, novel_path, novel_id);
-    Ok(root
-        .join(CONTENTS_ROOT_DIR)
-        .join(source_id)
-        .join(novel_segment))
+    let source_novel_id = source_novel_id.filter(|id| is_storage_id(id))
+        .ok_or_else(|| "chapter media: invalid plugin-owned novel id".to_string())?;
+    Ok(root.join(CONTENTS_ROOT_DIR).join(source_id).join(source_novel_id))
 }
 
 pub(super) fn chapter_number_segment(
     chapter_number: Option<&str>,
     position: Option<i64>,
-    chapter_id: i64,
-) -> String {
-    let fallback = position
-        .filter(|value| *value > 0)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| chapter_id.to_string());
-    safe_segment(chapter_number.unwrap_or_default(), &fallback)
+    _chapter_id: i64,
+) -> Result<String, String> {
+    let invalid = || "chapter media: invalid chapter sequence".to_string();
+    let number = if let Some(value) = chapter_number {
+        let parts: Vec<_> = value.split('.').collect();
+        if parts.len() > 2 || parts.iter().any(|part| part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return Err(invalid());
+        }
+        value.parse::<f64>().map_err(|_| invalid())?
+    } else {
+        position.filter(|value| *value > 0).ok_or_else(invalid)? as f64
+    };
+    if !number.is_finite() || number < 0.0 || number >= 1e21
+        || (number > 0.0 && number < 1e-6)
+    {
+        return Err(invalid());
+    }
+    Ok(if number == 0.0 { "0".to_string() } else { number.to_string() })
 }
 
-fn chapter_folder_segment(
-    chapter_number: Option<&str>,
-    chapter_name: Option<&str>,
-    position: Option<i64>,
-    chapter_id: i64,
-) -> String {
-    format!(
-        "{}-{}",
-        chapter_number_segment(chapter_number, position, chapter_id),
-        safe_label_segment(chapter_name, "chapter")
-    )
+pub(super) fn is_chapter_directory_name(value: &str) -> bool {
+    chapter_number_segment(Some(value), None, 0).is_ok_and(|number| number == value)
 }
 
 pub(super) fn content_chapter_dir_at(
     root: &Path,
     source_id: &str,
     novel_id: i64,
-    novel_path: Option<&str>,
+    source_novel_id: Option<&str>,
     novel_name: Option<&str>,
     chapter_id: i64,
     chapter_number: Option<&str>,
-    chapter_name: Option<&str>,
+    _chapter_name: Option<&str>,
     chapter_position: Option<i64>,
 ) -> Result<PathBuf, String> {
+    let novel_dir = content_novel_dir_at(root, source_id, novel_id, source_novel_id, novel_name)?;
     if let Some(directory) = super::work_metadata::registered_chapter_directory(root, chapter_id) {
         return Ok(directory);
     }
-    if novel_id <= 0 {
-        return Err("chapter media: invalid novel id".to_string());
-    }
-    if chapter_id <= 0 {
-        return Err("chapter media: invalid chapter id".to_string());
-    }
-    let chapter_segment =
-        chapter_folder_segment(chapter_number, chapter_name, chapter_position, chapter_id);
-    Ok(
-        content_novel_dir_at(root, source_id, novel_id, novel_path, novel_name)?
-            .join(chapter_segment),
-    )
+    let chapter_segment = chapter_number_segment(chapter_number, chapter_position, chapter_id)?;
+    Ok(novel_dir.join(chapter_segment))
 }
 
 pub(super) fn content_chapter_relative_dir(
     source_id: &str,
     novel_id: i64,
-    novel_path: Option<&str>,
+    source_novel_id: Option<&str>,
     novel_name: Option<&str>,
     chapter_id: i64,
     chapter_number: Option<&str>,
@@ -339,7 +303,7 @@ pub(super) fn content_chapter_relative_dir(
         Path::new(""),
         source_id,
         novel_id,
-        novel_path,
+        source_novel_id,
         novel_name,
         chapter_id,
         chapter_number,
@@ -424,9 +388,12 @@ pub(super) fn validate_chapter_dir_under_storage_root(
 
 pub(super) fn content_chapter_dirs_matching_segments(
     source_dir: &Path,
-    novel_identity_suffix: &str,
-    chapter_identity_prefix: &str,
+    novel_directory_name: &str,
+    chapter_directory_name: &str,
 ) -> Result<Vec<PathBuf>, String> {
+    if !is_storage_id(novel_directory_name) || !is_chapter_directory_name(chapter_directory_name) {
+        return Err("chapter media: invalid chapter storage identity".to_string());
+    }
     match fs::metadata(&source_dir) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
@@ -452,7 +419,7 @@ pub(super) fn content_chapter_dirs_matching_segments(
             || !novel_entry
                 .file_name()
                 .to_string_lossy()
-                .ends_with(novel_identity_suffix)
+                .eq(novel_directory_name)
         {
             continue;
         }
@@ -468,7 +435,7 @@ pub(super) fn content_chapter_dirs_matching_segments(
                 && chapter_entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(chapter_identity_prefix)
+                    .eq(chapter_directory_name)
             {
                 matches.push(chapter_entry.path());
             }
@@ -482,20 +449,17 @@ pub(super) fn content_chapter_dirs_matching_identity(
     root: &Path,
     source_id: &str,
     novel_id: i64,
-    novel_path: &str,
+    source_novel_id: &str,
     chapter_id: i64,
     chapter_number: Option<&str>,
     chapter_position: Option<i64>,
 ) -> Result<Vec<PathBuf>, String> {
+    let novel_dir = content_novel_dir_at(root, source_id, novel_id, Some(source_novel_id), None)?;
+    let source_dir = novel_dir.parent().ok_or("chapter media: missing source directory")?;
     content_chapter_dirs_matching_segments(
-        &root
-            .join(CONTENTS_ROOT_DIR)
-            .join(safe_segment(source_id, "source")),
-        &format!("-{}", safe_segment(novel_path, &novel_id.to_string())),
-        &format!(
-            "{}-",
-            chapter_number_segment(chapter_number, chapter_position, chapter_id)
-        ),
+        source_dir,
+        source_novel_id,
+        &chapter_number_segment(chapter_number, chapter_position, chapter_id)?,
     )
 }
 

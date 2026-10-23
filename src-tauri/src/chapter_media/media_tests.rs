@@ -16,7 +16,7 @@ fn store_input(file_name: &str) -> ChapterMediaStoreInput {
         novel_id: Some(7),
         source_id: Some("demo".to_string()),
         novel_name: Some("Novel".to_string()),
-        novel_path: Some("novel/path".to_string()),
+        source_novel_id: Some("novel-id".to_string()),
         chapter_number: Some("1".to_string()),
         chapter_name: Some("Opening".to_string()),
         chapter_position: Some(1),
@@ -26,8 +26,8 @@ fn store_input(file_name: &str) -> ChapterMediaStoreInput {
 fn stored_media_path(root: &Path, file_name: &str) -> PathBuf {
     root.join(CONTENTS_ROOT_DIR)
         .join("demo")
-        .join("Novel-novel-path")
-        .join("1-Opening")
+        .join("novel-id")
+        .join("1")
         .join(MEDIA_DOWNLOAD_DIR)
         .join(file_name)
 }

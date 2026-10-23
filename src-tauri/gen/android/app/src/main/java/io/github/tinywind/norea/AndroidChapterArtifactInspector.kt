@@ -11,10 +11,13 @@ internal class AndroidChapterArtifactInspector(
     rootUri: String,
     preferredChapterDir: String,
     sourceDir: String,
-    novelIdentitySuffix: String,
-    chapterIdentityPrefix: String,
+    novelDirectoryName: String,
+    chapterDirectoryName: String,
     preferredContentFileName: String,
   ): JSONObject = run {
+    require(isAndroidStorageId(novelDirectoryName) && isAndroidChapterDirectoryName(chapterDirectoryName)) {
+      "Android chapter storage identity is invalid."
+    }
     val root = storage.storageRoot(rootUri)
     require(root.canRead()) { "Android storage folder is not readable." }
     val preferredName = storage.safeStorageSegments(preferredContentFileName).singleOrNull()
@@ -65,7 +68,7 @@ internal class AndroidChapterArtifactInspector(
       require(source.canRead()) { "Android storage source path is not readable: $sourceDir" }
       for (novel in storage.listStorageChildren(source)) {
         val novelName = novel.name
-        if (!novelName.endsWith(novelIdentitySuffix)) continue
+        if (novelName != novelDirectoryName) continue
         require(novel.isDirectory) { "Android storage novel path is not a folder: $novelName" }
         val novelDirectory = storage.storageChildDocumentFile(novel) ?: continue
         require(novelDirectory.canRead()) {
@@ -73,7 +76,7 @@ internal class AndroidChapterArtifactInspector(
         }
         for (chapter in storage.listStorageChildren(novelDirectory)) {
           val chapterName = chapter.name
-          if (!chapterName.startsWith(chapterIdentityPrefix)) continue
+          if (chapterName != chapterDirectoryName) continue
           require(chapter.isDirectory) {
             "Android storage chapter path is not a folder: $chapterName"
           }
@@ -95,7 +98,7 @@ internal class AndroidChapterArtifactInspector(
         .put("mediaBytes", 0)
       1 -> matches.single()
       else -> throw IllegalStateException(
-        "Multiple stored chapter folders match source identity $chapterIdentityPrefix",
+        "Multiple stored chapter folders match source identity $chapterDirectoryName",
       )
     }
   }

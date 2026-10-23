@@ -87,7 +87,7 @@ struct DownloadCacheChapterRow {
     chapter_id: i64,
     novel_id: i64,
     source_id: String,
-    novel_path: String,
+    source_novel_id: String,
     novel_name: String,
     chapter_number: Option<String>,
     chapter_name: String,
@@ -275,7 +275,7 @@ async fn select_target_chapters(
           c.id             AS chapter_id,
           c.novel_id       AS novel_id,
           n.plugin_id      AS source_id,
-          n.path           AS novel_path,
+          n.source_novel_id AS source_novel_id,
           n.name           AS novel_name,
           c.chapter_number AS chapter_number,
           c.name           AS chapter_name,
@@ -306,9 +306,9 @@ async fn select_target_chapters(
                 source_id: row
                     .try_get("source_id")
                     .map_err(|err| format!("download cache: read source id: {err}"))?,
-                novel_path: row
-                    .try_get("novel_path")
-                    .map_err(|err| format!("download cache: read novel path: {err}"))?,
+                source_novel_id: row
+                    .try_get("source_novel_id")
+                    .map_err(|err| format!("download cache: read plugin-owned novel id: {err}"))?,
                 novel_name: row
                     .try_get("novel_name")
                     .map_err(|err| format!("download cache: read novel name: {err}"))?,
@@ -471,7 +471,7 @@ async fn clear_artifact_batch<R: Runtime>(
                 novel_id: Some(row.novel_id),
                 source_id: Some(row.source_id),
                 novel_name: Some(row.novel_name),
-                novel_path: Some(row.novel_path),
+                source_novel_id: Some(row.source_novel_id),
                 chapter_number: row.chapter_number,
                 chapter_name: Some(row.chapter_name),
                 chapter_position: Some(row.chapter_position),
@@ -790,6 +790,7 @@ mod tests {
               id integer PRIMARY KEY NOT NULL,
               plugin_id text NOT NULL,
               path text NOT NULL,
+              source_novel_id text,
               name text NOT NULL,
               is_local integer DEFAULT 0 NOT NULL
             )
@@ -824,8 +825,8 @@ mod tests {
     async fn seed_downloaded_novel(pool: &SqlitePool, chapter_count: i64) {
         sqlx::query(
             r#"
-            INSERT INTO novel (id, plugin_id, path, name, is_local)
-            VALUES (7, 'fixture-source', 'fixture/novel', 'Fixture Novel', 0)
+            INSERT INTO novel (id, plugin_id, path, source_novel_id, name, is_local)
+            VALUES (7, 'fixture-source', 'fixture/novel', 'fixture-novel', 'Fixture Novel', 0)
             "#,
         )
         .execute(pool)
@@ -863,8 +864,8 @@ mod tests {
         media_root
             .join("contents")
             .join("fixture-source")
-            .join("Fixture-Novel-fixture-novel")
-            .join(format!("{chapter_id}-Chapter-{chapter_id}"))
+            .join("fixture-novel")
+            .join(chapter_id.to_string())
     }
 
     fn seed_cache_files(media_root: &Path, chapter_count: i64) -> (PathBuf, PathBuf) {

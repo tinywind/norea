@@ -27,13 +27,13 @@ fn image_signature_overrides_disguised_media_extension() {
 #[test]
 fn only_novel_cover_media_paths_use_the_immutable_cache_policy() {
     assert!(is_novel_cover_media_path(
-        "/contents/demo/Sample-Novel-novel/cover.jpg"
+        "/contents/demo/novel-id/cover.jpg"
     ));
     assert!(!is_novel_cover_media_path(
-        "/contents/demo/Sample-Novel-novel/cover.json"
+        "/contents/demo/novel-id/cover.json"
     ));
     assert!(!is_novel_cover_media_path(
-        "/contents/demo/Sample-Novel-novel/1-Opening/page.jpg"
+        "/contents/demo/novel-id/1/page.jpg"
     ));
 }
 

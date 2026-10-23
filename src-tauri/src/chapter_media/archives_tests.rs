@@ -145,8 +145,8 @@ fn write_test_media_archive(chapter_dir: &Path, entries: &[(&str, &[u8])]) {
 fn recovery_chapter_dir(root: &Path) -> PathBuf {
     root.join(CONTENTS_ROOT_DIR)
         .join("source")
-        .join("Novel-path")
-        .join("1-Chapter")
+        .join("novel-id")
+        .join("1")
 }
 
 #[test]

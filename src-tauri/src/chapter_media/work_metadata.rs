@@ -41,13 +41,12 @@ pub(super) fn is_cover_file(name: &str) -> bool {
 }
 
 fn safe_child(value: &str) -> bool {
-    !value.is_empty() && value != "." && value != ".." && !value.ends_with(['.', ' '])
-        && !value.chars().any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+    super::paths::is_storage_id(value)
 }
 
 fn checked_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let parts: Vec<_> = relative.split('/').collect();
-    if parts.len() != 4 || parts[0] != "contents" || !parts.iter().all(|s| safe_child(s)) {
+    if parts.len() != 4 || parts[0] != "contents" || !parts.iter().all(|s| safe_child(s)) || !super::paths::is_plugin_storage_id(parts[1]) {
         return Err("work metadata: invalid file path".into());
     }
     let name = parts[3];
@@ -107,10 +106,12 @@ fn list_files(root: &Path) -> Result<Vec<String>, String> {
     let mut paths = Vec::new();
     for source in fs::read_dir(&contents).map_err(|e| format!("work metadata: list sources: {e}"))? {
         let source = source.map_err(|e| e.to_string())?;
-        if !source.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        if !source.file_type().map_err(|e| e.to_string())?.is_dir()
+            || !super::paths::is_plugin_storage_id(&source.file_name().to_string_lossy()) { continue; }
         for work in fs::read_dir(source.path()).map_err(|e| e.to_string())? {
             let work = work.map_err(|e| e.to_string())?;
-            if !work.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+            if !work.file_type().map_err(|e| e.to_string())?.is_dir()
+                || !safe_child(&work.file_name().to_string_lossy()) { continue; }
             let relative = format!("contents/{}/{}/novel.json", source.file_name().to_string_lossy(), work.file_name().to_string_lossy());
             checked_path(root, &relative)?;
             paths.push(relative);
@@ -135,8 +136,7 @@ fn list_chapter_files(root: &Path, relative: &str, skipped: &HashSet<String>) ->
         if !child.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
         let name = child.file_name().to_string_lossy().into_owned();
         if skipped.contains(&format!("{}/{name}", relative.trim_end_matches("/novel.json"))) { continue; }
-        let Some((number, title)) = name.split_once('-') else { continue; };
-        if !safe_child(&name) || title.is_empty() || number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.parse::<f64>().is_err() { continue; }
+        if !super::paths::is_chapter_directory_name(&name) { continue; }
         let directory = child.path();
         for filename in ["content.pdf", "content.html"] {
             if fs::symlink_metadata(directory.join(filename)).is_ok_and(|metadata| metadata.file_type().is_file() && metadata.len() > 0) {
@@ -157,7 +157,9 @@ fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResu
         let mut validated = Vec::with_capacity(incoming.len());
         for (id, relative) in incoming {
             let parts: Vec<_> = relative.split('/').collect();
-            if parts.len() != 4 || parts[0] != "contents" || !parts.iter().all(|part| safe_child(part)) {
+            if parts.len() != 4 || parts[0] != "contents" || !parts.iter().all(|part| safe_child(part))
+                || !super::paths::is_plugin_storage_id(parts[1])
+                || !super::paths::is_chapter_directory_name(parts[3]) {
                 return Err("work metadata: invalid chapter directory".into());
             }
             let chapter_id: i64 = id.parse().map_err(|_| "work metadata: invalid chapter id")?;
@@ -245,7 +247,7 @@ mod tests {
     #[test]
     fn lists_work_candidates_without_inspecting_chapter_folders() {
         let root = fixture();
-        fs::create_dir_all(root.path().join("contents/source/Uninspected/1-Chapter")).unwrap();
+        fs::create_dir_all(root.path().join("contents/source/Uninspected/1")).unwrap();
         fs::create_dir_all(root.path().join("contents/source/Ready")).unwrap();
         fs::write(root.path().join("contents/source/Ready/novel.json"), b"{}").unwrap();
         assert_eq!(list_files(root.path()).unwrap(), [
@@ -302,32 +304,34 @@ mod tests {
     fn discovers_final_bodies_despite_incomplete_media_or_partial_artifacts() {
         let root = fixture();
         let work = root.path().join("contents/source/Book");
-        for name in ["1-Opening", "2-Pdf", "3-Incomplete", "4-Empty", "5-Partial", "6-Final-with-partial", "7-Invalid-manifest", "cover"] {
+        for name in ["1", "2", "3", "4", "5", "6", "7", "cover", "1-Opening", "01", "1.0", "-1", "1e2"] {
             fs::create_dir_all(work.join(name)).unwrap();
         }
-        fs::write(work.join("1-Opening/content.html"), b"body").unwrap();
-        fs::write(work.join("2-Pdf/content.pdf"), b"%PDF-body").unwrap();
-        fs::write(work.join("3-Incomplete/content.html"), b"body").unwrap();
-        fs::write(work.join("3-Incomplete/manifest.json"), br#"{"complete":false}"#).unwrap();
-        fs::write(work.join("4-Empty/content.html"), b"").unwrap();
-        fs::write(work.join("5-Partial/content.partial.html"), b"body").unwrap();
-        fs::write(work.join("6-Final-with-partial/content.html"), b"body").unwrap();
-        fs::write(work.join("6-Final-with-partial/.chapter-content.partial"), b"partial").unwrap();
-        fs::write(work.join("7-Invalid-manifest/content.html"), b"body").unwrap();
-        fs::write(work.join("7-Invalid-manifest/manifest.json"), b"invalid").unwrap();
-        fs::write(work.join("cover/content.html"), b"body").unwrap();
+        fs::write(work.join("1/content.html"), b"body").unwrap();
+        fs::write(work.join("2/content.pdf"), b"%PDF-body").unwrap();
+        fs::write(work.join("3/content.html"), b"body").unwrap();
+        fs::write(work.join("3/manifest.json"), br#"{"complete":false}"#).unwrap();
+        fs::write(work.join("4/content.html"), b"").unwrap();
+        fs::write(work.join("5/content.partial.html"), b"body").unwrap();
+        fs::write(work.join("6/content.html"), b"body").unwrap();
+        fs::write(work.join("6/.chapter-content.partial"), b"partial").unwrap();
+        fs::write(work.join("7/content.html"), b"body").unwrap();
+        fs::write(work.join("7/manifest.json"), b"invalid").unwrap();
+        for name in ["cover", "1-Opening", "01", "1.0", "-1", "1e2"] {
+            fs::write(work.join(name).join("content.html"), b"body").unwrap();
+        }
         let result = operate(root.path(), WorkMetadataOperation { operation: "chapters".into(), path: Some("contents/source/Book/novel.json".into()), body: None, chapter_directories: None, skip_chapter_directories: None, reset: None }).unwrap();
         assert_eq!(result.paths.unwrap(), [
-            "contents/source/Book/1-Opening/content.html",
-            "contents/source/Book/2-Pdf/content.pdf",
-            "contents/source/Book/3-Incomplete/content.html",
-            "contents/source/Book/6-Final-with-partial/content.html",
-            "contents/source/Book/7-Invalid-manifest/content.html",
+            "contents/source/Book/1/content.html",
+            "contents/source/Book/2/content.pdf",
+            "contents/source/Book/3/content.html",
+            "contents/source/Book/6/content.html",
+            "contents/source/Book/7/content.html",
         ]);
-        let skipped = HashSet::from(["contents/source/Book/1-Opening".to_string()]);
+        let skipped = HashSet::from(["contents/source/Book/1".to_string()]);
         let pending = list_chapter_files(root.path(), "contents/source/Book/novel.json", &skipped).unwrap();
         assert_eq!(pending.len(), 4);
-        assert!(!pending.iter().any(|path| path.contains("/1-Opening/")));
+        assert!(!pending.iter().any(|path| path.contains("/1/")));
     }
     #[test]
     fn rejects_escape_and_non_metadata_files() {
@@ -340,8 +344,8 @@ mod tests {
     fn registers_exact_chapter_directories_for_native_media_writes() {
         let root = fixture();
         operate(root.path(), WorkMetadataOperation { operation: "register".into(), path: None, body: None, reset: None, skip_chapter_directories: None,
-            chapter_directories: Some(HashMap::from([("42".into(), "contents/source/Original/chapter-alpha".into())])) }).unwrap();
-        let directory = super::super::paths::content_chapter_dir_at(root.path(), "source", 7, Some("/book"), Some("Renamed"), 42, Some("1"), Some("Opening"), Some(1)).unwrap();
-        assert_eq!(directory, root.path().join("contents/source/Original/chapter-alpha"));
+            chapter_directories: Some(HashMap::from([("42".into(), "contents/source/Original/1".into())])) }).unwrap();
+        let directory = super::super::paths::content_chapter_dir_at(root.path(), "source", 7, Some("book"), Some("Renamed"), 42, Some("1"), Some("Opening"), Some(1)).unwrap();
+        assert_eq!(directory, root.path().join("contents/source/Original/1"));
     }
 }

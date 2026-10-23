@@ -48,6 +48,7 @@ CREATE TABLE `work_metadata_reading_state` (
 CREATE TABLE `novel` (
   `id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
   `plugin_id` text NOT NULL,
+  `source_novel_id` text,
   `path` text NOT NULL,
   `name` text NOT NULL,
   `cover` text,
@@ -66,6 +67,8 @@ CREATE TABLE `novel` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `novel_plugin_path_uniq` ON `novel` (`plugin_id`, `path`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `novel_plugin_source_id_uniq` ON `novel` (`plugin_id`, lower(`source_novel_id`));
 --> statement-breakpoint
 CREATE INDEX `novel_in_library_idx` ON `novel` (`in_library`);
 --> statement-breakpoint
@@ -268,7 +271,7 @@ BEGIN
 END;
 --> statement-breakpoint
 CREATE TRIGGER `content_sync_novel_metadata`
-AFTER UPDATE OF name,author,summary,is_local ON `novel`
+AFTER UPDATE OF name,author,summary,is_local,source_novel_id ON `novel`
 WHEN (SELECT remote FROM content_sync_origin WHERE id=1)=0
 BEGIN
   INSERT INTO content_sync_journal(state_key)
@@ -292,7 +295,7 @@ END;
 --> statement-breakpoint
 CREATE TRIGGER `work_metadata_novel_update`
 AFTER UPDATE ON `novel`
-WHEN OLD.plugin_id IS NOT NEW.plugin_id OR OLD.path IS NOT NEW.path OR OLD.name IS NOT NEW.name
+WHEN OLD.plugin_id IS NOT NEW.plugin_id OR OLD.path IS NOT NEW.path OR OLD.source_novel_id IS NOT NEW.source_novel_id OR OLD.name IS NOT NEW.name
   OR OLD.cover IS NOT NEW.cover OR OLD.author IS NOT NEW.author OR OLD.artist IS NOT NEW.artist
   OR OLD.summary IS NOT NEW.summary OR OLD.status IS NOT NEW.status OR OLD.genres IS NOT NEW.genres
   OR OLD.rating IS NOT NEW.rating OR OLD.is_local IS NOT NEW.is_local

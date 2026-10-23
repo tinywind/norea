@@ -6,7 +6,7 @@ pub(crate) struct ChapterMediaClearContext {
     pub novel_id: Option<i64>,
     pub source_id: Option<String>,
     pub novel_name: Option<String>,
-    pub novel_path: Option<String>,
+    pub source_novel_id: Option<String>,
     pub chapter_number: Option<String>,
     pub chapter_name: Option<String>,
     pub chapter_position: Option<i64>,

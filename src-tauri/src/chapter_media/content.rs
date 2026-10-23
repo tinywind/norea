@@ -99,8 +99,8 @@ fn chapter_content_mirror_inspect_sync(
     app: AppHandle,
     preferred_chapter_dir: String,
     source_dir: String,
-    novel_identity_suffix: String,
-    chapter_identity_prefix: String,
+    novel_directory_name: String,
+    chapter_directory_name: String,
     preferred_content_file_name: String,
 ) -> Result<ChapterContentInspection, String> {
     let root = media_root(&app)?;
@@ -122,8 +122,8 @@ fn chapter_content_mirror_inspect_sync(
     let mut matches = Vec::new();
     for chapter_path in content_chapter_dirs_matching_segments(
         &root.join(source_relative_dir),
-        &novel_identity_suffix,
-        &chapter_identity_prefix,
+        &novel_directory_name,
+        &chapter_directory_name,
     )? {
         if let Some(inspection) =
             inspect_content_chapter_dir(&root, &chapter_path, preferred_file_name)?
@@ -141,7 +141,7 @@ fn chapter_content_mirror_inspect_sync(
         }),
         1 => Ok(matches.remove(0)),
         _ => Err(format!(
-            "chapter media: multiple stored chapter folders match source identity {chapter_identity_prefix}"
+            "chapter media: multiple stored chapter folders match source identity {chapter_directory_name}"
         )),
     }
 }
@@ -158,7 +158,7 @@ fn chapter_content_extension(content_type: Option<&str>) -> &'static str {
 fn chapter_content_relative_path(
     source_id: &str,
     novel_id: i64,
-    novel_path: Option<&str>,
+    source_novel_id: Option<&str>,
     novel_name: Option<&str>,
     chapter_id: i64,
     chapter_number: Option<&str>,
@@ -171,7 +171,7 @@ fn chapter_content_relative_path(
         content_chapter_relative_dir(
             source_id,
             novel_id,
-            novel_path,
+            source_novel_id,
             novel_name,
             chapter_id,
             chapter_number,
@@ -203,7 +203,7 @@ pub(super) fn content_chapter_dir_from_context(
     root: &Path,
     novel_id: Option<i64>,
     source_id: Option<&str>,
-    novel_path: Option<&str>,
+    source_novel_id: Option<&str>,
     novel_name: Option<&str>,
     chapter_id: i64,
     chapter_number: Option<&str>,
@@ -219,14 +219,14 @@ pub(super) fn content_chapter_dir_from_context(
     let Some(source_id) = source_id else {
         return Ok(None);
     };
-    let Some(novel_path) = novel_path else {
+    let Some(source_novel_id) = source_novel_id else {
         return Ok(None);
     };
     let preferred_dir = content_chapter_dir_at(
         root,
         source_id,
         novel_id,
-        Some(novel_path),
+        Some(source_novel_id),
         novel_name,
         chapter_id,
         chapter_number,
@@ -249,15 +249,12 @@ pub(super) fn content_chapter_dir_from_context(
         Err(err) => return Err(format!("chapter media: inspect chapter storage: {err}")),
     }
 
-    let chapter_identity_prefix = format!(
-        "{}-",
-        chapter_number_segment(chapter_number, chapter_position, chapter_id)
-    );
+    let chapter_directory_name = chapter_number_segment(chapter_number, chapter_position, chapter_id)?;
     let candidate_dirs = content_chapter_dirs_matching_identity(
         root,
         source_id,
         novel_id,
-        novel_path,
+        source_novel_id,
         chapter_id,
         chapter_number,
         chapter_position,
@@ -273,7 +270,7 @@ pub(super) fn content_chapter_dir_from_context(
         0 => Ok(Some(preferred_dir)),
         1 => Ok(matches.pop()),
         _ => Err(format!(
-            "chapter media: multiple stored chapter folders match source identity {chapter_identity_prefix}"
+            "chapter media: multiple stored chapter folders match source identity {chapter_directory_name}"
         )),
     }
 }
@@ -305,7 +302,7 @@ pub async fn chapter_content_mirror_store(
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "chapter media: invalid novel metadata plugin id".to_string())?;
         let novel_name = novel.get("name").and_then(serde_json::Value::as_str);
-        let novel_path = novel.get("path").and_then(serde_json::Value::as_str);
+        let source_novel_id = novel.get("sourceNovelId").and_then(serde_json::Value::as_str);
         let chapter_number = chapter
             .get("chapterNumber")
             .and_then(serde_json::Value::as_str);
@@ -318,7 +315,7 @@ pub async fn chapter_content_mirror_store(
         let content_file = chapter_content_relative_path(
             source_id,
             novel_id,
-            novel_path,
+            source_novel_id,
             novel_name,
             chapter_id,
             chapter_number,
@@ -388,7 +385,7 @@ pub async fn chapter_content_mirror_store_partial(
             &media_root,
             source_id,
             novel_id,
-            novel.get("path").and_then(serde_json::Value::as_str),
+            novel.get("sourceNovelId").and_then(serde_json::Value::as_str),
             novel.get("name").and_then(serde_json::Value::as_str),
             chapter_id,
             chapter
@@ -432,8 +429,8 @@ pub async fn chapter_content_mirror_inspect(
     app: AppHandle,
     preferred_chapter_dir: String,
     source_dir: String,
-    novel_identity_suffix: String,
-    chapter_identity_prefix: String,
+    novel_directory_name: String,
+    chapter_directory_name: String,
     preferred_content_file_name: String,
 ) -> Result<ChapterContentInspection, String> {
     chapter_media_blocking("inspect stored chapter", move || {
@@ -441,8 +438,8 @@ pub async fn chapter_content_mirror_inspect(
             app,
             preferred_chapter_dir,
             source_dir,
-            novel_identity_suffix,
-            chapter_identity_prefix,
+            novel_directory_name,
+            chapter_directory_name,
             preferred_content_file_name,
         )
     })

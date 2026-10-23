@@ -152,6 +152,7 @@ struct BackupRestoreManifest {
 #[serde(rename_all = "camelCase")]
 struct BackupRestoreNovel {
     id: i64,
+    source_novel_id: Option<String>,
     plugin_id: String,
     path: String,
     name: String,
@@ -431,8 +432,8 @@ async fn execute_restore_snapshot(
             "INSERT INTO novel (
                 id, plugin_id, path, name, cover, summary, author, artist,
                 status, genres, in_library, is_local,
-                created_at, updated_at, library_added_at, last_read_at, rating
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                created_at, updated_at, library_added_at, last_read_at, rating, source_novel_id
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
         )
         .bind(novel.id)
         .bind(novel.plugin_id.as_str())
@@ -451,6 +452,7 @@ async fn execute_restore_snapshot(
         .bind(novel.library_added_at)
         .bind(novel.last_read_at)
         .bind(novel.rating)
+        .bind(novel.source_novel_id.as_deref())
         .execute(&mut **tx)
         .await
         .map_err(|err| format!("backup_restore_snapshot: insert novel: {err}"))?;

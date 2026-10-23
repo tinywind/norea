@@ -31,8 +31,8 @@ fn write_downloaded_chapter(root: &Path, relative_dir: &str, body: &[u8]) {
 #[test]
 fn chapter_storage_transfer_copies_the_complete_directory_before_finalize() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let source = "contents/source-a/Novel-a/1-Opening";
-    let target = "contents/source-b/Novel-b/1-Opening";
+    let source = "contents/source-a/novel-a/1";
+    let target = "contents/source-b/novel-b/1";
     write_downloaded_chapter(dir.path(), source, b"source chapter");
 
     let preparation = prepare_chapter_storage_transfer_at_root(
@@ -79,8 +79,8 @@ fn chapter_storage_transfer_copies_the_complete_directory_before_finalize() {
 #[test]
 fn chapter_storage_transfer_keeps_an_existing_target_download() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let source = "contents/source-a/Novel-a/1-Opening";
-    let target = "contents/source-b/Novel-b/1-Opening";
+    let source = "contents/source-a/novel-a/1";
+    let target = "contents/source-b/novel-b/1";
     write_downloaded_chapter(dir.path(), source, b"source chapter");
     write_downloaded_chapter(dir.path(), target, b"target chapter");
 
@@ -105,8 +105,8 @@ fn chapter_storage_transfer_keeps_an_existing_target_download() {
 #[test]
 fn chapter_storage_transfer_restores_an_invalid_target_on_rollback() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let source = "contents/source-a/Novel-a/1-Opening";
-    let target = "contents/source-b/Novel-b/1-Opening";
+    let source = "contents/source-a/novel-a/1";
+    let target = "contents/source-b/novel-b/1";
     write_downloaded_chapter(dir.path(), source, b"source chapter");
     fs::create_dir_all(dir.path().join(target)).expect("create partial target");
     fs::write(
@@ -138,8 +138,8 @@ fn chapter_storage_transfer_restores_an_invalid_target_on_rollback() {
 #[test]
 fn repeated_transfer_rollback_does_not_remove_a_new_target_download() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let source = "contents/source-a/Novel-a/1-Opening";
-    let target = "contents/source-b/Novel-b/1-Opening";
+    let source = "contents/source-a/novel-a/1";
+    let target = "contents/source-b/novel-b/1";
     write_downloaded_chapter(dir.path(), source, b"source chapter");
     let preparation = prepare_chapter_storage_transfer_at_root(
         dir.path(),
@@ -168,9 +168,9 @@ fn chapter_storage_transfer_rejects_invalid_and_duplicate_target_paths() {
     assert!(safe_chapter_storage_removal_relative_dir("contents/source").is_err());
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let source_one = "contents/source-a/Novel-a/1-Opening";
-    let source_two = "contents/source-a/Novel-a/2-Next";
-    let target = "contents/source-b/Novel-b/1-Opening";
+    let source_one = "contents/source-a/novel-a/1";
+    let source_two = "contents/source-a/novel-a/2";
+    let target = "contents/source-b/novel-b/1";
     write_downloaded_chapter(dir.path(), source_one, b"one");
     write_downloaded_chapter(dir.path(), source_two, b"two");
 
@@ -194,10 +194,10 @@ fn chapter_storage_transfer_rolls_back_prior_entries_after_copy_failure() {
     use std::os::unix::fs::symlink;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let source_one = "contents/source-a/Novel-a/1-Opening";
-    let source_two = "contents/source-a/Novel-a/2-Next";
-    let target_one = "contents/source-b/Novel-b/1-Opening";
-    let target_two = "contents/source-b/Novel-b/2-Next";
+    let source_one = "contents/source-a/novel-a/1";
+    let source_two = "contents/source-a/novel-a/2";
+    let target_one = "contents/source-b/novel-b/1";
+    let target_two = "contents/source-b/novel-b/2";
     write_downloaded_chapter(dir.path(), source_one, b"one");
     write_downloaded_chapter(dir.path(), source_two, b"two");
     symlink(
