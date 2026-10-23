@@ -41,7 +41,8 @@ compatibility requirements must be decided explicitly before implementation.
   and reading changes do not edit it. Local works publish their chapter titles
   after local imports, edits, deletions, and reordering. There is no update timestamp. Recovery
   restores the catalog into SQLite and marks only discovered completed files
-  as downloaded.
+  as downloaded. After inspecting chapter files, recovery rereads the work document
+  before applying it so an earlier snapshot cannot hide newer details or titles.
 - Chapter completeness is derived from `manifest.json` and the actual
   `media.zip` inventory. Every declared asset must be present; cached completion
   and per-asset status flags do not override the files. Folder recovery and
@@ -53,7 +54,10 @@ compatibility requirements must be decided explicitly before implementation.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.
   Nonempty updates and a rating of zero still apply. Explicit local edits can
-  clear fields through their separate editing path. Recovery does not rewrite
+  clear fields through their separate editing path. Server installation writes
+  the preserved fields to the work document as well as the database. A source
+  refresh repairs missing work details in that document even when the source
+  returns the same metadata already cached in SQLite. Recovery does not rewrite
   original metadata files merely to fill missing fields from the database.
 - Backups preserve unknown chapter creation times as `null`, including chapters
   recovered from metadata or storage. Restoring does not invent those timestamps.

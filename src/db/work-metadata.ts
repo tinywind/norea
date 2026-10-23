@@ -246,22 +246,30 @@ export async function initializeWorkMetadata(db: Database, options: {
     const previous = baselines.get(keyFor(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath));
     const downloadRevision = currentChapterDownloadRevision();
     const chapters = await listStoredNovelChapters(entry.directory);
-    const cover = entry.metadata.novel.isLocal ? await readStoredNovelCover(entry.directory, entry.metadata) : null;
     const restored = await run(async () => {
       checkCancelled();
       const current = knownFiles.get(keyFor(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath));
       const metadataChanged = current !== previous;
       if (metadataChanged && current?.directory !== entry.directory) return null;
+      let metadata = entry.metadata;
+      if (!metadataChanged) {
+        const latest = await readStoredNovelMetadata(entry.directory);
+        if (!latest) return null;
+        if (latest.metadata.identity.pluginId !== metadata.identity.pluginId || latest.metadata.identity.novelId !== metadata.identity.novelId ||
+          latest.metadata.identity.novelPath !== metadata.identity.novelPath) throw new Error("work metadata: recovery identity changed during inspection");
+        metadata = latest.metadata;
+      }
+      const cover = !metadataChanged && metadata.novel.isLocal ? await readStoredNovelCover(entry.directory, metadata) : null;
       const [pendingWork] = await db.select<{ pending: number }[]>("SELECT 1 AS pending FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]);
       const [existing] = metadataChanged || pendingWork ? await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]) : [];
       if ((metadataChanged || pendingWork) && !existing) return null;
       await db.execute("BEGIN IMMEDIATE");
       try {
-        const novelId = metadataChanged && existing ? existing.id : await applyNovelMetadataToCache(db, entry.metadata, entry.directory, {
+        const novelId = metadataChanged && existing ? existing.id : await applyNovelMetadataToCache(db, metadata, entry.directory, {
           storedCover: cover, addToLibrary: true, preserveMissingMetadata: true, preserveCachedNovel: Boolean(pendingWork),
         });
         await scanStoredNovelChaptersToCache(db, novelId, entry.directory, { chapters, downloadRevision, deferNativeRegistration: true });
-        if (!metadataChanged && !pendingWork) await rememberStoredNovelMetadata(db, entry.directory, entry.metadata, options.rebuild);
+        if (!metadataChanged && !pendingWork) await rememberStoredNovelMetadata(db, entry.directory, metadata, options.rebuild);
         if (!pendingWork) await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]);
         const mapped = await db.select<{ id: number; directory: string }[]>("SELECT chapter_id AS id,directory FROM work_metadata_directory_cache WHERE novel_id=$1", [novelId]);
         checkCancelled();
@@ -431,12 +439,14 @@ interface FetchedChapterCatalog { novelId: number; chapters: NovelMetadataV1["ch
 export async function flushWorkMetadata(db: Database, fetched?: FetchedChapterCatalog): Promise<void> {
   if (!isTauriRuntime()) return;
   if (fetched) {
-    const [work] = await db.select<{ directory: string | null; dirty: number }[]>(`SELECT f.directory,
+    const [work] = await db.select<(Pick<NovelMetadataV1["novel"], "name" | "author" | "artist" | "summary" | "status" | "genres" | "rating"> & { directory: string | null; dirty: number })[]>(`SELECT f.directory,n.name,n.author,n.artist,n.summary,n.status,n.genres,n.rating,
       EXISTS(SELECT 1 FROM work_metadata_dirty d WHERE d.plugin_id=n.plugin_id AND d.path=n.path) AS dirty
       FROM novel n LEFT JOIN work_metadata_file_cache f ON f.novel_id=n.id WHERE n.id=$1`, [fetched.novelId]);
     if (work && !work.dirty) {
       const stored = work.directory ? await readStoredNovelMetadata(work.directory) : null;
-      if (!stored || Object.entries(fetched.chapters).some(([number, name]) => stored.metadata.chapters[number] !== name)) {
+      const fields = ["name", "author", "artist", "summary", "status", "genres", "rating"] as const;
+      if (!stored || fields.some(field => stored.metadata.novel[field] !== work[field]) ||
+        Object.entries(fetched.chapters).some(([number, name]) => stored.metadata.chapters[number] !== name)) {
         await db.execute(`INSERT INTO work_metadata_dirty(plugin_id,path)
           SELECT plugin_id,path FROM novel WHERE id=$1 ON CONFLICT(plugin_id,path) DO NOTHING`, [fetched.novelId]);
       }

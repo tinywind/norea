@@ -35,7 +35,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
   return {};
 } }));
 
-import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories } from "./work-metadata";
+import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories, storedNovelMetadataFingerprint } from "./work-metadata";
 import { withChapterDownloadDeletion, withChapterDownloadWrite } from "../lib/chapter-download-writes";
 import { adoptStoredChapterContentMetadata } from "./queries/chapter";
 import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
@@ -84,6 +84,84 @@ beforeEach(() => {
   });
 });
 afterEach(() => sqlite.close());
+
+it("keeps refreshed work details durable when a later server document omits them", async () => {
+  await initializeWorkMetadata(db);
+  const plugin = { id: "source", parseNovel: async () => ({
+    novelId: "book", name: "Refreshed book", path: "/book", author: "Current author",
+    artist: "Current artist", summary: "Complete summary", status: "Ongoing", genres: "Fantasy", rating: 4.5,
+    chapters: [
+      { chapterNumber: 1, name: "Complete opening", path: "/chapter/1" },
+      { chapterNumber: 2, name: "Complete second chapter", path: "/chapter/2" },
+    ],
+  }) } as unknown as Plugin;
+  await syncNovelFromSource(plugin, { name: "Refreshed book", path: "/book" });
+  const sparse = fixture();
+  sparse.novel = { ...sparse.novel, name: "Refreshed book", author: null, artist: " " };
+  await installStoredNovelMetadata(sparse);
+
+  const persisted = (await listStoredNovelMetadata())[0]!.metadata;
+  expect(persisted.novel).toMatchObject({
+    author: "Current author", artist: "Current artist", summary: "Complete summary",
+    status: "Ongoing", genres: "Fantasy", rating: 4.5,
+  });
+  expect(persisted.chapters).toEqual({ "1": "Complete opening", "2": "Complete second chapter" });
+
+  sqlite.close();
+  sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT author,artist,summary,status,genres,rating FROM novel").get())
+    .toEqual({ author: "Current author", artist: "Current artist", summary: "Complete summary", status: "Ongoing", genres: "Fantasy", rating: 4.5 });
+  expect(sqlite.prepare("SELECT name FROM chapter ORDER BY position").all())
+    .toEqual([{ name: "Complete opening" }, { name: "Complete second chapter" }]);
+});
+
+it("republishes recovered work details on an unchanged full source refresh", async () => {
+  await initializeWorkMetadata(db);
+  const plugin = { id: "source", parseNovel: async () => ({
+    novelId: "book", name: "Complete book", path: "/book", author: "Writer", summary: "Full summary",
+    chapters: [{ chapterNumber: 1, name: "Full opening", path: "/chapter/1" }],
+  }) } as unknown as Plugin;
+  await syncNovelFromSource(plugin, { name: "Complete book", path: "/book" });
+  const full = (await listStoredNovelMetadata())[0]!.metadata;
+  save({ ...full, novel: { ...full.novel, summary: null } });
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(sqlite.prepare("SELECT summary FROM novel").get()).toEqual({ summary: "Full summary" });
+  expect((await listStoredNovelMetadata())[0]!.metadata.novel.summary).toBeNull();
+
+  await syncNovelFromSource(plugin, { name: "Complete book", path: "/book" });
+  expect((await listStoredNovelMetadata())[0]!.metadata).toEqual(full);
+  const writes = storage.writes;
+  await syncNovelFromSource(plugin, { name: "Complete book", path: "/book" });
+  expect(storage.writes).toBe(writes);
+});
+
+it.each([false, true])("uses the current work document after a slow recovery scan (rebuild: %s)", async (rebuild) => {
+  const initial = { ...fixture(), chapters: { "1": "Old opening" } };
+  save(initial);
+  if (rebuild) await initializeWorkMetadata(db);
+  let release!: () => void;
+  storage.chapterScan = new Promise<void>(resolve => { release = resolve; });
+  storage.chapterLists = 0;
+  const recovery = initializeWorkMetadata(db, { rebuild });
+  await vi.waitFor(() => expect(storage.chapterLists).toBe(1));
+  const current = {
+    ...initial, novel: { ...initial.novel, name: "Current title", summary: "Current summary" },
+    chapters: { "1": "Current opening", "2": "Current second chapter" },
+  };
+  save(current);
+  release();
+  await recovery;
+
+  expect(sqlite.prepare("SELECT name,summary FROM novel").get()).toEqual({ name: "Current title", summary: "Current summary" });
+  expect(sqlite.prepare("SELECT name,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
+    { name: "Current opening", is_downloaded: 1 }, { name: "Current second chapter", is_downloaded: 0 },
+  ]);
+  const [file] = await readWorkMetadataSyncFiles();
+  expect(file!.fingerprint).toBe(await storedNovelMetadataFingerprint(current));
+  expect(storage.writes).toBe(0);
+});
 
 it("preserves a plugin novel ID through source sync, work files, upload discovery, and backup restore", async () => {
   const plugin = { id: "source", parseNovel: async () => ({
@@ -920,7 +998,9 @@ it.each(["source", "server"])("restores extensible metadata during %s publicatio
   } else {
     await installStoredNovelMetadata(metadata);
   }
-  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(`${directory}/novel.json`)!)))).toEqual(metadata);
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(`${directory}/novel.json`)!)))).toEqual({
+    ...metadata, novel: { ...metadata.novel, summary: origin === "server" ? "Old summary" : null },
+  });
   expect(storage.files.get(contentPath)).toEqual([1, 2, 3]);
   expect(storage.files.get(mediaPath)).toEqual([4, 5, 6]);
   expect([...storage.files.keys()].filter(file => file.endsWith("/novel.json"))).toEqual([`${directory}/novel.json`]);
@@ -1222,6 +1302,7 @@ it("keeps recovered DB metadata through sparse server installation and reopening
     status: "Completed", genres: "Fantasy", rating: 4.5,
   });
   expect(sqlite.prepare("SELECT name FROM chapter WHERE chapter_number='2'").get()).toEqual({ name: "New server chapter" });
+  expect((await listStoredNovelMetadata())[0]!.metadata.novel).toMatchObject(readFields()!);
   const installedFile = [...storage.files.get(path)!];
   const writes = storage.writes;
   await initializeWorkMetadata(db, { rebuild: true });

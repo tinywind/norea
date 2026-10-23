@@ -9,6 +9,7 @@ import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 import { canonicalMetadataValue, coverContentType, MAX_NOVEL_COVER_BYTES, parseNovelMetadata, safeMetadataChild, type NovelMetadataV1 } from "./work-metadata/schema";
 import { throwIfAborted } from "./abort";
+import { mergeIncomingNovelMetadata } from "./work-metadata/merge";
 export { parseNovelMetadata, type NovelMetadataV1 } from "./work-metadata/schema";
 
 export interface StoredNovelMetadata { directory: string; metadata: NovelMetadataV1 }
@@ -226,7 +227,7 @@ export async function writeStoredNovelCover(directory: string, metadata: NovelMe
 }
 
 export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>): Promise<InstalledNovelMetadata | null> {
-  const metadata = parseNovelMetadata(input);
+  let metadata = parseNovelMetadata(input);
   const { runDatabaseTransaction } = await import("../db/client");
   const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
   return runWorkContentStorageOperation(metadata.identity.pluginId, metadata.identity.novelPath, async () => {
@@ -237,11 +238,15 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
       if (existing) existing.metadata.cover = await discoverStoredNovelCover(directory, existing.metadata.cover);
       if (await beforeInstall?.(existing, db) === false) return null;
       return withWorkMetadataRollback(async () => {
-        metadata.chapters = { ...existing?.metadata.chapters, ...metadata.chapters };
+        metadata = mergeIncomingNovelMetadata(existing?.metadata, metadata);
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
         else metadata.cover = existing?.metadata.cover ?? null;
-        await writeStoredNovelMetadata(directory, metadata, false);
         const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: true });
+        const [cached] = await db.select<Pick<NovelMetadataV1["novel"], "author" | "artist" | "summary" | "status" | "genres" | "rating">[]>(
+          "SELECT author,artist,summary,status,genres,rating FROM novel WHERE id=$1", [installedNovelId]);
+        if (!cached) throw new Error("Installed work metadata is missing from the local cache.");
+        metadata.novel = { ...metadata.novel, ...cached };
+        await writeStoredNovelMetadata(directory, metadata, false);
         await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
         await rememberStoredNovelMetadata(db, directory, metadata, true);
         const syncFile = await readWorkMetadataSyncFile(metadata.identity, db);
