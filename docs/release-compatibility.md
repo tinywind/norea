@@ -43,6 +43,9 @@ compatibility requirements must be decided explicitly before implementation.
   restores the catalog into SQLite and marks only discovered completed files
   as downloaded. After inspecting chapter files, recovery rereads the work document
   before applying it so an earlier snapshot cannot hide newer details or titles.
+  A completed scan clears download flags and byte counts for cached chapter paths
+  absent from that work, preserving metadata and reading state. Downloads changed
+  after the scan began retain their newer state.
   Once a work is indexed, a different external document has unknown freshness
   and cannot replace its cached details or chapter catalog during recovery or
   sync rescanning. Newly discovered works still recover from their files.
