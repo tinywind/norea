@@ -251,12 +251,13 @@ the files that are actually present. Only the current manifest format 2 is suppo
 
 ## Version Compatibility
 
-During early development, Norea supports only the current database, settings,
-metadata, backup, and content-server formats. There are no upgrade migrations,
-old-format readers, or settings translations. A schema version or checksum
-mismatch recreates the app database; downloaded files remain on disk and can be
-rescanned when they follow the current file format. Use current app and server
-builds together. Any future compatibility policy will be decided separately.
+Database schema changes increment the version and migrate existing app data,
+including development builds. Registered migration SQL remains immutable.
+Unknown versions, changed checksums, and failed migrations stop database opening
+without deleting existing data.
+
+Settings, metadata, backups, and the content-server API currently support only
+their current formats. Use current app and server builds together.
 
 Maintainer details live in
 [docs/release-compatibility.md](./docs/release-compatibility.md).

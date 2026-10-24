@@ -69,9 +69,14 @@ pnpm test
 Run `pnpm tauri build --debug` on Windows when the change touches native
 desktop integration.
 
-Keep `src-tauri/src/schema.sql` and `src/db/schema.ts` aligned as one current
-development schema. Do not add upgrade migrations or retain older schema readers.
-The app recreates its database when the installed schema checksum differs.
+Keep `src/db/schema.ts` aligned with the result of the registered SQLite
+migrations in `src-tauri/src/database.rs`. The existing `schema.sql` is the
+immutable version 1 baseline. For each schema change, append SQL with a higher
+version, register it in `schema_migrations()`, and preserve existing rows and
+relationships. Do not edit applied migration SQL or reset a database on mismatch.
+Test fresh initialization, upgrades from supported installed versions, reopening,
+and rollback after a failed upgrade. Version/checksum errors preserve the database
+and require diagnosis before retrying.
 
 Rust-side checks:
 

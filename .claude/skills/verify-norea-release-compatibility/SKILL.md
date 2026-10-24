@@ -19,30 +19,25 @@ merge or release.
 
 ## Compatibility Rule
 
-Norea guarantees compatibility only inside the active release line:
+Follow the current scope in `docs/release-compatibility.md`.
 
-- `1.0.0` and later: same major version only.
-- `0.x.y`: same minor version only.
-
-Inside the supported line, existing app data must remain readable through
-migrations or backward-compatible readers. Outside that line, incompatible data
-changes are allowed only when the release boundary and user-facing guidance are
-documented.
-
-Pre-release schema edits do not require one migration file per edit. Verify
-compatibility across released schema versions only; discarded development
-schema history is not part of the compatibility contract.
+- App database changes increment the version and preserve existing data through
+  ordered migrations, including development builds.
+- Applied migration SQL is immutable. Unsupported history, checksum mismatches,
+  and upgrade failures must preserve the database instead of resetting it.
+- Settings, metadata, backups, and content-server APIs currently support their
+  current formats. Do not infer additional format compatibility from semver alone.
 
 ## Verification Checklist
 
 For data or release-affecting changes:
 
 1. Identify whether the change is inside the current compatibility scope.
-2. Check that release-boundary database migrations or schema version files,
+2. Check that ordered database migrations and schema versions,
    backup format handling, local file handling, and reader/import paths
    preserve data inside that scope.
-3. Check that incompatible changes are aligned with the next allowed release
-   boundary.
+3. Require explicit authorization for data loss and populated upgrade,
+   rollback, reopen, and mismatch-preservation coverage for schema changes.
 4. Check that README, `CLAUDE.md`, release notes, or developer docs reference
    the compatibility impact when users or agents need to know it.
 5. Prefer the smallest relevant automated check, then add manual smoke steps

@@ -8,11 +8,12 @@ SQLite and matches completed chapter files by their source chapter numbers.
 The app database retains queryable metadata as a rebuildable cache. Files win
 when cache and disk differ. Reading progress, bookmarks, library membership,
 and other device preferences stay local and are not sent to the content server.
-Both applications support only the current database schema v1, metadata schema v1,
-and API/package version 1. No upgrade migrations or previous-format readers are
-retained. A schema checksum mismatch recreates the app database while leaving
-files on disk. The server requires a fresh state volume for an incompatible
-schema. The independent source-plugin API remains 0.2.
+The app currently registers database schema v1. Later app schema changes must
+increment the version and preserve existing rows through ordered migrations.
+A version/checksum error preserves the database and stops opening it.
+Both applications use metadata schema v1 and API/package version 1 without
+previous-format readers. The server requires a fresh state volume for an
+incompatible server schema. The independent source-plugin API remains 0.2.
 
 The work identity stores the plugin ID, the plugin-owned `novelId`, and its source path without the base URL,
 for example `/novel/123456`. Absolute HTTP URLs, protocol-relative URLs, and

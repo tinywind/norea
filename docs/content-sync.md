@@ -275,12 +275,12 @@ A sync request arriving during an active pass queues another pass. Waiting reque
 coalesce and preserve upload and rescan requests, so a metadata refresh after the
 active work phase is processed before the requesting caller completes.
 
-The current development schema has one v1 bootstrap. A version or checksum
-mismatch recreates the app database, without importing previous records. Current
-files remain available for an explicit rescan. Server schema mismatch requires
-a fresh state volume; no migration or format conversion runs. Sync cursors and
-device keys remain outside portable backups. No account, session, or personal-state
-endpoint is called.
+The app database uses an immutable v1 baseline. Later schema changes increment
+the version and migrate existing records, including sync exclusions and cursors.
+Version/checksum errors preserve the database and stop opening it. An incompatible
+server schema still requires a fresh state volume; server format conversion is
+outside this app migration policy. Sync cursors and device keys remain outside
+portable backups. No account, session, or personal-state endpoint is called.
 
 Local content installation is serialized per work. Network transfers use private
 staging directories and do not hold a work lock. Upload fingerprinting and transfer

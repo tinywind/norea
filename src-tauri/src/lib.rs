@@ -54,7 +54,7 @@ fn write_frontend_log(level: String, message: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![database::schema_migration()];
+    let migrations = database::schema_migrations();
 
     let plugin_vpn = plugin_vpn::PluginVpnState::bind()
         .expect("could not start the plugin VPN proxy");
@@ -113,7 +113,6 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(database::schema_plugin())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:norea.db", migrations)

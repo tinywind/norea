@@ -1,38 +1,42 @@
 # Development Data Policy
 
-Norea is in early development and supports only its current data formats.
-Backward compatibility with earlier development builds is out of scope,
-including builds with the same version number.
+Norea preserves app database data across schema upgrades, including development
+builds. Every schema change requires a higher version and an ordered migration.
+The current version 1 schema is the baseline for this policy; discarded older
+development schemas are not reconstructed automatically.
 
-This policy covers SQLite, settings, library and reading state, local work
-metadata, chapter packages, backups, and content-server storage and APIs.
-Do not add migration histories, old format readers, endpoint aliases, or
-settings translation to preserve discarded development formats. Future release
-compatibility requirements must be decided explicitly before implementation.
+Settings, work metadata, chapter packages, backups, and content-server APIs
+support only their current formats. Earlier external formats do not require
+fallback readers, endpoint aliases, or settings translation. Further compatibility
+requirements must be decided explicitly before implementation.
 
-## Current App Database
+## App Database Upgrades
 
-- `src/db/schema.ts` defines the app tables and columns. The single version 1
-  bootstrap in `src-tauri/src/schema.sql` creates all current tables, indexes,
-  and triggers, including the content journal and work metadata caches.
-- Before the SQL plugin opens the database, startup requires exactly one
-  successful version 1 entry with the bootstrap's SQLx SHA-384 checksum.
-  Reopening that schema preserves its data. Every other history resets the
-  database; matching prefixes do not upgrade.
+- `src/db/schema.ts` defines the current app tables and columns. The registered
+  SQL migrations in `src-tauri/src/database.rs` must produce that schema for
+  fresh installations and upgrades.
+- `src-tauri/src/schema.sql` is the immutable version 1 baseline. Append later
+  migration SQL and register each upgrade with a strictly increasing version.
+  Do not rewrite an applied migration or its checksum, even before a release.
+- The SQL plugin applies pending migrations in order. Reopening an up-to-date
+  database does not rerun them. Upgrades must retain library membership,
+  categories, installed plugins, chapters, reading progress, history, downloads,
+  and work metadata caches unless the user explicitly authorizes a specific loss.
+- Unknown versions, mismatched checksums, invalid migration history, and failed
+  upgrades stop database opening without deleting the database or its sidecars.
+  Transactional upgrades must roll back their changes when an operation fails.
+  An unsupported database requires explicit recovery; startup must not erase it.
+- Test fresh initialization, upgrades from supported installed versions, unchanged
+  reopen, failed-upgrade rollback, and preservation on version/checksum errors.
+  Include populated records and relationships affected by the change.
 - Reopening the current schema retains pending metadata edits. Startup restores
   indexed work paths and publishes those edits transactionally before content
   sync can proceed. Failed publication leaves pending edits available for retry.
-- Reset removes `norea.db` and its WAL, shared-memory, and rollback-journal
-  files before creating the current schema. It does not delete chapter files,
-  covers, `novel.json`, or other app files. Database access errors propagate
-  without deleting an unreadable database.
-- A reset loses DB-backed library membership, reading state, and caches.
-  Current `novel.json` documents and completed chapter folders can rebuild the
-  work cache. Invalid or obsolete files are not converted or used to guess work
-  identity.
-- Runtime initialization rebuilds cached data from current files when needed.
-  It does not add missing columns, replace tables, or translate old cached
-  snapshots. Schema edits belong in the bootstrap and change its checksum.
+- Current `novel.json` documents and completed chapter folders can rebuild work
+  caches after an explicitly requested reset. Invalid or obsolete files are not
+  converted or used to guess work identity.
+- Runtime initialization restores caches from current files when needed. Schema
+  changes belong in versioned migrations, not opportunistic runtime DDL.
 
 ## Other Formats
 
@@ -131,7 +135,7 @@ source plugin. Files live under `contents/<pluginId>/<novelId>/<chapterNumber>/`
 Titles and host-generated hashes are excluded from directory names. The app
 caches the plugin-owned work ID in `novel.source_novel_id` and includes it in metadata,
 chapter manifests, and backup snapshots. Invalid, changed, or conflicting IDs
-are rejected. The database bootstrap checksum changes with the new cache column.
+are rejected. The version 1 baseline includes this cache column.
 Runtime recovery does not import or convert earlier title-based folders or
 metadata without the plugin-owned ID. It leaves those original files untouched.
 Explicitly requested offline conversions follow the preservation and validation
@@ -143,7 +147,8 @@ unsupported.
 
 1. Update the current format and its callers together.
 2. Remove obsolete format branches and their tests instead of extending them.
-3. Test fresh initialization, reopening the exact current schema, rejection or
-   reset of other schemas, and the affected current-format behavior.
-4. State any data reset consequences in release notes. Do not reset deployed
-   databases or device data as part of a code change without authorization.
+3. For database changes, increment the schema version, append an ordered
+   migration, and test populated upgrades, fresh initialization, reopening, and
+   failure rollback. Keep earlier migration SQL unchanged.
+4. Document compatibility consequences. Never reset deployed databases or device
+   data as part of a code change without explicit authorization.

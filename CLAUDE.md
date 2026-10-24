@@ -64,14 +64,16 @@ Release notes:
 
 Compatibility notes:
 
-- Current development supports only the current database, settings, metadata,
-  backup, content-server API, and chapter package formats.
-- Do not preserve earlier development formats through migrations, fallback
-  readers, old endpoint aliases, or settings translation.
-- Keep one current SQLite bootstrap. A schema mismatch resets the app database
-  without migrating its data; chapter and metadata files remain on disk.
-- Future release compatibility requirements must be decided explicitly before
-  they introduce implementation work.
+- Database schema changes must increment the schema version and include ordered
+  migrations that preserve existing app data, including development builds.
+- Keep registered migration SQL immutable. Append upgrades and test existing
+  databases as well as fresh initialization. Never reset a database automatically
+  because its version or checksum differs.
+- Current development supports only the current settings, metadata, backup,
+  content-server API, and chapter package formats. Earlier versions of those
+  external formats do not require fallback readers, endpoint aliases, or translation.
+- Further compatibility requirements must be decided explicitly before they
+  introduce implementation work.
 - Data, backup, migration, import/export, or local-file changes must follow
   `docs/release-compatibility.md`.
 

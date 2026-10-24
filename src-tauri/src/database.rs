@@ -1,10 +1,6 @@
-use std::{fs, path::Path, time::Duration};
+use std::{fs, time::Duration};
 
-use sqlx::{
-    migrate::{Migration as SqlxMigration, MigrationType},
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    SqlitePool,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool, Migration, MigrationKind};
 
@@ -28,81 +24,13 @@ fn run_async_command<F: std::future::Future>(command: F) -> F::Output {
     }
 }
 
-pub fn schema_migration() -> Migration {
-    Migration {
+pub fn schema_migrations() -> Vec<Migration> {
+    vec![Migration {
         version: 1,
         description: "create current application schema",
         sql: include_str!("schema.sql"),
         kind: MigrationKind::Up,
-    }
-}
-
-pub fn schema_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    let schema = schema_migration();
-    let expected = SqlxMigration::new(
-        schema.version,
-        schema.description.into(),
-        MigrationType::ReversibleUp,
-        schema.sql.into(),
-        false,
-    );
-    tauri::plugin::Builder::new("database-schema")
-        .setup(move |app, _| {
-            let path = app.path().app_config_dir()?.join(DB_FILE);
-            run_async_command(reset_incompatible_database(&path, &expected))?;
-            Ok(())
-        })
-        .build()
-}
-
-async fn schema_is_current(
-    pool: &SqlitePool,
-    expected: &SqlxMigration,
-) -> Result<bool, sqlx::Error> {
-    let has_history: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
-    ).fetch_one(pool).await?;
-    if !has_history {
-        return Ok(false);
-    }
-    let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
-        "SELECT version, checksum, success FROM _sqlx_migrations",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(matches!(applied.as_slice(), [(version, checksum, true)]
-        if *version == expected.version && checksum.as_slice() == expected.checksum.as_ref()))
-}
-
-async fn reset_incompatible_database(path: &Path, expected: &SqlxMigration) -> Result<(), sqlx::Error> {
-    if !path.try_exists()? {
-        return Ok(());
-    }
-    let pool = sqlite_pool_options()
-        .connect_with(
-            SqliteConnectOptions::new()
-                .filename(path)
-                .create_if_missing(false)
-                .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS)),
-        )
-        .await?;
-    let current = schema_is_current(&pool, expected).await;
-    pool.close().await;
-    if current? {
-        return Ok(());
-    }
-    log::warn!("Resetting application database because its schema does not match this build");
-    // Run before the SQL plugin opens any connections; leave media and other app files intact.
-    for suffix in ["-wal", "-shm", "-journal", ""] {
-        let mut file = path.as_os_str().to_os_string();
-        file.push(suffix);
-        match fs::remove_file(Path::new(&file)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
+    }]
 }
 
 pub fn install_single_connection_sqlite_pool(app: &AppHandle) -> Result<(), String> {
@@ -134,11 +62,11 @@ pub fn install_single_connection_sqlite_pool(app: &AppHandle) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::migrate::{Migration, MigrationType, Migrator};
+    use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
     use std::borrow::Cow;
 
     fn schema(sql: &str) -> SqlxMigration {
-        Migration::new(
+        SqlxMigration::new(
             1,
             "fixture".into(),
             MigrationType::ReversibleUp,
@@ -147,39 +75,61 @@ mod tests {
         )
     }
 
-    async fn bootstrap(path: &std::path::Path, expected: &SqlxMigration) -> sqlx::SqlitePool {
-        reset_incompatible_database(path, expected).await.unwrap();
+    async fn bootstrap(path: &std::path::Path, expected: &[SqlxMigration]) -> Result<sqlx::SqlitePool, sqlx::migrate::MigrateError> {
         let pool = sqlite_pool_options()
             .connect_with(
                 SqliteConnectOptions::new()
                     .filename(path)
                     .create_if_missing(true),
             )
-            .await
-            .unwrap();
-        Migrator {
-            migrations: Cow::Owned(vec![expected.clone()]),
+            .await?;
+        let migration = Migrator {
+            migrations: Cow::Owned(expected.to_vec()),
             ..Migrator::DEFAULT
         }
         .run(&pool)
-        .await
-        .unwrap();
-        pool
+        .await;
+        if let Err(error) = migration {
+            pool.close().await;
+            return Err(error);
+        }
+        Ok(pool)
     }
 
     const CURRENT: &str = "CREATE TABLE sample (value INTEGER);";
 
     #[tokio::test]
+    async fn registered_app_migrations_preserve_library_and_downloads_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Retained work',1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter(novel_id,path,name,position,is_downloaded,stored_content_type) VALUES(1,'/chapter','Retained chapter',1,1,'html')")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (String, i64, String, i64)>(
+            "SELECT n.name,n.in_library,c.name,c.is_downloaded FROM novel n JOIN chapter c ON c.novel_id=n.id")
+            .fetch_one(&pool).await.unwrap(), ("Retained work".into(),1,"Retained chapter".into(),1));
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn current_schema_reopens_without_changing_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
-        let pool = bootstrap(&path, &schema(CURRENT)).await;
+        let pool = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
         sqlx::query("INSERT INTO sample VALUES (42)")
             .execute(&pool)
             .await
             .unwrap();
         pool.close().await;
-        let pool = bootstrap(&path, &schema(CURRENT)).await;
+        let pool = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT value FROM sample")
                 .fetch_one(&pool)
@@ -191,38 +141,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changed_schema_resets_only_database() {
+    async fn changed_checksum_preserves_database_and_media() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
         let media = dir.path().join("content.html");
         fs::write(&media, "chapter content").unwrap();
-        let pool = bootstrap(&path, &schema("CREATE TABLE sample (value TEXT);")).await;
-        sqlx::query("INSERT INTO sample (value) VALUES (42)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        let pool = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
+        sqlx::query("INSERT INTO sample VALUES (42)").execute(&pool).await.unwrap();
         pool.close().await;
-        let pool = bootstrap(&path, &schema(CURRENT)).await;
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sample")
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
-                .fetch_all(&pool)
-                .await
-                .unwrap(),
-            vec![1]
-        );
+        assert!(bootstrap(&path, &[schema("CREATE TABLE sample (value TEXT);")]).await.is_err());
+        let pool = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&pool).await.unwrap(), 42);
         assert_eq!(fs::read_to_string(media).unwrap(), "chapter content");
         pool.close().await;
     }
 
     #[tokio::test]
-    async fn noncurrent_history_resets_database() {
+    async fn appended_migration_preserves_rows_and_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let first = schema(CURRENT);
+        let second = SqlxMigration::new(2, "add label".into(), MigrationType::ReversibleUp,
+            "ALTER TABLE sample ADD COLUMN label TEXT NOT NULL DEFAULT 'retained';".into(), false);
+        let pool = bootstrap(&path, &[first.clone()]).await.unwrap();
+        sqlx::query("INSERT INTO sample VALUES (42)").execute(&pool).await.unwrap();
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = bootstrap(&path, &[first.clone(), second.clone()]).await.unwrap();
+            assert_eq!(sqlx::query_as::<_, (i64, String)>("SELECT value, label FROM sample").fetch_one(&pool).await.unwrap(),
+                (42, "retained".into()));
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap(), vec![1, 2]);
+            pool.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_or_newer_history_preserves_database() {
         for change in [
             "UPDATE _sqlx_migrations SET version = 2",
             "UPDATE _sqlx_migrations SET success = 0",
@@ -233,24 +187,32 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(DB_FILE);
-            let expected = schema(CURRENT);
-            let pool = bootstrap(&path, &expected).await;
-            sqlx::query("INSERT INTO sample (value) VALUES (42)")
-                .execute(&pool)
-                .await
-                .unwrap();
+            let pool = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
+            sqlx::query("INSERT INTO sample VALUES (42)").execute(&pool).await.unwrap();
             sqlx::query(change).execute(&pool).await.unwrap();
             pool.close().await;
-            let pool = bootstrap(&path, &expected).await;
-            assert_eq!(
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sample")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap(),
-                0
-            );
+            assert!(bootstrap(&path, &[schema(CURRENT)]).await.is_err(), "{change}");
+            let pool = sqlite_pool_options().connect_with(SqliteConnectOptions::new().filename(&path).create_if_missing(false)).await.unwrap();
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&pool).await.unwrap(), 42);
             pool.close().await;
         }
+    }
+
+    #[tokio::test]
+    async fn failed_upgrade_rolls_back_and_keeps_the_previous_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let first = schema(CURRENT);
+        let pool = bootstrap(&path, &[first.clone()]).await.unwrap();
+        sqlx::query("INSERT INTO sample VALUES (42)").execute(&pool).await.unwrap();
+        pool.close().await;
+        let second = SqlxMigration::new(2, "broken upgrade".into(), MigrationType::ReversibleUp,
+            "UPDATE sample SET value = 99; INSERT INTO missing_table VALUES (1);".into(), false);
+        assert!(bootstrap(&path, &[first.clone(), second]).await.is_err());
+        let pool = bootstrap(&path, &[first]).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&pool).await.unwrap(), 42);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations").fetch_all(&pool).await.unwrap(), vec![1]);
+        pool.close().await;
     }
 
     #[tokio::test]
@@ -259,9 +221,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let contents = b"not a SQLite database";
         fs::write(&path, contents).unwrap();
-        assert!(reset_incompatible_database(&path, &schema(CURRENT))
-            .await
-            .is_err());
+        assert!(bootstrap(&path, &[schema(CURRENT)]).await.is_err());
         assert_eq!(fs::read(path).unwrap(), contents);
     }
 
