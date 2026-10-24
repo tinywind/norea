@@ -18,7 +18,7 @@ export interface CacheChapterMediaOptions {
   onHtmlUpdate?: (html: string) => Promise<void> | void;
   onMediaPatch?: (patches: ChapterMediaElementPatch[]) => Promise<void> | void;
   onProgress?: (progress: { current: number; total: number }) => void;
-  previousHtml?: string | null;
+  fetchMissingMedia?: (file: ChapterMediaManifestFile) => Promise<Response | null>;
   requestInit?: ChapterMediaRequestInit;
   repair?: boolean;
   /** Offline downloads must not publish an archive with missing remote assets. */
@@ -145,10 +145,4 @@ export interface MediaSrcsetTarget {
   candidates: SrcsetCandidate[];
   element: Element;
   slotIndex: number;
-}
-
-export interface ExistingMediaSlots {
-  srcSlots: Array<string | null>;
-  srcsetSlots: Array<Array<string | null>>;
-  styleSlots: Array<Array<string | null>>;
 }

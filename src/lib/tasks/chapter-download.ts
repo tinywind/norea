@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getChapterById } from "../../db/queries/chapter";
+import { getChapterById, markChapterMediaRepairPending } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
+import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { beginChapterDownloadQueueWrite, notifyChapterDownloadsSettled } from "./chapter-download-activity";
@@ -20,7 +21,6 @@ import {
 import {
   cacheHtmlChapterMedia,
   clearChapterMedia,
-  getStoredChapterMediaBytes,
   hasRemoteChapterMedia,
   isChapterMediaFinalizationError,
   localChapterMediaSources,
@@ -1194,7 +1194,6 @@ function enqueueChapterDownloadForExecutor(
                 progressTotal = total + 1;
                 reportProgress({ current, total: progressTotal });
               },
-              previousHtml,
               requestInit: plugin.imageRequestInit,
               repair: usesStoredHtmlSource,
               scraperExecutor: executor ?? "immediate",
@@ -1303,7 +1302,6 @@ export function enqueueChapterMediaRepair(
       setSourceAccessUrl,
       shouldYield,
       signal,
-      sourceAccessVerification,
       tryStartSourceAccess,
     }) => {
       setChapterDownloadPhase?.("local");
@@ -1316,24 +1314,16 @@ export function enqueueChapterMediaRepair(
       if (!chapter) {
         throw missingRepairChapterError(job);
       }
-      if (await tryDownloadServerChapter({ ...job, novelId: chapter.novelId, chapterPath: chapter.path }, signal, setChapterDownloadPhase)) {
-        if (signal.aborted) throw abortReason(signal);
-        reportProgress({ current: progressTotal, total: progressTotal }, { force: true });
-        return;
-      }
       if (signal.aborted) throw abortReason(signal);
-      setChapterDownloadPhase?.("source-download");
-      if (tryStartSourceAccess && !tryStartSourceAccess()) return;
       if (isTauriRuntime()) {
         await abortableStep(signal, pluginManager.loadInstalledFromDb());
       }
-      const plugin = pluginManager.getPluginForExecutor(
-        job.pluginId,
-        executor ?? "immediate",
-      );
-      const sourceContentType = normalizeChapterContentType(
-        chapter.sourceContentType ?? chapter.contentType,
-      );
+      const plugin = pluginManager.getPlugin(job.pluginId)
+        ? pluginManager.getPluginForExecutor(job.pluginId, executor ?? "immediate")
+        : undefined;
+      const fetchServerMedia = createServerChapterMediaFetcher(job, signal);
+      let sourceAccessStarted = false;
+      let sourceAccessDeferred = false;
       const storedContentType = storedChapterContentType(
         normalizeChapterContentType(chapter.contentType),
       );
@@ -1349,90 +1339,13 @@ export function enqueueChapterMediaRepair(
         );
         return;
       }
-      const acquisitionPlan = validateChapterAcquisitionPlan(
-        plugin.getChapterAcquisitionPlan(chapter.path, sourceContentType),
-      );
-      let baseUrl = absolutePluginUrl(plugin, chapter.path);
-      const acquisitionUrl =
-        acquisitionPlan.type === "page"
-          ? acquisitionPlan.url
-          : (baseUrl ?? getPluginBaseUrl(plugin));
-      let trustedAccessUrl = acquisitionUrl;
-      if (setSourceAccessUrl?.(acquisitionUrl) === false) {
-        throw new Error(
-          "Chapter source access URL does not match the verification scope.",
-        );
-      }
-      let repairHtml = content;
-      if (!isBinaryChapterContentType(sourceContentType)) {
-        if (acquisitionPlan.type === "page") {
-          const captured = await captureChapterPage(acquisitionPlan, {
-            contentType: sourceContentType,
-            executor: executor ?? "immediate",
-            signal,
-            sourceId: job.pluginId,
-          });
-          if (signal.aborted) {
-            throw new DOMException("Task was cancelled.", "AbortError");
-          }
-          const convertedHtml = chapterContentToHtml(
-            captured.content,
-            sourceContentType,
-          );
-          repairHtml =
-            sourceContentType === "html"
-              ? sanitizeReaderHtml(convertedHtml)
-              : convertedHtml;
-          baseUrl = captured.baseUrl;
-        } else {
-          const resource = validateChapterContentResource(
-            await loadChapterResource(
-              plugin,
-              chapter.path,
-              sourceContentType,
-            ),
-            sourceContentType,
-          );
-          if (signal.aborted) {
-            throw new DOMException("Task was cancelled.", "AbortError");
-          }
-          const convertedHtml = chapterContentToHtml(
-            resource.content,
-            resource.contentType,
-          );
-          repairHtml =
-            resource.contentType === "html"
-              ? sanitizeReaderHtml(convertedHtml)
-              : convertedHtml;
-          baseUrl = resource.baseUrl ?? baseUrl;
-        }
-        if (baseUrl && !sourceAccessVerification) {
-          if (setSourceAccessUrl?.(baseUrl) === false) {
-            throw new Error(
-              "Chapter source access URL does not match the verification scope.",
-            );
-          }
-          trustedAccessUrl = baseUrl;
-        }
-        confirmSourceAccess?.();
-      } else if (acquisitionPlan.type === "page") {
-        throw new Error(
-          `Plugin must declare a resource acquisition plan for ${sourceContentType} chapters.`,
-        );
-      }
-      if (!baseUrl) {
-        throw new Error(
-          `chapter-media-repair: failed to resolve chapter URL for "${chapter.name}".`,
-        );
-      }
-      const repairProbeContext = {
-        chapterId: chapter.id,
-        chapterName: chapter.name,
-        chapterNumber: chapter.chapterNumber,
-        chapterPosition: chapter.position,
-        novelId: chapter.novelId,
-        sourceId: job.pluginId,
-      };
+      const chapterUrl = plugin ? absolutePluginUrl(plugin, chapter.path) : null;
+      const baseUrl = plugin
+        ? chapterUrl && /^https?:\/\//i.test(chapterUrl) ? chapterUrl : getPluginBaseUrl(plugin)
+        : undefined;
+      const repairHtml = restoreProtectedRemoteChapterMediaSources(content, baseUrl);
+      const pending = await withChapterDownloadWrite(chapter.id, signal, () => markChapterMediaRepairPending(chapter.id));
+      if (pending.rowsAffected <= 0) throw missingRepairChapterError(job);
       const novel = await getNovelById(chapter.novelId);
       const storageContext = {
         chapterId: chapter.id,
@@ -1444,26 +1357,26 @@ export function enqueueChapterMediaRepair(
         sourceNovelId: novel?.sourceNovelId,
         sourceId: job.pluginId,
       };
-      if (
-        !hasRemoteChapterMedia(repairHtml, baseUrl) &&
-        localChapterMediaSources(repairHtml, repairProbeContext).length ===
-          0
-      ) {
-        const saveResult = await withChapterDownloadWrite(chapter.id, signal, () =>
-          saveStoredChapterContent(chapter.id, repairHtml, storedContentType, { mediaBytes: 0 }),
-        );
-        if (saveResult.rowsAffected <= 0) {
-          throw missingRepairChapterError(job);
-        }
-        await withChapterDownloadWrite(chapter.id, signal, () => clearChapterMedia(chapter.id, storageContext));
-        setDetail("Chapter body refreshed");
-        reportProgress(
-          { current: progressTotal, total: progressTotal },
-          { force: true },
-        );
-        return;
-      }
       const media = await cacheHtmlChapterMedia({
+        fetchMissingMedia: async (file) => {
+          const serverAsset = await fetchServerMedia(file);
+          if (serverAsset) return serverAsset;
+          if (!plugin || !/^https?:\/\//i.test(file.sourceUrl)) {
+            throw new Error(`No source is available to repair media asset: ${file.fileName}`);
+          }
+          if (!sourceAccessStarted) {
+            if (tryStartSourceAccess && !tryStartSourceAccess()) {
+              sourceAccessDeferred = true;
+              throw new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError");
+            }
+            setChapterDownloadPhase?.("source-download");
+            if (baseUrl && setSourceAccessUrl?.(baseUrl) === false) {
+              throw new Error("Chapter source access URL does not match the verification scope.");
+            }
+            sourceAccessStarted = true;
+          }
+          return null;
+        },
         requireComplete: true,
         baseUrl,
         chapterId: chapter.id,
@@ -1471,7 +1384,7 @@ export function enqueueChapterMediaRepair(
         chapterNumber: chapter.chapterNumber ?? String(chapter.position),
         chapterPosition: chapter.position,
         contextUrl: baseUrl,
-        ...(trustedAccessUrl ? { sourceAccessUrl: trustedAccessUrl } : {}),
+        sourceAccessUrl: baseUrl,
         html: repairHtml,
         novelId: storageContext.novelId,
         novelName: storageContext.novelName,
@@ -1502,27 +1415,22 @@ export function enqueueChapterMediaRepair(
           progressTotal = total + 1;
           reportProgress({ current, total: progressTotal });
         },
-        previousHtml: content,
-        requestInit: plugin.imageRequestInit,
+        requestInit: plugin?.imageRequestInit,
         repair: true,
         scraperExecutor: executor ?? "immediate",
         shouldYield,
         signal,
         sourceId: job.pluginId,
+      }).catch((error: unknown) => {
+        if (sourceAccessDeferred) return null;
+        throw error;
       });
-      if (
-        acquisitionPlan.type !== "page" &&
-        isBinaryChapterContentType(sourceContentType)
-      ) {
-        confirmSourceAccess?.();
-      }
+      if (!media) return;
+      if (sourceAccessStarted) confirmSourceAccess?.();
       if (media.mediaFailures.length > 0) {
         throw new ChapterMediaIncompleteError(media.mediaFailures);
       }
-      const mediaBytes = await getStoredChapterMediaBytes(
-        media.html,
-        storageContext,
-      );
+      const mediaBytes = media.mediaBytes;
       const saveResult = await withChapterDownloadWrite(chapter.id, signal, () =>
         saveStoredChapterContent(chapter.id, media.html, storedContentType, { mediaBytes }),
       );

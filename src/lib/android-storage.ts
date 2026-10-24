@@ -106,6 +106,11 @@ interface AndroidStorageBridge {
     archiveRelativePath: string,
     entryNamesJson: string,
   ) => void;
+  prepareChapterMediaRepair: (
+    requestId: string,
+    rootUri: string,
+    chapterRelativeDir: string,
+  ) => void;
   extractZip: (
     rootUri: string,
     archiveRelativePath: string,
@@ -868,6 +873,19 @@ export async function androidStorageZipEntrySizes(
     }
   }
   return sizes;
+}
+
+export async function prepareAndroidChapterMediaRepair(
+  chapterRelativeDir: string,
+): Promise<Map<string, number>> {
+  const bridge = androidStorageBridge();
+  const root = await androidStorageRoot();
+  const response = await runAndroidStorageOperation<AndroidStorageZipEntrySizesResponse>(
+    (requestId) => bridge.prepareChapterMediaRepair(requestId, root, chapterRelativeDir),
+  );
+  return new Map(Object.entries(response.sizes ?? {}).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isSafeInteger(entry[1]) && entry[1] > 0,
+  ));
 }
 
 export async function deleteAndroidStoragePath(

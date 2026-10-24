@@ -890,7 +890,7 @@ export async function saveChapterPartialContentMetadata(
      SET
        stored_content_type = $2,
        content_bytes  = $3,
-       media_repair_needed = $4,
+       media_repair_needed = MAX(media_repair_needed, $4),
        media_bytes_checked_at = NULL,
        updated_at     = unixepoch()
      WHERE id = $1`,
@@ -900,6 +900,16 @@ export async function saveChapterPartialContentMetadata(
       getUtf8ByteLength(html),
       chapterMediaRepairFlag(html, normalizedContentType),
     ],
+  );
+  return { rowsAffected: result.rowsAffected };
+}
+
+export async function markChapterMediaRepairPending(chapterId: number): Promise<ChapterMutationResult> {
+  const db = await getDb();
+  const result = await db.execute(
+    `UPDATE chapter SET media_repair_needed = 1, is_downloaded = 0,
+      media_bytes_checked_at = NULL WHERE id = $1`,
+    [chapterId],
   );
   return { rowsAffected: result.rowsAffected };
 }

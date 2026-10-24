@@ -7,6 +7,7 @@ import {
   clearAndroidStorageRoot,
   deleteAndroidStoragePaths,
   prepareAndroidReaderMediaCache,
+  prepareAndroidChapterMediaRepair,
   readAndroidStorageText,
   writeAndroidStorageBytes,
   writeAndroidStorageText,
@@ -22,7 +23,6 @@ import {
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import { localChapterMediaSources } from "./html";
 import {
-  emptyChapterMediaManifest,
   parseChapterMediaManifest,
   serializeChapterMediaManifest,
 } from "./manifest";
@@ -98,6 +98,7 @@ export async function writeChapterMediaManifest({
 
 export async function readChapterMediaManifest(
   context: ChapterMediaStorageContext,
+  strict = false,
 ): Promise<ChapterMediaManifest> {
   if (isAndroidRuntime()) {
     const manifestPath = androidChapterMediaManifestRelativePath(context);
@@ -111,7 +112,7 @@ export async function readChapterMediaManifest(
       });
       throw error;
     }
-    return raw === null ? emptyChapterMediaManifest() : parseChapterMediaManifest(raw);
+    return parseChapterMediaManifest(raw, strict);
   }
   const raw = await invoke<string | null>("chapter_media_read_manifest", {
     chapterId: context.chapterId,
@@ -125,7 +126,7 @@ export async function readChapterMediaManifest(
     ...(context.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context.sourceId ? { sourceId: context.sourceId } : {}),
   });
-  return parseChapterMediaManifest(raw);
+  return parseChapterMediaManifest(raw, strict);
 }
 
 export async function getStoredChapterMediaBytes(
@@ -355,8 +356,12 @@ export async function prepareChapterMediaWorkspace(
   context: ChapterMediaStorageContext,
   repair: boolean,
   { preserveExisting = false }: { preserveExisting?: boolean } = {},
-): Promise<void> {
+): Promise<Map<string, number>> {
   if (isAndroidRuntime()) {
+    if (repair) {
+      const archivePath = androidChapterMediaArchiveRelativePathForContext(context);
+      return prepareAndroidChapterMediaRepair(archivePath.slice(0, -"/media.zip".length));
+    }
     if (!repair && !preserveExisting) {
       await deleteAndroidStoragePaths([
         androidChapterMediaRelativePathForContext(context),
@@ -366,9 +371,9 @@ export async function prepareChapterMediaWorkspace(
         }),
       ]);
     }
-    return;
+    return new Map();
   }
-  await invoke("chapter_media_prepare_workspace", {
+  const sizes = await invoke<Record<string, number>>("chapter_media_prepare_workspace", {
     repair,
     preserveExisting,
     chapterId: context.chapterId,
@@ -382,6 +387,7 @@ export async function prepareChapterMediaWorkspace(
     ...(context.sourceNovelId ? { sourceNovelId: context.sourceNovelId } : {}),
     ...(context.sourceId ? { sourceId: context.sourceId } : {}),
   });
+  return new Map(Object.entries(sizes ?? {}));
 }
 
 export async function androidStoredManifestFileBytes(

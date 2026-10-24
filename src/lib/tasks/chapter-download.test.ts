@@ -33,6 +33,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("../../db/queries/chapter", () => ({
   getChapterById: vi.fn(),
+  markChapterMediaRepairPending: vi.fn(async () => ({ rowsAffected: 1 })),
 }));
 vi.mock("../../db/queries/novel", () => ({
   getNovelById: vi.fn(),
@@ -83,6 +84,10 @@ vi.mock("../plugins/manager", () => ({
 vi.mock("../plugins/chapter-acquisition", () => acquisitionMocks);
 vi.mock("../tauri-runtime", () => ({
   isTauriRuntime: vi.fn(() => false),
+}));
+const serverMediaMocks = vi.hoisted(() => ({ fetch: vi.fn(async () => null as Response | null) }));
+vi.mock("../content-sync/media-repair", () => ({
+  createServerChapterMediaFetcher: vi.fn(() => serverMediaMocks.fetch),
 }));
 vi.mock("../content-sync/novel-source", () => ({
   tryDownloadServerChapter: vi.fn(async () => false),
@@ -1692,7 +1697,6 @@ describe("enqueueChapterDownload", () => {
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
         html: storedHtml,
-        previousHtml: storedHtml,
         repair: true,
         requestInit: { headers: { Referer: "https://source.test/" } },
         scraperExecutor: "pool:1",
@@ -1758,7 +1762,6 @@ describe("enqueueChapterDownload", () => {
         baseUrl: "https://source-new.test/chapter/7",
         sourceAccessUrl: "https://source.test/chapter/7",
         html: `<img src="https://cdn.test/page.png?accessKey=signed">`,
-        previousHtml: storedHtml,
         repair: false,
       }),
     );
@@ -1868,7 +1871,6 @@ describe("enqueueChapterDownload", () => {
     );
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
       expect.objectContaining({
-        previousHtml: null,
         repair: false,
         requestInit: { headers: { Referer: "https://source.test/" } },
         scraperExecutor: "pool:1",
@@ -2387,358 +2389,92 @@ describe("enqueueChapterMediaRepair", () => {
     ]);
   });
 
-  it("repairs a server-bound chapter by replacing its package before source access", async () => {
+  it.each(["html", "epub"])("repairs stored %s assets without replacing the package or refreshing the body", async (contentType) => {
+    const storedHtml = `<p>Original body</p><img src="norea-media://reader-asset/page.png">`;
     vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
-    vi.mocked(getChapterById).mockResolvedValueOnce({ id: 7, novelId: 3, path: "/chapter/7" } as never);
+    pluginMocks.getChapterResource.mockResolvedValueOnce(contentResource("<p>Source removed its images</p>"));
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      id: 7, novelId: 11, path: "/chapter/7", name: "Chapter 7", position: 7,
+      chapterNumber: "7", contentType, sourceContentType: contentType,
+      isDownloaded: true, mediaRepairNeeded: true,
+    } as never);
+    vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({
+      html: storedHtml, mediaBytes: 8, mediaFailures: [], storedMediaCount: 1,
+    });
+    vi.mocked(getStoredChapterMediaBytes).mockResolvedValueOnce(8);
     enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
     if (!capturedSpec) throw new Error("Task spec was not captured.");
-    const setProgress = vi.fn();
-    const tryStartSourceAccess = vi.fn(() => false);
-    await capturedSpec.run({ setDetail: vi.fn(), setProgress, signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
-    expect(capturedSpec.canCompleteWithoutSourceAccess).toBe(true);
-    expect(setProgress).toHaveBeenLastCalledWith({ current: 1, total: 1 });
-    expect(tryStartSourceAccess).not.toHaveBeenCalled();
-    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
-  });
-
-  it("uses the source type for acquisition and the effective type for stored HTML", async () => {
-    const storedHtml = `<img src="https://cdn.test/page.png">`;
-    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
-    vi.mocked(getChapterById).mockResolvedValueOnce({
-      chapterNumber: "7",
-      contentType: "html",
-      sourceContentType: "text",
-      id: 7,
-      isDownloaded: true,
-      name: "Chapter 7",
-      novelId: 11,
-      path: "/chapter/7",
-      position: 7,
-    } as never);
-
-    enqueueChapterMediaRepair({
-      id: 7,
-      pluginId: "source-a",
-      title: "Chapter 7",
-    });
-
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
     await capturedSpec.run({
-      setDetail: vi.fn(),
-      setProgress: vi.fn(),
-      signal: new AbortController().signal,
-      taskId: "task-1",
+      setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1",
     });
-
-    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
-      "/chapter/7",
-      "text",
-    );
-    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<img>", "html", {
-      mediaBytes: 3,
-    });
-  });
-
-  it.each([false, true])("recaptures media repair pages with verification=%s", async (sourceAccessVerification) => {
-    const confirmSourceAccess = vi.fn(() => true);
-    const setSourceAccessUrl = vi.fn(
-      (url: string) => new URL(url).hostname === "source.test",
-    );
-    const setDetail = vi.fn();
-    const signal = new AbortController().signal;
-    const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
-    const capturedHtml = `<img src="https://cdn.test/page.png?accessKey=asset">`;
-    const repairedHtml = `<img src="norea-media://reader-asset/page.png">`;
-    const capturedUrl = sourceAccessVerification
-      ? "https://source-new.test/chapter/7?accessKey=fresh"
-      : "https://source.test/chapter/7?accessKey=fresh";
-    const pagePlan = {
-      type: "page" as const,
-      url: "https://source.test/chapter/7?accessKey=chapter",
-      contentSelector: "article.chapter",
-      documentStartScript: "window.__captureChapter = true;",
-    };
-    pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce(pagePlan);
-    acquisitionMocks.captureChapterPage.mockResolvedValueOnce({
-      baseUrl: capturedUrl,
-      content: capturedHtml,
-    });
-    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
-    vi.mocked(hasRemoteChapterMedia).mockImplementationOnce(
-      (html) => html.includes("accessKey=asset"),
-    );
-    vi.mocked(getChapterById).mockResolvedValueOnce({
-      chapterNumber: "7",
-      content: storedHtml,
-      contentType: "html",
-      sourceContentType: "html",
-      id: 7,
-      isDownloaded: true,
-      name: "Chapter 7",
-      novelId: 11,
-      path: "/chapter/7",
-      position: 7,
-    } as never);
-    vi.mocked(getNovelById).mockResolvedValueOnce({
-      id: 11,
-      name: "Novel",
-      path: "/novel",
-      sourceNovelId: "novel",
-      pluginId: "source-a",
-    } as never);
-    vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({
-      html: repairedHtml,
-      mediaFailures: [],
-      mediaBytes: 8,
-      storedMediaCount: 1,
-    });
-    vi.mocked(getStoredChapterMediaBytes).mockResolvedValueOnce(8);
-
-    enqueueChapterMediaRepair({
-      id: 7,
-      pluginId: "source-a",
-      title: "Chapter 7",
-    });
-
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    await capturedSpec.run({
-      confirmSourceAccess,
-      executor: "pool:1",
-      setDetail,
-      setProgress: vi.fn(),
-      setSourceAccessUrl,
-      signal,
-      sourceAccessVerification,
-      taskId: "task-1",
-    });
-
-    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
-      "/chapter/7",
-      "html",
-    );
-    expect(acquisitionMocks.validateChapterAcquisitionPlan).toHaveBeenCalledWith(
-      pagePlan,
-    );
-    expect(acquisitionMocks.captureChapterPage).toHaveBeenCalledWith(pagePlan, {
-      contentType: "html",
-      executor: "pool:1",
-      signal,
-      sourceId: "source-a",
-    });
+    expect(tryDownloadServerChapter).not.toHaveBeenCalled();
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
-    expect(setSourceAccessUrl).toHaveBeenNthCalledWith(1, pagePlan.url);
-    if (!sourceAccessVerification) {
-      expect(setSourceAccessUrl).toHaveBeenNthCalledWith(2, capturedUrl);
-    }
-    expect(setSourceAccessUrl).toHaveBeenCalledTimes(
-      sourceAccessVerification ? 1 : 2,
-    );
-    expect(setSourceAccessUrl.mock.invocationCallOrder.at(-1)).toBeLessThan(
-      confirmSourceAccess.mock.invocationCallOrder[0] ?? Infinity,
-    );
-    expect(confirmSourceAccess).toHaveBeenCalledOnce();
-    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
-      expect.objectContaining({
-        baseUrl: capturedUrl,
-        contextUrl: capturedUrl,
-        html: capturedHtml,
-        previousHtml: storedHtml,
-        repair: true,
-        requestInit: { headers: { Referer: "https://source.test/" } },
-        scraperExecutor: "pool:1",
-        sourceId: "source-a",
-        sourceAccessUrl: sourceAccessVerification ? pagePlan.url : capturedUrl,
-      }),
-    );
-    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, repairedHtml, "html", {
-      mediaBytes: 8,
-    });
-    expect(setDetail).toHaveBeenCalledWith("1 media assets repaired");
-  });
-
-  it.each([false, true])("repairs stored resource-plan media without page capture (complete: %s)", async isDownloaded => {
-    const setDetail = vi.fn();
-    const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
-    pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
-      type: "resource",
-    });
-    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
-    vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
-    vi.mocked(localChapterMediaSources).mockReturnValueOnce([
-      "norea-media://reader-asset/0001-page.png",
-    ]);
-    vi.mocked(getChapterById).mockResolvedValueOnce({
-      chapterNumber: "7",
-      content: storedHtml,
-      contentType: "epub",
-      sourceContentType: "epub",
-      id: 7,
-      isDownloaded,
-      mediaRepairNeeded: true,
-      name: "Chapter 7",
-      novelId: 11,
-      path: "/chapter/7",
-      position: 7,
-    } as never);
-    vi.mocked(getNovelById).mockResolvedValueOnce({
-      id: 11,
-      name: "Novel",
-      path: "/novel",
-      sourceNovelId: "novel",
-      pluginId: "source-a",
-    } as never);
-    vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({
-      html: storedHtml,
-      mediaFailures: [],
-      mediaBytes: 8,
-      storedMediaCount: 1,
-    });
-    vi.mocked(getStoredChapterMediaBytes).mockResolvedValueOnce(8);
-
-    enqueueChapterMediaRepair({
-      id: 7,
-      pluginId: "source-a",
-      title: "Chapter 7",
-    });
-
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    await capturedSpec.run({
-      executor: "pool:1",
-      setDetail,
-      setProgress: vi.fn(),
-      signal: new AbortController().signal,
-      taskId: "task-1",
-    });
-
-    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(
-      "/chapter/7",
-      "epub",
-    );
     expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
-    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
-    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
-      expect.objectContaining({
-        html: storedHtml,
-        previousHtml: storedHtml,
-        repair: true,
-      }),
-    );
-    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, storedHtml, "epub", {
-      mediaBytes: 8,
-    });
-    expect(setDetail).toHaveBeenCalledWith("1 media assets repaired");
+    expect(clearChapterMedia).not.toHaveBeenCalled();
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({
+      html: storedHtml, repair: true, requireComplete: true,
+    }));
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, storedHtml, contentType, { mediaBytes: 8 });
   });
 
-  it("refetches resource-plan HTML while reusing completed media", async () => {
-    const storedHtml = `<img src="norea-media://reader-asset/0001-page.png">`;
-    const freshHtml = `<img src="https://cdn.test/page.png?accessKey=fresh">`;
-    pluginMocks.getChapterAcquisitionPlan.mockReturnValueOnce({
-      type: "resource",
-    });
-    pluginMocks.getChapterResource.mockResolvedValueOnce({
-      type: "content",
-      contentType: "html",
-      content: freshHtml,
-      baseUrl: "https://source.test/chapter/7",
-    });
+  it("repairs manifest assets even when the stored body does not reference them", async () => {
+    vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({ html: "<p>Original body</p>", mediaBytes: 81, mediaFailures: [], storedMediaCount: 1 });
+    const storedHtml = "<p>Original body</p>";
     vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(storedHtml);
-    vi.mocked(getChapterById).mockResolvedValueOnce({
-      chapterNumber: "7",
-      contentType: "html",
-      sourceContentType: "html",
-      id: 7,
-      isDownloaded: true,
-      name: "Chapter 7",
-      novelId: 11,
-      path: "/chapter/7",
-      position: 7,
-    } as never);
-    vi.mocked(getNovelById).mockResolvedValueOnce({
-      id: 11,
-      name: "Novel",
-      path: "/novel",
-      sourceNovelId: "novel",
-      pluginId: "source-a",
-    } as never);
-
-    enqueueChapterMediaRepair({
-      id: 7,
-      pluginId: "source-a",
-      title: "Chapter 7",
-    });
-
-    if (!capturedSpec) throw new Error("Task spec was not captured.");
-    await capturedSpec.run({
-      confirmSourceAccess: vi.fn(() => true),
-      executor: "pool:1",
-      setDetail: vi.fn(),
-      setProgress: vi.fn(),
-      setSourceAccessUrl: vi.fn(() => true),
-      signal: new AbortController().signal,
-      taskId: "task-1",
-    });
-
-    expect(pluginMocks.getChapterResource).toHaveBeenCalledWith(
-      "/chapter/7",
-      "html",
-    );
-    expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
-    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(
-      expect.objectContaining({
-        baseUrl: "https://source.test/chapter/7",
-        html: freshHtml,
-        previousHtml: storedHtml,
-        repair: true,
-      }),
-    );
-  });
-
-  it("persists the refetched body when downloaded HTML has no media", async () => {
-    const setDetail = vi.fn();
-    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce(
-      `<p>plain chapter</p>`,
-    );
-    pluginMocks.getChapterResource.mockResolvedValueOnce(
-      contentResource(`<p>refetched chapter</p>`),
-    );
     vi.mocked(hasRemoteChapterMedia).mockReturnValueOnce(false);
     vi.mocked(localChapterMediaSources).mockReturnValueOnce([]);
-    vi.mocked(getChapterById).mockResolvedValueOnce({
-      content: `<p>plain chapter</p>`,
-      contentType: "html",
-      id: 7,
-      isDownloaded: true,
-      name: "Chapter 7",
-      novelId: 11,
-      path: "/chapter/7",
-      position: 7,
-    } as never);
-
-    enqueueChapterMediaRepair({
-      id: 7,
-      pluginId: "source-a",
-      title: "Chapter 7",
-    });
-
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
     if (!capturedSpec) throw new Error("Task spec was not captured.");
     await capturedSpec.run({
-      setDetail,
-      setProgress: vi.fn(),
-      signal: new AbortController().signal,
-      taskId: "task-1",
+      setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1",
     });
-
-    expect(setDetail).toHaveBeenCalledWith("Chapter body refreshed");
-    expect(pluginMocks.getChapterResource).toHaveBeenCalledWith(
-      "/chapter/7",
-      "html",
-    );
-    expect(cacheHtmlChapterMedia).not.toHaveBeenCalled();
-    expect(saveStoredChapterContent).toHaveBeenCalledWith(
-      7,
-      "<p>refetched chapter</p>",
-      "html",
-      { mediaBytes: 0 },
-    );
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, storedHtml, "html", { mediaBytes: 81 });
+    expect(clearChapterMedia).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({ html: storedHtml, repair: true }));
   });
+  it("finishes local-only repair without requiring an installed source or contacting a server", async () => {
+    pluginMocks.getPlugin.mockReturnValue(undefined);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({ html: "<p>Stored body</p>", mediaBytes: 25, mediaFailures: [], storedMediaCount: 0 });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const tryStartSourceAccess = vi.fn(() => false);
+    await capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(serverMediaMocks.fetch).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<p>Stored body</p>", "html", { mediaBytes: 25 });
+  });
+
+  it("rejects every concurrent missing asset when the source scope is invalid", async () => {
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
+      const results = await Promise.allSettled(["one.png", "two.png"].map(fileName => options.fetchMissingMedia!({
+        bytes: 3, fileName, path: `media/${fileName}`, sourceUrl: `https://source.test/${fileName}`, status: "remote", updatedAt: 1,
+      })));
+      expect(results.map(result => result.status)).toEqual(["rejected", "rejected"]);
+      throw new Error("Source scope rejected");
+    });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1", setSourceAccessUrl: () => false })).rejects.toThrow("Source scope rejected");
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+  });
+
+  it("settles a deferred source attempt normally so the scheduler can requeue the repair", async () => {
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
+      await options.fetchMissingMedia!({ bytes: 3, fileName: "one.png", path: "media/one.png", sourceUrl: "https://source.test/one.png", status: "remote", updatedAt: 1 });
+      throw new Error("A deferred source must stop media acquisition");
+    });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess: () => false })).resolves.toBeUndefined();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+  });
+
 });

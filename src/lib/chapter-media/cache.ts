@@ -32,20 +32,19 @@ import {
   emitHtmlUpdate,
   emitMediaPatchUpdate,
   fileNameFromLocalMediaSrc,
+  localChapterMediaSources,
   normalizeLocalChapterMediaOutput,
   tagCollectedMediaTargets,
 } from "./html";
 import { emptyChapterMediaManifest } from "./manifest";
 import {
-  collectMissingManifestMediaSources,
-  collectReusableMediaSources,
   collectStoredManifestMediaSources,
-  filterExistingReusableMediaSources,
 } from "./recovery";
 import {
   bytesFromArrayBuffer,
   chapterMediaByteLength,
   mediaFileName,
+  localChapterMediaOutputSrc,
   uniqueFileName,
 } from "./sources";
 import {
@@ -135,6 +134,7 @@ export async function cacheHtmlChapterMedia({
   chapterNumber,
   chapterPosition,
   contextUrl,
+  fetchMissingMedia,
   html,
   novelId,
   novelName,
@@ -142,7 +142,6 @@ export async function cacheHtmlChapterMedia({
   onHtmlUpdate,
   onMediaPatch,
   onProgress,
-  previousHtml,
   requestInit,
   repair = false,
   requireComplete = false,
@@ -188,65 +187,49 @@ export async function cacheHtmlChapterMedia({
     sourceId,
   };
   const mediaContextUrl = contextUrl ?? baseUrl ?? undefined;
-  const reusableCandidates = repair
-    ? collectReusableMediaSources({
-        baseUrl,
-        chapterId,
-        context: storageContext,
-        previousHtml,
-        srcTargets,
-        srcsetTargets,
-        styleTargets,
-        urls,
-      })
-    : new Map<string, string>();
   const mediaFailures: ChapterMediaFailure[] = [];
-  let previousManifest = await readChapterMediaManifest(storageContext);
+  let storedFileBytes: Map<string, number> | null = repair
+    ? await withChapterDownloadWrite(chapterId, signal, () => prepareChapterMediaWorkspace(storageContext, true))
+    : null;
+  let previousManifest = await readChapterMediaManifest(storageContext, repair);
   const fetchedSourceUrls = new Set(urls);
   const resetChangedMedia =
     !repair &&
     previousManifest.media.files.some(
       (file) => !fetchedSourceUrls.has(file.sourceUrl),
     );
-  if (repair || resetChangedMedia) {
-    await withChapterDownloadWrite(chapterId, signal, () =>
+  if (resetChangedMedia) {
+    storedFileBytes = await withChapterDownloadWrite(chapterId, signal, () =>
       prepareChapterMediaWorkspace(storageContext, repair),
     );
   }
-  if (resetChangedMedia) {
-    previousManifest = emptyChapterMediaManifest();
-  }
-  const storedFileBytes = await androidStoredManifestFileBytes(
-    storageContext,
-    previousManifest,
-  );
-  const reusableSources = repair
-    ? await filterExistingReusableMediaSources(
-        reusableCandidates,
-        storageContext,
-        previousManifest,
-        storedFileBytes,
-      )
-    : new Map<string, string>();
-  const manifestSources = await collectStoredManifestMediaSources({
-    context: storageContext,
-    manifest: previousManifest,
-    storedFileBytes,
-    urls,
-  });
-  const missingManifestSources = repair
-    ? await collectMissingManifestMediaSources({
-        chapterId,
-        context: storageContext,
-        html: template.innerHTML,
-        manifest: previousManifest,
-      })
-    : new Map<string, string>();
-  const localSources = new Map<string, string>(reusableSources);
-  for (const [url, src] of manifestSources) {
-    if (!localSources.has(url)) {
-      localSources.set(url, src);
+  if (resetChangedMedia) previousManifest = emptyChapterMediaManifest();
+  const localSources = new Map<string, string>();
+  const missingManifestSources = new Map<string, string>();
+  if (repair) {
+    const names = new Set(previousManifest.media.files.map((file) => file.fileName));
+    for (const src of localChapterMediaSources(html, storageContext)) {
+      const name = fileNameFromLocalMediaSrc(src, chapterId);
+      if (name && !names.has(name)) throw new Error(`Chapter media manifest is missing asset: ${name}`);
     }
+    previousManifest.media.files = previousManifest.media.files.map((file) => {
+      const bytes = storedFileBytes?.get(file.fileName);
+      if (bytes !== undefined && bytes > 0) {
+        localSources.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
+        return { ...file, bytes, status: "stored" };
+      }
+      if (!fetchMissingMedia && !/^https?:\/\//i.test(file.sourceUrl)) {
+        throw new Error(`Cannot repair media asset without a source URL: ${file.fileName}`);
+      }
+      missingManifestSources.set(file.sourceUrl, localChapterMediaOutputSrc(file.fileName));
+      return { ...file, status: "remote" };
+    });
+  } else {
+    storedFileBytes = await androidStoredManifestFileBytes(storageContext, previousManifest);
+    const manifestSources = await collectStoredManifestMediaSources({
+      context: storageContext, manifest: previousManifest, storedFileBytes, urls,
+    });
+    for (const [url, src] of manifestSources) localSources.set(url, src);
   }
   const currentSourceUrls = new Set([
     ...urls,
@@ -263,10 +246,6 @@ export async function cacheHtmlChapterMedia({
   const usedFileNames = new Set(
     [...mediaFilesBySourceUrl.values()].map((file) => file.fileName),
   );
-  for (const src of reusableSources.values()) {
-    const fileName = fileNameFromLocalMediaSrc(src, chapterId);
-    if (fileName) usedFileNames.add(fileName);
-  }
   for (let index = 0; index < urls.length; index += 1) {
     const url = urls[index]!;
     const existing = mediaFilesBySourceUrl.get(url);
@@ -378,12 +357,15 @@ export async function cacheHtmlChapterMedia({
         ...(sourceId ? { sourceId } : {}),
         ...(sourceAccessUrl ? { sourceAccessUrl } : {}),
       };
-      const acquisition = await session.acquireCapturedMedia(url, mediaRequest);
-      capturedHandle = acquisition.capturedHandle;
-      releaseFallbackAcquisition = acquisition.releaseFallback;
-      const response = capturedHandle
-        ? null
-        : await fetchChapterMedia(url, mediaRequest, signal);
+      let response = fetchMissingMedia
+        ? await fetchMissingMedia(mediaFilesBySourceUrl.get(url)!)
+        : null;
+      if (!response) {
+        const acquisition = await session.acquireCapturedMedia(url, mediaRequest);
+        capturedHandle = acquisition.capturedHandle;
+        releaseFallbackAcquisition = acquisition.releaseFallback;
+        response = capturedHandle ? null : await fetchChapterMedia(url, mediaRequest, signal);
+      }
       const status = capturedHandle?.status ?? response?.status ?? 0;
       const statusText =
         capturedHandle?.statusText ?? response?.statusText ?? "";
@@ -443,6 +425,7 @@ export async function cacheHtmlChapterMedia({
         let src: string;
         if (capturedHandle) {
           storedBytes = capturedHandle.bodyBytes;
+          if (storedBytes <= 0) throw new Error("Downloaded chapter media asset is empty.");
           const bodyHandle = capturedHandle.bodyHandle;
           capturedHandle = null;
           src = await withChapterDownloadWrite(chapterId, signal, () =>
@@ -465,6 +448,7 @@ export async function cacheHtmlChapterMedia({
           const body = bytesFromArrayBuffer(await response!.arrayBuffer());
           throwIfAborted(signal, CHAPTER_MEDIA_CANCELLED_MESSAGE);
           storedBytes = chapterMediaByteLength(body);
+          if (storedBytes <= 0) throw new Error("Downloaded chapter media asset is empty.");
           src = await withChapterDownloadWrite(chapterId, signal, () =>
             storeChapterMedia({
               body,
