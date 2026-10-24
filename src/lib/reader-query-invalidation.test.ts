@@ -90,6 +90,7 @@ describe("reader query invalidation", () => {
     expect(invalidated).toEqual([
       chapterListQueryKey(7),
       novelChaptersQueryKey(7),
+      novelLibraryQueryKey,
       novelDetailQueryKey(7),
       chapterHistoryQueryKey,
       chapterUpdatesQueryKey,
@@ -109,11 +110,11 @@ describe("reader query invalidation", () => {
     expect(invalidated).toEqual([
       chapterListQueryKey(7),
       novelChaptersQueryKey(7),
+      novelLibraryQueryKey,
     ]);
     expect(invalidated).not.toContainEqual(["novel"]);
     expect(invalidated).not.toContainEqual(chapterHistoryQueryKey);
     expect(invalidated).not.toContainEqual(novelDetailQueryKey(7));
-    expect(invalidated).not.toContainEqual(novelLibraryQueryKey);
   });
 
   it("scopes chapter-open history updates without broad novel invalidation", () => {
@@ -125,13 +126,13 @@ describe("reader query invalidation", () => {
 
     expect(invalidated).toEqual([
       novelDetailQueryKey(7),
+      novelLibraryQueryKey,
       chapterHistoryQueryKey,
     ]);
     expect(invalidated).not.toContainEqual(["novel"]);
-    expect(invalidated).not.toContainEqual(novelLibraryQueryKey);
   });
 
-  it("does not refetch unrelated novel or library queries on ordinary progress saves", async () => {
+  it("does not refetch unrelated novels or a hidden library on ordinary progress saves", async () => {
     const queryClient = createQueryClient();
     const currentChapterListQuery = vi.fn().mockResolvedValue([]);
     const currentNovelChaptersQuery = vi.fn().mockResolvedValue([]);
@@ -148,11 +149,10 @@ describe("reader query invalidation", () => {
     );
     await observeQuery(queryClient, novelDetailQueryKey(7), currentNovelQuery);
     await observeQuery(queryClient, novelDetailQueryKey(99), unrelatedNovelQuery);
-    await observeQuery(
-      queryClient,
-      ["novel", "library", { sortOrder: "nameAsc" }],
-      unrelatedLibraryQuery,
-    );
+    await queryClient.fetchQuery({
+      queryKey: ["novel", "library", { sortOrder: "nameAsc" }],
+      queryFn: unrelatedLibraryQuery,
+    });
     await observeQuery(queryClient, chapterUpdatesQueryKey, updatesQuery);
 
     await invalidateReaderProgressQueries(queryClient, {
@@ -167,6 +167,24 @@ describe("reader query invalidation", () => {
     expect(unrelatedNovelQuery).toHaveBeenCalledTimes(1);
     expect(unrelatedLibraryQuery).toHaveBeenCalledTimes(1);
     expect(updatesQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("refreshes persisted progress when returning to the library (history: %s)", async recordHistory => {
+    const queryClient = createQueryClient();
+    const queryKey = ["novel", "library", { sortOrder: "lastReadDesc" }];
+    let storedProgress = 0;
+    const queryFn = vi.fn(async () => [{ id: 7, readingProgress: storedProgress }]);
+    await queryClient.fetchQuery({ queryKey, queryFn });
+    const observer = new QueryObserver(queryClient, { queryKey, queryFn, enabled: false });
+    unsubscriptions.push(observer.subscribe(() => undefined));
+    storedProgress = 42;
+    await invalidateReaderProgressQueries(queryClient, { novelId: 7, progress: 42, recordHistory });
+    expect(queryFn).toHaveBeenCalledTimes(1);
+    observer.setOptions({ queryKey, queryFn, enabled: true });
+    await vi.waitFor(() => expect(observer.getCurrentResult().data).toEqual([{ id: 7, readingProgress: 42 }]));
+    storedProgress = 100;
+    await invalidateReaderProgressQueries(queryClient, { novelId: 7, progress: 100, recordHistory });
+    expect(observer.getCurrentResult().data).toEqual([{ id: 7, readingProgress: 100 }]);
   });
 
   it("can include download-cache invalidation for content repair paths", () => {

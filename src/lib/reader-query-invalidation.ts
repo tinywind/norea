@@ -132,6 +132,7 @@ export function invalidateReaderProgressQueries(
     invalidations.push(
       invalidate(queryClient, chapterListQueryKey(novelId), true),
       invalidate(queryClient, novelChaptersQueryKey(novelId), true),
+      invalidate(queryClient, novelLibraryQueryKey),
     );
     if (recordHistory) {
       invalidations.push(
@@ -164,6 +165,7 @@ export function invalidateReaderOpenedQueries(
   if (novelId > 0) {
     invalidations.push(
       invalidate(queryClient, novelDetailQueryKey(novelId), true),
+      invalidate(queryClient, novelLibraryQueryKey),
     );
   }
   invalidations.push(invalidate(queryClient, chapterHistoryQueryKey));
