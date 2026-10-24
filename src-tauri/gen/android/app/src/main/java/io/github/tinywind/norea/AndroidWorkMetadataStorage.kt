@@ -40,7 +40,7 @@ internal class AndroidWorkMetadataStorage(
       val workPath = parts.dropLast(1).joinToString("/")
       val skipped = input.optJSONArray("skipChapterDirectories")
       val skippedDirectories = if (skipped == null) emptySet() else (0 until skipped.length()).map { skipped.getString(it) }.toSet()
-      val work = storage.storageDocumentAt(root, workPath) ?: return result.put("paths", paths)
+      val work = storage.storageDocumentAt(root, workPath) ?: error("Cannot find work directory for chapter scan: $workPath")
       for (child in storage.listStorageChildren(work).filter { it.isDirectory }) {
         if ("$workPath/${child.name}" in skippedDirectories) continue
         if (!isAndroidChapterDirectoryName(child.name)) continue

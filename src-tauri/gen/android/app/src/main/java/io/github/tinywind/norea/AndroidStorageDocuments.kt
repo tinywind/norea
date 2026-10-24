@@ -183,7 +183,9 @@ internal class AndroidStorageDocuments(private val context: Context) {
       DocumentsContract.Document.COLUMN_SIZE,
     )
     val children = mutableListOf<StorageChildDocument>()
-    contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+    val cursor = contentResolver.query(childrenUri, projection, null, null, null)
+      ?: throw IOException("Cannot list Android storage directory: ${parent.uri}")
+    cursor.use {
       while (cursor.moveToNext()) {
         val documentId = cursor.getString(0) ?: continue
         val name = cursor.getString(1) ?: continue
