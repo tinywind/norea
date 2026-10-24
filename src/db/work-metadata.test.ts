@@ -841,6 +841,73 @@ it.each(["work", "sync"])("updates completeness on every %s scan while preservin
   expect(storage.writes).toBe(0);
 });
 
+it.each(["work", "sync", "rebuild"])("clears absent chapter downloads during a %s scan without losing metadata or reading state", async scan => {
+  save({ ...fixture(), chapters: { "1": "Opening", "2": "Second chapter" } });
+  storage.chapters.set(path, ["contents/source/book/1/content.html", "contents/source/book/2/content.html"]);
+  mediaInspections.set("contents/source/book/2", false);
+  await initializeWorkMetadata(db);
+  sqlite.exec("UPDATE chapter SET progress=42,bookmark=1,unread=0,read_at=123,content_bytes=100,media_bytes=200,media_bytes_checked_at=456 WHERE id=1");
+  const originals = structuredClone(storage.files);
+  storage.chapters.set(path, ["contents/source/book/2/content.html"]);
+
+  if (scan === "work") await refreshStoredNovelChapterDownloads(1);
+  else if (scan === "sync") await readWorkMetadataSyncFiles(true);
+  else await initializeWorkMetadata(db, { rebuild: true });
+  await initializeWorkMetadata(db);
+
+  expect(sqlite.prepare("SELECT name,is_downloaded,media_repair_needed,stored_content_type,content_bytes,media_bytes,media_bytes_checked_at,progress,bookmark,unread,read_at FROM chapter WHERE id=1").get())
+    .toEqual({ name: "Opening", is_downloaded: 0, media_repair_needed: 0, stored_content_type: null, content_bytes: 0, media_bytes: 0, media_bytes_checked_at: null, progress: 42, bookmark: 1, unread: 0, read_at: 123 });
+  expect(sqlite.prepare("SELECT name,is_downloaded,media_repair_needed,stored_content_type FROM chapter WHERE id=2").get())
+    .toEqual({ name: "Second chapter", is_downloaded: 0, media_repair_needed: 1, stored_content_type: "html" });
+  expect(sqlite.prepare("SELECT name,author FROM novel").get()).toEqual({ name: "Disk title", author: "Writer" });
+  expect(storage.files).toEqual(originals);
+  expect(storage.writes).toBe(0);
+});
+
+it.each(["work", "sync"])("keeps a download completed after an absent snapshot during a %s scan", async scan => {
+  save(fixture()); await initializeWorkMetadata(db);
+  storage.chapters.set(path, []);
+  let finishScan!: () => void;
+  storage.chapterScan = new Promise<void>(resolve => { finishScan = resolve; });
+  storage.chapterLists = 0;
+  const refresh = scan === "work" ? refreshStoredNovelChapterDownloads(1) : readWorkMetadataSyncFiles(true);
+  await vi.waitFor(() => expect(storage.chapterLists).toBe(1));
+  await withChapterDownloadWrite(1, undefined, async () => {
+    storage.chapters.set(path, ["contents/source/book/1/content.html"]);
+    await adoptStoredChapterContentMetadata(1, 100, 200, "html", false);
+  });
+  finishScan();
+  await refresh;
+
+  expect(sqlite.prepare("SELECT is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter WHERE id=1").get())
+    .toEqual({ is_downloaded: 1, stored_content_type: "html", content_bytes: 100, media_bytes: 200 });
+});
+
+it("keeps a discovered chapter when its absent cached directory is replaced", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  sqlite.exec("UPDATE chapter SET chapter_number='2',is_downloaded=0 WHERE id=1");
+  storage.chapters.set(path, ["contents/source/book/2/content.html"]);
+
+  await refreshStoredNovelChapterDownloads(1);
+
+  expect(sqlite.prepare("SELECT is_downloaded,stored_content_type FROM chapter WHERE id=1").get())
+    .toEqual({ is_downloaded: 1, stored_content_type: "html" });
+  expect(sqlite.prepare("SELECT directory FROM work_metadata_directory_cache WHERE chapter_id=1").get())
+    .toEqual({ directory: "contents/source/book/2" });
+});
+
+it.each(["work", "sync"])("preserves download state when a %s scan cannot list the directory", async scan => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const before = sqlite.prepare("SELECT * FROM chapter").all();
+  storage.chapterScan = Promise.reject(new Error("Cannot list Android storage directory"));
+
+  await expect(scan === "work" ? refreshStoredNovelChapterDownloads(1) : readWorkMetadataSyncFiles(true))
+    .rejects.toThrow("Cannot list Android storage directory");
+
+  expect(sqlite.prepare("SELECT * FROM chapter").all()).toEqual(before);
+  expect(storage.writes).toBe(0);
+});
+
 it("recovers incomplete chapter bodies with a repair flag", async () => {
   mediaInspections.set("contents/source/book/1", false);
   save(fixture()); await initializeWorkMetadata(db);

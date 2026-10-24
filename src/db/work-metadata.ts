@@ -69,6 +69,7 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
 }
 
 export async function scanStoredNovelChaptersToCache(db: Database, novelId: number, directory: string, snapshot?: { chapters: StoredNovelChapter[]; downloadRevision: number; deferNativeRegistration?: boolean }): Promise<void> {
+  const downloadRevision = snapshot?.downloadRevision ?? currentChapterDownloadRevision();
   const discovered = snapshot?.chapters ?? await listStoredNovelChapters(directory);
   const [novel] = await db.select<{ pluginId: string }[]>("SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
   const isLocal = novel?.pluginId === LOCAL_PLUGIN_ID;
@@ -151,6 +152,17 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
       if (batch.length === 0) continue;
       await db.execute(`UPDATE chapter SET is_downloaded=$2,media_repair_needed=1-$2,stored_content_type=$1 WHERE id IN (${batch.map((_, index) => `$${index + 3}`).join(",")})`, [contentType, mediaComplete ? 1 : 0, ...batch]);
     }
+  }
+  const discoveredDirectories = new Set(discovered.map(chapter => `${directory}/${chapter.directory}`));
+  const missing = cached.filter(row => !used.has(row.id) && row.directory?.startsWith(`${directory}/`) && !discoveredDirectories.has(row.directory)).map(row => row.id);
+  for (let offset = 0; offset < missing.length; offset += 100) {
+    const batch = missing.slice(offset, offset + 100).filter(id => canAdoptChapterDownloadSnapshot(id, downloadRevision));
+    if (!batch.length) continue;
+    await db.execute(`UPDATE chapter SET is_downloaded=0,media_repair_needed=0,stored_content_type=NULL,
+      content_bytes=0,media_bytes=0,media_bytes_checked_at=NULL
+      WHERE id IN (${batch.map((_, index) => `$${index + 1}`).join(",")})
+      AND (is_downloaded<>0 OR media_repair_needed<>0 OR stored_content_type IS NOT NULL
+        OR content_bytes<>0 OR media_bytes<>0 OR media_bytes_checked_at IS NOT NULL)`, batch);
   }
   const retained = cached.filter((row) => row.directory && !used.has(row.id)).map((row) => ({ id: row.id, directory: row.directory! }));
   if (!snapshot || directories.some((chapter) => byDirectory.get(chapter.directory)?.id !== chapter.id)) {
