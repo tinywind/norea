@@ -17,6 +17,7 @@ vi.mock("@tanstack/react-query", async importOriginal => ({
 vi.mock("../../db/client", () => ({ startWorkMetadataRecovery: vi.fn() }));
 import { StorageRecoveryNotifications } from "./StorageRecovery";
 import { useStorageRecoveryStore } from "../../store/storage-recovery";
+import { notifyWorkMetadataChanges } from "../../lib/work-metadata";
 
 let cleanup: () => void;
 beforeEach(() => {
@@ -29,6 +30,25 @@ beforeEach(() => {
   mocks.invalidateQueries.mockClear();
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+it("refreshes visible work details and titles after a background metadata publication", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  mocks.invalidateQueries.mockImplementation((...args) => client.invalidateQueries(...args));
+  mocks.refetchQueries.mockImplementation((...args) => client.refetchQueries(...args));
+  let title = "Before refresh";
+  const novel = new QueryObserver(client, { queryKey: ["novel", "detail", 7], queryFn: async () => ({ name: title }) });
+  const chapters = new QueryObserver(client, { queryKey: ["novel", "detail", 7, "chapters"], queryFn: async () => [{ name: title }] });
+  const unsubscribeNovel = novel.subscribe(() => undefined);
+  const unsubscribeChapters = chapters.subscribe(() => undefined);
+  try {
+    await novel.refetch(); await chapters.refetch();
+    title = "After refresh";
+    notifyWorkMetadataChanges();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(novel.getCurrentResult().data).toEqual({ name: "After refresh" });
+    expect(chapters.getCurrentResult().data).toEqual([{ name: "After refresh" }]);
+  } finally { unsubscribeNovel(); unsubscribeChapters(); client.clear(); }
+});
 
 it("refreshes the visible library after each recovered work without waiting for completion", async () => {
   useStorageRecoveryStore.setState({ status: "scanning", progress: {

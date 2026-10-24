@@ -5,29 +5,36 @@ import { startWorkMetadataRecovery } from "../../db/client";
 import { useTranslation } from "../../i18n";
 import { useStorageRecoveryStore } from "../../store/storage-recovery";
 import { TextButton } from "../TextButton";
+import { subscribeWorkMetadataChanges } from "../../lib/work-metadata";
 
 export function StorageRecoveryNotifications() {
   const queryClient = useQueryClient();
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let metadataChanged = false;
     const refresh = () => {
       timer = undefined;
       for (const queryKey of [["novel", "library"], ["category", "counts"], ["download-cache"]]) {
         void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
       }
-      void queryClient.invalidateQueries({ queryKey: ["novel", "detail"], refetchType: "none" });
-      void queryClient.refetchQueries({
-        queryKey: ["novel", "detail"],
-        predicate: query => query.queryKey[3] === "chapters",
-        type: "active",
-      });
+      void queryClient.invalidateQueries({ queryKey: ["novel", "detail"], refetchType: metadataChanged ? "active" : "none" });
+      if (!metadataChanged) void queryClient.refetchQueries({
+          queryKey: ["novel", "detail"],
+          predicate: query => query.queryKey[3] === "chapters",
+          type: "active",
+        });
+      metadataChanged = false;
     };
     const unsubscribe = useStorageRecoveryStore.subscribe((state, previous) => {
       if (state.progress?.recoveredWorks === previous.progress?.recoveredWorks && state.status !== "complete" && state.status !== "error") return;
       if (timer === undefined) timer = setTimeout(refresh, 100);
     });
+    const unsubscribeMetadata = subscribeWorkMetadataChanges(() => {
+      metadataChanged = true;
+      if (timer === undefined) timer = setTimeout(refresh, 100);
+    });
     refresh();
-    return () => { unsubscribe(); if (timer !== undefined) clearTimeout(timer); };
+    return () => { unsubscribe(); unsubscribeMetadata(); if (timer !== undefined) clearTimeout(timer); };
   }, [queryClient]);
   return null;
 }
