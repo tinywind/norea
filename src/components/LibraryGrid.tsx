@@ -226,7 +226,7 @@ const LibraryTableRow = memo(function LibraryTableRow({
           <span data-active={hasUnread} />
         )}
       </span>
-      <ConsoleCover alt={novel.name} fit="contain" height={42} src={coverSource} width={28} />
+      <ConsoleCover alt={novel.name} height={42} src={coverSource} width={28} />
       <span className="norea-library-title-cell">
         <span className="norea-library-title">{novel.name}</span>
         <span className="norea-library-subtitle">
@@ -291,7 +291,6 @@ const LibraryCard = memo(function LibraryCard({
         ) : null}
         <ConsoleCover
           alt={novel.name}
-          fit="contain"
           height={displayMode === "compact" ? 150 : 190}
           src={coverSource}
           width={coverWidth}

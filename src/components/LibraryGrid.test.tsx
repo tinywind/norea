@@ -23,7 +23,7 @@ const novel: LibraryNovel = {
 };
 
 it.each<LibraryDisplayMode>(["comfortable", "compact", "cover-only", "list"])(
-  "recovers and displays the entire cover in library %s mode",
+  "recovers and fills the thumbnail with the cover in library %s mode",
   (displayMode) => {
     const html = renderToStaticMarkup(
       <MantineProvider>
@@ -38,6 +38,6 @@ it.each<LibraryDisplayMode>(["comfortable", "compact", "cover-only", "list"])(
       </MantineProvider>,
     );
     expect(html).toContain('src="https://source.test/landscape-cover.png"');
-    expect(html).toContain('style="object-fit:contain"');
+    expect(html).toContain('style="object-fit:cover"');
   },
 );
