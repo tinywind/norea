@@ -3,7 +3,7 @@ import { findNovelBySource } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
 import { bytesToBase64 } from "../base64";
 import { installStoredNovelMetadata, parseNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
-import { ContentServerError, contentServerRequest, normalizeContentServerUrl } from "./client";
+import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
@@ -28,17 +28,19 @@ export function listServerWorks(server: string, token: string, query: string, so
 }
 
 export async function readServerCover(server: string, token: string, id: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {
-  const response = await nativeFetch(`${normalizeContentServerUrl(server)}/api/v1/works/${encodeURIComponent(id)}/cover`, {
-    headers: { Authorization: `Bearer ${token}` }, maxRedirections: 0, connectTimeout: 10_000,
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw new ContentServerError(response.status);
-  if (Number(response.headers.get("content-length")) > 10 * 1024 * 1024) throw new Error("Server cover exceeds the size limit.");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error("Server cover is empty or exceeds the size limit.");
-  const contentType = response.headers.get("content-type")?.split(";")[0] ?? "image/jpeg";
-  if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") throw new Error("Server cover is not an image.");
-  return { bytes, contentType };
+  return withContentServerLookup(async deadline => {
+    const response = await nativeFetch(`${normalizeContentServerUrl(server)}/api/v1/works/${encodeURIComponent(id)}/cover`, {
+      headers: { Authorization: `Bearer ${token}` }, maxRedirections: 0, connectTimeout: 10_000,
+      signal: deadline,
+    });
+    if (!response.ok) throw new ContentServerError(response.status);
+    if (Number(response.headers.get("content-length")) > 10 * 1024 * 1024) throw new Error("Server cover exceeds the size limit.");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error("Server cover is empty or exceeds the size limit.");
+    const contentType = response.headers.get("content-type")?.split(";")[0] ?? "image/jpeg";
+    if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") throw new Error("Server cover is not an image.");
+    return { bytes, contentType };
+  }, 30, signal);
 }
 
 export async function serverCoverSource(server: string, token: string, id: string, signal?: AbortSignal): Promise<string> {

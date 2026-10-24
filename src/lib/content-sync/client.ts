@@ -16,9 +16,11 @@ export function normalizeContentServerUrl(value: string): string {
 
 export async function withContentServerLookup<T>(run: (signal: AbortSignal) => Promise<T>, seconds: number, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();
-  const timeout = new AbortController();
-  const deadline = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
-  const timer = setTimeout(() => timeout.abort(new Error("Content server lookup timed out.")), seconds * 1000);
+  const controller = new AbortController();
+  const deadline = controller.signal;
+  const cancel = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", cancel, { once: true });
+  const timer = setTimeout(() => controller.abort(new Error("Content server lookup timed out.")), seconds * 1000);
   let abort: () => void = () => undefined;
   try {
     const interrupted = new Promise<never>((_, reject) => {
@@ -29,24 +31,27 @@ export async function withContentServerLookup<T>(run: (signal: AbortSignal) => P
   } finally {
     clearTimeout(timer);
     deadline.removeEventListener("abort", abort);
+    signal?.removeEventListener("abort", cancel);
   }
 }
 
 export async function contentServerRequest<T>(serverUrl: string, path: string, token?: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await nativeFetch(`${normalizeContentServerUrl(serverUrl)}/api/v1${path}`, {
-    method,
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    connectTimeout: 10_000,
-    maxRedirections: 0,
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) {
-    if (response.status === 401 && token) {
-      const { forgetContentDeviceRegistration } = await import("./device");
-      forgetContentDeviceRegistration(serverUrl, token);
+  return withContentServerLookup(async deadline => {
+    const response = await nativeFetch(`${normalizeContentServerUrl(serverUrl)}/api/v1${path}`, {
+      method,
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      connectTimeout: 10_000,
+      maxRedirections: 0,
+      signal: deadline,
+    });
+    if (!response.ok) {
+      if (response.status === 401 && token) {
+        const { forgetContentDeviceRegistration } = await import("./device");
+        forgetContentDeviceRegistration(serverUrl, token);
+      }
+      throw new ContentServerError(response.status);
     }
-    throw new ContentServerError(response.status);
-  }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+    return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+  }, 30, signal);
 }

@@ -90,3 +90,15 @@ it("protects metadata installed concurrently while opening a new server work", a
   await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).rejects.toThrow("installed while opening");
   expect(rememberServerNovelSource).not.toHaveBeenCalled();
 });
+
+it("reads server covers with a caller signal on WebViews without AbortSignal.any", async () => {
+  const original = Object.getOwnPropertyDescriptor(AbortSignal, "any")!;
+  Object.defineProperty(AbortSignal, "any", { value: undefined, configurable: true });
+  try {
+    vi.mocked(nativeFetch).mockResolvedValue(new Response(new Uint8Array([255, 216, 255]), { headers: { "content-type": "image/jpeg" } }));
+    await expect(serverCoverSource("http://server", "device", "work", new AbortController().signal))
+      .resolves.toBe("data:image/jpeg;base64,/9j/");
+  } finally {
+    Object.defineProperty(AbortSignal, "any", original);
+  }
+});
