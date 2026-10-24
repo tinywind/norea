@@ -823,7 +823,7 @@
   .norea-novel-page {
     height: var(--norea-app-content-height);
     min-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   .norea-novel-page > .norea-page-frame-stack,
@@ -840,7 +840,11 @@
   }
 
   .norea-novel-chapters-panel {
-    flex: 1 1 auto;
+    flex: 1 0 20rem;
+  }
+
+  .norea-novel-chapters-panel > .norea-console-section-header {
+    flex-shrink: 0;
   }
 
   .norea-novel-hero-desktop {
