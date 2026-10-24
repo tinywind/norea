@@ -48,9 +48,15 @@ internal class AndroidWorkMetadataStorage(
         val files = storage.listStorageChildren(chapter).associateBy { it.name }
         for (name in listOf("content.pdf", "content.html")) {
           val file = files[name] ?: continue
+          if (file.mimeType.isNullOrEmpty() || file.isDirectory) continue
           val size = file.byteSize ?: storage.storageChildDocumentFile(file)?.length() ?: 0
-          if (!file.mimeType.isNullOrEmpty() && !file.isDirectory && size > 0) {
-            paths.put("$workPath/${child.name}/$name")
+          val relativePath = "$workPath/${child.name}/$name"
+          // Android can retain a zero size after a file is copied into shared storage.
+          val hasContent = size > 0 || storage.openStorageInputStream(root, relativePath)?.use {
+            it.read() != -1
+          } == true
+          if (hasContent) {
+            paths.put(relativePath)
             break
           }
         }
