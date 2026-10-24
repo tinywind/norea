@@ -70,6 +70,19 @@ it("deletes a whole work on its displayed server and persists the returned tombs
   expect(recordDeletedWorkMetadata).toHaveBeenCalledExactlyOnceWith(source.serverUrl, deletedWork);
 });
 
+it("exposes a successful remote deletion before local persistence so its caller can retry without another DELETE", async () => {
+  vi.mocked(contentServerRequest).mockResolvedValueOnce(deletedWork);
+  const captured = vi.fn();
+  vi.mocked(recordDeletedWorkMetadata).mockImplementationOnce(async () => {
+    expect(captured).toHaveBeenCalledExactlyOnceWith(deletedWork);
+    throw new Error("Cache unavailable");
+  });
+
+  await expect(deleteServerWork(source, captured)).rejects.toThrow("Cache unavailable");
+  expect(contentServerRequest).toHaveBeenCalledExactlyOnceWith(source.serverUrl, "/works/work-id", "device", "DELETE");
+  expect(captured).toHaveBeenCalledOnce();
+});
+
 it("waits for an in-flight metadata operation before deleting and recording a whole work", async () => {
   const order: string[] = [];
   let release!: () => void;

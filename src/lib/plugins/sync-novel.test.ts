@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 vi.mock("../../db/client", () => ({
   getDb: vi.fn(),
@@ -245,6 +245,43 @@ describe("syncNovelFromSource", () => {
     });
     await expect(syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { signal: controller.signal })).rejects.toThrow();
     expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it.each(["deleted", "replaced", "renamed"])("rejects a delayed existing-work refresh after the work is %s", async change => {
+    const sqlite = new DatabaseSync(":memory:");
+    sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+    sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(7,'demo','novel','/novel','Original')");
+    const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
+    const db = {
+      select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
+      execute: async (sql: string, values: SQLInputValue[] = []) => ({ rowsAffected: Number(sqlite.prepare(sql).run(parameters(values)).changes) }),
+    };
+    mockedGetDb.mockResolvedValue(db as never);
+    mockedRunDatabaseTransaction.mockImplementation(async run => {
+      sqlite.exec("BEGIN");
+      try { const result = await run(db as never); sqlite.exec("COMMIT"); return result; }
+      catch (error) { sqlite.exec("ROLLBACK"); throw error; }
+    });
+    let release!: (detail: SourceNovel) => void;
+    const detail = new Promise<SourceNovel>(resolve => { release = resolve; });
+    const refresh = syncNovelFromSource(makePlugin({ parseNovel: () => detail }), { name: "Original", path: "/novel" }, { novelId: 7 });
+    try {
+      if (change === "renamed") sqlite.exec("UPDATE novel SET path='/renamed' WHERE id=7");
+      else {
+        sqlite.exec("DELETE FROM novel WHERE id=7");
+        if (change === "replaced") sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(8,'demo','novel','/novel','Replacement')");
+      }
+      const before = sqlite.prepare("SELECT id,path,name FROM novel").all();
+      release(makeDetail([1]));
+      await expect(refresh).rejects.toThrow("Work no longer matches the source refresh");
+      expect(sqlite.prepare("SELECT id,path,name FROM novel").all()).toEqual(before);
+      expect(mockedUpsertSourceChaptersInDb).not.toHaveBeenCalled();
+      expect(sqlite.prepare("SELECT * FROM work_metadata_sync_journal").all()).toEqual([]);
+      if (change === "deleted") {
+        await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" });
+        expect(sqlite.prepare("SELECT name FROM novel").all()).toEqual([{ name: "Novel" }]);
+      }
+    } finally { sqlite.close(); }
   });
 
   it("rejects chapters without finite numeric chapterNumber", async () => {
@@ -500,7 +537,7 @@ describe("syncNovelFromSource", () => {
   });
 
   it("stores the preserved database cover when an update omits cover metadata", async () => {
-    mockSelect.mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([
+    mockSelect.mockResolvedValueOnce([{ id: 7 }]).mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([
       {
         cover: "https://source.test/preserved-cover.jpg",
         id: 7,
@@ -534,7 +571,7 @@ describe("syncNovelFromSource", () => {
       "https://source.test/preserved-cover.jpg",
       { refresh: false },
     );
-    expect(mockSelect.mock.calls[1]?.[0]).toContain("SELECT id, cover");
+    expect(mockSelect.mock.calls[2]?.[0]).toContain("SELECT id, cover");
   });
 
   it("does not persist a cover when opening a novel outside the library", async () => {

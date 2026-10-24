@@ -19,7 +19,8 @@ import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
-import { syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
+import { runContentSyncOperation, syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
+import { setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { ContentServerError } from "./client";
@@ -459,7 +460,7 @@ it("keeps the saved device key when registration is blocked and retries it after
 });
 
 it("uses the device credential for delete and restore without changing local downloads", async () => {
-  const entry = { id: "chapter-1" } as never;
+  const entry = { id: "chapter-1", manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: { chapterNumber: "1" } } } as never;
   await deleteServerChapter(entry);
   await restoreServerChapter(entry);
   const calls = vi.mocked(appFetch).mock.calls.filter(([url]) => String(url).includes("/chapters/chapter-1"));
@@ -692,4 +693,63 @@ it("removes a compact tombstone on restore and only scans downloaded content ini
   expect(listContentSyncChapters).toHaveBeenCalledWith(undefined, true);
   expect(uploadContentChapter).toHaveBeenCalledOnce();
   expect(JSON.parse(memory.get(key)!).tombstones).toEqual({});
+});
+
+
+it("serializes deletion between an ongoing sync and a sync requested during deletion", async () => {
+  let releaseSync!: () => void;
+  let releaseDeletion!: () => void;
+  const order: string[] = [];
+  vi.mocked(syncWorkMetadata).mockImplementationOnce(async () => {
+    order.push("first-sync");
+    await new Promise<void>(resolve => { releaseSync = resolve; });
+    return new Set();
+  }).mockImplementationOnce(async () => { order.push("next-sync"); return new Set(); });
+  const first = syncContentServer();
+  await vi.waitFor(() => expect(order).toEqual(["first-sync"]));
+  const deletion = runContentSyncOperation(async () => {
+    order.push("delete-start");
+    await new Promise<void>(resolve => { releaseDeletion = resolve; });
+    order.push("delete-end");
+  });
+  releaseSync();
+  await first;
+  await vi.waitFor(() => expect(order).toEqual(["first-sync", "delete-start"]));
+  const next = syncContentServer();
+  await Promise.resolve();
+  expect(order).toEqual(["first-sync", "delete-start"]);
+  releaseDeletion();
+  await Promise.all([deletion, next]);
+  expect(order).toEqual(["first-sync", "delete-start", "delete-end", "next-sync"]);
+});
+
+
+it("preserves explicit server-only deletions across queued sync, reloads, and rescans", async () => {
+  const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n", chapterPath: "norea-folder:1", chapterNumber: "1.0", position: 1, isDownloaded: true, mediaRepairNeeded: false };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  await setServerChapterDeletionExclusion("http://localhost:7788", { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "/original/chapter" }, "1", true);
+  await syncContentServer(true, true);
+  await syncContentServer(true, true);
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(native.stage).not.toHaveBeenCalled();
+  await setServerChapterDeletionExclusion("http://localhost:7788", { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "/original/chapter" }, "1", false);
+  await syncContentServer(true, true);
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+});
+
+it("times out queued deletion and never runs the expired destructive callback later", async () => {
+  vi.useFakeTimers();
+  try {
+    let release!: () => void;
+    const first = runContentSyncOperation(() => new Promise<void>(resolve => { release = resolve; }));
+    await vi.advanceTimersByTimeAsync(0);
+    const remove = vi.fn(async () => undefined);
+    const rejected = expect(runContentSyncOperation(remove)).rejects.toThrow("Timed out waiting");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejected;
+    release();
+    await first;
+    await runContentSyncOperation(async () => undefined);
+    expect(remove).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
 });

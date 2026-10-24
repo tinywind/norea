@@ -6,7 +6,7 @@ import { registerContentDevice } from "./device";
 import type { ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 
-export async function findServerWork(serverUrl: string, identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">, signal?: AbortSignal): Promise<ServerNovelSource | null> {
+export async function findServerWork(serverUrl: string, identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath"> & { novelId?: string | null }, signal?: AbortSignal): Promise<ServerNovelSource | null> {
   const settings = useContentSyncStore.getState();
   return withContentServerLookup(async deadline => {
     const workId = await contentWorkId(identity);
@@ -15,7 +15,7 @@ export async function findServerWork(serverUrl: string, identity: Pick<NovelMeta
       const work = await contentServerRequest<WorkCatalogEntry>(serverUrl, `/works/${workId}`, token, "GET", undefined, deadline);
       deadline.throwIfAborted();
       if (work.deleted) return null;
-      if (work.id !== workId || work.metadata.identity.pluginId !== identity.pluginId || work.metadata.identity.novelPath !== identity.novelPath) {
+      if (work.id !== workId || work.metadata.identity.pluginId !== identity.pluginId || work.metadata.identity.novelPath !== identity.novelPath || (identity.novelId != null && work.metadata.identity.novelId !== identity.novelId)) {
         throw new Error("Server work identity does not match the requested work.");
       }
       return { serverUrl, workId };
@@ -32,7 +32,7 @@ export async function loadServerChapterPage(source: ServerNovelSource, offset: n
   return fetchServerChapterPage(source, token, offset, signal);
 }
 
-export async function deleteSelectedServerChapters(source: ServerNovelSource, chapterIds: readonly string[]): Promise<void> {
+export async function deleteSelectedServerChapters(source: Pick<ServerNovelSource, "serverUrl">, chapterIds: readonly string[]): Promise<void> {
   if (!chapterIds.length) return;
   const token = await registerContentDevice(source.serverUrl, useContentSyncStore.getState().deviceName);
   for (const id of new Set(chapterIds)) {
@@ -41,7 +41,7 @@ export async function deleteSelectedServerChapters(source: ServerNovelSource, ch
   }
 }
 
-export async function deleteServerWork(source: ServerNovelSource): Promise<WorkCatalogEntry> {
+export async function deleteServerWork(source: ServerNovelSource, onDeleted?: (entry: WorkCatalogEntry) => void): Promise<WorkCatalogEntry> {
   const server = normalizeContentServerUrl(source.serverUrl);
   const waiting = new AbortController();
   const timer = setTimeout(() => waiting.abort(new Error("Timed out waiting for content synchronization before deleting the work. Try again after synchronization finishes.")), 30_000);
@@ -51,6 +51,7 @@ export async function deleteServerWork(source: ServerNovelSource): Promise<WorkC
       const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
       const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token, "DELETE");
       if (entry.id !== source.workId || !entry.deleted) throw new Error("Server did not confirm the requested work deletion.");
+      onDeleted?.(entry);
       await recordDeletedWorkMetadata(server, entry);
       return entry;
     }, waiting.signal);

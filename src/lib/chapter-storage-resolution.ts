@@ -41,6 +41,14 @@ export function forgetResolvedChapterStorageDir(chapterId: number): void {
   resolvedChapterStorageDirs.delete(chapterId);
 }
 
+export function forgetNovelStorageDirs(novelId: number, chapterIds: readonly number[]): void {
+  resolvedNovelStorageDirs.delete(novelId);
+  for (const chapterId of chapterIds) {
+    authoritativeChapterStorageDirs.delete(chapterId);
+    resolvedChapterStorageDirs.delete(chapterId);
+  }
+}
+
 export function clearResolvedChapterStorageDirs(): void {
   resolvedChapterStorageDirs.clear();
 }

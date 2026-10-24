@@ -317,6 +317,13 @@ async function performNovelSourceRefresh(
   const result = await runDatabaseTransaction(async (db) => {
     options.signal?.throwIfAborted();
     if (!isCurrent()) return null;
+    if (options.novelId !== undefined) {
+      const [current] = await db.select<{ id: number }[]>(
+        "SELECT id FROM novel WHERE id=$1 AND plugin_id=$2 AND path=$3",
+        [options.novelId, plugin.id, item.path],
+      );
+      if (!current) throw new Error("Work no longer matches the source refresh; open it again before refreshing.");
+    }
     const reconciled = await reconcileImportedNovelIdentityInDb(db, {
       pluginId: plugin.id, path: item.path, name: item.name,
     }, chapterInputs);

@@ -167,6 +167,67 @@ it("records an app-initiated work deletion without advancing past unseen changes
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
 
+it("keeps explicitly deleted work excluded after reloading sync caches and rescanning retained files", async () => {
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
+  const id = await contentWorkId(metadata().identity);
+  await recordDeletedWorkMetadata("http://server/", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true });
+  memory.delete("norea-content-works:http://server/");
+  memory.delete("norea-content-works:http://server");
+
+  expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
+  expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
+  expect(puts).toBe(0);
+  expect(remote).toBeUndefined();
+  expect(local).toHaveLength(1);
+
+  await syncWorkMetadata("http://other-server", "device", true, undefined, true);
+  expect(puts).toBe(1);
+});
+
+it("excludes an explicitly deleted work by plugin-owned ID across source-path aliases", async () => {
+  const original = metadata();
+  const aliased = { ...metadata("Local alias"), identity: { ...original.identity, novelPath: "/changed-route" } };
+  local = [{ directory: "contents/example/book", metadata: aliased }];
+  const id = await contentWorkId(original.identity);
+  const aliasId = await contentWorkId(aliased.identity);
+  await recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: original, hasCover: false, deleted: true });
+  remote = original;
+  sequence = 2;
+
+  const excluded = await syncWorkMetadata("http://server", "device", true, undefined, true);
+
+  expect(excluded).toEqual(new Set([id, aliasId]));
+  expect(puts).toBe(0);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(local).toEqual([{ directory: "contents/example/book", metadata: aliased }]);
+});
+
+it("does not reinstall a fully removed explicit deletion when a server record reappears", async () => {
+  const id = await contentWorkId(metadata().identity);
+  await recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true });
+  remote = metadata();
+  sequence = 2;
+
+  expect(await syncWorkMetadata("http://server", "device", false, undefined, true)).toEqual(new Set([id]));
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(local).toEqual([]);
+});
+
+it("preserves an explicit work exclusion if writing its ordinary sync cache fails", async () => {
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
+  const id = await contentWorkId(metadata().identity);
+  const save = vi.mocked(writeContentSyncCache).getMockImplementation()!;
+  let failed = false;
+  vi.mocked(writeContentSyncCache).mockImplementation(async (key, value) => {
+    if (!failed && key === "norea-content-works:http://server") { failed = true; throw new Error("Cache write failed"); }
+    return save(key, value);
+  });
+  await expect(recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true })).rejects.toThrow("Cache write failed");
+
+  expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
+  expect(puts).toBe(0);
+});
+
 it("rejects invalid work deletion responses without changing the sync cache", async () => {
   const id = await contentWorkId(metadata().identity);
   await expect(recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: false })).rejects.toThrow("deletion");

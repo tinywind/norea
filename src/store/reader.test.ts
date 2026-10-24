@@ -334,6 +334,25 @@ describe("useReaderStore", () => {
     expect(useReaderStore.getState().novelPageIndexByNovel[7]).toBe(4);
   });
 
+  it("removes only the deleted work's reading state and keeps it removed after rehydration", async () => {
+    const retainedSettings = { enabled: true, appearance: { textSize: 18 } };
+    useReaderStore.setState({
+      lastReadChapterByNovel: { 1: 11, 2: 22 },
+      novelPageIndexByNovel: { 1: 4, 2: 8 },
+      readerSettingsByNovel: { 1: { enabled: true }, 2: retainedSettings },
+      readerSettingsBySource: { demo: retainedSettings },
+    });
+
+    useReaderStore.getState().removeNovelReaderState(1);
+    await useReaderStore.persist.rehydrate();
+
+    const state = useReaderStore.getState();
+    expect(state.lastReadChapterByNovel).toEqual({ 2: 22 });
+    expect(state.novelPageIndexByNovel).toEqual({ 2: 8 });
+    expect(state.readerSettingsByNovel).toEqual({ 2: retainedSettings });
+    expect(state.readerSettingsBySource).toEqual({ demo: retainedSettings });
+  });
+
   it("moves A reader state to B and remaps the last-read chapter", () => {
     useReaderStore.setState({
       lastReadChapterByNovel: { 1: 11 },

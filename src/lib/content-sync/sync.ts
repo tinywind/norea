@@ -15,6 +15,7 @@ import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata } from "./works";
+import { readServerChapterDeletionExclusions, serverChapterDeletionKey, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 
 interface CatalogCache {
   cursor: number;
@@ -96,6 +97,7 @@ async function pullCatalog(server: string, token: string | null, cache: CatalogC
 }
 
 async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>, conflictPolicy: UploadConflictPolicy): Promise<void> {
+  const deletions = await readServerChapterDeletionExclusions(server);
   const head = await contentJournalHead();
   const changes = cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
     : await readContentJournal(cache.localCursor, head);
@@ -136,7 +138,8 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         reportProgress();
         continue;
       }
-      if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))) {
+      if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))
+        || (row.sourceNovelId != null && deletions.has(serverChapterDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId, chapterPath: row.chapterPath }, row.chapterNumber)))) {
         if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
         delete cache.downloads[id];
         pending.delete(id);
@@ -201,6 +204,27 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
 
 let running: Promise<void> | null = null;
 let pendingSync: { uploadContent: boolean; rescan: boolean } | null = null;
+
+export function runContentSyncOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const waiting = new AbortController();
+  const timer = setTimeout(() => waiting.abort(new Error("Timed out waiting for content synchronization. Retry after synchronization finishes.")), 30_000);
+  let rejectWait: () => void;
+  const interrupted = new Promise<never>((_, reject) => {
+    rejectWait = () => reject(waiting.signal.reason);
+    waiting.signal.addEventListener("abort", rejectWait, { once: true });
+  });
+  const result = (running ?? Promise.resolve()).catch(() => undefined).then(() => {
+    clearTimeout(timer);
+    waiting.signal.removeEventListener("abort", rejectWait);
+    waiting.signal.throwIfAborted();
+    return operation();
+  });
+  const reserved = result.then(() => undefined, () => undefined).finally(() => {
+    if (running === reserved) running = null;
+  });
+  running = reserved;
+  return Promise.race([result, interrupted]);
+}
 
 async function initializeDevice(serverUrl: string): Promise<string> {
   const deviceKey = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
@@ -289,13 +313,24 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
     }));
 }
 
-async function mutateServerChapter(entry: CatalogEntry, restore: boolean): Promise<void> {
-  const { serverUrl } = useContentSyncStore.getState();
-  const token = await initializeDevice(serverUrl);
+async function mutateServerChapter(serverUrl: string, entry: CatalogEntry, restore: boolean): Promise<void> {
+  const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
   await contentServerRequest(serverUrl, `/chapters/${encodeURIComponent(entry.id)}${restore ? "/restore" : ""}`, token, restore ? "POST" : "DELETE");
 }
-export function deleteServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, false); }
-export function restoreServerChapter(entry: CatalogEntry): Promise<void> { return mutateServerChapter(entry, true); }
+export function deleteServerChapter(entry: CatalogEntry): Promise<void> {
+  const server = useContentSyncStore.getState().serverUrl;
+  return runContentSyncOperation(async () => {
+    await mutateServerChapter(server, entry, false);
+    await setServerChapterDeletionExclusion(server, entry.manifest.identity, entry.manifest.chapter.chapterNumber, true);
+  });
+}
+export function restoreServerChapter(entry: CatalogEntry): Promise<void> {
+  const server = useContentSyncStore.getState().serverUrl;
+  return runContentSyncOperation(async () => {
+    await mutateServerChapter(server, entry, true);
+    await setServerChapterDeletionExclusion(server, entry.manifest.identity, entry.manifest.chapter.chapterNumber, false);
+  });
+}
 
 export async function getContentSyncCursors(): Promise<{ catalogCursor: number; workCursor: number }> {
   const { serverUrl } = useContentSyncStore.getState();

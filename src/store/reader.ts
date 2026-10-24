@@ -235,6 +235,7 @@ interface ReaderState {
   setLastReadChapter: (novelId: number, chapterId: number) => void;
   setNovelPageIndex: (novelId: number, pageIndex: number) => void;
   mergeNovelReaderState: (input: MergeNovelReaderStateInput) => void;
+  removeNovelReaderState: (novelId: number) => void;
   resetReadingProgress: () => void;
   resetSourceReaderSettings: (sourceId: string) => void;
   resetNovelReaderSettings: (novelId: number) => void;
@@ -1270,6 +1271,13 @@ export const useReaderStore = create<ReaderState>()(
             novelPageIndexByNovel,
             readerSettingsByNovel,
           };
+        }),
+      removeNovelReaderState: (novelId) =>
+        set((state) => {
+          const { [novelId]: _chapter, ...lastReadChapterByNovel } = state.lastReadChapterByNovel;
+          const { [novelId]: _page, ...novelPageIndexByNovel } = state.novelPageIndexByNovel;
+          const { [novelId]: _settings, ...readerSettingsByNovel } = state.readerSettingsByNovel;
+          return { lastReadChapterByNovel, novelPageIndexByNovel, readerSettingsByNovel };
         }),
       resetReadingProgress: () =>
         set({

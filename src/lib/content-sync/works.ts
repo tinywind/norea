@@ -5,6 +5,7 @@ import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/co
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
 import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
+import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion, serverWorkDeletionKey } from "./deletion-exclusions";
 
 export interface WorkCatalogEntry { id: string; sequence: number; metadata: NovelMetadataV1; hasCover: boolean; deleted?: boolean }
 interface WorkCatalogPage { items: WorkCatalogEntry[]; cursor: number; hasMore: boolean }
@@ -65,6 +66,7 @@ export async function recordDeletedWorkMetadata(server: string, entry: WorkCatal
   if (!entry.deleted || await contentWorkId(metadata.identity) !== entry.id) {
     throw new Error("Server work deletion does not match its metadata.");
   }
+  await recordServerWorkDeletionExclusion(server, metadata.identity);
   const cache = await readCache(server);
   cache.deleted[entry.id] = true;
   delete cache.fingerprints[entry.id];
@@ -111,6 +113,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
   assertCurrent();
   let installed = false;
   const cache = await readCache(server);
+  const explicitDeletions = await readServerWorkDeletionExclusions(server);
   let dirty = false;
   const checkpoint = async () => {
     if (!dirty) return;
@@ -124,6 +127,14 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
   try {
     const local = await readWorkMetadataSyncFiles(rescan);
     const byIdentity = new Map(local.map(entry => [JSON.stringify([entry.pluginId, entry.path]), entry]));
+    for (const [identity, file] of byIdentity) {
+      if (!explicitDeletions.has(file.directory)) continue;
+      const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
+      cache.deleted[id] = true;
+      delete cache.fingerprints[id];
+      delete cache.fileVersions[identity];
+      dirty = true;
+    }
     const latestById = new Map<string, WorkCatalogEntry>();
     let cursor = cache.cursor;
     let more = true;
@@ -140,7 +151,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       if (await contentWorkId(metadata.identity) !== entry.id) throw new Error("Server work identity does not match its metadata.");
       dirty = true;
       const identity = identityKey(metadata.identity);
-      if (entry.deleted) {
+      if (entry.deleted || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) {
         cache.deleted[entry.id] = true;
         delete cache.fingerprints[entry.id];
         delete cache.fileVersions[identity];
@@ -196,6 +207,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
     if (!upload) return new Set(Object.keys(cache.deleted));
     let uploaded = 0;
     for (const [identity, file] of byIdentity) {
+      if (explicitDeletions.has(file.directory)) continue;
       const version = workMetadataFileVersion(file)!;
       const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
       if (cache.deleted[id] && !rescan) continue;
