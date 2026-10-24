@@ -1,10 +1,12 @@
 use std::{fs, time::Duration};
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool, Migration, MigrationKind};
 
 const DB_URL: &str = "sqlite:norea.db";
+const READ_DB_URL: &str = "sqlite:norea-readonly.db";
 const DB_FILE: &str = "norea.db";
 const DB_BUSY_TIMEOUT_MS: u64 = 5000;
 
@@ -33,7 +35,21 @@ pub fn schema_migrations() -> Vec<Migration> {
     }]
 }
 
-pub fn install_single_connection_sqlite_pool(app: &AppHandle) -> Result<(), String> {
+async fn open_sqlite_pools(path: &std::path::Path) -> Result<(SqlitePool, SqlitePool), sqlx::Error> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
+    let writer = sqlite_pool_options().connect_with(options.clone()).await?;
+    let reader = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(options.read_only(true))
+        .await?;
+    Ok((writer, reader))
+}
+
+pub fn install_sqlite_pools(app: &AppHandle) -> Result<(), String> {
     run_async_command(async move {
         let db_dir = app
             .path()
@@ -41,19 +57,15 @@ pub fn install_single_connection_sqlite_pool(app: &AppHandle) -> Result<(), Stri
             .map_err(|err| format!("database: app config dir: {err}"))?;
         fs::create_dir_all(&db_dir).map_err(|err| format!("database: create db dir: {err}"))?;
 
-        let options = SqliteConnectOptions::new()
-            .filename(db_dir.join(DB_FILE))
-            .create_if_missing(true)
-            .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
-        let pool = sqlite_pool_options()
-            .connect_with(options)
+        let (writer, reader) = open_sqlite_pools(&db_dir.join(DB_FILE))
             .await
-            .map_err(|err| format!("database: open sqlite pool: {err}"))?;
+            .map_err(|err| format!("database: open sqlite pools: {err}"))?;
 
         {
             let instances = app.state::<DbInstances>();
             let mut guard = instances.0.write().await;
-            let _ = guard.insert(DB_URL.to_string(), DbPool::Sqlite(pool));
+            let _ = guard.insert(DB_URL.to_string(), DbPool::Sqlite(writer));
+            let _ = guard.insert(READ_DB_URL.to_string(), DbPool::Sqlite(reader));
         }
         Ok(())
     })
@@ -238,6 +250,32 @@ mod tests {
         let error = sqlx::query("COMMIT").execute(&pool).await.unwrap_err();
         assert!(error.to_string().contains("no transaction is active"));
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn work_home_reads_committed_metadata_during_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrated = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
+        sqlx::query("INSERT INTO sample VALUES (1)").execute(&migrated).await.unwrap();
+        migrated.close().await;
+        let (writer, reader) = open_sqlite_pools(&path).await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&writer).await.unwrap();
+        sqlx::query("UPDATE sample SET value=2").execute(&writer).await.unwrap();
+        let saved = tokio::time::timeout(Duration::from_secs(1),
+            sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&reader))
+            .await.unwrap().unwrap();
+        assert_eq!(saved, 1);
+        sqlx::query("COMMIT").execute(&writer).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&reader).await.unwrap(), 2);
+        sqlx::query("BEGIN IMMEDIATE").execute(&writer).await.unwrap();
+        sqlx::query("UPDATE sample SET value=3").execute(&writer).await.unwrap();
+        sqlx::query("ROLLBACK").execute(&writer).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&reader).await.unwrap(), 2);
+        assert!(sqlx::query("UPDATE sample SET value=4").execute(&reader).await.is_err());
+        reader.close().await;
+        writer.close().await;
+        fs::remove_file(&path).unwrap();
     }
 
     #[tokio::test]

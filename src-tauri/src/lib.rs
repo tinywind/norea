@@ -221,7 +221,7 @@ pub fn run() {
             write_frontend_log,
         ])
         .setup(move |app| {
-            database::install_single_connection_sqlite_pool(app.handle())
+            database::install_sqlite_pools(app.handle())
                 .map_err(|err| format!("database init: {err}"))?;
             native_stream::cleanup_startup(app.handle())
                 .map_err(|err| format!("native stream init: {err}"))?;
