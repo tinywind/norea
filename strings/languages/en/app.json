@@ -19,7 +19,7 @@
   "contentSync.resetDeviceName": "Reset device name",
   "contentSync.mode": "Sync mode",
   "contentSync.uploadConflictPolicy": "Upload conflicts",
-  "contentSync.uploadConflictDescription": "Choose what happens when a chapter is already on the server. Prefer complete chapters keeps the server copy when both are complete. Changes apply to the next sync.",
+  "contentSync.uploadConflictDescription": "Choose what happens when a chapter is already on the server. Prefer complete chapters keeps the server copy if both copies are complete or both are incomplete. Changes apply to the next sync.",
   "contentSync.preferComplete": "Prefer complete chapters",
   "contentSync.keepServer": "Keep server data",
   "contentSync.replaceServer": "Replace with app data",

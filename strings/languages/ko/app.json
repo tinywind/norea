@@ -19,7 +19,7 @@
   "contentSync.resetDeviceName": "기기 이름 초기화",
   "contentSync.mode": "동기화 방식",
   "contentSync.uploadConflictPolicy": "업로드 충돌 처리",
-  "contentSync.uploadConflictDescription": "서버에 같은 챕터가 있을 때 처리할 방법입니다. 완전한 챕터 우선은 양쪽 모두 완전하면 서버 데이터를 유지합니다. 변경한 설정은 다음 동기화부터 적용됩니다.",
+  "contentSync.uploadConflictDescription": "서버에 같은 챕터가 있을 때 처리할 방법입니다. 완전한 챕터 우선은 양쪽의 완전성이 같으면 서버 데이터를 유지합니다. 변경한 설정은 다음 동기화부터 적용됩니다.",
   "contentSync.preferComplete": "완전한 챕터 우선",
   "contentSync.keepServer": "서버 데이터 유지",
   "contentSync.replaceServer": "앱 데이터로 덮어쓰기",
