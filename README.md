@@ -192,18 +192,19 @@ HTML or media references, or recompressing media. The server publishes a revisio
 only after every listed file arrives with its declared size. Transfers check
 file names, sizes, and completion without computing or comparing chapter-file
 SHA-256 hashes. Downloads support only the current original-file format.
-Deleting a local download
-leaves the server copy intact. The server keeps one copy per chapter and records
+Deleting a local download leaves the server copy intact unless its confirmation
+also selects server deletion. The server keeps one copy per chapter and records
 whether its ZIP contains every asset declared in the media manifest.
 Under **Settings > Data > Content server > Upload conflicts**, choose whether to
 prefer complete chapters, keep server data, or replace it with app data.
-Then use **Sync now** to apply the selected policy. Chapter deletion
-preserves local files, reading state, work metadata, and covers. To remove an
-entire server work, choose **Delete work from server** in Browse -> Content server
-or in the work's **Manage server data** page. Confirmation removes the server
-metadata, cover, and all chapters while keeping device files and personal state.
-Whole-work deletion blocks automatic reuploads until an explicit local rescan
-restores the work. The server admin console provides the same deletion action.
+Then use **Sync now** to apply the selected policy. Deletion confirmations let you
+also remove matching data from the other side; additional options start unchecked.
+Removing library membership can also delete device downloads or the whole server
+work. **Delete work from server** in Browse -> Content server or **Manage server
+data** removes server metadata, the cover, and all chapters, with an option to
+remove the whole device work and its reading state. Chapter download deletion
+keeps work information and reading progress. Explicit server deletions made in
+the app stay excluded from uploads after restart and local rescans.
 
 Work metadata and covers sync independently of chapter downloads. Each work's
 `novel.json` stores its details and a `chapters` map of source chapter numbers to

@@ -105,25 +105,36 @@ from the original site. The label changes when a server attempt falls back to
 the source. Queued rows show the known pending step; an unstarted download has
 no selected source yet.
 
-Registered devices can delete and restore server chapters. Server deletion
-preserves local files. Removing a local download does not delete the server copy
-or automatically download it again. When the work is on the server or already
-linked to it, **Manage server data** opens a separate server chapter list from
-the work page. It has its own selection, pages of 100 chapters, and deletion
-confirmation naming the work and server. Only selected server chapter IDs are
-deleted; local files, work metadata, and covers remain. The next normal sync
-rechecks completed local chapters in that work and uploads missing server chapters,
-even when no local file changed. To replace existing complete chapters, select
-**Replace with app data** under Upload conflicts, then choose **Sync now**.
+Registered devices can delete and restore server chapters. Deletion confirmations
+name the selected scope and server. Additional options start unchecked. Server
+chapter deletion can also remove matching device downloads; local chapter deletion
+can also remove matching server chapters, including incomplete copies. These
+operations preserve work information and reading progress. Removing library
+membership can also delete device downloads or the whole server work. Settings
+maintenance uses the same choices for the entire library or all downloads.
+
+When the work is on the server or already linked to it, **Manage server data**
+opens a separate server chapter list with its own selection and pages of 100
+chapters. Explicit app deletions persist per-server upload exclusions keyed by
+plugin-owned work and chapter identities. Normal sync and local rescans do not
+undo those choices after restart. An explicit server chapter restore clears that
+chapter's exclusion. Deletions originating outside this app retain the existing
+sync policy: completed local chapters can fill missing server copies. To replace
+existing complete chapters, select **Replace with app data** under Upload
+conflicts, then choose **Sync now**.
 **Delete work from server** is available on each work in Browse -> Content server
 and in the work's **Manage server data** page. After confirmation, it removes
 the whole server work folder, metadata, cover, and chapter index, using the
-registered device key. Device files, library membership, and reading state remain
-intact. The work disappears from server browsing, and its deletion record blocks
-automatic metadata and chapter reuploads until an explicit local rescan restores
-the work. Whole-work deletion in the server console follows the same policy.
-Local deletion runs directly and cancels only the selected chapter downloads.
-It does not enter the task queue or wait for network requests or unrelated jobs.
+registered device key. Its optional device action removes the matching work's
+database records, files, library membership, and reading state. Keeping device
+data still leaves the explicitly deleted server work excluded during rescans.
+Whole-work deletions originating in the server console can be restored by an
+explicit local rescan when this app has no explicit exclusion for that work.
+
+Deletion waits for active content synchronization, with a 30-second admission
+timeout. A timed-out request cannot execute later. Results distinguish successful
+and failed targets; retries skip successful actions. Local deletion cancels only
+the selected chapter downloads and does not enter the task queue.
 An in-progress local write for a selected chapter settles before its files are
 removed; cancelled downloads cannot write files afterward. Pending batch entries
 and late download-queue inserts are discarded for those chapters. A new download
@@ -238,7 +249,8 @@ chapter deltas do not include a chapter number, so the app rechecks completed
 chapters in the same work to match source paths and recovered folder identities.
 Those checks become durable local upload candidates before the deletion signal
 is consumed. Existing siblings skip snapshot creation and upload; failed or queued
-candidates remain pending. Whole-work deletion still requires an explicit restore.
+candidates remain pending. Explicit app deletion exclusions suppress these uploads;
+whole-work exclusions also suppress metadata restoration during local rescans.
 The server's change-wait endpoint returns
 cursor hints; the app then fetches the corresponding deltas. Before making a
 snapshot, the app checks whether the server already has a complete chapter.

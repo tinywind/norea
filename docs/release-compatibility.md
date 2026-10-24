@@ -75,6 +75,11 @@ compatibility requirements must be decided explicitly before implementation.
   recovered from metadata or storage. Restoring does not invent those timestamps.
 - Content sync shares work metadata and chapter content. Library membership,
   reading progress, bookmarks, and selected reading positions remain local.
+- Explicit app deletions store per-server work and chapter upload exclusions in
+  the existing content sync cache. They survive restart and local rescans without
+  changing the database schema. Whole-device work deletion removes its reader
+  state and source association; a source refresh started before deletion cannot
+  recreate that work. Partial deletion retries retain completed targets.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.
