@@ -59,6 +59,11 @@ const sourceDuplicateChaptersByNovelId = new Map<
   number,
   SourceDuplicateChapterInfo[]
 >();
+const sourceRefreshes = new Map<string, {
+  generation: number;
+  pending: number;
+  latest: Promise<SyncNovelFromSourceResult> | null;
+}>();
 
 export function getSourceDuplicateChapterInfo(
   novelId: number,
@@ -266,12 +271,33 @@ export async function syncNovelFromSource(
   options: SyncNovelFromSourceOptions = {},
 ): Promise<SyncNovelFromSourceResult> {
   options.signal?.throwIfAborted();
+  const key = JSON.stringify([plugin.id, item.path]);
+  const state = sourceRefreshes.get(key) ?? { generation: 0, pending: 0, latest: null };
+  const generation = ++state.generation;
+  state.pending++;
+  sourceRefreshes.set(key, state);
+  const promise: Promise<SyncNovelFromSourceResult> = performNovelSourceRefresh(
+    plugin, item, options, () => state.generation === generation,
+  ).then(result => result ?? state.latest!);
+  state.latest = promise;
+  try { return await promise; }
+  finally { if (--state.pending === 0) sourceRefreshes.delete(key); }
+}
+
+async function performNovelSourceRefresh(
+  plugin: Plugin,
+  item: NovelItem,
+  options: SyncNovelFromSourceOptions,
+  isCurrent: () => boolean,
+): Promise<SyncNovelFromSourceResult | null> {
+  options.signal?.throwIfAborted();
   const { detail, duplicateChapters, startPosition } = await parseNovelForSync(
     plugin,
     item,
     options,
   );
   options.signal?.throwIfAborted();
+  if (!isCurrent()) return null;
   const preserveMissingMetadata = options.preserveMissingMetadata ?? true;
   const cover = optionalText(detail.cover) ?? optionalText(item.cover);
   const novelName = detail.name || item.name;
@@ -290,6 +316,7 @@ export async function syncNovelFromSource(
 
   const result = await runDatabaseTransaction(async (db) => {
     options.signal?.throwIfAborted();
+    if (!isCurrent()) return null;
     const reconciled = await reconcileImportedNovelIdentityInDb(db, {
       pluginId: plugin.id, path: item.path, name: item.name,
     }, chapterInputs);
@@ -371,14 +398,17 @@ export async function syncNovelFromSource(
       novelId,
     };
   });
+  if (!result) return null;
   notifyWorkMetadataChanges();
 
   rememberSourceDuplicateChapters(result.novelId, duplicateChapters);
 
   const changed = result.novelChanged || result.changedChapters > 0;
-  if (changed && (options.notifyUpdatesIndex ?? true)) {
+  const superseded = !isCurrent();
+  if (changed && ((options.notifyUpdatesIndex ?? true) || superseded)) {
     markUpdatesIndexDirty("novel-sync");
   }
+  if (superseded) return null;
 
   if (result.inLibrary || options.refreshCover) {
     try {

@@ -99,7 +99,7 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options
         await rawWorkMetadataOperation(body === null ? { operation: "remove", path } : { operation: "write", path, body });
       } catch (restoreError) { failures.push(restoreError); }
     }
-    if (!options.preserveCoverSourcesOnRollback || failures.length > 1) {
+    if (snapshots.size && (!options.preserveCoverSourcesOnRollback || failures.length > 1)) {
       const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
       invalidateAllNovelCoverSources();
     }
@@ -284,7 +284,7 @@ export async function removeStoredNovelCover(directory: string, cover: NovelMeta
 
 export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null }, options: { preserveExisting?: boolean } = {}): Promise<void> {
   const { runDatabaseTransaction } = await import("../db/client");
-  const { rememberStoredNovelMetadata } = await import("../db/work-metadata");
+  const { hasWorkMetadataConflict, rememberStoredNovelMetadata } = await import("../db/work-metadata");
   await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
     if (options.preserveExisting) {
       const { cover: existing } = await workMetadataOperation({ operation: "cover", path: `${directory}/novel.json` });
@@ -293,6 +293,8 @@ export async function persistNovelCover(directory: string, cover: { body: Uint8A
     const { body } = await workMetadataOperation({ operation: "read", path: `${directory}/novel.json` });
     if (!body) throw new Error("work metadata: missing work for cover");
     const metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
+    metadata.cover = await discoverStoredNovelCover(directory, metadata.cover);
+    if (await hasWorkMetadataConflict(directory, metadata)) throw new Error("work metadata: file changed outside the cache; refresh from the source before editing");
     const previousCover = metadata.cover;
     metadata.cover = { fileName: cover.fileName, contentType: cover.contentType };
     const coverChanged = await writeStoredNovelCover(directory, metadata, cover.body, false);

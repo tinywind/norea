@@ -139,6 +139,7 @@ async function runLibraryUpdateCheck(
                 novelId: novel.id,
                 notifyUpdatesIndex: false,
                 preserveMissingMetadata: true,
+                signal: context.signal,
               },
             ),
         });

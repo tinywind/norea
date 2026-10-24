@@ -2,7 +2,7 @@ import { canonicalMetadataValue } from "../work-metadata/schema";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
-import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, type WorkMetadataSyncFile } from "../../db/work-metadata";
+import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
 import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
 
@@ -205,6 +205,11 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       const { metadata } = latest;
       const cover = await readStoredNovelCover(file.directory, metadata);
       const current = await workMetadataFingerprint(metadata, cover);
+      const currentFile = await readWorkMetadataSyncFile(metadata.identity);
+      if (workMetadataFileVersion(currentFile) !== version) continue;
+      if (await storedNovelMetadataFingerprint(metadata) !== file.fingerprint) {
+        throw new Error("work metadata: file changed outside the cache; refresh from the source before uploading");
+      }
       assertCurrent();
       try {
         await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", metadata);

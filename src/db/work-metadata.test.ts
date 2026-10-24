@@ -45,6 +45,7 @@ import { chapterStorageRelativeDir, novelStorageRelativeDir } from "../lib/chapt
 import { clearResolvedChapterStorageDirs } from "../lib/chapter-storage-resolution";
 import { syncNovelFromSource } from "../lib/plugins/sync-novel";
 import type { Plugin } from "../lib/plugins/types";
+import { getUpdatesIndexRevision } from "../lib/updates/update-index-events";
 
 import { gatherBackupSnapshot } from "../lib/backup/snapshot";
 import { encodeBackupManifest, parseBackupManifest } from "../lib/backup/format";
@@ -84,6 +85,97 @@ beforeEach(() => {
   });
 });
 afterEach(() => sqlite.close());
+
+it("keeps the newer source refresh when an earlier response finishes last", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const parsing = new Promise<void>(resolve => { started = resolve; });
+  const detail = (name: string) => ({ novelId: "book", name, author: name, summary: name, path: "/book",
+    chapters: [{ chapterNumber: 1, name, path: "/chapter/1" }] });
+  const earlier = syncNovelFromSource({ id: "source", parseNovel: async () => {
+    started(); await gate; return detail("Earlier response");
+  } } as unknown as Plugin, { name: "Book", path: "/book" });
+  await parsing;
+  await syncNovelFromSource({ id: "source", parseNovel: async () => detail("Latest response") } as unknown as Plugin, { name: "Book", path: "/book" });
+  release(); await earlier;
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT name,author,summary FROM novel").get()).toEqual({ name: "Latest response", author: "Latest response", summary: "Latest response" });
+  expect(sqlite.prepare("SELECT name FROM chapter").all()).toEqual([{ name: "Latest response" }]);
+  expect((await listStoredNovelMetadata())[0]!.metadata).toMatchObject({ novel: { name: "Latest response" }, chapters: { "1": "Latest response" } });
+});
+
+it("rechecks refresh order when an earlier response was already waiting for the database", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  let release!: () => void;
+  let queued!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const waiting = new Promise<void>(resolve => { queued = resolve; });
+  const transact = databaseClient.transaction.getMockImplementation()!;
+  databaseClient.transaction.mockImplementationOnce(async run => { queued(); await gate; return transact(run); });
+  const plugin = (name: string) => ({ id: "source", parseNovel: async () => ({ novelId: "book", name, path: "/book", chapters: [{ chapterNumber: 1, name, path: "/chapter/1" }] }) } as unknown as Plugin);
+  const earlier = syncNovelFromSource(plugin("Earlier response"), { name: "Book", path: "/book" });
+  await waiting;
+  await syncNovelFromSource(plugin("Latest response"), { name: "Book", path: "/book" });
+  release(); await earlier;
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Latest response" });
+  expect((await listStoredNovelMetadata())[0]!.metadata.chapters).toEqual({ "1": "Latest response" });
+});
+
+it.each([true, false])("notifies committed metadata when a superseding request fails (notifyUpdatesIndex: %s)", async notifyUpdatesIndex => {
+  save(fixture()); await initializeWorkMetadata(db);
+  const revision = getUpdatesIndexRevision();
+  let release!: () => void;
+  let committed!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const saved = new Promise<void>(resolve => { committed = resolve; });
+  const transact = databaseClient.transaction.getMockImplementation()!;
+  databaseClient.transaction.mockImplementationOnce(async run => {
+    const result = await transact(run);
+    committed(); await gate; return result;
+  });
+  const earlier = syncNovelFromSource({ id: "source", parseNovel: async () => ({ novelId: "book", name: "Committed title", path: "/book", chapters: [] }) } as unknown as Plugin, { name: "Book", path: "/book" }, { notifyUpdatesIndex });
+  const outcome = expect(earlier).rejects.toThrow("source offline");
+  await saved;
+  const changed = vi.fn();
+  const unsubscribe = subscribeWorkMetadataChanges(changed);
+  try {
+    await expect(syncNovelFromSource({ id: "source", parseNovel: async () => { throw new Error("source offline"); } } as unknown as Plugin, { name: "Book", path: "/book" })).rejects.toThrow("source offline");
+    release(); await outcome;
+    expect(changed).toHaveBeenCalledOnce();
+    expect(getUpdatesIndexRevision()).toBe(revision + 1);
+    expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Committed title" });
+  } finally { release(); unsubscribe(); }
+});
+
+it.each(["rebuild", "rescan"])("retains refreshed details and titles when an older file returns before %s", async mode => {
+  const original = fixture(); original.chapters = { "1": "Old opening" };
+  save(original); await initializeWorkMetadata(db);
+  const plugin = { id: "source", parseNovel: async () => ({ novelId: "book", name: "Latest title", author: "Latest author", summary: "Latest summary", path: "/book",
+    chapters: [{ chapterNumber: 1, name: "Latest opening", path: "/chapter/1" }, { chapterNumber: 2, name: "Latest second", path: "/chapter/2" }] }) } as unknown as Plugin;
+  await syncNovelFromSource(plugin, { name: "Book", path: "/book" });
+  const [before] = await readWorkMetadataSyncFiles();
+  save(original);
+  if (mode === "rebuild") await initializeWorkMetadata(db, { rebuild: true });
+  else await readWorkMetadataSyncFiles(true);
+  await initializeWorkMetadata(db);
+  expect(sqlite.prepare("SELECT name,author,summary FROM novel").get()).toEqual({ name: "Latest title", author: "Latest author", summary: "Latest summary" });
+  expect(sqlite.prepare("SELECT name FROM chapter ORDER BY position").all()).toEqual([{ name: "Latest opening" }, { name: "Latest second" }]);
+  expect((await readWorkMetadataSyncFiles())[0]!.fingerprint).toBe(before!.fingerprint);
+  await syncNovelFromSource(plugin, { name: "Book", path: "/book" });
+  expect((await listStoredNovelMetadata())[0]!.metadata).toMatchObject({ novel: { name: "Latest title", summary: "Latest summary" }, chapters: { "1": "Latest opening", "2": "Latest second" } });
+});
+
+it("rejects cover publication that would adopt an externally replaced metadata document", async () => {
+  save(fixture()); await initializeWorkMetadata(db);
+  await db.execute("UPDATE novel SET name='Latest title' WHERE id=1"); await flushWorkMetadata(db);
+  const [before] = await readWorkMetadataSyncFiles();
+  save(fixture());
+  await expect(persistNovelCover("contents/source/book", { fileName: "cover.jpg", contentType: "image/jpeg", body: new Uint8Array([1]) })).rejects.toThrow("changed outside");
+  expect((await readWorkMetadataSyncFiles())[0]!.fingerprint).toBe(before!.fingerprint);
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Latest title" });
+});
 
 it("inspects a bounded group of chapters concurrently and preserves ordered completeness", async () => {
   const numbers = ["9", "2", "4", "1", "3", "5", "6", "7", "8"];
@@ -188,14 +280,13 @@ it("republishes recovered work details on an unchanged full source refresh", asy
   expect(storage.writes).toBe(writes);
 });
 
-it.each([false, true])("uses the current work document after a slow recovery scan (rebuild: %s)", async (rebuild) => {
+it("uses the current work document after a slow first recovery scan", async () => {
   const initial = { ...fixture(), chapters: { "1": "Old opening" } };
   save(initial);
-  if (rebuild) await initializeWorkMetadata(db);
   let release!: () => void;
   storage.chapterScan = new Promise<void>(resolve => { release = resolve; });
   storage.chapterLists = 0;
-  const recovery = initializeWorkMetadata(db, { rebuild });
+  const recovery = initializeWorkMetadata(db);
   await vi.waitFor(() => expect(storage.chapterLists).toBe(1));
   const current = {
     ...initial, novel: { ...initial.novel, name: "Current title", summary: "Current summary" },
@@ -555,7 +646,7 @@ it("recovers incomplete stored metadata without erasing richer existing fields",
   expect(storage.writes).toBe(0);
 });
 
-it.each(["rebuild", "rescan"])("preserves populated fields during a partial metadata %s while accepting real updates", async (mode) => {
+it.each(["rebuild", "rescan"])("keeps indexed fields when an unversioned external document changes before %s", async (mode) => {
   const original = fixture();
   original.novel = { ...original.novel, artist: "Illustrator", summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 4.5 };
   save(original); await initializeWorkMetadata(db);
@@ -566,7 +657,7 @@ it.each(["rebuild", "rescan"])("preserves populated fields during a partial meta
   if (mode === "rebuild") await initializeWorkMetadata(db, { rebuild: true });
   else await readWorkMetadataSyncFiles(true);
   expect(sqlite.prepare("SELECT name,author,artist,summary,status,genres,rating FROM novel").get()).toEqual({
-    name: "New title", author: "New writer", artist: "Illustrator", summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 0,
+    name: "Disk title", author: "Writer", artist: "Illustrator", summary: "Full summary", status: "Ongoing", genres: "Fantasy", rating: 4.5,
   });
   expect(storage.files.get(path)).toEqual(bytes);
   expect(storage.writes).toBe(0);
@@ -606,7 +697,7 @@ it("retains pending edits during folder recovery and publishes them before the s
   await db.execute("DELETE FROM chapter WHERE chapter_number='2'");
   await initializeWorkMetadata(db, { rebuild: true });
   expect(sqlite.prepare("SELECT name,author,summary FROM novel").get()).toEqual({ name: "Pending title", author: null, summary: "Pending summary" });
-  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 2 });
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 1 });
   expect(sqlite.prepare("SELECT plugin_id,path FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
   expect(storage.files.get(path)).toEqual(bytes);
   expect(storage.writes).toBe(0);
@@ -923,7 +1014,7 @@ it("advances work revisions when rebuilding from authoritative files", async () 
   expect(storage.directories["1"]).toBe("contents/source/book/1");
 });
 
-it("discovers external work files and metadata changes only on an explicit sync rescan", async () => {
+it("discovers new works during a sync rescan while preserving indexed metadata", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   const changed = fixture(); changed.novel.name = "External edit"; save(changed);
   const other = fixture(); other.identity.novelPath = "/other"; other.identity.novelId = "other";
@@ -931,7 +1022,7 @@ it("discovers external work files and metadata changes only on an explicit sync 
   expect(await readWorkMetadataSyncFiles()).toHaveLength(1);
   const files = await readWorkMetadataSyncFiles(true);
   expect(files).toHaveLength(2);
-  expect(sqlite.prepare("SELECT name FROM novel WHERE path='/book'").get()).toEqual({ name: "External edit" });
+  expect(sqlite.prepare("SELECT name FROM novel WHERE path='/book'").get()).toEqual({ name: "Disk title" });
   expect(storage.writes).toBe(0);
 });
 
@@ -1016,13 +1107,13 @@ it("retries interrupted metadata publication without discarding the persisted ed
   expect(sqlite.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]);
 });
 
-it("rescans authoritative metadata only when explicitly rebuilding an existing cache", async () => {
+it("keeps indexed metadata across restart and explicit folder rebuilding", async () => {
   save(fixture()); await initializeWorkMetadata(db);
   const changed = fixture(); changed.novel.name = "External edit"; save(changed);
   await initializeWorkMetadata(db);
   expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Disk title" });
   await initializeWorkMetadata(db, { rebuild: true });
-  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "External edit" });
+  expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Disk title" });
 });
 
 it("restores the persisted baseline after a transaction and file publication roll back", async () => {

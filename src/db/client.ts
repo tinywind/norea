@@ -6,7 +6,7 @@ import { flushWorkMetadata, initializeWorkMetadata, restoreWorkMetadataDirectori
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useStorageRecoveryStore } from "../store/storage-recovery";
 import { describeError } from "../lib/errors";
-import { notifyWorkMetadataChanges } from "../lib/work-metadata";
+import { notifyWorkMetadataChanges, withWorkMetadataRollback } from "../lib/work-metadata";
 
 const DB_URL = "sqlite:norea.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
@@ -57,11 +57,14 @@ function serializedDb(rawDb: Database): Database {
         const metadataMutation = isTauriRuntime() && /\b(novel|chapter)\b/i.test(query) && /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
         try {
           if (metadataMutation) await rawDb.execute("BEGIN IMMEDIATE");
-          const result = await rawDb.execute(query, bindValues);
-          if (metadataMutation) {
-            await flushWorkMetadata(rawDb);
-            await rawDb.execute("COMMIT");
-          }
+          const result = await withWorkMetadataRollback(async () => {
+            const result = await rawDb.execute(query, bindValues);
+            if (metadataMutation) {
+              await flushWorkMetadata(rawDb);
+              await rawDb.execute("COMMIT");
+            }
+            return result;
+          });
           if (/\b(novel|chapter|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
           finish({ rowsAffected: result.rowsAffected });
           return result;
@@ -69,7 +72,6 @@ function serializedDb(rawDb: Database): Database {
           if (metadataMutation) {
             await rawDb.execute("ROLLBACK").catch(() => undefined);
             await restoreWorkMetadataDirectories(rawDb, false);
-            startWorkMetadataRecovery(true);
           }
           finish({ error: observationError(error), failed: true });
           throw error;
@@ -171,7 +173,6 @@ export async function runExclusiveDatabaseOperation<T>(
     } catch (error) {
       if (isTauriRuntime()) {
         await restoreWorkMetadataDirectories(rawDb, false);
-        startWorkMetadataRecovery(true);
       }
       throw error;
     }
@@ -186,11 +187,14 @@ export async function runDatabaseTransaction<T>(
   return queueDbOperation(async () => {
     await rawDb.execute("BEGIN IMMEDIATE");
     try {
-      if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");
-      const result = await run(rawDb);
-      await flushWorkMetadata(rawDb);
-      if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=0 WHERE id=1");
-      await rawDb.execute("COMMIT");
+      const result = await withWorkMetadataRollback(async () => {
+        if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");
+        const result = await run(rawDb);
+        await flushWorkMetadata(rawDb);
+        if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=0 WHERE id=1");
+        await rawDb.execute("COMMIT");
+        return result;
+      });
       await notifyContentSyncChanges(rawDb);
       return result;
     } catch (error) {
@@ -200,7 +204,6 @@ export async function runDatabaseTransaction<T>(
       });
       if (isTauriRuntime()) {
         await restoreWorkMetadataDirectories(rawDb, false);
-        startWorkMetadataRecovery(true);
       }
       throw error;
     }

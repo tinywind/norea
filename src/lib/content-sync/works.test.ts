@@ -93,6 +93,16 @@ it("uploads metadata and cover without any downloaded chapter and skips unchange
   expect(local[0]?.metadata.chapters).toEqual(chapters);
 });
 
+it("does not upload an old file over the last indexed metadata", async () => {
+  local = [{ directory: "contents/example/book", metadata: metadata("Latest title") }];
+  const files = await readWorkMetadataSyncFiles();
+  vi.mocked(readWorkMetadataSyncFiles).mockResolvedValue(files);
+  vi.mocked(readWorkMetadataSyncFile).mockResolvedValue(files[0]!);
+  local[0]!.metadata = metadata("Older title");
+  await expect(syncWorkMetadata("http://server", "device", true)).rejects.toThrow("changed outside");
+  expect(remote).toBeUndefined();
+});
+
 it("retains populated local fields during a sparse server catalog update", async () => {
   const saved = metadata();
   saved.novel.artist = "Saved artist";

@@ -128,6 +128,7 @@ async function runLibraryMetadataRefresh(
                 notifyUpdatesIndex: false,
                 preserveMissingMetadata: true,
                 refreshCover: true,
+                signal: context.signal,
               },
             ),
         });

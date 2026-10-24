@@ -94,6 +94,36 @@ afterEach(async () => {
   sqlite.close();
 });
 
+it("keeps committed metadata after a later transaction fails with an older file on disk", async () => {
+  const db = await client.getDb();
+  await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
+  const original = storage.files.get("old")!.get(first)!;
+  await db.execute("UPDATE novel SET name='Latest title',summary='Latest summary' WHERE id=1");
+  storage.files.get("old")!.set(first, original);
+  storage.calls = [];
+  await expect(client.runDatabaseTransaction(async transaction => {
+    await transaction.execute("UPDATE novel SET summary='Uncommitted' WHERE id=1");
+    throw new Error("Unrelated operation failed");
+  })).rejects.toThrow("Unrelated operation failed");
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(await db.select("SELECT name,summary FROM novel")).toEqual([{ name: "Latest title", summary: "Latest summary" }]);
+  expect(storage.calls).not.toContain("old:list:");
+});
+
+it("restores the work file when a transaction fails after publishing metadata", async () => {
+  const db = await client.getDb();
+  await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
+  const original = storage.files.get("old")!.get(first)!;
+  const { flushWorkMetadata } = await import("./work-metadata");
+  await expect(client.runDatabaseTransaction(async transaction => {
+    await transaction.execute("UPDATE novel SET name='Uncommitted' WHERE id=1");
+    await flushWorkMetadata(transaction);
+    throw new Error("Later operation failed");
+  })).rejects.toThrow("Later operation failed");
+  expect(await db.select("SELECT name FROM novel")).toEqual([{ name: "First" }]);
+  expect(storage.files.get("old")!.get(first)).toEqual(original);
+});
+
 it("opens the library and repository while local discovery is blocked and no server is configured", async () => {
   block("old:list:");
   const db = await promptly(client.getDb());

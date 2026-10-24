@@ -43,6 +43,12 @@ compatibility requirements must be decided explicitly before implementation.
   restores the catalog into SQLite and marks only discovered completed files
   as downloaded. After inspecting chapter files, recovery rereads the work document
   before applying it so an earlier snapshot cannot hide newer details or titles.
+  Once a work is indexed, a different external document has unknown freshness
+  and cannot replace its cached details or chapter catalog during recovery or
+  sync rescanning. Newly discovered works still recover from their files.
+  A successful source refresh can republish the retained details and chapter
+  catalog over a conflicting file. Cover-only writes and uploads reject that
+  conflict instead of accepting it as a new baseline.
 - Chapter completeness is derived from `manifest.json` and the actual
   `media.zip` inventory. Every declared asset must be present; cached completion
   and per-asset status flags do not override the files. Folder recovery and
@@ -53,12 +59,18 @@ compatibility requirements must be decided explicitly before implementation.
   app's selected policy, checked again when the server publishes the files.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.
-  Nonempty updates and a rating of zero still apply. Explicit local edits can
-  clear fields through their separate editing path. Server installation writes
+  Nonempty source and server updates and a rating of zero still apply. Explicit
+  local edits can clear fields through their separate editing path. Server installation writes
   the preserved fields to the work document as well as the database. A source
   refresh repairs missing work details in that document even when the source
   returns the same metadata already cached in SQLite. Recovery does not rewrite
   original metadata files merely to fill missing fields from the database.
+- Overlapping source refreshes use the newest request for each work. An earlier
+  response is checked again inside the database queue and cannot publish after
+  a later request. Superseded callers receive the newer request's result.
+  Metadata publication notifies visible detail and chapter queries, including
+  background refreshes. Database failures restore transaction-owned file writes
+  without automatically rebuilding metadata from unrelated external files.
 - Backups preserve unknown chapter creation times as `null`, including chapters
   recovered from metadata or storage. Restoring does not invent those timestamps.
 - Content sync shares work metadata and chapter content. Library membership,
