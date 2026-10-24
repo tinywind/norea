@@ -85,14 +85,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   const novelQuery = useQuery({
     queryKey: novelKey(id),
-    queryFn: () => getNovelById(id),
+    queryFn: () => getNovelById(id, "committed"),
     enabled: id > 0,
     staleTime: Infinity,
   });
 
   const chaptersQuery = useQuery({
     queryKey: chaptersKey(id),
-    queryFn: () => listChaptersByNovel(id),
+    queryFn: () => listChaptersByNovel(id, "committed"),
     enabled: id > 0,
     staleTime: Infinity,
   });

@@ -1,4 +1,4 @@
-import { getDb, runDatabaseTransaction } from "../client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import { upsertDownloadedChaptersInDb } from "./chapter";
@@ -677,8 +677,9 @@ function mapNovelDetail(row: RawNovelDetail): NovelDetailRecord {
 
 export async function getNovelById(
   id: number,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<NovelDetailRecord | null> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const rows = await db.select<RawNovelDetail[]>(
     `${SELECT_NOVEL_DETAIL_FIELDS}
      WHERE n.id = $1`,

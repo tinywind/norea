@@ -78,6 +78,13 @@ Test fresh initialization, upgrades from supported installed versions, reopening
 and rollback after a failed upgrade. Version/checksum errors preserve the database
 and require diagnosis before retrying.
 
+The work home requests `committed` reads for its detail and chapter-list queries
+through a read-only SQLite pool mapped to the same `norea.db` file. WAL allows
+these queries to read committed data while a metadata transaction publishes its
+files. All writes and transactional reads
+remain on the serialized single-connection writer. Do not use the reader for
+mutation preconditions that must wait for earlier queued writes.
+
 Rust-side checks:
 
 ```bash

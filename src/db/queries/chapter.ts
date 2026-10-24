@@ -14,7 +14,7 @@ import {
   assertByteBudget,
   clampRouteQueryLimit,
 } from "../../lib/performance-budgets";
-import { getDb, runDatabaseTransaction } from "../client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
@@ -127,8 +127,9 @@ function normalizeChapterRow(row: RawChapterRow): ChapterRow {
 
 export async function listChaptersByNovel(
   novelId: number,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<ChapterListRow[]> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const rows = await db.select<RawChapterListRow[]>(
     `SELECT ${CHAPTER_LIST_SELECT_FIELDS}
      FROM chapter

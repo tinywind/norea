@@ -8,7 +8,10 @@ import { useStorageRecoveryStore } from "../store/storage-recovery";
 import { describeError } from "../lib/errors";
 import { notifyWorkMetadataChanges, withWorkMetadataRollback } from "../lib/work-metadata";
 
+export type DatabaseReadMode = "queued" | "committed";
+
 const DB_URL = "sqlite:norea.db";
+const READ_DB_URL = "sqlite:norea-readonly.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
 
 let dbPromise: Promise<Database> | null = null;
@@ -123,6 +126,12 @@ export function getDb(): Promise<Database> {
     });
   }
   return dbPromise;
+}
+
+/** Reads committed data without waiting for metadata publication on the writer. */
+export async function getReadOnlyDb(): Promise<Pick<Database, "select">> {
+  await getDb();
+  return Database.get(READ_DB_URL);
 }
 
 export function cancelWorkMetadataRecovery(): void {
