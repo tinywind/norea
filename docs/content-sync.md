@@ -228,6 +228,13 @@ Native code checks every file's name, size, and completed transfer in a private
 staging directory before installing the complete set. Interrupted replacement
 preserves a target-named backup that storage access can recover.
 
+Media repair preserves the saved body and validates existing ZIP entries before
+requesting missing or corrupt assets. Server copies supply individual assets
+through `GET /api/v1/chapters/:id/media`, with the revision, filename, and original
+source URL identifying the requested entry. The server checks the entry's size
+and CRC before returning it. Repair can use server assets without an installed
+source plugin; source-site fallback still requires the plugin fetch path.
+
 Only the current original-file format is supported. There is no outer ZIP
 transfer, older manifest decoder, or media-reference conversion.
 

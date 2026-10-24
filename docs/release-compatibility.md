@@ -57,6 +57,14 @@ compatibility requirements must be decided explicitly before implementation.
   Content-server uploads and folder scans persist this result in the catalog;
   incomplete copies are unavailable for download. Upload conflicts follow the
   app's selected policy, checked again when the server publishes the files.
+- Media repair keeps the stored chapter body and uses its manifest as the asset
+  inventory. It validates ZIP entries individually, reuses intact entries from
+  current or interrupted-publication archives, and downloads only missing or
+  corrupt assets. A stale per-asset status does not force a new download.
+  The original archive remains available until its replacement is validated;
+  completed assets from a failed repair are reused on retry. A malformed
+  manifest without a valid recovery copy fails without replacing the archive.
+  A damaged archive that cannot be safely decoded is also preserved on failure.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.
   Nonempty source and server updates and a rating of zero still apply. Explicit
