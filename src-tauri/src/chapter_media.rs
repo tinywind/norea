@@ -9,6 +9,7 @@ mod paths;
 mod protocol;
 mod publication;
 mod restore;
+mod repair;
 mod transfer;
 mod types;
 mod work_metadata;

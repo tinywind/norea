@@ -787,7 +787,7 @@ pub async fn chapter_media_prepare_workspace(
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
-) -> Result<(), String> {
+) -> Result<HashMap<String, u64>, String> {
     chapter_media_blocking("prepare workspace", move || {
         chapter_media_prepare_workspace_sync(
             app,
@@ -818,7 +818,7 @@ fn chapter_media_prepare_workspace_sync(
     chapter_number: Option<String>,
     chapter_name: Option<String>,
     chapter_position: Option<i64>,
-) -> Result<(), String> {
+) -> Result<HashMap<String, u64>, String> {
     let chapter_dir = required_content_chapter_dir(
         &app,
         chapter_id,
@@ -830,7 +830,8 @@ fn chapter_media_prepare_workspace_sync(
         chapter_name.as_deref(),
         chapter_position,
     )?;
-    if !repair && !preserve_existing {
+    if repair { return super::repair::prepare_chapter_media_repair(&chapter_dir); }
+    if !preserve_existing {
         let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
         if media_dir.exists() {
             fs::remove_dir_all(&media_dir)
@@ -843,7 +844,7 @@ fn chapter_media_prepare_workspace_sync(
         remove_known_publication_file(&manifest_path, "chapter media: remove media manifest")?;
         remove_stale_chapter_media_manifest_publication_files(&chapter_dir)?;
     }
-    Ok(())
+    Ok(HashMap::new())
 }
 
 #[tauri::command]

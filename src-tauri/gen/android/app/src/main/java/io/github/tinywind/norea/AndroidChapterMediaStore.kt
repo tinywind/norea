@@ -46,6 +46,64 @@ internal class AndroidChapterMediaStore(
     val file: AndroidChapterMediaLooseFile,
   )
 
+  fun prepareChapterMediaRepair(rootUri: String, relativeDir: String): Map<String, Long> {
+    val directory = storage.storageDocumentAt(rootUri, relativeDir)
+      ?: return emptyMap()
+    val result = readChapterMediaManifest(rootUri, directory, relativeDir)
+    val archives = listOf(CHAPTER_MEDIA_ARCHIVE_FILE, CHAPTER_MEDIA_ARCHIVE_TEMP_FILE,
+      CHAPTER_MEDIA_ARCHIVE_BACKUP_FILE, CHAPTER_MEDIA_ARCHIVE_ROLLBACK_FILE)
+      .mapNotNull { name -> storage.findStorageChild(directory, name)?.let { name to it } }
+    if (!result.exists && archives.isEmpty()) return emptyMap()
+    val manifest = result.manifest
+      ?: throw IllegalStateException("A valid manifest is required to repair chapter media.")
+    val expected = androidChapterMediaStoredFiles(manifest.files.map { it.copy(status = "stored") })
+    val valid = mutableMapOf<String, Long>()
+    val temporary = storage.createChapterMediaRepairTempFile()
+    try {
+      val accept: (String, java.io.File, Long) -> Unit = { name, source, bytes ->
+        require(valid.values.sum() + bytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+          "Chapter media repair exceeds the total byte limit."
+        }
+        val destination = storage.ensureStorageFile(rootUri, "$relativeDir/media/$name", "application/octet-stream")
+        contentResolver.openOutputStream(destination.uri, "wt")?.use { output ->
+          source.inputStream().use { it.copyTo(output, ANDROID_CHAPTER_MEDIA_COPY_BUFFER_BYTES) }
+        } ?: throw IllegalStateException("Cannot stage validated chapter media: $name")
+        valid[name] = bytes
+      }
+      for ((archiveName, archive) in archives) {
+        val remaining = expected.filter { !valid.containsKey(it.fileName) }
+        if (remaining.isEmpty()) break
+        val relativePath = "$relativeDir/$archiveName"
+        try {
+          storage.inspectChapterMediaZip(rootUri, relativePath, archive) { zip, _ ->
+            recoverAndroidChapterMediaArchive(zip, remaining, temporary, accept)
+          }
+        } catch (_: ZipException) {
+          val input = storage.openStorageInputStream(rootUri, relativePath, archive)
+            ?: throw IllegalStateException("Cannot read chapter media for repair.")
+          recoverAndroidChapterMediaStream(input, remaining, temporary, accept)
+        } catch (_: EOFException) {
+          val input = storage.openStorageInputStream(rootUri, relativePath, archive)
+            ?: throw IllegalStateException("Cannot read chapter media for repair.")
+          recoverAndroidChapterMediaStream(input, remaining, temporary, accept)
+        }
+      }
+    } finally {
+      temporary.delete()
+    }
+    val media = storage.findStorageChild(directory, CHAPTER_MEDIA_DIRECTORY)
+    for (file in expected.filter { !valid.containsKey(it.fileName) }) {
+      val loose = media?.let { storage.findStorageChild(it, file.fileName) }
+      if (file.bytes > 0 && loose?.isFile == true && loose.length() == file.bytes && loose.canRead()) {
+        require(valid.values.sum() + file.bytes <= ANDROID_CHAPTER_MEDIA_MAX_TOTAL_BYTES) {
+          "Chapter media repair exceeds the total byte limit."
+        }
+        valid[file.fileName] = file.bytes
+      }
+    }
+    return valid
+  }
+
   private fun chapterMediaJsonLong(value: Any?, field: String): Long {
     val number = value as? Number
       ?: throw IllegalArgumentException("Chapter media manifest $field is not a number.")

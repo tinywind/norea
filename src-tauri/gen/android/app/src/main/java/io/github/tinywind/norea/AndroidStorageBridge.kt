@@ -228,6 +228,16 @@ internal class AndroidStorageBridge(
   }
 
   @JavascriptInterface
+  fun prepareChapterMediaRepair(requestId: String, rootUri: String, chapterRelativeDir: String) {
+    submitStorageOperation(requestId) {
+      storage.safeStorageSegments(chapterRelativeDir)
+      JSONObject().put("ok", true).put(
+        "sizes", JSONObject(mediaStore.prepareChapterMediaRepair(rootUri, chapterRelativeDir)),
+      )
+    }
+  }
+
+  @JavascriptInterface
   fun readText(requestId: String, rootUri: String, relativePath: String) {
     submitStorageOperation(requestId) {
       Log.d(TAG, "Android storage readText path=$relativePath root=$rootUri")

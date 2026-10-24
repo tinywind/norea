@@ -2,15 +2,210 @@ package io.github.tinywind.norea
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import java.util.zip.ZipFile
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AndroidChapterMediaRecoveryTest {
+  @Test
+  fun countsUnknownEntriesTowardTheArchiveByteLimit() {
+    val bytes = repairNamedArchiveFixture((1..9).map { "unknown$it.png" })
+    for (index in 0..bytes.size - 28) {
+      if (bytes.copyOfRange(index, index + 4).contentEquals(byteArrayOf(80, 75, 1, 2))) {
+        val declared = ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES
+        for (shift in 0..3) bytes[index + 24 + shift] = (declared ushr (shift * 8)).toByte()
+      }
+    }
+    val archiveFile = File.createTempFile("repair-test", ".zip")
+    val temporary = File.createTempFile("repair-test", ".part")
+    try {
+      archiveFile.writeBytes(bytes)
+      ZipFile(archiveFile).use { archive ->
+        assertThrows(IllegalArgumentException::class.java) {
+          recoverAndroidChapterMediaArchive(archive, emptyList(), temporary) { _, _, _ ->
+            throw AssertionError("An oversized archive must not publish an asset.")
+          }
+        }
+      }
+    } finally {
+      archiveFile.delete()
+      temporary.delete()
+    }
+  }
+
+  @Test
+  fun countsDuplicateStreamEntriesBeforePublishingAnyAsset() {
+    val archive = repairNamedArchiveFixture(listOf("first.png"))
+    val entry = archive.copyOf(zipSignatureOffset(archive, byteArrayOf(80, 75, 1, 2)))
+    val repeated = ByteArray(entry.size * (ANDROID_CHAPTER_MEDIA_MAX_ENTRIES + 1))
+    for (index in 0..ANDROID_CHAPTER_MEDIA_MAX_ENTRIES) entry.copyInto(repeated, index * entry.size)
+    val temporary = File.createTempFile("repair-test", ".part")
+    try {
+      assertThrows(IllegalArgumentException::class.java) {
+        recoverAndroidChapterMediaStream(ByteArrayInputStream(repeated), listOf(
+          AndroidChapterMediaStoredFile("first.png", 1),
+        ), temporary) { _, _, _ -> throw AssertionError("An oversized stream must not publish an asset.") }
+      }
+    } finally {
+      temporary.delete()
+    }
+  }
+
+  @Test
+  fun omitsAmbiguousStreamEntriesWithoutPublishingEitherCopy() {
+    val duplicate = repairNamedArchiveFixture(listOf("first.png", "other.png", "last.png"))
+      .replaceAscii("other.png", "first.png")
+    val end = zipSignatureOffset(duplicate, byteArrayOf(80, 75, 1, 2))
+    val temporary = File.createTempFile("repair-test", ".part")
+    try {
+      val recovered = mutableMapOf<String, ByteArray>()
+      recoverAndroidChapterMediaStream(ByteArrayInputStream(duplicate.copyOf(end)), listOf(
+        AndroidChapterMediaStoredFile("first.png", 0),
+        AndroidChapterMediaStoredFile("last.png", 0),
+      ), temporary) { name, file, _ -> recovered[name] = file.readBytes() }
+      assertEquals(setOf("last.png"), recovered.keys)
+      assertArrayEquals(byteArrayOf(3), recovered["last.png"])
+    } finally {
+      temporary.delete()
+    }
+  }
+
+  @Test
+  fun omitsDuplicateCentralEntriesAndPreservesUnrelatedAssets() {
+    val duplicate = repairNamedArchiveFixture(listOf("first.png", "other.png", "last.png"))
+      .replaceAscii("other.png", "first.png")
+    val archiveFile = File.createTempFile("repair-test", ".zip")
+    val temporary = File.createTempFile("repair-test", ".part")
+    try {
+      archiveFile.writeBytes(duplicate)
+      val recovered = mutableSetOf<String>()
+      ZipFile(archiveFile).use { archive ->
+        recoverAndroidChapterMediaArchive(archive, listOf(
+          AndroidChapterMediaStoredFile("first.png", 0),
+          AndroidChapterMediaStoredFile("last.png", 0),
+        ), temporary) { name, _, _ -> recovered.add(name) }
+      }
+      assertEquals(setOf("last.png"), recovered)
+    } finally {
+      archiveFile.delete()
+      temporary.delete()
+    }
+  }
+
+  private fun ByteArray.replaceAscii(from: String, to: String): ByteArray {
+    require(from.length == to.length)
+    val result = clone()
+    val needle = from.toByteArray(Charsets.US_ASCII)
+    val replacement = to.toByteArray(Charsets.US_ASCII)
+    for (index in 0..result.size - needle.size) {
+      if (result.copyOfRange(index, index + needle.size).contentEquals(needle)) {
+        replacement.copyInto(result, index)
+      }
+    }
+    return result
+  }
+
+  private fun zipSignatureOffset(bytes: ByteArray, signature: ByteArray): Int =
+    (0..bytes.size - signature.size).first { index ->
+      bytes.copyOfRange(index, index + signature.size).contentEquals(signature)
+    }
+
+  private fun repairNamedArchiveFixture(names: List<String>): ByteArray {
+    val output = ByteArrayOutputStream()
+    ZipOutputStream(output).use { archive ->
+      names.forEachIndexed { index, name ->
+        val bytes = byteArrayOf((index + 1).toByte())
+        archive.putNextEntry(ZipEntry(name).apply {
+          method = ZipEntry.STORED
+          size = bytes.size.toLong()
+          crc = CRC32().apply { update(bytes) }.value
+        })
+        archive.write(bytes)
+        archive.closeEntry()
+      }
+    }
+    return output.toByteArray()
+  }
+
+  @Test
+  fun preservesValidNeighborsWhenOneArchiveEntryHasAnInvalidCrc() {
+    val original = repairArchiveFixture()
+    val corrupt = original.clone()
+    val payload = byteArrayOf(41, 42, 43, 44)
+    val offset = (0..corrupt.size - payload.size).first { index ->
+      corrupt.copyOfRange(index, index + payload.size).contentEquals(payload)
+    }
+    corrupt[offset] = 0
+    val archiveFile = File.createTempFile("repair-test", ".zip")
+    val temporary = File.createTempFile("repair-test", ".part")
+    try {
+      archiveFile.writeBytes(corrupt)
+      val recovered = mutableMapOf<String, ByteArray>()
+      ZipFile(archiveFile).use { archive ->
+        recoverAndroidChapterMediaArchive(archive, listOf(
+          AndroidChapterMediaStoredFile("first.png", 0),
+          AndroidChapterMediaStoredFile("broken.png", 4),
+          AndroidChapterMediaStoredFile("last.png", 3),
+          AndroidChapterMediaStoredFile("missing.png", 5),
+        ), temporary) { name, file, _ -> recovered[name] = file.readBytes() }
+      }
+      assertEquals(setOf("first.png", "last.png"), recovered.keys)
+      assertArrayEquals(byteArrayOf(1, 2, 3), recovered["first.png"])
+      assertArrayEquals(byteArrayOf(7, 8, 9), recovered["last.png"])
+      assertArrayEquals(corrupt, archiveFile.readBytes())
+    } finally {
+      archiveFile.delete()
+      temporary.delete()
+    }
+  }
+
+  @Test
+  fun salvagesCompleteEntriesWhenTheCentralDirectoryWasTruncated() {
+    val archive = repairArchiveFixture()
+    val end = (0..archive.size - 4).first { index ->
+      archive.copyOfRange(index, index + 4).contentEquals(byteArrayOf(80, 75, 1, 2))
+    }
+    val temporary = File.createTempFile("repair-test", ".part")
+    try {
+      val recovered = mutableMapOf<String, Long>()
+      recoverAndroidChapterMediaStream(ByteArrayInputStream(archive.copyOf(end)), listOf(
+        AndroidChapterMediaStoredFile("first.png", 3),
+        AndroidChapterMediaStoredFile("broken.png", 4),
+        AndroidChapterMediaStoredFile("last.png", 3),
+      ), temporary) { name, _, bytes -> recovered[name] = bytes }
+      assertEquals(mapOf("first.png" to 3L, "broken.png" to 4L, "last.png" to 3L), recovered)
+    } finally {
+      temporary.delete()
+    }
+  }
+
+  private fun repairArchiveFixture(): ByteArray {
+    val output = ByteArrayOutputStream()
+    ZipOutputStream(output).use { archive ->
+      for ((name, bytes) in listOf(
+        "first.png" to byteArrayOf(1, 2, 3),
+        "broken.png" to byteArrayOf(41, 42, 43, 44),
+        "last.png" to byteArrayOf(7, 8, 9),
+      )) {
+        archive.putNextEntry(ZipEntry(name).apply {
+          method = ZipEntry.STORED
+          size = bytes.size.toLong()
+          crc = CRC32().apply { update(bytes) }.value
+        })
+        archive.write(bytes)
+        archive.closeEntry()
+      }
+    }
+    return output.toByteArray()
+  }
+
   @Test
   fun validatesOnlyStoredManifestFilesAgainstLooseMedia() {
     val stored = androidChapterMediaStoredFiles(

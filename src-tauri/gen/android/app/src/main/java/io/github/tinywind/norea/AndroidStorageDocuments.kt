@@ -348,6 +348,9 @@ internal class AndroidStorageDocuments(private val context: Context) {
     }
   }
 
+  fun createChapterMediaRepairTempFile(): File =
+    File.createTempFile("chapter-media-repair-", ".tmp", context.cacheDir)
+
   fun storageReadFailureMessage(rootUri: String, relativePath: String): String {
     val document = runCatching { storageDocumentAt(rootUri, relativePath) }.getOrNull()
     val message = when {
