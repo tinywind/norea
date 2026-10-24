@@ -250,7 +250,7 @@ internal class AndroidStorageBridge(
     chapterDirectoryName: String,
     preferredContentFileName: String,
   ) {
-    storageExecutors.foreground.execute {
+    storageExecutors.scans.execute {
       resolveChapterArtifactInspection(
         requestId,
         inspectChapterArtifactsResponse(

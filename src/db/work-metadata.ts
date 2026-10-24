@@ -245,7 +245,7 @@ export async function initializeWorkMetadata(db: Database, options: {
     report();
     const previous = baselines.get(keyFor(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath));
     const downloadRevision = currentChapterDownloadRevision();
-    const chapters = await listStoredNovelChapters(entry.directory);
+    const chapters = await listStoredNovelChapters(entry.directory, options.signal);
     const restored = await run(async () => {
       checkCancelled();
       const current = knownFiles.get(keyFor(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath));

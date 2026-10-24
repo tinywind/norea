@@ -157,17 +157,18 @@ export interface StoredNovelChapter {
   mediaComplete: boolean;
 }
 
-export async function listStoredNovelChapters(directory: string): Promise<StoredNovelChapter[]> {
+export async function listStoredNovelChapters(directory: string, signal?: AbortSignal): Promise<StoredNovelChapter[]> {
+  throwIfAborted(signal, "Storage recovery cancelled.");
   const { paths = [] } = await workMetadataOperation({ operation: "chapters", path: `${directory}/novel.json` });
   const chapters: StoredNovelChapter[] = [];
   const seen = new Set<string>();
-  for (const path of paths) {
+  const inspect = async (path: string): Promise<StoredNovelChapter | null> => {
     if (!path.startsWith(`${directory}/`)) throw new Error("work metadata: invalid chapter location");
     const parts = path.slice(directory.length + 1).split("/");
     const [child, fileName] = parts;
     if (parts.length !== 2 || !safeMetadataChild(child!) || !["content.html", "content.pdf"].includes(fileName!)) throw new Error("work metadata: invalid chapter file");
     const match = /^(\d+(?:\.\d+)?)$/.exec(child!);
-    if (!match || String(Number(match[1])) !== child || seen.has(child!)) continue;
+    if (!match || String(Number(match[1])) !== child || seen.has(child!)) return null;
     seen.add(child!);
     const artifacts = await inspectChapterContentArtifacts({
       preferredChapterDir: `${directory}/${child}`,
@@ -176,9 +177,20 @@ export async function listStoredNovelChapters(directory: string): Promise<Stored
       chapterDirectoryName: child!,
       preferredContentFileName: fileName!,
     });
-    if (artifacts.status !== "present") continue;
-    chapters.push({ directory: child!, chapterNumber: match[1]!, name: match[1]!, contentType: artifacts.contentFile?.endsWith(".pdf") ? "pdf" : "html", mediaComplete: artifacts.mediaComplete === true });
+    if (artifacts.status !== "present") return null;
+    return { directory: child!, chapterNumber: match[1]!, name: match[1]!, contentType: artifacts.contentFile?.endsWith(".pdf") ? "pdf" : "html", mediaComplete: artifacts.mediaComplete === true };
+  };
+  for (let offset = 0; offset < paths.length; offset += 4) {
+    throwIfAborted(signal, "Storage recovery cancelled.");
+    // Drain native reads before cancellation or failure releases the recovery operation.
+    const results = await Promise.allSettled(paths.slice(offset, offset + 4).map(inspect));
+    throwIfAborted(signal, "Storage recovery cancelled.");
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+      if (result.value) chapters.push(result.value);
+    }
   }
+  throwIfAborted(signal, "Storage recovery cancelled.");
   return chapters.sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber) || a.directory.localeCompare(b.directory));
 }
 

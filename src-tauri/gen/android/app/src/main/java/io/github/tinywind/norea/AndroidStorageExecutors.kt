@@ -9,7 +9,7 @@ internal class AndroidStorageExecutors {
   val foreground = Executors.newSingleThreadExecutor { runnable ->
     Thread(runnable, "NoreaStorageBridge").apply { isDaemon = true }
   }
-  val scans = Executors.newSingleThreadExecutor { runnable ->
+  val scans = Executors.newFixedThreadPool(4) { runnable ->
     Thread(runnable, "NoreaStorageScan").apply {
       isDaemon = true
       priority = Thread.MIN_PRIORITY

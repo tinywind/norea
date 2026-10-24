@@ -38,7 +38,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
 import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories, storedNovelMetadataFingerprint } from "./work-metadata";
 import { withChapterDownloadDeletion, withChapterDownloadWrite } from "../lib/chapter-download-writes";
 import { adoptStoredChapterContentMetadata } from "./queries/chapter";
-import { installStoredNovelMetadata, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
+import { installStoredNovelMetadata, listStoredNovelChapters, listStoredNovelMetadata, persistNovelCover, subscribeWorkMetadataChanges, writeStoredNovelCover, writeStoredNovelMetadata, type NovelMetadataV1 } from "../lib/work-metadata";
 import { clearNovelCoverDisplayCache, getNovelCoverSnapshot, peekCachedNovelCoverSrc, persistCachedNovelCoverSource, resolveCachedNovelCoverSrc, subscribeNovelCoverChanges } from "../lib/novel-cover-storage";
 import * as http from "../lib/http";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "../lib/chapter-storage-path";
@@ -84,6 +84,57 @@ beforeEach(() => {
   });
 });
 afterEach(() => sqlite.close());
+
+it("inspects a bounded group of chapters concurrently and preserves ordered completeness", async () => {
+  const numbers = ["9", "2", "4", "1", "3", "5", "6", "7", "8"];
+  storage.chapters.set(path, numbers.map(number => `contents/source/book/${number}/content.html`));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let active = 0;
+  let peak = 0;
+  for (const number of numbers) {
+    mediaInspections.set(`contents/source/book/${number}`, number !== "2");
+    mediaInspectionHooks.set(`contents/source/book/${number}`, async () => {
+      active++; peak = Math.max(peak, active);
+      await gate;
+      active--;
+    });
+  }
+  const recovery = listStoredNovelChapters("contents/source/book");
+  try { await vi.waitFor(() => expect(active).toBe(4)); }
+  finally { release(); await recovery; }
+  expect(peak).toBe(4);
+  expect((await recovery).map(chapter => [chapter.chapterNumber, chapter.mediaComplete]))
+    .toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"].map(number => [number, number !== "2"]));
+});
+
+it.each(["cancel", "failure"])("drains in-flight chapter inspections before reporting %s", async (reason) => {
+  storage.chapters.set(path, Array.from({ length: 8 }, (_, index) => `contents/source/book/${index + 1}/content.html`));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let started = 0;
+  let finished = 0;
+  const controller = new AbortController();
+  for (let index = 1; index <= 8; index++) {
+    mediaInspectionHooks.set(`contents/source/book/${index}`, async () => {
+      started++;
+      if (reason === "failure" && index === 1) throw new Error("Unreadable archive");
+      await gate;
+      finished++;
+    });
+  }
+  let settled = false;
+  const recovery = listStoredNovelChapters("contents/source/book", controller.signal);
+  const outcome = recovery.then(() => { settled = true; return null; }, error => { settled = true; return error as Error; });
+  try {
+    await vi.waitFor(() => expect(started).toBe(4));
+    if (reason === "cancel") controller.abort();
+    expect(settled).toBe(false);
+  } finally { release(); await outcome; }
+  expect(started).toBe(4);
+  expect(finished).toBe(reason === "cancel" ? 4 : 3);
+  expect((await outcome)?.message).toBe(reason === "cancel" ? "Storage recovery cancelled." : "Unreadable archive");
+});
 
 it("keeps refreshed work details durable when a later server document omits them", async () => {
   await initializeWorkMetadata(db);

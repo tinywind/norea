@@ -10,6 +10,28 @@ import org.junit.Test
 
 class AndroidStorageExecutorsTest {
   @Test
+  fun fourFolderInspectionsRunTogetherWithoutBlockingForegroundStorage() {
+    val executors = AndroidStorageExecutors()
+    val started = CountDownLatch(4)
+    val release = CountDownLatch(1)
+    try {
+      val scans = (1..4).map {
+        executors.scans.submit { started.countDown(); release.await() }
+      }
+      assertTrue(started.await(2, TimeUnit.SECONDS))
+      val waiting = executors.scans.submit<String> { "fifth" }
+      assertTrue(!waiting.isDone)
+      assertEquals("read", executors.foreground.submit<String> { "read" }.get(1, TimeUnit.SECONDS))
+      release.countDown()
+      scans.forEach { it.get(5, TimeUnit.SECONDS) }
+      assertEquals("fifth", waiting.get(5, TimeUnit.SECONDS))
+    } finally {
+      release.countDown()
+      executors.destroy()
+    }
+  }
+
+  @Test
   fun foregroundStorageCompletesWhileFolderScanIsBlocked() {
     val executors = AndroidStorageExecutors()
     val scanStarted = CountDownLatch(1)
