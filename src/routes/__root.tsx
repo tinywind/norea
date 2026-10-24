@@ -10,6 +10,7 @@ import {
 import { PageSlot } from "../components/PageSlot";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
+import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { startAndroidBackNavigationBridge } from "../lib/android-back-navigation";
 import { startAndroidFileOpenListener } from "../lib/android-file-open";
@@ -657,6 +658,7 @@ export function RootLayout() {
       </nav>
       <SiteBrowserOverlay />
       <TaskNotifications />
+      <ContentDeletionDialog />
     </AppShell>
   );
 }

@@ -35,7 +35,7 @@ import {
   loadDownloadCacheNovels,
 } from "../lib/download-cache-loaders";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
-import { deleteDownloadCache } from "../lib/tasks/download-cache-delete";
+import { confirmContentDeletion } from "../store/content-deletion";
 import { describeError } from "../lib/errors";
 import { pluginManager } from "../lib/plugins/manager";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
@@ -227,9 +227,9 @@ function DownloadCacheChapters({
   });
   const deleteChapter = useMutation({
     mutationFn: (chapter: DownloadCacheChapter) =>
-      deleteDownloadCache({
-        scope: "chapter",
-        targetIds: [chapter.id],
+      confirmContentDeletion({
+        kind: "downloads", scope: "chapter",
+        ids: [chapter.id],
         title: t("tasks.task.deleteDownloadCacheChapter", {
           name: chapter.name,
         }),
@@ -294,11 +294,6 @@ function DownloadCacheChapters({
             repairChapter.variables?.id === chapter.id
           }
           onDelete={() => {
-            if (!window.confirm(t("downloads.deleteChapterConfirm", {
-              name: chapter.name,
-            }))) {
-              return;
-            }
             deleteChapter.mutate(chapter);
           }}
           onRepair={() => repairChapter.mutate(chapter)}
@@ -339,9 +334,9 @@ function DownloadCacheNovelCard({
   );
   const deleteNovel = useMutation({
     mutationFn: (novelId: number) =>
-      deleteDownloadCache({
-        scope: "novel",
-        targetIds: [novelId],
+      confirmContentDeletion({
+        kind: "downloads", scope: "novel",
+        ids: [novelId],
         title: t("tasks.task.deleteDownloadCacheNovel", {
           name: novel.novelName,
         }),
@@ -457,13 +452,6 @@ function DownloadCacheNovelCard({
             disabled={novelDeleting}
             label={t("downloads.deleteNovel", { name: novel.novelName })}
             onClick={() => {
-              if (!window.confirm(t("downloads.deleteNovelConfirm", {
-                count: novel.chaptersDownloaded,
-                name: novel.novelName,
-                size,
-              }))) {
-                return;
-              }
               deleteNovel.mutate(novel.novelId);
             }}
             size="lg"
@@ -516,8 +504,8 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
   const deleteAll = useMutation({
     mutationFn: () =>
-      deleteDownloadCache({
-        scope: "all",
+      confirmContentDeletion({
+        kind: "downloads", scope: "all",
         title: t("tasks.task.deleteDownloadCache"),
       }),
     onSettled: () => invalidateDownloadCache(queryClient),
@@ -590,12 +578,6 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               disabled={rows.length === 0 || deleteAll.isPending}
               label={t("downloads.deleteAll")}
               onClick={() => {
-                if (!window.confirm(t("downloads.deleteAllConfirm", {
-                  chapters: totals.chapters,
-                  size: totalSize,
-                }))) {
-                  return;
-                }
                 deleteAll.mutate();
               }}
               size="lg"

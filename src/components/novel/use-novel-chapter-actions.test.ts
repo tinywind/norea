@@ -31,8 +31,8 @@ vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadSta
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownload: vi.fn(), enqueueChapterDownloadBatch: vi.fn(), enqueueChapterMediaRepair: vi.fn(),
 }));
-vi.mock("../../lib/tasks/download-cache-delete", () => ({
-  deleteDownloadCache: mocks.deleteCache,
+vi.mock("../../store/content-deletion", () => ({
+  confirmContentDeletion: mocks.deleteCache,
 }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 
@@ -57,8 +57,8 @@ it.each([
   const pending = mutation.mutationFn(input).then(settled);
   await Promise.resolve();
   expect(settled).not.toHaveBeenCalled();
-  expect(mocks.deleteCache).toHaveBeenCalledWith(expect.objectContaining({ scope: "chapter", targetIds: expectedIds }));
-  const result = { workId: "delete-7", total: expectedIds.length, deleted: expectedIds.length, failed: 0, cancelled: false };
+  expect(mocks.deleteCache).toHaveBeenCalledWith(expect.objectContaining({ kind: "downloads", scope: "chapter", ids: expectedIds }));
+  const result = true;
   complete(result);
   await pending;
   expect(settled).toHaveBeenCalledWith(result);

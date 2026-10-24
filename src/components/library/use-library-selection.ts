@@ -8,14 +8,13 @@ import {
 } from "../../db/queries/chapter";
 import {
   getNovelById,
-  setNovelInLibrary,
   type LibraryNovel,
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { describeError } from "../../lib/errors";
 import { enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
-import { deleteDownloadCache } from "../../lib/tasks/download-cache-delete";
+import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
 import { useReaderStore } from "../../store/reader";
 import {
@@ -144,12 +143,12 @@ export function useLibrarySelection(
 
   const deleteSelectedDownloadsMutation = useMutation({
     mutationFn: (novelIds: readonly number[]) =>
-      deleteDownloadCache({
-        scope: "novel",
-        targetIds: novelIds,
+      confirmContentDeletion({
+        kind: "downloads", scope: "novel",
+        ids: novelIds,
         title: t("tasks.task.deleteDownloadCache"),
       }),
-    onSuccess: () => setSelectedIds(new Set()),
+    onSuccess: changed => { if (changed) setSelectedIds(new Set()); },
     onSettled: () => {
       invalidateLibraryCategories();
       void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
@@ -164,12 +163,9 @@ export function useLibrarySelection(
   });
 
   const removeSelectedFromLibraryMutation = useMutation({
-    mutationFn: async (novelIds: readonly number[]) => {
-      for (const novelId of novelIds) {
-        await setNovelInLibrary(novelId, false);
-      }
-    },
-    onSuccess: () => {
+    mutationFn: (novelIds: readonly number[]) => confirmContentDeletion({ kind: "library", ids: novelIds, title: t("library.removeSelectedFromLibrary") }),
+    onSuccess: changed => {
+      if (!changed) return;
       setSelectedIds(new Set());
       invalidateLibraryCategories();
       void queryClient.invalidateQueries({ queryKey: ["download-cache"] });

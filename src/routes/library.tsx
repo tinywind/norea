@@ -462,16 +462,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                         : t("library.deleteSelectedDownloadsUnavailable")
                     }
                     onClick={() => {
-                      if (
-                        !window.confirm(
-                          t("library.deleteSelectedDownloadsConfirm", {
-                            chapters: selectedDownloadedChapterCount,
-                            count: selectedIds.size,
-                          }),
-                        )
-                      ) {
-                        return;
-                      }
                       deleteSelectedDownloadsMutation.mutate(selectedNovelIds);
                     }}
                     size="sm"
@@ -496,15 +486,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     }
                     label={t("library.removeSelectedFromLibrary")}
                     onClick={() => {
-                      if (
-                        !window.confirm(
-                          t("library.removeSelectedFromLibraryConfirm", {
-                            count: selectedIds.size,
-                          }),
-                        )
-                      ) {
-                        return;
-                      }
                       removeSelectedFromLibraryMutation.mutate(
                         selectedNovelIds,
                       );

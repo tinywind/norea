@@ -36,7 +36,7 @@ vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownloadBatch: mocks.enqueue,
   isChapterDownloadQueued: (id: number) => mocks.queued.has(id),
 }));
-vi.mock("../../lib/tasks/download-cache-delete", () => ({ deleteDownloadCache: vi.fn() }));
+vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn() }));
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: {} }) } }));
 vi.mock("./use-library-download-availability", () => ({ useLibraryDownloadAvailability: mocks.availability }));
 import { useLibrarySelection } from "./use-library-selection";

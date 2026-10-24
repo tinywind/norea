@@ -14,7 +14,7 @@ import {
   enqueueChapterDownloadBatch,
   enqueueChapterMediaRepair,
 } from "../../lib/tasks/chapter-download";
-import { deleteDownloadCache } from "../../lib/tasks/download-cache-delete";
+import { confirmContentDeletion } from "../../store/content-deletion";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { chaptersKey } from "./novel-detail-model";
 
@@ -46,9 +46,9 @@ export function useNovelChapterActions(
   const clearDownload = useMutation({
     mutationFn: async (chapterId: number) => {
       const chapter = chapters.find((row) => row.id === chapterId);
-      return deleteDownloadCache({
-        scope: "chapter",
-        targetIds: [chapterId],
+      return confirmContentDeletion({
+        kind: "downloads", scope: "chapter",
+        ids: [chapterId],
         title: t("tasks.task.deleteDownloadCacheChapter", {
           name: chapter?.name ?? String(chapterId),
         }),
@@ -63,9 +63,9 @@ export function useNovelChapterActions(
       const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
         (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
       );
-      return deleteDownloadCache({
-        scope: "chapter",
-        targetIds: uniqueChapterIds,
+      return confirmContentDeletion({
+        kind: "downloads", scope: "chapter",
+        ids: uniqueChapterIds,
         title: t("tasks.task.deleteDownloadCache"),
       });
     },

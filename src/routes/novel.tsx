@@ -516,15 +516,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                         : t("novel.selection.deleteDownloadsUnavailable")
                     }
                     onClick={() => {
-                      if (
-                        !window.confirm(
-                          t("novel.selection.deleteDownloadsConfirm", {
-                            count: selectedDownloadedChapterIds.length,
-                          }),
-                        )
-                      ) {
-                        return;
-                      }
                       clearSelectedDownloads.mutate(
                         selectedDownloadedChapterIds,
                       );

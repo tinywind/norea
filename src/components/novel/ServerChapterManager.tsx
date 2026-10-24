@@ -1,14 +1,14 @@
 import { Alert, Badge, Group, Loader, Modal, Pagination, Stack, Text } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { usePageBackNavigation } from "../../lib/android-back-navigation";
-import type { ServerChapterPage } from "../../lib/content-sync/chapters";
-import { deleteSelectedServerChapters, findServerWork, loadServerChapterPage } from "../../lib/content-sync/management";
+import type { ServerChapterPage, ServerChapterSummary } from "../../lib/content-sync/chapters";
+import { findServerWork, loadServerChapterPage } from "../../lib/content-sync/management";
 import type { ServerNovelSource } from "../../lib/content-sync/novel-source";
 import { describeError } from "../../lib/errors";
+import { confirmContentDeletion } from "../../store/content-deletion";
 import { useContentSyncStore } from "../../store/content-sync";
 import { StateView } from "../AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
@@ -50,7 +50,6 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
-  const [confirmation, setConfirmation] = useState<readonly string[] | null>(null);
   const [workDeletionActive, setWorkDeletionActive] = useState(false);
   const queryKey = ["content-server", source.serverUrl, "managed-chapters", source.workId];
   const chapters = useQuery({
@@ -62,10 +61,9 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const rows = chapters.data?.items ?? [];
   const selectedIds = rows.filter(chapter => selected.has(chapter.id)).map(chapter => chapter.id);
   const remove = useMutation({
-    mutationFn: (ids: readonly string[]) => deleteSelectedServerChapters(source, ids),
-    onSuccess: () => notifications.show({ message: t("contentSync.serverDeleteDone") }),
-    onSettled: async () => {
-      setConfirmation(null);
+    mutationFn: (selectedChapters: readonly ServerChapterSummary[]) => confirmContentDeletion({ kind: "server-chapters", source, title: name, chapters: selectedChapters }),
+    onSuccess: async changed => {
+      if (!changed) return;
       setSelected(new Set());
       await Promise.all([
         queryClient.invalidateQueries({ queryKey }),
@@ -79,8 +77,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   usePageBackNavigation(() => {
     if (workDeletionActive) return false;
     if (remove.isPending) return true;
-    if (confirmation) setConfirmation(null);
-    else onClose();
+    onClose();
     return true;
   });
   const busy = remove.isPending || workDeletionActive;
@@ -91,7 +88,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const close = () => { if (!busy) onClose(); };
   return <Modal opened onClose={close} fullScreen title={t("contentSync.manageChapters")}
     classNames={{ inner: "norea-server-management-modal", content: "norea-server-management-dialog" }}
-    closeOnEscape={!confirmation && !busy} withCloseButton={!busy}>
+    closeOnEscape={!busy} withCloseButton={!busy}>
     <Stack className="norea-server-management" gap="md">
       <ConsoleSectionHeader title={name} eyebrow={t("contentSync.manageChapters")}
         actions={<TextButton onClick={close} disabled={busy}>{t("contentSync.backToWork")}</TextButton>} />
@@ -101,7 +98,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
             <Text className="norea-server-address" size="sm" c="dimmed">{source.serverUrl}</Text></Group>
           <Text size="sm">{t("contentSync.manageChaptersHint")}</Text>
           <Group>
-            <ServerWorkDeleteButton source={source} name={name} disabled={remove.isPending || confirmation !== null}
+            <ServerWorkDeleteButton source={source} name={name} disabled={remove.isPending}
               onOpenChange={setWorkDeletionActive} onDeleted={onClose} />
           </Group>
         </Stack>
@@ -115,7 +112,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
             <TextButton size="sm" disabled={unavailable || !rows.length} onClick={() => setSelected(new Set(rows.map(chapter => chapter.id)))}>{t("contentSync.selectPage")}</TextButton>
             <TextButton size="sm" disabled={busy || !selectedIds.length} onClick={() => setSelected(new Set())}>{t("novel.selection.clearSelected")}</TextButton>
             <TextButton size="sm" tone="danger" disabled={unavailable || !selectedIds.length} loading={remove.isPending}
-              onClick={() => setConfirmation(selectedIds)}>{t("contentSync.deleteSelectedServer", { count: selectedIds.length })}</TextButton>
+              onClick={() => remove.mutate(rows.filter(chapter => selected.has(chapter.id)))}>{t("contentSync.deleteSelectedServer", { count: selectedIds.length })}</TextButton>
           </Group>
         </div>
         {error ? <Alert color="red" title={t("common.actionFailed")}>{describeError(error)}</Alert> : null}
@@ -134,18 +131,6 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
           <Pagination value={page} total={Math.max(page, Math.ceil((chapters.data?.total ?? 0) / 100))} onChange={changePage} disabled={unavailable} siblings={0} boundaries={1} />
         </Group> : null}
       </ConsolePanel>
-      <Modal opened={confirmation !== null} onClose={() => { if (!remove.isPending) setConfirmation(null); }}
-        title={t("contentSync.deleteServer")} centered closeOnClickOutside={!remove.isPending} closeOnEscape={!remove.isPending} withCloseButton={!remove.isPending}>
-        <Stack>
-          <Text>{t("contentSync.deleteSelectedConfirm", { count: confirmation?.length ?? 0, name })}</Text>
-          <Text size="sm" c="dimmed" className="norea-server-address">{source.serverUrl}</Text>
-          <Group justify="flex-end">
-            <TextButton disabled={remove.isPending} onClick={() => setConfirmation(null)}>{t("common.cancel")}</TextButton>
-            <TextButton tone="danger" loading={remove.isPending} disabled={!confirmation?.length}
-              onClick={() => { if (confirmation?.length) remove.mutate(confirmation); }}>{t("contentSync.deleteServer")}</TextButton>
-          </Group>
-        </Stack>
-      </Modal>
     </Stack>
   </Modal>;
 }

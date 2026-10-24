@@ -36,10 +36,10 @@ import {
 import { TextButton } from "../components/TextButton";
 import { VpnGateServerVerdictControl } from "../components/VpnGateServerVerdictControl";
 import {
-  clearLibraryMembership,
   clearReadingProgress,
   clearUpdatesTab,
 } from "../db/queries/maintenance";
+import { listLibraryNovels } from "../db/queries/novel";
 import {
   listVpnGateServerVerdicts,
   setVpnGateServerVerdict,
@@ -74,7 +74,6 @@ import {
 } from "../lib/plugin-vpn";
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
-import { deleteDownloadCache } from "../lib/tasks/download-cache-delete";
 import type { MainTaskKind } from "../lib/tasks/scheduler";
 import {
   checkDevUpdate,
@@ -105,6 +104,7 @@ import {
   useAppearanceStore,
 } from "../store/appearance";
 import { useBrowseStore } from "../store/browse";
+import { confirmContentDeletion } from "../store/content-deletion";
 import { useLibraryStore } from "../store/library";
 import { LOG_LEVELS, type LogLevel, useLoggingStore } from "../store/logging";
 import { usePluginVpnStore } from "../store/plugin-vpn";
@@ -1158,6 +1158,7 @@ function AppSettingsSection({ isBusy }: { isBusy: boolean }) {
 
 function DataSettingsSection({
   isBusy,
+  onClearLibrary,
   onClearDownloadedContent,
   onClearWebViewCache,
   onExport,
@@ -1165,6 +1166,7 @@ function DataSettingsSection({
   onRunMaintenance,
 }: {
   isBusy: boolean;
+  onClearLibrary: () => void;
   onClearDownloadedContent: () => void;
   onClearWebViewCache: () => void;
   onExport: () => void;
@@ -1269,17 +1271,7 @@ function DataSettingsSection({
             variant="default"
             tone="danger"
             onClick={() => {
-              onRunMaintenance(
-                "maintenance.clearLibraryMembership",
-                t("settings.data.libraryMembership.button"),
-                t("settings.data.libraryMembership.busy"),
-                t("settings.data.libraryMembership.warning"),
-                clearLibraryMembership,
-                (rowsAffected) =>
-                  t("settings.data.libraryMembership.done", {
-                    count: rowsAffected,
-                  }),
-              );
+              onClearLibrary();
             }}
           >
             {t("settings.data.libraryMembership.button")}
@@ -1932,14 +1924,6 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
         markUpdatesIndexDirty("updates-cleared");
       }
       if (
-        kind === "maintenance.clearLibraryMembership" &&
-        result.rowsAffected > 0
-      ) {
-        markUpdatesIndexDirty("library-membership");
-        void queryClient.invalidateQueries({ queryKey: ["category"] });
-        void queryClient.invalidateQueries({ queryKey: ["novel"] });
-      }
-      if (
         kind === "maintenance.clearReadingProgress" &&
         result.rowsAffected > 0
       ) {
@@ -1965,37 +1949,38 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     }
   }
 
+  async function clearLibrary(): Promise<void> {
+    const kind = "maintenance.clearLibraryMembership";
+    const title = t("settings.data.libraryMembership.button");
+    setBusyAction(kind);
+    try {
+      const novels = await listLibraryNovels();
+      await confirmContentDeletion({
+        kind: "library",
+        ids: novels.map((novel) => novel.id),
+        title,
+      });
+    } catch (error) {
+      showSettingsToast(
+        "red",
+        title,
+        t("settings.data.maintenanceFailed", {
+          error: describeError(error),
+        }),
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function clearDownloadedContent(): Promise<void> {
     const kind = "maintenance.clearDownloadedContent";
     const title = t("settings.data.downloadedContent.button");
-    if (!window.confirm(t("settings.data.downloadedContent.warning"))) {
-      return;
-    }
     setBusyAction(kind);
-    showSettingsLoadingToast(
-      kind,
-      title,
-      t("settings.data.downloadedContent.busy"),
-    );
     try {
-      const result = await deleteDownloadCache({
-        scope: "all",
-        title: t("tasks.task.deleteDownloadCache"),
-      });
-      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
-      void queryClient.invalidateQueries({ queryKey: ["chapter"] });
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
-      updateSettingsToast(
-        kind,
-        "green",
-        title,
-        t("settings.data.downloadedContent.done", {
-          count: result.deleted,
-        }),
-      );
+      await confirmContentDeletion({ kind: "downloads", scope: "all", title });
     } catch (error) {
-      updateSettingsToast(
-        kind,
+      showSettingsToast(
         "red",
         title,
         t("settings.data.maintenanceFailed", {
@@ -2086,6 +2071,9 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       content: (
         <DataSettingsSection
           isBusy={isBusy}
+          onClearLibrary={() => {
+            void clearLibrary();
+          }}
           onClearDownloadedContent={() => {
             void clearDownloadedContent();
           }}

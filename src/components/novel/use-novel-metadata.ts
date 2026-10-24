@@ -4,6 +4,7 @@ import {
   setNovelInLibrary,
   type NovelDetailRecord,
 } from "../../db/queries/novel";
+import { confirmContentDeletion } from "../../store/content-deletion";
 import { useTranslation } from "../../i18n";
 import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { saveNovelCoverFromSource } from "../../lib/novel-cover-storage";
@@ -42,7 +43,11 @@ export function useNovelMetadata(
   const toggle = useMutation({
     mutationFn: async () => {
       if (!novel) return;
-      const inLibrary = !novel.inLibrary;
+      if (novel.inLibrary) {
+        await confirmContentDeletion({ kind: "library", ids: [novel.id], title: novel.name });
+        return;
+      }
+      const inLibrary = true;
       const serverSource = inLibrary ? await readServerNovelSource(novel.id) : null;
       await setNovelInLibrary(novel.id, inLibrary);
       return { inLibrary, novel, serverSource };
