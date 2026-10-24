@@ -12,7 +12,7 @@ vi.mock("./native", () => ({
   withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
   withContentChapterStage: (input: unknown, run: (stagePath: string) => Promise<unknown>) => { native.stage(input); return run("snapshot"); },
 }));
-vi.mock("./works", () => ({ syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0), contentWorkId: vi.fn(async () => "work-id") }));
+vi.mock("./works", () => ({ recordDeletedWorkMetadata: vi.fn(async (server, entry) => recordServerWorkDeletionExclusion(server, entry.metadata.identity)), syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0), contentWorkId: vi.fn(async () => "work-id") }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => "Test device") }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
@@ -20,10 +20,11 @@ import { contentJournalHead, readContentJournal, listContentSyncChapters, listCo
 import { uploadContentChapter, fingerprintContentChapter } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
 import { runContentSyncOperation, syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
-import { setServerChapterDeletionExclusion } from "./deletion-exclusions";
+import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { ContentServerError } from "./client";
+import { deleteServerWork } from "./management";
 import { beginChapterDownloadQueueWrite } from "../tasks/chapter-download-activity";
 
 const memory = new Map<string, string>();
@@ -71,6 +72,64 @@ it("uploads the plugin novel ID in the manifest and numeric directory without de
       pluginId: "p", novelId: "literal-42", novelPath: "/source-route?book=42", chapterPath: "/chapter/side-story",
     } }),
   }));
+});
+
+it("reconciles an upload rejected before the concurrent DELETE response arrives", async () => {
+  const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "/chapter/1",
+    chapterNumber: "1", position: 1, novelName: "Novel", chapterName: "Chapter", isDownloaded: true, mediaRepairNeeded: false };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  let release!: () => void;
+  let started!: () => void;
+  const requestStarted = new Promise<void>(resolve => { started = resolve; });
+  const response = new Promise<void>(resolve => { release = resolve; });
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation(async (url, init) => {
+    if (init?.method === "DELETE") {
+      started(); await response;
+      return Response.json({ id: "work-id", deleted: true, metadata: { identity: { pluginId: "p", novelId: "n", novelPath: "/work" } } });
+    }
+    return original(url, init);
+  });
+  let deletion: Promise<unknown> | undefined;
+  vi.mocked(uploadContentChapter).mockImplementationOnce(async () => {
+    deletion = deleteServerWork({ serverUrl: "http://localhost:7788", workId: "work-id" });
+    await requestStarted;
+    throw new ContentServerError(409);
+  });
+  const syncing = syncContentServer(true, true).catch(error => error);
+  await requestStarted;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  release(); await deletion;
+  expect(await syncing).toBeUndefined();
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "idle", error: null });
+  expect(JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!).pendingUploads).toEqual([]);
+});
+
+it.each(["lookup", "snapshot", "upload"])("removes a work deleted during %s from the active upload queue and continues other works", async phase => {
+  const rows = [1, 2, 3].map(chapterId => ({ chapterId, novelId: chapterId === 3 ? 2 : 1, pluginId: "p", sourceNovelId: chapterId === 3 ? "other" : "n",
+    novelPath: chapterId === 3 ? "/other" : "/work", chapterPath: `/chapter/${chapterId}`, chapterNumber: String(chapterId), position: chapterId,
+    novelName: "Novel", chapterName: `Chapter ${chapterId}`, isDownloaded: true, mediaRepairNeeded: false }));
+  vi.mocked(listContentSyncChapters).mockResolvedValue(rows as never);
+  const remove = () => recordServerWorkDeletionExclusion("http://localhost:7788", { pluginId: "p", novelId: "n" });
+  if (phase === "lookup") {
+    const original = vi.mocked(appFetch).getMockImplementation()!;
+    vi.mocked(appFetch).mockImplementation(async (url, init) => {
+      if (String(url).includes("/catalog/chapter?") && new URL(String(url)).searchParams.get("chapterPath") === "/chapter/1") await remove();
+      return original(url, init);
+    });
+  } else if (phase === "snapshot") {
+    vi.mocked(fingerprintContentChapter).mockImplementationOnce(async () => { await remove(); return "snapshot"; });
+  } else {
+    vi.mocked(uploadContentChapter).mockImplementationOnce(async () => { await remove(); throw new Error("content sync: server returned 409: Work deleted"); });
+  }
+  await syncContentServer(true, true);
+  expect(vi.mocked(uploadContentChapter).mock.calls.map(([input]) => input.chapterId)).toEqual(phase === "upload" ? [1, 3] : [3]);
+  const saved = JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!);
+  expect(saved.pendingUploads).toEqual([]);
+  expect(saved.downloads['["p","/work","/chapter/1"]']).toBeUndefined();
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "idle", error: null, progress: { failed: 0 } });
+  await syncContentServer(true, true);
+  expect(vi.mocked(uploadContentChapter).mock.calls.filter(([input]) => input.chapterId === 2)).toHaveLength(0);
 });
 
 it("skips local snapshots and uploads when a complete server chapter exists", async () => {

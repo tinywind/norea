@@ -5,7 +5,7 @@ import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/co
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
 import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
-import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion, serverWorkDeletionKey } from "./deletion-exclusions";
+import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion, serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
 export interface WorkCatalogEntry { id: string; sequence: number; metadata: NovelMetadataV1; hasCover: boolean; deleted?: boolean }
 interface WorkCatalogPage { items: WorkCatalogEntry[]; cursor: number; hasMore: boolean }
@@ -21,7 +21,7 @@ function matchesSyncedWork(cache: WorkSyncCache, id: string, file: WorkMetadataS
 }
 
 export async function canPullWorkMetadata(server: string, file: WorkMetadataSyncFile | null, fingerprint: string): Promise<boolean> {
-  if (!file) return false;
+  if (!file || (await readServerWorkDeletionExclusions(server)).has(file.directory)) return false;
   return matchesSyncedWork(await readCache(server), await contentWorkId({ pluginId: file.pluginId, novelPath: file.path }), file, fingerprint);
 }
 
@@ -67,11 +67,6 @@ export async function recordDeletedWorkMetadata(server: string, entry: WorkCatal
     throw new Error("Server work deletion does not match its metadata.");
   }
   await recordServerWorkDeletionExclusion(server, metadata.identity);
-  const cache = await readCache(server);
-  cache.deleted[entry.id] = true;
-  delete cache.fingerprints[entry.id];
-  delete cache.fileVersions[identityKey(metadata.identity)];
-  await saveCache(server, cache);
 }
 
 async function rememberInstalledWork(cache: WorkSyncCache, stored: InstalledNovelMetadata, hasServerCover: boolean): Promise<void> {
@@ -86,6 +81,7 @@ async function rememberInstalledWork(cache: WorkSyncCache, stored: InstalledNove
 export async function recordInstalledWorkMetadata(server: string, stored: InstalledNovelMetadata, hasServerCover: boolean): Promise<void> {
   const cache = await readCache(server);
   await rememberInstalledWork(cache, stored, hasServerCover);
+  if ((await readServerWorkDeletionExclusions(server)).has(serverWorkDeletionKey(stored.metadata.identity))) return;
   await saveCache(server, cache);
 }
 
@@ -106,16 +102,23 @@ async function coverRequest(server: string, id: string, token: string, body?: Ui
 }
 
 export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<ReadonlySet<string>> {
-  return runWorkMetadataSyncOperation(server, () => performWorkMetadataSync(server, token, upload, assertCurrent, rescan));
+  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, excluded => performWorkMetadataSync(server, token, upload, assertCurrent, rescan, excluded)));
 }
 
-async function performWorkMetadataSync(server: string, token: string, upload: boolean, assertCurrent: () => void, rescan: boolean): Promise<ReadonlySet<string>> {
+async function performWorkMetadataSync(server: string, token: string, upload: boolean, assertCurrent: () => void, rescan: boolean, explicitDeletions: ReadonlySet<string>): Promise<ReadonlySet<string>> {
   assertCurrent();
   let installed = false;
   const cache = await readCache(server);
-  const explicitDeletions = await readServerWorkDeletionExclusions(server);
+  const knownWorks = new Map<string, { directory: string; identity: string }>();
   let dirty = false;
   const checkpoint = async () => {
+    for (const [id, work] of knownWorks) {
+      if (!explicitDeletions.has(work.directory)) continue;
+      cache.deleted[id] = true;
+      delete cache.fingerprints[id];
+      delete cache.fileVersions[work.identity];
+      dirty = true;
+    }
     if (!dirty) return;
     await saveCache(server, cache);
     dirty = false;
@@ -151,6 +154,8 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       if (await contentWorkId(metadata.identity) !== entry.id) throw new Error("Server work identity does not match its metadata.");
       dirty = true;
       const identity = identityKey(metadata.identity);
+      await waitForServerWorkDeletion(server, entry.id);
+      knownWorks.set(entry.id, { identity, directory: serverWorkDeletionKey(metadata.identity) });
       if (entry.deleted || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) {
         cache.deleted[entry.id] = true;
         delete cache.fingerprints[entry.id];
@@ -168,6 +173,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       let cover: Uint8Array | null;
       try { cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null; }
       catch (error) {
+        if (explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) continue;
         if (error instanceof ContentServerError && error.status === 404) {
           try { await contentServerRequest<WorkCatalogEntry>(server, `/works/${entry.id}`, token); }
           catch (currentError) {
@@ -181,6 +187,8 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         }
         throw error;
       }
+      await waitForServerWorkDeletion(server, entry.id);
+      if (explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) continue;
       const installedMetadata = mergeIncomingNovelMetadata(current?.metadata, metadata);
       assertCurrent();
       const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
@@ -189,11 +197,11 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         continue;
       }
       const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest, db) => {
-        if (!isCurrent()) return false;
+        if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) return false;
         const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
         if (!isCurrent() || latestFingerprint !== expectedFingerprint) return false;
         const latestFile = await readWorkMetadataSyncFile(metadata.identity, db);
-        if (!isCurrent() || workMetadataFileVersion(latestFile) !== workMetadataFileVersion(file)) return false;
+        if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity)) || workMetadataFileVersion(latestFile) !== workMetadataFileVersion(file)) return false;
       });
       assertCurrent();
       if (!stored) continue;
@@ -207,10 +215,10 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
     if (!upload) return new Set(Object.keys(cache.deleted));
     let uploaded = 0;
     for (const [identity, file] of byIdentity) {
-      if (explicitDeletions.has(file.directory)) continue;
       const version = workMetadataFileVersion(file)!;
       const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
-      if (cache.deleted[id] && !rescan) continue;
+      knownWorks.set(id, { identity, directory: file.directory });
+      if (explicitDeletions.has(file.directory) || (cache.deleted[id] && !rescan)) continue;
       if (!rescan && cache.fileVersions[identity] === version) continue;
       const latest = await readStoredNovelMetadata(file.directory);
       if (!latest) { cache.fileVersions[identity] = version; dirty = true; continue; }
@@ -223,21 +231,29 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         throw new Error("work metadata: file changed outside the cache; refresh from the source before uploading");
       }
       assertCurrent();
+      await waitForServerWorkDeletion(server, id);
+      if (explicitDeletions.has(file.directory)) continue;
       try {
         await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", metadata);
+        assertCurrent();
+        await waitForServerWorkDeletion(server, id);
+        if (explicitDeletions.has(file.directory)) continue;
+        if (cover) await coverRequest(server, id, token, cover, metadata.cover?.contentType);
       } catch (error) {
-        if (error instanceof ContentServerError && error.status === 410) { cache.deleted[id] = true; dirty = true; continue; }
+        await waitForServerWorkDeletion(server, id);
+        if (explicitDeletions.has(file.directory) || (error instanceof ContentServerError && error.status === 410)) { cache.deleted[id] = true; dirty = true; continue; }
         throw error;
       }
       assertCurrent();
-      if (cover) await coverRequest(server, id, token, cover, metadata.cover?.contentType);
-      assertCurrent();
+      await waitForServerWorkDeletion(server, id);
+      if (explicitDeletions.has(file.directory)) continue;
       cache.fingerprints[id] = current;
       delete cache.deleted[id];
       cache.fileVersions[identity] = version;
       dirty = true;
       if (++uploaded % 25 === 0) await checkpoint();
     }
+    await checkpoint();
     return new Set(Object.keys(cache.deleted));
   } finally {
     await checkpoint();

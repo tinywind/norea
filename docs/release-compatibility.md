@@ -91,6 +91,12 @@ compatibility requirements must be decided explicitly before implementation.
   changing the database schema. Whole-device work deletion removes its reader
   state and source association; a source refresh started before deletion cannot
   recreate that work. Partial deletion retries retain completed targets.
+  Server work deletion bypasses the full synchronization queue. Active metadata
+  and chapter transfers recheck the deletion before publishing results or starting
+  another upload; unrelated works continue. A pending deletion is reconciled even
+  when its upload rejection arrives first. Late server responses cannot reinstall
+  explicitly deleted works. Deletion exclusions are saved separately from the
+  active sync checkpoint so its cursor and completed baselines are retained.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.

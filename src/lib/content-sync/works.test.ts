@@ -73,6 +73,35 @@ beforeEach(() => {
   });
 });
 
+it.each(["metadata", "cover"])("keeps a work deleted during its %s upload excluded while synchronizing another work", async phase => {
+  const removed = metadata();
+  const kept = { ...metadata("Other work"), identity: { pluginId: "example", novelId: "other", novelPath: "/other" } };
+  local = [{ directory: "contents/example/book", metadata: removed }, { directory: "contents/example/other", metadata: kept }];
+  const id = await contentWorkId(removed.identity);
+  const original = vi.mocked(nativeFetch).getMockImplementation()!;
+  let deleted = false;
+  vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    const result = await original(input, init);
+    if (!deleted && init?.method === "PUT" && url.pathname === `/api/v1/works/${id}${phase === "cover" ? "/cover" : ""}`) {
+      deleted = true;
+      await recordDeletedWorkMetadata("http://server", { id, sequence: ++sequence, metadata: removed, hasCover: false, deleted: true });
+      remote = undefined; remoteCover = undefined;
+      if (phase === "cover") return new Response(null, { status: 410 });
+    }
+    return result;
+  });
+
+  await syncWorkMetadata("http://server", "device", true, undefined, true);
+  expect(remote?.novel.name).toBe("Other work");
+  expect(local.map(work => work.metadata.novel.name)).toEqual(["Book", "Other work"]);
+  expect(JSON.parse(memory.get("norea-content-works:http://server")!).deleted[id]).toBe(true);
+  if (phase === "metadata") expect(vi.mocked(nativeFetch).mock.calls.filter(([url, init]) => String(url).endsWith(`/works/${id}/cover`) && init?.method === "PUT")).toHaveLength(0);
+  const before = puts;
+  await syncWorkMetadata("http://server", "device", true, undefined, true);
+  expect(puts - before).toBe(1);
+});
+
 it("uploads metadata and cover without any downloaded chapter and skips unchanged uploads", async () => {
   const chapters = { "1": "Opening", "2": "Not downloaded", "1000": "Latest chapter" };
   local = [{ directory: "contents/example/book", metadata: { ...metadata(), chapters } }];
@@ -157,9 +186,7 @@ it("records an app-initiated work deletion without advancing past unseen changes
   await recordDeletedWorkMetadata("http://server", { id, sequence: sequence + 10, metadata: metadata(), hasCover: false, deleted: true });
   const saved = JSON.parse(memory.get(key)!);
   expect(saved.cursor).toBe(cursor);
-  expect(saved.deleted[id]).toBe(true);
-  expect(saved.fingerprints[id]).toBeUndefined();
-  expect(saved.fileVersions[JSON.stringify(["example", "/book"])]).toBeUndefined();
+  expect(await canPullWorkMetadata("http://server", (await readWorkMetadataSyncFiles())[0], await workMetadataFingerprint(metadata(), new Uint8Array([1, 2, 3])))).toBe(false);
   remote = undefined;
   expect(await syncWorkMetadata("http://server", "device", true)).toEqual(new Set([id]));
   expect(puts).toBe(1);
@@ -213,7 +240,7 @@ it("does not reinstall a fully removed explicit deletion when a server record re
   expect(local).toEqual([]);
 });
 
-it("preserves an explicit work exclusion if writing its ordinary sync cache fails", async () => {
+it("records an explicit exclusion without rewriting the active synchronization checkpoint", async () => {
   local = [{ directory: "contents/example/book", metadata: metadata() }];
   const id = await contentWorkId(metadata().identity);
   const save = vi.mocked(writeContentSyncCache).getMockImplementation()!;
@@ -222,7 +249,9 @@ it("preserves an explicit work exclusion if writing its ordinary sync cache fail
     if (!failed && key === "norea-content-works:http://server") { failed = true; throw new Error("Cache write failed"); }
     return save(key, value);
   });
-  await expect(recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true })).rejects.toThrow("Cache write failed");
+  await recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true });
+  expect(failed).toBe(false);
+  vi.mocked(writeContentSyncCache).mockImplementation(save);
 
   expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
   expect(puts).toBe(0);

@@ -15,7 +15,7 @@ import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata } from "./works";
-import { readServerChapterDeletionExclusions, serverChapterDeletionKey, setServerChapterDeletionExclusion } from "./deletion-exclusions";
+import { readServerChapterDeletionExclusions, serverChapterDeletionKey, serverWorkDeletionKey, setServerChapterDeletionExclusion, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
 interface CatalogCache {
   cursor: number;
@@ -97,109 +97,126 @@ async function pullCatalog(server: string, token: string | null, cache: CatalogC
 }
 
 async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>, conflictPolicy: UploadConflictPolicy): Promise<void> {
-  const deletions = await readServerChapterDeletionExclusions(server);
-  const head = await contentJournalHead();
-  const changes = cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
-    : await readContentJournal(cache.localCursor, head);
-  const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
-  const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
-  const changedRows = await listContentSyncChapters(requested, requested === undefined);
-  const deletedIds = Object.keys(cache.tombstones);
-  // Deletion deltas omit chapter numbers, so recheck the work to resolve folder aliases.
-  const recheckWorks = [...new Set(deletedIds.map(id => JSON.stringify((JSON.parse(id) as string[]).slice(0, 2))))];
-  const recheckRows = recheckWorks.length ? await listContentSyncWorkChapters(recheckWorks) : [];
-  const rows = [...changedRows, ...recheckRows];
-  const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
-  const deletedLocalWorks = new Set<string>();
-  if (deletedWorks.size) {
-    for (const row of new Map(rows.map(row => [JSON.stringify([row.pluginId, row.novelPath]), row])).values()) {
-      if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
+  return withServerWorkDeletionExclusions(server, async deletedDirectories => {
+    const isDeletedWork = (row: ContentSyncChapter) => row.sourceNovelId != null && deletedDirectories.has(serverWorkDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId }));
+    const deletions = await readServerChapterDeletionExclusions(server);
+    const head = await contentJournalHead();
+    const changes = cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
+      : await readContentJournal(cache.localCursor, head);
+    const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
+    const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
+    const changedRows = await listContentSyncChapters(requested, requested === undefined);
+    const deletedIds = Object.keys(cache.tombstones);
+    // Deletion deltas omit chapter numbers, so recheck the work to resolve folder aliases.
+    const recheckWorks = [...new Set(deletedIds.map(id => JSON.stringify((JSON.parse(id) as string[]).slice(0, 2))))];
+    const recheckRows = recheckWorks.length ? await listContentSyncWorkChapters(recheckWorks) : [];
+    const rows = [...changedRows, ...recheckRows];
+    const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
+    const deletedLocalWorks = new Set<string>();
+    if (deletedWorks.size) {
+      for (const row of new Map(rows.map(row => [JSON.stringify([row.pluginId, row.novelPath]), row])).values()) {
+        if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
+      }
     }
-  }
-  const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys()), ...recheckRows.map(identity)]);
-  if (!pending.size && cache.localCursor === head && !deletedIds.length) return;
-  cache.pendingUploads = [...pending];
-  cache.localCursor = head;
-  cache.uploadConflictPolicy = conflictPolicy;
-  cache.tombstones = {};
-  await saveCatalog(server, cache);
-  let processed = 0;
-  let uploaded = 0;
-  const total = pending.size;
-  const failures: string[] = [];
-  const reportProgress = () => useContentSyncStore.setState({ progress: { completed: processed, total, uploaded, failed: failures.length } });
-  reportProgress();
-  try {
-    for (const id of pending) {
-      assertDevice(server, token);
-      const row = rowsByIdentity.get(id);
-      if (row?.isDownloadQueued) {
-        processed++;
-        reportProgress();
-        continue;
-      }
-      if (!row || !row.isDownloaded || row.mediaRepairNeeded || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))
-        || (row.sourceNovelId != null && deletions.has(serverChapterDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId, chapterPath: row.chapterPath }, row.chapterNumber)))) {
-        if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
-        delete cache.downloads[id];
-        pending.delete(id);
-        processed++;
-        reportProgress();
-        continue;
-      }
-      const activity = watchChapterDownloadActivity(row.chapterId);
-      try {
-        activity.signal.throwIfAborted();
-        if (!await canUploadContentChapter(row.chapterId)) continue;
-        activity.signal.throwIfAborted();
-        const existing = await findUploadedChapter(server, token, row, activity.signal);
-        activity.signal.throwIfAborted();
+    const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys()), ...recheckRows.map(identity)]);
+    if (!pending.size && cache.localCursor === head && !deletedIds.length) return;
+    cache.pendingUploads = [...pending];
+    cache.localCursor = head;
+    cache.uploadConflictPolicy = conflictPolicy;
+    cache.tombstones = {};
+    await saveCatalog(server, cache);
+    let processed = 0;
+    let uploaded = 0;
+    const total = pending.size;
+    const failures: string[] = [];
+    const reportProgress = () => useContentSyncStore.setState({ progress: { completed: processed, total, uploaded, failed: failures.length } });
+    reportProgress();
+    try {
+      for (const id of pending) {
         assertDevice(server, token);
-        if (existing && (conflictPolicy === "keep-server" || (conflictPolicy === "prefer-complete" && existing.complete))) {
-          cache.downloads[id] = true;
-          pending.delete(id);
+        const row = rowsByIdentity.get(id);
+        const workId = row ? await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }) : null;
+        if (workId) await waitForServerWorkDeletion(server, workId);
+        if (row?.isDownloadQueued && !isDeletedWork(row)) {
+          processed++;
+          reportProgress();
           continue;
         }
-        await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath }, signal: activity.signal }, async stagePath => {
-          activity.signal.throwIfAborted();
-          const fingerprint = await contentFingerprint(row, stagePath);
-          assertDevice(server, token);
-          if (!await canUploadContentChapter(row.chapterId)) return;
-          activity.signal.throwIfAborted();
-          await uploadContentChapter({
-            serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal, conflictPolicy,
-            manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath, chapterPath: row.chapterPath },
-              novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
-              chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
-          });
-          activity.signal.throwIfAborted();
-          assertDevice(server, token);
-          cache.uploaded[id] = fingerprint;
-          uploaded++;
-          cache.downloads[id] = true;
+        if (!row || !row.isDownloaded || row.mediaRepairNeeded || isDeletedWork(row) || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))
+          || (row.sourceNovelId != null && deletions.has(serverChapterDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId, chapterPath: row.chapterPath }, row.chapterNumber)))) {
+          if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
+          delete cache.downloads[id];
+          if (row && isDeletedWork(row)) delete cache.uploaded[id];
           pending.delete(id);
-        });
-      } catch (error) {
-        if (error instanceof ContentServerError && (error.status === 401 || error.status === 403)) throw error;
-        if (activity.signal.aborted) continue;
-        assertDevice(server, token);
-        failures.push(`${row.novelName} / ${row.chapterName}: ${error instanceof Error ? error.message : String(error)}`);
-        useContentSyncStore.setState({ error: failures.at(-1) });
-      } finally {
-        activity.dispose();
-        processed++;
-        reportProgress();
-        if (processed % 25 === 0) {
-          cache.pendingUploads = [...pending];
-          await saveCatalog(server, cache);
+          processed++;
+          reportProgress();
+          continue;
+        }
+        const activity = watchChapterDownloadActivity(row.chapterId);
+        try {
+          activity.signal.throwIfAborted();
+          if (!await canUploadContentChapter(row.chapterId)) continue;
+          activity.signal.throwIfAborted();
+          const existing = await findUploadedChapter(server, token, row, activity.signal);
+          activity.signal.throwIfAborted();
+          assertDevice(server, token);
+          await waitForServerWorkDeletion(server, workId!);
+          if (isDeletedWork(row)) continue;
+          if (existing && (conflictPolicy === "keep-server" || (conflictPolicy === "prefer-complete" && existing.complete))) {
+            cache.downloads[id] = true;
+            pending.delete(id);
+            continue;
+          }
+          await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath }, signal: activity.signal }, async stagePath => {
+            activity.signal.throwIfAborted();
+            const fingerprint = await contentFingerprint(row, stagePath);
+            assertDevice(server, token);
+            await waitForServerWorkDeletion(server, workId!);
+            if (!await canUploadContentChapter(row.chapterId) || isDeletedWork(row)) return;
+            activity.signal.throwIfAborted();
+            await uploadContentChapter({
+              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal, conflictPolicy,
+              manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath, chapterPath: row.chapterPath },
+                novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
+                chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
+            });
+            activity.signal.throwIfAborted();
+            assertDevice(server, token);
+            await waitForServerWorkDeletion(server, workId!);
+            if (isDeletedWork(row)) return;
+            cache.uploaded[id] = fingerprint;
+            uploaded++;
+            cache.downloads[id] = true;
+            pending.delete(id);
+          });
+        } catch (error) {
+          if (error instanceof ContentServerError && (error.status === 401 || error.status === 403)) throw error;
+          await waitForServerWorkDeletion(server, workId!);
+          if (activity.signal.aborted || isDeletedWork(row)) continue;
+          assertDevice(server, token);
+          failures.push(`${row.novelName} / ${row.chapterName}: ${error instanceof Error ? error.message : String(error)}`);
+          useContentSyncStore.setState({ error: failures.at(-1) });
+        } finally {
+          activity.dispose();
+          if (isDeletedWork(row)) {
+            pending.delete(id);
+            delete cache.downloads[id];
+            delete cache.uploaded[id];
+          }
+          processed++;
+          reportProgress();
+          if (processed % 25 === 0) {
+            cache.pendingUploads = [...pending];
+            await saveCatalog(server, cache);
+          }
         }
       }
+    } finally {
+      cache.pendingUploads = [...pending];
+      await saveCatalog(server, cache);
     }
-  } finally {
-    cache.pendingUploads = [...pending];
-    await saveCatalog(server, cache);
-  }
-  if (failures.length) throw new Error(failures.join("\n"));
+    if (failures.length) throw new Error(failures.join("\n"));
+  });
 }
 
 let running: Promise<void> | null = null;

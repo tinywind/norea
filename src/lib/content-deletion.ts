@@ -32,6 +32,7 @@ export interface ContentDeletionAction {
   side: "library" | "device" | "server";
   name: string;
   requires?: string;
+  waitForSync?: boolean;
   source?: ServerNovelSource;
   run: () => Promise<WorkCatalogEntry | void>;
 }
@@ -120,12 +121,12 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
     };
     for (const chapter of new Map(request.chapters.map(row => [row.id, row])).values()) {
       const id = `server:${chapter.id}`;
-      actions.push({ id, side: "server", name: chapter.name, run: async () => {
+      actions.push({ id, side: "server", name: chapter.name, waitForSync: true, run: async () => {
         const identity = (await getWork()).metadata.identity;
         await deleteSelectedServerChapters(request.source, [chapter.id]);
         await setServerChapterDeletionExclusion(request.source.serverUrl, { ...identity, chapterPath: chapter.chapterPath }, chapter.chapterNumber, true);
       } });
-      if (options.local) actions.push({ id: `device:${chapter.id}`, side: "device", name: chapter.name, requires: id, run: async () => {
+      if (options.local) actions.push({ id: `device:${chapter.id}`, side: "device", name: chapter.name, requires: id, waitForSync: true, run: async () => {
         const novel = await findLocalDeletionNovel((await getWork()).metadata.identity);
         if (!novel) return;
         const localChapter = matchDeletionChapter(await listChaptersByNovel(novel.id), chapter);
@@ -136,13 +137,13 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
   }
   if (options.server && !request.serverUrl) throw new Error("No content server is configured.");
   const addServerChapter = (novel: NovelDetailRecord, chapter: ChapterListRow) => {
-    actions.push({ id: `server:${chapter.id}`, side: "server", name: `${novel.name} · ${chapter.name}`, run: () => deleteMatchingServerChapter(request.serverUrl, novel, chapter) });
+    actions.push({ id: `server:${chapter.id}`, side: "server", name: `${novel.name} · ${chapter.name}`, waitForSync: true, run: () => deleteMatchingServerChapter(request.serverUrl, novel, chapter) });
   };
   if (request.kind === "downloads" && request.scope === "chapter") {
     for (const id of new Set(request.ids)) {
       const chapter = await getChapterById(id);
       if (!chapter) continue;
-      actions.push({ id: `device:${id}`, side: "device", name: chapter.name, run: () => deleteLocalDownloads("chapter", [id], request.title) });
+      actions.push({ id: `device:${id}`, side: "device", name: chapter.name, waitForSync: true, run: () => deleteLocalDownloads("chapter", [id], request.title) });
       if (options.server) {
         const novel = await getNovelById(chapter.novelId);
         if (!novel) throw new Error("Selected chapter's work no longer exists.");
@@ -153,12 +154,12 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
   }
   const allDownloads = request.kind === "downloads" && request.scope === "all";
   const ids = allDownloads && options.server ? await listStoredDeletionNovelIds() : request.ids;
-  if (allDownloads) actions.push({ id: "device:all", side: "device", name: request.title, run: () => deleteLocalDownloads("all", [], request.title) });
+  if (allDownloads) actions.push({ id: "device:all", side: "device", name: request.title, waitForSync: true, run: () => deleteLocalDownloads("all", [], request.title) });
   for (const id of new Set(ids)) {
     const novel = await getNovelById(id);
     if (!novel) continue;
     if (request.kind === "library") actions.push({ id: `library:${id}`, side: "library", name: novel.name, run: async () => { await setNovelInLibrary(id, false); } });
-    if (!allDownloads && (request.kind === "downloads" || options.local)) actions.push({ id: `device:${id}`, side: "device", name: novel.name, run: () => deleteLocalDownloads("novel", [id], request.title) });
+    if (!allDownloads && (request.kind === "downloads" || options.local)) actions.push({ id: `device:${id}`, side: "device", name: novel.name, waitForSync: true, run: () => deleteLocalDownloads("novel", [id], request.title) });
     if (options.server && request.kind === "library") {
       let deleted: WorkCatalogEntry | undefined;
       const action: ContentDeletionAction = { id: `server:${id}`, side: "server", name: novel.name, run: async () => {
@@ -180,24 +181,22 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
   return actions;
 }
 
-export function runContentDeletion(actions: readonly ContentDeletionAction[], previous: readonly ContentDeletionResult[] = [], onResult?: (results: ContentDeletionResult[]) => void): Promise<ContentDeletionResult[]> {
-  return runContentSyncOperation(async () => {
-    const results = new Map(previous.map(result => [result.id, result]));
-    let reportedAt = 0;
-    for (const action of actions) {
-      if (results.get(action.id)?.status === "succeeded") continue;
-      if (action.requires && results.get(action.requires)?.status !== "succeeded") {
-        results.set(action.id, { id: action.id, status: "failed", error: "Waiting for the server deletion to succeed." });
-      } else {
-        try {
-          const deletedWork = await action.run();
-          results.set(action.id, { id: action.id, status: "succeeded", ...(deletedWork ? { deletedWork } : {}) });
-        } catch (error) { results.set(action.id, { id: action.id, status: "failed", error: describeError(error) }); }
-      }
-      if (Date.now() - reportedAt >= 100) { onResult?.([...results.values()]); reportedAt = Date.now(); }
+export async function runContentDeletion(actions: readonly ContentDeletionAction[], previous: readonly ContentDeletionResult[] = [], onResult?: (results: ContentDeletionResult[]) => void): Promise<ContentDeletionResult[]> {
+  const results = new Map(previous.map(result => [result.id, result]));
+  let reportedAt = 0;
+  for (const action of actions) {
+    if (results.get(action.id)?.status === "succeeded") continue;
+    if (action.requires && results.get(action.requires)?.status !== "succeeded") {
+      results.set(action.id, { id: action.id, status: "failed", error: "Waiting for the server deletion to succeed." });
+    } else {
+      try {
+        const deletedWork = await (action.waitForSync ? runContentSyncOperation(action.run) : action.run());
+        results.set(action.id, { id: action.id, status: "succeeded", ...(deletedWork ? { deletedWork } : {}) });
+      } catch (error) { results.set(action.id, { id: action.id, status: "failed", error: describeError(error) }); }
     }
-    const completed = [...results.values()];
-    onResult?.(completed);
-    return completed;
-  });
+    if (Date.now() - reportedAt >= 100) { onResult?.([...results.values()]); reportedAt = Date.now(); }
+  }
+  const completed = [...results.values()];
+  onResult?.(completed);
+  return completed;
 }

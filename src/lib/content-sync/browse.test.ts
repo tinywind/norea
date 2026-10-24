@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 vi.mock("./chapters", () => ({ fetchServerChapters: vi.fn(async () => []) }));
-vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: vi.fn(), readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));
@@ -15,6 +15,9 @@ import { listServerWorks, openServerNovel, refreshServerNovel, serverCoverSource
 import { rememberServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
+import { fetchServerChapters } from "./chapters";
+import { cacheServerChapters } from "../../db/queries/content-sync";
+import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
 
 const metadata: NovelMetadataV1 = {
   schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
@@ -28,7 +31,25 @@ const installed = {
 };
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
-  vi.mocked(installStoredNovelMetadata).mockResolvedValue(installed);
+  vi.mocked(installStoredNovelMetadata).mockReset().mockResolvedValue(installed);
+});
+
+it.each(["response", "install"])("discards a server work deleted during its delayed %s", async phase => {
+  const id = await contentWorkId(metadata.identity);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id, metadata, hasCover: false });
+  const remove = () => recordServerWorkDeletionExclusion("http://server", metadata.identity);
+  const commit = vi.fn();
+  if (phase === "response") vi.mocked(fetchServerChapters).mockImplementationOnce(async () => { await remove(); return []; });
+  vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
+    if (phase === "install") await remove();
+    if (await guard?.(null) === false) return null;
+    commit();
+    return installed;
+  });
+  await expect(refreshServerNovel({ serverUrl: "http://server", workId: id }, true)).rejects.toMatchObject({ status: 410 });
+  expect(commit).not.toHaveBeenCalled();
+  expect(cacheServerChapters).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).not.toHaveBeenCalled();
 });
 
 it("queries a bounded page without fetching synchronization history", async () => {
@@ -45,7 +66,7 @@ it("installs only the selected work and retains its origin for later downloads",
   expect(await refreshServerNovel({ serverUrl: "http://server", workId: id })).toBe(42);
   expect(contentServerRequest).toHaveBeenCalledOnce();
   expect(contentServerRequest).toHaveBeenCalledWith("http://server", `/works/${id}`, "device");
-  expect(installStoredNovelMetadata).toHaveBeenCalledWith(metadata, undefined, undefined);
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(metadata, undefined, expect.any(Function));
   expect(recordInstalledWorkMetadata).toHaveBeenCalledWith("http://server", installed, false);
   expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
 });

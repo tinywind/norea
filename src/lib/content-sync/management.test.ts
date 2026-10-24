@@ -83,67 +83,21 @@ it("exposes a successful remote deletion before local persistence so its caller 
   expect(captured).toHaveBeenCalledOnce();
 });
 
-it("waits for an in-flight metadata operation before deleting and recording a whole work", async () => {
-  const order: string[] = [];
+it("deletes and records a work while another metadata operation is still running", async () => {
   let release!: () => void;
-  const blocked = new Promise<void>(resolve => { release = resolve; });
-  const upload = runWorkMetadataSyncOperation(source.serverUrl, async () => { order.push("upload"); await blocked; });
+  let started = false;
+  const upload = runWorkMetadataSyncOperation(source.serverUrl, async () => {
+    started = true;
+    await new Promise<void>(resolve => { release = resolve; });
+  });
+  await vi.waitFor(() => expect(started).toBe(true));
   vi.mocked(contentServerRequest).mockResolvedValueOnce(deletedWork);
-  const deletion = deleteServerWork(source);
-  await vi.waitFor(() => expect(order).toEqual(["upload"]));
-  expect(contentServerRequest).not.toHaveBeenCalled();
-  expect(recordDeletedWorkMetadata).not.toHaveBeenCalled();
-  release();
-  await Promise.all([upload, deletion]);
-  expect(contentServerRequest).toHaveBeenCalledExactlyOnceWith(source.serverUrl, "/works/work-id", "device", "DELETE");
-  expect(recordDeletedWorkMetadata).toHaveBeenCalledExactlyOnceWith(source.serverUrl, deletedWork);
-});
-
-it("expires a queued deletion without sending it later when synchronization finishes", async () => {
-  vi.useFakeTimers();
-  let release!: () => void;
-  const blocked = new Promise<void>(resolve => { release = resolve; });
-  const upload = runWorkMetadataSyncOperation(source.serverUrl, () => blocked);
+  let result: WorkCatalogEntry | undefined;
+  const deletion = deleteServerWork(source).then(entry => { result = entry; });
   try {
-    const deletion = expect(deleteServerWork(source)).rejects.toThrow("Timed out waiting for content synchronization");
-    await vi.advanceTimersByTimeAsync(30_000);
-    await deletion;
-    expect(registerContentDevice).not.toHaveBeenCalled();
-    expect(contentServerRequest).not.toHaveBeenCalled();
-    release();
-    await upload;
-    await runWorkMetadataSyncOperation(source.serverUrl, async () => undefined);
-    expect(contentServerRequest).not.toHaveBeenCalled();
-    expect(recordDeletedWorkMetadata).not.toHaveBeenCalled();
-  } finally { release(); await upload; vi.useRealTimers(); }
-});
-
-it("stops the queue timer when deletion starts and leaves the HTTP request deadline independent", async () => {
-  vi.useFakeTimers();
-  let releaseUpload!: () => void;
-  let finishDelete!: (entry: WorkCatalogEntry) => void;
-  const upload = runWorkMetadataSyncOperation(source.serverUrl, () => new Promise<void>(resolve => { releaseUpload = resolve; }));
-  const response = new Promise<WorkCatalogEntry>(resolve => { finishDelete = resolve; });
-  vi.mocked(contentServerRequest).mockReturnValueOnce(response);
-  const deletion = deleteServerWork(source);
-  let settled = false;
-  void deletion.then(() => { settled = true; }, () => { settled = true; });
-  try {
-    await vi.advanceTimersByTimeAsync(29_000);
-    releaseUpload();
-    await upload;
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(contentServerRequest).toHaveBeenCalledExactlyOnceWith(source.serverUrl, "/works/work-id", "device", "DELETE");
-    expect(settled).toBe(false);
-    finishDelete(deletedWork);
-    expect(await deletion).toBe(deletedWork);
-  } finally {
-    releaseUpload();
-    finishDelete?.(deletedWork);
-    await upload;
-    await deletion.catch(() => undefined);
-    vi.useRealTimers();
-  }
+    await vi.waitFor(() => expect(result).toBe(deletedWork), { timeout: 100 });
+    expect(recordDeletedWorkMetadata).toHaveBeenCalledExactlyOnceWith(source.serverUrl, deletedWork);
+  } finally { release(); await Promise.all([upload, deletion]); }
 });
 
 it("does not record a local deletion when the server rejects it or confirms another work", async () => {

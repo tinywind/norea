@@ -3,8 +3,9 @@ import type { NovelMetadataV1 } from "../work-metadata";
 import { fetchServerChapterPage } from "./chapters";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
+import { runServerWorkDeletion } from "./deletion-exclusions";
 import type { ServerNovelSource } from "./novel-source";
-import { contentWorkId, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
+import { contentWorkId, recordDeletedWorkMetadata, type WorkCatalogEntry } from "./works";
 
 export async function findServerWork(serverUrl: string, identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath"> & { novelId?: string | null }, signal?: AbortSignal): Promise<ServerNovelSource | null> {
   const settings = useContentSyncStore.getState();
@@ -43,17 +44,12 @@ export async function deleteSelectedServerChapters(source: Pick<ServerNovelSourc
 
 export async function deleteServerWork(source: ServerNovelSource, onDeleted?: (entry: WorkCatalogEntry) => void): Promise<WorkCatalogEntry> {
   const server = normalizeContentServerUrl(source.serverUrl);
-  const waiting = new AbortController();
-  const timer = setTimeout(() => waiting.abort(new Error("Timed out waiting for content synchronization before deleting the work. Try again after synchronization finishes.")), 30_000);
-  try {
-    return await runWorkMetadataSyncOperation(server, async () => {
-      clearTimeout(timer);
-      const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
-      const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token, "DELETE");
-      if (entry.id !== source.workId || !entry.deleted) throw new Error("Server did not confirm the requested work deletion.");
-      onDeleted?.(entry);
-      await recordDeletedWorkMetadata(server, entry);
-      return entry;
-    }, waiting.signal);
-  } finally { clearTimeout(timer); }
+  return runServerWorkDeletion(server, source.workId, async () => {
+    const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
+    const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token, "DELETE");
+    if (entry.id !== source.workId || !entry.deleted) throw new Error("Server did not confirm the requested work deletion.");
+    onDeleted?.(entry);
+    await recordDeletedWorkMetadata(server, entry);
+    return entry;
+  });
 }

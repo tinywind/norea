@@ -11,6 +11,7 @@ import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovel
 import { readServerCover } from "./browse";
 import { ContentServerError, contentServerRequest, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
+import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { readServerNovelSource } from "./novel-source";
 import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFileVersion, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
 import { cacheServerChapters } from "../../db/queries/content-sync";
@@ -22,11 +23,13 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   const source = await readServerNovelSource(novelId);
   const server = source?.serverUrl ?? settings.serverUrl;
   if (!server) return false;
-  return runWorkMetadataSyncOperation(server, async () => {
+  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
     signal?.throwIfAborted();
     const novel = await getNovelById(novelId);
     if (!novel) return false;
     const identity = { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path };
+    const isDeleted = () => excluded.has(serverWorkDeletionKey(identity));
+    if (isDeleted()) return false;
     const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
     const stored = await readStoredNovelMetadata(directory);
     if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");
@@ -55,7 +58,8 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
       }
       return null;
     }, settings.lookupTimeoutSeconds, signal);
-    if (!result) return false;
+    await waitForServerWorkDeletion(server, source?.workId ?? await contentWorkId(identity));
+    if (!result || isDeleted()) return false;
     signal?.throwIfAborted();
     const local = stored.metadata;
     const remote = result.metadata;
@@ -64,11 +68,11 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     let installed = false;
     if (mayApplyMetadata && await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
       const stored = await installStoredNovelMetadata(metadata, coverBytes ?? undefined, async (current, db) => {
-        if (signal?.aborted || !canApplyMetadata()) return false;
+        if (isDeleted() || signal?.aborted || !canApplyMetadata()) return false;
         const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
-        if (signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
+        if (isDeleted() || signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
         const currentFile = await readWorkMetadataSyncFile(identity, db);
-        if (signal?.aborted || !canApplyMetadata() || workMetadataFileVersion(currentFile) !== workMetadataFileVersion(file)) return false;
+        if (isDeleted() || signal?.aborted || !canApplyMetadata() || workMetadataFileVersion(currentFile) !== workMetadataFileVersion(file)) return false;
       });
       if (stored) {
         await recordInstalledWorkMetadata(server, stored, result.cover !== null);
@@ -76,9 +80,10 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
       }
     }
     signal?.throwIfAborted();
+    if (isDeleted()) return false;
     const chaptersChanged = await cacheServerChapters(novelId, result.chapters, signal);
     return installed || chaptersChanged;
-  }, signal);
+  }), signal);
 }
 
 interface ServerNovelSourceRefreshOptions {

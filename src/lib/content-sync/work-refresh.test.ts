@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("./chapters", () => ({ fetchServerChapters: mocks.chapters }));
-vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: mocks.cache }));
+vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: mocks.cache, readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
 import type { NovelMetadataV1 } from "../work-metadata";
 
 const mocks = vi.hoisted(() => ({
@@ -26,6 +26,7 @@ vi.mock("../tasks/scheduler", () => ({ taskScheduler: { cancel: mocks.cancel } }
 
 import { contentServerRequest, ContentServerError } from "./client";
 import { contentWorkId } from "./works";
+import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
 import { syncServerNovelOnOpen, refreshServerNovelFromSource } from "./work-refresh";
 
 const chapter = { chapterPath: "/chapter/1", name: "One", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const, releaseTime: null, directory: "1-One" };
@@ -40,7 +41,7 @@ beforeEach(() => {
   mocks.chapters.mockResolvedValue([chapter]);
   mocks.cache.mockResolvedValue(true);
   mocks.settings.serverUrl = "http://server";
-  mocks.novel.mockResolvedValue({ id: 42, ...local.novel, pluginId: "source", path: "/book" });
+  mocks.novel.mockResolvedValue({ id: 42, ...local.novel, pluginId: "source", sourceNovelId: "book", path: "/book" });
   mocks.source.mockResolvedValue(null);
   mocks.read.mockResolvedValue({ directory: "contents/source/Book-book", metadata: structuredClone(local) });
   mocks.syncFile.mockReset().mockResolvedValue({ pluginId: "source", path: "/book", directory: "contents/source/Book-book", fingerprint: "stored", revision: 1 });
@@ -58,6 +59,22 @@ beforeEach(() => {
   vi.mocked(contentServerRequest).mockReset();
 });
 afterEach(() => vi.useRealTimers());
+
+it.each(["response", "install"])("keeps local metadata and chapter availability unchanged after deletion during %s", async phase => {
+  const metadata = { ...local, novel: { ...local.novel, summary: "Delayed server summary" } };
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: await contentWorkId(local.identity), metadata, hasCover: false });
+  const remove = () => recordServerWorkDeletionExclusion("http://server", local.identity);
+  if (phase === "response") mocks.chapters.mockImplementationOnce(async () => { await remove(); return [chapter]; });
+  else mocks.install.mockImplementationOnce(async (metadata, _cover, guard) => {
+    await remove();
+    if (await guard(await mocks.read()) === false) return null;
+    mocks.commit(metadata);
+    return { metadata };
+  });
+  expect(await syncServerNovelOnOpen(42)).toBe(false);
+  expect(mocks.commit).not.toHaveBeenCalled();
+  expect(mocks.cache).not.toHaveBeenCalled();
+});
 
 it("refreshes only the opened work and retains locally known chapters", async () => {
   const metadata = { ...local, novel: { ...local.novel, summary: "Updated" } };

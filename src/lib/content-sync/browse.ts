@@ -5,6 +5,7 @@ import { bytesToBase64 } from "../base64";
 import { installStoredNovelMetadata, parseNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
+import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
@@ -59,16 +60,20 @@ export async function openServerNovel(server: string, work: ServerWorkSummary): 
 
 export async function refreshServerNovel(source: ServerNovelSource, requireNewWork = false): Promise<number> {
   const server = normalizeContentServerUrl(source.serverUrl);
-  return runWorkMetadataSyncOperation(server, async () => {
+  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
     const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
     const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token);
     const metadata = parseNovelMetadata(entry.metadata);
     if (entry.id !== source.workId || await contentWorkId(metadata.identity) !== source.workId) throw new Error("Server work identity does not match its metadata.");
     const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
     const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
-    const installed = await installStoredNovelMetadata(metadata, cover?.bytes, requireNewWork ? async current => {
-      if (current) return false;
-    } : undefined);
+    await waitForServerWorkDeletion(server, source.workId);
+    const isDeleted = () => excluded.has(serverWorkDeletionKey(metadata.identity));
+    if (isDeleted()) throw new ContentServerError(410);
+    const installed = await installStoredNovelMetadata(metadata, cover?.bytes, async current => {
+      if (isDeleted() || (requireNewWork && current)) return false;
+    });
+    if (isDeleted()) throw new ContentServerError(410);
     if (installed === null) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
     await recordInstalledWorkMetadata(server, installed, entry.hasCover);
     const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
@@ -77,5 +82,5 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
     await rememberServerNovelSource(novel.id, { serverUrl: server, workId: source.workId });
     window.dispatchEvent(new Event("norea-content-state-changed"));
     return novel.id;
-  });
+  }));
 }

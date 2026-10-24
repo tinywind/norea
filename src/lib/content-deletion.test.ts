@@ -5,7 +5,7 @@ vi.mock("../db/queries/chapter", () => ({ getChapterById: vi.fn(), listChaptersB
 vi.mock("../db/queries/content-deletion", () => ({ findLocalDeletionNovel: vi.fn(), deleteLocalNovelRecords: vi.fn(), listStoredDeletionNovelIds: vi.fn() }));
 vi.mock("./tasks/download-cache-delete", () => ({ deleteDownloadCache: vi.fn(), cancelNovelChapterDownloadWork: vi.fn() }));
 vi.mock("./content-sync/management", () => ({ findServerWork: vi.fn(), deleteServerWork: vi.fn(), deleteSelectedServerChapters: vi.fn() }));
-vi.mock("./content-sync/sync", () => ({ runContentSyncOperation: (run: () => Promise<unknown>) => run() }));
+vi.mock("./content-sync/sync", () => ({ runContentSyncOperation: vi.fn((run: () => Promise<unknown>) => run()) }));
 vi.mock("./content-sync/client", () => ({ contentServerRequest: vi.fn(), ContentServerError: class extends Error { constructor(public status: number) { super(String(status)); } } }));
 vi.mock("./content-sync/deletion-exclusions", () => ({ setServerChapterDeletionExclusion: vi.fn() }));
 vi.mock("./content-sync/works", () => ({ recordDeletedWorkMetadata: vi.fn() }));
@@ -25,6 +25,7 @@ import { recordDeletedWorkMetadata } from "./content-sync/works";
 import { ContentServerError, contentServerRequest } from "./content-sync/client";
 import { removeChapterStorageDirectory } from "./chapter-storage-transfer";
 import { prepareContentDeletion, runContentDeletion, matchDeletionChapter } from "./content-deletion";
+import { runContentSyncOperation } from "./content-sync/sync";
 
 const novel = { id: 12, pluginId: "source", sourceNovelId: "book-42", path: "/book/42", name: "Book", isLocal: false };
 const source = { serverUrl: "http://chosen-server", workId: "work-42" };
@@ -46,6 +47,39 @@ it("unregisters without deleting either copy by default", async () => {
   expect(setNovelInLibrary).toHaveBeenCalledExactlyOnceWith(12, false);
   expect(deleteDownloadCache).not.toHaveBeenCalled();
   expect(deleteServerWork).not.toHaveBeenCalled();
+});
+
+it("runs a server work deletion without waiting for the content synchronization queue", async () => {
+  const entry = { id: source.workId, deleted: true } as never;
+  vi.mocked(deleteServerWork).mockResolvedValueOnce(entry);
+  let release!: () => void;
+  vi.mocked(runContentSyncOperation).mockImplementationOnce(async run => {
+    await new Promise<void>(resolve => { release = resolve; });
+    return run();
+  });
+  const actions = await prepareContentDeletion({ kind: "server-work", source, title: "Remove" }, options);
+  let result: Awaited<ReturnType<typeof runContentDeletion>> | undefined;
+  const deletion = runContentDeletion(actions).then(value => { result = value; });
+  try {
+    await vi.waitFor(() => expect(result).toEqual([{ id: "server-work", status: "succeeded", deletedWork: entry }]), { timeout: 100 });
+  } finally {
+    release?.();
+    await deletion;
+    vi.mocked(runContentSyncOperation).mockReset().mockImplementation(run => run());
+  }
+});
+
+it("waits for active uploads before deleting local chapter files", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  vi.mocked(runContentSyncOperation).mockImplementationOnce(async run => { await gate; return run(); });
+  const actions = await prepareContentDeletion({ kind: "downloads", scope: "chapter", ids: [91], title: "Remove", serverUrl: "" }, options);
+  const deletion = runContentDeletion(actions);
+  try {
+    await vi.waitFor(() => expect(runContentSyncOperation).toHaveBeenCalledOnce());
+    expect(deleteDownloadCache).not.toHaveBeenCalled();
+  } finally { release(); await deletion; }
+  expect(deleteDownloadCache).toHaveBeenCalledOnce();
 });
 
 it("keeps successful sides complete and retries only the failed server deletion", async () => {
