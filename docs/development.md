@@ -144,7 +144,7 @@ artifact names and release-upload behavior used by maintainers.
 | Windows Release Bundles | `norea-windows-x64-nsis`, `norea-windows-x64-msi`, `norea-windows-arm64-nsis`, `norea-windows-arm64-msi`, plus matching checksum artifacts |
 | Android Release APKs | `norea-arm64.apk`, `norea-x86_64.apk`, and `norea-android-checksums` |
 
-Pushes to `main` create workflow artifacts retained for 30 days and refresh the
+Pushes to `0.2` create workflow artifacts retained for 30 days and refresh the
 `dev-0.2` prerelease. Version tags matching `v*` upload collected bundles to the
 matching GitHub Release.
 
@@ -179,7 +179,7 @@ The public sample source catalog is maintained in
 stores a single active repository URL, and the published sample manifest is:
 
 ```text
-https://raw.githubusercontent.com/tinywind/norea-plugins/dist/v0.2/.dist/plugins.json
+https://raw.githubusercontent.com/tinywind/norea-plugins/dist/0.2/.dist/plugins.json
 ```
 
 For local plugin development, keep a sibling checkout at `../norea-plugins` and

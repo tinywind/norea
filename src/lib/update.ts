@@ -212,7 +212,7 @@ export async function checkDevUpdate(
   }
 
   const runs = await fetchGithubJson<GitHubWorkflowRunsResponse>(
-    `${GITHUB_API_BASE}/actions/workflows/${workflow}/runs?branch=main&status=success&per_page=10`,
+    `${GITHUB_API_BASE}/actions/workflows/${workflow}/runs?branch=0.2&status=success&per_page=10`,
   );
 
   for (const run of runs.workflow_runs) {

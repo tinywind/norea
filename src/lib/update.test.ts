@@ -146,7 +146,7 @@ function mockDevUpdateRoutes(
   const manifestUrl =
     "https://github.com/tinywind/norea/releases/download/dev-0.2/norea-updates-windows-x64.json";
   mockJsonRoutes({
-    [`${GITHUB_API_BASE}/actions/workflows/windows.yml/runs?branch=main&status=success&per_page=10`]:
+    [`${GITHUB_API_BASE}/actions/workflows/windows.yml/runs?branch=0.2&status=success&per_page=10`]:
       {
         workflow_runs: [
           {

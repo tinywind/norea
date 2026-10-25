@@ -162,7 +162,7 @@ release target that script produces.
 
 ## Git Workflow
 
-- Work on `main` unless the user asks for another branch.
+- Work on `0.2` unless the user asks for another branch.
 - Do not bypass hooks.
 - Commit subject format: `<type>(<module>): <imperative summary>`.
 - Types: `feat | fix | chore | docs | style | refactor | test`.

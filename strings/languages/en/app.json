@@ -470,7 +470,7 @@
   "settings.about.officialUpdate.label": "Official release",
   "settings.about.officialUpdate.description": "Check the latest GitHub Release and open the installer for this platform.",
   "settings.about.devUpdate.label": "Dev build",
-  "settings.about.devUpdate.description": "Check the GitHub dev-0.2 Release for the newest successful main build for this platform.",
+  "settings.about.devUpdate.description": "Check the GitHub dev-0.2 Release for the newest successful 0.2 build for this platform.",
   "settings.about.update.check": "Check",
   "settings.about.update.install": "Install",
   "settings.about.update.checkingOfficial": "Checking the latest GitHub Release...",

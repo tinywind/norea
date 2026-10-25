@@ -82,7 +82,7 @@ For regular installs, use the
 [latest GitHub release](https://github.com/tinywind/norea/releases/latest).
 Release assets are the stable public downloads.
 
-For a newer tester build from the current `main` branch, use the
+For a newer tester build from the current `0.2` branch, use the
 [dev-0.2 GitHub prerelease](https://github.com/tinywind/norea/releases/dev-0.2).
 Successful platform workflows refresh its installers, packages, APKs, update
 metadata, and checksums.
@@ -91,8 +91,8 @@ Workflow artifacts remain available as a fallback while the prerelease is being
 refreshed:
 
 1. Open the latest successful workflow run for your platform:
-   [Windows](https://github.com/tinywind/norea/actions/workflows/windows.yml?query=branch%3Amain+is%3Asuccess) or
-   [Android](https://github.com/tinywind/norea/actions/workflows/android.yml?query=branch%3Amain+is%3Asuccess).
+   [Windows](https://github.com/tinywind/norea/actions/workflows/windows.yml?query=branch%3A0.2+is%3Asuccess) or
+   [Android](https://github.com/tinywind/norea/actions/workflows/android.yml?query=branch%3A0.2+is%3Asuccess).
 2. Open the run and scroll to Artifacts.
 3. Download the matching artifact:
 
@@ -128,7 +128,7 @@ To add the sample source list:
 3. Paste this URL:
 
    ```text
-   https://raw.githubusercontent.com/tinywind/norea-plugins/dist/v0.2/.dist/plugins.json
+   https://raw.githubusercontent.com/tinywind/norea-plugins/dist/0.2/.dist/plugins.json
    ```
 
 4. Save it.
