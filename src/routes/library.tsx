@@ -18,6 +18,8 @@ import {
   CategorySubpanel,
   getLibraryStats,
   getLibraryTags,
+  LibraryTagFilters,
+  type LibraryTagId,
   SelectionCategoryPicker,
 } from "../components/library/LibraryCategories";
 import {
@@ -95,6 +97,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const setSearch = useLibraryStore((s) => s.setSearch);
   const selectedCategoryId = useLibraryStore((s) => s.selectedCategoryId);
   const setSelectedCategoryId = useLibraryStore((s) => s.setSelectedCategoryId);
+  const defaultCategoryId = useLibraryStore((s) => s.defaultCategoryId);
+  const setDefaultCategoryId = useLibraryStore((s) => s.setDefaultCategoryId);
+  const enterLibrary = useLibraryStore((s) => s.enterLibrary);
   const sortOrder = useLibraryStore((s) => s.sortOrder);
   const setSortOrder = useLibraryStore((s) => s.setSortOrder);
   const displayMode = useLibraryStore((s) => s.displayMode);
@@ -107,6 +112,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const setDownloadedOnlyMode = useLibraryStore((s) => s.setDownloadedOnlyMode);
   const unreadOnlyMode = useLibraryStore((s) => s.unreadOnlyMode);
   const setUnreadOnlyMode = useLibraryStore((s) => s.setUnreadOnlyMode);
+  const localOnlyMode = useLibraryStore((s) => s.localOnlyMode);
+  const setLocalOnlyMode = useLibraryStore((s) => s.setLocalOnlyMode);
+  const completedOnlyMode = useLibraryStore((s) => s.completedOnlyMode);
+  const setCompletedOnlyMode = useLibraryStore((s) => s.setCompletedOnlyMode);
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const libraryFilter = useMemo<LibraryNovelRefreshFilter>(
@@ -116,6 +125,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       downloadedOnly: downloadedOnlyMode,
       sourceId: selectedSourceId,
       unreadOnly: unreadOnlyMode,
+      localOnly: localOnlyMode,
+      completedOnly: completedOnlyMode,
     }),
     [
       debouncedSearch,
@@ -123,11 +134,14 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       selectedCategoryId,
       selectedSourceId,
       unreadOnlyMode,
+      localOnlyMode,
+      completedOnlyMode,
     ],
   );
   const {
     novels,
     summary,
+    tagSummary,
     sourceFilters,
     categories,
     categoryCounts,
@@ -146,6 +160,28 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+
+  useEffect(() => {
+    if (active) enterLibrary();
+  }, [active, enterLibrary]);
+
+  useEffect(() => {
+    if (!active || !categories.isSuccess) return;
+    const exists = (id: number | null) =>
+      id === null ||
+      id === UNCATEGORIZED_CATEGORY_ID ||
+      categories.data.some((category) => category.id === id);
+    if (!exists(defaultCategoryId)) setDefaultCategoryId(null);
+    if (!exists(selectedCategoryId)) setSelectedCategoryId(null);
+  }, [
+    active,
+    categories.data,
+    categories.isSuccess,
+    defaultCategoryId,
+    selectedCategoryId,
+    setDefaultCategoryId,
+    setSelectedCategoryId,
+  ]);
 
   useEffect(() => {
     if (
@@ -199,7 +235,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     selectedCategoryId !== null ||
     selectedSourceId !== null ||
     downloadedOnlyMode ||
-    unreadOnlyMode;
+    unreadOnlyMode ||
+    localOnlyMode ||
+    completedOnlyMode;
 
   const libraryError = novels.error;
   const isInitialLibraryLoading = novels.isLoading;
@@ -236,7 +274,20 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     total: stats.totalChapters,
   });
   const showMobileSearch = mobileSearchOpen || search.trim() !== "";
-  const tags = getLibraryTags(summary, t);
+  const tags = getLibraryTags(tagSummary, t);
+  const activeTags: LibraryTagId[] = [];
+  if (unreadOnlyMode) activeTags.push("unread");
+  if (downloadedOnlyMode) activeTags.push("downloaded");
+  if (localOnlyMode) activeTags.push("local");
+  if (completedOnlyMode) activeTags.push("complete");
+  const toggleTag = (id: LibraryTagId) => {
+    switch (id) {
+      case "unread": setUnreadOnlyMode(!unreadOnlyMode); break;
+      case "downloaded": setDownloadedOnlyMode(!downloadedOnlyMode); break;
+      case "local": setLocalOnlyMode(!localOnlyMode); break;
+      case "complete": setCompletedOnlyMode(!completedOnlyMode); break;
+    }
+  };
   const sortLabel = t(SORT_LABEL_KEYS[sortOrder]);
   const activeSource =
     selectedSourceId == null
@@ -274,6 +325,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             onRename={openRenameCategory}
             onSelect={setSelectedCategoryId}
             tags={tags}
+            activeTags={activeTags}
+            onToggleTag={toggleTag}
             t={t}
             uncategorizedCount={uncategorizedCategoryCount}
           />
@@ -410,6 +463,14 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               </div>
             ) : null}
 
+            <LibraryTagFilters
+              className="norea-library-tablet-tags"
+              activeTags={activeTags}
+              onToggle={toggleTag}
+              tags={tags}
+              t={t}
+            />
+
             {sourceFilters.isLoading ||
             sourceRows.length > 0 ||
             selectedSourceId !== null ? (
@@ -441,9 +502,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   <SelectionCategoryPicker
                     assigning={assignCategoryMutation.isPending}
                     categories={assignableCategories}
-                    onAssign={(categoryId) =>
+                    onAssign={(categoryId, mode) =>
                       assignCategoryMutation.mutate({
                         categoryId,
+                        mode,
                         novelIds: selectedNovelIds,
                       })
                     }
@@ -599,6 +661,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       </PageFrame>
 
       <CategoriesDrawer
+        tags={tags}
+        activeTags={activeTags}
+        onToggleTag={toggleTag}
         allCount={allCategoryCount}
         categories={manualCategories}
         error={categories.error}

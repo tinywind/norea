@@ -28,12 +28,14 @@ import {
 } from "./browse";
 import { READER_CUSTOM_CSS_PRESETS, useReaderStore } from "./reader";
 import { DEFAULT_USER_AGENT, useUserAgentStore } from "./user-agent";
+import { useLibraryStore } from "./library";
 
 beforeEach(() => {
   storageHarness.values.clear();
   useAppearanceStore.getState().resetAppearance();
   useReaderStore.getState().resetReaderSettings();
   useUserAgentStore.setState({ userAgent: DEFAULT_USER_AGENT });
+  useLibraryStore.setState({ defaultCategoryId: null, selectedCategoryId: null, unreadOnlyMode: false, completedOnlyMode: false });
 });
 
 afterAll(() => {
@@ -111,5 +113,38 @@ describe("current persisted settings", () => {
     }));
     await useReaderStore.persist.rehydrate();
     expect(useReaderStore.getState().appearance.customCss).toBe(customCss);
+  });
+});
+
+
+describe("library entry preferences", () => {
+  it("opens all categories when no default is configured", () => {
+    useLibraryStore.getState().setSelectedCategoryId(9);
+    useLibraryStore.getState().enterLibrary();
+    expect(useLibraryStore.getState().selectedCategoryId).toBeNull();
+  });
+
+  it("persists the chosen default independently from the current category", async () => {
+    useLibraryStore.getState().setDefaultCategoryId(7);
+    useLibraryStore.getState().setSelectedCategoryId(9);
+    const saved = storageHarness.values.get("norea-library-settings")!;
+    expect(JSON.parse(saved).state.defaultCategoryId).toBe(7);
+    expect(JSON.parse(saved).state.selectedCategoryId).toBeUndefined();
+    useLibraryStore.setState({ defaultCategoryId: null, selectedCategoryId: null });
+    storageHarness.values.set("norea-library-settings", saved);
+    await useLibraryStore.persist.rehydrate();
+    useLibraryStore.getState().enterLibrary();
+    expect(useLibraryStore.getState().selectedCategoryId).toBe(7);
+    useLibraryStore.getState().setDefaultCategoryId(-1);
+    useLibraryStore.getState().enterLibrary();
+    expect(useLibraryStore.getState().selectedCategoryId).toBe(-1);
+  });
+
+  it("keeps unread and complete filters mutually exclusive", () => {
+    useLibraryStore.getState().setUnreadOnlyMode(true);
+    useLibraryStore.getState().setCompletedOnlyMode(true);
+    expect(useLibraryStore.getState()).toMatchObject({ unreadOnlyMode: false, completedOnlyMode: true });
+    useLibraryStore.getState().setUnreadOnlyMode(true);
+    expect(useLibraryStore.getState()).toMatchObject({ unreadOnlyMode: true, completedOnlyMode: false });
   });
 });

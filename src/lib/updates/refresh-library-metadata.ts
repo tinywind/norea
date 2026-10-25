@@ -46,6 +46,8 @@ function metadataRefreshScopeKey(
     search: filter.search?.trim() ?? "",
     sourceId: filter.sourceId?.trim() ?? "",
     unreadOnly: filter.unreadOnly === true,
+    localOnly: filter.localOnly === true,
+    completedOnly: filter.completedOnly === true,
   });
 }
 

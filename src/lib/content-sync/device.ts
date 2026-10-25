@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { contentServerRequest, normalizeContentServerUrl } from "./client";
 
-interface ContentCapabilities {
+export interface ContentCapabilities {
   apiVersion: number;
   packageVersion: number;
   authentication: string;
   personalStateSync: boolean;
+  readingStateVersion?: number;
 }
 
 interface RegisteredDevice { id: string; deviceName: string }
@@ -47,7 +48,8 @@ export function registerContentDevice(serverUrl: string, deviceName: string, sig
     const capabilities = await contentServerRequest<ContentCapabilities>(server, "/capabilities", undefined, "GET", undefined, signal);
     signal?.throwIfAborted();
     if (capabilities.apiVersion !== 1 || capabilities.packageVersion !== 1
-      || capabilities.authentication !== "device-key" || capabilities.personalStateSync !== false) {
+      || capabilities.authentication !== "device-key"
+      || (capabilities.personalStateSync !== false && !(capabilities.personalStateSync === true && capabilities.readingStateVersion === 1))) {
       throw new Error("This content server uses an incompatible authentication or package protocol.");
     }
     // Persist before registration so a failed response cannot create a second device.

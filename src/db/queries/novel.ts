@@ -53,6 +53,8 @@ export interface LibraryFilter {
   /** Restrict to one source plugin id. */
   sourceId?: string | null;
   unreadOnly?: boolean;
+  localOnly?: boolean;
+  completedOnly?: boolean;
   sortOrder?: LibrarySortOrder;
   /** Optional route-level guard for screens that render bounded library windows. */
   limit?: number;
@@ -147,6 +149,8 @@ export type LibraryNovelRefreshFilter = Pick<
   | "downloadedOnly"
   | "sourceId"
   | "unreadOnly"
+  | "localOnly"
+  | "completedOnly"
 >;
 
 interface RawLibraryNovelRefreshTarget
@@ -326,6 +330,12 @@ function buildLibraryFilterConditions(
   }
   if (filter.unreadOnly) {
     conditions.push("COALESCE(s.chapters_unread, 0) > 0");
+  }
+  if (filter.localOnly) {
+    conditions.push("n.plugin_id = " + addParam(params, LOCAL_PLUGIN_ID) + " AND n.is_local = 1");
+  }
+  if (filter.completedOnly) {
+    conditions.push("COALESCE(s.total_chapters, 0) > 0 AND COALESCE(s.chapters_unread, 0) = 0");
   }
 
   return conditions;
@@ -533,7 +543,7 @@ export async function getLibraryNovelSummary(
        COALESCE(SUM(chaptersUnread), 0) AS unreadChapters,
        MAX(lastUpdatedAt) AS lastUpdatedAt,
        COALESCE(SUM(CASE WHEN chaptersUnread > 0 THEN 1 ELSE 0 END), 0) AS unreadNovels,
-       COALESCE(SUM(CASE WHEN chaptersDownloaded > 0 THEN 1 ELSE 0 END), 0) AS downloadedNovels,
+       COALESCE(SUM(CASE WHEN isLocal = 1 OR chaptersDownloaded > 0 THEN 1 ELSE 0 END), 0) AS downloadedNovels,
        COALESCE(SUM(CASE WHEN pluginId = '${LOCAL_PLUGIN_ID}' AND isLocal = 1 THEN 1 ELSE 0 END), 0) AS localNovels,
        COALESCE(SUM(CASE WHEN totalChapters > 0 AND chaptersUnread = 0 THEN 1 ELSE 0 END), 0) AS completeNovels
      FROM library_rows`,

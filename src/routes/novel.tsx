@@ -35,6 +35,7 @@ import {
   VirtualChapterList,
 } from "../components/novel/NovelChapterList";
 import { NovelWorkspace } from "../components/novel/NovelWorkspace";
+import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
 import { ServerChapterManager } from "../components/novel/ServerChapterManager";
 import { useLocalNovelEditor } from "../components/novel/use-local-novel-editor";
 import { useNovelChapterActions } from "../components/novel/use-novel-chapter-actions";
@@ -433,6 +434,9 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             sourceUrl={sourceUrl}
             toggleBusy={toggle.isPending}
           />
+
+          {novel.inLibrary ? <NovelCategoryEditor key={novel.id}
+            active={active} novelId={novel.id} novelName={novel.name} /> : null}
 
           <ConsolePanel className="norea-novel-chapters-panel">
             <ConsoleSectionHeader

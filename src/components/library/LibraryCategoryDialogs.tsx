@@ -73,6 +73,9 @@ export const LibraryCategoryDialogs = forwardRef<
       if (selectedCategoryId === id) {
         setSelectedCategoryId(null);
       }
+      if (useLibraryStore.getState().defaultCategoryId === id) {
+        useLibraryStore.getState().setDefaultCategoryId(null);
+      }
       setCategoryDeleteTarget(null);
     },
   });

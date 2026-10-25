@@ -1,4 +1,4 @@
-import { getDb } from "../client";
+import { getDb, runDatabaseTransaction } from "../client";
 
 export const UNCATEGORIZED_CATEGORY_ID = -1;
 
@@ -129,6 +129,90 @@ export async function addNovelsToCategory(
      VALUES ${values}`,
     params,
   );
+}
+
+export async function removeNovelsFromCategory(
+  novelIds: readonly number[],
+  categoryId: number,
+): Promise<void> {
+  assertManualCategoryId(categoryId);
+  const uniqueNovelIds = Array.from(new Set(novelIds)).filter(
+    (id) => Number.isInteger(id) && id > 0,
+  );
+  if (uniqueNovelIds.length === 0) return;
+
+  const db = await getDb();
+  const params: unknown[] = [categoryId, ...uniqueNovelIds];
+  const placeholders = uniqueNovelIds.map((_, index) => "$" + (index + 2)).join(", ");
+  await db.execute(
+    "DELETE FROM novel_category WHERE category_id = $1 AND novel_id IN (" + placeholders + ")",
+    params,
+  );
+}
+
+export class NovelCategoryError extends Error {
+  constructor(readonly code: "work-not-found" | "category-not-found") {
+    super(code === "work-not-found"
+      ? "The work is no longer in the library."
+      : "A selected category is no longer available.");
+    this.name = "NovelCategoryError";
+  }
+}
+
+export async function getNovelCategoryIds(novelId: number): Promise<number[]> {
+  const db = await getDb();
+  const rows = await db.select<{ categoryId: number }[]>(
+    `SELECT nc.category_id AS categoryId
+     FROM novel_category nc
+     JOIN category c ON c.id = nc.category_id AND c.is_system = 0
+     WHERE nc.novel_id = $1
+     ORDER BY c.sort, c.name`,
+    [novelId],
+  );
+  return rows.map((row) => row.categoryId);
+}
+
+export async function setNovelCategories(
+  novelId: number,
+  categoryIds: readonly number[],
+): Promise<void> {
+  if (!Number.isInteger(novelId) || novelId <= 0) {
+    throw new NovelCategoryError("work-not-found");
+  }
+  const uniqueCategoryIds = Array.from(new Set(categoryIds));
+  uniqueCategoryIds.forEach(assertManualCategoryId);
+
+  await runDatabaseTransaction(async (db) => {
+    const works = await db.select<{ id: number }[]>(
+      "SELECT id FROM novel WHERE id = $1 AND in_library = 1",
+      [novelId],
+    );
+    if (works.length === 0) throw new NovelCategoryError("work-not-found");
+
+    if (uniqueCategoryIds.length > 0) {
+      const placeholders = uniqueCategoryIds.map((_, index) => `$${index + 1}`).join(", ");
+      const categories = await db.select<{ id: number }[]>(
+        `SELECT id FROM category WHERE is_system = 0 AND id IN (${placeholders})`,
+        uniqueCategoryIds,
+      );
+      if (categories.length !== uniqueCategoryIds.length) {
+        throw new NovelCategoryError("category-not-found");
+      }
+    }
+
+    await db.execute(
+      `DELETE FROM novel_category
+       WHERE novel_id = $1 AND category_id IN (SELECT id FROM category WHERE is_system = 0)`,
+      [novelId],
+    );
+    if (uniqueCategoryIds.length === 0) return;
+
+    const values = uniqueCategoryIds.map((_, index) => `($1, $${index + 2})`).join(", ");
+    await db.execute(
+      `INSERT INTO novel_category (novel_id, category_id) VALUES ${values}`,
+      [novelId, ...uniqueCategoryIds],
+    );
+  });
 }
 
 function normalizeCategoryName(name: string): string {

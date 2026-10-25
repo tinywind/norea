@@ -154,7 +154,9 @@ block. Ask the administrator to unblock the device before retrying.
 
 The app checks `/api/v1/capabilities` before device registration. It
 requires API version 1, package version 1, `authentication: "device-key"`, and
-`personalStateSync: false`. Registration uses `/api/v1/devices/register`;
+`personalStateSync: false` for older content-only servers, or
+`personalStateSync: true` with `readingStateVersion: 1` for private history sync.
+Registration uses `/api/v1/devices/register`;
 successful registration is reused during the app session. A changed device name
 or key requires registration again. HTTP 401 clears only this in-memory result so
 the next request registers the same saved key. Subsequent requests carry the key
@@ -280,7 +282,9 @@ the version and migrate existing records, including sync exclusions and cursors.
 Version/checksum errors preserve the database and stop opening it. An incompatible
 server schema still requires a fresh state volume; server format conversion is
 outside this app migration policy. Sync cursors and device keys remain outside
-portable backups. No account, session, or personal-state endpoint is called.
+portable backups. Shared content sync never calls private reading-state
+endpoints. Private history transfer is a separate, explicit operation described
+below; it needs no account or console session.
 
 Local content installation is serialized per work. Network transfers use private
 staging directories and do not hold a work lock. Upload fingerprinting and transfer
@@ -317,3 +321,55 @@ Run the server on the development machine and map its port with
 in the app. Use a separate debug app and an owned test storage folder. Do not clear
 or uninstall the user's existing app to work around installation or migration
 errors. See [development.md](development.md) for the targeted Android build.
+
+
+## Private reading history transfer
+
+Settings -> Data -> Content server now has a separate Reading history sync
+section. On the first device, create a reading sync key, save it somewhere
+private, and choose Send to server. On another device, enter the same key and
+choose Import from server. Merge both ways uploads local records and then imports
+the combined server records. An existing content-only server has no historical
+personal records to recover until a device sends them.
+
+Update the app before updating the server. Older app builds that require
+`personalStateSync: false` reject the new server capability. The updated app
+continues to use an older server for content and explains when reading-history
+transfer requires a server update.
+
+This profile key is a random 32-byte secret, independent of the device key and
+scoped to the configured server URL in local storage. Someone holding it can
+read and add to that private history. The server stores only its SHA-256 hash.
+Both endpoints require a non-blocked registered device credential even when the
+shared catalog allows anonymous reading. The key travels in a POST body, never
+in a URL, and is not included in work or chapter content metadata.
+
+- `POST /api/v1/reading-state/merge`: `{ syncKey, entries }`, at most 200 entries.
+  Returns `{ received, updated, total }`. The app further splits bodies below
+  512 KiB. Retrying an interrupted upload is idempotent.
+- `POST /api/v1/reading-state/read`: `{ syncKey, offset, limit }`, up to 500
+  entries per server response (the app requests 200). Returns
+  `{ entries, total, nextOffset }`. A profile with no stored records is empty.
+
+An entry identifies a source, a work by stable source ID (or work path), and a
+chapter by unambiguous source chapter number plus page (or chapter path). A
+conflicting work ID or ambiguous chapter identity is skipped, never matched by
+display title. Source URLs may change when stable identities still match.
+
+Import and upload preserve the union of read flags and bookmarks, the maximum
+progress, and the latest real `readAt`. Metadata modification times are not
+reading-state clocks. This intentionally does not propagate a reset to unread,
+bookmark removal, or history deletion. The UI explains this policy before an
+action. Import only updates matching local chapters; missing records are counted
+and can be retried after adding or refreshing the relevant work.
+
+Each local batch is a database transaction. It updates chapter flags/progress,
+novel history timestamps, materialized library counters, and resume-reading
+pointers, then refreshes library, detail, and history queries. Server/profile
+changes and cancellation are checked inside the queued transaction before
+commit. Completed batches survive a later network failure and the UI reports
+partial progress. No content files or library membership are replaced.
+
+The server creates its private reading-state table additively, after validating
+the unchanged baseline schema checksum. Existing content, device registrations,
+settings, and catalog records are retained when upgrading.

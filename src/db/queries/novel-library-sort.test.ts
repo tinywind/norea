@@ -10,6 +10,8 @@ vi.mock("../client", () => ({
 import { getDb } from "../client";
 import {
   listLibraryNovelPage,
+  getLibraryNovelSummary,
+  listLibraryNovelRefreshTargets,
   listLibraryNovels,
   type LibraryNovelCursor,
 } from "./novel";
@@ -121,4 +123,30 @@ it("reorders when downloads finish, downloaded files are removed, and new chapte
   expect(rows[0]).toMatchObject({ totalChapters: 6, chaptersDownloaded: 3 });
   expect(rows.find((novel) => novel.id === 1)).toMatchObject({ totalChapters: 4, chaptersDownloaded: 4 });
   expect(rows.find((novel) => novel.id === 5)).toMatchObject({ totalChapters: 2, chaptersDownloaded: 0 });
+});
+
+
+it("filters complete and local tags without including empty or non-library works", async () => {
+  sqlite.exec("UPDATE novel SET plugin_id='local',is_local=1 WHERE id=3");
+  expect((await listLibraryNovels({ completedOnly: true, sortOrder: "nameAsc" })).map((row) => row.id)).toEqual([1, 3]);
+  expect((await listLibraryNovels({ localOnly: true })).map((row) => row.id)).toEqual([3]);
+  expect((await listLibraryNovels({ localOnly: true, unreadOnly: true }))).toEqual([]);
+  const summary = await getLibraryNovelSummary({});
+  expect(summary.localNovels).toBe(1);
+  expect(summary.completeNovels).toBe(2);
+  expect(summary.downloadedNovels).toBe(5);
+  expect((await listLibraryNovels({ downloadedOnly: true }))).toHaveLength(summary.downloadedNovels);
+});
+
+it("combines tag, category, source and search filters across pages and refresh targets", async () => {
+  sqlite.exec("INSERT INTO category(id,name,sort) VALUES(1,'Shelf',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1),(3,1),(4,1)");
+  const filter = { completedOnly: true, categoryId: 1, search: "alpha", sourceId: "source" };
+  const first = await listLibraryNovelPage({ ...filter, limit: 1, sortOrder: "nameAsc" });
+  expect(first.novels.map((row) => row.id)).toEqual([1]);
+  expect(first.hasMore).toBe(true);
+  const second = await listLibraryNovelPage({ ...filter, cursor: first.nextCursor, limit: 1, sortOrder: "nameAsc" });
+  expect(second.novels.map((row) => row.id)).toEqual([3]);
+  expect(second.hasMore).toBe(false);
+  expect((await getLibraryNovelSummary(filter)).totalNovels).toBe(2);
+  expect((await listLibraryNovelRefreshTargets(filter)).map((row) => row.id).sort()).toEqual([1, 3]);
 });

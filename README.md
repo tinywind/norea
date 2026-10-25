@@ -32,7 +32,12 @@ webtoons or read manga and comics page by page.
 ## What You Can Do
 
 - Browse and search installed reading sources.
-- Add novels to your library and organize them with categories.
+- Add novels to your library and organize them with categories. Add or remove
+  category assignments for selected works, or edit them from the work home.
+- Choose the category shown when entering the library, with All as the default.
+- Filter by unread, downloaded, local, and fully read tags. Tablet and desktop
+  layouts expose these filters directly; narrow layouts include them in the
+  category drawer.
 - Sort your library by undownloaded chapter count, from fewest or most first.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
 - Open TXT, Markdown, EPUB, and PDF files with installed Windows or Android builds,
@@ -52,7 +57,8 @@ webtoons or read manga and comics page by page.
 - Share complete chapters through an optional [content server](docs/content-sync.md).
   Browse its works under Browse -> Content server, add them to your library, and
   download chapters without waiting for a full sync. Devices register
-  automatically; reading state stays on each device.
+  automatically. Private reading history can be sent, imported, or merged manually
+  using the same reading sync key on your devices.
 - Export and import local backups for your library, progress, categories,
   source settings, and chapter download status.
 
@@ -181,7 +187,13 @@ as described in the [server documentation](https://github.com/tinywind/norea-con
 4. Choose Download to this device for content in the server catalog.
 
 No account or password is needed in the app. Each device uses its own key;
-reading positions, read flags, bookmarks, and library membership stay local.
+library membership stays local. In the separate Reading history sync section,
+create a private reading sync key on your first device and choose Send to server.
+On another device, save the same key and choose Import from server. Merge both
+ways sends this device’s history and then imports the combined result. Read
+chapters, furthest progress, bookmarks, and the latest read time are preserved;
+marking unread, bookmark removal, and history deletion are not propagated. Books
+and chapters must already be present locally; unmatched records are reported.
 Choose Manual only, Periodically, or When changes occur. Automatic sync runs
 while the app is visible, and later syncs use recorded content changes.
 

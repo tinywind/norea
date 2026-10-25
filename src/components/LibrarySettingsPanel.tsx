@@ -1,4 +1,6 @@
 import { NumberInput, Select, Stack, Switch } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
+import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
 import { SegmentedToggle } from "./SegmentedToggle";
 import { SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
 import { useTranslation } from "../i18n";
@@ -19,6 +21,13 @@ import {
 
 export function LibrarySettingsPanel() {
   const { t } = useTranslation();
+  const defaultCategoryId = useLibraryStore((s) => s.defaultCategoryId);
+  const setDefaultCategoryId = useLibraryStore((s) => s.setDefaultCategoryId);
+  const categories = useQuery({
+    queryKey: ["category", "list"],
+    queryFn: listCategories,
+    staleTime: Infinity,
+  });
   const displayMode = useLibraryStore((s) => s.displayMode);
   const setDisplayMode = useLibraryStore((s) => s.setDisplayMode);
   const novelsPerRow = useLibraryStore((s) => s.novelsPerRow);
@@ -43,6 +52,28 @@ export function LibrarySettingsPanel() {
   return (
     <Stack gap="md">
       <SettingsSection title={t("librarySettings.group.sorting")}>
+        <SettingsFieldRow
+          label={t("librarySettings.defaultCategory")}
+          description={t("librarySettings.defaultCategory.description")}
+        >
+          <Select
+            aria-label={t("librarySettings.defaultCategory")}
+            data={[
+              { value: "all", label: t("categories.all") },
+              { value: String(UNCATEGORIZED_CATEGORY_ID), label: t("categories.uncategorized") },
+              ...(categories.data ?? []).map((category) => ({
+                value: String(category.id),
+                label: category.name,
+              })),
+            ]}
+            disabled={categories.isLoading || categories.isError}
+            error={categories.isError ? t("librarySettings.defaultCategory.error") : undefined}
+            value={defaultCategoryId === null ? "all" : String(defaultCategoryId)}
+            onChange={(value) => {
+              if (value !== null) setDefaultCategoryId(value === "all" ? null : Number(value));
+            }}
+          />
+        </SettingsFieldRow>
         <SettingsFieldRow
           label={t("librarySettings.sort")}
           description={t("librarySettings.sort.description")}

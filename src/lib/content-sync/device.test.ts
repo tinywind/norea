@@ -144,12 +144,19 @@ it.each([
   { ...capabilities, apiVersion: 2 },
   { ...capabilities, authentication: "account" },
   { ...capabilities, personalStateSync: true },
+  { ...capabilities, personalStateSync: true, readingStateVersion: 2 },
   { ...capabilities, packageVersion: 2 },
 ])("rejects incompatible capabilities before revealing or generating a credential", async (response) => {
   vi.mocked(nativeFetch).mockResolvedValue(Response.json(response));
   await expect(registerContentDevice("http://server", "Tablet")).rejects.toThrow("incompatible");
   expect(nativeFetch).toHaveBeenCalledOnce();
   expect(storage.size).toBe(0);
+});
+
+it("accepts a server advertising the supported private reading-state protocol", async () => {
+  vi.mocked(nativeFetch).mockImplementation(async url => Response.json(String(url).endsWith("/capabilities")
+    ? { ...capabilities, personalStateSync: true, readingStateVersion: 1 } : { id: "device", deviceName: "Tablet" }));
+  await expect(registerContentDevice("http://server", "Tablet")).resolves.toMatch(/^[a-f0-9]{64}$/);
 });
 
 it("stops before registration if persistence fails or an existing key is malformed", async () => {

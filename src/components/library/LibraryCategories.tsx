@@ -1,5 +1,7 @@
+import { useState } from "react";
 import {
   Popover,
+  SegmentedControl,
   ScrollArea,
   Text,
   Tooltip,
@@ -26,6 +28,8 @@ interface CategorySubpanelProps {
   onRename: (category: LibraryCategory) => void;
   onSelect: (id: number | null) => void;
   tags: readonly LibraryTag[];
+  activeTags: readonly LibraryTagId[];
+  onToggleTag: (id: LibraryTagId) => void;
   t: TranslateFn;
   uncategorizedCount: number;
 }
@@ -42,6 +46,8 @@ export function CategorySubpanel({
   onRename,
   onSelect,
   tags,
+  activeTags,
+  onToggleTag,
   t,
   uncategorizedCount,
 }: CategorySubpanelProps) {
@@ -108,23 +114,12 @@ export function CategorySubpanel({
             </Text>
           )}
 
-          <div className="norea-library-tags">
-            <div className="norea-library-tags-title">
-              {t("library.tags.title")}
-            </div>
-            {tags.length > 0 ? (
-              tags.map((tag) => (
-                <div className="norea-library-tag-row" key={tag.label}>
-                  <span>{`#${tag.label}`}</span>
-                  <span>{tag.count}</span>
-                </div>
-              ))
-            ) : (
-              <Text className="norea-library-subpanel-note">
-                {t("library.tags.none")}
-              </Text>
-            )}
-          </div>
+          <LibraryTagFilters
+            activeTags={activeTags}
+            onToggle={onToggleTag}
+            tags={tags}
+            t={t}
+          />
         </div>
       </ScrollArea>
       <div className="norea-library-subpanel-footer">
@@ -163,6 +158,7 @@ function CategoryButton({
       <UnstyledButton
         className="norea-library-category"
         data-active={active}
+        aria-pressed={active}
         onClick={onClick}
       >
         <span className="norea-library-category-label">{label}</span>
@@ -201,7 +197,7 @@ function CategoryButton({
 interface SelectionCategoryPickerProps {
   assigning: boolean;
   categories: readonly LibraryCategory[];
-  onAssign: (categoryId: number) => void;
+  onAssign: (categoryId: number, mode: "add" | "remove") => void;
   t: TranslateFn;
 }
 
@@ -211,20 +207,35 @@ export function SelectionCategoryPicker({
   onAssign,
   t,
 }: SelectionCategoryPickerProps) {
+  const [mode, setMode] = useState<"add" | "remove">("add");
   return (
-    <Popover position="bottom-end" shadow="md" width={220}>
+    <Popover position="bottom-end" shadow="md" width={280}>
       <Popover.Target>
         <IconButton
           className="norea-library-selection-icon"
           disabled={categories.length === 0 || assigning}
-          label={t("library.addSelectedToCategory")}
+          label={t("library.editSelectedCategories")}
           size="sm"
-          title={t("library.addSelectedToCategory")}
+          title={t("library.editSelectedCategories")}
         >
           <FolderPlusIcon />
         </IconButton>
       </Popover.Target>
       <Popover.Dropdown className="norea-library-category-assign-popover">
+        <SegmentedControl
+          fullWidth
+          size="xs"
+          aria-label={t("library.editSelectedCategories")}
+          value={mode}
+          onChange={(value) => setMode(value as "add" | "remove")}
+          data={[
+            { value: "add", label: t("library.categoryAction.add") },
+            { value: "remove", label: t("library.categoryAction.remove") },
+          ]}
+        />
+        <Text c="dimmed" size="xs" p="xs">
+          {t("library.categoryAction.hint")}
+        </Text>
         <div className="norea-library-category-assign-list">
           {categories.length > 0 ? (
             categories.map((category) => (
@@ -232,7 +243,7 @@ export function SelectionCategoryPicker({
                 className="norea-library-category-assign-option"
                 disabled={assigning}
                 key={category.id}
-                onClick={() => onAssign(category.id)}
+                onClick={() => onAssign(category.id, mode)}
               >
                 <span>{category.name}</span>
               </UnstyledButton>
@@ -268,9 +279,44 @@ function FolderPlusIcon() {
   );
 }
 
-interface LibraryTag {
+export type LibraryTagId = "unread" | "downloaded" | "local" | "complete";
+
+export interface LibraryTag {
+  id: LibraryTagId;
   count: number;
   label: string;
+}
+
+export function LibraryTagFilters({
+  activeTags,
+  onToggle,
+  tags,
+  t,
+  className = "",
+}: {
+  activeTags: readonly LibraryTagId[];
+  onToggle: (id: LibraryTagId) => void;
+  tags: readonly LibraryTag[];
+  t: TranslateFn;
+  className?: string;
+}) {
+  return (
+    <div className={"norea-library-tags " + className} role="group" aria-label={t("library.tags.title")}>
+      <div className="norea-library-tags-title">{t("library.tags.title")}</div>
+      {tags.map((tag) => (
+        <UnstyledButton
+          className="norea-library-tag-row"
+          key={tag.id}
+          data-active={activeTags.includes(tag.id)}
+          aria-pressed={activeTags.includes(tag.id)}
+          onClick={() => onToggle(tag.id)}
+        >
+          <span>{"#" + tag.label}</span>
+          <span>{tag.count}</span>
+        </UnstyledButton>
+      ))}
+    </div>
+  );
 }
 
 export function getLibraryTags(
@@ -278,11 +324,11 @@ export function getLibraryTags(
   t: TranslateFn,
 ): LibraryTag[] {
   return [
-    { count: summary.unreadNovels, label: t("library.tags.unread") },
-    { count: summary.downloadedNovels, label: t("library.tags.downloaded") },
-    { count: summary.localNovels, label: t("library.tags.local") },
-    { count: summary.completeNovels, label: t("library.tags.complete") },
-  ].filter((tag) => tag.count > 0);
+    { id: "unread", count: summary.unreadNovels, label: t("library.tags.unread") },
+    { id: "downloaded", count: summary.downloadedNovels, label: t("library.tags.downloaded") },
+    { id: "local", count: summary.localNovels, label: t("library.tags.local") },
+    { id: "complete", count: summary.completeNovels, label: t("library.tags.complete") },
+  ];
 }
 
 export function getLibraryStats(

@@ -12,6 +12,7 @@ import {
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { ReadingStateSettings } from "./ReadingStateSettings";
 
 export function ContentServerSettings() {
   const { t } = useTranslation();
@@ -61,6 +62,7 @@ export function ContentServerSettings() {
 
 
   return (
+    <>
     <SettingsSection title={t("contentSync.title")} description={t("contentSync.description")}>
       <SettingsFieldRow label={t("contentSync.serverUrl")}>
         <div className="norea-settings-connection">
@@ -143,5 +145,7 @@ export function ContentServerSettings() {
         </TextButton>
       </SettingsFieldRow>
     </SettingsSection>
+    <ReadingStateSettings key={serverUrl} serverUrl={serverUrl} />
+    </>
   );
 }

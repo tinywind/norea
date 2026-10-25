@@ -36,18 +36,14 @@ export function useLibraryQuery(
   const {
     search: debouncedSearch,
     categoryId: selectedCategoryId,
-    downloadedOnly: downloadedOnlyMode,
-    unreadOnly: unreadOnlyMode,
   } = libraryFilter;
   const libraryBodyRef = useRef<HTMLDivElement>(null);
   const librarySourceFilter = useMemo(
     () => ({
       search: debouncedSearch,
       categoryId: selectedCategoryId,
-      downloadedOnly: downloadedOnlyMode,
-      unreadOnly: unreadOnlyMode,
     }),
-    [debouncedSearch, downloadedOnlyMode, selectedCategoryId, unreadOnlyMode],
+    [debouncedSearch, selectedCategoryId],
   );
 
   const novels = useInfiniteQuery({
@@ -78,6 +74,18 @@ export function useLibraryQuery(
     enabled: active && libraryRowsLoaded,
     queryKey: ["novel", "library", "summary", libraryFilter] as const,
     queryFn: () => getLibraryNovelSummary(libraryFilter),
+    staleTime: Infinity,
+  });
+
+  const tagFilter = {
+    search: debouncedSearch,
+    categoryId: selectedCategoryId,
+    sourceId: libraryFilter.sourceId,
+  };
+  const tagSummary = useQuery({
+    enabled: active && libraryRowsLoaded,
+    queryKey: ["novel", "library", "summary", tagFilter] as const,
+    queryFn: () => getLibraryNovelSummary(tagFilter),
     staleTime: Infinity,
   });
 
@@ -158,6 +166,7 @@ export function useLibraryQuery(
   return {
     novels,
     summary,
+    tagSummary: tagSummary.data ?? EMPTY_LIBRARY_SUMMARY,
     sourceFilters,
     categories,
     categoryCounts,

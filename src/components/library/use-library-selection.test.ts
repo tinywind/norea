@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   queued: new Set<number>(),
   enqueue: vi.fn(),
   invalidate: vi.fn(async () => undefined),
+  addCategory: vi.fn(async () => undefined),
+  removeCategory: vi.fn(async () => undefined),
   availability: vi.fn(() => ({ data: true, isPending: false })),
 }));
 vi.mock("react", () => ({
@@ -29,7 +31,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: vi.fn() }));
+vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: mocks.addCategory, removeNovelsFromCategory: mocks.removeCategory }));
 vi.mock("../../db/queries/chapter", () => ({ listLibraryDownloadChapters: mocks.listChapters, listUnqueuedChapterDownloadIds: vi.fn() }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, setNovelInLibrary: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
@@ -98,4 +100,21 @@ it("skips empty batches and handles a later background batch failure", async () 
   mocks.enqueue.mockReturnValue({ id: "batch", promise: Promise.reject(new Error("Source failed")) });
   await expect(mocks.mutations[1]!.mutationFn("all")).resolves.toBe(1);
   await vi.waitFor(() => expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["novel", "library"] }));
+});
+
+
+it("removes selected category assignments without removing novels from the library", async () => {
+  const selection = useLibrarySelection({}, "nameAsc");
+  const change = selection.assignCategoryMutation as unknown as {
+    mutationFn: (input: { categoryId: number; novelIds: number[]; mode?: "add" | "remove" }) => Promise<void>;
+    onSuccess: () => void;
+  };
+  await change.mutationFn({ categoryId: 7, novelIds: [1, 2], mode: "remove" });
+  expect(mocks.removeCategory).toHaveBeenCalledWith([1, 2], 7);
+  expect(mocks.addCategory).not.toHaveBeenCalled();
+  change.onSuccess();
+  expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["category"] });
+  expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["novel", "library"] });
+  await change.mutationFn({ categoryId: 7, novelIds: [1], mode: "add" });
+  expect(mocks.addCategory).toHaveBeenCalledWith([1], 7);
 });

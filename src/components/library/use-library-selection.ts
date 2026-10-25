@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useState } from "react";
-import { addNovelsToCategory } from "../../db/queries/category";
+import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
 import {
   listLibraryDownloadChapters,
   type LibraryDownloadChapter,
@@ -36,6 +36,8 @@ export function useLibrarySelection(
     downloadedOnly: downloadedOnlyMode,
     sourceId: selectedSourceId,
     unreadOnly: unreadOnlyMode,
+    localOnly,
+    completedOnly,
   } = libraryFilter;
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
@@ -53,6 +55,8 @@ export function useLibrarySelection(
     selectedSourceId,
     sortOrder,
     unreadOnlyMode,
+    localOnly,
+    completedOnly,
   ]);
 
   const invalidateLibraryCategories = useCallback(() => {
@@ -61,11 +65,20 @@ export function useLibrarySelection(
   }, [queryClient]);
 
   const assignCategoryMutation = useMutation({
-    mutationFn: ({ categoryId, novelIds }: AssignCategoryInput) =>
-      addNovelsToCategory(novelIds, categoryId),
+    mutationFn: ({ categoryId, novelIds, mode = "add" }: AssignCategoryInput) =>
+      mode === "remove"
+        ? removeNovelsFromCategory(novelIds, categoryId)
+        : addNovelsToCategory(novelIds, categoryId),
     onSuccess: () => {
       invalidateLibraryCategories();
       setSelectedIds(new Set());
+    },
+    onError: (error) => {
+      notifications.show({
+        color: "red",
+        title: t("library.editSelectedCategories"),
+        message: describeError(error),
+      });
     },
   });
 
@@ -201,6 +214,7 @@ export function useLibrarySelection(
 }
 
 interface AssignCategoryInput {
+  mode?: "add" | "remove";
   categoryId: number;
   novelIds: number[];
 }

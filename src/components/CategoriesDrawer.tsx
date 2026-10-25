@@ -5,6 +5,7 @@ import {
 } from "../db/queries/category";
 import { PlusGlyph, TrashGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
+import { LibraryTagFilters, type LibraryTag, type LibraryTagId } from "./library/LibraryCategories";
 import { useTranslation } from "../i18n";
 
 interface CategoriesDrawerProps {
@@ -20,6 +21,9 @@ interface CategoriesDrawerProps {
   selectedCategoryId: number | null;
   onSelect: (id: number | null) => void;
   uncategorizedCount: number;
+  tags: readonly LibraryTag[];
+  activeTags: readonly LibraryTagId[];
+  onToggleTag: (id: LibraryTagId) => void;
 }
 
 export function CategoriesDrawer({
@@ -35,6 +39,9 @@ export function CategoriesDrawer({
   selectedCategoryId,
   onSelect,
   uncategorizedCount,
+  tags,
+  activeTags,
+  onToggleTag,
 }: CategoriesDrawerProps) {
   const { t } = useTranslation();
 
@@ -113,6 +120,7 @@ export function CategoriesDrawer({
               </Text>
             )}
           </Stack>
+          <LibraryTagFilters tags={tags} activeTags={activeTags} onToggle={onToggleTag} t={t} />
         </ScrollArea.Autosize>
       </Stack>
     </Drawer>
@@ -144,6 +152,7 @@ function DrawerCategoryButton({
     <div className="norea-library-drawer-category-row" data-active={active}>
       <UnstyledButton
         className="norea-library-drawer-category"
+        aria-pressed={active}
         onClick={onClick}
       >
         <span>{label}</span>

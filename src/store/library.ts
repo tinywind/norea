@@ -30,6 +30,7 @@ export type DefaultChapterSort = "asc" | "desc";
 interface LibraryState {
   pendingLocalImportFiles: readonly File[];
   selectedCategoryId: number | null;
+  defaultCategoryId: number | null;
   search: string;
   displayMode: LibraryDisplayMode;
   novelsPerRow: number;
@@ -39,11 +40,15 @@ interface LibraryState {
   showNumberBadges: boolean;
   downloadedOnlyMode: boolean;
   unreadOnlyMode: boolean;
+  localOnlyMode: boolean;
+  completedOnlyMode: boolean;
   incognitoMode: boolean;
   defaultChapterSort: DefaultChapterSort;
   queueLocalImportFiles: (files: readonly File[]) => void;
   takePendingLocalImportFiles: () => File[];
   setSelectedCategoryId: (id: number | null) => void;
+  setDefaultCategoryId: (id: number | null) => void;
+  enterLibrary: () => void;
   setSearch: (search: string) => void;
   setDisplayMode: (displayMode: LibraryDisplayMode) => void;
   setNovelsPerRow: (novelsPerRow: number) => void;
@@ -53,6 +58,8 @@ interface LibraryState {
   setShowNumberBadges: (showNumberBadges: boolean) => void;
   setDownloadedOnlyMode: (downloadedOnlyMode: boolean) => void;
   setUnreadOnlyMode: (unreadOnlyMode: boolean) => void;
+  setLocalOnlyMode: (localOnlyMode: boolean) => void;
+  setCompletedOnlyMode: (completedOnlyMode: boolean) => void;
   setIncognitoMode: (incognitoMode: boolean) => void;
   setDefaultChapterSort: (defaultChapterSort: DefaultChapterSort) => void;
 }
@@ -62,6 +69,7 @@ export const useLibraryStore = create<LibraryState>()(
     (set, get) => ({
       pendingLocalImportFiles: [],
       selectedCategoryId: null,
+      defaultCategoryId: null,
       search: "",
       displayMode: "comfortable",
       novelsPerRow: 3,
@@ -71,6 +79,8 @@ export const useLibraryStore = create<LibraryState>()(
       showNumberBadges: false,
       downloadedOnlyMode: false,
       unreadOnlyMode: false,
+      localOnlyMode: false,
+      completedOnlyMode: false,
       incognitoMode: false,
       defaultChapterSort: "asc",
       queueLocalImportFiles: (files) =>
@@ -84,6 +94,8 @@ export const useLibraryStore = create<LibraryState>()(
       },
       setSelectedCategoryId: (selectedCategoryId) =>
         set({ selectedCategoryId }),
+      setDefaultCategoryId: (defaultCategoryId) => set({ defaultCategoryId }),
+      enterLibrary: () => set({ selectedCategoryId: get().defaultCategoryId }),
       setSearch: (search) => set({ search }),
       setDisplayMode: (displayMode) => set({ displayMode }),
       setNovelsPerRow: (novelsPerRow) =>
@@ -97,7 +109,17 @@ export const useLibraryStore = create<LibraryState>()(
         set({ showNumberBadges }),
       setDownloadedOnlyMode: (downloadedOnlyMode) =>
         set({ downloadedOnlyMode }),
-      setUnreadOnlyMode: (unreadOnlyMode) => set({ unreadOnlyMode }),
+      setUnreadOnlyMode: (unreadOnlyMode) =>
+        set((state) => ({
+          unreadOnlyMode,
+          completedOnlyMode: unreadOnlyMode ? false : state.completedOnlyMode,
+        })),
+      setLocalOnlyMode: (localOnlyMode) => set({ localOnlyMode }),
+      setCompletedOnlyMode: (completedOnlyMode) =>
+        set((state) => ({
+          completedOnlyMode,
+          unreadOnlyMode: completedOnlyMode ? false : state.unreadOnlyMode,
+        })),
       setIncognitoMode: (incognitoMode) => set({ incognitoMode }),
       setDefaultChapterSort: (defaultChapterSort) =>
         set({ defaultChapterSort }),
@@ -113,6 +135,9 @@ export const useLibraryStore = create<LibraryState>()(
         showNumberBadges: state.showNumberBadges,
         downloadedOnlyMode: state.downloadedOnlyMode,
         unreadOnlyMode: state.unreadOnlyMode,
+        localOnlyMode: state.localOnlyMode,
+        completedOnlyMode: state.completedOnlyMode,
+        defaultCategoryId: state.defaultCategoryId,
         incognitoMode: state.incognitoMode,
         defaultChapterSort: state.defaultChapterSort,
       }),

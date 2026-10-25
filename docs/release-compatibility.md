@@ -88,8 +88,12 @@ requirements must be decided explicitly before implementation.
   without automatically rebuilding metadata from unrelated external files.
 - Backups preserve unknown chapter creation times as `null`, including chapters
   recovered from metadata or storage. Restoring does not invent those timestamps.
-- Content sync shares work metadata and chapter content. Library membership,
-  reading progress, bookmarks, and selected reading positions remain local.
+- Content sync shares work metadata and chapter content. Library membership
+  remains local. Private reading history is separately opt-in with a shared
+  reading sync key: manual send, import, or bidirectional safe merge preserves
+  read flags, maximum progress, bookmarks, and the latest real reading timestamp.
+  Read-state resets and deletions are not propagated. The server adds private
+  state storage without changing its existing baseline schema checksum.
 - Explicit app deletions store per-server work and chapter upload exclusions in
   the existing content sync cache. They survive restart and local rescans without
   changing the database schema. Whole-device work deletion removes its reader
