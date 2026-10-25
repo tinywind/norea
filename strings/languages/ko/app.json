@@ -39,7 +39,7 @@
   "library.categoryAction.remove": "카테고리에서 해제",
   "library.categoryAction.hint": "작품의 카테고리 지정만 바뀝니다. 작품과 다운로드는 유지됩니다.",
   "librarySettings.defaultCategory": "서재 기본 카테고리",
-  "librarySettings.defaultCategory.description": "서재에 들어올 때 표시할 카테고리입니다. 전체를 선택하면 모든 카테고리를 표시합니다.",
+  "librarySettings.defaultCategory.description": "앱을 시작한 뒤 서재를 처음 열 때 표시할 카테고리입니다. 다른 화면에서 돌아오거나 정렬을 바꿔도 현재 선택은 유지됩니다. 전체를 선택하면 모든 카테고리를 표시합니다.",
   "librarySettings.defaultCategory.error": "카테고리를 불러오지 못했습니다. 다시 시도해 주세요.",
   "contentDeletion.workCount": "선택한 작품: {count}개",
   "contentDeletion.chapterCount": "선택한 챕터: {count}개",

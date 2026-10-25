@@ -44,6 +44,7 @@ import {
 } from "../components/library/LibraryLocalImport";
 import { ImportFileIcon } from "../components/library/LocalImportReviewRow";
 import { useLibraryQuery } from "../components/library/use-library-query";
+import { useLibraryEntry } from "../components/library/use-library-entry";
 import { StorageRecoveryStatus } from "../components/runtime/StorageRecovery";
 import { useLibrarySelection } from "../components/library/use-library-selection";
 import { LibraryGrid } from "../components/LibraryGrid";
@@ -99,7 +100,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const setSelectedCategoryId = useLibraryStore((s) => s.setSelectedCategoryId);
   const defaultCategoryId = useLibraryStore((s) => s.defaultCategoryId);
   const setDefaultCategoryId = useLibraryStore((s) => s.setDefaultCategoryId);
-  const enterLibrary = useLibraryStore((s) => s.enterLibrary);
   const sortOrder = useLibraryStore((s) => s.sortOrder);
   const setSortOrder = useLibraryStore((s) => s.setSortOrder);
   const displayMode = useLibraryStore((s) => s.displayMode);
@@ -161,9 +161,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
-  useEffect(() => {
-    if (active) enterLibrary();
-  }, [active, enterLibrary]);
+  useLibraryEntry(active);
 
   useEffect(() => {
     if (!active || !categories.isSuccess) return;

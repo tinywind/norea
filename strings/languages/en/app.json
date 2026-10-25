@@ -39,7 +39,7 @@
   "library.categoryAction.remove": "Remove from category",
   "library.categoryAction.hint": "Only category assignments change. Works and downloads are kept.",
   "librarySettings.defaultCategory": "Default library category",
-  "librarySettings.defaultCategory.description": "Open this category whenever you enter the library. Choose All to show every category.",
+  "librarySettings.defaultCategory.description": "Open this category the first time you visit the library after starting the app. Your selection stays when returning or changing the sort order. Choose All to show every category.",
   "librarySettings.defaultCategory.error": "Could not load categories. Try again.",
   "contentDeletion.workCount": "Selected works: {count}",
   "contentDeletion.chapterCount": "Selected chapters: {count}",

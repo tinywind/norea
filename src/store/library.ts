@@ -31,6 +31,7 @@ interface LibraryState {
   pendingLocalImportFiles: readonly File[];
   selectedCategoryId: number | null;
   defaultCategoryId: number | null;
+  librarySessionInitialized: boolean;
   search: string;
   displayMode: LibraryDisplayMode;
   novelsPerRow: number;
@@ -70,6 +71,7 @@ export const useLibraryStore = create<LibraryState>()(
       pendingLocalImportFiles: [],
       selectedCategoryId: null,
       defaultCategoryId: null,
+      librarySessionInitialized: false,
       search: "",
       displayMode: "comfortable",
       novelsPerRow: 3,
@@ -93,9 +95,16 @@ export const useLibraryStore = create<LibraryState>()(
         return files;
       },
       setSelectedCategoryId: (selectedCategoryId) =>
-        set({ selectedCategoryId }),
+        set({ selectedCategoryId, librarySessionInitialized: true }),
       setDefaultCategoryId: (defaultCategoryId) => set({ defaultCategoryId }),
-      enterLibrary: () => set({ selectedCategoryId: get().defaultCategoryId }),
+      enterLibrary: () => {
+        if (get().librarySessionInitialized) return;
+        if (useLibraryStore.persist && !useLibraryStore.persist.hasHydrated()) return;
+        set({
+          selectedCategoryId: get().defaultCategoryId,
+          librarySessionInitialized: true,
+        });
+      },
       setSearch: (search) => set({ search }),
       setDisplayMode: (displayMode) => set({ displayMode }),
       setNovelsPerRow: (novelsPerRow) =>

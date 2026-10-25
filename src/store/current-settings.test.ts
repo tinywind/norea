@@ -35,7 +35,13 @@ beforeEach(() => {
   useAppearanceStore.getState().resetAppearance();
   useReaderStore.getState().resetReaderSettings();
   useUserAgentStore.setState({ userAgent: DEFAULT_USER_AGENT });
-  useLibraryStore.setState({ defaultCategoryId: null, selectedCategoryId: null, unreadOnlyMode: false, completedOnlyMode: false });
+  useLibraryStore.setState({
+    defaultCategoryId: null,
+    selectedCategoryId: null,
+    librarySessionInitialized: false,
+    unreadOnlyMode: false,
+    completedOnlyMode: false,
+  });
 });
 
 afterAll(() => {
@@ -119,25 +125,60 @@ describe("current persisted settings", () => {
 
 describe("library entry preferences", () => {
   it("opens all categories when no default is configured", () => {
-    useLibraryStore.getState().setSelectedCategoryId(9);
     useLibraryStore.getState().enterLibrary();
     expect(useLibraryStore.getState().selectedCategoryId).toBeNull();
+    expect(useLibraryStore.getState().librarySessionInitialized).toBe(true);
   });
 
-  it("persists the chosen default independently from the current category", async () => {
+  it("persists the default but starts a fresh library session after reload", async () => {
     useLibraryStore.getState().setDefaultCategoryId(7);
     useLibraryStore.getState().setSelectedCategoryId(9);
     const saved = storageHarness.values.get("norea-library-settings")!;
     expect(JSON.parse(saved).state.defaultCategoryId).toBe(7);
     expect(JSON.parse(saved).state.selectedCategoryId).toBeUndefined();
-    useLibraryStore.setState({ defaultCategoryId: null, selectedCategoryId: null });
+    expect(JSON.parse(saved).state.librarySessionInitialized).toBeUndefined();
+    useLibraryStore.setState({
+      defaultCategoryId: null,
+      selectedCategoryId: null,
+      librarySessionInitialized: false,
+    });
     storageHarness.values.set("norea-library-settings", saved);
     await useLibraryStore.persist.rehydrate();
     useLibraryStore.getState().enterLibrary();
     expect(useLibraryStore.getState().selectedCategoryId).toBe(7);
+  });
+
+  it("uses a changed default on the next app session instead of replacing the current selection", () => {
+    useLibraryStore.getState().setDefaultCategoryId(7);
+    useLibraryStore.getState().enterLibrary();
+    useLibraryStore.getState().setSelectedCategoryId(9);
     useLibraryStore.getState().setDefaultCategoryId(-1);
     useLibraryStore.getState().enterLibrary();
+    expect(useLibraryStore.getState().selectedCategoryId).toBe(9);
+
+    useLibraryStore.setState({
+      selectedCategoryId: null,
+      librarySessionInitialized: false,
+    });
+    useLibraryStore.getState().enterLibrary();
     expect(useLibraryStore.getState().selectedCategoryId).toBe(-1);
+  });
+
+  it.each([9, null])("preserves an explicit category choice of %s before the first entry", (categoryId) => {
+    useLibraryStore.getState().setDefaultCategoryId(7);
+    useLibraryStore.getState().setSelectedCategoryId(categoryId);
+    useLibraryStore.getState().enterLibrary();
+    expect(useLibraryStore.getState().selectedCategoryId).toBe(categoryId);
+  });
+
+  it("keeps All after the selected category is deleted even when another default exists", () => {
+    useLibraryStore.getState().setDefaultCategoryId(7);
+    useLibraryStore.getState().enterLibrary();
+    useLibraryStore.getState().setSelectedCategoryId(9);
+    useLibraryStore.getState().setSelectedCategoryId(null);
+    useLibraryStore.getState().enterLibrary();
+    expect(useLibraryStore.getState().selectedCategoryId).toBeNull();
+    expect(useLibraryStore.getState().defaultCategoryId).toBe(7);
   });
 
   it("keeps unread and complete filters mutually exclusive", () => {
