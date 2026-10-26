@@ -2,11 +2,11 @@
 
 ## Scope
 
-Verified on 2026-10-26 with a Lenovo Y700 (TB322FC), Android 16, using an
-arm64 development APK. All interaction used the primary display (display 0).
-The production installation, its database, content folder, and VPN settings
-were preserved. Downloads used a separate development profile and content root.
-The baseline application revision was `5046e9d`.
+Verified on 2026-10-26 with a Lenovo Y700 (TB322FC), Android 16.
+All interaction used the primary display (display 0). Initial reproduction and
+subset checks used an arm64 development APK with a separate profile and content
+root. The final section covers the existing signed installation without clearing
+its data. The baseline application revision was `5046e9d`.
 
 ## Reproduced failures and changes
 
@@ -87,3 +87,33 @@ opened in the reader with its local text intact. A controlled tunnel interruptio
 in the test profile recovered through the existing connection restoration path;
 the chapter downloaded again and its persisted queue row was removed. This
 recovery check is separate from the manual-retry regression tests above.
+
+## Existing installation and full database
+
+The signed arm64 release APK from Actions run `40310818493`, built from
+`84a820d5df532059dfda2eccede5a9601f8a7971`, was downloaded through the in-app
+browser. Its bytes matched the workflow update manifest, and its signing
+certificate matched the installed release. It was installed over the existing
+package without clearing application data.
+
+The existing installation had 1,256 queued or running tasks before the update.
+Its original source WebViews repeatedly timed out while the plugin VPN remained
+connected. After the update, the same database, storage root, VPN profile, and
+queue resumed actual chapter acquisition. A force-stop/relaunch also resumed
+the remaining queue.
+
+Full database exports before installation, after installation, and after the
+restart retained all 118 work IDs and 54,286 chapter IDs. Every work record and
+the compared chapter metadata and reading-state fields matched: paths, titles,
+chapter numbers, order, source types, release dates, bookmarks, unread flags,
+progress, reading timestamps, and discovery timestamps. Categories, work-category
+membership, repositories, and installed plugin records also matched.
+
+At the final comparison, downloaded flags had increased from 35,790 to 35,809.
+Tiger Brother chapters 169 and 170 and Drug-Eating Genius Mage chapters 668 and
+669 changed from undownloaded to downloaded and had newly saved content files.
+The two Tiger Brother packages and Return of the Blossoming Blade chapter 35
+contained all 234 manifest-listed assets with matching byte sizes and valid ZIP
+CRCs. Both checked Mage chapters contained saved text, measuring 8,930 and
+7,588 characters. The remaining requested downloads were left running in the
+original installation.
