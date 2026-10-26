@@ -113,3 +113,37 @@ ended the task, but history eviction immediately removed the failure row because
 the active queue exceeded the 200-record history limit. The scheduler log retained
 the filename and host, while the visible failure count stayed at zero. The
 terminal-record accounting fix above addresses this separately from media retry.
+
+## Final full-queue verification
+
+Actions run `40387591413` produced the final signed arm64 APK from
+`69f2726d6cc37ca5222787cc6602abb619f8dfcd`. The in-app browser download again
+matched the workflow size, SHA-256, and installed certificate. The in-place
+update retained the original storage root, source plugins, VPN configuration,
+and queued downloads.
+
+A full export after this update retained all 118 work records and 54,286 chapter
+metadata and reading-state records compared above. Categories, memberships,
+repositories, and installed plugins also matched. Downloaded flags increased
+from 36,921 in the pre-update snapshot to 37,087 in this snapshot; chapter
+`47230` remained undownloaded. This interval includes downloads before and after
+installation and is not a performance measurement.
+
+The final full-queue run ended the affected task after five exhausted acquisition
+rounds. With 2,575 tasks still queued, the primary display retained its failed row,
+missing filename and host, and manual retry button. The task screen reported two
+failures in total; another work had a separate unavailable asset. Unrelated
+downloads continued. The selected chapter's failure was not removed by the backlog.
+
+After a force-stop and relaunch, another full export retained the same 118 work
+records, 54,286 chapter metadata and reading-state records, categories, memberships,
+repositories, and source plugins. Downloaded flags reached 37,101, while chapter
+`47230` remained undownloaded. All 56 intact media files still matched their
+original SHA-256 hashes. The work's `novel.json` was byte-for-byte unchanged from
+the initial snapshot, and its 57-entry chapter manifest remained incomplete.
+
+The temporary test application, copied test root and import ZIP, temporary VPN
+profile copy, debug forwarding, and task log collectors were removed or stopped.
+The original application, content root, source VPN profile, and remaining user
+queue were preserved. The unavailable source image remains the limit on completing
+this chapter; no image was skipped or replaced to claim success.
