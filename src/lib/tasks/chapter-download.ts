@@ -704,6 +704,11 @@ function settleChapterDownloadBatchJob(
   state[settlement] += 1;
 }
 
+function completeChapterDownloadJob(job: ChapterDownloadJob): void {
+  settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+  removeQueuedChapterDownloadJob(job);
+}
+
 function chapterDownloadBatchCancelledCount(
   state: ChapterDownloadBatchState,
 ): number {
@@ -942,7 +947,7 @@ function enqueueChapterDownloadForExecutor(
           throw missingLocalChapterError(job);
         }
         if (!sourceAccessVerification && chapter.isDownloaded) {
-          settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+          completeChapterDownloadJob(job);
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -951,7 +956,7 @@ function enqueueChapterDownloadForExecutor(
         }
         if (await tryDownloadServerChapter(job, signal, setChapterDownloadPhase)) {
           if (signal.aborted) throw abortReason(signal);
-          settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+          completeChapterDownloadJob(job);
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -1045,7 +1050,7 @@ function enqueueChapterDownloadForExecutor(
               throw missingLocalChapterError(job);
             }
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
-            settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+            completeChapterDownloadJob(job);
             reportProgress(
               { current: progressTotal, total: progressTotal },
               { force: true },
@@ -1083,7 +1088,7 @@ function enqueueChapterDownloadForExecutor(
           if (embedded.storedMediaCount === 0) {
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
           }
-          settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+          completeChapterDownloadJob(job);
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -1227,7 +1232,7 @@ function enqueueChapterDownloadForExecutor(
             sourceId: job.pluginId,
           }));
         }
-        settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
+        completeChapterDownloadJob(job);
         reportProgress(
           { current: progressTotal, total: progressTotal },
           { force: true },
@@ -1249,14 +1254,11 @@ function enqueueChapterDownloadForExecutor(
       }
     },
   });
-  void handle.promise.then(
-    () => removeQueuedChapterDownloadJob(job),
-    (error) => {
-      if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
-      if (!removeQueuedJobOnFailure && !isAbortError(error)) return;
-      removeQueuedChapterDownloadJob(job);
-    },
-  );
+  void handle.promise.catch((error) => {
+    if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
+    if (!removeQueuedJobOnFailure && !isAbortError(error)) return;
+    removeQueuedChapterDownloadJob(job);
+  });
   return handle;
 }
 

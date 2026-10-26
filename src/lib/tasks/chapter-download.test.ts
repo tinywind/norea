@@ -1207,6 +1207,63 @@ describe("enqueueChapterDownload", () => {
     ).toHaveLength(0);
   });
 
+  it.each(["source", "server", "local"] as const)(
+    "removes a retained VPN job after a manual retry completes from %s",
+    async (completion) => {
+      vi.mocked(isTauriRuntime).mockReturnValue(true);
+      pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+      const vpnError = Object.assign(new Error("Plugin VPN is unavailable."), {
+        code: "plugin-vpn-unavailable" as const,
+      });
+      schedulerMocks.enqueueSource.mockImplementationOnce((spec: SourceTaskSpec<void>) => {
+        capturedSpec = spec;
+        return { id: "original-download", promise: Promise.reject(vpnError) };
+      });
+      const handle = enqueueChapterDownload({
+        id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7",
+      });
+      await expect(handle.promise).rejects.toBe(vpnError);
+      await waitForChapterDownloadQueueMutations();
+      expect(backendQueueValues.has(7)).toBe(true);
+      if (!capturedSpec) throw new Error("Missing task spec");
+      if (completion === "server") vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+      if (completion === "local") {
+        vi.mocked(getChapterById).mockResolvedValue({ id: 7, isDownloaded: true } as never);
+      }
+
+      // Scheduler retries replay the spec without the original handle's observers.
+      await capturedSpec.run({
+        setDetail: vi.fn(), setProgress: vi.fn(),
+        signal: new AbortController().signal, taskId: "retried-download",
+      });
+      await waitForChapterDownloadQueueMutations();
+
+      expect(backendQueueValues.has(7)).toBe(false);
+      expect(tauriMocks.invoke.mock.calls.filter(
+        ([command]) => command === "chapter_download_queue_remove",
+      )).toHaveLength(1);
+    },
+  );
+
+  it("keeps a queued job when source access defers its run", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    enqueueChapterDownload({
+      id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7",
+    });
+    await waitForChapterDownloadQueueMutations();
+    if (!capturedSpec) throw new Error("Missing task spec");
+
+    await capturedSpec.run({
+      setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "deferred-download",
+      tryStartSourceAccess: () => false,
+    });
+    await waitForChapterDownloadQueueMutations();
+
+    expect(backendQueueValues.has(7)).toBe(true);
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+  });
+
   it("keeps chapter downloads off the interaction executor", () => {
     pluginMocks.getPlugin.mockReturnValueOnce({
       apiVersion: "0.2",
