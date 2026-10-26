@@ -138,7 +138,7 @@ export function ContentServerSettings() {
           {progress ? <Text>{t("contentSync.progress", progress)}</Text> : null}
         </div>
       ) : null}
-      {actionError || error ? <Alert className="norea-settings-error" color="red" role="alert">{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
+      {actionError || error ? <Alert className="norea-settings-error" color="red" role="alert" style={{ whiteSpace: "pre-wrap" }}>{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
       <SettingsFieldRow label={t("contentSync.catalog")} description={t("contentSync.browseHint")}>
         <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>
           {t("contentSync.browse")}

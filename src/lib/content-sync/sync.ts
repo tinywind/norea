@@ -45,27 +45,40 @@ async function contentFingerprint(row: ContentSyncChapter, stagePath: string): P
   return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
     row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
 }
-async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber" | "sourceNovelId">, signal?: AbortSignal): Promise<CatalogEntry | null> {
+interface UploadChapterLookup {
+  entry: CatalogEntry;
+  available: boolean;
+}
+async function findUploadedChapter(server: string, token: string, row: Pick<ContentSyncChapter, "pluginId" | "novelPath" | "chapterPath" | "chapterNumber" | "sourceNovelId">, signal?: AbortSignal): Promise<UploadChapterLookup | null> {
   const local = { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath };
   const recovered = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(row.chapterPath);
   const chapterNumber = row.chapterNumber ?? recovered?.[1];
+  const query = new URLSearchParams({ ...local, ...(chapterNumber && /^\d+(?:\.\d+)?$/.test(chapterNumber) ? { chapterNumber } : {}) });
   let entry: CatalogEntry;
+  let available = true;
   try {
-    const query = new URLSearchParams({ ...local, ...(chapterNumber && /^\d+(?:\.\d+)?$/.test(chapterNumber) ? { chapterNumber } : {}) });
     entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token, "GET", undefined, signal);
   } catch (error) {
-    if (error instanceof ContentServerError && error.status === 404) return null;
-    throw error;
+    if (!(error instanceof ContentServerError) || error.status !== 404) throw error;
+    query.set("includeUnavailable", "true");
+    try {
+      entry = await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token, "GET", undefined, signal);
+    } catch (lookupError) {
+      if (lookupError instanceof ContentServerError && lookupError.status === 404) return null;
+      throw lookupError;
+    }
+    available = false;
   }
   const remote = entry.manifest.identity;
   const sameChapter = remote.chapterPath === row.chapterPath ||
     ((recovered || /^norea-folder:\d+(?:\.\d+)?$/.test(remote.chapterPath)) &&
       entry.manifest.chapter.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
-  if (entry.deleted || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath || remote.novelId !== row.sourceNovelId ||
+  // Unavailable lookups exclude explicit deletions but may retain a missing-file catalog marker.
+  if ((available && entry.deleted) || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath || remote.novelId !== row.sourceNovelId ||
     !remote.chapterPath || !sameChapter) {
     throw new Error("Content server upload identity does not match the requested chapter.");
   }
-  return entry;
+  return { entry, available };
 }
 function assertDevice(server: string, token: string | null): void {
   const current = useContentSyncStore.getState();
@@ -157,12 +170,13 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
           activity.signal.throwIfAborted();
           if (!await canUploadContentChapter(row.chapterId)) continue;
           activity.signal.throwIfAborted();
-          const existing = await findUploadedChapter(server, token, row, activity.signal);
+          const lookup = await findUploadedChapter(server, token, row, activity.signal);
+          const existing = lookup?.entry;
           activity.signal.throwIfAborted();
           assertDevice(server, token);
           await waitForServerWorkDeletion(server, workId!);
           if (isDeletedWork(row)) continue;
-          if (existing && (conflictPolicy === "keep-server" || (conflictPolicy === "prefer-complete" && existing.complete))) {
+          if (lookup?.available && existing && (conflictPolicy === "keep-server" || (conflictPolicy === "prefer-complete" && existing.complete))) {
             cache.downloads[id] = true;
             pending.delete(id);
             continue;
@@ -176,7 +190,8 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
             activity.signal.throwIfAborted();
             await uploadContentChapter({
               serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal, conflictPolicy,
-              manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath, chapterPath: row.chapterPath },
+              manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath,
+                  chapterPath: existing?.manifest.identity.chapterPath.startsWith("norea-folder:") ? existing.manifest.identity.chapterPath : row.chapterPath },
                 novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
                 chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
             });

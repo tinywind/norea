@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => "Test device") }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter } from "../../db/queries/content-sync";
-import { uploadContentChapter, fingerprintContentChapter } from "./native";
+import { uploadContentChapter, fingerprintContentChapter, type CatalogEntry } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
 import { runContentSyncOperation, syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
@@ -165,6 +165,58 @@ it("uploads a complete local chapter over an incomplete server copy when preferr
     ? Promise.resolve(Response.json({ id: "existing", complete: false, deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
   await syncContentServer();
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: "prefer-complete" }));
+});
+
+it.each([
+  ["prefer-complete", false, false], ["keep-server", false, false], ["replace-server", false, false],
+  ["prefer-complete", true, false], ["prefer-complete", true, true],
+] as const)("reconciles an unavailable recovered server chapter without retrying it on every sync (%s, cached completeness: %s, catalog deleted: %s)", async (conflictPolicy, complete, catalogDeleted) => {
+  const row = {
+    chapterId: 1879, novelId: 27, pluginId: "naver-webtoon", sourceNovelId: "650305",
+    novelPath: "/webtoon/list?titleId=650305", chapterPath: "/webtoon/detail?titleId=650305&no=179",
+    novelName: "Tiger Brother", author: null, summary: null, isLocal: false, chapterName: "Part 2, episode 96",
+    chapterNumber: "179", position: 179, page: "1", contentType: "html" as const,
+    isDownloaded: true, mediaRepairNeeded: false, isDownloadQueued: false, contentBytes: 13, mediaBytes: 0,
+  };
+  const existing: CatalogEntry = {
+    id: "recovered-server-chapter", revision: "a".repeat(64), fileBytes: 13, complete, deleted: catalogDeleted, sequence: 1,
+    manifest: {
+      packageVersion: 1, layout: "chapter-files",
+      identity: { pluginId: "naver-webtoon", novelId: "650305", novelPath: row.novelPath, chapterPath: "norea-folder:179" },
+      novel: { name: "Tiger Brother", author: null, summary: null, isLocal: false },
+      chapter: { name: "Part 2, episode 96", chapterNumber: "179", position: 179, page: "1", contentType: "html" },
+      bodyPath: "content.html", files: [{ path: "content.html", size: 13, modifiedAt: 1 }],
+    },
+  };
+  vi.mocked(listContentSyncChapters).mockImplementation(async ids => ids?.length === 0 ? [] : [row]);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => {
+    if (!String(url).includes("/catalog/chapter?")) return original(url, init);
+    return Promise.resolve(new URL(String(url)).searchParams.get("includeUnavailable") === "true"
+      ? Response.json(existing) : new Response(null, { status: 404 }));
+  });
+  vi.mocked(uploadContentChapter).mockImplementation(async input => {
+    if (input.manifest.identity.chapterPath !== "norea-folder:179") {
+      throw new ContentServerError(409, "Chapter directory already belongs to another identity");
+    }
+    return { ...existing, complete: conflictPolicy !== "keep-server" };
+  });
+  useContentSyncStore.setState({ uploadConflictPolicy: conflictPolicy });
+
+  await syncContentServer();
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "idle", error: null, progress: { completed: 1, failed: 0 } });
+  expect(JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!).pendingUploads).toEqual([]);
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    chapterId: 1879, storageDir: "contents/naver-webtoon/650305/179", conflictPolicy,
+    manifest: expect.objectContaining({ identity: existing.manifest.identity }),
+  }));
+
+  vi.mocked(appFetch).mockClear();
+  native.stage.mockClear();
+  await syncContentServer();
+  expect(native.stage).not.toHaveBeenCalled();
+  expect(vi.mocked(appFetch).mock.calls.some(([url]) => String(url).includes("/catalog/chapter?"))).toBe(false);
+  expect(uploadContentChapter).toHaveBeenCalledTimes(1);
 });
 
 it("keeps the conflict policy captured at sync start when settings change during metadata transfer", async () => {
