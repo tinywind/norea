@@ -53,7 +53,13 @@ describe("automatic download retries", () => {
     await first.promise;
   });
 
-  it("reports a persistently unavailable asset as failed while allowing the next chapter", async () => {
+  it.each([0, 250])("retains an unavailable asset failure alongside %i queued tasks", async (pendingCount) => {
+    scheduler.pauseSourceQueue("pending");
+    for (let index = 0; index < pendingCount; index += 1) {
+      scheduler.enqueueSource({
+        ...spec(async () => undefined, "pending"), dedupeKey: `pending:${index}`,
+      });
+    }
     const error = new ChapterMediaIncompleteError([
       { fileName: "0056-missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
     ]);
@@ -73,7 +79,7 @@ describe("automatic download retries", () => {
     expect(scheduler.getTask(handle.id)).toMatchObject({
       status: "failed", canRetry: true, error: expect.stringContaining("0056-missing.jpg"),
     });
-    expect(scheduler.getSnapshot()).toMatchObject({ queued: 0, running: 0, failed: 1 });
+    expect(scheduler.getSnapshot()).toMatchObject({ queued: pendingCount, running: 0, failed: 1 });
     await vi.advanceTimersByTimeAsync(120_000);
     expect(run).toHaveBeenCalledTimes(5);
   });

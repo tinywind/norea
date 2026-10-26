@@ -48,10 +48,14 @@ Different assets receive separate budgets. Manual retry starts a fresh budget.
 Stored valid assets remain reusable, and incomplete packages are not published
 as completed downloads.
 
+History eviction counts terminal records separately from running and queued
+work. It retains up to 200 terminal records even when thousands of downloads are
+pending, so an exhausted asset remains visible and manually retryable.
+
 ## Automated checks
 
 - TypeScript type checking passed.
-- Frontend tests: 1,957 passed across 166 files.
+- Frontend tests: 1,959 passed across 166 files.
 - The targeted arm64 debug APK build passed.
 - The missing-asset classification, diagnostic, bounded task retry, and scheduler
   regressions failed before the implementation and passed afterward.
@@ -59,6 +63,9 @@ as completed downloads.
   after four earlier VPN failures. Both passed with independent asset counters.
 - Scheduler coverage confirms that another chapter can finish during backoff,
   and that a failed asset receives no further automatic attempts.
+- History regression tests reproduced immediate failure eviction beside 250
+  queued tasks before the fix. They now retain the failed task and verify that
+  201 failures evict only the oldest record while keeping all queued work.
 - Scoped static verification: 16 passed, with no remaining actionable findings.
 
 ## Device result
@@ -79,3 +86,30 @@ The visible manual retry control started another attempt. Its first exhausted
 media round received the initial 5-second delay, confirming that the previous
 failure did not consume the new budget. The valid files still matched all 56
 original hashes. The test queue was then paused through the normal task controls.
+
+## Existing signed installation
+
+The signed arm64 APK from Actions run `40383347458` identifies application
+revision `0e2b57b61ed71b29dc476cc1aa6de36dc686f174`. It was downloaded through the
+in-app browser. Its size and SHA-256 matched the workflow update manifest, and
+its certificate matched the existing installation. Installation used an in-place
+update without clearing application data.
+
+Full database exports before and after installation retained all 118 work IDs
+and 54,286 chapter IDs. Every work record and the compared chapter metadata and
+reading-state fields matched, including chapter paths, titles, numbers, order,
+bookmarks, unread flags, progress, release dates, reading timestamps, and discovery
+timestamps. Categories,
+work-category membership, repositories, and installed plugin records also matched.
+
+The affected work home retained all 158 chapter rows, with 157 downloaded and
+the unavailable chapter still incomplete. All 56 original media files retained
+their hashes in the original storage root. The existing queue contained over
+2,700 tasks; the affected work was moved to the front through the normal task
+controls for verification while unrelated downloads continued.
+
+This first full-queue check exposed a second failure: the fifth exhausted round
+ended the task, but history eviction immediately removed the failure row because
+the active queue exceeded the 200-record history limit. The scheduler log retained
+the filename and host, while the visible failure count stayed at zero. The
+terminal-record accounting fix above addresses this separately from media retry.

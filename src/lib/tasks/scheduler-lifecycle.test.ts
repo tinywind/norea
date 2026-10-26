@@ -92,6 +92,35 @@ describe("scheduler lifecycle boundaries", () => {
     expect(scheduler.getSnapshot().total).toBe(0);
   });
 
+  it("caps retained failures independently of paused downloads", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const scheduler = new TaskScheduler();
+    scheduler.pauseSourceQueue("pending");
+    for (let index = 0; index < 250; index += 1) {
+      scheduler.enqueueSource({
+        kind: "chapter.download", source: { id: "pending", name: "Pending" },
+        title: `Pending ${index}`, run: async () => undefined,
+      });
+    }
+    const failedIds: string[] = [];
+    for (let index = 0; index < 201; index += 1) {
+      const handle = scheduler.enqueueSource({
+        kind: "chapter.download", source: { id: "failed", name: "Failed" },
+        title: `Failed ${index}`, retry: () => null,
+        run: async () => { throw new Error("Unavailable asset"); },
+      });
+      await expect(handle.promise).rejects.toThrow("Unavailable asset");
+      failedIds.push(handle.id);
+      vi.advanceTimersByTime(1);
+    }
+    expect(scheduler.getSnapshot()).toMatchObject({ queued: 250, failed: 200, running: 0 });
+    expect(scheduler.getTask(failedIds[0]!)).toBeUndefined();
+    for (const id of failedIds.slice(1)) {
+      expect(scheduler.getTask(id)).toMatchObject({ status: "failed", canRetry: true });
+    }
+  });
+
   it("retires disabled executor affinity without releasing unsettled source work", async () => {
     const scheduler = new TaskScheduler({
       sourceForegroundConcurrency: 2,

@@ -51,12 +51,12 @@ export class TaskHistory {
     totalCount: number,
   ): string[] {
     if (totalCount <= HISTORY_LIMIT) return [];
-    return [...records]
-      .filter(
-        (record) => record.status !== "queued" && record.status !== "running",
-      )
+    const terminalRecords = [...records].filter(
+      (record) => record.status !== "queued" && record.status !== "running",
+    );
+    return terminalRecords
       .sort((left, right) => left.createdAt - right.createdAt)
-      .slice(0, totalCount - HISTORY_LIMIT)
+      .slice(0, Math.max(0, terminalRecords.length - HISTORY_LIMIT))
       .map((record) => record.id);
   }
 
