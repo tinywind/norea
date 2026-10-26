@@ -900,6 +900,8 @@ class AndroidScraperBridge(
       domStorageEnabled = true
       databaseEnabled = true
       mediaPlaybackRequiresUserGesture = false
+      // Capture scripts must keep running while their WebView is outside the visible viewport.
+      offscreenPreRaster = true
       mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
       setSupportZoom(false)
       builtInZoomControls = false
@@ -1379,7 +1381,9 @@ class AndroidScraperBridge(
     val loadTarget = {
       if (state.activeExtractId == id && state.activeAction?.id == id) {
         runCatching {
-          if (useDocumentStartScript && navigationScript.isNotBlank()) {
+          val reuseDocument = useDocumentStartScript && navigationScript.isNotBlank() &&
+            state.contextReady && sameOrigin(state.currentUrl, url)
+          if (reuseDocument) {
             val prepareCapture = scripts.extractStart(id, resultNonce.orEmpty(), beforeScript.orEmpty())
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
               if (state.activeExtractId == id && followed == "true") logState(state, "followed chapter link id=$id", targetUrl)
