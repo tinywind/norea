@@ -23,6 +23,32 @@ describe("download recovery policy", () => {
   ])("does not retry cancellation, configuration or permanent content errors", error => {
     expect(downloadRetryDecision(error, 1)).toBeNull();
   });
+  it("stops retrying the same unavailable media asset after four delayed attempts", () => {
+    const error = new ChapterMediaIncompleteError([
+      { message: "Failed to fetch", url: "https://media.test/missing.jpg" },
+    ]);
+    expect(Array.from({ length: 5 }, (_, index) =>
+      downloadRetryDecision(error, index + 1)?.delayMs,
+    )).toEqual([5000, 15000, 30000, 60000, undefined]);
+  });
+
+  it("identifies missing assets without disclosing URL credentials or query tokens", () => {
+    const error = new ChapterMediaIncompleteError([
+      { fileName: "0056-missing.jpg", message: "Failed to fetch", url: "https://user:password@media.test/missing.jpg?token=secret" },
+    ]);
+    expect(error.message).toContain("0056-missing.jpg");
+    expect(error.message).toContain("media.test");
+    expect(error.message).not.toMatch(/password|token=|secret/);
+  });
+
+  it("does not retry a mixed network failure and permanently missing asset", () => {
+    const error = new ChapterMediaIncompleteError([
+      { message: "Failed to fetch", url: "https://media.test/slow.jpg" },
+      { status: 404, message: "Not Found", url: "https://media.test/missing.jpg" },
+    ]);
+    expect(downloadRetryDecision(error, 1)).toBeNull();
+  });
+
   it("caps recovery backoff rather than giving up after a short outage", () => {
     const delays = Array.from({ length: 7 }, (_, i) => downloadRetryDecision(new PluginVpnUnavailableError(), i+1)?.delayMs);
     expect(delays).toEqual([5000, 15000, 30000, 60000, 60000, 60000, 60000]);

@@ -387,6 +387,7 @@ export async function cacheHtmlChapterMedia({
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
             error: `HTTP ${status} ${statusText}`,
+            fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId,
             status,
@@ -515,10 +516,23 @@ export async function cacheHtmlChapterMedia({
       }
       if (
         isSourceAccessRequiredError(error) || isPluginVpnUnavailableError(error) ||
-        (requireComplete && (isTransientMediaNetworkError(error) || error instanceof ChapterMediaHttpRetryError))
+        (requireComplete && error instanceof ChapterMediaHttpRetryError)
       ) {
         releaseMediaAcquisition();
         session.fail(error);
+        return;
+      }
+      if (requireComplete && isTransientMediaNetworkError(error)) {
+        releaseMediaAcquisition();
+        recordChapterMediaFailure(mediaFailures, {
+          contextUrl: mediaContextUrl ?? url,
+          error,
+          fileName: mediaFilesBySourceUrl.get(url)?.fileName,
+          scraperExecutor,
+          sourceId,
+          url,
+        });
+        session.fail(new ChapterMediaIncompleteError([...mediaFailures]));
         return;
       }
       try {
@@ -526,6 +540,7 @@ export async function cacheHtmlChapterMedia({
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
             error,
+            fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId,
             url,

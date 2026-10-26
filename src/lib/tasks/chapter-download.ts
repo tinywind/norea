@@ -45,7 +45,7 @@ import { pluginManager } from "../plugins/manager";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { isTaskUserCancelledError } from "./task-errors";
-import { downloadRetryDecision, isRetryableDownloadError } from "./download-retry";
+import { createDownloadRetryPolicy, isRetryableDownloadError } from "./download-retry";
 import {
   normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
@@ -876,7 +876,7 @@ function enqueueChapterDownloadForExecutor(
   }
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
-    retry: downloadRetryDecision,
+    retry: createDownloadRetryPolicy(),
     priority: job.priority ?? "background",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -1280,7 +1280,7 @@ export function enqueueChapterMediaRepair(
     : undefined;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
-    retry: downloadRetryDecision,
+    retry: createDownloadRetryPolicy(),
     priority: job.priority ?? "user",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },

@@ -41,9 +41,12 @@ export class ChapterMediaIncompleteError extends Error {
 
   constructor(readonly failures: readonly ChapterMediaFailure[]) {
     const statuses = [...new Set(failures.map((failure) => failure.status).filter(Boolean))];
+    const assets = failures.slice(0, 3).map((failure) =>
+      [failure.fileName, mediaFailureHost(failure.url)].filter(Boolean).join(" @ "),
+    ).filter(Boolean);
     super(`Offline download is incomplete: ${failures.length} media assets unavailable${
       statuses.length ? ` (HTTP ${statuses.join(", ")})` : ""
-    }.`);
+    }.${assets.length ? ` Missing assets: ${assets.join(", ")}.` : ""}`);
     this.name = "ChapterMediaIncompleteError";
   }
 }
@@ -100,6 +103,7 @@ export function recordChapterMediaFailure(
   input: {
     contextUrl: string;
     error: unknown;
+    fileName?: string;
     scraperExecutor?: ScraperExecutorId;
     sourceId?: string;
     status?: number;
@@ -108,6 +112,7 @@ export function recordChapterMediaFailure(
 ): void {
   const message = mediaFailureMessage(input.error);
   failures.push({
+    ...(input.fileName ? { fileName: input.fileName } : {}),
     message,
     ...(input.status ? { status: input.status } : {}),
     url: input.url,
@@ -115,6 +120,7 @@ export function recordChapterMediaFailure(
   console.warn("[chapter-media] media asset using remote fallback", {
     contextHost: mediaFailureContextHost(input.contextUrl),
     error: message,
+    fileName: input.fileName,
     host: mediaFailureHost(input.url),
     sanitizedUrl: redactUrlForLog(input.url),
     scraperExecutor: input.scraperExecutor,

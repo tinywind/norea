@@ -37,6 +37,7 @@ export interface ChapterMediaElementPatch {
 }
 
 export interface ChapterMediaFailure {
+  fileName?: string;
   message: string;
   status?: number;
   url: string;

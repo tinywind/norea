@@ -123,6 +123,7 @@ import {
 } from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { SourceAccessRequiredError } from "../plugins/source-access";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { isTauriRuntime } from "../tauri-runtime";
 import { watchChapterDownloadActivity } from "./chapter-download-activity";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
@@ -1174,6 +1175,32 @@ describe("enqueueChapterDownload", () => {
     expect(capturedSpec.retry?.(new TypeError("Failed to fetch"), 1)).toMatchObject({ delayMs: 5000 });
     expect(capturedSpec.retry?.(new Error("HTTP 404 Not Found"), 1)).toBeNull();
     expect(capturedSpec.retry?.(new TaskUserCancelledError(), 1)).toBeNull();
+  });
+
+  it.each(["download", "repair"] as const)("isolates each asset retry budget from VPN recovery for %s", (operation) => {
+    if (operation === "download") {
+      enqueueChapterDownload({ id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
+    } else {
+      enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    }
+    if (!capturedSpec?.retry) throw new Error("Missing task retry policy");
+    const retry = capturedSpec.retry;
+    const vpnError = Object.assign(new Error("Plugin VPN is unavailable."), { code: "plugin-vpn-unavailable" });
+    for (let attempt = 1; attempt <= 4; attempt += 1) expect(retry(vpnError, attempt)).not.toBeNull();
+    const missing = new ChapterMediaIncompleteError([
+      { fileName: "missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
+    ]);
+    const other = new ChapterMediaIncompleteError([
+      { fileName: "other.jpg", message: "Failed to fetch", url: "https://media.test/other.jpg" },
+    ]);
+    expect(retry(missing, 5)?.delayMs).toBe(5000);
+    expect(retry(other, 6)?.delayMs).toBe(5000);
+    expect(retry(missing, 7)?.delayMs).toBe(15000);
+    expect(retry(missing, 8)?.delayMs).toBe(30000);
+    expect(retry(missing, 9)?.delayMs).toBe(60000);
+    expect(retry(missing, 10)).toBeNull();
+    expect(retry(other, 11)?.delayMs).toBe(15000);
+    expect(retry(missing, 1)?.delayMs).toBe(5000);
   });
 
   it("keeps an unavailable-VPN job resumable instead of discarding it", async () => {

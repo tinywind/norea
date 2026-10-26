@@ -1179,14 +1179,18 @@ describe("cacheHtmlChapterMedia", () => {
       expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
     });
 
-    it("hands exhausted fast network retries back to the durable task rather than remote fallback", async () => {
+    it("retains the failed asset when fast network retries are exhausted", async () => {
       vi.useFakeTimers();
       try {
         pluginMediaFetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
         const checked = expect(cacheHtmlChapterMedia({
           baseUrl: "https://source.test/", chapterId: 42,
           html: '<img src="./page.png">', requireComplete: true,
-        })).rejects.toThrow("Failed to fetch");
+        })).rejects.toMatchObject({
+          code: "chapter-media-incomplete",
+          failures: [{ fileName: "0001-page.png", message: "Failed to fetch", url: "https://source.test/page.png" }],
+        });
+        void checked.catch(() => undefined);
         await vi.advanceTimersByTimeAsync(4000);
         await checked;
         expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);

@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskScheduler, type TaskSpec, type TaskRunContext } from "./scheduler";
 import { TaskUserCancelledError } from "./task-errors";
-import { downloadRetryDecision } from "./download-retry";
+import { createDownloadRetryPolicy } from "./download-retry";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 
 let scheduler: TaskScheduler;
 const networkError = () => new TypeError("Failed to fetch");
 const spec = (run: TaskSpec<void>["run"], id = "a") => ({
   kind: "chapter.download" as const, title: "Retry download", source: { id, name: id },
-  dedupeKey: `download:${id}`, retry: downloadRetryDecision, run,
+  dedupeKey: `download:${id}`, retry: createDownloadRetryPolicy(), run,
 });
 const settle = () => vi.advanceTimersByTimeAsync(0);
 beforeEach(() => {
@@ -50,6 +51,31 @@ describe("automatic download retries", () => {
     expect(scheduler.getTask(first.id)?.status).toBe("queued");
     await vi.advanceTimersByTimeAsync(5000);
     await first.promise;
+  });
+
+  it("reports a persistently unavailable asset as failed while allowing the next chapter", async () => {
+    const error = new ChapterMediaIncompleteError([
+      { fileName: "0056-missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
+    ]);
+    const run = vi.fn().mockRejectedValue(error);
+    const handle = scheduler.enqueueSource(spec(run));
+    const checked = expect(handle.promise).rejects.toBe(error);
+    await settle();
+    expect(scheduler.getTask(handle.id)?.status).toBe("queued");
+    const next = scheduler.enqueueSource({
+      ...spec(async () => undefined), dedupeKey: "download:next",
+    });
+    await settle();
+    await expect(next.promise).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(110_000);
+    await checked;
+    expect(run).toHaveBeenCalledTimes(5);
+    expect(scheduler.getTask(handle.id)).toMatchObject({
+      status: "failed", canRetry: true, error: expect.stringContaining("0056-missing.jpg"),
+    });
+    expect(scheduler.getSnapshot()).toMatchObject({ queued: 0, running: 0, failed: 1 });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(run).toHaveBeenCalledTimes(5);
   });
 
   it("survives repeated VPN-readiness expiries beyond several minutes without final failure", async () => {
