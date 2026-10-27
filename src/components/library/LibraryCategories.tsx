@@ -279,7 +279,7 @@ function FolderPlusIcon() {
   );
 }
 
-export type LibraryTagId = "unread" | "downloaded" | "local" | "complete";
+export type LibraryTagId = "unread" | "downloaded" | "local" | "complete" | "repairNeeded";
 
 export interface LibraryTag {
   id: LibraryTagId;
@@ -328,6 +328,7 @@ export function getLibraryTags(
     { id: "downloaded", count: summary.downloadedNovels, label: t("library.tags.downloaded") },
     { id: "local", count: summary.localNovels, label: t("library.tags.local") },
     { id: "complete", count: summary.completeNovels, label: t("library.tags.complete") },
+    { id: "repairNeeded", count: summary.repairNeededNovels, label: t("library.tags.repairNeeded") },
   ];
 }
 

@@ -48,6 +48,7 @@ function metadataRefreshScopeKey(
     unreadOnly: filter.unreadOnly === true,
     localOnly: filter.localOnly === true,
     completedOnly: filter.completedOnly === true,
+    repairNeededOnly: filter.repairNeededOnly === true,
   });
 }
 

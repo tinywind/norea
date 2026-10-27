@@ -116,6 +116,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const setLocalOnlyMode = useLibraryStore((s) => s.setLocalOnlyMode);
   const completedOnlyMode = useLibraryStore((s) => s.completedOnlyMode);
   const setCompletedOnlyMode = useLibraryStore((s) => s.setCompletedOnlyMode);
+  const repairNeededOnlyMode = useLibraryStore((s) => s.repairNeededOnlyMode);
+  const setRepairNeededOnlyMode = useLibraryStore((s) => s.setRepairNeededOnlyMode);
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const libraryFilter = useMemo<LibraryNovelRefreshFilter>(
@@ -127,6 +129,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       unreadOnly: unreadOnlyMode,
       localOnly: localOnlyMode,
       completedOnly: completedOnlyMode,
+      repairNeededOnly: repairNeededOnlyMode,
     }),
     [
       debouncedSearch,
@@ -136,6 +139,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       unreadOnlyMode,
       localOnlyMode,
       completedOnlyMode,
+      repairNeededOnlyMode,
     ],
   );
   const {
@@ -235,7 +239,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     downloadedOnlyMode ||
     unreadOnlyMode ||
     localOnlyMode ||
-    completedOnlyMode;
+    completedOnlyMode ||
+    repairNeededOnlyMode;
 
   const libraryError = novels.error;
   const isInitialLibraryLoading = novels.isLoading;
@@ -278,12 +283,14 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   if (downloadedOnlyMode) activeTags.push("downloaded");
   if (localOnlyMode) activeTags.push("local");
   if (completedOnlyMode) activeTags.push("complete");
+  if (repairNeededOnlyMode) activeTags.push("repairNeeded");
   const toggleTag = (id: LibraryTagId) => {
     switch (id) {
       case "unread": setUnreadOnlyMode(!unreadOnlyMode); break;
       case "downloaded": setDownloadedOnlyMode(!downloadedOnlyMode); break;
       case "local": setLocalOnlyMode(!localOnlyMode); break;
       case "complete": setCompletedOnlyMode(!completedOnlyMode); break;
+      case "repairNeeded": setRepairNeededOnlyMode(!repairNeededOnlyMode); break;
     }
   };
   const sortLabel = t(SORT_LABEL_KEYS[sortOrder]);

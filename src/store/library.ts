@@ -43,6 +43,7 @@ interface LibraryState {
   unreadOnlyMode: boolean;
   localOnlyMode: boolean;
   completedOnlyMode: boolean;
+  repairNeededOnlyMode: boolean;
   incognitoMode: boolean;
   defaultChapterSort: DefaultChapterSort;
   queueLocalImportFiles: (files: readonly File[]) => void;
@@ -61,6 +62,7 @@ interface LibraryState {
   setUnreadOnlyMode: (unreadOnlyMode: boolean) => void;
   setLocalOnlyMode: (localOnlyMode: boolean) => void;
   setCompletedOnlyMode: (completedOnlyMode: boolean) => void;
+  setRepairNeededOnlyMode: (repairNeededOnlyMode: boolean) => void;
   setIncognitoMode: (incognitoMode: boolean) => void;
   setDefaultChapterSort: (defaultChapterSort: DefaultChapterSort) => void;
 }
@@ -83,6 +85,7 @@ export const useLibraryStore = create<LibraryState>()(
       unreadOnlyMode: false,
       localOnlyMode: false,
       completedOnlyMode: false,
+      repairNeededOnlyMode: false,
       incognitoMode: false,
       defaultChapterSort: "asc",
       queueLocalImportFiles: (files) =>
@@ -129,6 +132,7 @@ export const useLibraryStore = create<LibraryState>()(
           completedOnlyMode,
           unreadOnlyMode: completedOnlyMode ? false : state.unreadOnlyMode,
         })),
+      setRepairNeededOnlyMode: (repairNeededOnlyMode) => set({ repairNeededOnlyMode }),
       setIncognitoMode: (incognitoMode) => set({ incognitoMode }),
       setDefaultChapterSort: (defaultChapterSort) =>
         set({ defaultChapterSort }),
@@ -146,6 +150,7 @@ export const useLibraryStore = create<LibraryState>()(
         unreadOnlyMode: state.unreadOnlyMode,
         localOnlyMode: state.localOnlyMode,
         completedOnlyMode: state.completedOnlyMode,
+        repairNeededOnlyMode: state.repairNeededOnlyMode,
         defaultCategoryId: state.defaultCategoryId,
         incognitoMode: state.incognitoMode,
         defaultChapterSort: state.defaultChapterSort,

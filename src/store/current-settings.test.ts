@@ -41,6 +41,7 @@ beforeEach(() => {
     librarySessionInitialized: false,
     unreadOnlyMode: false,
     completedOnlyMode: false,
+    repairNeededOnlyMode: false,
   });
 });
 
@@ -179,6 +180,24 @@ describe("library entry preferences", () => {
     useLibraryStore.getState().enterLibrary();
     expect(useLibraryStore.getState().selectedCategoryId).toBeNull();
     expect(useLibraryStore.getState().defaultCategoryId).toBe(7);
+  });
+
+  it("persists the repair filter together with the other library filters", async () => {
+    useLibraryStore.getState().setRepairNeededOnlyMode(true);
+    useLibraryStore.getState().setUnreadOnlyMode(true);
+    const saved = storageHarness.values.get("norea-library-settings")!;
+    expect(JSON.parse(saved).state).toMatchObject({
+      repairNeededOnlyMode: true,
+      unreadOnlyMode: true,
+    });
+
+    useLibraryStore.setState({ repairNeededOnlyMode: false, unreadOnlyMode: false });
+    storageHarness.values.set("norea-library-settings", saved);
+    await useLibraryStore.persist.rehydrate();
+    expect(useLibraryStore.getState()).toMatchObject({
+      repairNeededOnlyMode: true,
+      unreadOnlyMode: true,
+    });
   });
 
   it("keeps unread and complete filters mutually exclusive", () => {

@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   getLibraryCategoryCounts,
@@ -13,6 +13,7 @@ import {
   type LibraryNovelSummary,
 } from "../../db/queries/novel";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
+import { subscribeChapterDownloadsSettled } from "../../lib/tasks/chapter-download-activity";
 import { type LibrarySortOrder } from "../../store/library";
 const LIBRARY_PAGE_SIZE = Math.min(100, MAX_ROUTE_QUERY_ROWS);
 const LIBRARY_LOAD_MORE_THRESHOLD_PX = 640;
@@ -22,6 +23,7 @@ const EMPTY_LIBRARY_SUMMARY: LibraryNovelSummary = {
   downloadedNovels: 0,
   lastUpdatedAt: null,
   localNovels: 0,
+  repairNeededNovels: 0,
   totalChapters: 0,
   totalNovels: 0,
   unreadChapters: 0,
@@ -37,7 +39,17 @@ export function useLibraryQuery(
     search: debouncedSearch,
     categoryId: selectedCategoryId,
   } = libraryFilter;
+  const queryClient = useQueryClient();
   const libraryBodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!active) return;
+    const refresh = () => {
+      void queryClient.invalidateQueries({ queryKey: ["novel", "library", "summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["novel", "library", { repairNeededOnly: true }] });
+    };
+    refresh();
+    return subscribeChapterDownloadsSettled(refresh);
+  }, [active, queryClient]);
   const librarySourceFilter = useMemo(
     () => ({
       search: debouncedSearch,

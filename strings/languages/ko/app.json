@@ -804,6 +804,7 @@
   "library.tags.downloaded": "다운로드됨",
   "library.tags.local": "로컬",
   "library.tags.complete": "완료",
+  "library.tags.repairNeeded": "복구 필요",
   "library.footer.shortcuts": "위/아래 이동 / Enter 선택",
   "library.manageCategories": "카테고리 관리",
   "library.openCategories": "카테고리 열기: {name}",

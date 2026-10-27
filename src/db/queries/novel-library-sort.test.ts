@@ -138,6 +138,64 @@ it("filters complete and local tags without including empty or non-library works
   expect((await listLibraryNovels({ downloadedOnly: true }))).toHaveLength(summary.downloadedNovels);
 });
 
+it("filters repair-needed works without counting ordinary undownloaded or queued chapters", async () => {
+  sqlite.exec(`
+    UPDATE chapter SET media_repair_needed=1 WHERE id IN (102,103,301,701);
+    INSERT INTO chapter_download_queue(chapter_id,job_json,created_at_ms,updated_at_ms)
+    VALUES(401,'{}',1,1);
+  `);
+
+  const rows = await listLibraryNovels({ repairNeededOnly: true, sortOrder: "nameAsc" });
+  expect(rows.map((row) => row.id)).toEqual([1, 3]);
+  expect((await getLibraryNovelSummary()).repairNeededNovels).toBe(2);
+  expect(await getLibraryNovelSummary({ repairNeededOnly: true })).toMatchObject({
+    totalNovels: 2,
+    repairNeededNovels: 2,
+  });
+  expect((await listLibraryNovels({ repairNeededOnly: true, downloadedOnly: true })).map((row) => row.id)).toEqual([1]);
+  expect((await listLibraryNovels({ repairNeededOnly: true, unreadOnly: true }))).toEqual([]);
+});
+
+it("scopes repair tags, pagination and metadata refresh to the selected category and source", async () => {
+  sqlite.exec(`
+    UPDATE chapter SET media_repair_needed=1 WHERE id IN (102,301,401,701);
+    INSERT INTO category(id,name,sort) VALUES(1,'Shelf',0);
+    INSERT INTO novel_category(novel_id,category_id) VALUES(1,1),(3,1);
+    UPDATE novel SET plugin_id='other-source' WHERE id=3;
+  `);
+
+  const filter = { repairNeededOnly: true, categoryId: 1, search: "alpha" };
+  const first = await listLibraryNovelPage({ ...filter, limit: 1, sortOrder: "nameAsc" });
+  expect(first.novels.map((row) => row.id)).toEqual([1]);
+  expect(first.hasMore).toBe(true);
+  const second = await listLibraryNovelPage({ ...filter, cursor: first.nextCursor, limit: 1, sortOrder: "nameAsc" });
+  expect(second.novels.map((row) => row.id)).toEqual([3]);
+  expect(second.hasMore).toBe(false);
+  expect((await getLibraryNovelSummary({ categoryId: 1 })).repairNeededNovels).toBe(2);
+  const scoped = { ...filter, sourceId: "source" };
+  expect((await getLibraryNovelSummary(scoped)).repairNeededNovels).toBe(1);
+  expect((await listLibraryNovelRefreshTargets(scoped)).map((row) => row.id)).toEqual([1]);
+});
+
+it("keeps a work in the repair filter until its last incomplete chapter is repaired or removed", async () => {
+  sqlite.exec("UPDATE chapter SET media_repair_needed=1 WHERE id IN (102,103)");
+  const filter = { repairNeededOnly: true };
+  expect((await listLibraryNovels(filter)).map((row) => row.id)).toEqual([1]);
+
+  sqlite.exec("UPDATE chapter SET is_downloaded=1,media_repair_needed=0 WHERE id=102");
+  expect((await getLibraryNovelSummary()).repairNeededNovels).toBe(1);
+  expect((await listLibraryNovels(filter)).map((row) => row.id)).toEqual([1]);
+
+  sqlite.exec("UPDATE chapter SET is_downloaded=1,media_repair_needed=0 WHERE id=103");
+  expect(await listLibraryNovels(filter)).toEqual([]);
+  expect((await getLibraryNovelSummary()).repairNeededNovels).toBe(0);
+
+  sqlite.exec("UPDATE chapter SET media_repair_needed=1 WHERE id=103");
+  expect((await listLibraryNovels(filter)).map((row) => row.id)).toEqual([1]);
+  sqlite.exec("DELETE FROM chapter WHERE id=103");
+  expect(await listLibraryNovels(filter)).toEqual([]);
+});
+
 it("combines tag, category, source and search filters across pages and refresh targets", async () => {
   sqlite.exec("INSERT INTO category(id,name,sort) VALUES(1,'Shelf',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1),(3,1),(4,1)");
   const filter = { completedOnly: true, categoryId: 1, search: "alpha", sourceId: "source" };

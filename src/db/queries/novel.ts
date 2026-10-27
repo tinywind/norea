@@ -50,6 +50,7 @@ export interface LibraryFilter {
   /** Restrict to an assigned category, or to uncategorized novels with the sentinel id. */
   categoryId?: number | null;
   downloadedOnly?: boolean;
+  repairNeededOnly?: boolean;
   /** Restrict to one source plugin id. */
   sourceId?: string | null;
   unreadOnly?: boolean;
@@ -78,6 +79,7 @@ export interface LibraryNovelSummary {
   downloadedNovels: number;
   lastUpdatedAt: number | null;
   localNovels: number;
+  repairNeededNovels: number;
   totalChapters: number;
   totalNovels: number;
   unreadChapters: number;
@@ -121,6 +123,7 @@ interface RawLibraryNovelSummary {
   downloadedNovels: number | null;
   lastUpdatedAt: number | null;
   localNovels: number | null;
+  repairNeededNovels: number | null;
   totalChapters: number | null;
   totalNovels: number | null;
   unreadChapters: number | null;
@@ -147,6 +150,7 @@ export type LibraryNovelRefreshFilter = Pick<
   | "search"
   | "categoryId"
   | "downloadedOnly"
+  | "repairNeededOnly"
   | "sourceId"
   | "unreadOnly"
   | "localOnly"
@@ -322,6 +326,11 @@ function buildLibraryFilterConditions(
   if (filter.downloadedOnly) {
     conditions.push(
       "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+    );
+  }
+  if (filter.repairNeededOnly) {
+    conditions.push(
+      "EXISTS (SELECT 1 FROM chapter c WHERE c.novel_id = n.id AND c.media_repair_needed = 1)",
     );
   }
   if (filter.sourceId != null && filter.sourceId.trim() !== "") {
@@ -545,7 +554,8 @@ export async function getLibraryNovelSummary(
        COALESCE(SUM(CASE WHEN chaptersUnread > 0 THEN 1 ELSE 0 END), 0) AS unreadNovels,
        COALESCE(SUM(CASE WHEN isLocal = 1 OR chaptersDownloaded > 0 THEN 1 ELSE 0 END), 0) AS downloadedNovels,
        COALESCE(SUM(CASE WHEN pluginId = '${LOCAL_PLUGIN_ID}' AND isLocal = 1 THEN 1 ELSE 0 END), 0) AS localNovels,
-       COALESCE(SUM(CASE WHEN totalChapters > 0 AND chaptersUnread = 0 THEN 1 ELSE 0 END), 0) AS completeNovels
+       COALESCE(SUM(CASE WHEN totalChapters > 0 AND chaptersUnread = 0 THEN 1 ELSE 0 END), 0) AS completeNovels,
+       COALESCE(SUM(EXISTS (SELECT 1 FROM chapter c WHERE c.novel_id = library_rows.id AND c.media_repair_needed = 1)), 0) AS repairNeededNovels
      FROM library_rows`,
     params,
   );
@@ -556,6 +566,7 @@ export async function getLibraryNovelSummary(
     downloadedNovels: row?.downloadedNovels ?? 0,
     lastUpdatedAt: row?.lastUpdatedAt ?? null,
     localNovels: row?.localNovels ?? 0,
+    repairNeededNovels: row?.repairNeededNovels ?? 0,
     totalChapters: row?.totalChapters ?? 0,
     totalNovels: row?.totalNovels ?? 0,
     unreadChapters: row?.unreadChapters ?? 0,

@@ -38,6 +38,7 @@ export function useLibrarySelection(
     unreadOnly: unreadOnlyMode,
     localOnly,
     completedOnly,
+    repairNeededOnly,
   } = libraryFilter;
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
@@ -57,6 +58,7 @@ export function useLibrarySelection(
     unreadOnlyMode,
     localOnly,
     completedOnly,
+    repairNeededOnly,
   ]);
 
   const invalidateLibraryCategories = useCallback(() => {

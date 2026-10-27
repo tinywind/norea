@@ -804,6 +804,7 @@
   "library.tags.downloaded": "downloaded",
   "library.tags.local": "local",
   "library.tags.complete": "complete",
+  "library.tags.repairNeeded": "needs repair",
   "library.footer.shortcuts": "up/down navigate / enter select",
   "library.manageCategories": "Manage categories",
   "library.openCategories": "Open categories: {name}",
