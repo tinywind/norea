@@ -1487,7 +1487,11 @@ class AndroidScraperBridge(
       contextUrl,
     )
 
-    val navigation = AndroidScraperContextNavigation(contextUrl, fallbackContextUrl)
+    // loadDataWithBaseURL can omit onPageStarted; identify its document so old callbacks stay rejected.
+    val syntheticDocumentUrl = if (syntheticContext) {
+      "${contextUrl.trimEnd('/')}/#norea-context-${bridgeSession.newNonce()}"
+    } else null
+    val navigation = AndroidScraperContextNavigation(contextUrl, fallbackContextUrl, syntheticDocumentUrl)
     val timeout = Runnable {
       if (navigation.finished) return@Runnable
       navigation.cancel()
@@ -1537,9 +1541,8 @@ class AndroidScraperBridge(
       onFinished = { finishedUrl -> onContextDocument(finishedUrl, "pageFinished") },
       onStarted = { navigation.onStarted() },
     )
-    if (syntheticContext) {
-      val documentUrl = "${contextUrl.trimEnd('/')}/"
-      webView.loadDataWithBaseURL(documentUrl, PARKED_PAGE_HTML, "text/html", "utf-8", documentUrl)
+    if (syntheticDocumentUrl != null) {
+      webView.loadDataWithBaseURL(syntheticDocumentUrl, PARKED_PAGE_HTML, "text/html", "utf-8", syntheticDocumentUrl)
     } else {
       webView.loadUrl(contextUrl)
     }

@@ -11,6 +11,36 @@ class AndroidScraperContextNavigationTest {
   private val finalRequest = "https://new.example/novel?page=2&sort=hot"
 
   @Test
+  fun syntheticDocumentsCompleteWithoutAPageStartedCallback() {
+    val document = "https://cdn.example/#norea-context-current"
+    val navigation = AndroidScraperContextNavigation("https://cdn.example/", request, document)
+    assertEquals(AndroidScraperContextAction.Ready(null), navigation.onDocumentReady(document, true, true))
+    assertTrue(navigation.finished)
+    assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(document, true, true))
+  }
+
+  @Test
+  fun syntheticDocumentsIgnoreLateCompletionsFromOlderDocuments() {
+    val document = "https://cdn.example/#norea-context-current"
+    val navigation = AndroidScraperContextNavigation("https://cdn.example/", request, document)
+    navigation.onStarted()
+    for (oldDocument in listOf(context, "https://cdn.example/", "https://cdn.example/#norea-context-old")) {
+      assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(oldDocument, true, true))
+      assertFalse(navigation.finished)
+    }
+    assertEquals(AndroidScraperContextAction.Ready(null), navigation.onDocumentReady(document, true, true))
+  }
+
+  @Test
+  fun syntheticDocumentsRejectLateEventsAfterCancellation() {
+    val document = "https://cdn.example/#norea-context-current"
+    val navigation = AndroidScraperContextNavigation("https://cdn.example/", request, document)
+    navigation.cancel()
+    assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(document, true, true))
+    assertTrue(navigation.finished)
+  }
+
+  @Test
   fun waitsUntilTheInitialNavigationStarts() {
     val navigation = AndroidScraperContextNavigation(context, request)
     assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(context, true, true))

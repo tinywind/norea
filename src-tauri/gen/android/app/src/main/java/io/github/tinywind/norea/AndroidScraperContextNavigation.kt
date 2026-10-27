@@ -9,6 +9,7 @@ internal sealed interface AndroidScraperContextAction {
 internal class AndroidScraperContextNavigation(
   private val contextUrl: String,
   private val requestUrl: String?,
+  private val syntheticDocumentUrl: String? = null,
 ) {
   private var navigationStarted = false
   private var fallbackAttempted = false
@@ -28,7 +29,15 @@ internal class AndroidScraperContextNavigation(
     sameOriginAsContext: Boolean,
     httpDocument: Boolean,
   ): AndroidScraperContextAction {
-    if (finished || !navigationStarted) return AndroidScraperContextAction.Wait
+    if (finished) return AndroidScraperContextAction.Wait
+    if (syntheticDocumentUrl != null) {
+      if (documentUrl != syntheticDocumentUrl) {
+        return AndroidScraperContextAction.Wait
+      }
+      finished = true
+      return AndroidScraperContextAction.Ready(null)
+    }
+    if (!navigationStarted) return AndroidScraperContextAction.Wait
     if (sameOriginAsContext) {
       finished = true
       return AndroidScraperContextAction.Ready(null)
