@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getChapterById, markChapterMediaRepairPending } from "../../db/queries/chapter";
+import { getChapterById, listExistingChapterIds, markChapterMediaRepairPending } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
 import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
@@ -183,7 +183,6 @@ export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
   10,
   MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
 );
-const CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL = 25;
 const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 const CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE = 500;
 
@@ -395,10 +394,6 @@ function normalizeChapterDownloadBatchWindowSize(
   );
 }
 
-function yieldChapterDownloadRestoreInspection(): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
-}
-
 function isPauseAbort(signal: AbortSignal): boolean {
   const reason = (signal as AbortSignal & { reason?: unknown }).reason;
   return (
@@ -567,7 +562,14 @@ function queueBackendChapterDownloadMutation(
 }
 
 export async function waitForChapterDownloadQueueMutations(): Promise<void> {
-  await backendChapterDownloadQueueMutation;
+  const mutation = backendChapterDownloadQueueMutation;
+  try {
+    await mutation;
+  } finally {
+    if (backendChapterDownloadQueueMutation === mutation) {
+      backendChapterDownloadQueueMutation = mutation.catch(() => undefined);
+    }
+  }
 }
 
 function queueChapterDownloadJob(job: ChapterDownloadJob, ownerId: string): Promise<void> {
@@ -1721,29 +1723,16 @@ async function pendingBackendChapterDownloadJobs(): Promise<
     return { leased: 0, pendingJobs: [] };
   }
 
+  const existingChapterIds = new Set(
+    await listExistingChapterIds(jobs.map((job) => job.id)),
+  );
   const pendingJobs: ChapterDownloadJob[] = [];
   const completedChapterIds: number[] = [];
-  for (let index = 0; index < jobs.length; index += 1) {
-    const job = jobs[index]!;
-    try {
-      const chapter = await getChapterById(job.id);
-      if (!chapter) {
-        completedChapterIds.push(job.id);
-      } else {
-        pendingJobs.push(job);
-      }
-    } catch (error) {
-      console.warn(
-        "[chapter-download] failed to inspect queued chapter:",
-        error,
-      );
-      throw error;
-    }
-    if (
-      (index + 1) % CHAPTER_DOWNLOAD_RESTORE_INSPECTION_YIELD_INTERVAL ===
-      0
-    ) {
-      await yieldChapterDownloadRestoreInspection();
+  for (const job of jobs) {
+    if (existingChapterIds.has(job.id)) {
+      pendingJobs.push(job);
+    } else {
+      completedChapterIds.push(job.id);
     }
   }
   if (completedChapterIds.length > 0) {
@@ -1797,11 +1786,15 @@ async function runBackendChapterDownloadExecutor(): Promise<void> {
   }
 }
 
-export function startChapterDownloadQueueExecutor(): void {
+export function startChapterDownloadQueueExecutor(
+  onError?: (error: unknown) => void,
+): void {
   if (chapterDownloadQueueExecutorStarted || !isTauriRuntime()) return;
   chapterDownloadQueueExecutorStarted = true;
 
   void runBackendChapterDownloadExecutor().catch((error) => {
+    chapterDownloadQueueExecutorStarted = false;
     console.warn("[chapter-download] failed to run download queue:", error);
+    onError?.(error);
   });
 }

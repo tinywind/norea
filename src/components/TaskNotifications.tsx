@@ -140,8 +140,28 @@ export function TaskNotifications() {
       subscribeChapterDownloadBatchesSettled(() => {
         void flushBatchCompletions().catch(() => undefined);
       });
-    void startChapterDownloadQueueExecutor();
+    const restoreQueue = () => {
+      notifications.hide("chapter-queue-restore-error");
+      startChapterDownloadQueueExecutor((error) => {
+        notifications.show({
+          id: "chapter-queue-restore-error",
+          autoClose: false,
+          color: "red",
+          title: t("tasks.restoreQueueFailed"),
+          message: describeError(error),
+        });
+      });
+    };
+    restoreQueue();
+    if (typeof window !== "undefined") {
+      window.addEventListener("norea-app-resumed", restoreQueue);
+      window.addEventListener("focus", restoreQueue);
+    }
     return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("norea-app-resumed", restoreQueue);
+        window.removeEventListener("focus", restoreQueue);
+      }
       unsubscribeChapterDownloadBatches();
       unsubscribeChapterDownloads();
       if (pendingCompletions.size > 0 || pendingCompletionWithoutNovel) {
@@ -150,7 +170,7 @@ export function TaskNotifications() {
         cancelAnimationFrame(completionFrame);
       }
     };
-  }, [queryClient]);
+  }, [queryClient, t]);
 
   useEffect(() => {
     const initialSnapshot = taskScheduler.getSnapshot();

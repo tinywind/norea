@@ -30,6 +30,37 @@ vi.mock("../store/notifications", () => ({
 describe("download completion notifications", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
 
+  it("reports queue restoration errors and retries when the application resumes", () => {
+    const client = new QueryClient();
+    vi.mocked(useQueryClient).mockReturnValue(client);
+    const restore = vi.spyOn(chapterDownloads, "startChapterDownloadQueueExecutor")
+      .mockImplementation(() => {});
+    vi.stubGlobal("window", new EventTarget());
+    TaskNotifications();
+    const dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
+    try {
+      expect(restore).toHaveBeenCalledOnce();
+      const onError = restore.mock.calls[0]![0];
+      expect(onError).toBeTypeOf("function");
+      onError!(new Error("Download queue database is busy"));
+      expect(notificationsStore.getState().notifications[0]).toMatchObject({
+        title: "tasks.restoreQueueFailed",
+        message: "Download queue database is busy",
+      });
+      window.dispatchEvent(new Event("norea-app-resumed"));
+      expect(restore).toHaveBeenCalledTimes(2);
+      expect(notificationsStore.getState().notifications).toEqual([]);
+      dispose();
+      window.dispatchEvent(new Event("norea-app-resumed"));
+      expect(restore).toHaveBeenCalledTimes(2);
+    } finally {
+      dispose();
+      notifications.clean();
+      client.clear();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([false, true])("keeps work metadata cached after completion (batch: %s)", async (batch) => {
     const client = new QueryClient();
     const metadataKey = ["novel", "detail", 7];

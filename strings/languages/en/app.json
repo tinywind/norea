@@ -143,6 +143,7 @@
   "tasks.downloadRetryWaiting": "The download request failed. Retrying automatically in {seconds}s.",
   "tasks.backgroundExecutionSuspended": "Android paused background execution. Open the app to continue; queued downloads are preserved.",
   "tasks.title": "Tasks",
+  "tasks.restoreQueueFailed": "Unable to restore queued downloads",
   "tasks.description": "Monitor queued and long-running work.",
   "tasks.currentWork": "Current work",
   "tasks.mainQueue": "Main queue",

@@ -33,6 +33,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("../../db/queries/chapter", () => ({
   getChapterById: vi.fn(),
+  listExistingChapterIds: vi.fn(),
   markChapterMediaRepairPending: vi.fn(async () => ({ rowsAffected: 1 })),
 }));
 vi.mock("../../db/queries/novel", () => ({
@@ -103,7 +104,7 @@ vi.mock("./scheduler", () => ({
   },
 }));
 
-import { getChapterById } from "../../db/queries/chapter";
+import { getChapterById, listExistingChapterIds } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
 import {
@@ -942,7 +943,18 @@ describe("startChapterDownloadQueueExecutor", () => {
         };
       },
     );
-    const restoredJobCount = 35;
+    const invoke = tauriMocks.invoke.getMockImplementation()!;
+    const restoreError = new Error("Download queue database is busy");
+    let firstLease = true;
+    tauriMocks.invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "chapter_download_queue_lease" && firstLease) {
+        firstLease = false;
+        return Promise.reject(restoreError);
+      }
+      return invoke(command, args);
+    });
+    const onRestoreError = vi.fn();
+    const restoredJobCount = 1_035;
     const jobs = Array.from({ length: restoredJobCount }, (_, index) => {
       const id = index + 1;
       return {
@@ -957,14 +969,11 @@ describe("startChapterDownloadQueueExecutor", () => {
       };
     });
     for (const job of jobs) backendQueueValues.set(job.id, job);
-    vi.mocked(getChapterById).mockImplementation(async (chapterId) => {
-      if (chapterId === 2) {
-        return null as never;
-      }
-      if (chapterId === 3) discardQueuedChapterDownloads([3]);
-      return { isDownloaded: chapterId === 3 } as never;
+    vi.mocked(listExistingChapterIds).mockImplementation(async (chapterIds) => {
+      discardQueuedChapterDownloads([3]);
+      return chapterIds.filter((id) => id !== 2);
     });
-    await startChapterDownloadQueueExecutor();
+    startChapterDownloadQueueExecutor(onRestoreError);
     await flushMicrotasks();
 
     expect(getChapterById).not.toHaveBeenCalled();
@@ -974,6 +983,10 @@ describe("startChapterDownloadQueueExecutor", () => {
     backendQueueValues.delete(1);
     releaseStorageOperation.resolve();
     await storageOperation;
+    await flushMicrotasks(100);
+    expect(onRestoreError).toHaveBeenCalledExactlyOnceWith(restoreError);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+    startChapterDownloadQueueExecutor(onRestoreError);
 
     try {
       await vi.waitFor(() => {
@@ -981,6 +994,10 @@ describe("startChapterDownloadQueueExecutor", () => {
           restoredJobCount - 3,
         );
       });
+      expect(listExistingChapterIds).toHaveBeenCalledExactlyOnceWith(
+        jobs.slice(1).map((job) => job.id),
+      );
+      expect(getChapterById).not.toHaveBeenCalled();
       expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
       expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
       const restoredSpecs = schedulerMocks.enqueueSource.mock.calls.map(
@@ -1181,6 +1198,7 @@ describe("enqueueChapterDownload", () => {
     });
     await flushMicrotasks();
     await expect(waitForChapterDownloadQueueMutations()).rejects.toThrow("Queue storage unavailable");
+    await expect(waitForChapterDownloadQueueMutations()).resolves.toBeUndefined();
     discardQueuedChapterDownloads([900099]);
     await waitForChapterDownloadQueueMutations();
     const rejectedBatch = expect(batch.promise).rejects.toThrow("2 chapter downloads failed.");

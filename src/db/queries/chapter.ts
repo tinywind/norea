@@ -199,6 +199,22 @@ export async function getChapterById(
   return rows[0] ? normalizeChapterRow(rows[0]) : null;
 }
 
+export async function listExistingChapterIds(
+  chapterIds: readonly number[],
+): Promise<number[]> {
+  if (chapterIds.length === 0) return [];
+  const db = await getDb();
+  const existingChapterIds: number[] = [];
+  for (const chunk of chapterChunks([...new Set(chapterIds)], CHAPTER_ID_CHUNK_SIZE)) {
+    const rows = await db.select<{ id: number }[]>(
+      `SELECT id FROM chapter WHERE id IN (${chapterIdPlaceholders(1, chunk.length)})`,
+      chunk,
+    );
+    existingChapterIds.push(...rows.map((row) => row.id));
+  }
+  return existingChapterIds;
+}
+
 export interface InsertChapterInput {
   novelId: number;
   path: string;

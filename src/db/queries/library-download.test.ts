@@ -6,6 +6,7 @@ import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb } from "../client";
 import {
+  listExistingChapterIds,
   listLibraryDownloadChapters,
   listUnqueuedChapterDownloadIds,
 } from "./chapter";
@@ -32,6 +33,27 @@ beforeEach(() => {
   } as never);
 });
 afterEach(() => sqlite.close());
+
+it("checks a restored queue in bounded queries and retains existing completed chapters", async () => {
+  const chapterIds = Array.from({ length: 16_503 }, (_, index) => 1_000 + index);
+  const missingChapterId = chapterIds[11]!;
+  const insert = sqlite.prepare(
+    "INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded) VALUES (?,2,?,'Queued',?,?)",
+  );
+  for (const [index, id] of chapterIds.entries()) {
+    if (id === missingChapterId) continue;
+    insert.run(id, `/chapter/${id}`, index + 2, index % 2);
+  }
+  const db = await getDb();
+  const select = vi.spyOn(db, "select");
+  const existing = await listExistingChapterIds([...chapterIds, chapterIds[0]!]);
+
+  expect(new Set(existing)).toEqual(new Set(chapterIds.filter((id) => id !== missingChapterId)));
+  expect(select).toHaveBeenCalledTimes(Math.ceil(chapterIds.length / MAX_ROUTE_QUERY_ROWS));
+  expect(select.mock.calls.every(([, params]) => params!.length <= MAX_ROUTE_QUERY_ROWS)).toBe(true);
+  await expect(listExistingChapterIds([])).resolves.toEqual([]);
+  expect(select).toHaveBeenCalledTimes(Math.ceil(chapterIds.length / MAX_ROUTE_QUERY_ROWS));
+});
 
 it("excludes stored bodies, persisted downloads and leased downloads", async () => {
   expect(await listUnqueuedChapterDownloadIds(1)).toEqual([5]);
