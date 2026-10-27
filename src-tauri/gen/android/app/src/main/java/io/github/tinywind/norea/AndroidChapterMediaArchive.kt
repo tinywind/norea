@@ -1,5 +1,6 @@
 package io.github.tinywind.norea
 
+import java.io.DataInputStream
 import java.io.EOFException
 import java.io.File
 import java.io.RandomAccessFile
@@ -448,6 +449,23 @@ internal fun validateAndroidChapterMediaArchive(
   input: InputStream,
 ) {
   requireAndroidChapterMediaStoredFiles(storedFiles)
+  if (storedFiles.isEmpty()) {
+    DataInputStream(input.buffered()).use { stream ->
+      val end = ByteArray(22)
+      stream.readFully(end)
+      require(
+        end[0] == 0x50.toByte() && end[1] == 0x4b.toByte() &&
+          end[2] == 0x05.toByte() && end[3] == 0x06.toByte() &&
+          (4 until 20).all { end[it] == 0.toByte() },
+      ) {
+        "Empty chapter media archive has an invalid end record."
+      }
+      val commentLength = (end[20].toInt() and 255) or ((end[21].toInt() and 255) shl 8)
+      stream.readFully(ByteArray(commentLength))
+      require(stream.read() == -1) { "Empty chapter media archive contains trailing data." }
+    }
+    return
+  }
   val expectedByName = storedFiles.associateBy(AndroidChapterMediaStoredFile::fileName)
   val seenNames = mutableSetOf<String>()
   var totalBytes = 0L

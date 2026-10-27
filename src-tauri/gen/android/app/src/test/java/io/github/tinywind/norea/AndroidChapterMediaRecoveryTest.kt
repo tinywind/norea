@@ -710,6 +710,39 @@ class AndroidChapterMediaRecoveryTest {
   }
 
   @Test
+  fun acceptsEmptyArchivesWithAndWithoutComments() {
+    for (comment in listOf("", "partial media")) {
+      val output = ByteArrayOutputStream()
+      ZipOutputStream(output).use { it.setComment(comment) }
+
+      validateAndroidChapterMediaArchive(emptyList(), ByteArrayInputStream(output.toByteArray()))
+    }
+  }
+
+  @Test
+  fun rejectsMalformedEmptyArchives() {
+    val output = ByteArrayOutputStream()
+    ZipOutputStream(output).use { }
+    val emptyArchive = output.toByteArray()
+    val invalidArchives = listOf(
+      byteArrayOf(),
+      "damaged archive preserved".toByteArray(),
+      emptyArchive.copyOf(21),
+      emptyArchive + byteArrayOf(0),
+      emptyArchive.copyOf().apply { this[20] = 1 },
+      emptyArchive.copyOf().apply { this[4] = 1 },
+      emptyArchive.copyOf().apply { this[10] = 1 },
+      emptyArchive.copyOf().apply { this[16] = 1 },
+    )
+
+    for (bytes in invalidArchives) {
+      assertThrows(Exception::class.java) {
+        validateAndroidChapterMediaArchive(emptyList(), ByteArrayInputStream(bytes))
+      }
+    }
+  }
+
+  @Test
   fun rejectsArchiveDataWithAnInvalidCrc() {
     val body = "unchanged-body".toByteArray()
     val crc = CRC32().apply { update(body) }.value
