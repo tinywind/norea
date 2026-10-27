@@ -1,4 +1,5 @@
 import {
+  hasStoredChapterContent,
   listUnqueuedChapterDownloadIds,
   type LibraryDownloadChapter,
 } from "../../db/queries/chapter";
@@ -8,7 +9,7 @@ export type LibraryBatchDownloadMode = "all" | "unread" | "next10" | "next30";
 
 function canQueueChapterDownload(chapter: LibraryDownloadChapter): boolean {
   return (
-    !chapter.isDownloaded &&
+    !hasStoredChapterContent(chapter) &&
     !chapter.isDownloadQueued &&
     !isChapterDownloadQueued(chapter.id)
   );

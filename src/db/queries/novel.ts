@@ -163,6 +163,10 @@ interface RawLibraryNovelRefreshTarget
 }
 
 const DEFAULT_LIBRARY_PAGE_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
+const LIBRARY_STORED_CHAPTER_COUNT_SQL = `(COALESCE(s.chapters_downloaded, 0) + (
+  SELECT COUNT(*) FROM chapter stored
+  WHERE stored.novel_id = n.id AND stored.is_downloaded = 0 AND stored.content_bytes > 0
+))`;
 
 const LIBRARY_SORT_CONFIG: Record<LibrarySortOrder, LibrarySortConfig> = {
   nameAsc: {
@@ -325,7 +329,7 @@ function buildLibraryFilterConditions(
   }
   if (filter.downloadedOnly) {
     conditions.push(
-      "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+      `(n.is_local = 1 OR ${LIBRARY_STORED_CHAPTER_COUNT_SQL} > 0)`,
     );
   }
   if (filter.repairNeededOnly) {
@@ -364,8 +368,8 @@ function libraryRowsCte(conditions: readonly string[]): string {
       n.in_library   AS inLibrary,
       n.is_local     AS isLocal,
       COALESCE(s.total_chapters, 0) AS totalChapters,
-      COALESCE(s.chapters_downloaded, 0) AS chaptersDownloaded,
-      MAX(COALESCE(s.total_chapters, 0) - COALESCE(s.chapters_downloaded, 0), 0) AS chaptersUndownloaded,
+      ${LIBRARY_STORED_CHAPTER_COUNT_SQL} AS chaptersDownloaded,
+      MAX(COALESCE(s.total_chapters, 0) - ${LIBRARY_STORED_CHAPTER_COUNT_SQL}, 0) AS chaptersUndownloaded,
       COALESCE(s.chapters_unread, 0) AS chaptersUnread,
       COALESCE(s.reading_progress, 0) AS readingProgress,
       n.last_read_at AS lastReadAt,

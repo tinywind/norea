@@ -32,7 +32,10 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: mocks.addCategory, removeNovelsFromCategory: mocks.removeCategory }));
-vi.mock("../../db/queries/chapter", () => ({ listLibraryDownloadChapters: mocks.listChapters, listUnqueuedChapterDownloadIds: vi.fn() }));
+vi.mock("../../db/queries/chapter", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../db/queries/chapter")>(),
+  listLibraryDownloadChapters: mocks.listChapters, listUnqueuedChapterDownloadIds: vi.fn(),
+}));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, setNovelInLibrary: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownloadBatch: mocks.enqueue,

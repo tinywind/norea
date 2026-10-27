@@ -44,6 +44,7 @@ import { useNovelMetadata } from "../components/novel/use-novel-metadata";
 import { useServerNovelSync } from "../components/novel/use-server-novel-sync";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import {
+  hasStoredChapterContent,
   listChaptersByNovel,
   type ChapterListRow,
 } from "../db/queries/chapter";
@@ -125,7 +126,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
     return serverSourceQuery.data && !hasSourcePlugin && serverChaptersQuery.data
-      ? storedRows.filter((chapter) => chapter.isDownloaded || serverChaptersQuery.data?.paths.has(chapter.path)
+      ? storedRows.filter((chapter) => hasStoredChapterContent(chapter) || serverChaptersQuery.data?.paths.has(chapter.path)
         || (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
           && serverChaptersQuery.data?.numbers.has(Number(chapter.chapterNumber))))
       : storedRows;
@@ -167,7 +168,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     let downloaded = 0;
     let unread = 0;
     for (const chapter of rows) {
-      if (chapter.isDownloaded) downloaded += 1;
+      if (hasStoredChapterContent(chapter)) downloaded += 1;
       if (chapter.unread) unread += 1;
     }
     return { downloaded, unread };
@@ -189,7 +190,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const selectedDownloadedChapterIds = useMemo(
     () =>
       selectedChapters
-        .filter((chapter) => chapter.isDownloaded)
+        .filter(hasStoredChapterContent)
         .map((chapter) => chapter.id),
     [selectedChapters],
   );

@@ -93,6 +93,29 @@ it.each([
   expect(ids).toEqual(expected);
 });
 
+it("counts stored bodies with missing media without marking their packages complete", async () => {
+  addNovel(8, "Partial media", 2, 1, 2);
+  addNovel(9, "Only partial", 1, 0, 1);
+  sqlite.exec("UPDATE chapter SET content_bytes=100,media_repair_needed=1 WHERE id IN (802,901)");
+
+  const rows = await listLibraryNovels({ sortOrder: "undownloadedAsc" });
+  expect(rows.find((row) => row.id === 8)).toMatchObject({ totalChapters: 2, chaptersDownloaded: 2 });
+  expect(rows.find((row) => row.id === 9)).toMatchObject({ totalChapters: 1, chaptersDownloaded: 1 });
+  expect(rows.slice(0, 4).map((row) => row.id)).toEqual([5, 6, 9, 8]);
+  expect(await getLibraryNovelSummary({ search: "Partial media" })).toMatchObject({
+    totalChapters: 2, downloadedChapters: 2, downloadedNovels: 1, repairNeededNovels: 1,
+  });
+  expect((await listLibraryNovels({ downloadedOnly: true })).some((row) => row.id === 9)).toBe(true);
+  expect((await listLibraryNovelRefreshTargets({ downloadedOnly: true })).some((row) => row.id === 9)).toBe(true);
+  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed FROM chapter WHERE id=802").get()).toMatchObject({
+    is_downloaded: 0, media_repair_needed: 1,
+  });
+  expect(sqlite.prepare("SELECT chapters_downloaded FROM novel_stats WHERE novel_id=8").get()).toMatchObject({ chapters_downloaded: 1 });
+
+  sqlite.exec("UPDATE chapter SET content_bytes=0,media_repair_needed=0 WHERE id=802");
+  expect((await listLibraryNovels()).find((row) => row.id === 8)?.chaptersDownloaded).toBe(1);
+});
+
 it("counts queued and leased chapters as undownloaded regardless of reading state", async () => {
   sqlite.exec(`
     INSERT INTO chapter_download_queue(chapter_id,job_json,created_at_ms,updated_at_ms,leased_at_ms)

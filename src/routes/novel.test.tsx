@@ -29,7 +29,10 @@ vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknow
     : { ...mocks.novelQuery, data: mocks.novel };
 } }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useRouterState: () => "/novel?id=3" }));
-vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../i18n", () => ({ useTranslation: () => ({
+  t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterCount"
+    ? `${values?.cached}/${values?.total} stored` : key,
+}) }));
 vi.mock("../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.fn() }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
@@ -44,6 +47,7 @@ vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(), listServerChapterAvailability: vi.fn() }));
 
 import { NovelDetailPage } from "./novel";
+import { buildBatchDownloadTargets } from "../components/novel/novel-detail-model";
 
 const chapter: ChapterListRow = {
   id: 1, novelId: 3, name: "Saved chapter", path: "/chapter", chapterNumber: "1", position: 1, page: "1",
@@ -51,6 +55,19 @@ const chapter: ChapterListRow = {
   contentBytes: 0, mediaBytes: 0, mediaRepairNeeded: false, releaseTime: null, readAt: null,
   createdAt: null, foundAt: 1, updatedAt: 1,
 };
+
+it("excludes stored partial bodies from missing-chapter batch scopes", () => {
+  const partial = { ...chapter, id: 2, position: 2, contentBytes: 100, mediaRepairNeeded: true };
+  const missing = { ...chapter, id: 3, position: 3 };
+  const targets = buildBatchDownloadTargets([
+    { ...chapter, isDownloaded: true }, partial, missing,
+  ], 1, new Map());
+  for (const scope of ["all", "unread", "next10", "next30"] as const) {
+    expect(targets[scope].map((row) => row.id)).toEqual([3]);
+  }
+  expect(partial.isDownloaded).toBe(false);
+  expect(partial.mediaRepairNeeded).toBe(true);
+});
 
 function renderPage() {
   return load(renderToStaticMarkup(<MantineProvider><NovelDetailPage id={3} /></MantineProvider>));
@@ -177,6 +194,15 @@ it("shows available packages and downloaded chapters without deleting canonical 
   expect(text).toContain("Local downloaded chapter");
   expect(text).not.toContain("Metadata without a package");
   expect(mocks.chapters).toHaveLength(3);
+});
+
+it("shows and counts a stored partial body even when its server package is unavailable", () => {
+  mocks.source.data = { serverUrl: "http://server", workId: "work" };
+  mocks.chapters = [{ ...chapter, contentBytes: 100, mediaRepairNeeded: true }];
+  const $ = renderPage();
+  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect($.text()).toContain("1/1 stored");
+  expect(mocks.chapters[0]).toMatchObject({ isDownloaded: false, mediaRepairNeeded: true });
 });
 
 it("shows saved chapters immediately while server availability is still pending", () => {

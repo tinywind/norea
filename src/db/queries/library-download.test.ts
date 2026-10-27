@@ -33,16 +33,18 @@ beforeEach(() => {
 });
 afterEach(() => sqlite.close());
 
-it("excludes completed, persisted and leased downloads while keeping partial content eligible", async () => {
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([4, 5]);
+it("excludes stored bodies, persisted downloads and leased downloads", async () => {
+  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([5]);
   expect(await listUnqueuedChapterDownloadIds(2)).toEqual([6]);
   expect(await listUnqueuedChapterDownloadIds(3)).toEqual([]);
 
   sqlite.exec("DELETE FROM chapter_download_queue WHERE chapter_id = 2");
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([2, 4, 5]);
+  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([2, 5]);
 
   sqlite.exec("UPDATE chapter SET is_downloaded = 0 WHERE id = 1");
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([1, 2, 4, 5]);
+  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([2, 5]);
+  sqlite.exec("UPDATE chapter SET content_bytes = 0 WHERE id = 1");
+  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([1, 2, 5]);
 });
 
 it("keeps queued and downloaded reading anchors in the batch catalog", async () => {

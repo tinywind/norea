@@ -1,4 +1,4 @@
-import { type ChapterListRow } from "../../db/queries/chapter";
+import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { getPluginBaseUrl } from "../../lib/plugins/base-url";
 import { pluginManager } from "../../lib/plugins/manager";
@@ -135,7 +135,7 @@ export function buildBatchDownloadTargets(
   const readingOrder = getReadingOrderChapters(chapters);
   const candidates = readingOrder.filter(
     (chapter) =>
-      !chapter.isDownloaded &&
+      !hasStoredChapterContent(chapter) &&
       !isActiveDownloadStatus(downloadStatuses.get(chapter.id)),
   );
   const currentIndex =
@@ -147,7 +147,7 @@ export function buildBatchDownloadTargets(
     .slice(nextStartIndex)
     .filter(
       (chapter) =>
-        !chapter.isDownloaded &&
+        !hasStoredChapterContent(chapter) &&
         !isActiveDownloadStatus(downloadStatuses.get(chapter.id)),
     );
 

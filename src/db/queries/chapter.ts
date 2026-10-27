@@ -55,6 +55,12 @@ export interface ChapterRow {
 
 export type ChapterListRow = ChapterRow;
 
+export function hasStoredChapterContent(
+  chapter: Pick<ChapterListRow, "isDownloaded" | "contentBytes">,
+): boolean {
+  return chapter.isDownloaded || chapter.contentBytes > 0;
+}
+
 type RawChapterListRow = Omit<
   ChapterListRow,
   | "bookmark"
@@ -172,7 +178,7 @@ export async function listUnqueuedChapterDownloadIds(
   const rows = await db.select<{ id: number }[]>(
     `SELECT c.id FROM chapter c JOIN novel n ON n.id = c.novel_id
      WHERE c.novel_id = $1 AND c.id > $2 AND n.is_local = 0
-       AND c.is_downloaded = 0
+       AND c.is_downloaded = 0 AND c.content_bytes <= 0
        AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = c.id)
      ORDER BY c.id LIMIT $3`,
     [novelId, afterChapterId, MAX_ROUTE_QUERY_ROWS],

@@ -211,11 +211,10 @@ describe("listLibraryNovels", () => {
 
     const [sql, params] = db.select.mock.calls[0]!;
     expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
-    expect(sql).not.toContain("FROM chapter");
     expect(params).toEqual([]);
   });
 
-  it("uses materialized downloaded stats when downloadedOnly is enabled", async () => {
+  it("combines complete stats and stored partial bodies when downloadedOnly is enabled", async () => {
     const db = stubDb();
     db.select.mockResolvedValueOnce([]);
 
@@ -223,9 +222,8 @@ describe("listLibraryNovels", () => {
 
     const [sql, params] = db.select.mock.calls[0]!;
     expect(sql).toContain(
-      "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+      "(n.is_local = 1 OR (COALESCE(s.chapters_downloaded, 0) + (",
     );
-    expect(sql).not.toContain("FROM chapter");
     expect(params).toEqual([]);
   });
 
@@ -450,7 +448,7 @@ describe("getLibraryNovelSummary", () => {
     expect(sql).toContain("EXISTS (SELECT 1 FROM novel_category");
     expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
     expect(sql).toContain(
-      "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+      "(n.is_local = 1 OR (COALESCE(s.chapters_downloaded, 0) + (",
     );
     expect(params).toEqual(["hero", 7]);
     expect(summary).toEqual({
@@ -551,7 +549,7 @@ describe("listLibraryNovelRefreshTargets", () => {
       "EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $2)",
     );
     expect(sql).toContain(
-      "(n.is_local = 1 OR COALESCE(s.chapters_downloaded, 0) > 0)",
+      "(n.is_local = 1 OR (COALESCE(s.chapters_downloaded, 0) + (",
     );
     expect(sql).toContain("n.plugin_id = $3");
     expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");

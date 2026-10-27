@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => ({
   listIds: vi.fn(),
   queued: new Set<number>(),
 }));
-vi.mock("../../db/queries/chapter", () => ({
+vi.mock("../../db/queries/chapter", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../db/queries/chapter")>(),
   listUnqueuedChapterDownloadIds: mocks.listIds,
 }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
@@ -44,10 +45,10 @@ describe("library batch download targets", () => {
       chapter(4, { contentBytes: 10, mediaRepairNeeded: true }),
       chapter(5),
     ];
-    expect(getLibraryBatchDownloadTargets("all", chapters, undefined).map((row) => row.id)).toEqual([4, 5]);
+    expect(getLibraryBatchDownloadTargets("all", chapters, undefined).map((row) => row.id)).toEqual([5]);
     mocks.queued.delete(3);
     chapters[1]!.isDownloadQueued = false;
-    expect(getLibraryBatchDownloadTargets("all", chapters, undefined).map((row) => row.id)).toEqual([2, 3, 4, 5]);
+    expect(getLibraryBatchDownloadTargets("all", chapters, undefined).map((row) => row.id)).toEqual([2, 3, 5]);
   });
 
   it("re-enables a deleted download and an individually cancelled job while another job remains queued", async () => {
