@@ -192,6 +192,11 @@ let chapterDownloadLifecycleSuspending = false;
 let chapterDownloadLifecycleListenersInstalled = false;
 let backendChapterDownloadQueueMutation: Promise<void> = Promise.resolve();
 const pendingBackendChapterDownloadJobsById = new Map<number, ChapterDownloadJob>();
+interface BackendChapterDownloadRegistration {
+  ownerId: string;
+  write: Promise<void>;
+}
+const backendChapterDownloadRegistrations = new Map<number, BackendChapterDownloadRegistration>();
 const backendChapterDownloadRestorations = new Set<Set<number>>();
 
 function createChapterDownloadProgressReporter(
@@ -551,31 +556,35 @@ async function leaseBackendChapterDownloadJobs(
 function queueBackendChapterDownloadMutation(
   context: string,
   mutation: () => Promise<void>,
-): void {
+): Promise<void> {
   backendChapterDownloadQueueMutation = backendChapterDownloadQueueMutation
     .catch(() => undefined)
-    .then(mutation)
-    .catch((error) => {
-      console.warn(`[chapter-download] failed to ${context}:`, error);
-    });
+    .then(mutation);
+  void backendChapterDownloadQueueMutation.catch((error) => {
+    console.warn(`[chapter-download] failed to ${context}:`, error);
+  });
+  return backendChapterDownloadQueueMutation;
 }
 
 export async function waitForChapterDownloadQueueMutations(): Promise<void> {
-  await backendChapterDownloadQueueMutation.catch(() => undefined);
+  await backendChapterDownloadQueueMutation;
 }
 
-function queueChapterDownloadJob(job: ChapterDownloadJob): void {
+function queueChapterDownloadJob(job: ChapterDownloadJob, ownerId: string): Promise<void> {
   if (job.batchId) {
     chapterDownloadBatchStates.get(job.batchId)?.queuedChapterIds.add(job.id);
   }
-  queueChapterDownloadJobs([job]);
+  return queueChapterDownloadJobs([job], ownerId);
 }
 
 function removeQueuedChapterDownloadJobs(chapterIds: Iterable<number>): void {
   if (!isTauriRuntime()) return;
   const uniqueChapterIds = [...new Set(chapterIds)];
   if (uniqueChapterIds.length === 0) return;
-  for (const id of uniqueChapterIds) pendingBackendChapterDownloadJobsById.delete(id);
+  for (const id of uniqueChapterIds) {
+    pendingBackendChapterDownloadJobsById.delete(id);
+    backendChapterDownloadRegistrations.delete(id);
+  }
   queueBackendChapterDownloadMutation("remove queued chapter download", () =>
     removeBackendChapterDownloadJobs(uniqueChapterIds),
   );
@@ -614,7 +623,9 @@ function scheduleQueuedChapterDownloadJobsRemoval(
 
 function removeQueuedChapterDownloadJob(
   job: Pick<ChapterDownloadJob, "batchId" | "id">,
+  ownerId: string,
 ): void {
+  if (backendChapterDownloadRegistrations.get(job.id)?.ownerId !== ownerId) return;
   const state = job.batchId
     ? chapterDownloadBatchStates.get(job.batchId)
     : undefined;
@@ -622,17 +633,20 @@ function removeQueuedChapterDownloadJob(
   removeQueuedChapterDownloadJobs([job.id]);
 }
 
-function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
-  if (!isTauriRuntime()) return;
+function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>, ownerId: string): Promise<void> {
+  if (!isTauriRuntime()) return Promise.resolve();
   const jobsById = new Map<number, ChapterDownloadJob>();
   for (const job of jobs) {
     const queuedJob = normalizeQueuedChapterDownloadJob(job);
-    if (queuedJob) jobsById.set(queuedJob.id, queuedJob);
+    if (!queuedJob) continue;
+    const status = getChapterDownloadStatus(queuedJob.id);
+    if (status?.kind === "queued" || status?.kind === "running") continue;
+    jobsById.set(queuedJob.id, queuedJob);
   }
   const queuedJobs = [...jobsById.values()];
+  if (queuedJobs.length === 0) return Promise.resolve();
   const finishQueueWrite = beginChapterDownloadQueueWrite(jobsById.keys());
-  for (const job of queuedJobs) pendingBackendChapterDownloadJobsById.set(job.id, job);
-  queueBackendChapterDownloadMutation("queue chapter downloads", async () => {
+  const write = queueBackendChapterDownloadMutation("queue chapter downloads", async () => {
     const pending = queuedJobs.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) === job);
     try {
       await enqueueBackendChapterDownloadJobs(pending);
@@ -645,6 +659,11 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>): void {
       finishQueueWrite();
     }
   });
+  for (const job of queuedJobs) {
+    pendingBackendChapterDownloadJobsById.set(job.id, job);
+    backendChapterDownloadRegistrations.set(job.id, { ownerId, write });
+  }
+  return write;
 }
 
 export function discardQueuedChapterDownloads(chapterIds: readonly number[]): void {
@@ -704,9 +723,9 @@ function settleChapterDownloadBatchJob(
   state[settlement] += 1;
 }
 
-function completeChapterDownloadJob(job: ChapterDownloadJob): void {
+function completeChapterDownloadJob(job: ChapterDownloadJob, ownerId: string): void {
   settleChapterDownloadBatchJob(job.batchId, job.id, "succeeded");
-  removeQueuedChapterDownloadJob(job);
+  removeQueuedChapterDownloadJob(job, ownerId);
 }
 
 function chapterDownloadBatchCancelledCount(
@@ -741,9 +760,15 @@ export function cancelChapterDownloadBatches(
       state.total - state.materializedChapterIds.size,
     );
 
-    const queuedChapterIds = state.queuedChapterIds;
+    const queuedChapterIds = [...state.queuedChapterIds].filter(
+      (id) => backendChapterDownloadRegistrations.get(id)?.ownerId === batchId,
+    );
     state.queuedChapterIds = new Set();
-    if (queuedChapterIds.size > 0) {
+    for (const id of queuedChapterIds) {
+      pendingBackendChapterDownloadJobsById.delete(id);
+      backendChapterDownloadRegistrations.delete(id);
+    }
+    if (queuedChapterIds.length > 0) {
       scheduleQueuedChapterDownloadJobsRemoval(queuedChapterIds);
     }
   }
@@ -861,6 +886,7 @@ function enqueueChapterDownloadForExecutor(
     persistBeforeStart?: boolean;
     removeQueuedJobOnFailure?: boolean;
     waitForBackendQueue?: boolean;
+    backendQueueWrite?: Promise<void>;
     localWorkScans?: Map<number, Promise<void>>;
   } = {},
 ): TaskHandle<void> {
@@ -869,11 +895,16 @@ function enqueueChapterDownloadForExecutor(
   const waitForBackendQueue =
     options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
   const removeQueuedJobOnFailure = options.removeQueuedJobOnFailure ?? true;
+  const requestedQueueOwnerId = job.batchId ?? makeChapterDownloadBatchId();
   const localWorkScans = options.localWorkScans ?? new Map<number, Promise<void>>();
   installChapterDownloadLifecycleListeners();
-  if (options.persistBeforeStart !== false) {
-    queueChapterDownloadJob(job);
-  }
+  const requestedQueueWrite = options.persistBeforeStart !== false
+    ? queueChapterDownloadJob(job, requestedQueueOwnerId)
+    : options.backendQueueWrite;
+  // Overlapping batches can replace a registration before this job materializes.
+  const registration = backendChapterDownloadRegistrations.get(job.id);
+  const queueOwnerId = registration?.ownerId ?? requestedQueueOwnerId;
+  const backendQueueWrite = registration?.write ?? requestedQueueWrite;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
     retry: createDownloadRetryPolicy(),
@@ -920,7 +951,7 @@ function enqueueChapterDownloadForExecutor(
         if (waitForBackendQueue) {
           await abortableStep(
             signal,
-            waitForChapterDownloadQueueMutations(),
+            backendQueueWrite ?? waitForChapterDownloadQueueMutations(),
           );
         }
         if (signal.aborted) throw abortReason(signal);
@@ -947,7 +978,7 @@ function enqueueChapterDownloadForExecutor(
           throw missingLocalChapterError(job);
         }
         if (!sourceAccessVerification && chapter.isDownloaded) {
-          completeChapterDownloadJob(job);
+          completeChapterDownloadJob(job, queueOwnerId);
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -956,7 +987,7 @@ function enqueueChapterDownloadForExecutor(
         }
         if (await tryDownloadServerChapter(job, signal, setChapterDownloadPhase)) {
           if (signal.aborted) throw abortReason(signal);
-          completeChapterDownloadJob(job);
+          completeChapterDownloadJob(job, queueOwnerId);
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -1050,7 +1081,7 @@ function enqueueChapterDownloadForExecutor(
               throw missingLocalChapterError(job);
             }
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
-            completeChapterDownloadJob(job);
+            completeChapterDownloadJob(job, queueOwnerId);
             reportProgress(
               { current: progressTotal, total: progressTotal },
               { force: true },
@@ -1088,7 +1119,7 @@ function enqueueChapterDownloadForExecutor(
           if (embedded.storedMediaCount === 0) {
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
           }
-          completeChapterDownloadJob(job);
+          completeChapterDownloadJob(job, queueOwnerId);
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -1232,7 +1263,7 @@ function enqueueChapterDownloadForExecutor(
             sourceId: job.pluginId,
           }));
         }
-        completeChapterDownloadJob(job);
+        completeChapterDownloadJob(job, queueOwnerId);
         reportProgress(
           { current: progressTotal, total: progressTotal },
           { force: true },
@@ -1254,11 +1285,14 @@ function enqueueChapterDownloadForExecutor(
       }
     },
   });
-  void handle.promise.catch((error) => {
-    if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
-    if (!removeQueuedJobOnFailure && !isAbortError(error)) return;
-    removeQueuedChapterDownloadJob(job);
-  });
+  void handle.promise.then(
+    () => removeQueuedChapterDownloadJob(job, queueOwnerId),
+    (error) => {
+      if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
+      if (!removeQueuedJobOnFailure && !isAbortError(error)) return;
+      removeQueuedChapterDownloadJob(job, queueOwnerId);
+    },
+  );
   return handle;
 }
 
@@ -1471,8 +1505,18 @@ export function enqueueChapterDownloadBatch({
   const windowSize = normalizeChapterDownloadBatchWindowSize(
     requestedWindowSize,
   );
-  if (persist && batchJobs) {
-    queueChapterDownloadJobs(batchJobs);
+  const backendQueueWrite = persist && batchJobs
+    ? queueChapterDownloadJobs(batchJobs, batchId)
+    : undefined;
+  if (!persist && removeBackendQueuedJobsOnCancel && batchJobs && isTauriRuntime()) {
+    const write = Promise.resolve();
+    for (const job of batchJobs) {
+      const status = getChapterDownloadStatus(job.id);
+      if (status?.kind !== "queued" && status?.kind !== "running" &&
+        !pendingBackendChapterDownloadJobsById.has(job.id)) {
+        backendChapterDownloadRegistrations.set(job.id, { ownerId: batchId, write });
+      }
+    }
   }
   const persistMaterializedJobs = persist && !batchJobs;
   const waitForBatchQueue = persist && Boolean(batchJobs);
@@ -1524,6 +1568,7 @@ export function enqueueChapterDownloadBatch({
             persistBeforeStart: persistMaterializedJobs,
             removeQueuedJobOnFailure: persist,
             waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
+            backendQueueWrite,
             localWorkScans,
           },
         );

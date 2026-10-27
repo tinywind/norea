@@ -1007,6 +1007,36 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
+  it("keeps a replacement queued job when an older cancellation settles late", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const previous = createDeferred<void>();
+    const replacement = createDeferred<void>();
+    schedulerMocks.enqueueSource
+      .mockReturnValueOnce({ id: "previous", promise: previous.promise })
+      .mockReturnValueOnce({ id: "replacement", promise: replacement.promise });
+    const previousHandle = enqueueChapterDownload({
+      id: 900010, pluginId: "source-a", chapterPath: "/chapter/10", title: "Previous job",
+    });
+    await waitForChapterDownloadQueueMutations();
+    const replacementHandle = enqueueChapterDownload({
+      id: 900010, pluginId: "source-a", chapterPath: "/chapter/10", title: "Replacement job",
+    });
+    await waitForChapterDownloadQueueMutations();
+    const rejected = expect(previousHandle.promise).rejects.toMatchObject({ cancelledByUser: true });
+    previous.reject(new TaskUserCancelledError());
+    await rejected;
+    await flushMicrotasks();
+    await waitForChapterDownloadQueueMutations();
+    try {
+      expect(backendQueueValues.get(900010)).toMatchObject({ title: "Replacement job" });
+    } finally {
+      discardQueuedChapterDownloads([900010]);
+      replacement.resolve();
+      await replacementHandle.promise;
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
   it("removes a deleted job even when its native queue insertion finishes late", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const inserting = createDeferred<void>();
@@ -1025,6 +1055,167 @@ describe("enqueueChapterDownload", () => {
     }
     await waitForChapterDownloadQueueMutations();
     expect(backendQueueValues.has(7)).toBe(false);
+  });
+
+  it("keeps deduplicated handles waiting for their shared persistent queue write", async () => {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => scheduler.enqueueSource(spec));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(getChapterById).mockRejectedValue(new Error("Chapter read ran before queue persistence"));
+    const inserting = createDeferred<void>();
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "chapter_download_queue_enqueue") await inserting.promise;
+      return original(command, args);
+    });
+    const job = { id: 900015, pluginId: "source-a", chapterPath: "/chapter/15", title: "Shared queued job" };
+    const first = enqueueChapterDownload(job);
+    const second = enqueueChapterDownload(job);
+    const settled = Promise.allSettled([first.promise, second.promise]);
+    expect(second.id).toBe(first.id);
+    scheduler.resumeSourceQueue();
+    try {
+      await flushMicrotasks();
+      expect(getChapterById).not.toHaveBeenCalled();
+    } finally {
+      inserting.reject(new Error("Queue storage unavailable"));
+    }
+    const results = await settled;
+    for (const result of results) {
+      expect(result).toMatchObject({ status: "rejected", reason: { message: "Queue storage unavailable" } });
+    }
+    await waitForChapterDownloadQueueMutations();
+  });
+
+  it("waits for the replacement write when overlapping batches materialize a shared chapter", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    vi.mocked(getChapterById).mockRejectedValue(new Error("Chapter read ran before queue persistence"));
+    const completions = new Map<number, Deferred<void>>();
+    const specs = new Map<number, SourceTaskSpec<void>>();
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => {
+      const id = spec.subject!.chapterId!;
+      const completion = createDeferred<void>();
+      specs.set(id, spec);
+      completions.set(id, completion);
+      return { id: `overlap-${id}`, promise: completion.promise };
+    });
+    const inserting = createDeferred<void>();
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "chapter_download_queue_enqueue" &&
+        (args?.jobs as { id: number }[]).some((job) => job.id === 900017)) await inserting.promise;
+      return original(command, args);
+    });
+    const job = (id: number) => ({ id, pluginId: "source-a", chapterPath: `/chapter/${id}`, title: `Overlap ${id}` });
+    const first = enqueueChapterDownloadBatch({ jobs: [job(900016), job(900018)], title: "First overlap", windowSize: 1 });
+    const second = enqueueChapterDownloadBatch({ jobs: [job(900017), job(900018)], title: "Second overlap", windowSize: 1 });
+    const settled = Promise.allSettled([first.promise, second.promise]);
+    let sharedRun: Promise<PromiseSettledResult<void>[]> | undefined;
+    try {
+      await flushMicrotasks();
+      completions.get(900016)!.resolve();
+      await flushMicrotasks();
+      const shared = specs.get(900018);
+      if (!shared) throw new Error("Shared chapter was not materialized");
+      sharedRun = Promise.allSettled([shared.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "shared-overlap" })]);
+      await flushMicrotasks();
+      expect(getChapterById).not.toHaveBeenCalled();
+      inserting.reject(new Error("Queue storage unavailable"));
+      expect(await sharedRun).toMatchObject([{ status: "rejected", reason: { message: "Queue storage unavailable" } }]);
+    } finally {
+      inserting.reject(new Error("Queue storage unavailable"));
+      cancelChapterDownloadBatches([first.id, second.id]);
+      for (const completion of completions.values()) completion.reject(new TaskUserCancelledError());
+      await settled;
+      await sharedRun;
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
+  it("keeps replacement jobs when an older batch is cancelled", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const previous = createDeferred<void>();
+    const replacement = createDeferred<void>();
+    schedulerMocks.enqueueSource
+      .mockReturnValueOnce({ id: "previous-batch", promise: previous.promise })
+      .mockReturnValueOnce({ id: "replacement-single", promise: replacement.promise });
+    const job = { id: 900012, pluginId: "source-a", chapterPath: "/chapter/12", title: "Previous batch" };
+    const batch = enqueueChapterDownloadBatch({ jobs: [job], title: "Previous batch" });
+    await waitForChapterDownloadQueueMutations();
+    const replacementHandle = enqueueChapterDownload({ ...job, title: "Replacement job" });
+    expect(cancelChapterDownloadBatches([batch.id])).toBe(1);
+    await waitForChapterDownloadQueueMutations();
+    previous.reject(new TaskUserCancelledError());
+    await expect(batch.promise).resolves.toMatchObject({ cancelled: 1 });
+    await waitForChapterDownloadQueueMutations();
+    try {
+      expect(backendQueueValues.get(job.id)).toMatchObject({ title: "Replacement job" });
+    } finally {
+      discardQueuedChapterDownloads([job.id]);
+      replacement.resolve();
+      await replacementHandle.promise;
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
+  it("keeps a failed batch write attached to all jobs after later queue mutations", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
+      command === "chapter_download_queue_enqueue"
+        ? Promise.reject(new Error("Queue storage unavailable"))
+        : original(command, args),
+    );
+    vi.mocked(getChapterById).mockRejectedValue(new Error("Chapter read ran before queue persistence"));
+    const completions: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(() => {
+      const completion = createDeferred<void>();
+      completions.push(completion);
+      return { id: `persist-failure-${completions.length}`, promise: completion.promise };
+    });
+    const batch = enqueueChapterDownloadBatch({
+      jobs: [900013, 900014].map((id) => ({ id, pluginId: "source-a", chapterPath: `/chapter/${id}`, title: "Persist first" })),
+      title: "Persist batch first", materializeAllTasks: true,
+    });
+    await flushMicrotasks();
+    await expect(waitForChapterDownloadQueueMutations()).rejects.toThrow("Queue storage unavailable");
+    discardQueuedChapterDownloads([900099]);
+    await waitForChapterDownloadQueueMutations();
+    const rejectedBatch = expect(batch.promise).rejects.toThrow("2 chapter downloads failed.");
+    const specs = schedulerMocks.enqueueSource.mock.calls.map(([spec]) => spec as SourceTaskSpec<void>);
+    expect(specs).toHaveLength(2);
+    for (const [index, spec] of specs.entries()) {
+      await expect(spec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: `persist-failure-${index}` }))
+        .rejects.toThrow("Queue storage unavailable");
+      completions[index]!.reject(new Error("Queue storage unavailable"));
+    }
+    await rejectedBatch;
+    await waitForChapterDownloadQueueMutations();
+    expect(getChapterById).not.toHaveBeenCalled();
+  });
+
+  it("rejects source work when its persistent queue write fails", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
+      command === "chapter_download_queue_enqueue"
+        ? Promise.reject(new Error("Queue storage unavailable"))
+        : original(command, args),
+    );
+    vi.mocked(getChapterById).mockRejectedValue(new Error("Chapter read ran before queue persistence"));
+    enqueueChapterDownload({ id: 900011, pluginId: "source-a", chapterPath: "/chapter/11", title: "Persist first" });
+    if (!capturedSpec) throw new Error("Missing task spec");
+    const run = capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "persist-failure" });
+    try {
+      await expect(run).rejects.toThrow("Queue storage unavailable");
+      expect(getChapterById).not.toHaveBeenCalled();
+      expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    } finally {
+      discardQueuedChapterDownloads([900011]);
+      await waitForChapterDownloadQueueMutations();
+    }
   });
 
   it("does not save a late media result after the chapter was cancelled", async () => {
