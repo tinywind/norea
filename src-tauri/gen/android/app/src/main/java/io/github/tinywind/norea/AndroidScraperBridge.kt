@@ -1383,6 +1383,11 @@ class AndroidScraperBridge(
         runCatching {
           val reuseDocument = useDocumentStartScript && navigationScript.isNotBlank() &&
             state.contextReady && sameOrigin(state.currentUrl, url)
+          logState(
+            state,
+            "runExtract navigate id=$id reuseDocument=$reuseDocument surface=${webView.width}x${webView.height}",
+            targetUrl,
+          )
           if (reuseDocument) {
             val prepareCapture = scripts.extractStart(id, resultNonce.orEmpty(), beforeScript.orEmpty())
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
@@ -1574,7 +1579,15 @@ class AndroidScraperBridge(
     clearTimeout(state)
     val timeout = Runnable {
       if (state.activeFetchId == id) abortActiveFetch(state, id)
-      if (state.activeExtractId == id) state.webView?.stopLoading()
+      if (state.activeExtractId == id) {
+        state.webView?.let { webView ->
+          if (isForegroundBrowser(webView)) {
+            webView.stopLoading()
+          } else {
+            destroyScraperWebView(state, webView, "extraction timeout")
+          }
+        }
+      }
       if (
         state.activeAction?.id == id &&
         state.activeAction?.browserAction == true
