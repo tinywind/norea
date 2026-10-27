@@ -159,7 +159,7 @@ internal class AndroidChapterMediaStore(
     }
     androidChapterMediaStoredFiles(files)
     return ChapterMediaManifest(
-      complete = complete,
+      complete = complete && files.all { it.status == "stored" },
       files = files,
       json = json,
     )
@@ -566,25 +566,26 @@ internal class AndroidChapterMediaStore(
     )
   }
 
-  private fun writeCompletedChapterMediaManifest(
+  private fun writeFinalizedChapterMediaManifest(
     rootUri: String,
     directory: DocumentFile,
     relativeDir: String,
     manifest: ChapterMediaManifest,
   ) {
-    val completeJson = JSONObject(manifest.json.toString())
-      .put("complete", true)
+    val complete = manifest.files.all { it.status == "stored" }
+    val finalizedJson = JSONObject(manifest.json.toString())
+      .put("complete", complete)
       .put("updatedAt", System.currentTimeMillis())
-    val body = "${completeJson.toString(2)}\n".toByteArray(Charsets.UTF_8)
+    val body = "${finalizedJson.toString(2)}\n".toByteArray(Charsets.UTF_8)
     if (
-      !writeChapterMediaManifestAtomically(
+      writeChapterMediaManifestAtomically(
         rootUri,
         directory,
         relativeDir,
         body,
-      ).complete
+      ).complete != complete
     ) {
-      throw IllegalStateException("Completed Android chapter media manifest failed validation.")
+      throw IllegalStateException("Finalized Android chapter media manifest failed validation.")
     }
   }
 
@@ -723,13 +724,15 @@ internal class AndroidChapterMediaStore(
           return null
         }
       }
-      if (archive != null && !archive.delete()) {
-        throw IllegalStateException("Cannot remove empty Android chapter media archive.")
+      if (manifest.files.all { it.status == "stored" }) {
+        if (archive != null && !archive.delete()) {
+          throw IllegalStateException("Cannot remove empty Android chapter media archive.")
+        }
+        if (!deleteChapterMediaArchiveWorkFiles(directory)) return null
+        looseDirectory?.let { deleteChapterMediaLooseDirectory(it, relativeDir) }
+        writeFinalizedChapterMediaManifest(rootUri, directory, relativeDir, manifest)
+        return 0L
       }
-      if (!deleteChapterMediaArchiveWorkFiles(directory)) return null
-      looseDirectory?.let { deleteChapterMediaLooseDirectory(it, relativeDir) }
-      writeCompletedChapterMediaManifest(rootUri, directory, relativeDir, manifest)
-      return 0L
     }
 
     if (
@@ -793,7 +796,7 @@ internal class AndroidChapterMediaStore(
     if (!archiveValid || archive == null) return null
     if (!deleteChapterMediaArchiveWorkFiles(directory)) return null
     looseDirectory?.let { deleteChapterMediaLooseDirectory(it, relativeDir) }
-    writeCompletedChapterMediaManifest(rootUri, directory, relativeDir, manifest)
+    writeFinalizedChapterMediaManifest(rootUri, directory, relativeDir, manifest)
     return archive.length().coerceAtLeast(0L)
   }
 

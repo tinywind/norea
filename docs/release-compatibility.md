@@ -69,7 +69,14 @@ requirements must be decided explicitly before implementation.
   current or interrupted-publication archives, and downloads only missing or
   corrupt assets. A stale per-asset status does not force a new download.
   The original archive remains available until its replacement is validated;
-  completed assets from a failed repair are reused on retry. A malformed
+  completed assets from a failed repair are reused on retry. Individual asset
+  failures do not stop acquisition of the remaining assets. Before reporting an
+  incomplete download, the host archives every validated stored asset in
+  `media.zip`, even when the result is an empty ZIP. Missing assets remain in
+  the manifest and keep `complete` false; a partial ZIP is not a completed
+  chapter. A retry reuses its intact entries and requests only missing or
+  damaged assets. Existing damaged archives and recovery copies are preserved
+  when there is no validated stored replacement. A malformed
   manifest without a valid recovery copy fails without replacing the archive.
   A damaged archive that cannot be safely decoded is also preserved on failure.
 - Source refreshes, server metadata installation, and storage recovery preserve

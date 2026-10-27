@@ -327,8 +327,9 @@ missing.
 When reconciling final HTML, the host also restores its media repair flag from
 remote media references. This keeps the explicit media repair action available
 for older downloads without invalidating their readable final content or
-starting network requests. Archive completeness describes the stored media
-files, so it does not imply that all media referenced by the HTML is offline.
+starting network requests. A valid `media.zip` may hold only the successfully
+stored assets. The manifest remains incomplete until every declared asset is
+stored; ZIP existence alone does not make a chapter available offline.
 
 The host then:
 
@@ -344,7 +345,8 @@ The host then:
    page-owning source-profile WebView without falling back to app or host HTTP;
 7. downloads missing assets through the assigned scraper WebView executor
    without an app-configurable resource slot limit;
-8. updates the manifest after each completed asset and creates `media.zip`;
+8. updates the manifest after each completed asset and creates `media.zip`,
+   including a partial archive when individual assets fail;
 9. publishes final `content.*` only after the acquisition pipeline completes;
 10. resumes incomplete work from stored partial HTML and the manifest without
     navigating the chapter page again.
@@ -469,11 +471,14 @@ media is reused on the next run. Missing/unsupported VPN configuration is termin
 not an endless network retry.
 
 Offline download and repair tasks require complete media. Exhausted fast network
-retries and temporary HTTP 408/429/502/503/504 responses are handed to the durable
-task retry policy, honoring valid Retry-After headers. Permanent HTTP failures
-such as 404 leave a failed/incomplete chapter instead of publishing a successful
-offline archive with remote-only images. Local-file import remains explicitly
-best-effort. User cancellation is tagged separately from lifecycle suspension
+retries and temporary HTTP 408/429/502/503/504 responses are collected per asset
+while acquisition continues for the remaining assets. The host archives stored
+assets before reporting the missing-asset count and handing retryable failures
+to the durable task retry policy, honoring valid Retry-After headers. Permanent
+HTTP failures such as 404 leave a failed/incomplete chapter with a reusable
+partial ZIP. Missing assets remain declared in the manifest; the host does not
+publish final chapter content or mark the partial package complete. Local-file
+import remains explicitly best-effort. User cancellation is tagged separately from lifecycle suspension
 and removes the cancelled chapter's persistent queue entry even while hidden.
 Genuine process/lifecycle interruptions keep resumable work.
 

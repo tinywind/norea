@@ -38,6 +38,7 @@ export function isMediaAbortError(error: unknown): boolean {
 
 export class ChapterMediaIncompleteError extends Error {
   readonly code = "chapter-media-incomplete" as const;
+  readonly retryAfterMs: number;
 
   constructor(readonly failures: readonly ChapterMediaFailure[]) {
     const statuses = [...new Set(failures.map((failure) => failure.status).filter(Boolean))];
@@ -48,6 +49,7 @@ export class ChapterMediaIncompleteError extends Error {
       statuses.length ? ` (HTTP ${statuses.join(", ")})` : ""
     }.${assets.length ? ` Missing assets: ${assets.join(", ")}.` : ""}`);
     this.name = "ChapterMediaIncompleteError";
+    this.retryAfterMs = failures.reduce((delay, failure) => Math.max(delay, failure.retryAfterMs ?? 0), 0);
   }
 }
 
@@ -104,6 +106,7 @@ export function recordChapterMediaFailure(
     contextUrl: string;
     error: unknown;
     fileName?: string;
+    retryAfterMs?: number;
     scraperExecutor?: ScraperExecutorId;
     sourceId?: string;
     status?: number;
@@ -114,6 +117,7 @@ export function recordChapterMediaFailure(
   failures.push({
     ...(input.fileName ? { fileName: input.fileName } : {}),
     message,
+    ...(input.retryAfterMs !== undefined ? { retryAfterMs: input.retryAfterMs } : {}),
     ...(input.status ? { status: input.status } : {}),
     url: input.url,
   });

@@ -21,7 +21,7 @@ export interface CacheChapterMediaOptions {
   fetchMissingMedia?: (file: ChapterMediaManifestFile) => Promise<Response | null>;
   requestInit?: ChapterMediaRequestInit;
   repair?: boolean;
-  /** Offline downloads must not publish an archive with missing remote assets. */
+  /** Report missing assets after archiving successfully stored files. */
   requireComplete?: boolean;
   scraperExecutor?: ScraperExecutorId;
   shouldYield?: () => boolean;
@@ -39,6 +39,7 @@ export interface ChapterMediaElementPatch {
 export interface ChapterMediaFailure {
   fileName?: string;
   message: string;
+  retryAfterMs?: number;
   status?: number;
   url: string;
 }

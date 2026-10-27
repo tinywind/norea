@@ -1,7 +1,7 @@
 import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import { isAbortError } from "../abort";
-import { ChapterMediaIncompleteError, isTransientMediaNetworkError } from "../chapter-media/errors";
+import { ChapterMediaIncompleteError, isTransientMediaHttpStatus, isTransientMediaNetworkError } from "../chapter-media/errors";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import type { TaskRetryDecision, TaskSpec } from "./task-types";
@@ -15,7 +15,9 @@ export function isRetryableDownloadError(error: unknown): boolean {
   }
   if (error instanceof ChapterMediaIncompleteError) {
     return error.failures.length > 0 && error.failures.every((failure) =>
-      failure.status === undefined && isTransientMediaNetworkError(failure.message),
+      failure.status === undefined
+        ? isTransientMediaNetworkError(failure.message)
+        : isTransientMediaHttpStatus(failure.status),
     );
   }
   if (isTransientMediaNetworkError(error)) return true;

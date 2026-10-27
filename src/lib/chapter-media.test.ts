@@ -1140,6 +1140,52 @@ describe("cacheHtmlChapterMedia", () => {
   });
 
   describe("strict offline completion", () => {
+    it.each(["network", "temporary HTTP", "permanent HTTP"])(
+      "stores later assets and archives them after a %s failure",
+      async failure => {
+        vi.useFakeTimers();
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const stored: string[] = [];
+        let archived: string[] | undefined;
+        let files: Array<{ fileName: string; status: string }> = [];
+        pluginMediaFetchMock.mockImplementation(async url => {
+          if (url.endsWith("/page-1.png")) {
+            if (failure === "network") throw new TypeError("Failed to fetch");
+            return new Response(null, { status: failure === "temporary HTTP" ? 503 : 404 });
+          }
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        });
+        mockChapterMediaInvoke(async (command, args) => {
+          if (command === "chapter_media_write_manifest") {
+            files = (args as { files: typeof files }).files;
+          }
+          if (command === "chapter_media_store_handle") {
+            const { fileName } = args as { fileName: string };
+            stored.push(fileName);
+            return `norea-media://reader-asset/${fileName}`;
+          }
+          if (command === "chapter_media_archive_cache") {
+            archived = [...stored];
+            return 12;
+          }
+          return null;
+        });
+        try {
+          const pending = cacheHtmlChapterMedia({
+            baseUrl: "https://source.test/", chapterId: 42, requireComplete: true,
+            html: '<img src="/page-1.png"><img src="/page-2.png"><img src="/page-3.png"><img src="/page-4.png"><img src="/page-5.png">',
+          }).catch((error: unknown) => error);
+          await vi.runAllTimersAsync();
+          const error = await pending;
+          expect(error).toMatchObject({ code: "chapter-media-incomplete", failures: [
+            expect.objectContaining({ fileName: "0001-page-1.png" }),
+          ] });
+          expect(archived?.sort()).toEqual(["0002-page-2.png", "0003-page-3.png", "0004-page-4.png", "0005-page-5.png"]);
+          expect(files.filter(file => file.status === "remote").map(file => file.fileName)).toEqual(["0001-page-1.png"]);
+          expect(new Set(pluginMediaFetchMock.mock.calls.map(([url]) => url)).size).toBe(5);
+        } finally { vi.useRealTimers(); }
+      },
+    );
     it.each([false, true])("releases captured response streams before automatic retry (cleanup fails: %s)", async cleanupFails => {
       takeCapturedMediaHandleMock.mockResolvedValueOnce({
         bodyBytes: 3, bodyHandle: "retry-response", finalUrl: "https://source.test/page.png",
@@ -1152,22 +1198,22 @@ describe("cacheHtmlChapterMedia", () => {
       await expect(cacheHtmlChapterMedia({
         baseUrl: "https://source.test/", chapterId: 42, scraperExecutor: "pool:1",
         html: '<img src="/page.png">', requireComplete: true,
-      })).rejects.toMatchObject({ code: "chapter-media-http-retry", status: 503, retryAfterMs: 30000 });
+      })).rejects.toMatchObject({ code: "chapter-media-incomplete", failures: [expect.objectContaining({ status: 503, retryAfterMs: 30000 })] });
       expect(invokeMock.mock.calls.filter(([command]) => command === "native_stream_cancel")).toEqual([
         ["native_stream_cancel", { handle: "retry-response" }],
       ]);
       expect(pluginMediaFetchMock).not.toHaveBeenCalled();
-      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
     });
 
-    it("does not archive or report success when a permanent image is missing", async () => {
+    it("archives available assets without reporting a missing image as complete", async () => {
       pluginMediaFetchMock.mockResolvedValue(new Response(null, { status: 404 }));
       await expect(cacheHtmlChapterMedia({
         baseUrl: "https://source.test/", chapterId: 42,
         html: '<img src="./missing.png">', requireComplete: true,
       })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
       expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
-      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
     });
 
     it.each([408, 429, 502, 503, 504])("propagates temporary HTTP %i to the task retry policy", async status => {
@@ -1175,8 +1221,8 @@ describe("cacheHtmlChapterMedia", () => {
       await expect(cacheHtmlChapterMedia({
         baseUrl: "https://source.test/", chapterId: 42,
         html: '<img src="./page.png">', requireComplete: true,
-      })).rejects.toMatchObject({ code: "chapter-media-http-retry", status, retryAfterMs: 30000 });
-      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      })).rejects.toMatchObject({ code: "chapter-media-incomplete", failures: [expect.objectContaining({ status, retryAfterMs: 30000 })] });
+      expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
     });
 
     it("retains the failed asset when fast network retries are exhausted", async () => {
@@ -1194,7 +1240,7 @@ describe("cacheHtmlChapterMedia", () => {
         await vi.advanceTimersByTimeAsync(4000);
         await checked;
         expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);
-        expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+        expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
       } finally { vi.useRealTimers(); }
     });
   });
@@ -2023,7 +2069,7 @@ describe("cacheHtmlChapterMedia", () => {
     });
     const options = { chapterId: 42, html: '<img src="norea-media://reader-asset/good.png">', repair: true, requireComplete: true };
     await expect(cacheHtmlChapterMedia(options)).rejects.toMatchObject({ code: "chapter-media-incomplete" });
-    expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+    expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
     expect(staged).toEqual({ "good.png": 3, "partial.png": 3 });
     blocked = false;
     await cacheHtmlChapterMedia(options);
@@ -2031,7 +2077,7 @@ describe("cacheHtmlChapterMedia", () => {
       "https://source.test/partial.png", "https://source.test/blocked.png", "https://source.test/blocked.png",
     ]);
     expect(files.every(file => file.status === "stored")).toBe(true);
-    expect(invokeMock.mock.calls.filter(([command]) => command === "chapter_media_archive_cache")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "chapter_media_archive_cache")).toHaveLength(2);
   });
 
   it("starts chapter downloads without scanning every target file", async () => {

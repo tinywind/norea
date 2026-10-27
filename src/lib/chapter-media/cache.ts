@@ -373,10 +373,11 @@ export async function cacheHtmlChapterMedia({
         ? capturedHandle.status >= 200 && capturedHandle.status < 300
         : response?.ok === true;
       if (!responseOk) {
-        if (requireComplete && isTransientMediaHttpStatus(status)) {
-          const headers = capturedHandle ? new Headers(capturedHandle.headers) : response!.headers;
-          throw new ChapterMediaHttpRetryError(status, mediaRetryAfterMs(headers.get("retry-after")));
-        }
+        const retryError = requireComplete && isTransientMediaHttpStatus(status)
+          ? new ChapterMediaHttpRetryError(status, mediaRetryAfterMs(
+              (capturedHandle ? new Headers(capturedHandle.headers) : response!.headers).get("retry-after"),
+            ))
+          : undefined;
         if (capturedHandle) {
           await cancelNativeStream(capturedHandle.bodyHandle).catch(
             () => undefined,
@@ -386,7 +387,8 @@ export async function cacheHtmlChapterMedia({
         await session.runUpdate(async () => {
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
-            error: `HTTP ${status} ${statusText}`,
+            error: retryError ?? `HTTP ${status} ${statusText}`,
+            ...(retryError ? { retryAfterMs: retryError.retryAfterMs } : {}),
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId,
@@ -515,24 +517,10 @@ export async function cacheHtmlChapterMedia({
         return;
       }
       if (
-        isSourceAccessRequiredError(error) || isPluginVpnUnavailableError(error) ||
-        (requireComplete && error instanceof ChapterMediaHttpRetryError)
+        isSourceAccessRequiredError(error) || isPluginVpnUnavailableError(error)
       ) {
         releaseMediaAcquisition();
         session.fail(error);
-        return;
-      }
-      if (requireComplete && isTransientMediaNetworkError(error)) {
-        releaseMediaAcquisition();
-        recordChapterMediaFailure(mediaFailures, {
-          contextUrl: mediaContextUrl ?? url,
-          error,
-          fileName: mediaFilesBySourceUrl.get(url)?.fileName,
-          scraperExecutor,
-          sourceId,
-          url,
-        });
-        session.fail(new ChapterMediaIncompleteError([...mediaFailures]));
         return;
       }
       try {
@@ -540,6 +528,9 @@ export async function cacheHtmlChapterMedia({
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
             error,
+            ...(error instanceof ChapterMediaHttpRetryError
+              ? { status: error.status, retryAfterMs: error.retryAfterMs }
+              : {}),
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId,
@@ -575,9 +566,6 @@ export async function cacheHtmlChapterMedia({
     windowSize: CHAPTER_MEDIA_STORE_WINDOW,
   });
   session.throwIfStopped();
-  if (requireComplete && mediaFailures.length > 0) {
-    throw new ChapterMediaIncompleteError(mediaFailures);
-  }
 
   let mediaBytes: number;
   try {
@@ -608,6 +596,9 @@ export async function cacheHtmlChapterMedia({
       sourceId,
     });
     throw finalizationError;
+  }
+  if (requireComplete && mediaFailures.length > 0) {
+    throw new ChapterMediaIncompleteError(mediaFailures);
   }
   clearMediaSourceMetadata(template.content);
 

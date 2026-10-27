@@ -455,7 +455,7 @@ fn build_validated_chapter_media_archive(
     ))
 }
 
-fn mark_chapter_media_manifest_complete(
+fn write_finalized_chapter_media_manifest(
     chapter_dir: &Path,
     manifest: &mut ValidChapterMediaArchiveManifest,
 ) -> Result<(), String> {
@@ -466,7 +466,10 @@ fn mark_chapter_media_manifest_complete(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    manifest_object.insert("complete".to_string(), serde_json::Value::Bool(true));
+    manifest_object.insert(
+        "complete".to_string(),
+        serde_json::Value::Bool(manifest.all_files_stored),
+    );
     manifest_object.insert(
         "updatedAt".to_string(),
         serde_json::Value::Number(now.into()),
@@ -547,6 +550,8 @@ fn finalize_chapter_media_artifacts_locked(
         if let ChapterMediaArtifactState::Invalid(reason) = &archive_state {
             return Ok(ChapterMediaFinalization::Incomplete(reason.clone()));
         }
+    }
+    if manifest.stored_files.is_empty() && manifest.all_files_stored {
         if matches!(&archive_state, ChapterMediaArtifactState::Valid(_)) {
             if archive_source_path != archive_path {
                 let empty_file_names = HashSet::new();
@@ -593,7 +598,7 @@ fn finalize_chapter_media_artifacts_locked(
             fs::remove_dir_all(&media_dir)
                 .map_err(|err| format!("chapter media: remove empty loose media dir: {err}"))?;
         }
-        mark_chapter_media_manifest_complete(chapter_dir, &mut manifest)?;
+        write_finalized_chapter_media_manifest(chapter_dir, &mut manifest)?;
         return Ok(ChapterMediaFinalization::Ready(0));
     }
 
@@ -617,9 +622,11 @@ fn finalize_chapter_media_artifacts_locked(
         )));
     }
 
-    let archive_is_published_and_complete = archive_source_path == archive_path
-        && archive_file_names.len() == manifest.stored_files.len()
-        && loose_file_names.is_empty();
+    let archive_is_published_and_complete =
+        matches!(&archive_state, ChapterMediaArtifactState::Valid(_))
+            && archive_source_path == archive_path
+            && archive_file_names.len() == manifest.stored_files.len()
+            && loose_file_names.is_empty();
     if !archive_is_published_and_complete {
         match build_validated_chapter_media_archive(
             chapter_dir,
@@ -668,7 +675,7 @@ fn finalize_chapter_media_artifacts_locked(
         fs::remove_dir_all(&media_dir)
             .map_err(|err| format!("chapter media: remove loose media dir: {err}"))?;
     }
-    mark_chapter_media_manifest_complete(chapter_dir, &mut manifest)?;
+    write_finalized_chapter_media_manifest(chapter_dir, &mut manifest)?;
     Ok(ChapterMediaFinalization::Ready(media_bytes))
 }
 

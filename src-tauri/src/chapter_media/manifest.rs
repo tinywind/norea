@@ -59,6 +59,7 @@ pub(super) struct ExpectedStoredChapterMedia {
 #[derive(Debug)]
 pub(super) struct ValidChapterMediaArchiveManifest {
     pub(super) complete: bool,
+    pub(super) all_files_stored: bool,
     pub(super) raw: serde_json::Value,
     pub(super) stored_files: Vec<ExpectedStoredChapterMedia>,
 }
@@ -110,6 +111,11 @@ pub(super) fn parse_chapter_media_archive_manifest(
         return Err(format!("unsupported manifest version {}", manifest.version));
     }
 
+    let all_files_stored = manifest
+        .media
+        .files
+        .iter()
+        .all(|file| matches!(file.status, ChapterMediaArchiveManifestFileStatus::Stored));
     let mut stored_file_names = HashSet::new();
     let mut stored_files = Vec::new();
     for file in manifest.media.files {
@@ -133,7 +139,8 @@ pub(super) fn parse_chapter_media_archive_manifest(
     stored_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
 
     Ok(ValidChapterMediaArchiveManifest {
-        complete: manifest.complete,
+        complete: manifest.complete && all_files_stored,
+        all_files_stored,
         raw: raw_value,
         stored_files,
     })

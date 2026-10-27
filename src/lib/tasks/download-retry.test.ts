@@ -32,6 +32,15 @@ describe("download recovery policy", () => {
     )).toEqual([5000, 15000, 30000, 60000, undefined]);
   });
 
+  it("retries temporary asset HTTP failures with their Retry-After budget", () => {
+    const error = new ChapterMediaIncompleteError([
+      { status: 503, retryAfterMs: 120_000, message: "HTTP 503", url: "https://media.test/slow.jpg" },
+      { message: "Failed to fetch", url: "https://media.test/other.jpg" },
+    ]);
+    expect(downloadRetryDecision(error, 1)?.delayMs).toBe(120_000);
+    expect(downloadRetryDecision(error, 5)).toBeNull();
+  });
+
   it("identifies missing assets without disclosing URL credentials or query tokens", () => {
     const error = new ChapterMediaIncompleteError([
       { fileName: "0056-missing.jpg", message: "Failed to fetch", url: "https://user:password@media.test/missing.jpg?token=secret" },
