@@ -76,9 +76,10 @@ export async function takeCapturedMediaResponse(
   }
   const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   if (signal?.aborted) throw requestAbortedError();
+  let result: FetchResultWire | null;
   try {
     // A cached response lookup does not own browser work to cancel.
-    const result = await awaitScraperInvoke(
+    result = await awaitScraperInvoke(
       invoke<FetchResultWire | null>("scraper_take_captured_resource", {
         url,
         queue: scraperExecutor,
@@ -87,18 +88,6 @@ export async function takeCapturedMediaResponse(
       }),
       signal,
     );
-    if (result) {
-      console.debug("[plugin-media-fetch] captured response used", {
-        ...mediaRequestLogContext(url, init, scraperExecutor, result.status),
-      });
-    }
-    return result
-      ? await checkedResponseFromWire(
-          result,
-          sourceAccessFallbackUrl(url, init),
-          signal,
-        )
-      : null;
   } catch (error) {
     if (signal?.aborted) throw requestAbortedError();
     if (isSourceAccessRequiredError(error)) throw error;
@@ -108,6 +97,14 @@ export async function takeCapturedMediaResponse(
     });
     return null;
   }
+  if (result) {
+    console.debug("[plugin-media-fetch] captured response used", {
+      ...mediaRequestLogContext(url, init, scraperExecutor, result.status),
+    });
+  }
+  return result
+    ? checkedResponseFromWire(result, url, sourceAccessFallbackUrl(url, init), signal)
+    : null;
 }
 
 export async function takeCapturedMediaHandle(
@@ -125,8 +122,9 @@ export async function takeCapturedMediaHandle(
     init.scraperExecutor ?? activeScraperExecutor(init.sourceId);
   const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   if (signal?.aborted) throw requestAbortedError();
+  let result: CapturedMediaHandle | null;
   try {
-    const result = await awaitScraperInvoke(
+    result = await awaitScraperInvoke(
       invoke<CapturedMediaHandle | null>(
         "scraper_take_captured_resource_handle",
         {
@@ -139,21 +137,6 @@ export async function takeCapturedMediaHandle(
       signal,
       scraperExecutor,
     );
-    if (result) {
-      const accessError = cloudflareAccessError(
-        result,
-        sourceAccessFallbackUrl(url, init),
-      );
-      if (accessError) {
-        await cancelNativeStream(result.bodyHandle).catch(() => undefined);
-        throw accessError;
-      }
-      console.debug("[plugin-media-fetch] captured response handle used", {
-        ...mediaRequestLogContext(url, init, scraperExecutor, result.status),
-        bodyBytes: result.bodyBytes,
-      });
-    }
-    return result;
   } catch (error) {
     if (signal?.aborted) throw requestAbortedError();
     if (isSourceAccessRequiredError(error)) throw error;
@@ -163,4 +146,20 @@ export async function takeCapturedMediaHandle(
     });
     return null;
   }
+  if (result) {
+    const accessError = cloudflareAccessError(
+      result,
+      url,
+      sourceAccessFallbackUrl(url, init),
+    );
+    if (accessError) {
+      await cancelNativeStream(result.bodyHandle).catch(() => undefined);
+      throw accessError;
+    }
+    console.debug("[plugin-media-fetch] captured response handle used", {
+      ...mediaRequestLogContext(url, init, scraperExecutor, result.status),
+      bodyBytes: result.bodyBytes,
+    });
+  }
+  return result;
 }

@@ -81,8 +81,17 @@ function isCloudflareChallengeResponse(result: FetchResultWire): boolean {
 export function cloudflareAccessError(
   result: FetchResultWire,
   requestUrl: string,
+  sourceAccessUrl: string,
 ): Error | null {
   if (!isCloudflareChallengeResponse(result)) return null;
+  const requestHost = new URL(requestUrl).hostname.replace(/\.$/, "");
+  const sourceHost = new URL(sourceAccessUrl).hostname.replace(/\.$/, "");
+  if (requestHost !== sourceHost) {
+    const responseHost = new URL(result.finalUrl || requestUrl).hostname;
+    return new Error(
+      `External resource at ${responseHost} requires Cloudflare verification (HTTP ${result.status}).`,
+    );
+  }
   return sourceAccessErrorFromEnvelope(
     {
       ok: false,
@@ -93,16 +102,17 @@ export function cloudflareAccessError(
         url: result.finalUrl || requestUrl,
       },
     },
-    requestUrl,
+    sourceAccessUrl,
   );
 }
 
 export async function checkedResponseFromWire(
   result: FetchResultWire,
   requestUrl: string,
+  sourceAccessUrl: string,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const accessError = cloudflareAccessError(result, requestUrl);
+  const accessError = cloudflareAccessError(result, requestUrl, sourceAccessUrl);
   if (accessError) throw accessError;
   return responseFromWire(result, signal);
 }

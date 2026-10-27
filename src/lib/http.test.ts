@@ -608,6 +608,75 @@ describe("pluginMediaFetch", () => {
     ).toEqual(["https://source.test/detail", "https://source.test/chapters"]);
   });
 
+  it.each([403, 200])("keeps a cross-host captured challenge from blocking the source (HTTP %s)", async status => {
+    invokeMock.mockResolvedValueOnce(
+      wireOk("Just a moment...", {
+        status,
+        headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+        finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+      }),
+    );
+
+    await expect(pluginMediaFetch("https://cdn.test/page.png", {
+      contextUrl: "https://source.test/chapter/1",
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof Error &&
+      !isSourceAccessRequiredError(error) &&
+      error.message.includes("cdn.test"),
+    );
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([403, 200])("keeps an external browser-first challenge from blocking the source (HTTP %s)", async status => {
+    invokeMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(wireOk("Just a moment...", {
+        status,
+        headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+        finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+      }));
+
+    await expect(pluginMediaFetch("https://cdn.test/page.png", {
+      contextUrl: "https://cdn.test/assets/",
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+      sourceAccessUrl: "https://source.test/chapter/1",
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof Error &&
+      !isSourceAccessRequiredError(error) &&
+      error.message.includes("cdn.test"),
+    );
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([403, 200])("releases an external captured challenge without blocking the source (HTTP %s)", async status => {
+    invokeMock.mockResolvedValueOnce({
+      bodyBytes: 20,
+      bodyHandle: "blocked-external-media",
+      cloudflareChallenge: true,
+      finalUrl: "https://cdn.test/page.png",
+      headers: { "content-type": "text/html" },
+      status,
+      statusText: "OK",
+    });
+
+    await expect(takeCapturedMediaHandle("https://cdn.test/page.png", {
+      contextUrl: "https://source.test/chapter/1",
+      scraperExecutor: "pool:1",
+      sourceId: "source-a",
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof Error &&
+      !isSourceAccessRequiredError(error) &&
+      error.message.includes("cdn.test"),
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "native_stream_cancel", {
+      handle: "blocked-external-media",
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
   it("propagates a Cloudflare challenge from captured media without falling back", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("Just a moment...", {
@@ -617,11 +686,11 @@ describe("pluginMediaFetch", () => {
           "cf-mitigated": "challenge",
           "content-type": "text/html",
         },
-        finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+        finalUrl: "https://source.test/cdn-cgi/challenge-platform/",
       }),
     );
 
-    const request = pluginMediaFetch("https://cdn.test/page.png", {
+    const request = pluginMediaFetch("https://source.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
       headers: { "User-Agent": "Captured Response Agent" },
       scraperExecutor: "pool:1",
@@ -632,7 +701,7 @@ describe("pluginMediaFetch", () => {
       (error: unknown) =>
         isSourceAccessRequiredError(error) &&
         error.challenge.kind === "cloudflare" &&
-        error.challenge.url === "https://source.test/chapter/1",
+        error.challenge.url === "https://source.test/cdn-cgi/challenge-platform/",
     );
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith(
@@ -640,7 +709,7 @@ describe("pluginMediaFetch", () => {
       {
         queue: "pool:1",
         sourceId: "source-a",
-        url: "https://cdn.test/page.png",
+        url: "https://source.test/page.png",
         userAgent: "Captured Response Agent",
       },
     );
@@ -657,11 +726,11 @@ describe("pluginMediaFetch", () => {
             "cf-mitigated": "challenge",
             "content-type": "text/html",
           },
-          finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+          finalUrl: "https://source.test/cdn-cgi/challenge-platform/",
         }),
       );
 
-    const request = pluginMediaFetch("https://cdn.test/page.png", {
+    const request = pluginMediaFetch("https://source.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
       scraperExecutor: "pool:1",
       sourceId: "source-a",
@@ -672,7 +741,7 @@ describe("pluginMediaFetch", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(
       2,
       "webview_fetch",
-      expect.objectContaining({ url: "https://cdn.test/page.png" }),
+      expect.objectContaining({ url: "https://source.test/page.png" }),
     );
   });
 
@@ -687,12 +756,12 @@ describe("pluginMediaFetch", () => {
             "cf-mitigated": "challenge",
             "content-type": "text/html",
           },
-          finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+          finalUrl: "https://source.test/cdn-cgi/challenge-platform/",
         }),
       );
 
-    const request = pluginMediaFetch("https://cdn.test/page.png", {
-      contextUrl: "https://cdn.test/assets/",
+    const request = pluginMediaFetch("https://source.test/page.png", {
+      contextUrl: "https://source.test/assets/",
       scraperExecutor: "pool:1",
       sourceId: "source-a",
       sourceAccessUrl: "https://source.test/chapter/1",
@@ -701,16 +770,32 @@ describe("pluginMediaFetch", () => {
     await expect(request).rejects.toSatisfy(
       (error: unknown) =>
         isSourceAccessRequiredError(error) &&
-        error.challenge.url === "https://source.test/chapter/1",
+        error.challenge.url === "https://source.test/cdn-cgi/challenge-platform/",
     );
     expect(invokeMock).toHaveBeenCalledTimes(2);
     expect(invokeMock).toHaveBeenNthCalledWith(
       2,
       "webview_fetch",
       expect.objectContaining({
-        contextUrl: "https://cdn.test/assets/",
-        url: "https://cdn.test/page.png",
+        contextUrl: "https://source.test/assets/",
+        url: "https://source.test/page.png",
       }),
+    );
+  });
+
+  it("keeps source-page redirects eligible for manual verification", async () => {
+    invokeMock.mockResolvedValueOnce(
+      wireOk("Just a moment...", {
+        status: 403,
+        headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+        finalUrl: "https://source-new.test/cdn-cgi/challenge-platform/",
+      }),
+    );
+
+    await expect(pluginFetch("https://source.test/chapter/1")).rejects.toSatisfy(
+      (error: unknown) =>
+        isSourceAccessRequiredError(error) &&
+        error.challenge.url === "https://source.test/chapter/1",
     );
   });
 
@@ -772,7 +857,7 @@ describe("pluginMediaFetch", () => {
     invokeMock.mockResolvedValueOnce({
       bodyBytes: 20,
       bodyHandle: "captured-media-1",
-      finalUrl: "https://cdn.test/cdn-cgi/challenge-platform/",
+      finalUrl: "https://source.test/cdn-cgi/challenge-platform/",
       headers: {
         "cf-mitigated": "challenge",
         "content-type": "text/html",
@@ -781,7 +866,7 @@ describe("pluginMediaFetch", () => {
       statusText: "Forbidden",
     });
 
-    const request = takeCapturedMediaHandle("https://cdn.test/page.png", {
+    const request = takeCapturedMediaHandle("https://source.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
       scraperExecutor: "pool:1",
       sourceId: "source-a",
@@ -790,7 +875,7 @@ describe("pluginMediaFetch", () => {
     await expect(request).rejects.toSatisfy(
       (error: unknown) =>
         isSourceAccessRequiredError(error) &&
-        error.challenge.url === "https://source.test/chapter/1",
+        error.challenge.url === "https://source.test/cdn-cgi/challenge-platform/",
     );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "native_stream_cancel", {
       handle: "captured-media-1",
@@ -802,13 +887,13 @@ describe("pluginMediaFetch", () => {
       bodyBytes: 20,
       bodyHandle: "captured-media-2",
       cloudflareChallenge: true,
-      finalUrl: "https://cdn.test/page.png",
+      finalUrl: "https://source.test/page.png",
       headers: {},
       status: 200,
       statusText: "OK",
     });
 
-    const request = takeCapturedMediaHandle("https://cdn.test/page.png", {
+    const request = takeCapturedMediaHandle("https://source.test/page.png", {
       contextUrl: "https://source.test/chapter/1",
       scraperExecutor: "pool:1",
       sourceId: "source-a",
@@ -817,7 +902,7 @@ describe("pluginMediaFetch", () => {
     await expect(request).rejects.toSatisfy(
       (error: unknown) =>
         isSourceAccessRequiredError(error) &&
-        error.challenge.url === "https://source.test/chapter/1",
+        error.challenge.url === "https://source.test/page.png",
     );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "native_stream_cancel", {
       handle: "captured-media-2",

@@ -72,6 +72,7 @@ async function pluginFetchInternal(
   }
   return checkedResponseFromWire(
     result,
+    url,
     sourceAccessFallbackUrl(url, init),
     signal,
   );
