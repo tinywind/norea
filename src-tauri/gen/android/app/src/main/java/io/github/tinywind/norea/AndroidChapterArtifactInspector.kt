@@ -22,7 +22,7 @@ internal class AndroidChapterArtifactInspector(
     require(root.canRead()) { "Android storage folder is not readable." }
     val preferredName = storage.safeStorageSegments(preferredContentFileName).singleOrNull()
       ?: throw IllegalArgumentException("Android storage content file name is invalid.")
-    val contentNames = linkedSetOf(preferredName, "content.html", "content.pdf")
+    val contentNames = linkedSetOf(preferredName, "content.html", "content.pdf", ".chapter-content.partial")
 
     fun inspectDirectory(directory: DocumentFile, relativeDir: String): JSONObject? {
       require(directory.isDirectory) { "Android storage chapter path is not a folder: $relativeDir" }

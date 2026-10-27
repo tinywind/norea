@@ -80,7 +80,9 @@ requirements must be decided explicitly before implementation.
   manifest without a valid recovery copy fails without replacing the archive.
   A damaged archive that cannot be safely decoded is also preserved on failure.
 - Library storage percentages and missing-chapter download batches count chapters
-  with a stored body, including chapters that still need media repair. Missing
+  with a stored body, including chapters that still need media repair. Native
+  storage inspection recognizes `.chapter-content.partial` and preserves its
+  body size and media repair state when reopening a work. Missing
   assets do not reduce the stored-chapter count or cause ordinary batch downloads
   to select the chapter again. Package completeness, server eligibility, and media
   repair flags continue to use the full manifest and validated asset inventory.

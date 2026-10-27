@@ -22,7 +22,7 @@ fn stored_content_path_in_dir(
 ) -> Result<Option<PathBuf>, String> {
     crate::content_sync::recover_content_directory(chapter_dir)?;
     let mut file_names = vec![preferred_file_name.to_string()];
-    for file_name in ["content.html", "content.pdf"] {
+    for file_name in ["content.html", "content.pdf", CHAPTER_PARTIAL_CONTENT_FILE] {
         if !file_names.iter().any(|candidate| candidate == file_name) {
             file_names.push(file_name.to_string());
         }
@@ -544,6 +544,45 @@ mod tests {
         fs::write(directory.join(MEDIA_ARCHIVE_FILE), b"not a zip").expect("bad archive");
         assert!(!inspect().media_complete);
         assert_eq!(inspect().status, "present");
+    }
+
+    #[test]
+    fn stored_chapter_inspection_keeps_partial_body_when_media_is_incomplete() {
+        let root = tempfile::tempdir().expect("storage");
+        let directory = root.path().join("chapter");
+        fs::create_dir(&directory).expect("chapter directory");
+        fs::write(directory.join(CHAPTER_PARTIAL_CONTENT_FILE), b"body").expect("partial body");
+        write_inventory_manifest(&directory, false, "remote");
+        write_inventory_archive(&directory, &["first.png"]);
+        let original_manifest = fs::read(directory.join("manifest.json")).expect("manifest");
+        let original_archive = fs::read(directory.join(MEDIA_ARCHIVE_FILE)).expect("archive");
+
+        let inspected = inspect_content_chapter_dir(root.path(), &directory, "content.html")
+            .expect("inspect chapter").expect("partial body present");
+
+        assert_eq!(inspected.status, "present");
+        assert_eq!(inspected.content_file.as_deref(), Some("chapter/.chapter-content.partial"));
+        assert_eq!(inspected.content_bytes, 4);
+        assert!(!inspected.media_complete);
+        assert_eq!(fs::read(directory.join(CHAPTER_PARTIAL_CONTENT_FILE)).unwrap(), b"body");
+        assert_eq!(fs::read(directory.join("manifest.json")).unwrap(), original_manifest);
+        assert_eq!(fs::read(directory.join(MEDIA_ARCHIVE_FILE)).unwrap(), original_archive);
+    }
+
+    #[test]
+    fn stored_chapter_inspection_prefers_published_body_over_partial_body() {
+        let root = tempfile::tempdir().expect("storage");
+        let directory = root.path().join("chapter");
+        fs::create_dir(&directory).expect("chapter directory");
+        fs::write(directory.join("content.html"), b"published").expect("published body");
+        fs::write(directory.join(CHAPTER_PARTIAL_CONTENT_FILE), b"partial").expect("partial body");
+
+        let inspected = inspect_content_chapter_dir(root.path(), &directory, "content.html")
+            .expect("inspect chapter").expect("published body present");
+
+        assert_eq!(inspected.content_file.as_deref(), Some("chapter/content.html"));
+        assert_eq!(inspected.content_bytes, 9);
+        assert!(inspected.media_complete);
     }
 
     #[test]
