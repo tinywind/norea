@@ -1,6 +1,6 @@
 //! Portable work metadata files and bounded, recoverable publication.
 
-use super::{chapter_media_blocking, paths::media_root};
+use super::{chapter_media_blocking, paths::{media_root, CHAPTER_PARTIAL_CONTENT_FILE}};
 use serde::{Deserialize, Serialize};
 use std::{collections::{HashMap, HashSet}, fs, io::{ErrorKind, Read, Write}, path::{Path, PathBuf}, sync::{LazyLock, Mutex}};
 use tauri::AppHandle;
@@ -138,7 +138,7 @@ fn list_chapter_files(root: &Path, relative: &str, skipped: &HashSet<String>) ->
         if skipped.contains(&format!("{}/{name}", relative.trim_end_matches("/novel.json"))) { continue; }
         if !super::paths::is_chapter_directory_name(&name) { continue; }
         let directory = child.path();
-        for filename in ["content.pdf", "content.html"] {
+        for filename in ["content.pdf", "content.html", CHAPTER_PARTIAL_CONTENT_FILE] {
             if fs::symlink_metadata(directory.join(filename)).is_ok_and(|metadata| metadata.file_type().is_file() && metadata.len() > 0) {
                 paths.push(format!("{}/{name}/{filename}", relative.trim_end_matches("/novel.json")));
                 break;
@@ -332,6 +332,32 @@ mod tests {
         let pending = list_chapter_files(root.path(), "contents/source/Book/novel.json", &skipped).unwrap();
         assert_eq!(pending.len(), 4);
         assert!(!pending.iter().any(|path| path.contains("/1/")));
+    }
+    #[test]
+    fn discovers_partial_bodies_without_replacing_published_content() {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("contents/source/Book");
+        for name in ["1", "2", "3", "4"] {
+            fs::create_dir_all(work.join(name)).unwrap();
+        }
+        fs::write(work.join("1/.chapter-content.partial"), b"partial body").unwrap();
+        fs::write(work.join("2/.chapter-content.partial"), b"retained partial").unwrap();
+        fs::write(work.join("2/content.html"), b"published html").unwrap();
+        fs::write(work.join("3/.chapter-content.partial"), b"retained partial").unwrap();
+        fs::write(work.join("3/content.html"), b"published html").unwrap();
+        fs::write(work.join("3/content.pdf"), b"published pdf").unwrap();
+        fs::write(work.join("4/.chapter-content.partial"), b"").unwrap();
+
+        let paths = list_chapter_files(root.path(), "contents/source/Book/novel.json", &HashSet::new()).unwrap();
+        assert_eq!(paths, [
+            "contents/source/Book/1/.chapter-content.partial",
+            "contents/source/Book/2/content.html",
+            "contents/source/Book/3/content.pdf",
+        ]);
+        assert_eq!(fs::read(work.join("1/.chapter-content.partial")).unwrap(), b"partial body");
+        assert_eq!(fs::read(work.join("2/.chapter-content.partial")).unwrap(), b"retained partial");
+        let skipped = HashSet::from(["contents/source/Book/1".to_string()]);
+        assert_eq!(list_chapter_files(root.path(), "contents/source/Book/novel.json", &skipped).unwrap(), paths[1..]);
     }
     #[test]
     fn rejects_escape_and_non_metadata_files() {

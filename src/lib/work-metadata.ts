@@ -154,6 +154,8 @@ export interface StoredNovelChapter {
   chapterNumber: string;
   name: string;
   contentType: "html" | "pdf";
+  contentBytes: number;
+  mediaBytes: number;
   mediaComplete: boolean;
 }
 
@@ -166,7 +168,7 @@ export async function listStoredNovelChapters(directory: string, signal?: AbortS
     if (!path.startsWith(`${directory}/`)) throw new Error("work metadata: invalid chapter location");
     const parts = path.slice(directory.length + 1).split("/");
     const [child, fileName] = parts;
-    if (parts.length !== 2 || !safeMetadataChild(child!) || !["content.html", "content.pdf"].includes(fileName!)) throw new Error("work metadata: invalid chapter file");
+    if (parts.length !== 2 || !safeMetadataChild(child!) || !["content.html", "content.pdf", ".chapter-content.partial"].includes(fileName!)) throw new Error("work metadata: invalid chapter file");
     const match = /^(\d+(?:\.\d+)?)$/.exec(child!);
     if (!match || String(Number(match[1])) !== child || seen.has(child!)) return null;
     seen.add(child!);
@@ -178,7 +180,9 @@ export async function listStoredNovelChapters(directory: string, signal?: AbortS
       preferredContentFileName: fileName!,
     });
     if (artifacts.status !== "present") return null;
-    return { directory: child!, chapterNumber: match[1]!, name: match[1]!, contentType: artifacts.contentFile?.endsWith(".pdf") ? "pdf" : "html", mediaComplete: artifacts.mediaComplete === true };
+    return { directory: child!, chapterNumber: match[1]!, name: match[1]!,
+      contentType: artifacts.contentFile?.endsWith(".pdf") ? "pdf" : "html",
+      contentBytes: artifacts.contentBytes, mediaBytes: artifacts.mediaBytes, mediaComplete: artifacts.mediaComplete === true };
   };
   for (let offset = 0; offset < paths.length; offset += 4) {
     throwIfAborted(signal, "Storage recovery cancelled.");

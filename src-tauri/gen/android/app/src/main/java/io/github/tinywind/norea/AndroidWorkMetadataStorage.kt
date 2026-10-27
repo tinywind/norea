@@ -46,7 +46,7 @@ internal class AndroidWorkMetadataStorage(
         if (!isAndroidChapterDirectoryName(child.name)) continue
         val chapter = storage.storageChildDocumentFile(child) ?: continue
         val files = storage.listStorageChildren(chapter).associateBy { it.name }
-        for (name in listOf("content.pdf", "content.html")) {
+        for (name in listOf("content.pdf", "content.html", ".chapter-content.partial")) {
           val file = files[name] ?: continue
           if (file.mimeType.isNullOrEmpty() || file.isDirectory) continue
           val size = file.byteSize ?: storage.storageChildDocumentFile(file)?.length() ?: 0

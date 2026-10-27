@@ -73,8 +73,8 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
   const discovered = snapshot?.chapters ?? await listStoredNovelChapters(directory);
   const [novel] = await db.select<{ pluginId: string }[]>("SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
   const isLocal = novel?.pluginId === LOCAL_PLUGIN_ID;
-  const cached = await db.select<{ id: number; path: string; name: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null; mediaRepairNeeded: number }[]>(
-    `SELECT c.id,c.path,c.name,c.chapter_number AS chapterNumber,c.position,d.directory,c.is_downloaded AS isDownloaded,c.stored_content_type AS storedContentType,c.media_repair_needed AS mediaRepairNeeded FROM chapter c
+  const cached = await db.select<{ id: number; path: string; name: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null; mediaRepairNeeded: number; contentBytes: number; mediaBytes: number }[]>(
+    `SELECT c.id,c.path,c.name,c.chapter_number AS chapterNumber,c.position,d.directory,c.is_downloaded AS isDownloaded,c.stored_content_type AS storedContentType,c.media_repair_needed AS mediaRepairNeeded,c.content_bytes AS contentBytes,c.media_bytes AS mediaBytes FROM chapter c
     LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1`, [novelId]);
   const byDirectory = new Map(cached.filter((row) => row.directory).map((row) => [row.directory, row]));
   const byPath = new Map(cached.map((row) => [row.path, row]));
@@ -91,7 +91,7 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
   }
   const directories: { id: number; directory: string }[] = [];
   const used = new Set<number>();
-  const updates = new Map<string, { contentType: StoredNovelChapter["contentType"]; mediaComplete: boolean; ids: number[] }>();
+  const updates = new Map<string, { contentType: StoredNovelChapter["contentType"]; mediaComplete: boolean; chapters: { id: number; contentBytes: number; mediaBytes: number }[] }>();
   const inserts: { path: string; chapter: StoredNovelChapter; position: number; directory: string }[] = [];
   const insertedPaths = new Set<string>();
   for (const [index, chapter] of discovered.entries()) {
@@ -114,10 +114,11 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
       }
       continue;
     } else if (Boolean(matched?.isDownloaded) !== chapter.mediaComplete || matched?.storedContentType !== chapter.contentType
-      || Boolean(matched?.mediaRepairNeeded) === chapter.mediaComplete) {
+      || Boolean(matched?.mediaRepairNeeded) === chapter.mediaComplete
+      || matched?.contentBytes !== chapter.contentBytes || matched?.mediaBytes !== chapter.mediaBytes) {
       const key = `${chapter.contentType}:${chapter.mediaComplete}`;
-      const update = updates.get(key) ?? { contentType: chapter.contentType, mediaComplete: chapter.mediaComplete, ids: [] };
-      update.ids.push(id); updates.set(key, update);
+      const update = updates.get(key) ?? { contentType: chapter.contentType, mediaComplete: chapter.mediaComplete, chapters: [] };
+      update.chapters.push({ id, contentBytes: chapter.contentBytes, mediaBytes: chapter.mediaBytes }); updates.set(key, update);
     }
     used.add(id);
     directories.push({ id, directory: absoluteDirectory });
@@ -127,12 +128,12 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
     const params: unknown[] = [novelId];
     const values = batch.map(({ path, chapter, position }) => {
       const first = params.length + 1;
-      params.push(path, chapter.name, chapter.chapterNumber, position, chapter.contentType, chapter.mediaComplete ? 1 : 0);
-      return `(${Array.from({ length: 6 }, (_, index) => `$${first + index}`).join(",")})`;
+      params.push(path, chapter.name, chapter.chapterNumber, position, chapter.contentType, chapter.mediaComplete ? 1 : 0, chapter.contentBytes, chapter.mediaBytes);
+      return `(${Array.from({ length: 8 }, (_, index) => `$${first + index}`).join(",")})`;
     });
-    await db.execute(`WITH discovered(path,name,number,position,type,complete) AS (VALUES ${values.join(",")})
-      INSERT INTO chapter(novel_id,path,name,chapter_number,position,content_type,stored_content_type,is_downloaded,media_repair_needed,progress,bookmark,unread,read_at)
-      SELECT n.id,d.path,d.name,d.number,d.position,d.type,d.type,d.complete,1-d.complete,COALESCE(state.progress,0),COALESCE(state.bookmark,0),COALESCE(state.unread,1),state.read_at
+    await db.execute(`WITH discovered(path,name,number,position,type,complete,content_bytes,media_bytes) AS (VALUES ${values.join(",")})
+      INSERT INTO chapter(novel_id,path,name,chapter_number,position,content_type,stored_content_type,is_downloaded,media_repair_needed,content_bytes,media_bytes,media_bytes_checked_at,progress,bookmark,unread,read_at)
+      SELECT n.id,d.path,d.name,d.number,d.position,d.type,d.type,d.complete,1-d.complete,d.content_bytes,d.media_bytes,unixepoch(),COALESCE(state.progress,0),COALESCE(state.bookmark,0),COALESCE(state.unread,1),state.read_at
       FROM discovered d JOIN novel n ON n.id=$1 LEFT JOIN work_metadata_reading_state state
       ON state.plugin_id=n.plugin_id AND state.novel_path=n.path AND state.chapter_path=d.path`, params);
   }
@@ -146,11 +147,17 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
       directories.push({ id, directory: inserted.directory });
     }
   }
-  for (const { contentType, mediaComplete, ids } of updates.values()) {
-    for (let offset = 0; offset < ids.length; offset += 100) {
-      const batch = ids.slice(offset, offset + 100).filter((id) => !snapshot || canAdoptChapterDownloadSnapshot(id, snapshot.downloadRevision));
+  for (const { contentType, mediaComplete, chapters } of updates.values()) {
+    for (let offset = 0; offset < chapters.length; offset += 100) {
+      const batch = chapters.slice(offset, offset + 100).filter(({ id }) => !snapshot || canAdoptChapterDownloadSnapshot(id, snapshot.downloadRevision));
       if (batch.length === 0) continue;
-      await db.execute(`UPDATE chapter SET is_downloaded=$2,media_repair_needed=1-$2,stored_content_type=$1 WHERE id IN (${batch.map((_, index) => `$${index + 3}`).join(",")})`, [contentType, mediaComplete ? 1 : 0, ...batch]);
+      const values = batch.map((_, index) => `($${index * 3 + 3},$${index * 3 + 4},$${index * 3 + 5})`);
+      await db.execute(`WITH inspected(id,content_bytes,media_bytes) AS (VALUES ${values.join(",")})
+        UPDATE chapter SET is_downloaded=$2,media_repair_needed=1-$2,stored_content_type=$1,
+          content_bytes=(SELECT content_bytes FROM inspected WHERE inspected.id=chapter.id),
+          media_bytes=(SELECT media_bytes FROM inspected WHERE inspected.id=chapter.id),media_bytes_checked_at=unixepoch()
+        WHERE id IN (SELECT id FROM inspected)`,
+      [contentType, mediaComplete ? 1 : 0, ...batch.flatMap(({ id, contentBytes, mediaBytes }) => [id, contentBytes, mediaBytes])]);
     }
   }
   const discoveredDirectories = new Set(discovered.map(chapter => `${directory}/${chapter.directory}`));

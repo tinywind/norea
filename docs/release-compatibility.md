@@ -84,8 +84,13 @@ requirements must be decided explicitly before implementation.
   storage inspection recognizes `.chapter-content.partial` and preserves its
   body size and media repair state when reopening a work. Missing
   assets do not reduce the stored-chapter count or cause ordinary batch downloads
-  to select the chapter again. Package completeness, server eligibility, and media
-  repair flags continue to use the full manifest and validated asset inventory.
+  to select the chapter again. Whole-work discovery includes nonempty partial
+  bodies after published HTML and PDF candidates. Reconciliation stores the
+  inspected body and archive sizes together with completeness and repair state,
+  so partial-only folders are not mistaken for missing chapters. These persisted
+  counts and repair flags remain available after restart without another scan.
+  Package completeness, server eligibility, and media repair flags continue to
+  use the full manifest and validated asset inventory.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.
   Nonempty source and server updates and a rating of zero still apply. Explicit
