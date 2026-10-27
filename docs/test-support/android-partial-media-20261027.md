@@ -129,14 +129,73 @@ exactly one chapter. All 41 original media files still matched their initial
 hashes before the signed update.
 
 The in-app browser's artifact save, normal Actions artifact link, and direct
-Release asset save all timed out. The signed APK has not yet been installed in
-the original application. Its in-place update, original-root retry, and
-post-update backup comparison remain unverified pending the requested alternate
-download authorization. The copied-content and direct storage results above
-were verified in the separate debug application. That application, its copied
-storage root and import ZIP, temporary VPN profile copy, native test executables,
-and debug forwarding were removed after verification. The original application,
-content root, VPN profile, and user queue were left in place.
+Release asset save all timed out. After the user authorized GitHub CLI download,
+the signed release containing the library repair filter, commit `1a8c7fa`, was
+installed over the original application. The replacement certificate matched
+the installed certificate. Both backups retained 118 works and 54,286 chapters;
+all work metadata, chapter metadata, reading state, categories, memberships,
+repositories, and installed plugins compared unchanged. Existing queued
+downloads continued and changed only download state. The work document still
+contained the same 306 chapter titles after restart.
+
+### Synthetic CDN context follow-up
+
+The original application exposed another acquisition failure before media HTTP
+requests started. Its synthetic CDN documents emitted completion callbacks
+without a page-start callback, while the navigation state machine required a
+start event. The missing event left cross-origin media requests waiting until
+the preparation timeout.
+
+Commit `9918c4ff6618c137be93528307d7629c7df038be` gives each synthetic document
+a unique URL and accepts only its matching completion. Older documents at the
+same origin, stale callbacks from other origins, canceled navigation, and
+duplicate completion events remain rejected. Ordinary source redirects and
+fallback navigation keep their existing behavior.
+
+The context regression suite first failed two assertions. After the fix, all
+108 Android JVM tests across 15 classes passed, along with the targeted arm64
+debug APK build. Three live cross-origin requests through the native scraper
+and its normal foreground-service lease returned HTTP 200. Two scoped static
+verification reports passed. The commit and push hooks passed TypeScript
+checking and 1,972 frontend tests across 168 files.
+
+Actions run `40449765012` built the signed release for that commit. The arm64
+APK SHA-256 is
+`a0537e627f891011be9449d8c94be8973a5e149ea00426510d98542948c18b27`.
+Its update metadata identifies the same run and commit. The checksum,
+certificate, presence of the context fix, and installed APK bytes were checked
+before testing the original content root again.
+
+That normal download acquired 75 more assets and published a 12,504,417-byte
+ZIP with 116 entries. ZIP CRC inspection passed, and all 41 original asset
+hashes matched the archived entries. The manifest retained 117 declared assets,
+one remote SVG, and `complete: false`. Automatic retries used one missing asset
+rather than acquiring the already stored 116 again. After the bounded retry
+budget ended, the original application displayed one failed chapter with a
+diagnostic naming exactly `0014-8vEq4gnkDRTZ.svg`.
+
+After a cold restart, all 116 ZIP entry hashes still matched, and ZIP CRC
+inspection passed again. The final exported backup retained 118 works and
+54,286 chapters. All work metadata, chapter metadata, reading state, categories,
+memberships, repositories, and installed plugins compared unchanged against
+the backup before either signed update. The continuing user queue increased
+completed chapter flags from 37,527 to 37,547; the incomplete target remained
+uncompleted. The work document was byte-identical, including its 306 chapter
+titles.
+
+The library repair tag was also checked in the original application: selecting
+it narrowed the reading category to the affected works, changing the source
+narrowed that result further, and disabling it restored the category's 43 works.
+Its selected state and affected works survived restart. Temporary partial
+chapters from the user's continuing queue can enter and leave the tag while
+their media state changes.
+
+The earlier copied-content test application, copied storage root, import ZIP,
+temporary VPN profile copy, native test executables, and debug forwarding were
+removed after verification. The follow-up debug application and forwarding
+were also removed; it never selected an external root or imported a VPN
+profile. The original application, content root, VPN profile, and user queue
+were preserved.
 
 ## Content-server restart policy
 
