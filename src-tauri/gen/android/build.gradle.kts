@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.LibraryExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 buildscript {
@@ -20,14 +19,6 @@ allprojects {
 }
 
 subprojects {
-    afterEvaluate {
-        if (plugins.hasPlugin("com.android.library")) {
-            extensions.configure<LibraryExtension>("android") {
-                defaultConfig.consumerProguardFiles.clear()
-                defaultConfig.consumerProguardFiles("proguard-rules.pro")
-            }
-        }
-    }
     tasks.withType<KotlinCompile>().configureEach {
         compilerOptions {
             suppressWarnings.set(true)
