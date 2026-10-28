@@ -32,7 +32,7 @@ tauri-plugin-notification = "2.3.3"
 tauri-plugin-opener = "2.5.4"
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio"] }
+sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "blocking", "multipart"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
