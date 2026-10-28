@@ -102,4 +102,42 @@ jobs:
       - name: Run Rust unit tests on Windows x64
         if: matrix.platform == 'windows-x64'
         working-directory: src-tauri
-        run: cargo test --lib --locked --target ${{ matrix.rust-target }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $testDirectory = Join-Path $env:GITHUB_WORKSPACE ".tmp\windows-rust-tests"
+          New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
+          $artifacts = Join-Path $testDirectory "artifacts.jsonl"
+          cargo test --lib --locked --target ${{ matrix.rust-target }} --no-run --message-format=json > $artifacts
+          if ($LASTEXITCODE -ne 0) { throw "Rust unit-test compilation failed" }
+          $testExecutables = @(Get-Content $artifacts | Where-Object { $_.TrimStart().StartsWith("{") } | ForEach-Object { ConvertFrom-Json $_ } |
+            Where-Object { $_.reason -eq "compiler-artifact" -and $_.target.name -eq "app_lib" -and $_.profile.test -and $_.executable } |
+            ForEach-Object { $_.executable })
+          if ($testExecutables.Count -ne 1) { throw "Expected one Rust unit-test executable" }
+          $testExecutable = $testExecutables[0]
+          if (-not (Test-Path $testExecutable -PathType Leaf)) { throw "Rust unit-test executable was not found" }
+
+          # Tauri embeds Common Controls v6 in the app binary, but not the library test binary.
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+          $manifestTool = Get-ChildItem "$sdkBin\*\x64\mt.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $manifestTool) { throw "Windows SDK manifest tool was not found" }
+          $commonControlsManifest = Join-Path $testDirectory "common-controls.manifest"
+          @'
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <dependency><dependentAssembly>
+              <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+            </dependentAssembly></dependency>
+          </assembly>
+          '@ | Set-Content -Encoding utf8 $commonControlsManifest
+          $originalManifest = Join-Path $testDirectory "original.manifest"
+          & $manifestTool.FullName "-inputresource:$testExecutable;#1" "-out:$originalManifest"
+          if ($LASTEXITCODE -eq 0) {
+            Get-Content $originalManifest
+            & $manifestTool.FullName -manifest $originalManifest $commonControlsManifest "-outputresource:$testExecutable;#1"
+          } else {
+            Write-Host "Manifest extraction exited $LASTEXITCODE; embedding the Common Controls manifest"
+            & $manifestTool.FullName -manifest $commonControlsManifest "-outputresource:$testExecutable;#1"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Embedding the unit-test manifest failed" }
+          cargo test --lib --locked --target ${{ matrix.rust-target }}
+          if ($LASTEXITCODE -ne 0) { throw "Rust unit tests failed" }
