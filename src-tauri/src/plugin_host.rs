@@ -50,12 +50,15 @@ fn requested_entry_index(
         let file = archive
             .by_index(index)
             .map_err(|err| format!("Could not inspect ZIP entry: {err}"))?;
-        if !file.is_file() || !is_safe_entry_name(file.name()) {
+        let name = file
+            .name()
+            .map_err(|err| format!("Could not decode ZIP entry name: {err}"))?;
+        if !file.is_file() || !is_safe_entry_name(&name) {
             continue;
         }
 
         if let Some(path) = options.path.as_deref() {
-            if file.name() == path {
+            if name.as_ref() == path {
                 return Ok(index);
             }
             continue;
@@ -63,7 +66,7 @@ fn requested_entry_index(
 
         if let Some(extension) = extension.as_deref() {
             let suffix = format!(".{extension}");
-            if file.name().to_ascii_lowercase().ends_with(&suffix) {
+            if name.to_ascii_lowercase().ends_with(&suffix) {
                 return Ok(index);
             }
             continue;
@@ -93,11 +96,15 @@ fn plugin_zip_list_sync(bytes: Vec<u8>) -> Result<Vec<PluginZipEntryInfo>, Strin
         let file = archive
             .by_index(index)
             .map_err(|err| format!("Could not inspect ZIP entry: {err}"))?;
+        let name = file
+            .name()
+            .map_err(|err| format!("Could not decode ZIP entry name: {err}"))?;
+        let is_file = file.is_file() && is_safe_entry_name(&name);
         entries.push(PluginZipEntryInfo {
-            name: file.name().to_string(),
+            name: name.into_owned(),
             compressed_size: file.compressed_size(),
             uncompressed_size: file.size(),
-            is_file: file.is_file() && is_safe_entry_name(file.name()),
+            is_file,
         });
     }
 
@@ -139,4 +146,53 @@ pub async fn plugin_zip_read_file(
     options: PluginZipReadOptions,
 ) -> Result<Vec<u8>, String> {
     plugin_zip_blocking("read", move || plugin_zip_read_file_sync(bytes, options)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    #[test]
+    fn non_ascii_zip_entry_names_are_preserved_for_listing_and_reading() {
+        let name = "chapter-\u{00e9}.txt";
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer.start_file(name, SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"chapter body").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        let entries = plugin_zip_list_sync(bytes.clone()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, name);
+        assert!(entries[0].is_file);
+
+        let content = plugin_zip_read_file_sync(bytes, PluginZipReadOptions {
+            path: Some(name.to_string()),
+            extension: None,
+            max_bytes: None,
+        }).unwrap();
+        assert_eq!(content, b"chapter body");
+    }
+
+    #[test]
+    fn invalid_utf8_zip_entry_names_are_rejected() {
+        let name = "chapter-\u{00e9}.txt";
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer.start_file(name, SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"chapter body").unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+        for index in 0..bytes.len() - 1 {
+            if bytes[index..index + 2] == [0xc3, 0xa9] {
+                bytes[index] = 0xff;
+            }
+        }
+
+        assert!(plugin_zip_list_sync(bytes.clone()).is_err());
+        assert!(plugin_zip_read_file_sync(bytes, PluginZipReadOptions {
+            path: Some(name.to_string()),
+            extension: None,
+            max_bytes: None,
+        }).is_err());
+    }
 }

@@ -415,11 +415,14 @@ fn extract_installer_from_zip_for_platform_with_limits(
             .map_err(|err| format!("artifact entry read failed: {err}"))?;
         validate_zip_entry_metadata(&entry, limits)?;
         total_uncompressed = add_update_zip_total(total_uncompressed, entry.size(), limits)?;
+        let name = entry
+            .name()
+            .map_err(|err| format!("artifact entry name decode failed: {err}"))?;
         if entry.is_dir() {
-            normalize_safe_zip_entry_path(entry.name())?;
+            normalize_safe_zip_entry_path(&name)?;
             continue;
         }
-        let entry_name = safe_zip_entry_file_name(entry.name())?;
+        let entry_name = safe_zip_entry_file_name(&name)?;
         let Some(priority) = installer_priority_for(target_os, target_arch, &entry_name) else {
             continue;
         };
@@ -438,7 +441,10 @@ fn extract_installer_from_zip_for_platform_with_limits(
         .by_index(index)
         .map_err(|err| format!("installer entry read failed: {err}"))?;
     validate_zip_entry_metadata(&entry, limits)?;
-    let entry_name = safe_zip_entry_file_name(entry.name())?;
+    let name = entry
+        .name()
+        .map_err(|err| format!("installer entry name decode failed: {err}"))?;
+    let entry_name = safe_zip_entry_file_name(&name)?;
     let target_path = updates_dir.join(sanitize_file_name(&entry_name));
     let mut output =
         File::create(&target_path).map_err(|err| format!("installer create failed: {err}"))?;

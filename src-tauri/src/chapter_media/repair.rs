@@ -151,7 +151,9 @@ fn recover_repair_stream(
             };
             entries += 1;
             if entries > MAX_ENTRIES { return Err("chapter media: too many repair archive entries".into()); }
-            let name = entry.name().to_owned();
+            let name = entry.name()
+                .map_err(|err| format!("chapter media: read repair entry name: {err}"))?
+                .into_owned();
             let folded = name.to_ascii_lowercase();
             if !names.insert(folded.clone()) { ambiguous.insert(folded.clone()); }
             let file = by_name.get(name.as_str()).copied().filter(|_| !valid.contains_key(&name) && !ambiguous.contains(&folded));

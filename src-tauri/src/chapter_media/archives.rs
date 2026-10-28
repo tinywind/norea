@@ -224,7 +224,14 @@ fn validate_chapter_media_archive(
                 )));
             }
         };
-        let file_name = entry.name().to_string();
+        let file_name = match entry.name() {
+            Ok(name) => name.into_owned(),
+            Err(err) => {
+                return Ok(ChapterMediaArtifactState::Invalid(format!(
+                    "invalid media archive entry name: {err}"
+                )));
+            }
+        };
         if !entry.is_file() || !is_safe_manifest_media_file_name(&file_name) {
             return Ok(ChapterMediaArtifactState::Invalid(format!(
                 "invalid media archive entry '{file_name}'"
