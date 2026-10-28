@@ -158,7 +158,8 @@ pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
     for index in 0..archive.len() {
         let file = archive.by_index(index).map_err(failure)?;
         let directory = file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o040000);
-        let name = file.name().strip_suffix('/').unwrap_or(file.name());
+        let file_name = file.name().map_err(failure)?;
+        let name = file_name.strip_suffix('/').unwrap_or(file_name.as_ref());
         safe_path(name)?;
         if file.unix_mode().is_some_and(|mode| mode & 0o170000 != 0 && mode & 0o170000 != if directory { 0o040000 } else { 0o100000 })
             || !names.insert(name.to_lowercase()) {
@@ -168,7 +169,7 @@ pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
             return Err(failure("chapter media exceeds byte limit"));
         }
         media_bytes += file.size();
-        if !directory { found.insert(file.name().to_string()); }
+        if !directory { found.insert(file_name.into_owned()); }
     }
     if media.iter().any(|name| !found.contains(name)) {
         return Err(failure("chapter media archive is incomplete"));

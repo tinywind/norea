@@ -860,7 +860,10 @@ fn read_backup_archive_with_limits<R: Read + Seek>(
         let mut entry = archive
             .by_index(index)
             .map_err(|err| format!("backup_unpack: read entry {index}: {err}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|err| format!("backup_unpack: read entry {index} name: {err}"))?
+            .into_owned();
         if entry.is_dir() {
             continue;
         }
