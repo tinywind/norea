@@ -257,22 +257,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
         let migrated = bootstrap(&path, &[schema(CURRENT)]).await.unwrap();
-        sqlx::query("INSERT INTO sample VALUES (1)").execute(&migrated).await.unwrap();
+        let mut migrated_connection = migrated.acquire().await.unwrap();
+        sqlx::query("INSERT INTO sample VALUES (1)").execute(&mut *migrated_connection).await.unwrap();
+        migrated_connection.close().await.unwrap();
         migrated.close().await;
         let (writer, reader) = open_sqlite_pools(&path).await.unwrap();
-        sqlx::query("BEGIN IMMEDIATE").execute(&writer).await.unwrap();
-        sqlx::query("UPDATE sample SET value=2").execute(&writer).await.unwrap();
+        let mut writer_connection = writer.acquire().await.unwrap();
+        let mut reader_connection = reader.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer_connection).await.unwrap();
+        sqlx::query("UPDATE sample SET value=2").execute(&mut *writer_connection).await.unwrap();
         let saved = tokio::time::timeout(Duration::from_secs(1),
-            sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&reader))
+            sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&mut *reader_connection))
             .await.unwrap().unwrap();
         assert_eq!(saved, 1);
-        sqlx::query("COMMIT").execute(&writer).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&reader).await.unwrap(), 2);
-        sqlx::query("BEGIN IMMEDIATE").execute(&writer).await.unwrap();
-        sqlx::query("UPDATE sample SET value=3").execute(&writer).await.unwrap();
-        sqlx::query("ROLLBACK").execute(&writer).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&reader).await.unwrap(), 2);
-        assert!(sqlx::query("UPDATE sample SET value=4").execute(&reader).await.is_err());
+        sqlx::query("COMMIT").execute(&mut *writer_connection).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&mut *reader_connection).await.unwrap(), 2);
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer_connection).await.unwrap();
+        sqlx::query("UPDATE sample SET value=3").execute(&mut *writer_connection).await.unwrap();
+        sqlx::query("ROLLBACK").execute(&mut *writer_connection).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&mut *reader_connection).await.unwrap(), 2);
+        assert!(sqlx::query("UPDATE sample SET value=4").execute(&mut *reader_connection).await.is_err());
+        reader_connection.close().await.unwrap();
+        writer_connection.close().await.unwrap();
         reader.close().await;
         writer.close().await;
         fs::remove_file(&path).unwrap();
