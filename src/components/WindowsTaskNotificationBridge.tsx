@@ -115,7 +115,7 @@ async function ensureNotificationPermission(): Promise<boolean> {
 }
 
 function routeFromNotification(
-  notification: NotificationOptions,
+  notification: Pick<NotificationOptions, "extra">,
 ): TaskNotificationRoute | null {
   const route = notification.extra?.route;
   if (route === "/downloads" || route === "/tasks" || route === "/updates") {
@@ -225,7 +225,9 @@ export function WindowsTaskNotificationBridge({
     const sentByKey = new Map<string, SentNotificationState>();
 
     void onAction((notification) => {
-      const route = routeFromNotification(notification);
+      const route = notification.notification
+        ? routeFromNotification(notification.notification)
+        : null;
       if (!route) return;
       void (async () => {
         try {

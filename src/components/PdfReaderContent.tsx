@@ -1050,7 +1050,7 @@ function PdfReaderContentInner(
         loadingTask = getDocument(source);
         const nextDocument = await loadingTask.promise;
         if (disposed) {
-          void nextDocument.destroy();
+          void loadingTask.destroy();
           return;
         }
         const nextPageCount = nextDocument.numPages;
