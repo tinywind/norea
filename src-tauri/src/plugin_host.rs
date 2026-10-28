@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_zip_entry_names_are_rejected() {
+    fn legacy_cp437_zip_entry_names_are_preserved() {
         let name = "chapter-\u{00e9}.txt";
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
         writer.start_file(name, SimpleFileOptions::default()).unwrap();
@@ -188,11 +188,14 @@ mod tests {
             }
         }
 
-        assert!(plugin_zip_list_sync(bytes.clone()).is_err());
-        assert!(plugin_zip_read_file_sync(bytes, PluginZipReadOptions {
-            path: Some(name.to_string()),
+        let decoded_name = "chapter-\u{00a0}\u{2310}.txt";
+        let entries = plugin_zip_list_sync(bytes.clone()).unwrap();
+        assert_eq!(entries[0].name, decoded_name);
+        let content = plugin_zip_read_file_sync(bytes, PluginZipReadOptions {
+            path: Some(decoded_name.to_string()),
             extension: None,
             max_bytes: None,
-        }).is_err());
+        }).unwrap();
+        assert_eq!(content, b"chapter body");
     }
 }
