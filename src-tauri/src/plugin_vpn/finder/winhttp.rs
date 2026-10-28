@@ -103,7 +103,7 @@ impl AsyncRequest {
                     WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, 0)
             };
             if previous.is_some_and(|callback| callback as usize == usize::MAX) {
-                return Err(format!("could not configure VPN Gate callbacks: {}", Error::from_win32()));
+                return Err(format!("could not configure VPN Gate callbacks: {}", Error::from_thread()));
             }
             Ok(())
         })();
@@ -142,7 +142,7 @@ struct WinHttpHandle(*mut c_void);
 impl WinHttpHandle {
     fn new(raw: *mut c_void, operation: &str) -> Result<Self, String> {
         if raw.is_null() {
-            Err(format!("{operation}: {}", Error::from_win32()))
+            Err(format!("{operation}: {}", Error::from_thread()))
         } else {
             Ok(Self(raw))
         }
