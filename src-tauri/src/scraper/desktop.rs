@@ -311,7 +311,10 @@ fn normalize_source_id(source_id: Option<&str>) -> Result<String, String> {
 }
 
 fn source_profile_key(source_id: &str) -> String {
-    format!("{:x}", Sha256::digest(source_id.as_bytes()))
+    Sha256::digest(source_id.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn source_profiles_data_directory(app: &AppHandle) -> Result<PathBuf, String> {
@@ -3082,7 +3085,7 @@ mod tests {
     fn source_profile_keys_are_stable_and_isolated() {
         assert_eq!(
             source_profile_key("source-a"),
-            source_profile_key("source-a")
+            "0f9f5ce47831e099e77e295ed8bb627f089efa8672ee6fbdc49eac6f0d7f5275"
         );
         assert_ne!(
             source_profile_key("source-a"),

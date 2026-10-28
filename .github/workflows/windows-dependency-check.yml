@@ -98,3 +98,8 @@ jobs:
 
       - name: Build Windows app without publishing
         run: pnpm tauri build --target ${{ matrix.rust-target }} --no-bundle
+
+      - name: Run Rust unit tests on Windows x64
+        if: matrix.platform == 'windows-x64'
+        working-directory: src-tauri
+        run: cargo test --lib --locked --target ${{ matrix.rust-target }}
