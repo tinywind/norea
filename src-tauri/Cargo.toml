@@ -37,7 +37,7 @@ reqwest = { version = "0.13.3", default-features = false, features = ["rustls", 
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
-rustls-platform-verifier = "=0.7.1"
+rustls-platform-verifier = "=0.7.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tauri-plugin-single-instance = "2.4.1"
@@ -47,7 +47,7 @@ windows = { version = "0.62.2", features = ["Foundation_Collections", "Networkin
 
 [target.'cfg(any(target_os = "android", target_os = "windows"))'.dependencies]
 getrandom = "=0.4.3"
-openvpn-connect = { version = "=0.1.2", default-features = false, features = ["external-tun", "tokio", "vendor"] }
+openvpn-connect = { version = "=0.1.1", default-features = false, features = ["external-tun", "tokio", "vendor"] }
 smoltcp = { version = "=0.14.0", default-features = false, features = ["medium-ip", "proto-dns", "proto-ipv4", "proto-ipv6", "socket-dns", "socket-tcp", "std"] }
 
 [dev-dependencies]
