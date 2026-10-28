@@ -499,7 +499,11 @@ fn verify_update_file(path: &Path, metadata: &UpdateInstallMetadata) -> Result<(
         hasher.update(&buffer[..read]);
     }
     validate_expected_size(total, metadata.size)?;
-    let actual_sha256 = format!("{:x}", hasher.finalize());
+    let actual_sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     validate_expected_sha256(&actual_sha256, &metadata.sha256)
 }
 
@@ -536,7 +540,11 @@ async fn stream_response_to_file(
         .flush()
         .map_err(|err| format!("download flush failed: {err}"))?;
     validate_expected_size(total, metadata.size)?;
-    let actual_sha256 = format!("{:x}", hasher.finalize());
+    let actual_sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     validate_expected_sha256(&actual_sha256, &metadata.sha256)
 }
 
@@ -574,7 +582,10 @@ fn normalize_sha256(value: &str) -> Result<String, String> {
 
 #[cfg(target_os = "android")]
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(not(target_os = "android"))]
@@ -817,7 +828,7 @@ mod tests {
     #[cfg(target_os = "android")]
     fn metadata_for(bytes: &[u8]) -> UpdateInstallMetadata {
         UpdateInstallMetadata {
-            sha256: format!("{:x}", Sha256::digest(bytes)),
+            sha256: sha256_hex(bytes),
             signature: None,
             signing_key_id: None,
             size: u64::try_from(bytes.len()).expect("test size"),

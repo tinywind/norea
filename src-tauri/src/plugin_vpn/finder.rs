@@ -550,7 +550,11 @@ fn candidate_id(profile: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"norea:vpn-gate-candidate:v1\0");
     hasher.update(profile);
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn inspect_profile_transport(
@@ -874,6 +878,14 @@ mod tests {
         format!(
             "public-vpn-1,93.184.216.34,123456,12,987654321,United States,US,4,60000,20,1000,2weeks,ignored,,{PROFILE_BASE64}"
         )
+    }
+
+    #[test]
+    fn candidate_ids_preserve_the_versioned_sha256_format() {
+        assert_eq!(
+            candidate_id(b"client\n"),
+            "938165b43ef350738a2039daab0b93213d1278a8ffb7c7c401da8dd21cb01a36"
+        );
     }
 
     #[test]
