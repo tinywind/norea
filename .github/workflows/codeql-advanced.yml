@@ -35,6 +35,7 @@ jobs:
           - language: java-kotlin
             build-mode: manual
     env:
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
       ANDROID_SDK_PLATFORM: android-36
       ANDROID_BUILD_TOOLS: 36.0.0
       ANDROID_NDK_VERSION: 29.0.14206865
@@ -122,6 +123,9 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           from zipfile import ZipFile
+          import os
+          import subprocess
+          import xml.etree.ElementTree as ET
           apks = list(Path('src-tauri/gen/android/app/build/outputs/apk').rglob('*.apk'))
           assert apks and all(path.stat().st_size > 0 for path in apks), 'Nonempty Android APK required'
           for path in apks:
@@ -129,7 +133,32 @@ jobs:
                   names = archive.namelist()
                   assert 'AndroidManifest.xml' in names and 'classes.dex' in names
                   assert any(name.startswith('lib/arm64-v8a/') and name.endswith('.so') for name in names)
+              analyzer = Path(os.environ['ANDROID_HOME']) / 'cmdline-tools/latest/bin/apkanalyzer'
+              manifest = subprocess.check_output([str(analyzer), 'manifest', 'print', str(path)], text=True)
+              application = ET.fromstring(manifest).find('application')
+              assert application is not None and application.get('{http://schemas.android.com/apk/res/android}allowBackup') == 'false'
+              print('Compiled APK manifest: allowBackup=false')
               print(path, path.stat().st_size)
+          PY
+
+      - name: Run Android JVM regression tests
+        if: matrix.language == 'java-kotlin'
+        working-directory: src-tauri/gen/android
+        run: |
+          ./gradlew :app:testUniversalDebugUnitTest --no-daemon
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('app/build/test-results/testUniversalDebugUnitTest').glob('TEST-*.xml'))
+          assert reports, 'Android JVM test reports required'
+          suites = [ET.parse(path).getroot() for path in reports]
+          assert all(int(suite.get('failures', 0)) == int(suite.get('errors', 0)) == 0 for suite in suites)
+          tests = sum(int(suite.get('tests', 0)) for suite in suites)
+          skipped = sum(int(suite.get('skipped', 0)) for suite in suites)
+          assert tests > 0 and skipped == 0, 'Executed, unskipped Android JVM tests required'
+          security = [suite for suite in suites if suite.get('name') == 'io.github.tinywind.norea.AndroidLogMessagesTest']
+          assert len(security) == 1 and int(security[0].get('tests', 0)) == 3
+          print(f'Android JVM tests: {tests}, executed: {tests - skipped}, skipped: {skipped}, suites: {len(suites)}, failures: 0, errors: 0')
           PY
 
       - name: Analyze the extracted source
