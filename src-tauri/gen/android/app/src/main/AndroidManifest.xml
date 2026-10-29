@@ -13,6 +13,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application
+        android:allowBackup="false"
         android:icon="${appIcon}"
         android:roundIcon="${appRoundIcon}"
         android:label="${appName}"

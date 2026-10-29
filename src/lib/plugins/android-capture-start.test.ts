@@ -9,13 +9,15 @@ const template = readFileSync(
 
 function startCapture(protocol: string, topFrame = true) {
   const post = vi.fn();
-  const window: Record<string, unknown> = { location: { protocol } };
+  const location = { protocol, hostname: "redirected.test", origin: `${protocol}//redirected.test` };
+  const window: Record<string, unknown> = { location };
   window.top = topFrame ? window : {};
   const script = template
+    .replaceAll("__NOREA_APP_ORIGIN_JSON__", JSON.stringify("https://tauri.localhost"))
     .replaceAll("__NOREA_REQUEST_ID_JSON__", JSON.stringify("capture-1"))
     .replaceAll("__NOREA_REQUEST_NONCE_JSON__", JSON.stringify("nonce-1"))
     .replace("__NOREA_BEFORE_SCRIPT__", "window.ReactNativeWebView.postMessage('captured');");
-  runInNewContext(script, { window, AndroidScraper: { postExtractResultWithNonce: post } });
+  runInNewContext(script, { window, location, AndroidScraper: { postExtractResultWithNonce: post } });
   return post;
 }
 

@@ -25,15 +25,7 @@ pub fn norea_media_protocol_response(
     let request_path = request.uri().path();
     match norea_media_protocol_body(app, request_path) {
         Ok((body, content_type)) => {
-            let mut response = http::Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, content_type);
-            if is_novel_cover_media_path(request_path) {
-                response = response.header(header::CACHE_CONTROL, IMMUTABLE_COVER_CACHE_CONTROL);
-            }
-            response
-                .body(body)
-                .unwrap_or_else(|_| http::Response::new(Vec::new()))
+            norea_media_success_response(request_path, body, content_type)
         }
         Err((status, message)) => http::Response::builder()
             .status(status)
@@ -41,6 +33,26 @@ pub fn norea_media_protocol_response(
             .body(message.into_bytes())
             .unwrap_or_else(|_| http::Response::new(Vec::new())),
     }
+}
+
+fn norea_media_success_response(
+    request_path: &str,
+    body: Vec<u8>,
+    content_type: &'static str,
+) -> http::Response<Vec<u8>> {
+    let mut response = http::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+        );
+    if is_novel_cover_media_path(request_path) {
+        response = response.header(header::CACHE_CONTROL, IMMUTABLE_COVER_CACHE_CONTROL);
+    }
+    response
+        .body(body)
+        .unwrap_or_else(|_| http::Response::new(Vec::new()))
 }
 
 fn is_novel_cover_media_path(request_path: &str) -> bool {

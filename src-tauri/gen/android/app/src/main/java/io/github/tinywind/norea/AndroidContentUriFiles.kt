@@ -149,7 +149,7 @@ internal class AndroidContentUriFiles(
         }
       }
     }.onFailure { error ->
-      Log.w(TAG, "Android content URI metadata query failed. uri=$uri", error)
+      Log.w(TAG, singleLineLogMessage("Android content URI metadata query failed. uri=$uri ${error.stackTraceToString()}"))
     }
     return ContentUriMetadata(fileName, size)
   }

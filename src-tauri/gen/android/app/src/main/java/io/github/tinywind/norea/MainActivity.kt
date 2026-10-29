@@ -102,6 +102,8 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(AndroidVpnProxyBridge(bridgeSession), "__NoreaAndroidVpn")
     webView.addJavascriptInterface(AndroidWindowMetricsBridge(this, webView), "__NoreaAndroidWindow")
     webView.settings.apply {
+      allowContentAccess = false
+      allowFileAccess = false
       setSupportZoom(false)
       builtInZoomControls = false
       displayZoomControls = false

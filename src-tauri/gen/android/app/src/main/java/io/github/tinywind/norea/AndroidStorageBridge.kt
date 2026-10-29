@@ -412,7 +412,7 @@ internal class AndroidStorageBridge(
 
   @JavascriptInterface
   fun readBase64(rootUri: String, relativePath: String): String = storageResponse {
-    Log.d(TAG, "Android storage readBase64 path=$relativePath root=$rootUri")
+    Log.d(TAG, singleLineLogMessage("Android storage readBase64 path=$relativePath root=$rootUri"))
     val bytes = storage.openStorageInputStream(rootUri, relativePath)?.use { input ->
       input.readBytes()
     } ?: throw IllegalStateException(storage.storageReadFailureMessage(rootUri, relativePath))

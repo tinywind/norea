@@ -2,6 +2,38 @@ use super::*;
 use std::path::Path;
 
 #[test]
+fn media_documents_are_sandboxed_without_changing_svg_bytes() {
+    let body = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>parent.postMessage('executed','*')</script><rect width="10" height="10"/></svg>"#.to_vec();
+    for request_path in [
+        "/contents/demo/novel-id/cover.svg",
+        "/contents/demo/novel-id/1/page.svg",
+    ] {
+        let response = norea_media_success_response(
+            request_path,
+            body.clone(),
+            "image/svg+xml",
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body(), &body);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/svg+xml");
+        let policy = response.headers().get(header::CONTENT_SECURITY_POLICY)
+            .expect("Untrusted media documents require a sandbox policy")
+            .to_str().unwrap();
+        assert!(policy.split(';').any(|directive| directive.trim() == "sandbox"));
+        assert!(policy.split(';').any(|directive| directive.trim() == "default-src 'none'"));
+        assert!(policy.split(';').any(|directive| directive.trim() == "style-src 'unsafe-inline'"));
+        assert!(policy.split(';').any(|directive| directive.trim() == "img-src data:"));
+        assert!(!policy.contains("allow-scripts"));
+        assert!(!policy.contains("allow-same-origin"));
+        if request_path.ends_with("/cover.svg") {
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
+        } else {
+            assert!(response.headers().get(header::CACHE_CONTROL).is_none());
+        }
+    }
+}
+
+#[test]
 fn image_signature_overrides_disguised_media_extension() {
     let cases: &[(&[u8], &str)] = &[
         (b"\xff\xd8\xff\xe0image-body", "image/jpeg"),

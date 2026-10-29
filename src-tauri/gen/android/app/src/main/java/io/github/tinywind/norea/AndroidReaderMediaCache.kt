@@ -189,9 +189,9 @@ internal class AndroidReaderMediaCache(
       val cacheRoot = readerMediaCacheTokenRoot(safeCacheToken)
       Log.d(
         TAG,
-        "Android reader media cache prepare start. " +
+        singleLineLogMessage("Android reader media cache prepare start. " +
           "token=$safeCacheToken mediaPath=$mediaRelativePath " +
-          "archivePath=$archiveRelativePath",
+          "archivePath=$archiveRelativePath"),
       )
       val mediaStats = copyReaderMediaDirectoryToCache(
         rootUri,
@@ -206,8 +206,7 @@ internal class AndroidReaderMediaCache(
         archiveFailure = error.message ?: error.toString()
         Log.w(
           TAG,
-          "Android reader media archive overlay failed. path=$archiveRelativePath",
-          error,
+          singleLineLogMessage("Android reader media archive overlay failed. path=$archiveRelativePath ${error.stackTraceToString()}"),
         )
         ReaderMediaCacheStats()
       }
@@ -219,13 +218,13 @@ internal class AndroidReaderMediaCache(
 
       Log.d(
         TAG,
-        "Android reader media cache prepared. " +
+        singleLineLogMessage("Android reader media cache prepared. " +
           "token=$safeCacheToken " +
           "mediaPath=$mediaRelativePath " +
           "archivePath=$archiveRelativePath " +
           "mediaCount=${mediaStats.entryCount} " +
           "archiveCount=${archiveStats.entryCount} " +
-          "bytes=$totalBytes",
+          "bytes=$totalBytes"),
       )
       JSONObject()
         .put("ok", true)

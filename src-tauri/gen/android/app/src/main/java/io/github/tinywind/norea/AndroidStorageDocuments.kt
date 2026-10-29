@@ -259,15 +259,14 @@ internal class AndroidStorageDocuments(private val context: Context) {
     val directFile = runCatching {
       externalStorageFile(rootUri, relativePath)
     }.getOrElse { error ->
-      Log.w(TAG, "Android storage direct path failed. path=$relativePath root=$rootUri", error)
+      Log.w(TAG, singleLineLogMessage("Android storage direct path failed. path=$relativePath root=$rootUri ${error.stackTraceToString()}"))
       null
     }
     val direct = directFile?.takeIf { it.isFile }?.let { file ->
       runCatching { file.inputStream() }.getOrElse { error ->
         Log.w(
           TAG,
-          "Android storage direct read failed. path=$relativePath file=${file.absolutePath}",
-          error,
+          singleLineLogMessage("Android storage direct read failed. path=$relativePath file=${file.absolutePath} ${error.stackTraceToString()}"),
         )
         null
       }
@@ -279,8 +278,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
     }.getOrElse { error ->
       Log.w(
         TAG,
-        "Android storage document uri failed. path=$relativePath root=$rootUri",
-        error,
+        singleLineLogMessage("Android storage document uri failed. path=$relativePath root=$rootUri ${error.stackTraceToString()}"),
       )
       null
     }
@@ -288,8 +286,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
       runCatching { contentResolver.openInputStream(uri) }.getOrElse { error ->
         Log.w(
           TAG,
-          "Android storage document read failed. path=$relativePath uri=$uri",
-          error,
+          singleLineLogMessage("Android storage document read failed. path=$relativePath uri=$uri ${error.stackTraceToString()}"),
         )
         null
       }
@@ -301,8 +298,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
     return runCatching { contentResolver.openInputStream(document.uri) }.getOrElse { error ->
       Log.w(
         TAG,
-        "Android storage fallback document read failed. path=$relativePath uri=${document.uri}",
-        error,
+        singleLineLogMessage("Android storage fallback document read failed. path=$relativePath uri=${document.uri} ${error.stackTraceToString()}"),
       )
       null
     }
@@ -360,7 +356,7 @@ internal class AndroidStorageDocuments(private val context: Context) {
       !document.isFile -> "Android storage path is not a file: $relativePath"
       else -> "Cannot open storage file for reading: $relativePath"
     }
-    Log.w(TAG, "$message root=$rootUri")
+    Log.w(TAG, singleLineLogMessage("$message root=$rootUri"))
     return message
   }
 

@@ -73,6 +73,14 @@
     }
   } catch (e) {}
   try {
+    var appOrigin = __NOREA_APP_ORIGIN_JSON__;
+    var protectedHost = /^(?:tauri|asset|norea-media)\.localhost$/i.test(location.hostname);
+    var websiteContext = /^https?:$/.test(location.protocol) && !protectedHost;
+    if (!appOrigin || location.origin === appOrigin) websiteContext = false;
+    if (!websiteContext) {
+      if ((window.name || "").indexOf(scriptPrefix) === 0) window.name = "";
+      return;
+    }
     if (params.__norea_script__) {
       var script = params.__norea_script__;
       if (fromHash) {
