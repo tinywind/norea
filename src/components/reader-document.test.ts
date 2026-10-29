@@ -1,5 +1,6 @@
 import { load } from "cheerio";
 import { describe, expect, it } from "vitest";
+import { sanitizeReaderHtml } from "../lib/chapter-content";
 import {
   prepareReaderDocument,
   READER_INERT_LOCAL_MEDIA_SRC_PREFIX,
@@ -7,6 +8,41 @@ import {
 } from "./reader-document";
 
 describe("prepareReaderDocument", () => {
+  it("escapes decoded tag-shaped text after text-only segmentation", () => {
+    const prepared = prepareReaderDocument(
+      '<article class="reader-text-content"><p>&lt;img src=x onerror=run()&gt;<br>After</p></article>',
+      false,
+    );
+    const $ = load(
+      prepared.virtualDocument.segments.map((segment) => segment.html).join(""),
+      {},
+      false,
+    );
+    expect($("img, script")).toHaveLength(0);
+    expect($("p").text()).toBe("<img src=x onerror=run()>\nAfter");
+  });
+
+  it("keeps upstream HTML sanitization intact through large-document segmentation", () => {
+    const html = sanitizeReaderHtml(
+      [
+        '<style>p { color: red; }</style><script>run()</script>',
+        '<p onclick="run()"><a href="javascript:run()">Safe</a></p>',
+        "<p>Large safe content.</p>".repeat(20_000),
+      ].join(""),
+    );
+    const prepared = prepareReaderDocument(html, false);
+    expect(html.length).toBeGreaterThan(350_000);
+    const $ = load(
+      prepared.virtualDocument.staticHtml +
+        prepared.virtualDocument.segments.map((segment) => segment.html).join(""),
+      {},
+      false,
+    );
+    expect($("script, style, [onclick], a[href]")).toHaveLength(0);
+    expect($("p")).toHaveLength(20_001);
+    expect($("a").text()).toBe("Safe");
+  });
+
   it("preserves HTML wrappers, style blocks, text nodes, and reading direction", () => {
     const html = [
       '<article class="reader-content reader-epub-content" dir="rtl" lang="en">',
