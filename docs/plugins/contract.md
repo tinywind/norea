@@ -507,6 +507,11 @@ finder, the native host recognizes Norea's reserved profile marker and supplies
 VPN Gate's fixed public credential at connection time, including after an app
 restart. That credential is not persisted separately.
 
+DES-CBC and DES-EDE3-CBC data-channel ciphers are unsupported. Profile import and
+connection reject these ciphers, including optional entries in negotiated lists,
+with an error asking for AES. The native cipher backend rejects their handles as
+well. Existing profile files and app data are preserved when validation fails.
+
 The VPN Gate finder retrieves its catalog only from the fixed official
 `https://www.vpngate.net/api/iphone/` endpoint. This is a direct app-owned
 control request, not plugin-owned traffic, and it does not use the plugin VPN.

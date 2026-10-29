@@ -5,9 +5,9 @@ mod finder;
 mod netstack;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod proxy;
+pub(crate) mod state;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod tls_client_hello;
-pub(crate) mod state;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod tunnel_config;
 
@@ -239,6 +239,22 @@ fn validate_profile(bytes: &[u8]) -> Result<ValidatedProfile, String> {
         };
         let directive = directive.to_ascii_lowercase();
 
+        if matches!(
+            directive.as_str(),
+            "cipher" | "data-ciphers" | "data-ciphers-fallback"
+        ) {
+            for cipher in arguments.iter().flat_map(|argument| argument.split(':')) {
+                let cipher = cipher.strip_prefix('?').unwrap_or(cipher);
+                if cipher.eq_ignore_ascii_case("DES-CBC")
+                    || cipher.eq_ignore_ascii_case("DES-EDE3-CBC")
+                {
+                    return Err(format!(
+                        "OpenVPN profile line {line_number}: legacy cipher '{cipher}' is not supported; use AES instead"
+                    ));
+                }
+            }
+        }
+
         if HOST_CONTROL_DIRECTIVES.contains(&directive.as_str()) {
             return Err(format!(
                 "OpenVPN profile line {line_number}: unsupported directive '{directive}'"
@@ -403,6 +419,36 @@ private-key
 -----END PRIVATE KEY-----
 </key>
 "#;
+
+    #[test]
+    fn rejects_weak_data_channel_ciphers() {
+        for directive in [
+            "cipher DES-CBC",
+            "cipher DES-EDE3-CBC",
+            "cipher \"des-cbc\"",
+            "data-ciphers AES-256-GCM:DES-CBC",
+            "data-ciphers AES-256-GCM:?DES-EDE3-CBC",
+            "data-ciphers-fallback DES-EDE3-CBC",
+        ] {
+            let profile = format!("{INLINE_PROFILE}\n{directive}\n");
+            let error = validate_profile(profile.as_bytes()).expect_err(directive);
+            assert!(error.contains("legacy cipher"), "{error}");
+            assert!(error.contains("AES"), "{error}");
+        }
+    }
+
+    #[test]
+    fn accepts_secure_data_channel_ciphers() {
+        for directive in [
+            "cipher AES-128-CBC",
+            "data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305",
+            "data-ciphers-fallback AES-256-CBC",
+        ] {
+            let profile = format!("{INLINE_PROFILE}\n{directive}\n");
+            let parsed = validate_profile(profile.as_bytes()).expect(directive);
+            assert_eq!(parsed.remote_host, "vpn.example.test");
+        }
+    }
 
     #[test]
     fn accepts_a_unified_inline_tun_profile() {
