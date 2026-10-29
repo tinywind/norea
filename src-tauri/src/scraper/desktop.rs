@@ -3562,7 +3562,7 @@ mod tests {
         let script = scraper_initialization_script(Some(&app_url));
         assert!(script.contains("\"https://dev.norea.test\""));
         for secret in ["probe-user", "probe-password", "private-path", "probe-token"] {
-            assert!(!script.contains(secret), "{secret}");
+            assert!(!script.contains(secret));
         }
     }
 
