@@ -104,7 +104,7 @@ pub fn run() {
 
     builder
         .plugin(
-            tauri::plugin::Builder::new("main-navigation")
+            tauri::plugin::Builder::<_, ()>::new("main-navigation")
                 .on_navigation(|webview, url| {
                     let dev_url = cfg!(dev)
                         .then_some(webview.app_handle().config().build.dev_url.as_ref())
