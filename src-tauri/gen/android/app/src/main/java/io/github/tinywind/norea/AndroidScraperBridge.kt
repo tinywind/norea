@@ -177,11 +177,11 @@ class AndroidScraperBridge(
     }
     Log.d(
       TAG,
-      "[${state.key}] ${redactUrlsForLog(message)} busy=${state.busy} queue=${state.queue.size} " +
+      singleLineLogMessage("[${state.key}] ${redactUrlsForLog(message)} busy=${state.busy} queue=${state.queue.size} " +
         "browserVisible=$browserVisible currentUrl=${urlForLog(state.currentUrl)} " +
         "knownQueues=${queues.keys.joinToString(",")} " +
         "webViews=${queues.values.count { it.webView != null }} " +
-        "targetUrl=${urlForLog(url)}$cookies",
+        "targetUrl=${urlForLog(url)}$cookies"),
     )
   }
 
@@ -892,6 +892,8 @@ class AndroidScraperBridge(
     val webView = WebView(mainWebView.context)
     WebViewCompat.setProfile(webView, sourceProfileName(sourceId))
     webView.settings.apply {
+      allowContentAccess = false
+      allowFileAccess = false
       if (!userAgent.isNullOrBlank()) {
         userAgentString = userAgent
       }
