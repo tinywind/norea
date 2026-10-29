@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -833,6 +834,10 @@ class ExternalTunSelfTestParent final : public openvpn::TunClientParent
         ++received;
         received_bytes += buf.size();
         received_headroom = buf.offset();
+        const uint8_t expected[] = {5, 6, 7, 8};
+        received_packet_matches = buf.size() == sizeof(expected)
+                                  && std::memcmp(buf.c_data(), expected,
+                                                 sizeof(expected)) == 0;
     }
 
     void tun_error(const openvpn::Error::Type,
@@ -848,6 +853,7 @@ class ExternalTunSelfTestParent final : public openvpn::TunClientParent
     size_t received = 0;
     size_t received_bytes = 0;
     size_t received_headroom = 0;
+    bool received_packet_matches = false;
     size_t errors = 0;
     size_t pre_tun_config = 0;
     size_t pre_route_config = 0;
@@ -1437,6 +1443,7 @@ class RustClient final : public OpenVPNClient
             || tun_parent.received_bytes != 4
             || tun_parent.received_headroom < 64
             || tun_parent.received_headroom >= 80
+            || !tun_parent.received_packet_matches
             || tun_parent.errors != 2
             || tun_parent.pre_tun_config != 1
             || tun_parent.pre_route_config != 1
@@ -2575,6 +2582,10 @@ int32_t ovpn_external_tun_receive(const ovpn_external_tun_handle *handle,
         || !handle->state)
         return 0;
     const auto state = handle->state;
+    const size_t overhead = state->read_tun_frame.headroom()
+                            + state->read_tun_frame.tailroom();
+    if (len > std::numeric_limits<size_t>::max() - overhead)
+        return 0;
     openvpn::BufferAllocated packet;
     try
     {
