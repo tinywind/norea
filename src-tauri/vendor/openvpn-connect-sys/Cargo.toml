@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88"
 name = "openvpn-connect-sys"
-version = "0.1.1"
+version = "0.1.2"
 build = "build.rs"
 links = "openvpn3-core"
 include = [
@@ -76,9 +76,6 @@ version = "0.10.1"
 
 [dependencies.ctr]
 version = "0.9.2"
-
-[dependencies.des]
-version = "0.8.1"
 
 [dependencies.digest]
 version = "0.10.7"

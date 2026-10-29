@@ -1,0 +1,150 @@
+name: CodeQL Advanced
+
+on:
+  push:
+    branches: ["0.2"]
+  pull_request:
+    branches: ["0.2"]
+  schedule:
+    - cron: "23 20 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: rust
+            build-mode: none
+          - language: java-kotlin
+            build-mode: manual
+    env:
+      ANDROID_SDK_PLATFORM: android-36
+      ANDROID_BUILD_TOOLS: 36.0.0
+      ANDROID_NDK_VERSION: 29.0.14206865
+      ANDROID_CMAKE_VERSION: 3.22.1
+      NOREA_BUILD_CHANNEL: dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        if: matrix.language == 'java-kotlin'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: matrix.language == 'java-kotlin'
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: matrix.language == 'java-kotlin'
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: matrix.language == 'java-kotlin'
+        with:
+          workspaces: src-tauri
+          key: codeql-android-aarch64
+
+      - name: Install Android build tools
+        if: matrix.language == 'java-kotlin'
+        run: |
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null
+          "$sdkmanager" --install \
+            "platform-tools" \
+            "platforms;${ANDROID_SDK_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "cmake;${ANDROID_CMAKE_VERSION}"
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Configure Android native compilation
+        if: matrix.language == 'java-kotlin'
+        run: |
+          set -euo pipefail
+          cmake_bin="${ANDROID_HOME}/cmake/${ANDROID_CMAKE_VERSION}/bin/cmake"
+          toolchain="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64"
+          clang_bin="${toolchain}/bin/clang"
+          test -x "$cmake_bin"
+          test -x "$clang_bin"
+          test -f "${toolchain}/lib/libclang.so"
+          resource_dir="$($clang_bin --print-resource-dir)"
+          test -f "${resource_dir}/include/stddef.h"
+          echo "CMAKE=$cmake_bin" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=${toolchain}/lib" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=${toolchain}/sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
+
+      - name: Install locked frontend dependencies
+        if: matrix.language == 'java-kotlin'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Android debug APK for Java and Kotlin extraction
+        if: matrix.language == 'java-kotlin'
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.caching=false
+        run: |
+          pnpm tauri android build --debug --apk --target aarch64
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          apks = list(Path('src-tauri/gen/android/app/build/outputs/apk').rglob('*.apk'))
+          assert apks and all(path.stat().st_size > 0 for path in apks), 'Nonempty Android APK required'
+          for path in apks:
+              with ZipFile(path) as archive:
+                  names = archive.namelist()
+                  assert 'AndroidManifest.xml' in names and 'classes.dex' in names
+                  assert any(name.startswith('lib/arm64-v8a/') and name.endswith('.so') for name in names)
+              print(path, path.stat().st_size)
+          PY
+
+      - name: Analyze the extracted source
+        id: analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          category: /language:${{ matrix.language }}
+          output: .tmp/codeql-results/${{ matrix.language }}
+          upload: ${{ vars.NOREA_ADVANCED_CODEQL_ENABLED == 'true' && 'always' || 'never' }}
+
+      - name: Retain analysis evidence before the reviewed setup transition
+        if: always() && steps.analyze.outputs.sarif-output != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: codeql-verification-${{ matrix.language }}
+          path: ${{ steps.analyze.outputs.sarif-output }}
+          if-no-files-found: error
+          retention-days: 3

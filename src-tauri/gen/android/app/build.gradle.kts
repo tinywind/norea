@@ -1,5 +1,4 @@
 import groovy.json.JsonSlurper
-import java.io.File
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -28,7 +27,6 @@ val releaseKeyPassword = envOrNull("ANDROID_RELEASE_KEY_PASSWORD") ?: "android"
 val buildChannel = envOrNull("NOREA_BUILD_CHANNEL") ?: "release"
 
 data class RustlsPlatformVerifierAndroidDependency(
-    val repository: File,
     val version: String,
 )
 
@@ -52,13 +50,10 @@ fun findRustlsPlatformVerifierAndroidDependency(): RustlsPlatformVerifierAndroid
     val packages = (JsonSlurper().parseText(dependencyText) as Map<String, Any>)["packages"]
         as List<Map<String, Any>>
     val dependency = packages.first { it["name"] == "rustls-platform-verifier-android" }
-    val manifestPath = dependency["manifest_path"]?.toString()
-        ?: error("rustls-platform-verifier-android manifest path was not found")
     val version = dependency["version"]?.toString()
         ?: error("rustls-platform-verifier-android version was not found")
 
     return RustlsPlatformVerifierAndroidDependency(
-        repository = File(File(manifestPath).parentFile, "maven"),
         version = version,
     )
 }
@@ -69,7 +64,10 @@ val rustlsPlatformVerifierAndroid by lazy {
 
 repositories {
     maven {
-        url = uri(rustlsPlatformVerifierAndroid.repository)
+        url = uri("https://github.com/rustls/rustls-platform-verifier/raw/maven-archive/android-release-support/maven/")
+        content {
+            includeGroup("org.rustls")
+        }
         metadataSources {
             mavenPom()
         }
@@ -171,7 +169,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("com.google.android.material:material:1.14.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
-    implementation("rustls:rustls-platform-verifier:${rustlsPlatformVerifierAndroid.version}")
+    implementation("org.rustls:rustls-platform-verifier:${rustlsPlatformVerifierAndroid.version}")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

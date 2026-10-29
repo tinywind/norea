@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
 
@@ -9,11 +9,10 @@ use aes_gcm::{Aes128Gcm, Aes256Gcm, AesGcm, Nonce as AesNonce};
 use blowfish::Blowfish;
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{
-    BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher, generic_array::typenum::U12,
+    generic_array::typenum::U12, BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher,
 };
 use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaChaNonce};
 use ctr::Ctr128BE;
-use des::{Des, TdesEde3};
 use digest::Digest;
 use hmac::{Hmac, Mac};
 use md4::Md4;
@@ -24,8 +23,6 @@ use sha2::{Sha224, Sha256, Sha384, Sha512};
 const AES_128_CBC: u32 = 1;
 const AES_192_CBC: u32 = 2;
 const AES_256_CBC: u32 = 3;
-const DES_CBC: u32 = 4;
-const DES_EDE3_CBC: u32 = 5;
 const BF_CBC: u32 = 6;
 const AES_256_CTR: u32 = 7;
 const AES_128_GCM: u32 = 8;
@@ -408,8 +405,6 @@ fn crypt_cipher(handle: &CipherHandle) -> Result<Vec<u8>, String> {
         AES_128_CBC => cbc!(Aes128),
         AES_192_CBC => cbc!(Aes192),
         AES_256_CBC => cbc!(Aes256),
-        DES_CBC => cbc!(Des),
-        DES_EDE3_CBC => cbc!(TdesEde3),
         BF_CBC => cbc!(Blowfish),
         AES_256_CTR => {
             let mut output = handle.data.clone();
@@ -481,7 +476,7 @@ fn decrypt_aead(
 const fn is_cipher_supported(algorithm: u32) -> bool {
     matches!(
         algorithm,
-        AES_128_CBC | AES_192_CBC | AES_256_CBC | DES_CBC | DES_EDE3_CBC | BF_CBC | AES_256_CTR
+        AES_128_CBC | AES_192_CBC | AES_256_CBC | BF_CBC | AES_256_CTR
     )
 }
 
@@ -495,9 +490,8 @@ const fn is_aead_supported(algorithm: u32) -> bool {
 const fn cipher_key_size(algorithm: u32) -> Result<usize, String> {
     match algorithm {
         AES_128_CBC | AES_128_GCM | BF_CBC => Ok(16),
-        AES_192_CBC | AES_192_GCM | DES_EDE3_CBC => Ok(24),
+        AES_192_CBC | AES_192_GCM => Ok(24),
         AES_256_CBC | AES_256_CTR | AES_256_GCM | CHACHA20_POLY1305 => Ok(32),
-        DES_CBC => Ok(8),
         _ => Err(String::new()),
     }
 }
@@ -505,7 +499,7 @@ const fn cipher_key_size(algorithm: u32) -> Result<usize, String> {
 const fn cipher_iv_size(algorithm: u32) -> Result<usize, String> {
     match algorithm {
         AES_128_CBC | AES_192_CBC | AES_256_CBC | AES_256_CTR => Ok(16),
-        DES_CBC | DES_EDE3_CBC | BF_CBC => Ok(8),
+        BF_CBC => Ok(8),
         AES_128_GCM | AES_192_GCM | AES_256_GCM | CHACHA20_POLY1305 => Ok(12),
         _ => Err(String::new()),
     }
@@ -599,12 +593,27 @@ mod tests {
     use std::ptr;
 
     use super::{
-        AES_128_CBC, AES_128_GCM, AES_192_CBC, AES_192_GCM, AES_256_CBC, AES_256_CTR, AES_256_GCM,
-        AeadHandle, BF_CBC, CHACHA20_POLY1305, CipherHandle, DES_CBC, DES_EDE3_CBC, MD4, MD5, SHA1,
-        SHA224, SHA256, SHA384, SHA512, cipher_iv_size, cipher_key_size, compute_digest,
+        cipher_free, cipher_iv_size, cipher_key_size, cipher_new, cipher_supported, compute_digest,
         compute_hmac, crypt_cipher, decrypt_aead, digest_size_for, encrypt_aead, input_slice,
-        output_slice,
+        output_slice, AeadHandle, CipherHandle, AES_128_CBC, AES_128_GCM, AES_192_CBC, AES_192_GCM,
+        AES_256_CBC, AES_256_CTR, AES_256_GCM, BF_CBC, CHACHA20_POLY1305, MD4, MD5, SHA1, SHA224,
+        SHA256, SHA384, SHA512,
     };
+
+    #[test]
+    fn rejects_des_and_triple_des_cipher_handles() {
+        let key = [7; 24];
+        for algorithm in [4, 5] {
+            assert_eq!(unsafe { cipher_supported(algorithm) }, 0);
+            assert!(cipher_key_size(algorithm).is_err());
+            assert!(cipher_iv_size(algorithm).is_err());
+            let handle = unsafe { cipher_new(algorithm, key.as_ptr(), key.len(), 1) };
+            if !handle.is_null() {
+                unsafe { cipher_free(handle) };
+            }
+            assert!(handle.is_null());
+        }
+    }
 
     #[test]
     fn every_aead_cipher_round_trips_and_rejects_a_modified_tag() {
@@ -632,30 +641,20 @@ mod tests {
 
             let mut bad_tag = tag;
             bad_tag[0] ^= 1;
-            assert!(
-                decrypt_aead(
-                    &decryptor,
-                    &mut encrypted,
-                    &nonce,
-                    &bad_tag,
-                    additional_data
-                )
-                .is_err()
-            );
+            assert!(decrypt_aead(
+                &decryptor,
+                &mut encrypted,
+                &nonce,
+                &bad_tag,
+                additional_data
+            )
+            .is_err());
         }
     }
 
     #[test]
     fn every_classic_cipher_round_trips() {
-        for algorithm in [
-            AES_128_CBC,
-            AES_192_CBC,
-            AES_256_CBC,
-            DES_CBC,
-            DES_EDE3_CBC,
-            BF_CBC,
-            AES_256_CTR,
-        ] {
+        for algorithm in [AES_128_CBC, AES_192_CBC, AES_256_CBC, BF_CBC, AES_256_CTR] {
             let key = (0..cipher_key_size(algorithm).unwrap())
                 .map(|value| u8::try_from(value + 1).unwrap())
                 .collect::<Vec<_>>();

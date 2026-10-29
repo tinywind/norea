@@ -723,6 +723,76 @@ mod tests {
     use crate::plugin_vpn::proxy::ProxyStream;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    #[test]
+    fn native_crypto_backend_self_test_has_no_diagnostic() {
+        let diagnostic = openvpn_connect::crypto_self_test();
+        assert!(diagnostic.is_empty(), "{diagnostic}");
+    }
+
+    #[test]
+    fn native_external_tun_preserves_packet_bytes_and_core_headroom() {
+        struct NativeTunProbe;
+
+        impl EventHandler for NativeTunProbe {
+            fn external_tun(&self) -> Option<&dyn ExternalTun> {
+                Some(self)
+            }
+
+            fn external_pki_certificate(
+                &self,
+                _: openvpn_connect::ExternalPkiCertificateRequest,
+            ) -> Result<openvpn_connect::ExternalPkiCertificate, openvpn_connect::ExternalPkiError>
+            {
+                Ok(openvpn_connect::ExternalPkiCertificate {
+                    certificate: "self-test-certificate".into(),
+                    supporting_chain: "self-test-supporting-chain".into(),
+                })
+            }
+
+            fn external_pki_sign(
+                &self,
+                _: openvpn_connect::ExternalPkiSignRequest,
+            ) -> Result<String, openvpn_connect::ExternalPkiError> {
+                Ok("c2lnbmF0dXJl".into())
+            }
+        }
+
+        impl ExternalTun for NativeTunProbe {
+            fn configure(&self, _: &ExternalTunConfig) -> bool {
+                true
+            }
+
+            fn start(&self, _: &ExternalTunStartConfig, io: ExternalTunIo) {
+                let retained = io.clone();
+                retained.receive(&[5, 6, 7, 8]).expect("TUN packet");
+                io.error("self-test").expect("TUN error");
+                io.error_with_code(1, "self-test-code")
+                    .expect("coded TUN error");
+                io.pre_tun_config().expect("TUN pre-config");
+                io.pre_route_config().expect("TUN pre-route");
+                io.connected().expect("TUN connected");
+            }
+
+            fn info(&self) -> ExternalTunInfo {
+                ExternalTunInfo {
+                    name: "self-test-tun".into(),
+                    vpn_ipv4: "10.8.0.2".into(),
+                    vpn_ipv6: "2001:db8::2".into(),
+                    gateway_ipv4: "10.8.0.1".into(),
+                    gateway_ipv6: "2001:db8::1".into(),
+                    mtu: 1500,
+                    interface_index: Some(9),
+                }
+            }
+        }
+
+        let client = openvpn_connect::Client::new(NativeTunProbe).expect("native callback client");
+        let status = client
+            .callback_self_test()
+            .expect("native callback self-test");
+        assert_eq!(status.status, "CALLBACK_SELF_TEST_OK");
+    }
+
     struct MarkerConnector(u8);
 
     impl ProxyConnector for MarkerConnector {
