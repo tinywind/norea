@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { downloadRetryDecision, isRetryableDownloadError } from "./download-retry";
+import { createDownloadRetryPolicy, downloadRetryDecision, isRetryableDownloadError } from "./download-retry";
 import { TaskUserCancelledError } from "./task-errors";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { SourceAccessRequiredError } from "../plugins/source-access";
@@ -23,6 +23,29 @@ describe("download recovery policy", () => {
   ])("does not retry cancellation, configuration or permanent content errors", error => {
     expect(downloadRetryDecision(error, 1)).toBeNull();
   });
+  it.each(["Failed to fetch", "webview_extract: timeout after 30000ms"])(
+    "stops retrying body acquisition after four delayed attempts: %s", message => {
+      const error = new Error(message);
+      expect(Array.from({ length: 5 }, (_, index) =>
+        downloadRetryDecision(error, index + 1)?.delayMs,
+      )).toEqual([5000, 15000, 30000, 60000, undefined]);
+    },
+  );
+
+  it.each(["Failed to fetch", "webview_extract: timeout after 30000ms"])(
+    "does not spend the body retry budget while waiting for the VPN: %s", message => {
+      const retry = createDownloadRetryPolicy();
+      for (let attempt = 1; attempt <= 7; attempt += 1) {
+        expect(retry(new PluginVpnUnavailableError(), attempt)).not.toBeNull();
+      }
+      const error = new Error(message);
+      expect(Array.from({ length: 5 }, (_, index) =>
+        retry(error, index + 8)?.delayMs,
+      )).toEqual([5000, 15000, 30000, 60000, undefined]);
+      expect(retry(error, 1)?.delayMs).toBe(5000);
+    },
+  );
+
   it("stops retrying the same unavailable media asset after four delayed attempts", () => {
     const error = new ChapterMediaIncompleteError([
       { message: "Failed to fetch", url: "https://media.test/missing.jpg" },

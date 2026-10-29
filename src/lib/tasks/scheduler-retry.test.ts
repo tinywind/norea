@@ -84,6 +84,66 @@ describe("automatic download retries", () => {
     expect(run).toHaveBeenCalledTimes(5);
   });
 
+  it.each([
+    ["Failed to fetch", 0],
+    ["Failed to fetch", 250],
+    ["webview_extract: timeout after 30000ms", 0],
+    ["webview_extract: timeout after 30000ms", 250],
+  ] as const)("retains a terminal body failure for %s alongside %i queued tasks", async (message, pendingCount) => {
+    scheduler.pauseSourceQueue("pending");
+    for (let index = 0; index < pendingCount; index += 1) {
+      scheduler.enqueueSource({
+        ...spec(async () => undefined, "pending"), dedupeKey: `pending:${index}`,
+      });
+    }
+    const error = new Error(message);
+    const fetchChapterBody = vi.fn().mockRejectedValue(error);
+    const handle = scheduler.enqueueSource(spec(fetchChapterBody));
+    const failure = handle.promise.catch((caught: unknown) => caught);
+    await settle();
+    expect(scheduler.getTask(handle.id)?.status).toBe("queued");
+    const next = scheduler.enqueueSource({
+      ...spec(async () => undefined), dedupeKey: "download:next",
+    });
+    await settle();
+    await expect(next.promise).resolves.toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(110_000);
+    expect(scheduler.getTask(handle.id)).toMatchObject({
+      status: "failed", canRetry: true, error: message,
+    });
+    await expect(failure).resolves.toBe(error);
+    expect(fetchChapterBody).toHaveBeenCalledTimes(5);
+    expect(scheduler.getSnapshot()).toMatchObject({ queued: pendingCount, running: 0, failed: 1 });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fetchChapterBody).toHaveBeenCalledTimes(5);
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", error: message });
+  });
+
+  it("starts a fresh body retry budget after a manual retry", async () => {
+    const error = new Error("webview_extract: timeout after 30000ms");
+    const fetchChapterBody = vi.fn().mockRejectedValue(error);
+    const handle = scheduler.enqueueSource(spec(fetchChapterBody));
+    const failure = handle.promise.catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(110_000);
+    expect(scheduler.getTask(handle.id)?.status).toBe("failed");
+    await expect(failure).resolves.toBe(error);
+    expect(fetchChapterBody).toHaveBeenCalledTimes(5);
+
+    const retried = scheduler.retry(handle.id);
+    if (!retried) throw new Error("Failed task cannot be retried.");
+    const retryFailure = retried.promise.catch((caught: unknown) => caught);
+    await settle();
+    expect(scheduler.getTask(retried.id)?.status).toBe("queued");
+    expect(fetchChapterBody).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(110_000);
+    expect(scheduler.getTask(retried.id)).toMatchObject({
+      status: "failed", canRetry: true, error: error.message,
+    });
+    await expect(retryFailure).resolves.toBe(error);
+    expect(fetchChapterBody).toHaveBeenCalledTimes(10);
+  });
+
   it("survives repeated VPN-readiness expiries beyond several minutes without final failure", async () => {
     let available = false;
     const run = vi.fn(async () => {
@@ -161,7 +221,13 @@ describe("automatic download retries", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it.each([new Error("HTTP 404 Not Found"), new Error("disk full"), new PluginVpnUnavailableError(false)])(
+  it.each([
+    new Error("HTTP 404 Not Found"),
+    new Error("disk full"),
+    new Error("manual-action-required: The source page requires manual action."),
+    new Error("content-not-found: Captured chapter content is empty."),
+    new PluginVpnUnavailableError(false),
+  ])(
     "finishes terminal failures instead of retrying forever", async error => {
       const run = vi.fn().mockRejectedValue(error);
       const handle = scheduler.enqueueSource(spec(run));

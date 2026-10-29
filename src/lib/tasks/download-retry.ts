@@ -27,8 +27,12 @@ export function isRetryableDownloadError(error: unknown): boolean {
 
 export function createDownloadRetryPolicy(): NonNullable<TaskSpec<unknown>["retry"]> {
   const mediaAttempts = new Map<string, number>();
+  let bodyAttempts = 0;
   return (error, attempt) => {
-    if (attempt === 1) mediaAttempts.clear();
+    if (attempt === 1) {
+      mediaAttempts.clear();
+      bodyAttempts = 0;
+    }
     let retryAttempt = attempt;
     if (error instanceof ChapterMediaIncompleteError) {
       retryAttempt = 0;
@@ -38,6 +42,8 @@ export function createDownloadRetryPolicy(): NonNullable<TaskSpec<unknown>["retr
         mediaAttempts.set(asset, count);
         retryAttempt = Math.max(retryAttempt, count);
       }
+    } else if (!isPluginVpnUnavailableError(error)) {
+      retryAttempt = ++bodyAttempts;
     }
     return downloadRetryDecision(error, retryAttempt);
   };
@@ -45,7 +51,7 @@ export function createDownloadRetryPolicy(): NonNullable<TaskSpec<unknown>["retr
 
 export function downloadRetryDecision(error: unknown, attempt: number): TaskRetryDecision | null {
   if (!isRetryableDownloadError(error)) return null;
-  if (error instanceof ChapterMediaIncompleteError && attempt > DOWNLOAD_RETRY_DELAYS_MS.length) return null;
+  if (!isPluginVpnUnavailableError(error) && attempt > DOWNLOAD_RETRY_DELAYS_MS.length) return null;
   const backoffMs = DOWNLOAD_RETRY_DELAYS_MS[Math.min(
     Math.max(0, Math.floor(attempt) - 1), DOWNLOAD_RETRY_DELAYS_MS.length - 1,
   )]!;
