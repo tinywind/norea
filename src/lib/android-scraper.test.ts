@@ -297,11 +297,16 @@ function loadBridgeDocument(document: BridgeDocument) {
   const location = {
     hash: document.hash ?? "",
     origin: document.origin ?? "https://source.test",
+    protocol: new URL(document.origin ?? "https://source.test").protocol,
+    hostname: new URL(document.origin ?? "https://source.test").hostname,
     pathname: "/novel/1",
     search: "?p=2",
   };
   const window: Record<string, unknown> = { name: document.name ?? "" };
-  runInNewContext(androidBridgeScript("norea_scraper_init"), {
+  const init = androidBridgeScript("norea_scraper_init").replaceAll(
+    "__NOREA_APP_ORIGIN_JSON__", JSON.stringify("https://tauri.localhost"),
+  );
+  runInNewContext(init, {
     AndroidScraper: {
       postExtractResult: (payload: string) => {
         legacyPosts.push(payload);

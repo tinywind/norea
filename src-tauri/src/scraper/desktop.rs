@@ -491,8 +491,10 @@ fn scraper_label_from_key(key: &str) -> String {
     format!("{SCRAPER_LABEL}-{:016x}", hasher.finish())
 }
 
-fn scraper_initialization_script() -> String {
-    SCRAPER_INIT_SCRIPT.to_string()
+fn scraper_initialization_script(app_url: Option<&Url>) -> String {
+    let app_origin_json = serde_json::json!(app_url.map(|url| url.origin().ascii_serialization()))
+        .to_string();
+    SCRAPER_INIT_SCRIPT.replace("__NOREA_APP_ORIGIN_JSON__", &app_origin_json)
 }
 
 fn scraper_handle_for_key(
@@ -567,7 +569,7 @@ fn scraper_handle_for_key(
     let source_id_for_navigation = source_id.to_string();
     let app_for_page_load = app.clone();
     let key_for_page_load = key.to_string();
-    let initialization_script = scraper_initialization_script();
+    let initialization_script = scraper_initialization_script(app.config().build.dev_url.as_ref());
     let data_directory = source_profile_data_directory(app, source_id)?;
     #[cfg(target_os = "windows")]
     if let Err(error) =
@@ -3549,6 +3551,53 @@ mod tests {
                 .unwrap_err()
                 .contains("Request cancelled")
         );
+    }
+
+    #[test]
+    fn scraper_initialization_exposes_only_the_configured_app_origin() {
+        let app_url = Url::parse(
+            "https://probe-user:probe-password@Dev.Norea.Test:443/private-path?token=probe-token",
+        )
+        .expect("test app URL");
+        let script = scraper_initialization_script(Some(&app_url));
+        assert!(script.contains("\"https://dev.norea.test\""));
+        for secret in ["probe-user", "probe-password", "private-path", "probe-token"] {
+            assert!(!script.contains(secret), "{secret}");
+        }
+    }
+
+    #[test]
+    fn native_custom_command_rejects_remote_origins_and_accepts_bundled_origins() {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![crate::write_frontend_log])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("test app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("test WebView");
+
+        for (url, allowed) in [
+            ("https://source.test/chapter", false),
+            ("http://tauri.localhost/scraper.html", true),
+            ("https://tauri.localhost/scraper.html", true),
+        ] {
+            let response = tauri::test::get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: "write_frontend_log".into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: Url::parse(url).expect("test origin"),
+                    body: tauri::ipc::InvokeBody::Json(serde_json::json!({
+                        "level": "off",
+                        "message": "origin boundary probe",
+                    })),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                },
+            );
+            assert_eq!(response.is_ok(), allowed, "{url}: {response:?}");
+        }
     }
 
     #[test]

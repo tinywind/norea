@@ -917,7 +917,7 @@ class AndroidScraperBridge(
     state.documentStartScriptEnabled =
       WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
     if (state.documentStartScriptEnabled) {
-      WebViewCompat.addDocumentStartJavaScript(webView, scripts.init, setOf("*"))
+      WebViewCompat.addDocumentStartJavaScript(webView, scripts.init(mainWebView.url), setOf("*"))
     }
     webView.webViewClient = makeClient(state, null)
     webView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -1219,7 +1219,7 @@ class AndroidScraperBridge(
       state.contextReady = false
       state.currentUrl = url
       logState(state, "pageStarted url=$url", url)
-      if (!state.documentStartScriptEnabled) view.evaluateJavascript(scripts.init, null)
+      if (!state.documentStartScriptEnabled) view.evaluateJavascript(scripts.init(mainWebView.url), null)
       onStarted?.invoke(url)
     }
 
@@ -1374,7 +1374,7 @@ class AndroidScraperBridge(
     if (beforeScript != null && useDocumentStartScript) {
       state.activeExtractScript = WebViewCompat.addDocumentStartJavaScript(
         webView,
-        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript),
+        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript, mainWebView.url),
         setOf("*"),
       )
     }
@@ -1389,7 +1389,9 @@ class AndroidScraperBridge(
             targetUrl,
           )
           if (reuseDocument) {
-            val prepareCapture = scripts.extractStart(id, resultNonce.orEmpty(), beforeScript.orEmpty())
+            val prepareCapture = scripts.extractStart(
+              id, resultNonce.orEmpty(), beforeScript.orEmpty(), mainWebView.url,
+            )
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
               if (state.activeExtractId == id && followed == "true") logState(state, "followed chapter link id=$id", targetUrl)
               if (state.activeExtractId == id && followed != "true") webView.loadUrl(targetUrl)

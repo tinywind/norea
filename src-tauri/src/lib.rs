@@ -21,6 +21,19 @@ mod webview_resource_capture;
 
 use tauri::Manager;
 
+fn allow_main_navigation(label: &str, url: &tauri::Url, dev_url: Option<&tauri::Url>) -> bool {
+    if label != "main" || url.as_str() == "about:blank" {
+        return true;
+    }
+    let bundled = (url.scheme() == "tauri"
+        && url.host_str() == Some("localhost")
+        && url.port().is_none())
+        || (matches!(url.scheme(), "http" | "https")
+            && url.host_str() == Some("tauri.localhost")
+            && url.port().is_none());
+    bundled || dev_url.is_some_and(|dev| url.origin() == dev.origin())
+}
+
 fn parse_runtime_log_level(level: &str) -> Result<log::LevelFilter, String> {
     match level {
         "trace" => Ok(log::LevelFilter::Trace),
@@ -90,6 +103,16 @@ pub fn run() {
     }));
 
     builder
+        .plugin(
+            tauri::plugin::Builder::new("main-navigation")
+                .on_navigation(|webview, url| {
+                    let dev_url = cfg!(dev)
+                        .then_some(webview.app_handle().config().build.dev_url.as_ref())
+                        .flatten();
+                    allow_main_navigation(webview.label(), url, dev_url)
+                })
+                .build(),
+        )
         .manage(android_file_open::AndroidOpenFileState::default())
         .manage(desktop_open_files)
         .manage(download_queue::DownloadQueueState::default())
@@ -244,4 +267,46 @@ pub fn run() {
                 android_file_open::enqueue_opened_urls(_app, urls);
             }
         });
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+
+    #[test]
+    fn main_navigation_keeps_app_routes_and_rejects_remote_documents() {
+        for url in [
+            "tauri://localhost/reader?id=1",
+            "http://tauri.localhost/library",
+            "https://tauri.localhost/settings#appearance",
+            "about:blank",
+        ] {
+            assert!(allow_main_navigation("main", &url.parse().unwrap(), None), "{url}");
+        }
+        for url in [
+            "https://source.test/chapter",
+            "https://tauri.localhost.foreign.test/",
+            "http://tauri.localhost:8080/",
+            "content://documents/private",
+            "file:///data/user/0/app/private",
+            "javascript:alert(1)",
+            "data:text/html,private",
+        ] {
+            let parsed = url.parse().unwrap();
+            assert!(!allow_main_navigation("main", &parsed, None), "{url}");
+            assert!(allow_main_navigation("scraper-fixture", &parsed, None), "{url}");
+        }
+    }
+
+    #[test]
+    fn main_development_navigation_requires_the_configured_origin() {
+        let dev_url = "http://dev-norea.test:1420/".parse().unwrap();
+        for url in ["http://dev-norea.test:1420/reader", "http://dev-norea.test:1420/settings"] {
+            assert!(allow_main_navigation("main", &url.parse().unwrap(), Some(&dev_url)));
+            assert!(!allow_main_navigation("main", &url.parse().unwrap(), None));
+        }
+        for url in ["https://dev-norea.test:1420/", "http://dev-norea.test:1421/", "http://foreign.test:1420/"] {
+            assert!(!allow_main_navigation("main", &url.parse().unwrap(), Some(&dev_url)));
+        }
+    }
 }
