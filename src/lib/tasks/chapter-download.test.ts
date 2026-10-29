@@ -124,7 +124,7 @@ import {
 } from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { SourceAccessRequiredError } from "../plugins/source-access";
-import { ChapterMediaIncompleteError } from "../chapter-media/errors";
+import type { ChapterResource } from "../plugins/types";
 import { isTauriRuntime } from "../tauri-runtime";
 import { watchChapterDownloadActivity } from "./chapter-download-activity";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
@@ -809,7 +809,7 @@ describe("enqueueChapterDownloadBatch", () => {
     ).toHaveLength(1);
   });
 
-  it.each([true, false])("removes only manually cancelled restored jobs (cancelled: %s)", async (cancelled) => {
+  it.each([true, false])("removes failed or manually cancelled restored jobs (cancelled: %s)", async (cancelled) => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(() => {
@@ -838,7 +838,7 @@ describe("enqueueChapterDownloadBatch", () => {
     await flushMicrotasks();
     await waitForChapterDownloadQueueMutations();
 
-    expect([...backendQueueValues.keys()]).toEqual(cancelled ? [2] : [1, 2]);
+    expect([...backendQueueValues.keys()]).toEqual([2]);
     expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(2);
     deferreds[1]!.resolve();
     if (cancelled) {
@@ -1316,7 +1316,7 @@ describe("enqueueChapterDownload", () => {
     ).toHaveLength(1);
   });
 
-  it("keeps the backend queue job when media finalization fails", async () => {
+  it("removes the backend queue job when media finalization fails", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const finalizationError = Object.assign(
       new Error("Chapter media archive finalization failed."),
@@ -1339,12 +1339,12 @@ describe("enqueueChapterDownload", () => {
     await expect(handle.promise).rejects.toBe(finalizationError);
     await flushMicrotasks();
 
-    expect([...backendQueueValues.keys()]).toEqual([7]);
+    expect([...backendQueueValues.keys()]).toEqual([]);
     expect(
       tauriMocks.invoke.mock.calls.filter(
         ([command]) => command === "chapter_download_queue_remove",
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
   it.each(["visible", "hidden"])("removes explicit user cancellation from persistent storage while %s", async (visibilityState) => {
@@ -1378,41 +1378,17 @@ describe("enqueueChapterDownload", () => {
     expect(backendQueueValues.has(72)).toBe(true);
   });
 
-  it("gives downloads a transient-only automatic retry policy", () => {
-    enqueueChapterDownload({ id: 73, pluginId: "source-a", chapterPath: "/chapter/73", title: "Retry test" });
-    if (!capturedSpec) throw new Error("Missing task spec");
-    expect(capturedSpec.retry?.(new TypeError("Failed to fetch"), 1)).toMatchObject({ delayMs: 5000 });
-    expect(capturedSpec.retry?.(new Error("HTTP 404 Not Found"), 1)).toBeNull();
-    expect(capturedSpec.retry?.(new TaskUserCancelledError(), 1)).toBeNull();
-  });
-
-  it.each(["download", "repair"] as const)("isolates each asset retry budget from VPN recovery for %s", (operation) => {
+  it.each(["download", "repair"] as const)("allows manual retry without automatic retries for %s", (operation) => {
     if (operation === "download") {
       enqueueChapterDownload({ id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
     } else {
       enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
     }
-    if (!capturedSpec?.retry) throw new Error("Missing task retry policy");
-    const retry = capturedSpec.retry;
-    const vpnError = Object.assign(new Error("Plugin VPN is unavailable."), { code: "plugin-vpn-unavailable" });
-    for (let attempt = 1; attempt <= 4; attempt += 1) expect(retry(vpnError, attempt)).not.toBeNull();
-    const missing = new ChapterMediaIncompleteError([
-      { fileName: "missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
-    ]);
-    const other = new ChapterMediaIncompleteError([
-      { fileName: "other.jpg", message: "Failed to fetch", url: "https://media.test/other.jpg" },
-    ]);
-    expect(retry(missing, 5)?.delayMs).toBe(5000);
-    expect(retry(other, 6)?.delayMs).toBe(5000);
-    expect(retry(missing, 7)?.delayMs).toBe(15000);
-    expect(retry(missing, 8)?.delayMs).toBe(30000);
-    expect(retry(missing, 9)?.delayMs).toBe(60000);
-    expect(retry(missing, 10)).toBeNull();
-    expect(retry(other, 11)?.delayMs).toBe(15000);
-    expect(retry(missing, 1)?.delayMs).toBe(5000);
+    expect(capturedSpec?.retryManually).toBeTypeOf("function");
+    expect(capturedSpec?.retry).toBeUndefined();
   });
 
-  it("keeps an unavailable-VPN job resumable instead of discarding it", async () => {
+  it("removes a failed VPN job from the automatic restoration queue", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const vpnError = Object.assign(
       new Error("Plugin VPN is unavailable."),
@@ -1435,16 +1411,16 @@ describe("enqueueChapterDownload", () => {
     await expect(handle.promise).rejects.toBe(vpnError);
     await flushMicrotasks();
 
-    expect([...backendQueueValues.keys()]).toEqual([7]);
+    expect([...backendQueueValues.keys()]).toEqual([]);
     expect(
       tauriMocks.invoke.mock.calls.filter(
         ([command]) => command === "chapter_download_queue_remove",
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
   it.each(["source", "server", "local"] as const)(
-    "removes a retained VPN job after a manual retry completes from %s",
+    "completes a manual retry of a failed VPN job from %s",
     async (completion) => {
       vi.mocked(isTauriRuntime).mockReturnValue(true);
       pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
@@ -1460,7 +1436,7 @@ describe("enqueueChapterDownload", () => {
       });
       await expect(handle.promise).rejects.toBe(vpnError);
       await waitForChapterDownloadQueueMutations();
-      expect(backendQueueValues.has(7)).toBe(true);
+      expect(backendQueueValues.has(7)).toBe(false);
       if (!capturedSpec) throw new Error("Missing task spec");
       if (completion === "server") vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
       if (completion === "local") {
@@ -1480,6 +1456,44 @@ describe("enqueueChapterDownload", () => {
       )).toHaveLength(1);
     },
   );
+
+  it("persists a manual retry across suspension and removes it after another failure", async () => {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) =>
+      scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const error = new Error("Failed to fetch");
+    const suspended = createDeferred<ChapterResource>();
+    pluginMocks.getChapterResource.mockRejectedValueOnce(error)
+      .mockImplementationOnce(() => suspended.promise).mockRejectedValueOnce(error);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    const original = enqueueChapterDownload({ id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" });
+    await expect(original.promise).rejects.toBe(error);
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(7)).toBe(false);
+
+    const retried = scheduler.retry(original.id);
+    if (!retried) throw new Error("Missing manual retry");
+    await flushMicrotasks(100);
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(7)).toBe(true);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    const interrupted = expect(retried.promise).rejects.toMatchObject({ name: "AbortError" });
+    suspended.reject(new DOMException("WebView suspended", "AbortError"));
+    await interrupted;
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(7)).toBe(true);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    const failedAgain = scheduler.retry(retried.id);
+    if (!failedAgain) throw new Error("Missing second manual retry");
+    await expect(failedAgain.promise).rejects.toBe(error);
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.has(7)).toBe(false);
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+  });
 
   it("keeps a queued job when source access defers its run", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);

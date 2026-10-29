@@ -138,6 +138,12 @@ export class SourceAccessGate {
     return { block, revokedVerificationTaskId: existing?.verificationTaskId };
   }
 
+  replaceOriginTaskId(previousTaskId: string, nextTaskId: string): void {
+    for (const block of this.blocks.values()) {
+      if (block.originTaskId === previousTaskId) block.originTaskId = nextTaskId;
+    }
+  }
+
   hydrate(blocks: Iterable<SourceAccessBlock>): void {
     const hydrated = new Map<string, SourceAccessBlock>();
     let highestRevision = this.revision;

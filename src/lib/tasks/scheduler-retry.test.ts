@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskScheduler, type TaskSpec, type TaskRunContext } from "./scheduler";
-import { TaskUserCancelledError } from "./task-errors";
-import { createDownloadRetryPolicy } from "./download-retry";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 
 let scheduler: TaskScheduler;
 const networkError = () => new TypeError("Failed to fetch");
 const spec = (run: TaskSpec<void>["run"], id = "a") => ({
-  kind: "chapter.download" as const, title: "Retry download", source: { id, name: id },
-  dedupeKey: `download:${id}`, retry: createDownloadRetryPolicy(), run,
+  kind: "chapter.download" as const, title: "Download", source: { id, name: id },
+  dedupeKey: `download:${id}`, canRetry: true, run,
 });
 const settle = () => vi.advanceTimersByTimeAsync(0);
 beforeEach(() => {
@@ -19,226 +17,67 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-describe("automatic download retries", () => {
-  it("retains the same task, pending promise and deduplication until recovery", async () => {
-    const run = vi.fn().mockRejectedValueOnce(networkError()).mockResolvedValueOnce(undefined);
-    const handle = scheduler.enqueueSource(spec(run));
-    const completed = vi.fn();
-    void handle.promise.then(completed);
-    await settle();
-    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "queued", canCancel: true });
-    expect(scheduler.getSnapshot()).toMatchObject({ queued: 1, running: 0, failed: 0 });
-    const duplicate = scheduler.enqueueSource(spec(run));
-    expect(duplicate.id).toBe(handle.id);
-    await vi.advanceTimersByTimeAsync(4999);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(completed).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    await handle.promise;
-    expect(run).toHaveBeenCalledTimes(2);
-    expect(completed).toHaveBeenCalledTimes(1);
-    expect(scheduler.getTask(handle.id)?.status).toBe("succeeded");
-  });
+const failures = [
+  networkError(),
+  new Error("webview_extract: timeout after 30000ms"),
+  new Error("manual-action-required: The source page requires manual action."),
+  new Error("content-not-found: Captured chapter content is empty."),
+  new PluginVpnUnavailableError(),
+  new ChapterMediaIncompleteError([
+    { fileName: "missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
+  ]),
+];
 
-  it("releases the physical executor during backoff so another source can finish", async () => {
-    const first = scheduler.enqueueSource(spec(vi.fn().mockRejectedValueOnce(networkError()).mockResolvedValue(undefined)));
-    await settle();
-    const otherRun = vi.fn().mockResolvedValue(undefined);
-    const other = scheduler.enqueueSource(spec(otherRun, "b"));
-    await settle();
-    await other.promise;
-    expect(otherRun).toHaveBeenCalledTimes(1);
-    expect(scheduler.getTask(first.id)?.status).toBe("queued");
-    await vi.advanceTimersByTimeAsync(5000);
-    await first.promise;
-  });
-
-  it.each([0, 250])("retains an unavailable asset failure alongside %i queued tasks", async (pendingCount) => {
-    scheduler.pauseSourceQueue("pending");
-    for (let index = 0; index < pendingCount; index += 1) {
-      scheduler.enqueueSource({
-        ...spec(async () => undefined, "pending"), dedupeKey: `pending:${index}`,
-      });
-    }
-    const error = new ChapterMediaIncompleteError([
-      { fileName: "0056-missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
-    ]);
+describe("manual download retries", () => {
+  it.each(failures)("fails immediately and keeps manual retry available for %s", async (error) => {
     const run = vi.fn().mockRejectedValue(error);
     const handle = scheduler.enqueueSource(spec(run));
     const checked = expect(handle.promise).rejects.toBe(error);
     await settle();
-    expect(scheduler.getTask(handle.id)?.status).toBe("queued");
-    const next = scheduler.enqueueSource({
-      ...spec(async () => undefined), dedupeKey: "download:next",
-    });
+    await checked;
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", canRetry: true });
+    expect(scheduler.getTask(handle.id)?.error).toBeTruthy();
+    const next = scheduler.enqueueSource({ ...spec(async () => undefined), dedupeKey: "download:next" });
     await settle();
     await expect(next.promise).resolves.toBeUndefined();
-    await vi.advanceTimersByTimeAsync(110_000);
-    await checked;
-    expect(run).toHaveBeenCalledTimes(5);
-    expect(scheduler.getTask(handle.id)).toMatchObject({
-      status: "failed", canRetry: true, error: expect.stringContaining("0056-missing.jpg"),
-    });
-    expect(scheduler.getSnapshot()).toMatchObject({ queued: pendingCount, running: 0, failed: 1 });
-    await vi.advanceTimersByTimeAsync(120_000);
-    expect(run).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", canRetry: true });
   });
 
-  it.each([
-    ["Failed to fetch", 0],
-    ["Failed to fetch", 250],
-    ["webview_extract: timeout after 30000ms", 0],
-    ["webview_extract: timeout after 30000ms", 250],
-  ] as const)("retains a terminal body failure for %s alongside %i queued tasks", async (message, pendingCount) => {
+  it.each([0, 250])("retains a body failure alongside %i queued tasks", async (pendingCount) => {
     scheduler.pauseSourceQueue("pending");
     for (let index = 0; index < pendingCount; index += 1) {
-      scheduler.enqueueSource({
-        ...spec(async () => undefined, "pending"), dedupeKey: `pending:${index}`,
-      });
+      scheduler.enqueueSource({ ...spec(async () => undefined, "pending"), dedupeKey: `pending:${index}` });
     }
-    const error = new Error(message);
-    const fetchChapterBody = vi.fn().mockRejectedValue(error);
-    const handle = scheduler.enqueueSource(spec(fetchChapterBody));
-    const failure = handle.promise.catch((caught: unknown) => caught);
-    await settle();
-    expect(scheduler.getTask(handle.id)?.status).toBe("queued");
-    const next = scheduler.enqueueSource({
-      ...spec(async () => undefined), dedupeKey: "download:next",
-    });
-    await settle();
-    await expect(next.promise).resolves.toBeUndefined();
-
-    await vi.advanceTimersByTimeAsync(110_000);
-    expect(scheduler.getTask(handle.id)).toMatchObject({
-      status: "failed", canRetry: true, error: message,
-    });
-    await expect(failure).resolves.toBe(error);
-    expect(fetchChapterBody).toHaveBeenCalledTimes(5);
-    expect(scheduler.getSnapshot()).toMatchObject({ queued: pendingCount, running: 0, failed: 1 });
-    await vi.advanceTimersByTimeAsync(120_000);
-    expect(fetchChapterBody).toHaveBeenCalledTimes(5);
-    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", error: message });
-  });
-
-  it("starts a fresh body retry budget after a manual retry", async () => {
     const error = new Error("webview_extract: timeout after 30000ms");
-    const fetchChapterBody = vi.fn().mockRejectedValue(error);
-    const handle = scheduler.enqueueSource(spec(fetchChapterBody));
-    const failure = handle.promise.catch((caught: unknown) => caught);
-    await vi.advanceTimersByTimeAsync(110_000);
-    expect(scheduler.getTask(handle.id)?.status).toBe("failed");
-    await expect(failure).resolves.toBe(error);
-    expect(fetchChapterBody).toHaveBeenCalledTimes(5);
+    const run = vi.fn().mockRejectedValue(error);
+    const handle = scheduler.enqueueSource(spec(run));
+    const checked = expect(handle.promise).rejects.toBe(error);
+    await settle();
+    await checked;
+    expect(scheduler.getSnapshot()).toMatchObject({ queued: pendingCount, running: 0, failed: 1 });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", error: error.message, canRetry: true });
+  });
 
+  it("runs again only when the user retries the failed task", async () => {
+    const error = networkError();
+    const run = vi.fn().mockRejectedValueOnce(error).mockResolvedValue(undefined);
+    const handle = scheduler.enqueueSource(spec(run));
+    const checked = expect(handle.promise).rejects.toBe(error);
+    await settle();
+    await checked;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(run).toHaveBeenCalledTimes(1);
     const retried = scheduler.retry(handle.id);
-    if (!retried) throw new Error("Failed task cannot be retried.");
-    const retryFailure = retried.promise.catch((caught: unknown) => caught);
+    if (!retried) throw new Error("Failed download cannot be retried.");
     await settle();
-    expect(scheduler.getTask(retried.id)?.status).toBe("queued");
-    expect(fetchChapterBody).toHaveBeenCalledTimes(6);
-    await vi.advanceTimersByTimeAsync(110_000);
-    expect(scheduler.getTask(retried.id)).toMatchObject({
-      status: "failed", canRetry: true, error: error.message,
-    });
-    await expect(retryFailure).resolves.toBe(error);
-    expect(fetchChapterBody).toHaveBeenCalledTimes(10);
-  });
-
-  it("survives repeated VPN-readiness expiries beyond several minutes without final failure", async () => {
-    let available = false;
-    const run = vi.fn(async () => {
-      if (!available) {
-        await new Promise(resolve => setTimeout(resolve, 120_000));
-        throw new PluginVpnUnavailableError();
-      }
-    });
-    const handle = scheduler.enqueueSource(spec(run));
-    const failures: string[] = [];
-    scheduler.subscribeEvents(({ task }) => { if (task.status === "failed") failures.push(task.id); });
-    await vi.advanceTimersByTimeAsync(250_000);
-    expect(scheduler.getTask(handle.id)?.status).toBe("queued");
-    expect(failures).toEqual([]);
-    available = true;
-    await vi.advanceTimersByTimeAsync(10_000);
-    await handle.promise;
-    expect(run).toHaveBeenCalledTimes(3);
-  });
-
-  it("cannot bypass the retry delay by moving or waking the source queue", async () => {
-    const run = vi.fn().mockRejectedValueOnce(networkError()).mockResolvedValue(undefined);
-    const handle = scheduler.enqueueSource(spec(run));
-    await settle();
-    scheduler.pauseSourceQueue("a");
-    scheduler.resumeSourceQueue("a");
-    scheduler.enqueueMain({ kind: "repository.refreshIndex", title: "Other work", run: async () => undefined });
-    await settle();
-    expect(run).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(5000);
-    await handle.promise;
-  });
-
-  it("keeps a user-paused retry queued until resume even after the timer expires", async () => {
-    const run = vi.fn().mockRejectedValueOnce(networkError()).mockResolvedValue(undefined);
-    const handle = scheduler.enqueueSource(spec(run));
-    await settle();
-    scheduler.pauseSourceQueue("a");
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(run).toHaveBeenCalledTimes(1);
-    scheduler.resumeSourceQueue("a");
-    await settle();
-    await handle.promise;
+    await expect(retried.promise).resolves.toBeUndefined();
     expect(run).toHaveBeenCalledTimes(2);
+    expect(scheduler.getTask(retried.id)?.status).toBe("succeeded");
   });
-
-  it.each([false, true])("clears cancelled retry timers without resurrection (bulk: %s)", async (bulk) => {
-    const run = vi.fn().mockRejectedValue(networkError());
-    const handle = scheduler.enqueueSource(spec(run));
-    await settle();
-    const checked = expect(handle.promise).rejects.toMatchObject({ name: "AbortError", cancelledByUser: true });
-    if (bulk) scheduler.cancelActiveTasks({ discardQueued: true });
-    else scheduler.cancel(handle.id);
-    await checked;
-    await vi.advanceTimersByTimeAsync(3600_000);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(scheduler.getSnapshot()).toMatchObject({ running: 0, queued: 0 });
-  });
-
-  it("tags a running user cancellation and does not retry its late network failure", async () => {
-    let rejectRun!: (error: unknown) => void;
-    let signal: AbortSignal | undefined;
-    const run = vi.fn((context: TaskRunContext) => {
-      signal = context.signal;
-      return new Promise<void>((_resolve, reject) => { rejectRun = reject; });
-    });
-    const handle = scheduler.enqueueSource(spec(run));
-    await settle();
-    const checked = expect(handle.promise).rejects.toBeInstanceOf(TaskUserCancelledError);
-    scheduler.cancel(handle.id);
-    expect(signal?.reason).toBeInstanceOf(TaskUserCancelledError);
-    rejectRun(networkError());
-    await checked;
-    await vi.advanceTimersByTimeAsync(100_000);
-    expect(run).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    new Error("HTTP 404 Not Found"),
-    new Error("disk full"),
-    new Error("manual-action-required: The source page requires manual action."),
-    new Error("content-not-found: Captured chapter content is empty."),
-    new PluginVpnUnavailableError(false),
-  ])(
-    "finishes terminal failures instead of retrying forever", async error => {
-      const run = vi.fn().mockRejectedValue(error);
-      const handle = scheduler.enqueueSource(spec(run));
-      const checked = expect(handle.promise).rejects.toBe(error);
-      await settle();
-      await checked;
-      await vi.advanceTimersByTimeAsync(120_000);
-      expect(scheduler.getTask(handle.id)?.status).toBe("failed");
-      expect(run).toHaveBeenCalledTimes(1);
-    },
-  );
 
   it("preserves a running task across platform suspension and resumes only after foreground", async () => {
     const run = vi.fn().mockImplementationOnce(({ signal }: TaskRunContext) => new Promise<void>((_resolve, reject) => {

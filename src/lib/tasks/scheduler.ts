@@ -1149,7 +1149,11 @@ export class TaskScheduler {
       return null;
     }
     const { spec } = entry;
-    return this.enqueue({ ...spec, dedupeKey: spec.dedupeKey });
+    const retried = spec.retryManually?.() ?? this.enqueue({ ...spec, dedupeKey: spec.dedupeKey });
+    this.sourceAccess.replaceOriginTaskId(entry.record.id, retried.id);
+    this.publishSnapshot();
+    this.requestDrain();
+    return retried;
   }
 
   clearFailedTasks(): number {
@@ -1998,6 +2002,10 @@ export class TaskScheduler {
           this.requeuePausedRunningAfterSettlement(entry);
           return;
         }
+        if (!sourceAccessError && (entry.record.kind === "chapter.download" ||
+            entry.record.kind === "chapter.repairMedia")) {
+          this.revokeSourceAccessVerificationForEntry(entry);
+        }
         if (
           entry.record.lane === "source" &&
           entry.record.status === "running" &&
@@ -2017,7 +2025,8 @@ export class TaskScheduler {
         }
         this.finishRunning(entry, cancelled ? "cancelled" : "failed", {
           canCancel: false,
-          canRetry: cancelled || entry.spec.retry !== undefined,
+          canRetry: cancelled || entry.spec.canRetry === true ||
+            entry.spec.retryManually !== undefined || entry.spec.retry !== undefined,
           error: cancelled ? undefined : describeTaskError(error),
           finishedAt: Date.now(),
         });

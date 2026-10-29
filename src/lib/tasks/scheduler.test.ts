@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildSyntheticSourceTasks } from "../../test/fixtures/performance";
 import { subscribePerformanceObservations } from "../observability";
 import { SourceAccessRequiredError } from "../plugins/source-access";
+import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import {
   taskWorkQueueKey,
   TaskScheduler,
@@ -1923,6 +1924,133 @@ describe("TaskScheduler", () => {
 
     scheduler.cancel(challenged.id);
     await Promise.allSettled([challenged.promise]);
+  });
+
+  it.each([
+    ["chapter.download", new PluginVpnUnavailableError()],
+    ["chapter.download", new Error("webview_extract: timeout after 30000ms")],
+    ["chapter.download", new Error("manual-action-required: The source page requires manual action.")],
+    ["chapter.repairMedia", new PluginVpnUnavailableError()],
+    ["chapter.repairMedia", new Error("webview_extract: timeout after 30000ms")],
+    ["chapter.repairMedia", new Error("manual-action-required: The source page requires manual action.")],
+  ] as const)("fails a %s verification canary immediately on %s and allows manual retry", async (kind, error) => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "plugin:source-a:site:source.test";
+    let runCount = 0;
+    let failedConfirmation: (() => boolean) | undefined;
+    const challenged = scheduler.enqueueSource({
+      kind,
+      title: "Challenged download",
+      priority: "background",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      canRetry: true,
+      run: async (context) => {
+        runCount += 1;
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "captcha",
+            url: "https://source.test/chapter/1",
+          });
+        }
+        expect(context.sourceAccessVerification).toBe(true);
+        if (runCount === 2) {
+          failedConfirmation = context.confirmSourceAccess;
+          throw error;
+        }
+        expect(context.confirmSourceAccess?.()).toBe(true);
+      },
+    });
+    const failure = challenged.promise.catch((caught: unknown) => caught);
+    let retried: ReturnType<TaskScheduler["retry"]> = null;
+
+    try {
+      await settle();
+      expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+      expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+        originTaskId: challenged.id,
+        scopeKey,
+        verificationRequested: false,
+      });
+      expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+      await settle();
+
+      expect(scheduler.getTask(challenged.id)).toMatchObject({
+        status: "failed",
+        canRetry: true,
+        error: error.message,
+      });
+      await expect(failure).resolves.toBe(error);
+      expect(runCount).toBe(2);
+      expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+        scopeKey,
+        verificationRequested: false,
+      });
+      expect(scheduler.getSnapshot().sourceAccessBlocks[0]?.verificationTaskId).toBeUndefined();
+      expect(failedConfirmation?.()).toBe(false);
+
+      retried = scheduler.retry(challenged.id);
+      if (!retried) throw new Error("Failed task cannot be retried.");
+      const retryResult = retried.promise.catch((caught: unknown) => caught);
+      expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+      await expect(retryResult).resolves.toBeUndefined();
+      expect(runCount).toBe(3);
+      expect(scheduler.getTask(retried.id)?.status).toBe("succeeded");
+      expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+    } finally {
+      scheduler.cancel(challenged.id);
+      if (retried) scheduler.cancel(retried.id);
+      await Promise.allSettled([
+        challenged.promise,
+        ...(retried ? [retried.promise] : []),
+      ]);
+    }
+  });
+
+  it("keeps a source search canary blocked after an unconfirmed transport failure", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const scopeKey = "plugin:source-a:site:source.test";
+    let runCount = 0;
+    let settled = false;
+    const challenged = scheduler.enqueueSource({
+      kind: "source.search",
+      title: "Challenged search",
+      source: { id: "source-a", name: "Source A" },
+      sourceAccessScopeKey: scopeKey,
+      run: async () => {
+        runCount += 1;
+        if (runCount === 1) {
+          throw new SourceAccessRequiredError("Complete the challenge.", {
+            kind: "captcha",
+            url: "https://source.test/search",
+          });
+        }
+        throw new Error("webview_extract: timeout after 30000ms");
+      },
+    });
+    void challenged.promise.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    try {
+      await settle();
+      expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+      await settle();
+
+      expect(runCount).toBe(2);
+      expect(settled).toBe(false);
+      expect(scheduler.getTask(challenged.id)?.status).toBe("queued");
+      expect(scheduler.getSnapshot().sourceAccessBlocks[0]).toMatchObject({
+        scopeKey,
+        verificationError: "webview_extract: timeout after 30000ms",
+        verificationRequested: false,
+      });
+      expect(scheduler.getSnapshot().sourceAccessBlocks[0]?.verificationTaskId).toBeUndefined();
+    } finally {
+      scheduler.cancel(challenged.id);
+      await Promise.allSettled([challenged.promise]);
+    }
   });
 
   it("keeps a verified canary pinned to its trusted hostname", async () => {

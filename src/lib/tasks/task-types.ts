@@ -173,6 +173,8 @@ export interface TaskSpec<T> {
   subject?: TaskSubject;
   dedupeKey?: string;
   canCancel?: boolean;
+  canRetry?: boolean;
+  retryManually?: () => TaskHandle<T>;
   canCompleteWithoutSourceAccess?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;

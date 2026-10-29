@@ -22,7 +22,6 @@ import {
   cacheHtmlChapterMedia,
   clearChapterMedia,
   hasRemoteChapterMedia,
-  isChapterMediaFinalizationError,
   localChapterMediaSources,
   protectRemoteChapterMediaForPartialHtml,
   restoreProtectedRemoteChapterMediaSources,
@@ -42,10 +41,8 @@ import {
   validateChapterAcquisitionPlan,
 } from "../plugins/chapter-acquisition";
 import { pluginManager } from "../plugins/manager";
-import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { isTaskUserCancelledError } from "./task-errors";
-import { createDownloadRetryPolicy, isRetryableDownloadError } from "./download-retry";
 import {
   normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
@@ -704,7 +701,6 @@ function shouldKeepQueuedChapterDownloadJobAfterRejection(
   error: unknown,
 ): boolean {
   if (isTaskUserCancelledError(error)) return false;
-  if (isChapterMediaFinalizationError(error) || isPluginVpnUnavailableError(error)) return true;
   if (!isAbortError(error)) return false;
   if (chapterDownloadLifecycleSuspending) return true;
   return (
@@ -886,7 +882,6 @@ function enqueueChapterDownloadForExecutor(
   job: ChapterDownloadJob,
   options: {
     persistBeforeStart?: boolean;
-    removeQueuedJobOnFailure?: boolean;
     waitForBackendQueue?: boolean;
     backendQueueWrite?: Promise<void>;
     localWorkScans?: Map<number, Promise<void>>;
@@ -896,7 +891,6 @@ function enqueueChapterDownloadForExecutor(
   const sourceCooldownKey = job.pluginId;
   const waitForBackendQueue =
     options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
-  const removeQueuedJobOnFailure = options.removeQueuedJobOnFailure ?? true;
   const requestedQueueOwnerId = job.batchId ?? makeChapterDownloadBatchId();
   const localWorkScans = options.localWorkScans ?? new Map<number, Promise<void>>();
   installChapterDownloadLifecycleListeners();
@@ -909,7 +903,7 @@ function enqueueChapterDownloadForExecutor(
   const backendQueueWrite = registration?.write ?? requestedQueueWrite;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
-    retry: createDownloadRetryPolicy(),
+    retryManually: () => enqueueChapterDownload(job),
     priority: job.priority ?? "background",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -1273,7 +1267,6 @@ function enqueueChapterDownloadForExecutor(
       } catch (error) {
         if (
           !normalizeSourceAccessRequiredError(error) &&
-          (signal.aborted || !isRetryableDownloadError(error)) &&
           !isPauseAbort(signal) &&
           !isPauseAbortError(error)
         ) {
@@ -1291,7 +1284,6 @@ function enqueueChapterDownloadForExecutor(
     () => removeQueuedChapterDownloadJob(job, queueOwnerId),
     (error) => {
       if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
-      if (!removeQueuedJobOnFailure && !isAbortError(error)) return;
       removeQueuedChapterDownloadJob(job, queueOwnerId);
     },
   );
@@ -1316,7 +1308,7 @@ export function enqueueChapterMediaRepair(
     : undefined;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
-    retry: createDownloadRetryPolicy(),
+    retryManually: () => enqueueChapterMediaRepair(job),
     priority: job.priority ?? "user",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -1568,7 +1560,6 @@ export function enqueueChapterDownloadBatch({
           },
           {
             persistBeforeStart: persistMaterializedJobs,
-            removeQueuedJobOnFailure: persist,
             waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
             backendQueueWrite,
             localWorkScans,
