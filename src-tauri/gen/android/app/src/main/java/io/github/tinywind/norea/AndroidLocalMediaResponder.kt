@@ -210,6 +210,7 @@ internal class AndroidLocalMediaResponder(
       mapOf(
         "Access-Control-Allow-Origin" to "*",
         "Cache-Control" to cacheControl,
+        "Content-Security-Policy" to "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
       ),
       input,
     )
