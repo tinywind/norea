@@ -19,7 +19,7 @@ but it is a separate app with its own data, backup, and source system.
   <img src="docs/screenshots/reader-settings-xs.png" alt="Reader settings panel over the reading view" width="25%">
 </p>
 
-### Webtoon and Manga Reading
+### Webtoon and manga reading
 
 Norea supports image-based chapters as well as text. Scroll through long-strip
 webtoons or read manga and comics page by page.
@@ -29,7 +29,7 @@ webtoons or read manga and comics page by page.
   <img src="docs/screenshots/reader-manga-xl.png" alt="A page-based manga chapter in Norea's reader" width="48%">
 </p>
 
-## What You Can Do
+## What you can do
 
 - Browse and search installed reading sources.
 - Add novels to your library and organize them with categories. Add or remove
@@ -62,7 +62,7 @@ webtoons or read manga and comics page by page.
 - Export and import local backups for your library, progress, categories,
   source settings, and chapter download status.
 
-## Current State
+## Current state
 
 Norea is usable for testing, but it is not a polished app-store release yet.
 
@@ -78,12 +78,9 @@ Current limits:
 
 ## Download
 
-For regular installs, use the
-[latest GitHub release](https://github.com/tinywind/norea/releases/latest).
-Release assets are the stable public downloads.
-
-For a newer tester build from the current `0.2` branch, use the
-[dev-0.2 GitHub prerelease](https://github.com/tinywind/norea/releases/dev-0.2).
+Norea currently publishes tester builds from the `0.2` branch. Download them from
+the [dev-0.2 GitHub prerelease](https://github.com/tinywind/norea/releases/tag/dev-0.2).
+There is no stable release yet.
 Successful platform workflows refresh its installers, packages, APKs, update
 metadata, and checksums.
 
@@ -104,9 +101,9 @@ refreshed:
 | Android emulator or WSA | `norea-x86_64.apk` |
 
 Workflow artifacts are kept for 30 days. If an artifact is expired, use a newer
-successful run, the dev-0.2 prerelease, or the latest stable release.
+successful run or the dev-0.2 prerelease.
 
-## First Run
+## First run
 
 1. Install and open Norea.
 2. Add a reading source list from Browse -> Sources.
@@ -114,7 +111,7 @@ successful run, the dev-0.2 prerelease, or the latest stable release.
 4. Search a source, open a novel, and add it to your library.
 5. Open a chapter to read. Download chapters you want available later.
 
-## Add Reading Sources
+## Add reading sources
 
 Reading sources are installed separately from the app. The sample source list is
 maintained at [tinywind/norea-plugins](https://github.com/tinywind/norea-plugins)
@@ -137,7 +134,7 @@ To add the sample source list:
 Only install and use sources you are allowed to access in your country and under
 the source site's terms.
 
-## Optional Content Server
+## Optional content server
 
 [Norea Content Server](https://github.com/tinywind/norea-content-server) stores
 complete chapter files so you can upload content from one device and download
@@ -154,12 +151,12 @@ server download or manual sync, still report failures that prevent completion.
 ### Start with Docker
 
 The public [Docker image](https://hub.docker.com/r/tinywind0/norea-content-server)
-supports `linux/amd64` and `linux/arm64`, including Linux containers on Docker
-Desktop. To start a server with persistent storage:
+for the `0.2` app series targets `linux/amd64`, including Linux containers on
+Docker Desktop. To start a compatible server with persistent storage:
 
 ```sh
 docker volume create norea-content-data
-docker run -d --name norea-content-server --restart unless-stopped -p 0.0.0.0:8080:8787 -v norea-content-data:/data tinywind0/norea-content-server:0.1.0
+docker run -d --name norea-content-server --restart unless-stopped -p 0.0.0.0:8080:8787 -v norea-content-data:/data tinywind0/norea-content-server:0.2
 ```
 
 Open `http://localhost:8080/admin/` on the host. The administration console and
@@ -207,13 +204,13 @@ SHA-256 hashes. Downloads support only the current original-file format.
 Deleting a local download leaves the server copy intact unless its confirmation
 also selects server deletion. The server keeps one copy per chapter and records
 whether its ZIP contains every asset declared in the media manifest.
-Under **Settings > Data > Content server > Upload conflicts**, choose whether to
+Under Settings > Data > Content server > Upload conflicts, choose whether to
 prefer complete chapters, keep server data, or replace it with app data.
-Then use **Sync now** to apply the selected policy. Deletion confirmations let you
+Then use Sync now to apply the selected policy. Deletion confirmations let you
 also remove matching data from the other side; additional options start unchecked.
 Removing library membership can also delete device downloads or the whole server
-work. **Delete work from server** in Browse -> Content server or **Manage server
-data** removes server metadata, the cover, and all chapters, with an option to
+work. Delete work from server in Browse -> Content server or Manage server
+data removes server metadata, the cover, and all chapters, with an option to
 remove the whole device work and its reading state. Chapter download deletion
 keeps work information and reading progress. Explicit server deletions made in
 the app stay excluded from uploads after restart and local rescans.
@@ -261,7 +258,7 @@ chapter media are not packed into the backup; they stay in the chapter storage
 folder, and Norea re-checks that folder after a restore so download flags match
 the files that are actually present. Only the current manifest format 2 is supported.
 
-## Version Compatibility
+## Version compatibility
 
 Database schema changes increment the version and migrate existing app data,
 including development builds. Registered migration SQL remains immutable.
@@ -274,7 +271,7 @@ their current formats. Use current app and server builds together.
 Maintainer details live in
 [docs/release-compatibility.md](./docs/release-compatibility.md).
 
-## For Developers
+## For developers
 
 Developer setup, local plugin testing, release artifact details, and
 contribution rules live in [docs/development.md](./docs/development.md).
