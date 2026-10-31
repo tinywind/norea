@@ -1,90 +1,65 @@
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-
+const entry = { deviceName: "Phone backup", updatedAt: 1000, size: 2048, sha256: "a".repeat(64) };
 const mocks = vi.hoisted(() => ({
-  savedKey: "a".repeat(64), draft: undefined as string | undefined,
-  stateIndex: 0, setState: vi.fn(), sync: vi.fn(), saveKey: vi.fn(), invalidate: vi.fn(), copy: vi.fn(),
+  stateIndex: 0, selected: null as string | null, setState: vi.fn(), upload: vi.fn(), restore: vi.fn(), refetch: vi.fn(),
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
-  useEffect: vi.fn(), useRef: () => ({ current: null }),
-  useState: (initial: unknown) => {
-    const value = typeof initial === "function" ? initial() : initial;
-    return [mocks.stateIndex++ === 1 && mocks.draft !== undefined ? mocks.draft : value, mocks.setState];
-  },
+  useRef: () => ({ current: false }),
+  useState: (initial: unknown) => [mocks.stateIndex++ === 0 ? mocks.selected : initial, mocks.setState],
 }));
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ invalidateQueries: mocks.invalidate }) }));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: ({ queryKey }: { queryKey: string[] }) => queryKey[1] === "name"
+    ? { data: "This tablet" }
+    : { data: [entry], refetch: mocks.refetch, isFetching: false, error: null },
+}));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: mocks.copy }));
-vi.mock("../lib/content-sync/reading-state", () => ({
-  readReadingSyncKey: () => mocks.savedKey,
-  createReadingSyncKey: () => "b".repeat(64),
-  validReadingSyncKey: (key: string) => /^[a-f0-9]{64}$/.test(key),
-  saveReadingSyncKey: mocks.saveKey,
-  syncReadingState: mocks.sync,
-  ReadingSyncError: class extends Error {},
+vi.mock("../store/content-sync", () => ({ useContentSyncStore: () => "" }));
+vi.mock("../lib/content-sync/device-backup", () => ({
+  defaultBackupDeviceName: vi.fn(), listDeviceBackups: vi.fn(), uploadDeviceBackup: mocks.upload,
+  restoreDeviceBackup: mocks.restore, DeviceBackupError: class extends Error {},
 }));
-
 import { ReadingStateSettings } from "./ReadingStateSettings";
-interface Props { children?: ReactNode; onClick?: () => void; disabled?: boolean }
+interface Props { children?: ReactNode; onClick?: () => void; disabled?: boolean; data?: unknown; }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Props>;
   return [element, ...controls(element.props.children)];
 }
-function button(label: string) {
-  return controls(ReadingStateSettings({ serverUrl: "http://server" })).find(item => item.props.children === label)!;
-}
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.stateIndex = 0; mocks.savedKey = "a".repeat(64); mocks.draft = undefined;
-  mocks.saveKey.mockImplementation((_server, key) => key);
-  mocks.sync.mockResolvedValue({ uploaded: 0, downloaded: 1, serverUpdated: 0, localUpdated: 1, skipped: 0 });
-  mocks.invalidate.mockResolvedValue(undefined);
-  mocks.copy.mockResolvedValue(undefined);
+  vi.clearAllMocks(); mocks.stateIndex = 0; mocks.selected = null;
+  mocks.upload.mockResolvedValue(entry); mocks.refetch.mockResolvedValue({});
+  mocks.restore.mockResolvedValue(undefined);
 });
-
-it.each(["pull", "push", "merge"])("exposes the explicit %s action and invalidates local views after imports", async mode => {
-  const action = button(`readingSync.${mode}`);
-  expect(action.props.disabled).toBe(false);
-  action.props.onClick!();
-  await vi.waitFor(() => expect(mocks.sync).toHaveBeenCalledWith("http://server", mocks.savedKey, mode, expect.any(Function), expect.any(AbortSignal)));
-  if (mode === "push") expect(mocks.invalidate).not.toHaveBeenCalled();
-  else {
-    await vi.waitFor(() => expect(mocks.invalidate).toHaveBeenCalledTimes(3));
-    expect(mocks.invalidate.mock.calls.map(call => call[0])).toEqual([
-      { queryKey: ["novel"] }, { queryKey: ["chapter"] }, { queryKey: ["category"] },
-    ]);
-  }
-});
-
-it("requires saving an edited private key before any transfer", () => {
-  mocks.draft = "c".repeat(64);
+it("shows the device name and a backup action without any secret-key field", async () => {
   const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
-  for (const mode of ["pull", "push", "merge"]) {
-    expect(elements.find(item => item.props.children === `readingSync.${mode}`)!.props.disabled).toBe(true);
+  expect(elements.some(item => item.props.children === "This tablet")).toBe(true);
+  expect(elements.some(item => item.props.children === "readingSync.key")).toBe(false);
+  const upload = elements.find(item => item.props.children === "deviceBackup.upload")!;
+  expect(upload.props.disabled).toBe(false);
+  upload.props.onClick!();
+  await vi.waitFor(() => expect(mocks.upload).toHaveBeenCalledWith("http://server", expect.any(Function)));
+  await vi.waitFor(() => expect(mocks.refetch).toHaveBeenCalledTimes(1));
+});
+it("requires selecting a saved device before overwrite restoration", () => {
+  const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
+  const restore = elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!;
+  expect(restore.props.disabled).toBe(true);
+});
+it("offers all saved device names and requires confirmation before restoring", async () => {
+  mocks.selected = entry.deviceName;
+  const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
+  expect(elements.find(item => item.props.data)?.props.data).toEqual([{ value: entry.deviceName, label: entry.deviceName }]);
+  elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!.props.onClick!();
+  expect(mocks.restore).not.toHaveBeenCalled();
+  elements.find(item => item.props.children === "deviceBackup.confirmRestore")!.props.onClick!();
+  await vi.waitFor(() => expect(mocks.restore).toHaveBeenCalledWith("http://server", entry, expect.any(Function)));
+});
+it("disables uploads and restoration without a configured server", () => {
+  const elements = controls(ReadingStateSettings({ serverUrl: "" }));
+  for (const label of ["deviceBackup.upload", "deviceBackup.restore"]) {
+    expect(elements.find(item => item.props.children === label && item.props.onClick)!.props.disabled).toBe(true);
   }
-  elements.find(item => item.props.children === "readingSync.saveKey")!.props.onClick!();
-  expect(mocks.saveKey).toHaveBeenCalledWith("http://server", mocks.draft);
-  expect(mocks.sync).not.toHaveBeenCalled();
-});
-
-it("creates a private key only after the user chooses it, without starting a transfer", () => {
-  mocks.savedKey = "";
-  button("readingSync.createKey").props.onClick!();
-  expect(mocks.saveKey).toHaveBeenCalledWith("http://server", "b".repeat(64));
-  expect(mocks.sync).not.toHaveBeenCalled();
-});
-
-it("uses the WebView-compatible clipboard helper before showing copy success", async () => {
-  button("readingSync.copyKey").props.onClick!();
-  await vi.waitFor(() => expect(mocks.setState).toHaveBeenCalledWith("readingSync.keyCopied"));
-  expect(mocks.copy).toHaveBeenCalledExactlyOnceWith(mocks.savedKey);
-});
-
-it("offers manual-copy guidance instead of success when both clipboard methods fail", async () => {
-  mocks.copy.mockRejectedValue(new Error("Clipboard rejected"));
-  button("readingSync.copyKey").props.onClick!();
-  await vi.waitFor(() => expect(mocks.setState).toHaveBeenCalledWith("readingSync.copyFailed"));
-  expect(mocks.setState).not.toHaveBeenCalledWith("readingSync.keyCopied");
 });

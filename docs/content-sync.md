@@ -2,8 +2,10 @@
 
 The optional [Norea Content Server](https://github.com/tinywind/norea-content-server)
 stores complete chapter files for your devices. Configure it under Settings >
-Data > Content server. Reading positions, read flags, bookmarks, and library
-membership stay local. Reading continues when the server is unavailable.
+Data > Content server. Ordinary content sync keeps reading positions, read flags,
+bookmarks, and library membership local. The separate Device backup section can
+save and restore a complete app database and settings snapshot. Reading continues
+when the server is unavailable.
 
 ## Using the server
 
@@ -11,7 +13,8 @@ membership stay local. Reading continues when the server is unavailable.
 2. Save the server URL and a device name in Norea.
 3. Open Browse > Content server to search titles or filter by source. Results
    load one page at a time, without waiting for a full sync. The device registers
-   automatically; no account or password is required.
+   automatically; no account or password is required. Search and source filters
+   remain when you return from a work and are kept separately for each server.
 4. Open a work to view its cover and available chapters. Use the usual library
    and download buttons. Downloads use the server's files without contacting
    the original site or requiring its plugin.
@@ -144,7 +147,9 @@ for the same chapter waits for that deletion before accessing its local files.
 
 Each server URL has its own random 32-byte device key, persisted in this app's
 local storage before registration. The key survives app restarts and stays outside
-portable backups. Restoring a backup does not replace or remove device keys.
+portable file backups. Restoring a portable file backup does not replace or
+remove device keys. A full device backup includes all saved localStorage
+settings, including device keys, and restores the selected snapshot's values.
 The app does not derive keys from hardware identifiers.
 
 The server accepts new devices automatically. Its administrator can block or
@@ -154,8 +159,10 @@ block. Ask the administrator to unblock the device before retrying.
 
 The app checks `/api/v1/capabilities` before device registration. It
 requires API version 1, package version 1, `authentication: "device-key"`, and
-`personalStateSync: false` for older content-only servers, or
-`personalStateSync: true` with `readingStateVersion: 1` for private history sync.
+the supported content protocol. Full device backups additionally require
+`deviceBackupVersion: 1`; a server without this capability must be updated
+before using that section. The former private reading-history capability does
+not indicate support for full device backups.
 Registration uses `/api/v1/devices/register`;
 successful registration is reused during the app session. A changed device name
 or key requires registration again. HTTP 401 clears only this in-memory result so
@@ -237,12 +244,14 @@ source URL identifying the requested entry. The server checks the entry's size
 and CRC before returning it. Repair can use server assets without an installed
 source plugin; source-site fallback still requires the plugin fetch path.
 
-Only the current original-file format is supported. There is no outer ZIP
-transfer, older manifest decoder, or media-reference conversion.
+Chapter transfers support only the current original-file format. They do not
+use an outer ZIP, older manifest decoder, or media-reference conversion. The
+full device backup ZIP described below is a separate protocol.
 
 Chapter transfers do not compute or compare SHA-256 file checksums. A same-size
 change with an unchanged modification time cannot be detected by a file rescan.
 Identity and authentication hashes are independent of file transfer validation.
+Full device backups have their own required archive SHA-256 validation.
 
 Use current app and server builds together. Older protocols are unsupported.
 
@@ -282,17 +291,18 @@ the version and migrate existing records, including sync exclusions and cursors.
 Version/checksum errors preserve the database and stop opening it. An incompatible
 server schema still requires a fresh state volume; server format conversion is
 outside this app migration policy. Sync cursors and device keys remain outside
-portable backups. Shared content sync never calls private reading-state
-endpoints. Private history transfer is a separate, explicit operation described
-below; it needs no account or console session.
+portable file backups. Full device snapshots include the entire database and
+saved settings, including those values. Shared content sync does not upload or
+restore device backups automatically. Device backup is a separate, explicit
+operation described below.
 
 Local content installation is serialized per work. Network transfers use private
 staging directories and do not hold a work lock. Upload fingerprinting and transfer
 use one snapshot. Android copies snapshots on a separate, bounded worker so that
 the foreground storage queue can process metadata, downloads, and deletion.
 Conflicting changes during copying discard the snapshot and leave the upload pending.
-Backup restoration waits for active work operations and holds exclusive storage
-access while inspecting original files and restoring database state. It never
+Portable file backup restoration waits for active work operations and holds
+exclusive storage access while inspecting original files and restoring database state. It never
 deletes or rewrites work metadata, covers, or chapter files, including files for
 works omitted from the backup. Inspection failure leaves the database unchanged;
 failure during the native restore transaction rolls it back. Only discovered
@@ -323,53 +333,89 @@ or uninstall the user's existing app to work around installation or migration
 errors. See [development.md](development.md) for the targeted Android build.
 
 
-## Private reading history transfer
+## Full device backup
 
-Settings -> Data -> Content server now has a separate Reading history sync
-section. On the first device, create a reading sync key, save it somewhere
-private, and choose Send to server. On another device, enter the same key and
-choose Import from server. Merge both ways uploads local records and then imports
-the combined server records. An existing content-only server has no historical
-personal records to recover until a device sends them.
+Settings -> Data -> Device backup replaces the former reading-history sync UI.
+It saves a complete SQLite database and app settings snapshot rather than
+merging individual reading-history records. The current device name is the
+default backup slot. Saving again under that name replaces its current server
+snapshot; selecting another saved device name restores that device's snapshot
+into this app after explicit overwrite confirmation.
 
-Update the app before updating the server. Older app builds that require
-`personalStateSync: false` reject the new server capability. The updated app
-continues to use an older server for content and explains when reading-history
-transfer requires a server update.
+The server lists all saved device names, including each backup's update time,
+byte size, and SHA-256. Every registered, unblocked device may list and restore
+all these backups. A separate private reading sync key is not used. Anonymous
+catalog access does not grant backup access, and a console session is not a
+device credential for these endpoints.
 
-This profile key is a random 32-byte secret, independent of the device key and
-scoped to the configured server URL in local storage. Someone holding it can
-read and add to that private history. The server stores only its SHA-256 hash.
-Both endpoints require a non-blocked registered device credential even when the
-shared catalog allows anonymous reading. The key travels in a POST body, never
-in a URL, and is not included in work or chapter content metadata.
+### Snapshot contents
 
-- `POST /api/v1/reading-state/merge`: `{ syncKey, entries }`, at most 200 entries.
-  Returns `{ received, updated, total }`. The app further splits bodies below
-  512 KiB. Retrying an interrupted upload is idempotent.
-- `POST /api/v1/reading-state/read`: `{ syncKey, offset, limit }`, up to 500
-  entries per server response (the app requests 200). Returns
-  `{ entries, total, nextOffset }`. A profile with no stored records is empty.
+| Included | Details |
+| --- | --- |
+| Complete SQLite database | Repository URLs, complete installed plugin JavaScript, categories, library membership, progress, bookmarks, history, and all work and chapter metadata |
+| Saved app settings | All localStorage values, including server connection settings, device tokens, VPN preferences, and interface settings |
+| Native VPN profile | The imported `profile.ovpn`, when present |
+| Storage location | The storage root setting, without copying the folder's files or OS access grants |
 
-An entry identifies a source, a work by stable source ID (or work path), and a
-chapter by unambiguous source chapter number plus page (or chapter path). A
-conflicting work ID or ambiguous chapter identity is skipped, never matched by
-display title. Source URLs may change when stable identities still match.
+The ZIP contains only `manifest.json`, `norea.db`, and optional `profile.ovpn`.
+Installed plugin source code is part of the database snapshot. Downloaded
+chapter bodies, cover files, chapter images, and other media files remain in
+their original folders and are excluded from this archive. Restore does not
+delete or overwrite those original files.
 
-Import and upload preserve the union of read flags and bookmarks, the maximum
-progress, and the latest real `readAt`. Metadata modification times are not
-reading-state clocks. This intentionally does not propagate a reset to unread,
-bookmark removal, or history deletion. The UI explains this policy before an
-action. Import only updates matching local chapters; missing records are counted
-and can be retried after adding or refreshing the relevant work.
+WebView cookies and VPN usernames/passwords held only in memory are excluded.
+Operating-system folder permissions cannot be transferred with the saved folder
+setting. After restoring another device's snapshot, the user may need to grant
+folder access again or select a folder available on the current device.
 
-Each local batch is a database transaction. It updates chapter flags/progress,
-novel history timestamps, materialized library counters, and resume-reading
-pointers, then refreshes library, detail, and history queries. Server/profile
-changes and cancellation are checked inside the queued transaction before
-commit. Completed batches survive a later network failure and the UI reports
-partial progress. No content files or library membership are replaced.
+### Restore behavior
 
-The server creates its private reading-state table additively, after validating
-the unchanged baseline schema checksum. Existing content, device registrations,
-settings, and catalog records are retained when upgrading.
+Restore replaces the local database and saved settings with the chosen
+snapshot, including its library membership, read/unread flags, removed
+bookmarks, and history. It does not require matching books to exist locally,
+and it does not merge progress or preserve the current device's credentials
+over the saved values. Original content files stay in place even when they are
+absent from the restored database.
+
+The app pins the selected backup's SHA-256 while downloading and verifies the
+archive before replacement. The database must have the exact current schema
+and ordered migration history, pass SQLite integrity checks, and satisfy
+foreign-key checks. An incompatible or invalid snapshot is rejected without
+resetting the current database.
+
+Database replacement runs in a SQL transaction, with settings rollback if
+installation fails. A successful restore reloads the app to apply the restored
+database and settings together. Pending download and metadata publication jobs
+from the snapshot are cancelled or removed so startup cannot use them to
+rewrite original files.
+
+The existing Settings -> Backup portable file format is unchanged. That format
+excludes device authentication keys and inspects existing content files when
+rebuilding download state. Full device backup instead restores the entire
+database and saved settings. These are separate formats and restoration paths;
+see [Development data policy](release-compatibility.md).
+
+Physical download cache flags and byte counts are reset during a full device
+restore because original chapter files are not included. Existing local files
+remain untouched and are checked again when their chapters are opened or
+downloaded; reading progress and metadata stay restored.
+
+If a preserved work is absent from the restored database, opening it from the
+server catalog rebuilds its local index from the existing files without
+replacing those files with the server response.
+
+### Device backup API
+
+The server advertises `deviceBackupVersion: 1` in `/api/v1/capabilities`.
+All requests require the bearer credential of a registered, unblocked device.
+URL-encode the device name in the path.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /api/v1/device-backups` | Returns `{items: [{deviceName, updatedAt, size, sha256}]}` for the server's saved device names |
+| `PUT /api/v1/device-backups/:name` | Uploads the binary ZIP to the named slot; requires `X-Backup-Sha256` with the archive's SHA-256; maximum 512 MiB |
+| `GET /api/v1/device-backups/:name?sha256=<selected-sha256>` | Downloads the selected archive only while the named slot still has the requested SHA-256 |
+
+If another upload changes the named slot after listing, the pinned download
+fails instead of silently restoring a different snapshot. Refresh the device
+list and select the intended current backup again.

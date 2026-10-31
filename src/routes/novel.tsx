@@ -18,6 +18,7 @@ import {
 import { IconButton } from "../components/IconButton";
 import {
   buildBatchDownloadTargets,
+  buildPreviousChapterDownloadTargets,
   chaptersKey,
   EMPTY_CHAPTERS,
   FINISHED_PROGRESS,
@@ -193,6 +194,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         .filter(hasStoredChapterContent)
         .map((chapter) => chapter.id),
     [selectedChapters],
+  );
+  const previousDownloadTargets = useMemo(
+    () => buildPreviousChapterDownloadTargets(chapters, selectedChapterIds, statuses),
+    [chapters, selectedChapterIds, statuses],
   );
   const selectedUnreadCount = selectedChapters.filter(
     (chapter) => chapter.unread || chapter.progress < FINISHED_PROGRESS,
@@ -579,20 +584,23 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       <UnreadGlyph />
                     )}
                   </IconButton>
-                  {selectedAnchorChapter ? (
+                  {selectedChapterCount > 0 ? (
                     <ChapterRelativeReadMenu
                       afterCount={selectedAnchorAfterCount}
                       beforeCount={selectedAnchorBeforeCount}
                       busy={chapterSelectionBusy}
+                      previousDownloadCount={novel.isLocal ? 0 : previousDownloadTargets.length}
+                      onDownloadPrevious={() => downloadChapters(previousDownloadTargets)}
+                      showReadActions={selectedAnchorChapter !== undefined}
                       onMarkFollowingUnread={() =>
-                        setRelativeChapterReadState.mutate({
+                        selectedAnchorChapter && setRelativeChapterReadState.mutate({
                           anchorChapterId: selectedAnchorChapter.id,
                           direction: "after",
                           unread: true,
                         })
                       }
                       onMarkPreviousRead={() =>
-                        setRelativeChapterReadState.mutate({
+                        selectedAnchorChapter && setRelativeChapterReadState.mutate({
                           anchorChapterId: selectedAnchorChapter.id,
                           direction: "before",
                           unread: false,

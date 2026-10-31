@@ -133,10 +133,12 @@ let connectionGeneration = 0;
 let connectionAttempt: Promise<PluginVpnStatus | null> | null = null;
 let recoveryAttempt: Promise<PluginVpnStatus | null> | null = null;
 let activeProfileSwitches = 0;
+let profileReplacementPending = false;
 let sessionCredentials: PluginVpnCredentials | null = null;
 
 function clearPluginVpnIntent(): void {
   connectionGeneration += 1;
+  profileReplacementPending = false;
   sessionCredentials = null;
   usePluginVpnStore.getState().setEnabled(false);
 }
@@ -154,11 +156,8 @@ function trackPluginVpnConnection(
 }
 
 async function preparePluginVpnProfileChange(): Promise<void> {
-  const wasEnabled = usePluginVpnStore.getState().enabled;
   clearPluginVpnIntent();
-  if (wasEnabled || connectionAttempt) {
-    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
-  }
+  await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
 }
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
@@ -246,6 +245,7 @@ export async function switchPluginVpnFinderServer(
 ): Promise<PluginVpnStatus | null> {
   if (!lifecycle.isCurrent()) return null;
   activeProfileSwitches += 1;
+  profileReplacementPending = true;
   try {
     usePluginVpnStore.getState().setEnabled(true);
     await disconnectPluginVpn(true);
@@ -258,8 +258,9 @@ export async function switchPluginVpnFinderServer(
       throw error;
     }
     if (!lifecycle.isCurrent()) return null;
+    profileReplacementPending = false;
     lifecycle.onConnecting();
-    const status = await connectPluginVpn(
+    const status = await startPluginVpnConnection(
       {
         challengeResponse: "",
         password: "",
@@ -267,6 +268,7 @@ export async function switchPluginVpnFinderServer(
         username: "",
       },
       lifecycle.isCurrent,
+      false,
     );
     return lifecycle.isCurrent() ? status : null;
   } finally {
@@ -361,16 +363,28 @@ export function connectPluginVpn(
   credentials: PluginVpnCredentials,
   isCurrent: () => boolean = () => true,
 ): Promise<PluginVpnStatus | null> {
+  return startPluginVpnConnection(
+    credentials,
+    isCurrent,
+    connectionAttempt !== null || usePluginVpnStore.getState().enabled,
+  );
+}
+
+function startPluginVpnConnection(
+  credentials: PluginVpnCredentials,
+  isCurrent: () => boolean,
+  disconnectExisting: boolean,
+): Promise<PluginVpnStatus | null> {
   if (!isCurrent()) return Promise.resolve(null);
-  const previous = connectionAttempt;
   const generation = ++connectionGeneration;
   const current = () => generation === connectionGeneration && isCurrent();
+  profileReplacementPending = false;
   sessionCredentials = { ...credentials };
   usePluginVpnStore.getState().setEnabled(true);
   return trackPluginVpnConnection(
     (async () => {
       try {
-        if (previous) {
+        if (disconnectExisting) {
           await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
         }
         if (!current()) return null;
@@ -445,7 +459,7 @@ export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {
 }
 
 export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
-  if (!isNetworkOnline() || !usePluginVpnStore.getState().enabled || activeProfileSwitches > 0) {
+  if (!isNetworkOnline() || !usePluginVpnStore.getState().enabled || activeProfileSwitches > 0 || profileReplacementPending) {
     return Promise.resolve(null);
   }
   if (recoveryAttempt) return recoveryAttempt;

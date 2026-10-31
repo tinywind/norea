@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Badge,
   Group,
@@ -8,6 +8,7 @@ import {
   Select,
   SimpleGrid,
   Stack,
+  Switch,
   Table,
   Text,
   TextInput,
@@ -27,12 +28,12 @@ import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
 
 const PLUGIN_VPN_FINDER_QUERY_KEY = ["plugin-vpn", "finder"] as const;
-const PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS = 4 * 60 * 1000;
 
 type PluginVpnFinderSort = "ping" | "score" | "speed";
 
 interface PluginVpnFinderFilters {
   countryCode: string;
+  hideFailed?: boolean;
   protocol: "" | PluginVpnServerProtocol;
   search: string;
   sort: PluginVpnFinderSort;
@@ -77,13 +78,6 @@ export function pluginVpnFinderServerAction(
     : "connect";
 }
 
-export function pluginVpnFinderServersForDisplay(
-  servers: PluginVpnFinderServer[],
-  queryActive: boolean,
-): PluginVpnFinderServer[] {
-  return queryActive ? [] : servers;
-}
-
 export function pluginVpnFinderServerVerdict(
   server: Pick<PluginVpnFinderServer, "ip">,
   verdicts: ReadonlyMap<string, VpnGateServerVerdictValue>,
@@ -103,10 +97,14 @@ function comparePing(
 export function filterAndSortPluginVpnServers(
   servers: PluginVpnFinderServer[],
   filters: PluginVpnFinderFilters,
+  verdicts: ReadonlyMap<string, VpnGateServerVerdictValue> = new Map(),
 ): PluginVpnFinderServer[] {
   const search = filters.search.trim().toLocaleLowerCase();
   return servers
     .filter((server) => {
+      if (filters.hideFailed !== false && verdicts.get(server.ip) === "fails") {
+        return false;
+      }
       if (filters.countryCode && server.countryCode !== filters.countryCode) {
         return false;
       }
@@ -182,6 +180,8 @@ export function PluginVpnFinder({
   const queryClient = useQueryClient();
   const [countryCode, setCountryCode] = useState("");
   const [catalogStopped, setCatalogStopped] = useState(false);
+  const [hideFailed, setHideFailed] = useState(true);
+  const forceRefresh = useRef(false);
   const [selectedConnectionTarget, setSelectedConnectionTarget] = useState<
     string | null
   >(null);
@@ -189,21 +189,23 @@ export function PluginVpnFinder({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<PluginVpnFinderSort>("score");
   const serversQuery = useQuery({
-    enabled: opened && !catalogStopped && online,
-    queryFn: ({ signal }) => loadPluginVpnFinderServers(true, signal),
+    enabled: opened && !catalogStopped && online &&
+      queryClient.getQueryData(PLUGIN_VPN_FINDER_QUERY_KEY) === undefined,
+    queryFn: ({ signal }) => {
+      const refresh = forceRefresh.current;
+      forceRefresh.current = false;
+      return loadPluginVpnFinderServers(refresh, signal);
+    },
     queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
-    refetchInterval:
-      opened && !catalogStopped && online
-        ? PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS
-        : false,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
     retry: false,
-    staleTime: PLUGIN_VPN_FINDER_REFRESH_INTERVAL_MS,
+    staleTime: Infinity,
   });
   const catalogRefreshing = serversQuery.isFetching && !catalogStopped;
-  const servers = pluginVpnFinderServersForDisplay(
-    serversQuery.data ?? [],
-    catalogRefreshing || catalogStopped,
-  );
+  const servers = serversQuery.data ?? [];
   const countries = useMemo(
     () =>
       [...new Map(servers.map((server) => [server.countryCode, server.countryName]))]
@@ -218,36 +220,16 @@ export function PluginVpnFinder({
     () =>
       filterAndSortPluginVpnServers(servers, {
         countryCode,
+        hideFailed,
         protocol,
         search,
         sort,
-      }),
-    [countryCode, protocol, search, servers, sort],
+      }, verdicts),
+    [countryCode, hideFailed, protocol, search, servers, sort, verdicts],
   );
   const connectionServer =
     (pendingCandidateId === null ? connectionTarget : selectedConnectionTarget) ??
     t("settings.data.pluginVpn.finder.status.selectedServer");
-
-  useEffect(() => {
-    if (!opened) return;
-    setCatalogStopped(false);
-    queryClient.setQueryData<PluginVpnFinderServer[]>(
-      PLUGIN_VPN_FINDER_QUERY_KEY,
-      [],
-    );
-    if (
-      queryClient.isFetching({
-        exact: true,
-        queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
-      }) === 0
-    ) {
-      void queryClient.invalidateQueries({
-        exact: true,
-        queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
-        refetchType: "active",
-      });
-    }
-  }, [opened, queryClient]);
 
   async function applyAndConnect(
     candidateId: string,
@@ -270,10 +252,6 @@ export function PluginVpnFinder({
 
   function cancelCatalogQuery(): void {
     setCatalogStopped(true);
-    queryClient.setQueryData<PluginVpnFinderServer[]>(
-      PLUGIN_VPN_FINDER_QUERY_KEY,
-      [],
-    );
     void queryClient.cancelQueries({
       exact: true,
       queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
@@ -282,31 +260,17 @@ export function PluginVpnFinder({
 
   function refreshCatalog(): void {
     if (!online) return;
-    queryClient.setQueryData<PluginVpnFinderServer[]>(
-      PLUGIN_VPN_FINDER_QUERY_KEY,
-      [],
-    );
+    forceRefresh.current = true;
     setCatalogStopped(false);
     void serversQuery.refetch({ cancelRefetch: true });
   }
 
   function closeFinder(): void {
-    queryClient.setQueryData<PluginVpnFinderServer[]>(
-      PLUGIN_VPN_FINDER_QUERY_KEY,
-      [],
-    );
     void queryClient
       .cancelQueries({
         exact: true,
         queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
-      })
-      .then(() =>
-        queryClient.invalidateQueries({
-          exact: true,
-          queryKey: PLUGIN_VPN_FINDER_QUERY_KEY,
-          refetchType: "none",
-        }),
-      );
+      });
     onClose();
   }
 
@@ -490,6 +454,11 @@ export function PluginVpnFinder({
             value={sort}
           />
         </SimpleGrid>
+        <Switch
+          checked={hideFailed}
+          label={t("settings.data.pluginVpn.finder.verdict.hideFailed")}
+          onChange={(event) => setHideFailed(event.currentTarget.checked)}
+        />
         <Group justify="space-between">
           <Text c="dimmed" size="xs">
             {t("settings.data.pluginVpn.finder.sourceAttribution")}
@@ -507,11 +476,17 @@ export function PluginVpnFinder({
           </TextButton>
         </Group>
 
-        {!online ? (
+        {serversQuery.isError && serversQuery.data !== undefined ? (
+          <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
+            {t("settings.data.pluginVpn.finder.loadFailed")}
+            {loadErrorMessage ? ` ${loadErrorMessage}` : ""}
+          </Text>
+        ) : null}
+        {!online && servers.length === 0 ? (
           <Text className="norea-plugin-vpn-finder-state" role="status" size="sm">
             {t("network.waiting")}
           </Text>
-        ) : catalogStopped ? (
+        ) : catalogStopped && servers.length === 0 ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Text role="status" size="sm">
               {t("settings.data.pluginVpn.finder.stopped")}
@@ -524,14 +499,14 @@ export function PluginVpnFinder({
               {t("settings.data.pluginVpn.finder.retry")}
             </TextButton>
           </Stack>
-        ) : catalogRefreshing || serversQuery.isPending ? (
+        ) : (catalogRefreshing || serversQuery.isPending) && serversQuery.data === undefined ? (
           <Group className="norea-plugin-vpn-finder-state" justify="center">
             <Loader size="sm" />
             <Text size="sm">
               {t("settings.data.pluginVpn.finder.loading")}
             </Text>
           </Group>
-        ) : serversQuery.isError ? (
+        ) : serversQuery.isError && serversQuery.data === undefined ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Text role="alert" size="sm">
               {t("settings.data.pluginVpn.finder.loadFailed")}

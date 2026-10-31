@@ -37,7 +37,8 @@ webtoons or read manga and comics page by page.
 - Choose the category shown when entering the library, with All as the default.
 - Filter by unread, downloaded, local, and fully read tags. Tablet and desktop
   layouts expose these filters directly; narrow layouts include them in the
-  category drawer.
+  category drawer. Select all filtered works beside Download, including works
+  beyond the currently loaded page.
 - Sort your library by undownloaded chapter count, from fewest or most first.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
 - Open TXT, Markdown, EPUB, and PDF files with installed Windows or Android builds,
@@ -45,7 +46,9 @@ webtoons or read manga and comics page by page.
 - Cache rendered chapter media for offline reading.
 - Route source-plugin requests through an app-local OpenVPN tunnel on Windows
   and Android, using an imported `.ovpn` profile or the built-in VPN Gate server
-  finder.
+  finder. Connecting another profile disconnects the current tunnel first.
+  The finder hides servers you marked X by default, with an option to show them.
+  Reopening the finder reuses the fetched list; Refresh fetches it again.
 - Keep local files in one work on Windows and Android, reorder its chapters, and
   manage local metadata with locally uploaded cover images.
 - Read text, webtoon, and manga chapters in paged or scrolling mode.
@@ -53,12 +56,16 @@ webtoons or read manga and comics page by page.
 - Track reading progress, history, unread chapters, and downloaded chapters.
 - Download chapters for later reading.
   Library batch downloads remain available whenever selected works have
-  undownloaded chapters outside the current download queue.
+  undownloaded chapters outside the current download queue. Select one or more
+  chapters to download missing chapters before the lowest selected chapter
+  position, regardless of the displayed sort order.
 - Share complete chapters through an optional [content server](docs/content-sync.md).
   Browse its works under Browse -> Content server, add them to your library, and
   download chapters without waiting for a full sync. Devices register
-  automatically. Private reading history can be sent, imported, or merged manually
-  using the same reading sync key on your devices.
+  automatically. Search and source filters remain when returning from a work.
+- Save a complete device database and settings snapshot to the content server
+  under your device name. Select any saved device backup to replace this app's
+  local database, installed plugins, and settings after confirmation.
 - Export and import local backups for your library, progress, categories,
   source settings, and chapter download status.
 
@@ -183,16 +190,18 @@ as described in the [server documentation](https://github.com/tinywind/norea-con
 3. Choose Sync now to register the device and upload complete local chapters.
 4. Choose Download to this device for content in the server catalog.
 
-No account or password is needed in the app. Each device uses its own key;
-library membership stays local. In the separate Reading history sync section,
-create a private reading sync key on your first device and choose Send to server.
-On another device, save the same key and choose Import from server. Merge both
-ways sends this device’s history and then imports the combined result. Read
-chapters, furthest progress, bookmarks, and the latest read time are preserved;
-marking unread, bookmark removal, and history deletion are not propagated. Books
-and chapters must already be present locally; unmatched records are reported.
-Choose Manual only, Periodically, or When changes occur. Automatic sync runs
-while the app is visible, and later syncs use recorded content changes.
+No account or password is needed in the app. Each device uses its own registration
+key. Ordinary content sync shares work metadata and chapter files while keeping
+library membership and reading state local. The separate Settings -> Data ->
+Device backup section saves the complete app database and settings under your
+device name. It lists the server's saved device backups; selecting one and
+confirming Restore replaces the local database and settings, then reloads the app.
+This includes library membership and reading state, with no separate reading
+sync key or history merge. See [Backup](#backup) for its scope.
+
+Choose Manual only, Periodically, or When changes occur for content sync.
+Automatic sync runs while the app is visible, and later syncs use recorded
+content changes.
 
 Complete chapters upload as multipart requests containing the original
 `content.html` or `content.pdf`, plus `manifest.json` and `media.zip` when present.
@@ -251,12 +260,56 @@ for folder import and server configuration.
 
 ## Backup
 
+### Device backup on the content server
+
+Open Settings -> Data -> Device backup after configuring a content server.
+Your device name is the default backup name. Save the current snapshot to that
+name, or select a name from the server's list and restore its saved snapshot
+after confirming the overwrite.
+Every registered, unblocked device can list and restore the server's device
+backups; these are not separated by private reading sync keys.
+
+The snapshot includes the complete SQLite database, repository URLs, installed
+plugin JavaScript, categories, library membership, reading progress, bookmarks,
+history, and all work and chapter metadata. It also includes all saved app
+settings, including server connection and device credentials, VPN settings and
+the imported OpenVPN profile, interface preferences, and the storage folder
+setting. Restoring replaces these values with the selected device's snapshot
+and reloads the app. It does not merge two devices' history.
+
+Downloaded chapter bodies, cover files, and image or media files stay in their
+existing storage folders and are not included or overwritten. Operating-system
+folder permissions, WebView cookies, and VPN username/password values held only
+in memory are not included. A different device may need to grant access to the
+restored storage folder or select an available folder again.
+
+Only a backup with the same database schema and migration history can be
+restored. The app verifies the archive checksum and database integrity before
+replacement. Pending download and metadata publication jobs from the snapshot
+are cancelled or removed so they cannot modify original content files after
+restore. The older portable file backup remains available separately.
+
+Physical download cache flags and byte counts are reset during a full device
+restore because original chapter files are not included. Existing local files
+remain untouched and are checked again when their chapters are opened or
+downloaded; reading progress and metadata stay restored.
+
+If a preserved work is absent from the restored database, opening it from the
+server catalog rebuilds its local index from the existing files without
+replacing those files with the server response.
+
+### Portable local file backup
+
 Use Settings -> Backup to export or import your local library data. Backups
 include your library, reading progress, categories, source settings, installed
 sources, and chapter download status. Downloaded chapter bodies and cached
 chapter media are not packed into the backup; they stay in the chapter storage
 folder, and Norea re-checks that folder after a restore so download flags match
-the files that are actually present. Only the current manifest format 2 is supported.
+the files that are actually present. This portable format excludes device
+authentication keys and preserves existing content files during restore.
+Only the current manifest format 2 is supported. It is a different format from
+the complete device snapshot stored on the content server.
+
 
 ## Version compatibility
 

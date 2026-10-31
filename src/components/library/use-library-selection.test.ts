@@ -8,6 +8,8 @@ interface Mutation {
 const mocks = vi.hoisted(() => ({
   mutations: [] as Mutation[],
   selected: new Set([1]),
+  setSelected: vi.fn(),
+  listIds: vi.fn(),
   listChapters: vi.fn(),
   getNovel: vi.fn(),
   queued: new Set<number>(),
@@ -20,7 +22,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useEffect: vi.fn(),
-  useState: () => [mocks.selected, vi.fn()],
+  useState: () => [mocks.selected, mocks.setSelected],
+  useRef: (current: unknown) => ({ current }),
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: mocks.invalidate }),
@@ -36,7 +39,7 @@ vi.mock("../../db/queries/chapter", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../db/queries/chapter")>(),
   listLibraryDownloadChapters: mocks.listChapters, listUnqueuedChapterDownloadIds: vi.fn(),
 }));
-vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, setNovelInLibrary: vi.fn() }));
+vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, listLibraryNovelIds: mocks.listIds, setNovelInLibrary: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownloadBatch: mocks.enqueue,
   isChapterDownloadQueued: (id: number) => mocks.queued.has(id),
@@ -54,6 +57,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.mutations.length = 0;
   mocks.selected = new Set([1]);
+  mocks.listIds.mockReset().mockResolvedValue([]);
   mocks.queued.clear();
   mocks.listChapters.mockReset().mockImplementation(async (id: number) => [chapter(id)]);
   mocks.getNovel.mockReset().mockImplementation(async (id: number) => ({ id, name: `Novel ${id}`, pluginId: "source", path: `/work/${id}`, isLocal: false }));
@@ -72,7 +76,7 @@ it("finishes preparation when jobs are queued and accepts another selection whil
 
   mocks.selected = new Set([2]);
   useLibrarySelection({}, "nameAsc");
-  await expect(mocks.mutations[5]!.mutationFn("all")).resolves.toBe(1);
+  await expect(mocks.mutations[6]!.mutationFn("all")).resolves.toBe(1);
   expect(mocks.enqueue).toHaveBeenCalledTimes(2);
   expect(mocks.enqueue.mock.calls[1]![0].jobs[0].novelId).toBe(2);
 
@@ -120,4 +124,32 @@ it("removes selected category assignments without removing novels from the libra
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["novel", "library"] });
   await change.mutationFn({ categoryId: 7, novelIds: [1], mode: "add" });
   expect(mocks.addCategory).toHaveBeenCalledWith([1], 7);
+});
+
+it("selects every matching work beyond the visible library page", async () => {
+  const filter = { search: "series", sourceId: "source", categoryId: 4, unreadOnly: true };
+  const ids = Array.from({ length: 250 }, (_, index) => index + 10);
+  mocks.listIds.mockResolvedValue(ids);
+  useLibrarySelection(filter, "nameAsc");
+  await expect(mocks.mutations[4]!.mutationFn("")).resolves.toBe(250);
+  expect(mocks.listIds).toHaveBeenCalledWith(filter);
+  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set(ids));
+});
+
+it("does not restore a selection cleared while the full list was loading", async () => {
+  let resolve!: (ids: number[]) => void;
+  mocks.listIds.mockReturnValue(new Promise<number[]>(done => { resolve = done; }));
+  const selection = useLibrarySelection({}, "nameAsc");
+  const pending = mocks.mutations[4]!.mutationFn("");
+  selection.clearSelection();
+  resolve([1, 2, 3]);
+  await pending;
+  expect(mocks.setSelected).toHaveBeenCalledTimes(1);
+  expect(mocks.setSelected).toHaveBeenCalledWith(new Set());
+});
+
+it("clears a stale selection when the filtered result is empty", async () => {
+  useLibrarySelection({ search: "missing" }, "nameAsc");
+  await mocks.mutations[4]!.mutationFn("");
+  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
 });

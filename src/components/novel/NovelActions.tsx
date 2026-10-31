@@ -39,6 +39,9 @@ interface ChapterRelativeReadMenuProps {
   afterCount: number;
   beforeCount: number;
   busy: boolean;
+  previousDownloadCount: number;
+  onDownloadPrevious: () => void;
+  showReadActions: boolean;
   onMarkFollowingUnread: () => void;
   onMarkPreviousRead: () => void;
 }
@@ -126,6 +129,9 @@ export function ChapterRelativeReadMenu({
   afterCount,
   beforeCount,
   busy,
+  previousDownloadCount,
+  onDownloadPrevious,
+  showReadActions,
   onMarkFollowingUnread,
   onMarkPreviousRead,
 }: ChapterRelativeReadMenuProps) {
@@ -143,7 +149,7 @@ export function ChapterRelativeReadMenu({
       <Popover.Target>
         <IconButton
           className="norea-novel-selection-icon"
-          disabled={busy || (beforeCount === 0 && afterCount === 0)}
+          disabled={busy || (previousDownloadCount === 0 && (!showReadActions || (beforeCount === 0 && afterCount === 0)))}
           label={t("novel.selection.moreActions")}
           onClick={() => setOpened((current) => !current)}
           size="sm"
@@ -154,6 +160,23 @@ export function ChapterRelativeReadMenu({
       </Popover.Target>
       <Popover.Dropdown className="norea-novel-batch-download-menu">
         <div className="norea-novel-batch-download-list">
+          <button
+            className="norea-novel-batch-download-option"
+            disabled={busy || previousDownloadCount === 0}
+            onClick={() => {
+              onDownloadPrevious();
+              setOpened(false);
+            }}
+            type="button"
+          >
+            <span className="norea-novel-batch-download-label">
+              {t("novel.selection.downloadPrevious")}
+            </span>
+            <span className="norea-novel-batch-download-description">
+              {t("novel.selection.downloadPreviousDescription", { count: previousDownloadCount })}
+            </span>
+          </button>
+          {showReadActions ? <>
           <button
             className="norea-novel-batch-download-option"
             disabled={busy || beforeCount === 0}
@@ -190,6 +213,7 @@ export function ChapterRelativeReadMenu({
               })}
             </span>
           </button>
+          </> : null}
         </div>
       </Popover.Dropdown>
     </Popover>

@@ -1,10 +1,15 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import type Database from "@tauri-apps/plugin-sql";
 vi.mock("./chapters", () => ({ fetchServerChapters: vi.fn(async () => []) }));
 vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: vi.fn(), readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));
 vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn() }));
+vi.mock("../../db/work-metadata", async original => ({
+  ...await original<typeof import("../../db/work-metadata")>(),
+  applyNovelMetadataToCache: vi.fn(), rememberStoredNovelMetadata: vi.fn(), scanStoredNovelChaptersToCache: vi.fn(),
+}));
 vi.mock("../../db/queries/novel", () => ({ findNovelBySource: vi.fn(async () => ({ id: 42 })) }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("./works", async original => ({ ...await original<typeof import("./works")>(), recordInstalledWorkMetadata: vi.fn() }));
@@ -15,6 +20,7 @@ import { listServerWorks, openServerNovel, refreshServerNovel, serverCoverSource
 import { rememberServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
+import { applyNovelMetadataToCache, rememberStoredNovelMetadata, scanStoredNovelChaptersToCache } from "../../db/work-metadata";
 import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters } from "../../db/queries/content-sync";
 import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
@@ -29,9 +35,18 @@ const installed = {
   metadata, directory: "contents/source/book", coverBytes: null,
   syncFile: { pluginId: "source", path: "/book", directory: "contents/source/book", fingerprint: "installed", revision: 1 },
 };
+const rawSelect = vi.fn();
+const rawExecute = vi.fn();
+const rawDb = { select: rawSelect, execute: rawExecute } as unknown as Database;
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
   vi.mocked(installStoredNovelMetadata).mockReset().mockResolvedValue(installed);
+  vi.mocked(findNovelBySource).mockReset().mockResolvedValue({ id: 42 } as Awaited<ReturnType<typeof findNovelBySource>>);
+  vi.mocked(applyNovelMetadataToCache).mockReset().mockResolvedValue(42);
+  vi.mocked(scanStoredNovelChaptersToCache).mockReset().mockResolvedValue(undefined);
+  vi.mocked(rememberStoredNovelMetadata).mockReset().mockResolvedValue(undefined);
+  rawSelect.mockReset().mockResolvedValue([]);
+  rawExecute.mockReset().mockResolvedValue({ rowsAffected: 1 });
 });
 
 it.each(["response", "install"])("discards a server work deleted during its delayed %s", async phase => {
@@ -99,17 +114,106 @@ it("opens an existing local work without overwriting edits or deleting locally k
   expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
 });
 
-it("protects metadata installed concurrently while opening a new server work", async () => {
+it("opens a concurrently indexed work without overwriting its metadata or acknowledging the stale server response", async () => {
+  const id = await contentWorkId(metadata.identity);
+  vi.mocked(findNovelBySource).mockResolvedValueOnce(null);
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
+  rawSelect.mockResolvedValue([{ id: 42, sourceNovelId: "book" }]);
+  const publish = vi.fn();
+  vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
+    const current = { directory: "contents/source/book", metadata };
+    if (await guard!(current, rawDb) === false) return null;
+    publish();
+    return installed;
+  });
+  await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).resolves.toBe(42);
+  expect(publish).not.toHaveBeenCalled();
+  expect(applyNovelMetadataToCache).not.toHaveBeenCalled();
+  expect(scanStoredNovelChaptersToCache).not.toHaveBeenCalled();
+  expect(recordInstalledWorkMetadata).not.toHaveBeenCalled();
+  expect(cacheServerChapters).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
+});
+
+it("reindexes a work omitted by device restore from its preserved original files and opens it immediately", async () => {
+  const id = await contentWorkId(metadata.identity);
+  const original = {
+    directory: "contents/source/book",
+    metadata: { ...metadata, novel: { ...metadata.novel, name: "Preserved local title", summary: "Original local details" }, chapters: { "1": "Existing chapter" } },
+  };
+  vi.mocked(findNovelBySource).mockResolvedValueOnce(null);
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
+  const publish = vi.fn();
+  vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
+    if (await guard!(original, rawDb) === false) return null;
+    publish();
+    return installed;
+  });
+  const work = { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 };
+  await expect(openServerNovel("http://server", work)).resolves.toBe(42);
+  expect(publish).not.toHaveBeenCalled();
+  expect(applyNovelMetadataToCache).toHaveBeenCalledWith(rawDb, original.metadata, original.directory);
+  expect(scanStoredNovelChaptersToCache).toHaveBeenCalledWith(rawDb, 42, original.directory);
+  expect(rememberStoredNovelMetadata).toHaveBeenCalledWith(rawDb, original.directory, original.metadata);
+  expect(rawExecute).toHaveBeenCalledWith("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", ["source", "/book"]);
+  expect(recordInstalledWorkMetadata).not.toHaveBeenCalled();
+  expect(cacheServerChapters).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
+  // The next open reuses the recovered DB row instead of repeating the failed install.
+  await expect(openServerNovel("http://server", work)).resolves.toBe(42);
+  expect(installStoredNovelMetadata).toHaveBeenCalledOnce();
+  expect(contentServerRequest).toHaveBeenCalledOnce();
+});
+
+it("rolls back preserved-file indexing when a work is deleted during chapter inspection", async () => {
+  const id = await contentWorkId(metadata.identity);
+  vi.mocked(findNovelBySource).mockResolvedValueOnce(null);
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
+  vi.mocked(scanStoredNovelChaptersToCache).mockImplementationOnce(async () => {
+    await recordServerWorkDeletionExclusion("http://server", metadata.identity);
+  });
+  const publish = vi.fn();
+  vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
+    // Real installStoredNovelMetadata runs this guard in runDatabaseTransaction;
+    // a thrown deletion error must escape so that transaction rolls back.
+    if (await guard!({ directory: "contents/source/book", metadata }, rawDb) === false) return null;
+    publish();
+    return installed;
+  });
+  await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).rejects.toMatchObject({ status: 410 });
+  expect(publish).not.toHaveBeenCalled();
+  expect(rememberStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).not.toHaveBeenCalled();
+  expect(recordInstalledWorkMetadata).not.toHaveBeenCalled();
+});
+
+it("does not report preserved-file recovery as successful when original chapter inspection fails", async () => {
+  const id = await contentWorkId(metadata.identity);
+  vi.mocked(findNovelBySource).mockResolvedValueOnce(null);
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
+  vi.mocked(scanStoredNovelChaptersToCache).mockRejectedValueOnce(new Error("Storage permission unavailable"));
+  vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
+    if (await guard!({ directory: "contents/source/book", metadata }, rawDb) === false) return null;
+    return installed;
+  });
+  await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).rejects.toThrow("Storage permission unavailable");
+  expect(rememberStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).not.toHaveBeenCalled();
+  expect(recordInstalledWorkMetadata).not.toHaveBeenCalled();
+});
+
+it("continues normal installation when neither the work index nor original files exist", async () => {
   const id = await contentWorkId(metadata.identity);
   vi.mocked(findNovelBySource).mockResolvedValueOnce(null);
   vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata, hasCover: false });
   vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (_metadata, _cover, guard) => {
-    const current = { directory: "contents/source/book", metadata };
-    if (await guard!(current) === false) return null;
+    if (await guard!(null, rawDb) === false) return null;
     return installed;
   });
-  await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).rejects.toThrow("installed while opening");
-  expect(rememberServerNovelSource).not.toHaveBeenCalled();
+  await expect(openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1 })).resolves.toBe(42);
+  expect(applyNovelMetadataToCache).not.toHaveBeenCalled();
+  expect(recordInstalledWorkMetadata).toHaveBeenCalledWith("http://server", installed, false);
+  expect(cacheServerChapters).toHaveBeenCalledWith(42, []);
 });
 
 it("reads server covers with a caller signal on WebViews without AbortSignal.any", async () => {

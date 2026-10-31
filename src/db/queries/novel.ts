@@ -494,6 +494,22 @@ export async function listLibraryNovels(
   return selectLibraryNovels(filter);
 }
 
+export async function listLibraryNovelIds(
+  filter: LibraryNovelRefreshFilter = {},
+): Promise<number[]> {
+  const db = await getDb();
+  const params: unknown[] = [];
+  const conditions = buildLibraryFilterConditions(filter, params);
+  const rows = await db.select<Array<{ id: number }>>(
+    `SELECT n.id FROM novel n
+     LEFT JOIN novel_stats s ON s.novel_id = n.id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY n.id`,
+    params,
+  );
+  return rows.map(row => row.id);
+}
+
 export async function listLibraryNovelIdentities(): Promise<
   LibraryNovelIdentity[]
 > {

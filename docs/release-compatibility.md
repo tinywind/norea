@@ -59,8 +59,8 @@ requirements must be decided explicitly before implementation.
 - Chapter completeness is derived from `manifest.json` and the actual
   `media.zip` inventory. Every declared asset must be present; cached completion
   and per-asset status flags do not override the files. Folder recovery and
-  backup restore retain incomplete chapter rows with media repair required and
-  the downloaded flag cleared. Inspection does not rewrite the original files.
+  portable file backup restore retain incomplete chapter rows with media repair
+  required and the downloaded flag cleared. Inspection does not rewrite the original files.
   Content-server uploads and folder scans persist this result in the catalog;
   incomplete copies are unavailable for download. Upload conflicts follow the
   app's selected policy, checked again when the server publishes the files.
@@ -108,11 +108,12 @@ requirements must be decided explicitly before implementation.
 - Backups preserve unknown chapter creation times as `null`, including chapters
   recovered from metadata or storage. Restoring does not invent those timestamps.
 - Content sync shares work metadata and chapter content. Library membership
-  remains local. Private reading history is separately opt-in with a shared
-  reading sync key: manual send, import, or bidirectional safe merge preserves
-  read flags, maximum progress, bookmarks, and the latest real reading timestamp.
-  Read-state resets and deletions are not propagated. The server adds private
-  state storage without changing its existing baseline schema checksum.
+  and reading state remain local during ordinary content sync. Settings -> Data
+  -> Device backup separately saves and restores a complete database and settings
+  snapshot, identified by device name. Restore replaces personal state rather
+  than merging it, so unread flags, removed bookmarks, and deleted history in the
+  selected snapshot also replace the current values. The app no longer exposes
+  private-key reading-history send, import, or merge controls.
 - Explicit app deletions store per-server work and chapter upload exclusions in
   the existing content sync cache. They survive restart and local rescans without
   changing the database schema. Whole-device work deletion removes its reader
@@ -127,18 +128,22 @@ requirements must be decided explicitly before implementation.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.
-- Backup restore preserves every existing storage file, including `novel.json`,
-  covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies
+- Portable local file backups retain manifest format 2 and exclude device
+  authentication keys. Their restore behavior below is separate from full device
+  snapshots stored on the content server.
+- Portable file backup restore preserves every existing storage file, including
+  `novel.json`, covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies
   to works omitted from the backup as well. Restore inspects current files
   before replacing database rows and never deletes or rewrites originals.
-- Existing `novel.json` documents supply restored work metadata and chapter
-  titles. Backup library membership, categories, progress, and bookmarks remain
+- During portable file backup restore, existing `novel.json` documents supply
+  restored work metadata and chapter titles. Backup library membership,
+  categories, progress, and bookmarks remain
   authoritative for personal state. Works found only in storage remain cached
   outside the restored library. A downloaded flag is restored only when a
   completed chapter file is discovered; backed-up byte counts are discarded.
   Current size cache entries are retained only for the same inspected directory
   and body type. Other sizes remain available for the normal storage backfill.
-- The native restore transaction replaces database rows and installs the
+- The native portable restore transaction replaces database rows and installs the
   inspected file cache together, then clears metadata publication triggers.
   Failure rolls back that transaction. Old download jobs are discarded because
   their database IDs no longer identify the restored rows. Content-server
@@ -150,6 +155,56 @@ requirements must be decided explicitly before implementation.
   requests an importer.
 - Source plugins use their independent API version 0.2. Their contract is
   documented in [docs/plugins/contract.md](./plugins/contract.md).
+
+## Full Device Backups on the Content Server
+
+Device backup version 1 stores one current snapshot per device name. The app's
+device name is the default slot, and all registered, unblocked devices may list
+and restore every saved device name. Device registration remains the
+authentication mechanism; anonymous catalog access and console sessions do not
+authorize device backup requests. There is no separate private reading sync key.
+
+The archive contains `manifest.json`, `norea.db`, and, when present, the native
+`profile.ovpn`. The database snapshot includes every SQLite table, including
+repository URLs, complete installed plugin JavaScript, categories, library
+membership, read progress, bookmarks, history, and work and chapter metadata.
+The manifest carries all localStorage settings and the storage root setting.
+This includes server connection settings and device tokens, VPN preferences,
+and interface settings. Unlike portable file backups, device snapshots include
+device credentials and replace the current device's saved settings.
+
+Downloaded bodies, covers, chapter images, and other original content files are
+excluded. Restore must not delete or overwrite those files. OS folder access
+grants and WebView cookies are not portable snapshot data. VPN usernames and
+passwords held only in memory are also excluded. A restored storage root can
+refer to an unavailable folder or lack OS access on another device; acquiring
+that permission remains a separate device operation.
+
+Restoration requires an exact match for the current database schema and ordered
+migration history. Validate SQLite integrity and foreign keys before replacing
+the live data. Do not migrate an incompatible snapshot, reset the live database,
+or continue after a schema, checksum, or integrity failure. Existing app schema
+upgrade rules remain unchanged.
+
+The restore operation requires explicit overwrite confirmation, validates the
+selected snapshot's SHA-256, replaces database contents in a SQL transaction,
+and rolls settings back if installation fails. On success, reload the app so
+in-memory state reflects the restored database and settings. Cancel or remove
+restored pending download and metadata publication jobs before normal startup
+can process them; these jobs must not rewrite original content using snapshot
+state. Restore does not merge history or reconstruct the database from content
+files.
+
+The server advertises `deviceBackupVersion: 1` through capabilities. Its list
+includes the device name, update time, byte size, and SHA-256. Uploads require
+`X-Backup-Sha256` and are limited to 512 MiB. Downloads pin the chosen SHA-256
+so a newer upload to the same device name cannot silently replace the selected
+snapshot. See [Content-server integration](./content-sync.md) for the endpoints.
+Physical download cache flags and byte counts are reset during a full device
+restore because original chapter files are not included. Existing local files
+remain untouched and are checked again when their chapters are opened or
+downloaded; reading progress and metadata stay restored.
+
 
 ## Plugin-owned storage IDs
 

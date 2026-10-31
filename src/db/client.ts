@@ -171,13 +171,16 @@ export function startWorkMetadataRecovery(rebuild = false): void {
 
 export async function runExclusiveDatabaseOperation<T>(
   run: (db: Database) => Promise<T>,
+  options: { publishMetadata?: boolean } = {},
 ): Promise<T> {
   const rawDb = await getRawDb();
   return queueDbOperation(async () => {
     try {
       const result = await run(rawDb);
-      await flushWorkMetadata(rawDb);
-      await notifyContentSyncChanges(rawDb);
+      if (options.publishMetadata !== false) {
+        await flushWorkMetadata(rawDb);
+        await notifyContentSyncChanges(rawDb);
+      }
       return result;
     } catch (error) {
       if (isTauriRuntime()) {

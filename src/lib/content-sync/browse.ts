@@ -1,5 +1,6 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { findNovelBySource } from "../../db/queries/novel";
+import { applyNovelMetadataToCache, rememberStoredNovelMetadata, scanStoredNovelChaptersToCache } from "../../db/work-metadata";
 import { useContentSyncStore } from "../../store/content-sync";
 import { bytesToBase64 } from "../base64";
 import { installStoredNovelMetadata, parseNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
@@ -70,15 +71,45 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
     await waitForServerWorkDeletion(server, source.workId);
     const isDeleted = () => excluded.has(serverWorkDeletionKey(metadata.identity));
     if (isDeleted()) throw new ContentServerError(410);
-    const installed = await installStoredNovelMetadata(metadata, cover?.bytes, async current => {
-      if (isDeleted() || (requireNewWork && current)) return false;
+    let retainedNovelId: number | null = null;
+    const installed = await installStoredNovelMetadata(metadata, cover?.bytes, async (current, db) => {
+      if (isDeleted()) return false;
+      if (!requireNewWork) return;
+      if (!db) throw new Error("Cannot inspect the local work index outside its database transaction.");
+      // This callback already owns the work storage lock and raw DB transaction.
+      // A serialized query here would wait on our own transaction indefinitely.
+      const [indexed] = await db.select<{ id: number; sourceNovelId: string | null }[]>(
+        "SELECT id,source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2",
+        [metadata.identity.pluginId, metadata.identity.novelPath],
+      );
+      if (isDeleted()) throw new ContentServerError(410);
+      if (indexed) {
+        if (indexed.sourceNovelId && indexed.sourceNovelId !== metadata.identity.novelId) {
+          throw new Error("Local work identity does not match the server metadata.");
+        }
+        retainedNovelId = indexed.id;
+        return false;
+      }
+      if (!current) return;
+      // Full-device restore can omit a work while deliberately preserving its
+      // original files. Opening it indexes those files, without publishing the
+      // server response over its existing metadata, cover, or chapter contents.
+      retainedNovelId = await applyNovelMetadataToCache(db, current.metadata, current.directory);
+      await scanStoredNovelChaptersToCache(db, retainedNovelId, current.directory);
+      if (isDeleted()) throw new ContentServerError(410);
+      await rememberStoredNovelMetadata(db, current.directory, current.metadata);
+      await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2",
+        [metadata.identity.pluginId, metadata.identity.novelPath]);
+      if (isDeleted()) throw new ContentServerError(410);
+      return false;
     });
     if (isDeleted()) throw new ContentServerError(410);
-    if (installed === null) throw new Error("This work was installed while opening it. Open it again to use its local metadata.");
-    await recordInstalledWorkMetadata(server, installed, entry.hasCover);
+    if (installed === null && retainedNovelId === null) throw new Error("The local work changed while opening it. Open the work again.");
+    if (installed !== null) await recordInstalledWorkMetadata(server, installed, entry.hasCover);
     const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
     if (!novel) throw new Error("Installed server work is missing from the local index.");
-    await cacheServerChapters(novel.id, chapters);
+    if (isDeleted()) throw new ContentServerError(410);
+    if (installed !== null) await cacheServerChapters(novel.id, chapters);
     await rememberServerNovelSource(novel.id, { serverUrl: server, workId: source.workId });
     window.dispatchEvent(new Event("norea-content-state-changed"));
     return novel.id;

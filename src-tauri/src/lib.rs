@@ -5,6 +5,7 @@ mod backup;
 mod chapter_media;
 mod content_sync;
 mod database;
+mod device_backup;
 mod desktop_file_open;
 mod device;
 mod download_cache;
@@ -161,6 +162,12 @@ pub fn run() {
             backup::backup_pack_temp_file,
             backup::backup_restore_snapshot,
             backup::backup_unpack,
+            device_backup::device_backup_create,
+            device_backup::device_backup_inspect,
+            device_backup::device_backup_restore,
+            device_backup::device_backup_cleanup,
+            device_backup::device_backup_upload,
+            device_backup::device_backup_download,
             chapter_media::chapter_content_mirror_clear,
             chapter_media::chapter_content_mirror_inspect,
             chapter_media::chapter_content_mirror_read_file,

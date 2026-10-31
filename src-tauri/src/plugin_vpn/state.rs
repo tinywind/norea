@@ -204,6 +204,59 @@ impl PluginVpnState {
         Ok(())
     }
 
+    pub(crate) fn export_backup_profile(&self) -> Result<Option<Vec<u8>>, String> {
+        let _operation = self
+            .shared
+            .operation
+            .try_lock()
+            .map_err(|_| "wait for the current plugin VPN operation before backing up".to_string())?;
+        let path = self.profile_path()?;
+        recover_profile_publication(&path)?;
+        match fs::metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("could not inspect the stored OpenVPN profile: {error}")),
+            Ok(_) => {}
+        }
+        let bytes = read_profile_source(&path)?;
+        validate_profile(&bytes)?;
+        Ok(Some(bytes))
+    }
+
+    pub(crate) async fn restore_backup_profile(
+        &self,
+        _app: &AppHandle,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        let profile = bytes
+            .as_deref()
+            .map(validate_profile)
+            .transpose()?
+            .map(PluginVpnProfile::from);
+        disconnect(self, Some(false)).await?;
+        let _operation = self.shared.operation.lock().await;
+        self.require_disabled("restore a backup profile")?;
+        let path = self.profile_path()?;
+        {
+            let mut runtime = self.shared.state.lock().expect("plugin VPN state lock");
+            runtime.generation = runtime.generation.wrapping_add(1);
+            runtime.connection_requested = false;
+            runtime.connecting_cancellation = None;
+            #[cfg(any(target_os = "android", target_os = "windows", test))]
+            self.set_disconnected_proxy(false);
+        }
+        tauri::async_runtime::spawn_blocking(move || match bytes {
+            Some(bytes) => store_profile(&path, &bytes),
+            None => remove_stored_profile(&path),
+        })
+        .await
+        .map_err(|error| format!("could not restore the OpenVPN profile: {error}"))??;
+        let mut runtime = self.shared.state.lock().expect("plugin VPN state lock");
+        runtime.profile = profile;
+        runtime.phase = PluginVpnPhase::Disabled;
+        runtime.error = None;
+        Ok(())
+    }
+
     pub(crate) fn proxy_port(&self) -> u16 {
         #[cfg(any(target_os = "android", target_os = "windows", test))]
         {
@@ -946,6 +999,27 @@ mod tests {
     use crate::plugin_vpn::proxy::{ConnectFuture, ProxyConnector, ProxyTarget};
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
+
+    #[test]
+    fn exports_original_profile_bytes_and_preserves_finder_classification() {
+        let directory = tempfile::tempdir().expect("temporary profile directory");
+        let path = directory.path().join(PROFILE_FILE);
+        let state = PluginVpnState::bind().expect("plugin VPN state");
+        state.shared.profile_path.set(path.clone()).expect("profile path");
+        assert_eq!(state.export_backup_profile().expect("empty backup"), None);
+        let profile = format!(
+            "client\ndev tun\nremote 203.0.113.10 443\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n"
+        ).into_bytes();
+        store_profile(&path, &profile).expect("store Finder profile");
+        let exported = state.export_backup_profile().expect("export profile").expect("profile bytes");
+        assert_eq!(exported, profile);
+        assert!(validate_profile(&exported).expect("validated profile").is_vpn_gate_finder);
+        let operation = state.shared.operation.try_lock().expect("operation lock");
+        assert!(state.export_backup_profile().is_err());
+        drop(operation);
+        fs::write(&path, b"client\nup run.sh\n").expect("invalid stored profile");
+        assert!(state.export_backup_profile().is_err());
+    }
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
     #[test]

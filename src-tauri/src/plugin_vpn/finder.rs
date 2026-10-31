@@ -28,7 +28,6 @@ const FINDER_QUERY_TIMEOUT: Duration = Duration::from_secs(35);
 const FINDER_QUERY_CANCELLED_ERROR: &str = "VPN Gate server query was cancelled";
 const FINDER_QUERY_TIMEOUT_ERROR: &str = "VPN Gate server query timed out";
 const MAX_PENDING_QUERY_CANCELLATIONS: usize = 64;
-const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SERVER_ROWS: usize = 512;
 const MAX_BASE64_PROFILE_BYTES: usize = MAX_PROFILE_BYTES.div_ceil(3) * 4;
@@ -239,11 +238,6 @@ impl VpnGateFinder {
         let cached = cache.as_ref().ok_or_else(|| {
             "refresh the VPN Gate server list before applying a profile".to_string()
         })?;
-        if !cache_is_fresh(cached.fetched_at) {
-            return Err(
-                "VPN Gate server list expired; refresh it before applying a profile".to_string(),
-            );
-        }
         cached
             .candidates
             .iter()
@@ -263,10 +257,7 @@ impl VpnGateFinder {
             .lock()
             .map_err(|_| "VPN Gate server cache is unavailable".to_string())?;
         Ok(cache.as_ref().and_then(|cached| {
-            (cache_is_fresh(cached.fetched_at)
-                && fetched_since.is_none_or(|requested_at| {
-                    cached.fetched_at >= requested_at
-                }))
+            fetched_since.is_none_or(|requested_at| cached.fetched_at >= requested_at)
             .then(|| {
                 cached
                     .candidates
@@ -373,10 +364,6 @@ fn validate_query_id(query_id: &str) -> Result<(), String> {
         return Err("VPN Gate query ID is invalid".to_string());
     }
     Ok(())
-}
-
-fn cache_is_fresh(fetched_at: Instant) -> bool {
-    Instant::now().saturating_duration_since(fetched_at) < CACHE_TTL
 }
 
 fn parse_usable_api_candidates(bytes: &[u8]) -> Result<Vec<VpnGateCandidate>, String> {
@@ -1045,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn serves_profile_bytes_only_from_a_fresh_cache() {
+    fn retains_cached_servers_and_profiles_until_an_explicit_refresh() {
         let finder = VpnGateFinder::new().expect("finder");
         let candidate = parse_candidate(&valid_row()).expect("candidate");
         let candidate_id = candidate.server.candidate_id.clone();
@@ -1068,8 +1055,10 @@ mod tests {
             .expect("cache")
             .as_mut()
             .unwrap()
-            .fetched_at = Instant::now() - CACHE_TTL;
-        assert!(finder.profile_bytes(&candidate_id).is_err());
+            .fetched_at = Instant::now() - Duration::from_secs(24 * 60 * 60);
+        assert_eq!(finder.profile_bytes(&candidate_id).expect("retained profile"), expected_profile);
+        assert_eq!(finder.cached_servers(None).expect("cached servers").unwrap().len(), 1);
+        assert!(finder.cached_servers(Some(Instant::now())).expect("explicit refresh").is_none());
     }
 
     fn encode_base64(bytes: &[u8]) -> String {

@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { notifications } from "@mantine/notifications";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
 import {
   listLibraryDownloadChapters,
@@ -8,6 +8,7 @@ import {
 } from "../../db/queries/chapter";
 import {
   getNovelById,
+  listLibraryNovelIds,
   type LibraryNovel,
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
@@ -43,11 +44,16 @@ export function useLibrarySelection(
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
+  const selectionRequestRef = useRef(0);
+  const selectionScope = JSON.stringify([libraryFilter, sortOrder, active]);
+  const selectionScopeRef = useRef(selectionScope);
+  selectionScopeRef.current = selectionScope;
   const batchDownloadAvailability = useLibraryDownloadAvailability(
     selectedIds,
     active,
   );
   useEffect(() => {
+    selectionRequestRef.current += 1;
     setSelectedIds(new Set());
   }, [
     debouncedSearch,
@@ -188,6 +194,7 @@ export function useLibrarySelection(
   });
 
   const toggleSelected = useCallback((id: number) => {
+    selectionRequestRef.current += 1;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -200,13 +207,34 @@ export function useLibrarySelection(
   }, []);
 
   const clearSelection = useCallback(() => {
+    selectionRequestRef.current += 1;
     setSelectedIds(new Set());
   }, []);
+
+  const selectAllMutation = useMutation({
+    mutationFn: async () => {
+      const request = ++selectionRequestRef.current;
+      const scope = selectionScopeRef.current;
+      const ids = await listLibraryNovelIds(libraryFilter);
+      if (request === selectionRequestRef.current && scope === selectionScopeRef.current) {
+        setSelectedIds(new Set(ids));
+      }
+      return ids.length;
+    },
+    onError: (error) => {
+      notifications.show({
+        color: "red",
+        title: t("library.selection.selectAll"),
+        message: describeError(error),
+      });
+    },
+  });
 
   return {
     selectedIds,
     toggleSelected,
     clearSelection,
+    selectAllMutation,
     assignCategoryMutation,
     batchDownloadMutation,
     batchDownloadAvailability,

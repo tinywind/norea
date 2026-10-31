@@ -47,7 +47,7 @@ vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(), listServerChapterAvailability: vi.fn() }));
 
 import { NovelDetailPage } from "./novel";
-import { buildBatchDownloadTargets } from "../components/novel/novel-detail-model";
+import { buildBatchDownloadTargets, buildPreviousChapterDownloadTargets } from "../components/novel/novel-detail-model";
 
 const chapter: ChapterListRow = {
   id: 1, novelId: 3, name: "Saved chapter", path: "/chapter", chapterNumber: "1", position: 1, page: "1",
@@ -55,6 +55,25 @@ const chapter: ChapterListRow = {
   contentBytes: 0, mediaBytes: 0, mediaRepairNeeded: false, releaseTime: null, readAt: null,
   createdAt: null, foundAt: 1, updatedAt: 1,
 };
+
+it("downloads chapters before the lowest selected position regardless of selection or display order", () => {
+  const chapters = Array.from({ length: 8 }, (_, index) => ({ ...chapter, id: 80 - index, position: index + 1 }));
+  const selected = new Set([73, 76]);
+  for (const ordered of [chapters, [...chapters].reverse()]) {
+    expect(buildPreviousChapterDownloadTargets(ordered, selected, new Map()).map(row => row.position)).toEqual([1, 2, 3, 4]);
+  }
+  expect(buildPreviousChapterDownloadTargets(chapters, new Set(), new Map())).toEqual([]);
+  expect(buildPreviousChapterDownloadTargets(chapters, new Set([80, 73]), new Map())).toEqual([]);
+});
+
+it("skips stored and active chapters before a multi-selection download anchor", () => {
+  const chapters = Array.from({ length: 7 }, (_, index) => ({ ...chapter, id: index + 1, position: index + 1 }));
+  chapters[0]!.isDownloaded = true;
+  chapters[1]!.contentBytes = 100;
+  chapters[1]!.mediaRepairNeeded = true;
+  const statuses = new Map([[3, { kind: "queued" as const }]]);
+  expect(buildPreviousChapterDownloadTargets(chapters, new Set([6, 7]), statuses).map(row => row.id)).toEqual([4, 5]);
+});
 
 it("excludes stored partial bodies from missing-chapter batch scopes", () => {
   const partial = { ...chapter, id: 2, position: 2, contentBytes: 100, mediaRepairNeeded: true };

@@ -439,7 +439,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const profileOperationActive =
     vpnOperation?.kind === "import" || vpnOperation?.kind === "remove";
   const profileControlsDisabled =
-    isBusy || vpnOperation !== null || !statusAvailable || !disconnected;
+    isBusy || vpnOperation !== null || !statusAvailable;
   const finderDisabled = isBusy || profileOperationActive || !statusAvailable;
   const finderDisabledReason = !statusAvailable
     ? vpnQuery.isError

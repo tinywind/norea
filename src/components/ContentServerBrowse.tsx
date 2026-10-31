@@ -8,6 +8,7 @@ import { contentServerRequest } from "../lib/content-sync/client";
 import { registerContentDevice } from "../lib/content-sync/device";
 import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
 import { useContentSyncStore } from "../store/content-sync";
+import { EMPTY_CONTENT_SERVER_BROWSE_FILTERS, useContentServerBrowseStore } from "../store/content-server-browse";
 import { LibraryAddedGlyph } from "./ActionGlyphs";
 import { StateView } from "./AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "./ConsolePrimitives";
@@ -23,11 +24,10 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
   const server = useContentSyncStore(state => state.serverUrl);
   const deviceName = useContentSyncStore(state => state.deviceName);
   const isInLibrary = useLibraryNovelMembership();
-  const [draft, setDraft] = useState("");
-  const [query, setQuery] = useState("");
-  const [source, setSource] = useState("");
+  const { draft, query, source } = useContentServerBrowseStore(state => state.filtersByServer[server] ?? EMPTY_CONTENT_SERVER_BROWSE_FILTERS);
+  const setFilters = useContentServerBrowseStore(state => state.setFilters);
   const [deletingWorkId, setDeletingWorkId] = useState<string | null>(null);
-  useEffect(() => { setSource(""); setQuery(""); setDraft(""); setDeletingWorkId(null); }, [server]);
+  useEffect(() => { setDeletingWorkId(null); }, [server]);
   const device = useQuery({
     queryKey: ["content-server", server, "device", deviceName],
     queryFn: () => registerContentDevice(server, deviceName),
@@ -67,10 +67,10 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
       <aside className="norea-source-tools">
         <ConsolePanel title={t("contentSync.title")}>
           <Stack gap="sm" p="sm">
-            <SearchBar value={draft} onChange={setDraft} onSubmit={() => setQuery(draft.trim())} placeholder={t("contentSync.search")} />
+            <SearchBar value={draft} onChange={value => setFilters(server, { draft: value })} onSubmit={() => setFilters(server, { query: draft.trim() })} placeholder={t("contentSync.search")} />
             <Select label={t("contentSync.sourceFilter")} value={source} allowDeselect={false}
               data={[{ value: "", label: t("contentSync.allSources") }, ...(sources.data?.items ?? []).map(item => ({ value: item.id, label: `${item.id} (${item.workCount})` }))]}
-              onChange={value => setSource(value ?? "")} />
+              onChange={value => setFilters(server, { source: value ?? "" })} />
             <Text size="sm" c="dimmed">{t("contentSync.browseHint")}</Text>
             <TextButton onClick={() => { void queryClient.invalidateQueries({ queryKey: ["content-server", server] }); }}>{t("common.refresh")}</TextButton>
           </Stack>

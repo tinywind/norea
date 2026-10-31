@@ -159,6 +159,20 @@ export function buildBatchDownloadTargets(
   };
 }
 
+export function buildPreviousChapterDownloadTargets(
+  chapters: readonly ChapterListRow[],
+  selectedChapterIds: ReadonlySet<number>,
+  downloadStatuses: ReadonlyMap<number, ChapterDownloadStatus>,
+): ChapterListRow[] {
+  const anchor = findFirstChapter(chapters.filter(chapter => selectedChapterIds.has(chapter.id)));
+  if (!anchor) return [];
+  return buildBatchDownloadTargets(
+    chapters.filter(chapter => chapter.position < anchor.position),
+    undefined,
+    downloadStatuses,
+  ).all;
+}
+
 export function getChapterReadingProgress(chapter: ChapterListRow): number {
   if (chapter.progress >= FINISHED_PROGRESS) return 100;
   return Math.max(0, Math.min(100, Math.round(chapter.progress)));

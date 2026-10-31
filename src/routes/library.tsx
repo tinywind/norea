@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CheckGlyph,
   DownloadedGlyph,
   PlusGlyph,
   RefreshGlyph,
@@ -156,6 +157,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     selectedIds,
     toggleSelected,
     clearSelection,
+    selectAllMutation,
     assignCategoryMutation,
     batchDownloadMutation,
     batchDownloadAvailability,
@@ -245,11 +247,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const libraryError = novels.error;
   const isInitialLibraryLoading = novels.isLoading;
   const selectedNovelIds = Array.from(selectedIds);
-  const selectedDownloadedChapterCount = rows.reduce(
-    (total, novel) =>
-      selectedIds.has(novel.id) ? total + novel.chaptersDownloaded : total,
-    0,
-  );
+  const selectedDownloadedChapterCount = selectedIds.size === summary.totalNovels
+    ? summary.downloadedChapters
+    : rows.reduce(
+        (total, novel) => selectedIds.has(novel.id) ? total + novel.chaptersDownloaded : total,
+        0,
+      );
   const manualCategories = categories.data ?? [];
   const sourceRows = sourceFilters.data ?? [];
   const sourceTotalCount = sourceRows.reduce(
@@ -489,7 +492,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               />
             ) : null}
 
-            {selectedIds.size > 0 ? (
+            {rows.length > 0 || selectedIds.size > 0 ? (
               <div className="norea-library-selection-strip">
                 <span>
                   {t("library.selectedCount", { count: selectedIds.size })}
@@ -504,6 +507,17 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     }
                     t={t}
                   />
+                  <IconButton
+                    className="norea-library-selection-icon"
+                    disabled={isInitialLibraryLoading || Boolean(libraryError) || summary.totalNovels === 0 || selectAllMutation.isPending}
+                    label={t("library.selection.selectAll")}
+                    onClick={() => selectAllMutation.mutate()}
+                    size="sm"
+                    title={t("library.selection.selectAll")}
+                  >
+                    {selectAllMutation.isPending ? <Loader size={14} /> : <CheckGlyph />}
+                  </IconButton>
+                  {selectedIds.size > 0 ? <>
                   <SelectionCategoryPicker
                     assigning={assignCategoryMutation.isPending}
                     categories={assignableCategories}
@@ -570,6 +584,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   <UnstyledButton onClick={clearSelection}>
                     {t("common.done")}
                   </UnstyledButton>
+                  </> : null}
                 </div>
               </div>
             ) : null}

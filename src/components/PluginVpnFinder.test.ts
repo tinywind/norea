@@ -6,7 +6,6 @@ import {
   pluginVpnFinderErrorMessage,
   pluginVpnFinderServerAction,
   pluginVpnFinderServerVerdict,
-  pluginVpnFinderServersForDisplay,
 } from "./PluginVpnFinder";
 
 const SERVERS: PluginVpnFinderServer[] = [
@@ -136,9 +135,18 @@ describe("PluginVpnFinder", () => {
     ).toBe("connect");
   });
 
-  it("clears the displayed server list while a catalog query is active", () => {
-    expect(pluginVpnFinderServersForDisplay(SERVERS, true)).toEqual([]);
-    expect(pluginVpnFinderServersForDisplay(SERVERS, false)).toBe(SERVERS);
+  it("hides failed verdicts by default and lets the filter include them", () => {
+    const verdicts = new Map([
+      [SERVERS[0]!.ip, "fails" as const],
+      [SERVERS[1]!.ip, "works" as const],
+    ]);
+    const filters = { countryCode: "", protocol: "" as const, search: "", sort: "score" as const };
+    expect(filterAndSortPluginVpnServers(SERVERS, filters, verdicts).map(server => server.candidateId))
+      .toEqual(["kr-low-ping", "jp-no-ping"]);
+    expect(filterAndSortPluginVpnServers(SERVERS, { ...filters, hideFailed: false }, verdicts))
+      .toEqual(SERVERS);
+    expect(filterAndSortPluginVpnServers(SERVERS, { ...filters, search: SERVERS[0]!.ip }, verdicts))
+      .toEqual([]);
   });
 
   it("shares one recorded verdict across candidates with the same IP", () => {

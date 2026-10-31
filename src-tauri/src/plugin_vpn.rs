@@ -326,6 +326,10 @@ fn validate_profile(bytes: &[u8]) -> Result<ValidatedProfile, String> {
     })
 }
 
+pub(crate) fn validate_backup_profile(bytes: &[u8]) -> Result<(), String> {
+    validate_profile(bytes).map(|_| ())
+}
+
 fn inline_opening_tag(line: &str) -> Option<&str> {
     let tag = line.strip_prefix('<')?.strip_suffix('>')?;
     (!tag.starts_with('/') && inline_tag_name(tag)).then_some(tag)
@@ -457,6 +461,15 @@ private-key
         assert_eq!(validated.remote_host, "vpn.example.test");
         assert!(!validated.is_vpn_gate_finder);
         assert!(!validated.requires_username_password);
+    }
+
+    #[test]
+    fn validates_backup_profiles_without_removing_the_finder_marker() {
+        let marked = format!("{INLINE_PROFILE}\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n");
+        assert!(validate_backup_profile(marked.as_bytes()).is_ok());
+        assert!(validate_backup_profile(INLINE_PROFILE.as_bytes()).is_ok());
+        assert!(validate_backup_profile(format!("{marked}\nup run.sh\n").as_bytes()).is_err());
+        assert!(validate_backup_profile(format!("{marked}\nca outside.pem\n").as_bytes()).is_err());
     }
 
     #[test]

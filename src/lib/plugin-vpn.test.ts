@@ -318,6 +318,44 @@ describe("plugin VPN", () => {
     ]);
   });
 
+  it("stops a settled active connection before starting a new manual connection", async () => {
+    invokeMock.mockResolvedValueOnce(CONNECTED_STATUS);
+    await connectPluginVpn(SESSION_CREDENTIALS);
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(CONNECTED_STATUS);
+    const replacement = { ...SESSION_CREDENTIALS, username: "other-reader" };
+
+    await expect(connectPluginVpn(replacement)).resolves.toEqual(CONNECTED_STATUS);
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
+      ["plugin_vpn_connect", { credentials: replacement }],
+    ]);
+  });
+
+  it("honors Off while an existing connection is stopping for its replacement", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    let finishDisconnect!: (status: PluginVpnStatus) => void;
+    invokeMock.mockImplementationOnce(() => new Promise((resolve) => { finishDisconnect = resolve; }));
+    const connection = connectPluginVpn(SESSION_CREDENTIALS);
+    await disconnectPluginVpn();
+    finishDisconnect(STATUS);
+
+    await expect(connection).resolves.toBeNull();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "plugin_vpn_disconnect", "plugin_vpn_disconnect",
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(false);
+  });
+
+  it("stops native VPN routing before importing another profile even without saved On intent", async () => {
+    openMock.mockResolvedValue("/profiles/replacement.ovpn");
+    await expect(importPluginVpnProfile()).resolves.toEqual(STATUS);
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: false }],
+      ["plugin_vpn_import_profile", { path: "/profiles/replacement.ovpn" }],
+    ]);
+  });
+
   it("cancels recovery when replacing or removing a profile", async () => {
     usePluginVpnStore.getState().setEnabled(true);
     let resolveStatus!: (status: PluginVpnStatus) => void;
@@ -685,6 +723,14 @@ describe("plugin VPN", () => {
       ["plugin_vpn_disconnect", { preserveBlock: true }],
     ]);
     expect(usePluginVpnStore.getState().enabled).toBe(true);
+    invokeMock.mockClear();
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalled();
+    invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(STATUS)
+      .mockResolvedValueOnce(CONNECTED_STATUS);
+    await expect(switchPluginVpnFinderServer("candidate-2", {
+      isCurrent: () => true, onConnecting: vi.fn(),
+    })).resolves.toEqual(CONNECTED_STATUS);
   });
 
   it("rejects a native connect result that is not connected", async () => {

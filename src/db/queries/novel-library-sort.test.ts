@@ -10,6 +10,7 @@ vi.mock("../client", () => ({
 import { getDb } from "../client";
 import {
   listLibraryNovelPage,
+  listLibraryNovelIds,
   getLibraryNovelSummary,
   listLibraryNovelRefreshTargets,
   listLibraryNovels,
@@ -66,6 +67,16 @@ beforeEach(() => {
 });
 
 afterEach(() => sqlite.close());
+
+it("selects all matching library IDs with the same filters as library pages", async () => {
+  expect(await listLibraryNovelIds({ search: "alpha", unreadOnly: true, sourceId: "source" })).toEqual([4]);
+  expect(await listLibraryNovelIds({ completedOnly: true })).toEqual([1, 3]);
+  expect(await listLibraryNovelIds({ search: "Outside" })).toEqual([]);
+  expect(await listLibraryNovelIds({ sourceId: "another-source" })).toEqual([]);
+  for (let id = 8; id <= 120; id++) addNovel(id, `Paged ${id}`, 0, 0, 0);
+  expect(await listLibraryNovelIds({ search: "Paged" })).toHaveLength(113);
+  expect((await listLibraryNovelPage({ search: "Paged", limit: 1 })).novels).toHaveLength(1);
+});
 
 it.each([
   { sortOrder: "undownloadedAsc" as const, expected: [5, 6, 3, 4, 2, 1] },

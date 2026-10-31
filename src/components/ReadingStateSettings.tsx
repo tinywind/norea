@@ -1,119 +1,107 @@
-import { useEffect, useRef, useState } from "react";
-import { Alert, PasswordInput, Text } from "@mantine/core";
-import { useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { Alert, Modal, Select, Text } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
-import { copyTextToClipboard } from "../lib/clipboard";
 import { ContentServerError } from "../lib/content-sync/client";
 import {
-  createReadingSyncKey, readReadingSyncKey, ReadingSyncError, saveReadingSyncKey, syncReadingState,
-  validReadingSyncKey, type ReadingSyncMode, type ReadingSyncProgress, type ReadingSyncResult,
-} from "../lib/content-sync/reading-state";
+  defaultBackupDeviceName, DeviceBackupError, listDeviceBackups, restoreDeviceBackup, uploadDeviceBackup,
+  type DeviceBackupPhase,
+} from "../lib/content-sync/device-backup";
+import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 
 export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const [savedKey, setSavedKey] = useState(() => readReadingSyncKey(serverUrl));
-  const [keyDraft, setKeyDraft] = useState(savedKey);
-  const [mode, setMode] = useState<ReadingSyncMode | null>(null);
-  const [progress, setProgress] = useState<ReadingSyncProgress | null>(null);
-  const [result, setResult] = useState<ReadingSyncResult | null>(null);
+  const deviceName = useContentSyncStore(state => state.deviceName);
+  const ownName = useQuery({
+    queryKey: ["device-backup", "name", deviceName],
+    queryFn: defaultBackupDeviceName, staleTime: Infinity,
+  });
+  const backups = useQuery({
+    queryKey: ["device-backup", "list", serverUrl],
+    queryFn: ({ signal }) => listDeviceBackups(serverUrl, signal),
+    enabled: Boolean(serverUrl), staleTime: 60_000, retry: false,
+  });
+  const [selected, setSelected] = useState<string | null>(null);
+  const [phase, setPhase] = useState<DeviceBackupPhase | null>(null);
+  const [mode, setMode] = useState<"upload" | "restore" | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const abort = useRef<AbortController | null>(null);
+  const action = useRef(false);
   const busy = mode !== null;
-  const keyChanged = keyDraft.trim().toLowerCase() !== savedKey;
-  const canSync = Boolean(serverUrl) && validReadingSyncKey(savedKey) && !keyChanged && !busy;
+  const entry = backups.data?.find(item => item.deviceName === selected);
 
-  useEffect(() => () => { abort.current?.abort(); }, []);
-
-  function showError(cause: unknown) {
-    setError(cause instanceof ReadingSyncError ? t(`readingSync.${cause.code}`)
-      : cause instanceof ContentServerError && cause.status === 403 ? t("contentSync.blocked") : describeError(cause));
+  function message(cause: unknown): string {
+    return cause instanceof DeviceBackupError ? t(`deviceBackup.${cause.code}`)
+      : cause instanceof ContentServerError && cause.status === 403 ? t("contentSync.blocked") : describeError(cause);
   }
-
-  function saveKey(value: string) {
-    setError(null); setResult(null); setProgress(null); setNotice(null);
+  async function run(nextMode: "upload" | "restore") {
+    if (action.current || (nextMode === "restore" && !entry)) return;
+    action.current = true;
+    setMode(nextMode); setError(null); setNotice(null); setConfirmRestore(false);
     try {
-      const key = saveReadingSyncKey(serverUrl, value);
-      setSavedKey(key); setKeyDraft(key); setNotice(t("readingSync.keySaved"));
-    } catch (cause) { showError(cause); }
-  }
-
-  async function start(nextMode: ReadingSyncMode) {
-    if (abort.current) return;
-    const controller = new AbortController();
-    abort.current = controller;
-    setMode(nextMode); setError(null); setNotice(null); setResult(null); setProgress(null);
-    try {
-      setResult(await syncReadingState(serverUrl, savedKey, nextMode, setProgress, controller.signal));
-    } catch (cause) {
-      if (controller.signal.aborted) setError(t("readingSync.cancelled"));
-      else showError(cause);
-    } finally {
-      // Even a later network failure can follow committed batches; refresh their real state.
-      if (nextMode !== "push") {
-        await Promise.allSettled([
-          queryClient.invalidateQueries({ queryKey: ["novel"] }),
-          queryClient.invalidateQueries({ queryKey: ["chapter"] }),
-          queryClient.invalidateQueries({ queryKey: ["category"] }),
-        ]);
+      if (nextMode === "upload") {
+        const saved = await uploadDeviceBackup(serverUrl, setPhase);
+        setNotice(t("deviceBackup.saved", { name: saved.deviceName }));
+        await backups.refetch();
+      } else {
+        await restoreDeviceBackup(serverUrl, entry!, setPhase);
       }
-      abort.current = null; setMode(null);
+    } catch (cause) {
+      setError(message(cause));
+    } finally {
+      action.current = false; setMode(null); setPhase(null);
     }
   }
 
   return (
-    <SettingsSection title={t("readingSync.title")} description={t("readingSync.description")}>
-      <SettingsFieldRow label={t("readingSync.key")} description={t("readingSync.keyDescription")} layout="stacked">
-        <PasswordInput aria-label={t("readingSync.key")} value={keyDraft} autoComplete="off"
-          disabled={busy || !serverUrl} placeholder={t("readingSync.keyPlaceholder")}
-          onChange={event => { setKeyDraft(event.currentTarget.value); setNotice(null); }} />
+    <SettingsSection title={t("deviceBackup.title")} description={t("deviceBackup.description")}>
+      <SettingsFieldRow label={t("deviceBackup.thisDevice")} description={t("deviceBackup.thisDeviceDescription")}>
         <SettingsInlineControls>
-          {!savedKey ? <TextButton disabled={busy || !serverUrl} onClick={() => saveKey(createReadingSyncKey())}>
-            {t("readingSync.createKey")}
-          </TextButton> : null}
-          <TextButton disabled={busy || !serverUrl || !keyChanged} onClick={() => saveKey(keyDraft)}>
-            {t("readingSync.saveKey")}
-          </TextButton>
-          <TextButton disabled={busy || !savedKey || keyChanged} onClick={() => {
-            setError(null);
-            setNotice(null);
-            void copyTextToClipboard(savedKey)
-              .then(() => setNotice(t("readingSync.keyCopied")))
-              .catch(() => setError(t("readingSync.copyFailed")));
-          }}>{t("readingSync.copyKey")}</TextButton>
+          <Text>{ownName.data || t("common.loading")}</Text>
+          <TextButton tone="accent" loading={mode === "upload"} disabled={busy || !serverUrl || !ownName.data}
+            onClick={() => { void run("upload"); }}>{t("deviceBackup.upload")}</TextButton>
         </SettingsInlineControls>
-        {notice ? <Text role="status" size="sm">{notice}</Text> : null}
       </SettingsFieldRow>
-      <SettingsFieldRow label={t("readingSync.actions")} description={t("readingSync.mergePolicy")} layout="stacked">
+      <SettingsFieldRow label={t("deviceBackup.savedDevices")} description={t("deviceBackup.restoreDescription")}>
+        <div className="norea-settings-connection">
+          <Select aria-label={t("deviceBackup.savedDevices")} placeholder={t("deviceBackup.chooseDevice")}
+            value={selected} onChange={setSelected} searchable clearable disabled={busy || !serverUrl}
+            data={(backups.data ?? []).map(item => ({ value: item.deviceName, label: item.deviceName }))}
+            nothingFoundMessage={t("deviceBackup.empty")} />
+          <TextButton loading={backups.isFetching} disabled={busy || !serverUrl} onClick={() => { void backups.refetch(); }}>
+            {t("common.refresh")}
+          </TextButton>
+        </div>
+      </SettingsFieldRow>
+      <SettingsFieldRow label={t("deviceBackup.restore")}>
         <SettingsInlineControls>
-          <TextButton tone="accent" disabled={!canSync} loading={mode === "pull"} onClick={() => { void start("pull"); }}>
-            {t("readingSync.pull")}
-          </TextButton>
-          <TextButton disabled={!canSync} loading={mode === "push"} onClick={() => { void start("push"); }}>
-            {t("readingSync.push")}
-          </TextButton>
-          <TextButton disabled={!canSync} loading={mode === "merge"} onClick={() => { void start("merge"); }}>
-            {t("readingSync.merge")}
-          </TextButton>
-          {busy ? <TextButton onClick={() => abort.current?.abort()}>{t("common.cancel")}</TextButton> : null}
+          <TextButton tone="danger" loading={mode === "restore"} disabled={busy || !serverUrl || !entry}
+            onClick={() => setConfirmRestore(true)}>{t("deviceBackup.restore")}</TextButton>
+          {entry ? <Text size="sm">{t("deviceBackup.details", {
+            date: new Date(entry.updatedAt).toLocaleString(), size: (entry.size / 1024 / 1024).toFixed(2),
+          })}</Text> : null}
         </SettingsInlineControls>
-        {!serverUrl ? <Text size="sm">{t("readingSync.serverRequired")}</Text> : null}
-        {keyChanged ? <Text size="sm">{t("readingSync.saveFirst")}</Text> : null}
-        {busy && progress ? <Text role="status">{t(progress.phase === "upload" ? "readingSync.uploading" : "readingSync.downloading", { count: progress.phase === "upload" ? progress.uploaded : progress.downloaded })}</Text> : null}
-        {result ? <Alert color="green" role="status">
-          {t("readingSync.result", { uploaded: result.uploaded, serverUpdated: result.serverUpdated, downloaded: result.downloaded, localUpdated: result.localUpdated })}
-          {result.skipped > 0 ? <Text size="sm">{t("readingSync.skipped", { count: result.skipped })}</Text> : null}
-          {result.uploaded === 0 && result.downloaded === 0 ? <Text size="sm">{t("readingSync.empty")}</Text> : null}
-        </Alert> : null}
-        {error ? <Alert color="red" role="alert">
-          {error}
-          {progress && (progress.uploaded > 0 || progress.downloaded > 0) ? <Text size="sm">{t("readingSync.partial", { uploaded: progress.uploaded, localUpdated: progress.localUpdated })}</Text> : null}
-        </Alert> : null}
       </SettingsFieldRow>
+      {!serverUrl ? <Text className="norea-settings-feedback">{t("deviceBackup.serverRequired")}</Text> : null}
+      {serverUrl && backups.data?.length === 0 ? <Text className="norea-settings-feedback">{t("deviceBackup.empty")}</Text> : null}
+      {phase ? <Text className="norea-settings-feedback" role="status">{t(`deviceBackup.${phase}`)}</Text> : null}
+      {notice ? <Alert className="norea-settings-feedback" color="green" role="status">{notice}</Alert> : null}
+      {error || backups.error || ownName.error ? <Alert className="norea-settings-error" color="red" role="alert">
+        {error || message(backups.error || ownName.error)}
+      </Alert> : null}
+      <Modal opened={confirmRestore} onClose={() => setConfirmRestore(false)} title={t("deviceBackup.restore")} centered>
+        <Text>{t("deviceBackup.restoreWarning", { name: entry?.deviceName ?? "" })}</Text>
+        <SettingsInlineControls>
+          <TextButton onClick={() => setConfirmRestore(false)}>{t("common.cancel")}</TextButton>
+          <TextButton tone="danger" disabled={!entry || busy} onClick={() => { void run("restore"); }}>
+            {t("deviceBackup.confirmRestore")}
+          </TextButton>
+        </SettingsInlineControls>
+      </Modal>
     </SettingsSection>
   );
 }
