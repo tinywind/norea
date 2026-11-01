@@ -22,6 +22,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { PageFrame } from "../components/AppFrame";
 import { BrowseSettingsPanel } from "../components/BrowseSettingsPanel";
+import { ChapterCleanupPanel } from "../components/ChapterCleanupPanel";
 import { ContentServerSettings } from "../components/ContentServerSettings";
 import { ConsoleChip } from "../components/ConsolePrimitives";
 import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
@@ -1806,6 +1807,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [cleanupOpened, setCleanupOpened] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsCategoryId>(() =>
     normalizeSection(section),
   );
@@ -1975,25 +1977,6 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     }
   }
 
-  async function clearDownloadedContent(): Promise<void> {
-    const kind = "maintenance.clearDownloadedContent";
-    const title = t("settings.data.downloadedContent.button");
-    setBusyAction(kind);
-    try {
-      await confirmContentDeletion({ kind: "downloads", scope: "all", title });
-    } catch (error) {
-      showSettingsToast(
-        "red",
-        title,
-        t("settings.data.maintenanceFailed", {
-          error: describeError(error),
-        }),
-      );
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function handleClearWebViewCache(): Promise<void> {
     const kind = "maintenance.clearWebViewCache";
     const title = t("settings.data.webViewCache.button");
@@ -2077,7 +2060,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
             void clearLibrary();
           }}
           onClearDownloadedContent={() => {
-            void clearDownloadedContent();
+            setCleanupOpened(true);
           }}
           onClearWebViewCache={() => {
             void handleClearWebViewCache();
@@ -2137,6 +2120,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
           onSelect={selectCategory}
         />
       </div>
+      <ChapterCleanupPanel opened={cleanupOpened} onClose={() => setCleanupOpened(false)} />
     </PageFrame>
   );
 }
