@@ -44,6 +44,7 @@ describe("download completion notifications", () => {
       expect(onError).toBeTypeOf("function");
       onError!(new Error("Download queue database is busy"));
       expect(notificationsStore.getState().notifications[0]).toMatchObject({
+        autoClose: 5_000,
         title: "tasks.restoreQueueFailed",
         message: "Download queue database is busy",
       });
@@ -211,6 +212,7 @@ describe("source access notifications", () => {
     const sync = mountNotifications([block]);
     const notification = notificationsStore.getState().notifications[0]!;
 
+    expect(notification.autoClose).toBe(5_000);
     expect(notification.withCloseButton).toBe(true);
     expect(notification.closeButtonProps?.["aria-label"]).toBe(
       "sourceAccess.dismissNotification",

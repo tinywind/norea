@@ -145,7 +145,7 @@ export function TaskNotifications() {
       startChapterDownloadQueueExecutor((error) => {
         notifications.show({
           id: "chapter-queue-restore-error",
-          autoClose: false,
+          autoClose: 5_000,
           color: "red",
           title: t("tasks.restoreQueueFailed"),
           message: describeError(error),
@@ -209,7 +209,7 @@ export function TaskNotifications() {
         const sourceName = sourceNames.join(", ") || firstBlock.scopeKey;
         const notification = {
           id: SOURCE_ACCESS_NOTIFICATION_ID,
-          autoClose: false as const,
+          autoClose: 5_000,
           color: "orange",
           message: t("sourceAccess.notificationMessage", {
             source: sourceName,

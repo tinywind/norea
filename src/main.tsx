@@ -283,7 +283,7 @@ function AppProviders() {
 
   return (
     <MantineProvider theme={theme} forceColorScheme={colorScheme}>
-      <Notifications position="top-right" />
+      <Notifications position="top-right" autoClose={5_000} />
       <QueryClientProvider client={queryClient}>
         <PluginVpnProxyGate>
           <ChapterMediaStorageGate>

@@ -178,7 +178,7 @@ function showSettingsLoadingToast(
     title,
     message,
     loading: true,
-    autoClose: false,
+    autoClose: SETTINGS_TOAST_AUTO_CLOSE_MS,
     withCloseButton: false,
   });
 }

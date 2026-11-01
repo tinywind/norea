@@ -6,6 +6,6 @@ export function showErrorToast(title: string, error: unknown): void {
     color: "red",
     title,
     message: describeError(error),
-    autoClose: 7_000,
+    autoClose: 5_000,
   });
 }
