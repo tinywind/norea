@@ -5,6 +5,7 @@ import type { ServerNovelSource } from "./novel-source";
 export type ServerChapterSummary = PackageManifest["chapter"] & {
   id: string;
   chapterPath: string;
+  complete: boolean;
 };
 export interface ServerChapterPage { items: ServerChapterSummary[]; total: number; hasMore: boolean }
 

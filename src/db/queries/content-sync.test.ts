@@ -44,7 +44,7 @@ const manifest = {
   layout: "chapter-files" as const,
   identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" },
   novel: { name: "A work", isLocal: false },
-  chapter: { name: "Opening", position: 1, contentType: "html" as const, page: "1" },
+  chapter: { name: "Opening", position: 1, contentType: "html" as const, complete: true, page: "1" },
   bodyPath: "content.html", files: [],
 };
 
@@ -64,7 +64,7 @@ it("keeps persisted and leased downloads out of upload readiness even before sch
 it("caches a server chapter list without duplicating a source chapter or changing reading state", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/cache-work','Book')");
   sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,is_downloaded) VALUES(1,'/chapter/1','Source title','1',1,75,1)");
-  const one = { id: "one", chapterPath: "norea-folder:1", name: "Folder-title", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const };
+  const one = { id: "one", chapterPath: "norea-folder:1", name: "Folder-title", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const, complete: true };
   expect(await cacheServerChapters(1, [one, { ...one, id: "two", chapterPath: "norea-folder:2", name: "Two", chapterNumber: "2", position: 2 }])).toBe(true);
   expect(sqlite.prepare("SELECT path,name,progress,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
     { path: "/chapter/1", name: "Source title", progress: 75, is_downloaded: 1 },
@@ -78,7 +78,7 @@ it("caches a server chapter list without duplicating a source chapter or changin
 it("retains different local files with the same chapter number", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name,is_local) VALUES(1,'local','local','local',1)");
   sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position,is_downloaded) VALUES(1,'local:file-a','A','1',1,1)");
-  const incoming = { id: "b", chapterPath: "local:file-b", name: "B", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const };
+  const incoming = { id: "b", chapterPath: "local:file-b", name: "B", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const, complete: true };
   expect(await cacheServerChapters(1, [incoming])).toBe(true);
   expect(sqlite.prepare("SELECT path,is_downloaded FROM chapter ORDER BY path").all()).toEqual([
     { path: "local:file-a", is_downloaded: 1 },
@@ -104,7 +104,7 @@ it("stops future chapter batches on navigation cancellation without rejecting th
   });
   const chapters = Array.from({ length: 150 }, (_, index) => ({
     id: String(index), chapterPath: `/chapter/${index}`, name: `Chapter ${index}`, chapterNumber: String(index + 1),
-    position: index + 1, page: "1", contentType: "html" as const,
+    position: index + 1, page: "1", contentType: "html" as const, complete: true,
   }));
   await expect(cacheServerChapters(42, chapters, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   expect(transactionFailed).toBe(false);
@@ -155,7 +155,7 @@ it("reuses a metadata catalog placeholder through server import and the next sou
   expect(sqlite.prepare("SELECT id,path,progress,bookmark,unread,read_at,is_downloaded FROM chapter").all()).toEqual([
     { id: chapterId, path: "/chapter", progress: 73, bookmark: 1, unread: 0, read_at: 123, is_downloaded: 0 },
   ]);
-  await markContentInstalled(chapterId, "html", 512, 16);
+  await markContentInstalled(chapterId, "html", 512, 16, true);
   const plugin = {
     id: "source", parseNovel: async () => ({ novelId: "work", name: "A work", path: "/work", chapters: [{ path: "/chapter", name: "Opening", chapterNumber: 1 }] }),
   } as unknown as Plugin;
@@ -207,6 +207,16 @@ it("retains chapter tombstones and local checkpoints", async () => {
   };
   await writeContentSyncCache("catalog", JSON.stringify(value));
   expect(JSON.parse((await readContentSyncCache("catalog"))!)).toEqual(value);
+});
+
+it("keeps an installed incomplete body readable with repair required", async () => {
+  const { chapterId } = await importContentMetadata(manifest);
+  await markContentInstalled(chapterId, "html", 512, 22, false);
+  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,content_bytes,media_bytes FROM chapter WHERE id=?").get(chapterId)).toEqual({
+    is_downloaded: 0, media_repair_needed: 1, content_bytes: 512, media_bytes: 22,
+  });
+  await markContentInstalled(chapterId, "html", 512, 100, true);
+  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed FROM chapter WHERE id=?").get(chapterId)).toEqual({ is_downloaded: 1, media_repair_needed: 0 });
 });
 
 it("returns no cached state before the first sync", async () => {

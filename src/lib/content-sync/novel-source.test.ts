@@ -197,13 +197,31 @@ it("rejects mismatched server identities before installing another chapter", asy
   expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
 });
 
+it("keeps per-path completeness without assigning ambiguous chapter numbers", async () => {
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({
+    items: [
+      { id: "one", chapterPath: "/chapter/a", chapterNumber: "7", position: 1, name: "First seven", complete: false },
+      { id: "two", chapterPath: "/chapter/b", chapterNumber: "7.0", position: 2, name: "Second seven", complete: true },
+      { id: "three", chapterPath: "/chapter/c", chapterNumber: "extra", position: 3, name: "Extra", complete: false },
+      { id: "four", chapterPath: "/chapter/d", chapterNumber: "8.5", position: 4, name: "Eight and a half", complete: true },
+    ],
+    total: 4,
+    hasMore: false,
+  });
+
+  expect(await listServerChapterAvailability({ serverUrl: "http://origin", workId: "work-a" })).toEqual({
+    paths: new Map([["/chapter/a", false], ["/chapter/b", true], ["/chapter/c", false], ["/chapter/d", true]]),
+    numbers: new Map([[8.5, true]]),
+  });
+});
+
 it("pages only the selected work when reading available server chapter paths", async () => {
   vi.mocked(contentServerRequest)
-    .mockResolvedValueOnce({ items: [{ id: "first", chapterPath: "/chapter/7", chapterNumber: "7", position: 7, name: "Seven" }], total: 2, hasMore: true })
-    .mockResolvedValueOnce({ items: [{ id: "second", chapterPath: "/chapter/8", chapterNumber: "8", position: 8, name: "Eight" }], total: 2, hasMore: false });
+    .mockResolvedValueOnce({ items: [{ id: "first", chapterPath: "/chapter/7", chapterNumber: "7", position: 7, name: "Seven", complete: false }], total: 2, hasMore: true })
+    .mockResolvedValueOnce({ items: [{ id: "second", chapterPath: "/chapter/8", chapterNumber: "8", position: 8, name: "Eight", complete: true }], total: 2, hasMore: false });
   const signal = new AbortController().signal;
   expect(await listServerChapterAvailability({ serverUrl: "http://origin", workId: "work-a" }, signal))
-    .toEqual({ paths: new Set(["/chapter/7", "/chapter/8"]), numbers: new Set([7, 8]) });
+    .toEqual({ paths: new Map([["/chapter/7", false], ["/chapter/8", true]]), numbers: new Map([[7, false], [8, true]]) });
   expect(vi.mocked(contentServerRequest).mock.calls.map((args) => args.slice(0, 2))).toEqual([
     ["http://origin", "/catalog/works/work-a/chapters?offset=0&limit=100"],
     ["http://origin", "/catalog/works/work-a/chapters?offset=1&limit=100"],

@@ -80,11 +80,11 @@ describe("chapter row controls", () => {
   );
 });
 
-function renderChapterStatus(status: ChapterDownloadStatus) {
+function renderChapterStatus(status: ChapterDownloadStatus, overrides: Partial<ChapterListRow> & { serverComplete?: boolean } = {}) {
   return load(renderToStaticMarkup(
     <MantineProvider>
       <VirtualChapterList
-        chapters={[{ ...chapter, releaseTime: "2026-10-12" }]}
+        chapters={[{ ...chapter, releaseTime: "2026-10-12", ...overrides }]}
         canDeleteDownloads
         canReorderChapters={false}
         deleteBusyChapterId={undefined}
@@ -107,6 +107,36 @@ function renderChapterStatus(status: ChapterDownloadStatus) {
     </MantineProvider>,
   ));
 }
+
+describe("server chapter completeness", () => {
+  it.each([[false, "Server: Incomplete"], [true, "Server: Complete"]] as const)(
+    "shows server completeness without changing local download actions (%s)",
+    (serverComplete, label) => {
+      const $ = renderChapterStatus({ kind: "done" }, { serverComplete });
+
+      expect($(".norea-novel-chapter-meta-row").text()).toContain(label);
+      expect($(".norea-novel-chapter-actions button[aria-label='Download chapter']")).toHaveLength(1);
+      expect($(".norea-novel-chapter-actions button[aria-label='Repair chapter media']")).toHaveLength(0);
+    },
+  );
+
+  it("preserves a complete local copy when the server copy is incomplete", () => {
+    const $ = renderChapterStatus({ kind: "done" }, { serverComplete: false, isDownloaded: true });
+
+    expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: Incomplete");
+    expect($(".norea-novel-chapter-actions button[aria-label='Download chapter']")).toHaveLength(0);
+    expect($(".norea-novel-chapter-actions button[aria-label='Repair chapter media']")).toHaveLength(0);
+    expect($(".norea-novel-chapter-flags--desktop [aria-label='Downloaded']")).toHaveLength(1);
+  });
+
+  it("keeps a local repair badge even when the server copy is complete", () => {
+    const $ = renderChapterStatus({ kind: "done" }, { serverComplete: true, mediaRepairNeeded: true });
+
+    expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: Complete");
+    expect($(".norea-novel-chapter-flags--desktop [aria-label='Remote media remains']")).toHaveLength(1);
+    expect($(".norea-novel-chapter-actions button[aria-label='Repair chapter media']")).toHaveLength(1);
+  });
+});
 
 describe("chapter download stage", () => {
   it.each<[

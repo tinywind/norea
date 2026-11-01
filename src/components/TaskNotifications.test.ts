@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import * as chapterDownloads from "../lib/tasks/chapter-download";
+import * as chapterQueries from "../db/queries/chapter";
 import { notifications, notificationsStore } from "@mantine/notifications";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { taskScheduler } from "../lib/tasks/scheduler";
@@ -67,6 +68,13 @@ describe("download completion notifications", () => {
     const metadataKey = ["novel", "detail", 7];
     client.setQueryData(metadataKey, { name: "Book", cover: "cover.webp" });
     client.setQueryData([...metadataKey, "chapters"], [{ id: 11, isDownloaded: false }]);
+    const installedDownload = {
+      isDownloaded: true, mediaRepairNeeded: false, contentBytes: 120,
+      mediaBytes: 30, contentType: "html",
+    } as const;
+    vi.spyOn(chapterQueries, "getChapterById").mockResolvedValue({
+      id: 11, ...installedDownload,
+    } as chapterQueries.ChapterRow);
     vi.mocked(useQueryClient).mockReturnValue(client);
     let completion!: Parameters<typeof chapterDownloads.subscribeChapterDownloads>[0];
     let batchSettled!: () => void;
@@ -80,7 +88,7 @@ describe("download completion notifications", () => {
     try {
       completion({ job: { id: 11, novelId: 7, ...(batch ? { batchId: "batch" } : {}) }, status: { kind: "done" } } as Parameters<typeof completion>[0]);
       if (batch) batchSettled();
-      await vi.waitFor(() => expect(client.getQueryData([...metadataKey, "chapters"])).toEqual([{ id: 11, isDownloaded: true }]));
+      await vi.waitFor(() => expect(client.getQueryData([...metadataKey, "chapters"])).toEqual([{ id: 11, ...installedDownload }]));
       expect(client.getQueryState(metadataKey)?.isInvalidated).toBe(false);
     } finally {
       dispose(); client.clear(); vi.unstubAllGlobals();

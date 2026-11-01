@@ -149,11 +149,11 @@ export async function importContentMetadata(manifest: PackageManifest): Promise<
   }, true);
 }
 
-export async function markContentInstalled(chapterId: number, contentType: string, contentBytes: number, mediaBytes: number): Promise<void> {
+export async function markContentInstalled(chapterId: number, contentType: string, contentBytes: number, mediaBytes: number, mediaComplete: boolean): Promise<void> {
   await runDatabaseTransaction(async (db) => {
-    const result = await db.execute(`UPDATE chapter SET is_downloaded=1,stored_content_type=$2,content_bytes=$3,
-      media_bytes=$4,media_repair_needed=0,media_bytes_checked_at=unixepoch(),updated_at=unixepoch() WHERE id=$1`,
-    [chapterId, contentType, contentBytes, mediaBytes]);
+    const result = await db.execute(`UPDATE chapter SET is_downloaded=$5,stored_content_type=$2,content_bytes=$3,
+      media_bytes=$4,media_repair_needed=$6,media_bytes_checked_at=unixepoch(),updated_at=unixepoch() WHERE id=$1`,
+    [chapterId, contentType, contentBytes, mediaBytes, Number(mediaComplete), Number(!mediaComplete)]);
     if (result.rowsAffected !== 1) throw new Error("Downloaded chapter no longer exists locally.");
   }, true);
 }

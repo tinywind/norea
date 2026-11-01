@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import {
   getChapterById,
+  hasStoredChapterContent,
   type ChapterListRow,
   type ChapterRow,
 } from "../db/queries/chapter";
@@ -21,10 +22,10 @@ export function getNextChapterPreparationPlan({
 }: {
   autoDownloadNextChapter: boolean;
   currentChapterReady: boolean;
-  nextChapter: Pick<ChapterListRow, "id" | "isDownloaded"> | undefined;
+  nextChapter: Pick<ChapterListRow, "id" | "isDownloaded" | "contentBytes"> | undefined;
 }): NextChapterPreparationPlan | null {
   if (!currentChapterReady || !nextChapter) return null;
-  if (nextChapter.isDownloaded) {
+  if (hasStoredChapterContent(nextChapter)) {
     return { chapterId: nextChapter.id, download: false };
   }
   return autoDownloadNextChapter

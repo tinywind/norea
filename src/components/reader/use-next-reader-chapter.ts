@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { type ChapterListRow } from "../../db/queries/chapter";
+import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import type { NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import {
@@ -51,7 +51,7 @@ export function useNextReaderChapter({
   const nextContent = nextChapterQuery.data;
   useReaderDocument(
     nextContent?.id === nextChapterId &&
-      nextContent.isDownloaded &&
+      hasStoredChapterContent(nextContent) &&
       nextContent.contentType !== "pdf"
       ? nextContent.content
       : null,

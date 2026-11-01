@@ -1,5 +1,6 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getChapterById, type ChapterRow } from "../db/queries/chapter";
 import {
   applyNovelChapterDownloadCompletion,
   applyNovelChapterDownloadCompletions,
@@ -17,6 +18,20 @@ import {
   novelLibraryQueryKey,
   type QueryInvalidator,
 } from "./reader-query-invalidation";
+
+vi.mock("../db/queries/chapter", () => ({ getChapterById: vi.fn() }));
+
+const completedDownload = {
+  isDownloaded: true, mediaRepairNeeded: false, contentBytes: 120,
+  mediaBytes: 30, contentType: "html",
+} as const;
+
+beforeEach(() => {
+  vi.mocked(getChapterById).mockReset();
+  vi.mocked(getChapterById).mockImplementation(async id => ({
+    id, ...completedDownload,
+  }) as ChapterRow);
+});
 
 const unsubscriptions: Array<() => void> = [];
 
@@ -231,11 +246,36 @@ describe("reader query invalidation", () => {
     });
 
     expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
-      { id: 11, isDownloaded: true },
+      { id: 11, ...completedDownload },
       { id: 12, isDownloaded: false },
     ]);
     expect(chaptersQuery).toHaveBeenCalledTimes(1);
     expect(libraryQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps incomplete installed chapters repairable and reflects a later complete download", async () => {
+    const queryClient = createQueryClient();
+    const key = novelChaptersQueryKey(7);
+    queryClient.setQueryData(key, [{
+      id: 11, ...completedDownload, unread: false, progress: 42, readAt: 123,
+    }]);
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      id: 11, ...completedDownload, isDownloaded: false,
+      mediaRepairNeeded: true, contentBytes: 80, mediaBytes: 5,
+      unread: true, progress: 0, readAt: null,
+    } as ChapterRow);
+
+    await applyNovelChapterDownloadCompletion(queryClient, { chapterId: 11, novelId: 7 });
+    expect(queryClient.getQueryData(key)).toEqual([{
+      id: 11, isDownloaded: false, mediaRepairNeeded: true,
+      contentBytes: 80, mediaBytes: 5, contentType: "html",
+      unread: false, progress: 42, readAt: 123,
+    }]);
+
+    await applyNovelChapterDownloadCompletion(queryClient, { chapterId: 11, novelId: 7 });
+    expect(queryClient.getQueryData(key)).toEqual([{
+      id: 11, ...completedDownload, unread: false, progress: 42, readAt: 123,
+    }]);
   });
 
   it("preserves cached chapter rows for an unrelated download", async () => {
@@ -249,6 +289,7 @@ describe("reader query invalidation", () => {
     });
 
     expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toBe(chapters);
+    expect(getChapterById).not.toHaveBeenCalled();
   });
 
   it("applies batched download completions once per novel and library", async () => {
@@ -271,11 +312,11 @@ describe("reader query invalidation", () => {
     );
 
     expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
-      { id: 11, isDownloaded: true },
-      { id: 12, isDownloaded: true },
+      { id: 11, ...completedDownload },
+      { id: 12, ...completedDownload },
     ]);
     expect(queryClient.getQueryData(novelChaptersQueryKey(8))).toEqual([
-      { id: 21, isDownloaded: true },
+      { id: 21, ...completedDownload },
     ]);
     expect(
       invalidateQueries.mock.calls.filter(

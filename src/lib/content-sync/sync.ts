@@ -323,7 +323,6 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
 export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
   options?.signal?.throwIfAborted();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
-  if (!entry.complete) throw new Error("Incomplete server chapters cannot be downloaded.");
   const token = options?.token ?? await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
   const target = options?.target ?? entry.manifest.identity;
   const imported = options ? undefined : await importContentMetadata(entry.manifest);
@@ -342,7 +341,7 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
       options?.signal?.throwIfAborted();
       await withChapterDownloadWrite(current.chapterId, options?.signal, async () => {
         await install(storageDir(current));
-        await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes);
+        await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes, result.mediaComplete);
       });
       return { novelId: current.novelId, chapterId: current.chapterId };
     }));

@@ -21,7 +21,7 @@ import {
   ReaderContent,
   type ReaderContentHandle,
 } from "../components/ReaderContent";
-import { listChaptersByNovel, setChapterBookmark } from "../db/queries/chapter";
+import { hasStoredChapterContent, listChaptersByNovel, setChapterBookmark } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { usePageActivity } from "../lib/page-activity";
@@ -170,14 +170,14 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     autoDownloadNextChapter: effectiveReaderGeneral.autoDownloadNextChapter,
     bionicReading: effectiveReaderGeneral.bionicReading,
     currentChapterReady:
-      chapter?.isDownloaded === true &&
+      Boolean(chapter && hasStoredChapterContent(chapter)) &&
       (isPdfChapter || Boolean(readerPreparation.document)),
   });
   const readerBusy =
     readerPreparation.isPending ||
     (chapterId > 0 &&
       !hasChapterContent &&
-      (chapterQuery.isLoading || Boolean(chapter && !chapter.isDownloaded)));
+      (chapterQuery.isLoading || Boolean(chapter && !hasStoredChapterContent(chapter))));
   const progress = chapter?.progress ?? 0;
   const activeInitialProgressOverride =
     initialProgressOverride &&
@@ -226,7 +226,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   useEffect(() => {
     if (
       !chapter ||
-      chapter.isDownloaded ||
+      hasStoredChapterContent(chapter) ||
       hasChapterContent ||
       autoDownloadingChapterId !== chapter.id
     ) {
@@ -244,6 +244,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     autoDownloadingChapterId,
     chapter?.id,
     chapter?.isDownloaded,
+    chapter?.contentBytes,
     hasChapterContent,
     queryClient,
   ]);

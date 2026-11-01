@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   getAdjacentChapter,
+  hasStoredChapterContent,
   type ChapterListRow,
 } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
@@ -37,6 +38,7 @@ type ReaderNavigationChapter = Pick<
   | "novelId"
   | "position"
   | "isDownloaded"
+  | "contentBytes"
   | "path"
   | "name"
   | "chapterNumber"
@@ -119,7 +121,7 @@ export function useReaderChapterNavigation({
 
       if (
         targetChapter.id === chapterId &&
-        (targetChapter.isDownloaded ||
+        (hasStoredChapterContent(targetChapter) ||
           autoDownloadingChapterRef.current === targetChapter.id)
       ) {
         return;
@@ -137,7 +139,7 @@ export function useReaderChapterNavigation({
         });
       }
 
-      if (targetChapter.isDownloaded) {
+      if (hasStoredChapterContent(targetChapter)) {
         return;
       }
 
@@ -213,7 +215,7 @@ export function useReaderChapterNavigation({
   );
 
   useEffect(() => {
-    if (!chapter || chapter.isDownloaded) return;
+    if (!chapter || hasStoredChapterContent(chapter)) return;
     if (autoDownloadingChapterRef.current === chapter.id) return;
     if (suppressedAutoDownloadChapterRef.current === chapter.id) return;
 

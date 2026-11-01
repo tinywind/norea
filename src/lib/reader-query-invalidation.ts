@@ -1,12 +1,12 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import type { ChapterListRow } from "../db/queries/chapter";
+import { getChapterById, type ChapterListRow } from "../db/queries/chapter";
 
 const FINISHED_PROGRESS = 100;
 
 export type QueryInvalidator = Pick<QueryClient, "invalidateQueries">;
 type ChapterDownloadQueryCache = Pick<
   QueryClient,
-  "invalidateQueries" | "setQueryData"
+  "getQueryData" | "invalidateQueries" | "setQueryData"
 >;
 
 export function chapterDetailQueryKey(chapterId: number) {
@@ -59,6 +59,17 @@ export async function applyNovelChapterDownloadCompletions(
     );
     if (chapterIds.size === 0) continue;
 
+    const cachedChapters = queryClient.getQueryData<ChapterListRow[]>(
+      novelChaptersQueryKey(novelId),
+    );
+    const storedChapters = await Promise.all(
+      (cachedChapters ?? [])
+        .filter(chapter => chapterIds.has(chapter.id))
+        .map(chapter => getChapterById(chapter.id)),
+    );
+    const storedById = new Map(
+      storedChapters.flatMap(chapter => chapter ? [[chapter.id, chapter] as const] : []),
+    );
     queryClient.setQueryData<ChapterListRow[]>(
       novelChaptersQueryKey(novelId),
       (chapters) => {
@@ -66,9 +77,23 @@ export async function applyNovelChapterDownloadCompletions(
         let updated: ChapterListRow[] | null = null;
         for (let index = 0; index < chapters.length; index += 1) {
           const chapter = chapters[index]!;
-          if (!chapterIds.has(chapter.id) || chapter.isDownloaded) continue;
+          const stored = storedById.get(chapter.id);
+          if (!stored || (
+            chapter.isDownloaded === stored.isDownloaded
+            && chapter.mediaRepairNeeded === stored.mediaRepairNeeded
+            && chapter.contentBytes === stored.contentBytes
+            && chapter.mediaBytes === stored.mediaBytes
+            && chapter.contentType === stored.contentType
+          )) continue;
           updated ??= [...chapters];
-          updated[index] = { ...chapter, isDownloaded: true };
+          updated[index] = {
+            ...chapter,
+            isDownloaded: stored.isDownloaded,
+            mediaRepairNeeded: stored.mediaRepairNeeded,
+            contentBytes: stored.contentBytes,
+            mediaBytes: stored.mediaBytes,
+            contentType: stored.contentType,
+          };
         }
         return updated ?? chapters;
       },

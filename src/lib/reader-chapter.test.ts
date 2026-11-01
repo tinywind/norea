@@ -8,7 +8,10 @@ import {
 } from "./reader-chapter";
 import { chapterDetailQueryKey } from "./reader-query-invalidation";
 
-vi.mock("../db/queries/chapter", () => ({ getChapterById: vi.fn() }));
+vi.mock("../db/queries/chapter", async original => ({
+  ...await original<typeof import("../db/queries/chapter")>(),
+  getChapterById: vi.fn(),
+}));
 vi.mock("./chapter-content-storage", () => ({
   readStoredChapterContentMirror: vi.fn(),
 }));
@@ -95,17 +98,25 @@ describe("next chapter preparation planning", () => {
     expect(
       getNextChapterPreparationPlan({
         currentChapterReady: true,
-        nextChapter: { id: 3, isDownloaded: true },
+        nextChapter: { id: 3, isDownloaded: true, contentBytes: 20 },
         autoDownloadNextChapter: false,
       }),
     ).toEqual({ chapterId: 3, download: false });
+  });
+
+  it.each([false, true])("prepares an incomplete stored body without downloading it (auto-download: %s)", autoDownloadNextChapter => {
+    expect(getNextChapterPreparationPlan({
+      currentChapterReady: true,
+      nextChapter: { id: 3, isDownloaded: false, contentBytes: 20 },
+      autoDownloadNextChapter,
+    })).toEqual({ chapterId: 3, download: false });
   });
 
   it("downloads and then prepares an unstored next chapter when enabled", () => {
     expect(
       getNextChapterPreparationPlan({
         currentChapterReady: true,
-        nextChapter: { id: 3, isDownloaded: false },
+        nextChapter: { id: 3, isDownloaded: false, contentBytes: 0 },
         autoDownloadNextChapter: true,
       }),
     ).toEqual({ chapterId: 3, download: true });
@@ -115,7 +126,7 @@ describe("next chapter preparation planning", () => {
     expect(
       getNextChapterPreparationPlan({
         currentChapterReady: true,
-        nextChapter: { id: 3, isDownloaded: false },
+        nextChapter: { id: 3, isDownloaded: false, contentBytes: 0 },
         autoDownloadNextChapter: false,
       }),
     ).toBeNull();
@@ -125,7 +136,7 @@ describe("next chapter preparation planning", () => {
     expect(
       getNextChapterPreparationPlan({
         currentChapterReady: false,
-        nextChapter: { id: 3, isDownloaded: true },
+        nextChapter: { id: 3, isDownloaded: true, contentBytes: 20 },
         autoDownloadNextChapter: true,
       }),
     ).toBeNull();

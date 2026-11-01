@@ -36,19 +36,24 @@ export async function rememberServerNovelSource(novelId: number, source: ServerN
   }));
 }
 
-export async function listServerChapterAvailability(source: ServerNovelSource, signal?: AbortSignal): Promise<{ paths: Set<string>; numbers: Set<number> }> {
+export async function listServerChapterAvailability(source: ServerNovelSource, signal?: AbortSignal): Promise<{ paths: Map<string, boolean>; numbers: Map<number, boolean> }> {
   const settings = useContentSyncStore.getState();
   return withContentServerLookup(async deadline => {
     const token = await registerContentDevice(source.serverUrl, settings.deviceName, deadline);
     const chapters = await fetchServerChapters(source, token, deadline);
-    const paths = new Set(chapters.map(chapter => chapter.chapterPath));
+    const paths = new Map(chapters.map(chapter => [chapter.chapterPath, chapter.complete]));
+    const numbers = new Map<number, boolean>();
     const counts = new Map<number, number>();
     for (const chapter of chapters) {
       if (chapter.chapterNumber == null || !/^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)) continue;
       const number = Number(chapter.chapterNumber);
       counts.set(number, (counts.get(number) ?? 0) + 1);
+      numbers.set(number, chapter.complete);
     }
-    return { paths, numbers: new Set([...counts].filter(([, count]) => count === 1).map(([number]) => number)) };
+    for (const [number, count] of counts) {
+      if (count > 1) numbers.delete(number);
+    }
+    return { paths, numbers };
   }, settings.lookupTimeoutSeconds, signal);
 }
 

@@ -124,7 +124,9 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
               const next = new Set(current); if (next.has(chapter.id)) next.delete(chapter.id); else next.add(chapter.id); return next;
             })} />
             <span className="norea-server-chapter-number">{chapter.chapterNumber ?? chapter.position}</span>
-            <span className="norea-server-chapter-title">{chapter.name}</span>
+            <span className="norea-server-chapter-title">{chapter.name} <Badge component="span" color={chapter.complete ? "green" : "yellow"} variant="light">
+              {t(chapter.complete ? "contentSync.complete" : "contentSync.incomplete")}
+            </Badge></span>
           </label>)}
         </div>
         {(chapters.data?.total ?? 0) > 100 || page > 1 ? <Group p="md" justify="center">

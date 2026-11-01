@@ -7,7 +7,7 @@ import type { NovelDetailRecord } from "../db/queries/novel";
 
 const mocks = vi.hoisted(() => ({
   source: { data: null as null | { serverUrl: string; workId: string }, isPending: false, isFetching: false, error: null as unknown },
-  available: { data: { paths: new Set<string>(), numbers: new Set<number>() } as { paths: Set<string>; numbers: Set<number> } | undefined, isLoading: false, error: null as unknown },
+  available: { data: { paths: new Map<string, boolean>(), numbers: new Map<number, boolean>() } as { paths: Map<string, boolean>; numbers: Map<number, boolean> } | undefined, isLoading: false, error: null as unknown },
   sync: { serverError: null as unknown, sourceError: null as unknown },
   metadataError: null as unknown,
   novelQuery: { isLoading: false, error: null as unknown },
@@ -31,7 +31,8 @@ vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknow
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useRouterState: () => "/novel?id=3" }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({
   t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterCount"
-    ? `${values?.cached}/${values?.total} stored` : key,
+    ? `${values?.cached}/${values?.total} stored`
+    : key === "novel.serverChapterStatus" ? `Server: ${values?.status}` : key,
 }) }));
 vi.mock("../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.fn() }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
@@ -103,7 +104,7 @@ beforeEach(() => {
   mocks.novelQuery.isLoading = false;
   mocks.novelQuery.error = null;
   mocks.chapters = [];
-  mocks.available.data = { paths: new Set(), numbers: new Set() };
+  mocks.available.data = { paths: new Map(), numbers: new Map() };
   mocks.available.isLoading = false;
   mocks.available.error = null;
   mocks.sync.serverError = null;
@@ -202,7 +203,7 @@ it("retains local editing presentation for unbound local works", () => {
 
 it("shows available packages and downloaded chapters without deleting canonical metadata chapters", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
-  mocks.available.data = { paths: new Set(["/available"]), numbers: new Set() };
+  mocks.available.data = { paths: new Map([["/available", true]]), numbers: new Map() };
   mocks.chapters = [
     { ...chapter, name: "Available package", path: "/available" },
     { ...chapter, id: 2, name: "Local downloaded chapter", path: "/local", isDownloaded: true },
@@ -213,6 +214,33 @@ it("shows available packages and downloaded chapters without deleting canonical 
   expect(text).toContain("Local downloaded chapter");
   expect(text).not.toContain("Metadata without a package");
   expect(mocks.chapters).toHaveLength(3);
+});
+
+it("keeps an incomplete server chapter visible and downloadable without a source plugin", () => {
+  mocks.source.data = { serverUrl: "http://server", workId: "work" };
+  mocks.available.data = { paths: new Map([[chapter.path, false]]), numbers: new Map() };
+  mocks.chapters = [{ ...chapter }];
+
+  const $ = renderPage();
+  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: contentSync.incomplete");
+  expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(1);
+  expect($("button[aria-label='novel.repairChapterMedia']")).toHaveLength(0);
+  expect(mocks.chapters[0]).toMatchObject({ isDownloaded: false, mediaRepairNeeded: false });
+});
+
+it("preserves a complete local chapter when its server copy is incomplete", () => {
+  mocks.source.data = { serverUrl: "http://server", workId: "work" };
+  mocks.available.data = { paths: new Map([[chapter.path, false]]), numbers: new Map() };
+  mocks.chapters = [{ ...chapter, isDownloaded: true, contentBytes: 100 }];
+
+  const $ = renderPage();
+  expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: contentSync.incomplete");
+  expect($(".norea-novel-chapter-flags--desktop [aria-label='novel.downloaded']")).toHaveLength(1);
+  expect($(".norea-novel-chapter-flags--desktop [aria-label='novel.mediaRepairNeeded']")).toHaveLength(0);
+  expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(0);
+  expect($("button[aria-label='novel.repairChapterMedia']")).toHaveLength(0);
+  expect(mocks.chapters[0]).toMatchObject({ isDownloaded: true, mediaRepairNeeded: false });
 });
 
 it("shows and counts a stored partial body even when its server package is unavailable", () => {
@@ -234,7 +262,7 @@ it("shows saved chapters immediately while server availability is still pending"
 
 it("shows a server folder chapter matching the cached source chapter number without a plugin", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
-  mocks.available.data = { paths: new Set(["norea-folder:1"]), numbers: new Set([1]) };
+  mocks.available.data = { paths: new Map([["norea-folder:1", false]]), numbers: new Map([[1, false]]) };
   mocks.chapters = [{ ...chapter, name: "Server chapter", path: "/chapter/1", chapterNumber: "1.0" }];
   expect(renderPage()(".norea-novel-chapter-open").text()).toContain("Server chapter");
 });
@@ -247,7 +275,7 @@ it("shows source-only chapters and source controls for a bound work with its ori
   const $ = renderPage();
   expect($(".norea-novel-chapter-open").text()).toContain("New source chapter");
   expect($("button[aria-label='novel.openSource']")).toHaveLength(1);
-  expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(false);
+  expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });
 
 it("still queries server availability when the source plugin cannot provide chapters", () => {

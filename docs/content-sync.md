@@ -39,7 +39,7 @@ the server is slow or unavailable. Explicit server actions still report failures
 that prevent completion. Sync does not refresh plugin repositories.
 A work becomes visible after its metadata and cover are installed.
 Sync preserves existing library membership; add a server work to the library
-from its detail page. Sync now uploads complete local chapters and updates the
+from its detail page. Sync now uploads stored local chapters and updates the
 remote catalog independently of browsing or selected chapter downloads.
 
 Settings > Data > Content server includes **Upload conflicts**:
@@ -58,9 +58,11 @@ Upload and folder indexing record completeness from the media inventory: every
 asset declared in `manifest.json` must exist in `media.zip`. Cached completion,
 status, and byte counts do not establish completeness. Safe extra ZIP entries
 are allowed. A body-only chapter without a media manifest has no declared assets.
-Valid incomplete chapters remain indexed but are excluded from server downloads;
-invalid manifests and unsafe archives are rejected. App folder scans use the
-same rule and mark incomplete chapters as needing media repair.
+Valid incomplete chapters remain visible in server catalogs and the library,
+and can be downloaded. Completeness is shown as status, without restricting
+availability. Downloads preserve the body, manifest and available media bytes;
+local inspection records missing assets as needing media repair. Invalid
+manifests and unsafe archives remain errors.
 
 All works are synchronization targets; library membership does not select the
 sync scope. Opening any work refreshes that work from the connected server in
@@ -208,7 +210,8 @@ eligible for retry.
 Saved metadata supports offline browsing without refetching the
 source site. Reading progress and library membership stay on each device.
 
-Only complete chapters outside the download queue can start an upload. This also
+Stored chapters outside the download queue can start an upload, including
+chapters with missing media. This also
 applies to manual sync and local rescans. Pending queue writes, persisted queue
 entries, active downloads, and media repairs defer the affected chapter. Queue
 checks use chapter-ID maps and SQLite primary-key lookups, without scanning the
@@ -216,7 +219,7 @@ task list for every chapter. Queue changes invalidate an upload being prepared,
 and completion and queue state are checked again before native transfer starts.
 Deferred chapters stay pending; other completed chapters continue syncing. When
 changes mode is enabled, queue settlement schedules another sync. Transfers use
-a private snapshot of completed files and never hold download locks during HTTP.
+a private snapshot of stored files and never hold download locks during HTTP.
 
 Native code sends the original `content.html`
 or `content.pdf`, with `manifest.json` and `media.zip` when present, in one multipart
@@ -262,7 +265,7 @@ Journal sequence numbers select changes; file names, sizes, and modification
 times identify unchanged chapter snapshots without rereading their contents.
 
 The first sync establishes a baseline. Later syncs read recorded local changes
-and server chapter deletions, then check affected complete chapters. Deleted
+and server chapter deletions, then check affected stored chapters. Deleted
 chapter deltas do not include a chapter number, so the app rechecks completed
 chapters in the same work to match source paths and recovered folder identities.
 Those checks become durable local upload candidates before the deletion signal

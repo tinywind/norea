@@ -118,19 +118,24 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     queryKey: ["content-server", "novel-chapters", serverSourceQuery.data?.serverUrl, serverSourceQuery.data?.workId],
     queryFn: ({ signal }) => serverSourceQuery.data
       ? listServerChapterAvailability(serverSourceQuery.data, signal)
-      : Promise.resolve({ paths: new Set<string>(), numbers: new Set<number>() }),
-    enabled: active && Boolean(serverSourceQuery.data && novelQuery.data) && !hasSourcePlugin,
+      : Promise.resolve({ paths: new Map<string, boolean>(), numbers: new Map<number, boolean>() }),
+    enabled: active && Boolean(serverSourceQuery.data && novelQuery.data),
     staleTime: 30_000,
   });
   useServerNovelSync(id, active, novelQuery.data?.name ?? "");
 
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
-    return serverSourceQuery.data && !hasSourcePlugin && serverChaptersQuery.data
-      ? storedRows.filter((chapter) => hasStoredChapterContent(chapter) || serverChaptersQuery.data?.paths.has(chapter.path)
-        || (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
-          && serverChaptersQuery.data?.numbers.has(Number(chapter.chapterNumber))))
-      : storedRows;
+    if (!serverSourceQuery.data || !serverChaptersQuery.data) return storedRows;
+    const available = serverChaptersQuery.data;
+    return storedRows.flatMap((chapter) => {
+      const serverComplete = available.paths.get(chapter.path)
+        ?? (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
+          ? available.numbers.get(Number(chapter.chapterNumber)) : undefined);
+      return hasSourcePlugin || hasStoredChapterContent(chapter) || serverComplete !== undefined
+        ? [{ ...chapter, serverComplete }]
+        : [];
+    });
   }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data, hasSourcePlugin]);
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),

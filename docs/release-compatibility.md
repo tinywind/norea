@@ -67,7 +67,9 @@ requirements must be decided explicitly before implementation.
   Partial bodies require a valid media manifest so missing assets remain tracked.
   The first sync after enabling incomplete uploads rediscovers stored chapters
   once, preserving the saved deletion exclusions and later incremental cursors.
-  Incomplete copies are unavailable for download. Upload conflicts follow the
+  Incomplete copies remain visible in catalogs and can be downloaded. Completeness
+  is displayed as status, and installed missing assets retain media repair state.
+  Upload conflicts follow the
   app's selected policy, checked again when the server publishes the files.
 - Media repair keeps the stored chapter body and uses its manifest as the asset
   inventory. It validates ZIP entries individually, reuses intact entries from
@@ -94,7 +96,7 @@ requirements must be decided explicitly before implementation.
   inspected body and archive sizes together with completeness and repair state,
   so partial-only folders are not mistaken for missing chapters. These persisted
   counts and repair flags remain available after restart without another scan.
-  Package completeness, server download eligibility, and media repair flags continue to
+  Package completeness and media repair flags continue to
   use the full manifest and validated asset inventory.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.

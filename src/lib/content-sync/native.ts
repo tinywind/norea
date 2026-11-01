@@ -83,6 +83,12 @@ export async function uploadContentChapter(input: {
   }
 }
 
+export interface ContentChapterDownloadResult {
+  contentBytes: number;
+  mediaBytes: number;
+  mediaComplete: boolean;
+}
+
 export async function withDownloadedContentChapter<T>(input: {
   serverUrl: string;
   token?: string;
@@ -90,11 +96,11 @@ export async function withDownloadedContentChapter<T>(input: {
   storageDir: string;
   chapterId: number;
   signal?: AbortSignal;
-}, apply: (sizes: { contentBytes: number; mediaBytes: number }, install: (storageDir: string) => Promise<void>) => Promise<T>): Promise<T> {
+}, apply: (sizes: ContentChapterDownloadResult, install: (storageDir: string) => Promise<void>) => Promise<T>): Promise<T> {
   input.signal?.throwIfAborted();
   const stagePath = await invoke<string>("content_sync_create_stage");
   const removeStage = () => invoke<void>("content_sync_remove_stage", { stagePath });
-  let transfer: Promise<{ contentBytes: number; mediaBytes: number }> | undefined;
+  let transfer: Promise<ContentChapterDownloadResult> | undefined;
   let settled = false;
   let onAbort: (() => void) | undefined;
   try {
@@ -103,7 +109,7 @@ export async function withDownloadedContentChapter<T>(input: {
       onAbort = () => reject(input.signal!.reason);
       input.signal!.addEventListener("abort", onAbort, { once: true });
     }) : undefined;
-    transfer = invoke<{ contentBytes: number; mediaBytes: number }>("content_sync_download", {
+    transfer = invoke<ContentChapterDownloadResult>("content_sync_download", {
       serverUrl: input.serverUrl, token: input.token ?? null, entry: input.entry,
       storageDir: input.storageDir, stagePath,
     }).finally(() => { settled = true; });

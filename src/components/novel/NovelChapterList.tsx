@@ -77,8 +77,10 @@ const CHAPTER_DOWNLOAD_LABELS: Record<
   },
 };
 
+type ServerAwareChapterListRow = ChapterListRow & { serverComplete?: boolean };
+
 interface ChapterListItemProps {
-  chapter: ChapterListRow;
+  chapter: ServerAwareChapterListRow;
   canDeleteDownload: boolean;
   canMoveDown: boolean;
   canMoveUp: boolean;
@@ -334,6 +336,13 @@ function ChapterListItem({
               </span>
             ) : (
               <>
+                {chapter.serverComplete !== undefined ? (
+                  <Text component="span" className="norea-novel-chapter-meta">
+                    {t("novel.serverChapterStatus", {
+                      status: t(chapter.serverComplete ? "contentSync.complete" : "contentSync.incomplete"),
+                    })}
+                  </Text>
+                ) : null}
                 {releaseTime ? (
                   <Text component="span" className="norea-novel-chapter-meta">
                     {releaseTime}
@@ -427,7 +436,7 @@ function ChapterListItem({
 }
 
 interface VirtualChapterListProps {
-  chapters: ChapterListRow[];
+  chapters: ServerAwareChapterListRow[];
   canDeleteDownloads: boolean;
   canReorderChapters: boolean;
   deleteBusyChapterId: number | undefined;

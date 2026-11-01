@@ -9,7 +9,7 @@ vi.mock("../../db/queries/content-sync", () => ({
 }));
 vi.mock("./native", () => ({
   uploadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn(),
-  withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
+  withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
   withContentChapterStage: (input: unknown, run: (stagePath: string) => Promise<unknown>) => { native.stage(input); return run("snapshot"); },
 }));
 vi.mock("./works", () => ({ recordDeletedWorkMetadata: vi.fn(async (server, entry) => recordServerWorkDeletionExclusion(server, entry.metadata.identity)), syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0), contentWorkId: vi.fn(async () => "work-id") }));
@@ -258,10 +258,14 @@ it("keeps the conflict policy captured at sync start when settings change during
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: "replace-server" }));
 });
 
-it("rejects an incomplete server chapter before importing its metadata or files", async () => {
-  await expect(downloadServerChapter({ deleted: false, complete: false } as never)).rejects.toThrow("Incomplete server chapters cannot be downloaded.");
-  expect(importContentMetadata).not.toHaveBeenCalled();
-  expect(native.download).not.toHaveBeenCalled();
+it("downloads incomplete server chapters and persists the inspected repair state", async () => {
+  const entry = { id: "partial", deleted: false, complete: false,
+    manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", position: 1 }] as never);
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 22, mediaComplete: false });
+  await expect(downloadServerChapter(entry)).resolves.toEqual({ novelId: 90, chapterId: 91 });
+  expect(native.install).toHaveBeenCalledOnce();
+  expect(markContentInstalled).toHaveBeenCalledWith(91, "html", 10, 22, false);
 });
 
 it("defers queued chapters without delaying completed chapters, then retries them after the queue clears", async () => {
@@ -618,7 +622,7 @@ it("does not transfer to a newly selected server when registration completes for
 it("downloads a selected origin chapter without full catalogs or foreground sync state changes", async () => {
   useContentSyncStore.setState({ status: "syncing" });
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
-  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
   const entry = { id: "one", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://origin-server")).resolves.toEqual({ novelId: 90, chapterId: 91 });
   expect(native.download).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: "http://origin-server" }));
@@ -636,7 +640,7 @@ it.each(["before transfer", "before installation"])("rejects a different source 
   const other = { ...row, sourceNovelId: "different-work" };
   if (phase === "before transfer") vi.mocked(listContentSyncChapters).mockResolvedValue([other] as never);
   else vi.mocked(listContentSyncChapters).mockResolvedValueOnce([row] as never).mockResolvedValue([other] as never);
-  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
   const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target })).rejects.toThrow("novel ID");
   expect(native.install).not.toHaveBeenCalled();
@@ -646,13 +650,13 @@ it.each(["before transfer", "before installation"])("rejects a different source 
 it("installs a scanned chapter into the existing source chapter of the same work", async () => {
   const target = { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" };
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, pluginId: target.pluginId, sourceNovelId: target.novelId, novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
-  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 20 });
+  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 20, mediaComplete: true });
   const entry = { id: "scanned", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "norea-folder:1" }, chapter: { contentType: "html" } } } as never;
   expect(await downloadServerChapterFromServer(entry, "http://origin", { token: "registered", target })).toEqual({ novelId: 3, chapterId: 7 });
   expect(importContentMetadata).not.toHaveBeenCalled();
   expect(appFetch).not.toHaveBeenCalled();
   expect(native.download).toHaveBeenCalledWith({ serverUrl: "http://origin", token: "registered", entry, storageDir: "contents/source/work/1", chapterId: 7 });
-  expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 20);
+  expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 20, true);
 });
 
 it("checkpoints a large catalog instead of persisting its growing snapshot on every page", async () => {
@@ -680,11 +684,11 @@ it("keeps selected downloads usable while the background work catalog is still t
   const background = syncContentServer(false);
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
-  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  vi.mocked(native.download).mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
   const entry = { id: "one", deleted: false, complete: true, manifest: { identity: { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" }, chapter: { contentType: "html" } } } as never;
   try {
     await downloadServerChapter(entry);
-    expect(markContentInstalled).toHaveBeenCalledWith(91, "html", 10, 0);
+    expect(markContentInstalled).toHaveBeenCalledWith(91, "html", 10, 0, true);
     expect(changed).not.toHaveBeenCalled();
     expect(useContentSyncStore.getState().status).toBe("syncing");
   } finally {
@@ -774,7 +778,7 @@ it("keeps work metadata usable while a selected package download waits for the s
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, pluginId: target.pluginId, sourceNovelId: target.novelId, novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
   let release!: () => void;
   vi.mocked(native.download).mockImplementationOnce(() => new Promise(resolve => {
-    release = () => resolve({ contentBytes: 10, mediaBytes: 0 });
+    release = () => resolve({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
   }));
   const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   const downloading = downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
@@ -795,11 +799,11 @@ it("uses the current chapter folder when metadata changes during the transfer", 
   const row = { chapterId: 7, novelId: 3, pluginId: target.pluginId, sourceNovelId: target.novelId, novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Before", chapterName: "One", position: 1, page: "1" };
   vi.mocked(listContentSyncChapters).mockResolvedValueOnce([row] as never)
     .mockResolvedValue([{ ...row, novelName: "After" }] as never);
-  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0 });
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
   const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   await downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
   expect(native.install).toHaveBeenCalledExactlyOnceWith("contents/source/work/1");
-  expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 0);
+  expect(markContentInstalled).toHaveBeenCalledWith(7, "html", 10, 0, true);
 });
 
 it("does not publish a cancelled package after its transfer finishes", async () => {
@@ -809,7 +813,7 @@ it("does not publish a cancelled package after its transfer finishes", async () 
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 7, novelId: 3, pluginId: target.pluginId, sourceNovelId: target.novelId, novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Book", chapterName: "One", position: 1, page: "1" }] as never);
   native.download.mockImplementationOnce(async () => {
     controller.abort(reason);
-    return { contentBytes: 10, mediaBytes: 0 };
+    return { contentBytes: 10, mediaBytes: 0, mediaComplete: true };
   });
   const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
   await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target, signal: controller.signal })).rejects.toBe(reason);
