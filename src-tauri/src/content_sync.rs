@@ -667,8 +667,8 @@ fn download_chapter_files(server_url: &str, token: Option<&str>, entry: &Value, 
         }
         output.set_times(fs::FileTimes::new().set_modified(modified)).map_err(failure)?;
     }
-    validate_chapter_media(destination)?;
-    Ok(json!({"contentBytes": fs::metadata(destination.join(body)).map_err(failure)?.len(),
+    let media_complete = inspect_chapter_media(destination)?;
+    Ok(json!({"mediaComplete": media_complete, "contentBytes": fs::metadata(destination.join(body)).map_err(failure)?.len(),
         "mediaBytes": if names.contains("media.zip") { fs::metadata(destination.join("media.zip")).map_err(failure)?.len() } else { 0 }}))
 }
 
@@ -949,15 +949,36 @@ mod tests {
 
     #[test]
     fn original_files_use_multipart_upload_and_individual_http_downloads() {
+        chapter_files_round_trip(true, true);
+    }
+
+    #[test]
+    fn incomplete_files_download_and_install_without_rewriting_originals() {
+        chapter_files_round_trip(false, true);
+    }
+
+    #[test]
+    fn incomplete_files_without_media_archive_download_and_install() {
+        chapter_files_round_trip(false, false);
+    }
+
+    fn chapter_files_round_trip(complete: bool, archive_present: bool) {
         use std::net::TcpListener;
         let root = workspace();
         let source = root.path().join("source");
         fs::create_dir(&source).unwrap();
-        let files = vec![
+        let mut files = vec![
             ("content.html", b"<img src=\"norea-media://reader-asset/page.png\">".to_vec()),
             ("manifest.json", br#"{"version":1,"complete":true,"updatedAt":123,"media":{"files":[{"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}}"#.to_vec()),
             ("media.zip", original_media_archive()),
         ];
+        if !complete {
+            let mut media: Value = serde_json::from_slice(&files[1].1).unwrap();
+            media["complete"] = json!(false);
+            media["media"]["files"].as_array_mut().unwrap().push(json!({"fileName":"missing.png","path":"","status":"remote"}));
+            files[1].1 = serde_json::to_vec(&media).unwrap();
+        }
+        if !archive_present { files.pop(); }
         for (name, bytes) in &files { fs::write(source.join(name), bytes).unwrap(); }
         let manifest = chapter_file_manifest(&source, metadata()).unwrap();
         let file_bytes: usize = files.iter().map(|(_, bytes)| bytes.len()).sum();
@@ -967,7 +988,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
         let receiver = std::thread::spawn(move || {
-            for index in 0..4 {
+            for index in 0..expected.len() + 1 {
                 let (mut connection, _) = listener.accept().unwrap();
                 connection.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
                 let mut head = Vec::new();
@@ -1012,15 +1033,17 @@ mod tests {
         assert_eq!(fs::read_to_string(installed.join("content.html")).unwrap(), "previous body");
         install_directory(&destination, &installed).unwrap();
         assert_eq!(sizes["contentBytes"], files[0].1.len());
-        assert_eq!(sizes["mediaBytes"], files[2].1.len());
+        assert_eq!(sizes["mediaBytes"], files.get(2).map_or(0, |file| file.1.len()));
+        assert_eq!(sizes["mediaComplete"], complete);
+        let file_count = files.len();
         for (name, bytes) in files {
             assert_eq!(fs::read(source.join(name)).unwrap(), bytes);
             assert_eq!(fs::read(destination.join(name)).unwrap(), bytes);
             assert_eq!(fs::read(installed.join(name)).unwrap(), bytes);
         }
         assert_eq!(fingerprint_directory(&source).unwrap(), fingerprint_directory(&installed).unwrap());
-        assert_eq!(fs::read_dir(&source).unwrap().count(), 3);
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(&source).unwrap().count(), file_count);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), file_count);
     }
 
     #[test]
