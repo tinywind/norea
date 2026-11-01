@@ -240,6 +240,38 @@ Native code checks every file's name, size, and completed transfer in a private
 staging directory before installing the complete set. Interrupted replacement
 preserves a target-named backup that storage access can recover.
 
+### Device-only cleanup
+
+Settings > Data > Clear downloaded chapters previews managed downloads and
+requires confirmation. Server, reading status, and category conditions all
+apply. The server condition can require an available chapter body, at least the
+device's declared-asset coverage, or every valid device asset with matching
+content. It can also ignore server state, without making a server request.
+Coverage and containment require matching body digests and valid manifests;
+coverage also requires the same declared asset set. Equal coverage can describe
+different missing assets. Server checks use the work's saved server association,
+or the configured server when the work has none. They are point-in-time checks,
+not a guarantee that another device will retain the server copy.
+
+Source downloads can be selected. A local-work chapter is eligible only when its
+own completed server download has recorded proof matching its current files.
+Older local chapters without that proof stay excluded even if their work has a
+server association. Cleanup preserves the work and chapter metadata, including
+`manifest.json`, and updates download state from remaining files. It does not
+remove server copies or create upload exclusions. Interrupted cleanup requires a
+new preview and does not resume automatically.
+
+For server-dependent previews, the app requests
+`GET /api/v1/chapters/:id/storage-inventory?revision=<revision>`. The response
+contains the package identity and revision, a SHA-256 body digest and byte count,
+manifest asset keys, and valid uncompressed asset digests and byte counts. A
+missing or malformed manifest produces `expectedAssetKeys: null`. The presence
+condition adds `presenceOnly=true`; this checks and hashes the body and returns
+`expectedAssetKeys: null` with an empty `storedAssets` array without reading the
+media inventory. The endpoint uses catalog read authorization and fails for a
+stale revision or unavailable body. It transfers inventory data, not the body
+or archive. Current app and server versions must both support this endpoint.
+
 Media repair preserves the saved body and validates existing ZIP entries before
 requesting missing or corrupt assets. Server copies supply individual assets
 through `GET /api/v1/chapters/:id/media`, with the revision, filename, and original

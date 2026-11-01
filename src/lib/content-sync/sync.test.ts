@@ -5,6 +5,7 @@ vi.mock("../../db/queries/content-sync", () => ({
   listContentSyncChapters: vi.fn(), listContentSyncWorkChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
   readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn(),
   contentJournalHead: vi.fn(), readContentJournal: vi.fn(), canUploadContentChapter: vi.fn(),
+  clearServerChapterDownloadProof: vi.fn(), rememberServerChapterDownload: vi.fn(),
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
 vi.mock("./native", () => ({
@@ -12,18 +13,24 @@ vi.mock("./native", () => ({
   withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
   withContentChapterStage: (input: unknown, run: (stagePath: string) => Promise<unknown>) => { native.stage(input); return run("snapshot"); },
 }));
+vi.mock("../chapter-content/storage-platform", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../chapter-content/storage-platform")>(),
+  inspectChapterPayloadInventory: vi.fn(),
+}));
 vi.mock("./works", () => ({ recordDeletedWorkMetadata: vi.fn(async (server, entry) => recordServerWorkDeletionExclusion(server, entry.metadata.identity)), syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0), contentWorkId: vi.fn(async () => "work-id") }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => "Test device") }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
-import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter } from "../../db/queries/content-sync";
+import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter, type CatalogEntry } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
 import { runContentSyncOperation, syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { runWorkContentStorageOperation } from "./storage-operation";
+import { withChapterDownloadDeletion, waitForChapterDownloadWrites } from "../chapter-download-writes";
 import { ContentServerError } from "./client";
+import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { deleteServerWork } from "./management";
 import { beginChapterDownloadQueueWrite } from "../tasks/chapter-download-activity";
 
@@ -645,6 +652,98 @@ it.each(["before transfer", "before installation"])("rejects a different source 
   await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target })).rejects.toThrow("novel ID");
   expect(native.install).not.toHaveBeenCalled();
   expect(markContentInstalled).not.toHaveBeenCalled();
+});
+
+it("does not install a server response that arrived after local deletion", async () => {
+  const target = { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" };
+  const row = { chapterId: 7001, novelId: 3, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "Book", chapterName: "One", position: 1, page: "1" };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  let release!: (value: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }) => void;
+  native.download.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const downloading = downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await withChapterDownloadDeletion([row.chapterId], async () => {});
+  release({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  await expect(downloading).rejects.toThrow("changed");
+  expect(native.install).not.toHaveBeenCalled();
+});
+
+it("rejects an in-flight server response blocked by an active deletion", async () => {
+  const target = { pluginId: "source", novelId: "work", novelPath: "/active-delete", chapterPath: "/chapter" };
+  const row = { chapterId: 7003, novelId: 3, pluginId: "source", sourceNovelId: "work", novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Book", chapterName: "One", position: 1, page: "1" };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  let releaseDownload!: (value: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }) => void;
+  native.download.mockImplementationOnce(() => new Promise(resolve => { releaseDownload = resolve; }));
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const downloading = downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
+  await vi.waitFor(() => expect(releaseDownload).toBeTypeOf("function"));
+  let releaseDeletion!: () => void;
+  const gate = new Promise<void>(resolve => { releaseDeletion = resolve; });
+  const deletion = withChapterDownloadDeletion([row.chapterId], () => gate);
+  releaseDownload({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(native.install).not.toHaveBeenCalled();
+  releaseDeletion();
+  await deletion;
+  await expect(downloading).rejects.toThrow("changed");
+  expect(native.install).not.toHaveBeenCalled();
+});
+
+it("allows a server installation already holding the work queue to finish before cleanup", async () => {
+  const target = { pluginId: "source", novelId: "work", novelPath: "/work-lock-test", chapterPath: "/chapter" };
+  const row = { chapterId: 7002, novelId: 3, pluginId: "source", sourceNovelId: "work", novelPath: target.novelPath, chapterPath: target.chapterPath, novelName: "Book", chapterName: "One", position: 1, page: "1" };
+  let release!: () => void;
+  let secondLookup!: () => void;
+  const lookupStarted = new Promise<void>(resolve => { secondLookup = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let lookups = 0;
+  vi.mocked(listContentSyncChapters).mockImplementation(async () => {
+    if (++lookups === 2) { secondLookup(); await gate; }
+    return [row] as never;
+  });
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const downloading = downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
+  await lookupStarted;
+  const events: string[] = [];
+  const cleanup = withChapterDownloadDeletion([row.chapterId], async () => {
+    await waitForChapterDownloadWrites([row.chapterId]);
+    await runWorkContentStorageOperation(target.pluginId, target.novelPath, async () => { events.push("cleanup"); });
+  });
+  release();
+  await Promise.race([
+    Promise.all([downloading, cleanup]),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("cleanup deadlocked")), 500)),
+  ]);
+  expect(native.install).toHaveBeenCalledOnce();
+  expect(events).toEqual(["cleanup"]);
+});
+
+it("records local chapter download proof only after successful installation and inspection", async () => {
+  const target = { pluginId: "local", novelId: "local", novelPath: "local", chapterPath: "/chapter" };
+  const row = { chapterId: 7004, novelId: 3, pluginId: "local", sourceNovelId: "local", novelPath: "local", chapterPath: "/chapter", novelName: "Book", chapterName: "One", chapterNumber: "1", position: 1, contentType: "html", page: "1", isLocal: true };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ fingerprint: "f".repeat(64) } as never);
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  await downloadServerChapterFromServer(entry, "http://server", { token: "registered", target });
+  expect(clearServerChapterDownloadProof).toHaveBeenCalledWith(row.chapterId);
+  expect(rememberServerChapterDownload).toHaveBeenCalledWith(row, "http://server", "f".repeat(64));
+  expect(vi.mocked(clearServerChapterDownloadProof).mock.invocationCallOrder[0]).toBeLessThan(native.install.mock.invocationCallOrder[0]!);
+  expect(vi.mocked(rememberServerChapterDownload).mock.invocationCallOrder[0]).toBeGreaterThan(native.install.mock.invocationCallOrder[0]!);
+});
+
+it("does not record local chapter download proof after installation fails", async () => {
+  const target = { pluginId: "local", novelId: "local", novelPath: "local", chapterPath: "/chapter" };
+  const row = { chapterId: 7005, novelId: 3, pluginId: "local", sourceNovelId: "local", novelPath: "local", chapterPath: "/chapter", novelName: "Book", chapterName: "One", position: 1, isLocal: true };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  native.install.mockRejectedValue(new Error("install failed"));
+  const entry = { id: "one", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  await expect(downloadServerChapterFromServer(entry, "http://server", { token: "registered", target })).rejects.toThrow("install failed");
+  expect(clearServerChapterDownloadProof).toHaveBeenCalledWith(row.chapterId);
+  expect(rememberServerChapterDownload).not.toHaveBeenCalled();
 });
 
 it("installs a scanned chapter into the existing source chapter of the same work", async () => {

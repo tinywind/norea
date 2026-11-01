@@ -1678,6 +1678,23 @@ export function enqueueChapterDownloadBatch({
   return { id: batchId, materialized, promise };
 }
 
+/** Cancel only selected materialized jobs, including tasks outside the UI snapshot. */
+export async function cancelChapterDownloadTasks(chapterIds: readonly number[]): Promise<void> {
+  const taskIds: string[] = [];
+  taskScheduler.batch(() => {
+    for (const chapterId of chapterIds) {
+      for (const key of [chapterDownloadDedupeKey(chapterId), chapterMediaRepairDedupeKey(chapterId)]) {
+        const task = taskScheduler.getTaskByDedupeKey(key);
+        if (task && (task.status === "queued" || task.status === "running")) {
+          taskIds.push(task.id);
+          taskScheduler.cancel(task.id);
+        }
+      }
+    }
+  });
+  await Promise.all(taskIds.map(id => taskScheduler.waitForSourceTaskSettlement(id)));
+}
+
 export function getChapterDownloadStatus(
   chapterId: number,
 ): ChapterDownloadStatus | undefined {

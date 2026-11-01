@@ -96,7 +96,7 @@ pub(super) fn prepare_chapter_media_repair(chapter_dir: &Path) -> Result<HashMap
 }
 
 // The ZIP library indexes by name and hides duplicate central-directory records.
-fn repair_archive_duplicates(source: &mut File, start: u64) -> Result<HashSet<String>, String> {
+pub(super) fn repair_archive_duplicates(source: &mut File, start: u64) -> Result<HashSet<String>, String> {
     source.seek(SeekFrom::Start(start)).map_err(|err| format!("chapter media: seek repair directory: {err}"))?;
     let mut names = HashSet::new();
     let mut duplicates = HashSet::new();

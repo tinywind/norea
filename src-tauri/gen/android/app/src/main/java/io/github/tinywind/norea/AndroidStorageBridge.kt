@@ -27,6 +27,7 @@ internal class AndroidStorageBridge(
   private val contentSync = AndroidContentSyncStorage(context, storage)
   private val workMetadata = AndroidWorkMetadataStorage(contentResolver, storage)
   private val chapterInspector = AndroidChapterArtifactInspector(storage, mediaStore)
+  private val payloadInventory = AndroidChapterPayloadInventory(storage, mediaStore)
   private val storageExecutors = AndroidStorageExecutors()
 
   fun destroy() = storageExecutors.destroy()
@@ -69,6 +70,20 @@ internal class AndroidStorageBridge(
         requestId,
         storageResponse { throw error },
       )
+    }
+  }
+
+  @JavascriptInterface
+  fun inspectChapterPayloadInventory(requestId: String, rootUri: String, chapterDir: String) {
+    submitStorageOperation(requestId, storageExecutors.scans) {
+      JSONObject().put("ok", true).put("snapshot", payloadInventory.inspectSnapshot(rootUri, chapterDir))
+    }
+  }
+
+  @JavascriptInterface
+  fun deleteChapterPayload(requestId: String, rootUri: String, chapterDir: String, expectedFingerprint: String) {
+    submitStorageOperation(requestId) {
+      payloadInventory.deletePayload(rootUri, chapterDir, expectedFingerprint).put("ok", true)
     }
   }
 

@@ -100,6 +100,8 @@ vi.mock("./scheduler", () => ({
     enqueueSource: schedulerMocks.enqueueSource,
     getSnapshot: vi.fn(() => ({ records: [] })),
     getTaskByDedupeKey: vi.fn(),
+    cancel: vi.fn(),
+    waitForSourceTaskSettlement: vi.fn(async () => undefined),
     subscribeEvents: vi.fn(() => () => undefined),
   },
 }));
@@ -133,6 +135,7 @@ import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation
 import { withChapterDownloadDeletion } from "../chapter-download-writes";
 import {
   cancelChapterDownloadBatches,
+  cancelChapterDownloadTasks,
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   enqueueChapterMediaRepair,
@@ -312,6 +315,30 @@ beforeEach(() => {
     html: `<article class="reader-epub-content" data-epub-rendered="true"></article>`,
     mediaBytes: 0,
     storedMediaCount: 0,
+  });
+});
+
+describe("targeted cleanup cancellation", () => {
+  it("cancels matching download and repair tasks outside the UI snapshot and waits for settlement", async () => {
+    const pending = createDeferred<void>();
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) => {
+      if (key === "chapter.download:42") return { id: "download", status: "running" } as never;
+      if (key === "chapter.repairMedia:42") return { id: "repair", status: "queued" } as never;
+      if (key === "chapter.download:99") return { id: "unrelated", status: "running" } as never;
+      return undefined;
+    });
+    vi.mocked(taskScheduler.waitForSourceTaskSettlement).mockImplementation((id) => id === "download" ? pending.promise : Promise.resolve());
+    let finished = false;
+    const cancellation = cancelChapterDownloadTasks([42]).then(() => { finished = true; });
+    await flushMicrotasks();
+    expect(finished).toBe(false);
+    expect(taskScheduler.cancel).toHaveBeenCalledWith("download");
+    expect(taskScheduler.cancel).toHaveBeenCalledWith("repair");
+    expect(taskScheduler.cancel).not.toHaveBeenCalledWith("unrelated");
+    expect(taskScheduler.getTaskByDedupeKey).not.toHaveBeenCalledWith("chapter.download:99");
+    pending.resolve();
+    await cancellation;
+    expect(taskScheduler.waitForSourceTaskSettlement).toHaveBeenCalledTimes(2);
   });
 });
 

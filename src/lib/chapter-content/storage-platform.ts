@@ -2,11 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   deleteAndroidStoragePath,
   inspectAndroidChapterArtifacts,
+  inspectAndroidChapterPayloadInventory,
+  deleteAndroidChapterPayload,
   readAndroidStorageText,
   renameAndroidStoragePath,
   writeAndroidStorageText,
 } from "../android-storage";
 import type { ChapterContentType } from "../chapter-content";
+import type { ChapterPayloadSnapshot } from "./inventory";
 import {
   chapterContentRelativePath as buildChapterContentRelativePath,
   chapterStorageRelativeDir,
@@ -30,6 +33,46 @@ export interface StoredChapterArtifactsInspection {
   contentBytes: number;
   mediaBytes: number;
   mediaComplete: boolean;
+}
+
+export interface ChapterPayloadDeleteResult {
+  snapshot: ChapterPayloadSnapshot;
+  errors: { path: string; message: string }[];
+}
+
+function cleanupChapterDir(identity: ChapterContentStorageIdentity): string {
+  const canonical = chapterStorageRelativeDir(
+    { ...identity.novel, id: undefined },
+    { ...identity.chapter, id: undefined },
+  );
+  const resolved = resolvedChapterStorageDir(identity.chapter.id);
+  if (resolved && resolved !== canonical) {
+    throw new Error("Stored chapter directory does not match its canonical identity.");
+  }
+  return canonical;
+}
+
+export async function inspectChapterPayloadInventory(
+  identity: ChapterContentStorageIdentity,
+  signal?: AbortSignal,
+): Promise<ChapterPayloadSnapshot> {
+  signal?.throwIfAborted();
+  const chapterDir = cleanupChapterDir(identity);
+  const snapshot = isAndroidRuntime()
+    ? await inspectAndroidChapterPayloadInventory(chapterDir)
+    : await invoke<ChapterPayloadSnapshot>("chapter_payload_inventory", { chapterDir });
+  signal?.throwIfAborted();
+  return snapshot;
+}
+
+export async function deleteChapterPayload(
+  identity: ChapterContentStorageIdentity,
+  expectedFingerprint: string,
+): Promise<ChapterPayloadDeleteResult> {
+  const chapterDir = cleanupChapterDir(identity);
+  return isAndroidRuntime()
+    ? deleteAndroidChapterPayload(chapterDir, expectedFingerprint)
+    : invoke<ChapterPayloadDeleteResult>("chapter_payload_delete", { chapterDir, expectedFingerprint });
 }
 
 const CHAPTER_PARTIAL_CONTENT_FILE = ".chapter-content.partial";

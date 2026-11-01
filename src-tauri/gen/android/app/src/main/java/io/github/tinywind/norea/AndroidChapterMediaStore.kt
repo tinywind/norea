@@ -115,7 +115,7 @@ internal class AndroidChapterMediaStore(
     return longValue
   }
 
-  private fun parseChapterMediaManifest(json: JSONObject): ChapterMediaManifest {
+  fun parseChapterMediaManifest(json: JSONObject): ChapterMediaManifest {
     require(chapterMediaJsonLong(json.opt("version"), "version") == 1L) {
       "Chapter media manifest version is unsupported."
     }

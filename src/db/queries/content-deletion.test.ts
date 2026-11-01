@@ -15,7 +15,7 @@ beforeEach(() => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library) VALUES(12,'source','42','/book','Book',1),(13,'other','42','/book','Other',1)");
   sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position,progress,bookmark) VALUES(91,12,'/chapter','One',1,75,1),(92,13,'/chapter','Other one',1,50,1)");
   sqlite.exec("INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread) VALUES('source','/book','old',50,1,0)");
-  sqlite.exec("INSERT INTO content_sync_cache(cache_key,payload) VALUES('norea-content-source:12','deleted-source'),('norea-content-source:13','retained-source'),('norea-content-catalog:http://server','catalog')");
+  sqlite.exec("INSERT INTO content_sync_cache(cache_key,payload) VALUES('norea-content-source:12','deleted-source'),('norea-content-source:13','retained-source'),('norea-content-chapter-source:91','removed-proof'),('norea-content-chapter-source:92','retained-proof'),('norea-content-catalog:http://server','catalog')");
   const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
   const db = {
     select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
@@ -43,6 +43,7 @@ it("removes work, chapters, statistics, membership, and saved reading state with
   expect(sqlite.prepare("SELECT novel_id FROM novel_stats").all()).toEqual([{ novel_id: 13 }]);
   expect(sqlite.prepare("SELECT cache_key,payload FROM content_sync_cache ORDER BY cache_key").all()).toEqual([
     { cache_key: "norea-content-catalog:http://server", payload: "catalog" },
+    { cache_key: "norea-content-chapter-source:92", payload: "retained-proof" },
     { cache_key: "norea-content-source:13", payload: "retained-source" },
   ]);
   await expect(deleteLocalNovelRecords(identity)).resolves.toBeUndefined();

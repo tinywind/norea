@@ -14,6 +14,8 @@ import type {
 } from "./chapter-storage-transfer";
 
 interface AndroidStorageBridge {
+  inspectChapterPayloadInventory: (requestId: string, rootUri: string, chapterDir: string) => void;
+  deleteChapterPayload: (requestId: string, rootUri: string, chapterDir: string, expectedFingerprint: string) => void;
   workMetadataOperation: (requestId: string, rootUri: string, input: string) => void;
   snapshotContentChapter: (requestId: string, rootUri: string, storageDir: string, stagePath: string) => void;
   installContentChapter: (requestId: string, rootUri: string, storageDir: string, stagePath: string) => void;
@@ -319,6 +321,27 @@ function androidStorageBridge(): AndroidStorageBridge {
   return bridge;
 }
 
+export async function inspectAndroidChapterPayloadInventory(
+  chapterDir: string,
+): Promise<import("./chapter-content/inventory").ChapterPayloadSnapshot> {
+  const root = await androidStorageRootWithoutMutation();
+  const response = await runAndroidStorageOperation<AndroidStorageResponse & {
+    snapshot: import("./chapter-content/inventory").ChapterPayloadSnapshot;
+  }>((requestId) => androidStorageBridge().inspectChapterPayloadInventory(requestId, root, chapterDir));
+  return response.snapshot;
+}
+
+export async function deleteAndroidChapterPayload(
+  chapterDir: string,
+  expectedFingerprint: string,
+): Promise<{ snapshot: import("./chapter-content/inventory").ChapterPayloadSnapshot; errors: { path: string; message: string }[] }> {
+  const root = await androidStorageRoot();
+  return runAndroidStorageOperation<AndroidStorageResponse & {
+    snapshot: import("./chapter-content/inventory").ChapterPayloadSnapshot;
+    errors: { path: string; message: string }[];
+  }>((requestId) => androidStorageBridge().deleteChapterPayload(requestId, root, chapterDir, expectedFingerprint));
+}
+
 export async function snapshotAndroidContentChapter(storageDir: string, stagePath: string): Promise<void> {
   const root = await androidStorageRoot();
   await runAndroidStorageOperation((requestId) =>
@@ -379,7 +402,7 @@ async function ensureAndroidStorageNomedia(root: string): Promise<void> {
   }
 }
 
-async function androidStorageRoot(): Promise<string> {
+async function androidStorageRootWithoutMutation(): Promise<string> {
   const root = (await invoke<string | null>(
     "chapter_media_get_storage_root",
   ))?.trim();
@@ -389,6 +412,11 @@ async function androidStorageRoot(): Promise<string> {
   if (!root.startsWith("content://")) {
     throw new Error("Android media storage folder must be selected again.");
   }
+  return root;
+}
+
+async function androidStorageRoot(): Promise<string> {
+  const root = await androidStorageRootWithoutMutation();
   await ensureAndroidStorageNomedia(root);
   return root;
 }

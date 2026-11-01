@@ -61,6 +61,19 @@ export async function writeContentSyncCache(key: string, payload: string): Promi
   await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload", [key, payload]);
 }
 
+export async function clearServerChapterDownloadProof(chapterId: number): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM content_sync_cache WHERE cache_key=$1", [`norea-content-chapter-source:${chapterId}`]);
+}
+
+export async function rememberServerChapterDownload(row: ContentSyncChapter, serverUrl: string, fingerprint: string): Promise<void> {
+  await writeContentSyncCache(`norea-content-chapter-source:${row.chapterId}`, JSON.stringify({
+    chapterId: row.chapterId, novelId: row.novelId, pluginId: row.pluginId, sourceNovelId: row.sourceNovelId,
+    novelPath: row.novelPath, chapterPath: row.chapterPath, chapterNumber: row.chapterNumber,
+    position: row.position, serverUrl, fingerprint,
+  }));
+}
+
 export interface ContentSyncChapter {
   chapterId: number;
   novelId: number;

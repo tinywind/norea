@@ -19,6 +19,7 @@ export async function withChapterDownloadWrite<T>(
   chapterId: number,
   signal: AbortSignal | undefined,
   write: () => Promise<T>,
+  expectedRevision?: number,
 ): Promise<T> {
   throwIfAborted(signal, "Chapter download was cancelled.");
   for (;;) {
@@ -26,6 +27,9 @@ export async function withChapterDownloadWrite<T>(
     if (!deletions) break;
     await Promise.all(deletions);
     throwIfAborted(signal, "Chapter download was cancelled.");
+  }
+  if (expectedRevision !== undefined && (activeWrites.has(chapterId) || (downloadRevisions.get(chapterId) ?? 0) > expectedRevision)) {
+    throw new Error("Chapter download changed during transfer.");
   }
   downloadRevisions.set(chapterId, ++downloadRevision);
   const writes = activeWrites.get(chapterId) ?? new Set<Promise<void>>();

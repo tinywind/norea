@@ -541,7 +541,7 @@ async fn restore_metadata_cache(
             .await
             .map_err(|err| format!("backup_restore_snapshot: clear {table}: {err}"))?;
     }
-    sqlx::query("DELETE FROM content_sync_cache WHERE cache_key LIKE 'norea-content-source:%'")
+    sqlx::query("DELETE FROM content_sync_cache WHERE cache_key LIKE 'norea-content-source:%' OR cache_key LIKE 'norea-content-chapter-source:%'")
         .execute(&mut **tx)
         .await
         .map_err(|err| format!("backup_restore_snapshot: clear replaced novel source IDs: {err}"))?;
@@ -1132,7 +1132,7 @@ mod tests {
     #[tokio::test]
     async fn restore_snapshot_marks_only_inspected_files_downloaded() {
         let pool = restore_pool().await;
-        for key in ["norea-content-source:1", "norea-content-work:http://server", "norea-content-catalog:http://server", "norea-content-device:http://server"] {
+        for key in ["norea-content-source:1", "norea-content-chapter-source:10", "norea-content-work:http://server", "norea-content-catalog:http://server", "norea-content-device:http://server"] {
             sqlx::query("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,'{}')")
                 .bind(key).execute(&pool).await.expect("seed sync cache");
         }

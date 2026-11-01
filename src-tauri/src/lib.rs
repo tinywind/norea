@@ -173,6 +173,8 @@ pub fn run() {
             device_backup::device_backup_download,
             chapter_media::chapter_content_mirror_clear,
             chapter_media::chapter_content_mirror_inspect,
+            chapter_media::chapter_payload_inventory,
+            chapter_media::chapter_payload_delete,
             chapter_media::chapter_content_mirror_read_file,
             chapter_media::chapter_content_mirror_store,
             chapter_media::chapter_content_mirror_store_partial,

@@ -163,6 +163,36 @@ requirements must be decided explicitly before implementation.
 - Source plugins use their independent API version 0.2. Their contract is
   documented in [docs/plugins/contract.md](./plugins/contract.md).
 
+## Device-only chapter cleanup
+
+Settings > Data > Clear downloaded chapters previews an explicit cleanup before
+confirmation. A chapter must have an eligible managed payload and satisfy the
+selected server, reading, and category conditions. Selected categories match
+any of those categories; the three conditions apply together. Source downloads
+remain eligible. A local-work chapter requires proof of its own successful
+server download and a matching current payload fingerprint. A work-level server
+association alone does not qualify it. Existing local chapters without this
+proof remain excluded, and replacing their files invalidates the proof.
+
+The four server conditions check whether a chapter is present, whether server
+asset coverage is at least the device coverage, whether the server contains all
+valid device content, or ignore server state. Coverage compares matching body
+digests and strict manifest declarations before comparing valid asset counts.
+Containment compares the body and every valid local asset by identity, digest,
+and size. Missing or malformed declarations cannot establish either comparison.
+Server evidence is checked again before deletion and reflects the server at that
+moment; another device may change the server copy later.
+
+Cleanup removes recognized downloaded bodies, archives, managed loose media,
+and payload staging files. It retains chapter `manifest.json`, `novel.json`,
+covers, chapter rows and catalog entries, library membership, categories,
+reading history, progress, read flags, and bookmarks. Download flags and byte
+counts are cache state and are reconciled with remaining files. Cleanup does not
+remove server content or create server deletion exclusions. An interrupted task
+does not restart automatically; run a new preview to evaluate remaining files.
+The proof uses the existing content sync cache and requires no schema migration,
+format conversion, or database reset.
+
 ## Full Device Backups on the Content Server
 
 Device backup version 1 stores one current snapshot per device name. The app's

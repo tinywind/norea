@@ -1,17 +1,18 @@
 import {
   contentIdentity, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters,
   markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
-  contentJournalHead, readContentJournal, canUploadContentChapter,
+  contentJournalHead, readContentJournal, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload,
 } from "../../db/queries/content-sync";
 import { hasStoredChapterContent } from "../../db/queries/chapter";
 import { useContentSyncStore } from "../../store/content-sync";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
+import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
 import {
   contentServerRequest, normalizeContentServerUrl, ContentServerError,
 } from "./client";
 import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity, type UploadConflictPolicy } from "./native";
-import { withChapterDownloadWrite } from "../chapter-download-writes";
+import { currentChapterDownloadRevision, withChapterDownloadWrite } from "../chapter-download-writes";
 import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
@@ -322,6 +323,7 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
 
 export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
   options?.signal?.throwIfAborted();
+  const downloadRevision = currentChapterDownloadRevision();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
   const token = options?.token ?? await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
   const target = options?.target ?? entry.manifest.identity;
@@ -334,17 +336,27 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
     return row;
   };
   const row = await findTarget();
-  return withDownloadedContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: row.chapterId, ...(options?.signal ? { signal: options.signal } : {}) }, (result, install) =>
-    runWorkContentStorageOperation(target.pluginId, target.novelPath, async () => {
-      options?.signal?.throwIfAborted();
-      const current = await findTarget();
-      options?.signal?.throwIfAborted();
-      await withChapterDownloadWrite(current.chapterId, options?.signal, async () => {
+  return withDownloadedContentChapter({ serverUrl, token, entry, storageDir: storageDir(row), chapterId: row.chapterId, ...(options?.signal ? { signal: options.signal } : {}) }, (result, install) => {
+    options?.signal?.throwIfAborted();
+    return withChapterDownloadWrite(row.chapterId, options?.signal, () =>
+      runWorkContentStorageOperation(target.pluginId, target.novelPath, async () => {
+        options?.signal?.throwIfAborted();
+        const current = await findTarget();
+        if (current.chapterId !== row.chapterId) throw new Error("Downloaded chapter identity changed during transfer.");
+        options?.signal?.throwIfAborted();
+        if (current.isLocal) await clearServerChapterDownloadProof(current.chapterId);
         await install(storageDir(current));
         await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes, result.mediaComplete);
-      });
-      return { novelId: current.novelId, chapterId: current.chapterId };
-    }));
+        if (current.isLocal) {
+          const snapshot = await inspectChapterPayloadInventory({
+            novel: { id: current.novelId, pluginId: current.pluginId, sourceNovelId: current.sourceNovelId, path: current.novelPath, name: current.novelName },
+            chapter: { id: current.chapterId, chapterNumber: current.chapterNumber, position: current.position, name: current.chapterName, contentType: current.contentType },
+          });
+          await rememberServerChapterDownload(current, normalizeContentServerUrl(serverUrl), snapshot.fingerprint);
+        }
+        return { novelId: current.novelId, chapterId: current.chapterId };
+      }), downloadRevision);
+  });
 }
 
 async function mutateServerChapter(serverUrl: string, entry: CatalogEntry, restore: boolean): Promise<void> {

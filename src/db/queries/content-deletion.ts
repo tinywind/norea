@@ -27,6 +27,7 @@ export async function deleteLocalNovelRecords(novel: Pick<NovelDetailRecord, "id
     if (current.pluginId !== novel.pluginId || current.sourceNovelId !== novel.sourceNovelId || current.path !== novel.path) {
       throw new Error("Local work identity changed before deletion.");
     }
+    await db.execute("DELETE FROM content_sync_cache WHERE cache_key IN (SELECT 'norea-content-chapter-source:' || id FROM chapter WHERE novel_id=$1)", [novel.id]);
     await db.execute("DELETE FROM novel WHERE id=$1", [novel.id]);
     await db.execute("DELETE FROM work_metadata_reading_state WHERE plugin_id=$1 AND novel_path=$2", [novel.pluginId, novel.path]);
     await db.execute("DELETE FROM content_sync_cache WHERE cache_key=$1", [`norea-content-source:${novel.id}`]);
