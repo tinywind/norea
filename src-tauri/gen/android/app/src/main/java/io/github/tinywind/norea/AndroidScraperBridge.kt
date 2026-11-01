@@ -454,6 +454,9 @@ class AndroidScraperBridge(
           webView.resumeTimers()
           webView.onResume()
           syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
+          if (state.pendingSurfaceLayoutListener != null) {
+            layoutHiddenScraperSurface(webView)
+          }
         }
       }
     }
@@ -1068,6 +1071,23 @@ class AndroidScraperBridge(
     state.webView?.removeOnLayoutChangeListener(listener)
   }
 
+  private fun layoutHiddenScraperSurface(webView: WebView) {
+    if (scraperContainer().windowVisibility == View.VISIBLE) return
+    // Hidden activity windows do not run layout passes, so waiting for a size
+    // change would time out before navigation can reach the source or VPN.
+    val layoutParams = webView.layoutParams as FrameLayout.LayoutParams
+    webView.measure(
+      View.MeasureSpec.makeMeasureSpec(layoutParams.width, View.MeasureSpec.EXACTLY),
+      View.MeasureSpec.makeMeasureSpec(layoutParams.height, View.MeasureSpec.EXACTLY),
+    )
+    webView.layout(
+      layoutParams.leftMargin,
+      layoutParams.topMargin,
+      layoutParams.leftMargin + layoutParams.width,
+      layoutParams.topMargin + layoutParams.height,
+    )
+  }
+
   private fun showBackgroundScraperSurface(
     state: AndroidScraperState,
     webView: WebView,
@@ -1087,6 +1107,7 @@ class AndroidScraperBridge(
     webView.isFocusableInTouchMode = false
     webView.requestLayout()
     webView.invalidate()
+    layoutHiddenScraperSurface(webView)
     fun hasTargetSize(width: Int, height: Int): Boolean =
       androidBackgroundScraperSurfaceIsReady(width, height) &&
         width == layoutParams.width && height == layoutParams.height
