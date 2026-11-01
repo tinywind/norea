@@ -61,6 +61,7 @@ export const LibraryLocalImport = forwardRef<
   >([]);
   const [localImportAnalyzing, setLocalImportAnalyzing] = useState(false);
   const localImportMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async (
       items: readonly LocalImportReviewItem[],
     ): Promise<LocalImportItemResult[]> => {
@@ -142,6 +143,7 @@ export const LibraryLocalImport = forwardRef<
   });
 
   const openLocalHome = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: () => upsertLocalNovel({ name: LOCAL_NOVEL_NAME, path: LOCAL_NOVEL_PATH, chapters: [] }),
     onSuccess: ({ novelId }) => {
       void queryClient.invalidateQueries({ queryKey: ["category"] });

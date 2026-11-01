@@ -6,7 +6,6 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { notifications } from "@mantine/notifications";
 import {
   Badge,
   Box,
@@ -36,7 +35,7 @@ import {
 } from "../lib/download-cache-loaders";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
 import { confirmContentDeletion } from "../store/content-deletion";
-import { describeError } from "../lib/errors";
+import { showErrorToast } from "../lib/runtime/error-toast";
 import { pluginManager } from "../lib/plugins/manager";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import {
@@ -55,7 +54,7 @@ function invalidateDownloadCache(queryClient: QueryClient): void {
 }
 
 function showDownloadCacheDeleteError(error: Error, title: string): void {
-  notifications.show({ color: "red", title, message: describeError(error) });
+  showErrorToast(title, error, `downloads:delete:${title}`);
 }
 
 function formatBytes(bytes: number, locale: AppLocale): string {
@@ -222,6 +221,7 @@ function DownloadCacheChapters({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const chapters = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: [...DOWNLOAD_CACHE_QUERY_KEY, "chapters", novel.novelId] as const,
     queryFn: () => loadDownloadCacheChapters(novel.novelId),
   });
@@ -482,6 +482,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
   const queryClient = useQueryClient();
   const scheduledBackfillRef = useRef(false);
   const query = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: DOWNLOAD_CACHE_QUERY_KEY,
     queryFn: loadDownloadCacheNovels,
   });

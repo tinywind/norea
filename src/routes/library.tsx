@@ -203,6 +203,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   }, [selectedSourceId, sourceFilters.data, sourceFilters.isLoading]);
 
   const metadataRefreshMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: () =>
       refreshLibraryMetadata({
         aggregateTaskTitle: t("tasks.task.refreshLibraryMetadata"),

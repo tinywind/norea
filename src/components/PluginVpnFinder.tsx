@@ -189,6 +189,7 @@ export function PluginVpnFinder({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<PluginVpnFinderSort>("score");
   const serversQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     enabled: opened && !catalogStopped && online &&
       queryClient.getQueryData(PLUGIN_VPN_FINDER_QUERY_KEY) === undefined,
     queryFn: ({ signal }) => {

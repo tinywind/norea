@@ -53,6 +53,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const [workDeletionActive, setWorkDeletionActive] = useState(false);
   const queryKey = ["content-server", source.serverUrl, "managed-chapters", source.workId];
   const chapters = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: [...queryKey, page],
     queryFn: ({ signal }) => loadServerChapterPage(source, (page - 1) * 100, signal),
     retry: false,
@@ -61,6 +62,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
   const rows = chapters.data?.items ?? [];
   const selectedIds = rows.filter(chapter => selected.has(chapter.id)).map(chapter => chapter.id);
   const remove = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: (selectedChapters: readonly ServerChapterSummary[]) => confirmContentDeletion({ kind: "server-chapters", source, title: name, chapters: selectedChapters }),
     onSuccess: async changed => {
       if (!changed) return;

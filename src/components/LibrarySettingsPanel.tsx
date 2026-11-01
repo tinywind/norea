@@ -24,6 +24,7 @@ export function LibrarySettingsPanel() {
   const defaultCategoryId = useLibraryStore((s) => s.defaultCategoryId);
   const setDefaultCategoryId = useLibraryStore((s) => s.setDefaultCategoryId);
   const categories = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["category", "list"],
     queryFn: listCategories,
     staleTime: Infinity,

@@ -786,6 +786,7 @@ export function HistoryPage() {
     useState<ProgressFilter>("all");
 
   const query = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["chapter", "history", HISTORY_LIMIT] as const,
     queryFn: () => listRecentlyRead(HISTORY_LIMIT),
   });

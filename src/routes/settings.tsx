@@ -394,10 +394,12 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const connectionRequest = useRef(0);
   const verdictSavingIpsRef = useRef(new Set<string>());
   const verdictQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     queryFn: listVpnGateServerVerdicts,
     queryKey: VPN_GATE_SERVER_VERDICTS_QUERY_KEY,
   });
   const vpnQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: PLUGIN_VPN_QUERY_KEY,
     queryFn: getPluginVpnStatus,
     refetchInterval: (query) => {

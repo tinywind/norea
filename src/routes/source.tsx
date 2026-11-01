@@ -243,6 +243,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   const isInLibrary = useLibraryNovelMembership();
 
   const installed = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: INSTALLED_QUERY_KEY,
     queryFn: async () => {
       if (isTauriRuntime()) {
@@ -318,6 +319,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   }, [listingScopeKey]);
 
   const listing = useQuery({
+    meta: { errorPresentation: "inline" },
     enabled: canLoadSourceListing(
       plugin,
       filterOwner,
@@ -432,6 +434,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   );
 
   const open = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async (item: NovelItem) => {
       if (!plugin) throw new Error(t("source.pluginNotLoaded"));
       const task = enqueueOpenNovelFromSourceTask({

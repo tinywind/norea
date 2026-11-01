@@ -48,6 +48,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const contentRef = useRef<ReaderContentHandle | null>(null);
   const openedChapterRef = useRef<number | null>(null);
   const chapterQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     ...readerChapterQueryOptions(chapterId),
     enabled: chapterId > 0,
   });

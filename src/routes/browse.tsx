@@ -299,6 +299,7 @@ export function BrowsePage({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const repos = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: REPO_QUERY_KEY,
     queryFn: listRepositories,
     enabled: active && tab === "sources",
@@ -319,6 +320,7 @@ export function BrowsePage({
   const forceRefreshNextRef = useRef(false);
 
   const available = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: AVAILABLE_QUERY_KEY,
     queryFn: async () => {
       const force = forceRefreshNextRef.current;
@@ -426,6 +428,7 @@ export function BrowsePage({
   }, [pendingRepoUrl, clearPendingRepoUrl]);
 
   const addRepoMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async () => {
       const trimmed = url.trim();
       debugRepositoryFlow("add mutation start", {
@@ -468,6 +471,7 @@ export function BrowsePage({
   });
 
   const removeRepoMutation = useMutation({
+    meta: { errorPresentation: "toast" },
     mutationFn: async (id: number) => {
       const repository = repos.data?.find((item) => item.id === id) ?? null;
       debugRepositoryFlow("remove mutation start", {
@@ -517,6 +521,7 @@ export function BrowsePage({
   });
 
   const installSourceMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async ({
       item,
       form,
@@ -542,6 +547,7 @@ export function BrowsePage({
   });
 
   const uploadPluginMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async (file: File): Promise<Plugin> => {
       if (!file.name.toLowerCase().endsWith(".js")) {
         throw new Error(t("browse.localPlugin.invalidFile"));

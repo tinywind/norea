@@ -16,10 +16,12 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const { t } = useTranslation();
   const deviceName = useContentSyncStore(state => state.deviceName);
   const ownName = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["device-backup", "name", deviceName],
     queryFn: defaultBackupDeviceName, staleTime: Infinity,
   });
   const backups = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["device-backup", "list", serverUrl],
     queryFn: ({ signal }) => listDeviceBackups(serverUrl, signal),
     enabled: Boolean(serverUrl), staleTime: 60_000, retry: false,

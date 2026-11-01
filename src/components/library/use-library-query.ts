@@ -59,6 +59,7 @@ export function useLibraryQuery(
   );
 
   const novels = useInfiniteQuery({
+    meta: { errorPresentation: "inline" },
     enabled: active,
     queryKey: [
       "novel",
@@ -109,6 +110,7 @@ export function useLibraryQuery(
   });
 
   const categories = useQuery({
+    meta: { errorPresentation: "inline" },
     enabled: active && libraryRowsLoaded,
     queryKey: ["category", "list"],
     queryFn: listCategories,

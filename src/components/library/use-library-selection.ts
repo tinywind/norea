@@ -1,5 +1,4 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
 import {
@@ -13,7 +12,7 @@ import {
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { describeError } from "../../lib/errors";
+import { showErrorToast } from "../../lib/runtime/error-toast";
 import { enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
@@ -82,11 +81,7 @@ export function useLibrarySelection(
       setSelectedIds(new Set());
     },
     onError: (error) => {
-      notifications.show({
-        color: "red",
-        title: t("library.editSelectedCategories"),
-        message: describeError(error),
-      });
+      showErrorToast(t("library.editSelectedCategories"), error);
     },
   });
 
@@ -154,11 +149,7 @@ export function useLibrarySelection(
       });
     },
     onError: (error) => {
-      notifications.show({
-        color: "red",
-        title: t("library.batchDownload.open"),
-        message: describeError(error),
-      });
+      showErrorToast(t("library.batchDownload.open"), error);
     },
   });
 
@@ -175,11 +166,7 @@ export function useLibrarySelection(
       void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
     },
     onError: (error) => {
-      notifications.show({
-        color: "red",
-        title: t("tasks.task.deleteDownloadCache"),
-        message: describeError(error),
-      });
+      showErrorToast(t("tasks.task.deleteDownloadCache"), error);
     },
   });
 
@@ -222,11 +209,7 @@ export function useLibrarySelection(
       return ids.length;
     },
     onError: (error) => {
-      notifications.show({
-        color: "red",
-        title: t("library.selection.selectAll"),
-        message: describeError(error),
-      });
+      showErrorToast(t("library.selection.selectAll"), error);
     },
   });
 

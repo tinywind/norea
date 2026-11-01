@@ -525,16 +525,19 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   const [confirmationOpen, setConfirmationOpen] = useState(false);
 
   const sourceNovelQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     enabled: sourceNovelId > 0,
     queryKey: ["novel", "detail", sourceNovelId] as const,
     queryFn: () => getNovelById(sourceNovelId),
   });
   const sourceChaptersQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     enabled: sourceNovelId > 0,
     queryKey: ["novel", "detail", sourceNovelId, "chapters"] as const,
     queryFn: () => listChaptersByNovel(sourceNovelId),
   });
   const installedPluginsQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: INSTALLED_PLUGINS_QUERY_KEY,
     queryFn: async () => {
       if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
@@ -568,6 +571,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   );
 
   const searchTargets = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async (query: string) => {
       searchAbortRef.current?.abort();
       const controller = new AbortController();
@@ -591,6 +595,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   });
 
   const previewTarget = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async (candidate: MergeTargetCandidate) => {
       const task = enqueueNovelMergeTargetPreviewTask({
         item: candidate.item,
@@ -683,6 +688,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   ]);
 
   const mergeNovel = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async () => {
       if (!selectedTarget || !validation.canConfirm) {
         throw new Error(t("novelMerge.confirmation.incomplete"));

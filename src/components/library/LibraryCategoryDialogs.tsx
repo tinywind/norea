@@ -48,6 +48,7 @@ export const LibraryCategoryDialogs = forwardRef<
   const [categoryDeleteTarget, setCategoryDeleteTarget] =
     useState<LibraryCategory | null>(null);
   const createCategoryMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: (name: string) => insertCategory({ name }),
     onSuccess: () => {
       invalidateLibraryCategories();
@@ -57,6 +58,7 @@ export const LibraryCategoryDialogs = forwardRef<
   });
 
   const renameCategoryMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: ({ id, name }: { id: number; name: string }) =>
       updateCategory(id, { name }),
     onSuccess: () => {
@@ -67,6 +69,7 @@ export const LibraryCategoryDialogs = forwardRef<
   });
 
   const deleteCategoryMutation = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: (id: number) => deleteCategory(id),
     onSuccess: (_data, id) => {
       invalidateLibraryCategories();

@@ -29,17 +29,20 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
   const [deletingWorkId, setDeletingWorkId] = useState<string | null>(null);
   useEffect(() => { setDeletingWorkId(null); }, [server]);
   const device = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["content-server", server, "device", deviceName],
     queryFn: () => registerContentDevice(server, deviceName),
     enabled: active && !!server, staleTime: 60_000, retry: false,
   });
   const enabled = active && !!server && !!device.data;
   const sources = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["content-server", server, "sources"],
     queryFn: ({ signal }) => contentServerRequest<{ items: ServerSourceSummary[] }>(server, "/catalog/sources", device.data!, "GET", undefined, signal),
     enabled, staleTime: 30_000,
   });
   const works = useInfiniteQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["content-server", server, "browse", query, source],
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) => listServerWorks(server, device.data!, query, source, pageParam, signal),
@@ -47,6 +50,7 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
     enabled, staleTime: 30_000,
   });
   const open = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: (work: ServerWorkSummary) => openServerNovel(server, work),
     onSuccess: async (id) => {
       await queryClient.invalidateQueries({ queryKey: ["novel", "detail", id] });

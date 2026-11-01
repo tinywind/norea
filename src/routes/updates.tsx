@@ -515,11 +515,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   >(() => new Map());
 
   const refresh = useMutation({
+    meta: { errorPresentation: hasLoaded ? "toast" : "inline" },
     mutationFn: () => listLibraryUpdatesPage(UPDATES_PAGE_SIZE),
     onSuccess: mergeFirstPage,
   });
 
   const check = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: () => {
       const loadedWindowSize = useUpdatesStore.getState().updates.length;
       return checkLibraryUpdates(Math.max(UPDATES_PAGE_SIZE, loadedWindowSize), {

@@ -167,6 +167,7 @@ export function useNovelMetadata(
   }
 
   const refreshMetadata = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: () => enqueueNovelMetadataRefresh("since"),
     onSuccess: (result) => {
       if (result) setSourceDuplicateChapters(result.duplicateChapters);
@@ -175,6 +176,7 @@ export function useNovelMetadata(
   });
 
   const fullRefreshMetadata = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: () => enqueueNovelMetadataRefresh("full"),
     onSuccess: (result) => {
       if (result) setSourceDuplicateChapters(result.duplicateChapters);

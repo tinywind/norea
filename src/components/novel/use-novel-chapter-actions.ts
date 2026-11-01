@@ -1,5 +1,4 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { notifications } from "@mantine/notifications";
 import {
   setChaptersReadState,
   setRelativeChaptersReadState,
@@ -8,7 +7,7 @@ import {
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
-import { describeError } from "../../lib/errors";
+import { showErrorToast } from "../../lib/runtime/error-toast";
 import {
   enqueueChapterDownload,
   enqueueChapterDownloadBatch,
@@ -37,11 +36,11 @@ export function useNovelChapterActions(
     void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
   };
   const showDeleteError = (error: Error) => {
-    notifications.show({
-      color: "red",
-      title: t("tasks.task.deleteDownloadCache"),
-      message: describeError(error),
-    });
+    showErrorToast(
+      t("tasks.task.deleteDownloadCache"),
+      error,
+      `downloads:novel:${id}`,
+    );
   };
   const clearDownload = useMutation({
     mutationFn: async (chapterId: number) => {

@@ -25,12 +25,14 @@ export function NovelCategoryEditor({ active, novelId, novelName }: NovelCategor
   const [opened, setOpened] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const categoriesQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: ["category", "list"],
     queryFn: listCategories,
     enabled: active,
   });
   const membershipKey = ["category", "novel", novelId];
   const membershipQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: membershipKey,
     queryFn: () => getNovelCategoryIds(novelId),
     enabled: active,
@@ -39,6 +41,7 @@ export function NovelCategoryEditor({ active, novelId, novelName }: NovelCategor
   const assignedIds = membershipQuery.data ?? [];
   const assignedCategories = categories.filter((category) => assignedIds.includes(category.id));
   const save = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: (ids: number[]) => setNovelCategories(novelId, ids),
     onSuccess: async (_data, ids) => {
       queryClient.setQueryData(membershipKey, ids);

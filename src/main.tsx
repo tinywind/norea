@@ -7,6 +7,7 @@ import {
   QueryCache,
   QueryClient,
   QueryClientProvider,
+  hashKey,
 } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode, useEffect, useMemo, useState } from "react";
@@ -37,28 +38,35 @@ import { makeMantineColorScale, resolveMd3Palette } from "./theme/md3";
 
 installRuntimeLogLevelFilter(useLoggingStore.getState().logLevel);
 
-/**
- * Global error fallbacks for any mutation or query that doesn't
- * surface its own error UI. Silent-failure is the worst kind of
- * bug. Every mutation/query that throws gets a red toast at minimum.
- */
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
-    onError: (error) =>
+    onError: (error, query) => {
+      if (query.meta?.errorPresentation === "inline") return;
       showErrorToast(
         translate(useAppearanceStore.getState().appLocale, "common.loadFailed"),
         error,
-      ),
+        query.meta?.errorToastGroup ?? `query:${query.queryHash}`,
+      );
+    },
   }),
   mutationCache: new MutationCache({
-    onError: (error) =>
+    onError: (error, _variables, _context, mutation) => {
+      if (
+        mutation.meta?.errorPresentation === "inline" ||
+        (mutation.options.onError && mutation.meta?.errorPresentation !== "toast")
+      ) {
+        return;
+      }
       showErrorToast(
         translate(
           useAppearanceStore.getState().appLocale,
           "common.actionFailed",
         ),
         error,
-      ),
+        mutation.meta?.errorToastGroup ??
+          `mutation:${hashKey(mutation.options.mutationKey ?? [describeError(error)])}`,
+      );
+    },
   }),
   defaultOptions: {
     queries: {

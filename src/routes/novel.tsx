@@ -87,6 +87,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const chapterSelectionGuardRef = useRef(false);
 
   const novelQuery = useQuery({
+    meta: { errorPresentation: "inline" },
     queryKey: novelKey(id),
     queryFn: () => getNovelById(id, "committed"),
     enabled: id > 0,

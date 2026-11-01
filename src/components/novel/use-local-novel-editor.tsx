@@ -86,6 +86,7 @@ export function useLocalNovelEditor(
   const [localMetadataForm, setLocalMetadataForm] =
     useState<LocalNovelMetadataInput>(EMPTY_LOCAL_NOVEL_FORM);
   const addLocalChapters = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: async (files: readonly File[]) => {
       let result = null;
       for (const file of files) {
@@ -129,6 +130,7 @@ export function useLocalNovelEditor(
   });
 
   const updateLocalMetadata = useMutation({
+    meta: { errorPresentation: "inline" },
     mutationFn: (input: LocalNovelMetadataInput) =>
       updateLocalNovelMetadata(id, input),
     onSuccess: () => {
