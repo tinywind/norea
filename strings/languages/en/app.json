@@ -68,7 +68,7 @@
   "contentSync.browseHint": "Open a work to add it to your library or download chapters. Browsing does not require a full sync.",
   "contentSync.background": "Syncing in the background. You can keep browsing and reading.",
   "contentSync.progress": "Checked {completed}/{total} chapters · Uploaded {uploaded} · Failed {failed}",
-  "contentSync.description": "Share complete chapter files and work details with your devices. Automatic content sync excludes personal reading state and library membership. Use Device backup below to save or replace the complete app database and settings. Devices register automatically.",
+  "contentSync.description": "Share stored chapter files and work details with your devices. Automatic content sync excludes personal reading state and library membership. Use Device backup below to save or replace the complete app database and settings. Devices register automatically.",
   "contentSync.serverUrl": "Server URL",
   "contentSync.deviceName": "Device name",
   "contentSync.resetDeviceName": "Reset device name",

@@ -3,6 +3,7 @@ import {
   markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
   contentJournalHead, readContentJournal, canUploadContentChapter,
 } from "../../db/queries/content-sync";
+import { hasStoredChapterContent } from "../../db/queries/chapter";
 import { useContentSyncStore } from "../../store/content-sync";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
@@ -26,6 +27,7 @@ interface CatalogCache {
   pendingUploads: string[];
   localCursor?: number;
   uploadConflictPolicy?: UploadConflictPolicy;
+  includesIncompleteChapters?: boolean;
 }
 interface CatalogChangesPage { items: { identity: ContentIdentity; deleted: boolean; complete: boolean; sequence: number }[]; cursor: number; hasMore: boolean }
 function saveCache(key: string, value: unknown): Promise<void> { return writeContentSyncCache(key, JSON.stringify(value)); }
@@ -114,7 +116,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     const isDeletedWork = (row: ContentSyncChapter) => row.sourceNovelId != null && deletedDirectories.has(serverWorkDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId }));
     const deletions = await readServerChapterDeletionExclusions(server);
     const head = await contentJournalHead();
-    const changes = cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
+    const changes = !cache.includesIncompleteChapters || cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
       : await readContentJournal(cache.localCursor, head);
     const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
     const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
@@ -132,10 +134,11 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
       }
     }
     const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys()), ...recheckRows.map(identity)]);
-    if (!pending.size && cache.localCursor === head && !deletedIds.length) return;
+    if (!pending.size && cache.includesIncompleteChapters && cache.localCursor === head && !deletedIds.length) return;
     cache.pendingUploads = [...pending];
     cache.localCursor = head;
     cache.uploadConflictPolicy = conflictPolicy;
+    cache.includesIncompleteChapters = true;
     cache.tombstones = {};
     await saveCatalog(server, cache);
     let processed = 0;
@@ -155,9 +158,9 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
           reportProgress();
           continue;
         }
-        if (!row || !row.isDownloaded || row.mediaRepairNeeded || isDeletedWork(row) || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))
+        if (!row || !hasStoredChapterContent(row) || isDeletedWork(row) || deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath]))
           || (row.sourceNovelId != null && deletions.has(serverChapterDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId, chapterPath: row.chapterPath }, row.chapterNumber)))) {
-          if (cache.downloads[id] && !row?.isDownloaded && !cache.excluded.includes(id)) cache.excluded.push(id);
+          if (cache.downloads[id] && (!row || !hasStoredChapterContent(row)) && !cache.excluded.includes(id)) cache.excluded.push(id);
           delete cache.downloads[id];
           if (row && isDeletedWork(row)) delete cache.uploaded[id];
           pending.delete(id);

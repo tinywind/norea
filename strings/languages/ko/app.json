@@ -68,7 +68,7 @@
   "contentSync.browseHint": "작품을 열어 서재에 추가하거나 회차를 다운로드하세요. 전체 동기화 없이 탐색할 수 있습니다.",
   "contentSync.background": "백그라운드에서 동기화 중입니다. 탐색과 읽기를 계속할 수 있습니다.",
   "contentSync.progress": "확인 {completed}/{total}회차 · 업로드 {uploaded} · 실패 {failed}",
-  "contentSync.description": "기기 간에 완전한 챕터 파일과 작품 정보를 공유합니다. 자동 콘텐츠 동기화에는 개인 읽기 기록과 서재 목록이 포함되지 않습니다. 아래의 기기 백업에서 앱 DB와 모든 설정을 통째로 저장하거나 복원할 수 있습니다. 기기는 자동으로 등록됩니다.",
+  "contentSync.description": "기기 간에 저장된 챕터 파일과 작품 정보를 공유합니다. 자동 콘텐츠 동기화에는 개인 읽기 기록과 서재 목록이 포함되지 않습니다. 아래의 기기 백업에서 앱 DB와 모든 설정을 통째로 저장하거나 복원할 수 있습니다. 기기는 자동으로 등록됩니다.",
   "contentSync.serverUrl": "서버 주소",
   "contentSync.deviceName": "기기 이름",
   "contentSync.resetDeviceName": "기기 이름 초기화",

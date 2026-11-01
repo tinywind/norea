@@ -113,7 +113,7 @@ async function selectContentSyncChapters(identities: string[] | undefined, downl
     c.is_downloaded AS isDownloaded, c.media_repair_needed AS mediaRepairNeeded,
     c.content_bytes AS contentBytes, c.media_bytes AS mediaBytes,
     EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id=c.id) AS isDownloadQueued
-    FROM ${from} ${downloadedOnly ? "WHERE c.is_downloaded=1" : ""} ORDER BY n.id,c.position,c.id`, targets);
+    FROM ${from} ${downloadedOnly ? "WHERE (c.is_downloaded=1 OR c.content_bytes>0)" : ""} ORDER BY n.id,c.position,c.id`, targets);
   return rows.map((row) => ({ ...row, isLocal: sqliteBoolean(row.isLocal),
     isDownloaded: sqliteBoolean(row.isDownloaded), mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
     isDownloadQueued: sqliteBoolean(row.isDownloadQueued) }));
@@ -122,7 +122,7 @@ async function selectContentSyncChapters(identities: string[] | undefined, downl
 export async function canUploadContentChapter(chapterId: number): Promise<boolean> {
   const db = await getDb();
   const rows = await db.select<{ ready: boolean }[]>(`SELECT EXISTS(
-    SELECT 1 FROM chapter c WHERE c.id=$1 AND c.is_downloaded=1 AND c.media_repair_needed=0
+    SELECT 1 FROM chapter c WHERE c.id=$1 AND (c.is_downloaded=1 OR c.content_bytes>0)
     AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id=c.id)
   ) AS ready`, [chapterId]);
   return sqliteBoolean(rows[0]?.ready);

@@ -121,6 +121,13 @@ fn media_files(manifest: &Value) -> Result<Vec<String>, String> {
 }
 
 pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
+    if !inspect_chapter_media(source)? {
+        return Err(failure("chapter media archive is incomplete"));
+    }
+    Ok(())
+}
+
+fn inspect_chapter_media(source: &Path) -> Result<bool, String> {
     for name in ["manifest.json", "media.zip"] {
         match fs::symlink_metadata(source.join(name)) {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
@@ -134,15 +141,15 @@ pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
         return if source.join("media.zip").exists() {
             Err(failure("chapter media manifest is missing"))
         } else {
-            Ok(())
+            Ok(true)
         };
     }
     let media = media_files(&read_json(&source.join("manifest.json"))?)?;
     if media.len() + 2 > MAX_FILES {
         return Err(failure("too many chapter media files"));
     }
-    if media.is_empty() && !source.join("media.zip").is_file() {
-        return Ok(());
+    if !source.join("media.zip").is_file() {
+        return Ok(media.is_empty());
     }
     let zip_file = File::open(source.join("media.zip")).map_err(failure)?;
     if zip_file.metadata().map_err(failure)?.len() > MAX_MEDIA_ZIP_BYTES {
@@ -171,10 +178,7 @@ pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
         media_bytes += file.size();
         if !directory { found.insert(file_name.into_owned()); }
     }
-    if media.iter().any(|name| !found.contains(name)) {
-        return Err(failure("chapter media archive is incomplete"));
-    }
-    Ok(())
+    Ok(media.iter().all(|name| found.contains(name)))
 }
 
 fn checked_storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -333,11 +337,15 @@ fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
             Err(error) => return Err(failure(error)),
         }
     }
-    if !paths
-        .iter()
-        .any(|path| path == "content.html" || path == "content.pdf")
-    {
-        return Err(failure("chapter body is missing"));
+    if !paths.iter().any(|path| path == "content.html" || path == "content.pdf") {
+        let metadata = fs::symlink_metadata(source.join(".chapter-content.partial")).map_err(failure)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 {
+            return Err(failure("chapter body is missing"));
+        }
+        if !source.join("manifest.json").is_file() {
+            return Err(failure("partial chapter media manifest is missing"));
+        }
+        paths.push(".chapter-content.partial".to_string());
     }
     match fs::symlink_metadata(source.join("media")) {
         Ok(_) => return Err(failure("chapter media must use media.zip")),
@@ -386,7 +394,7 @@ fn snapshot_directory(source: &Path, stage: &Path) -> Result<(), String> {
         let mut total = 0;
         for path in files {
             let input = source.join(&path);
-            let target = destination.join(&path);
+            let target = destination.join(if path == ".chapter-content.partial" { "content.html" } else { &path });
             fs::create_dir_all(target.parent().unwrap()).map_err(failure)?;
             let metadata = fs::symlink_metadata(&input).map_err(failure)?;
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -408,7 +416,7 @@ fn snapshot_directory(source: &Path, stage: &Path) -> Result<(), String> {
             output.set_times(fs::FileTimes::new().set_modified(metadata.modified().map_err(failure)?)).map_err(failure)?;
             total += bytes;
         }
-        validate_chapter_media(&destination)?;
+        inspect_chapter_media(&destination)?;
         if fingerprint_directory(source)? != before {
             return Err(failure("chapter changed during snapshot"));
         }
@@ -539,7 +547,7 @@ fn chapter_file_manifest(source: &Path, mut manifest: Value) -> Result<Value, St
     if !records.iter().any(|record| record["path"] == body) {
         return Err(failure("chapter body is missing"));
     }
-    validate_chapter_media(source)?;
+    inspect_chapter_media(source)?;
     manifest["layout"] = json!("chapter-files");
     manifest["bodyPath"] = json!(body);
     manifest["files"] = json!(records);
@@ -690,7 +698,11 @@ mod tests {
     use zip::{write::SimpleFileOptions, ZipWriter};
 
     fn workspace() -> tempfile::TempDir {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.tmp/content-sync-tests");
+        let root = if cfg!(target_os = "android") {
+            std::env::temp_dir().join("norea-content-sync-tests")
+        } else {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../.tmp/content-sync-tests")
+        };
         fs::create_dir_all(&root).unwrap();
         tempfile::tempdir_in(root).unwrap()
     }
@@ -830,16 +842,18 @@ mod tests {
             assert_eq!(fs::read_to_string(root.path().join("manifest.json")).unwrap(), raw);
         }
         fs::remove_file(root.path().join("media.zip")).unwrap();
-        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+        chapter_file_manifest(root.path(), metadata()).unwrap();
+        assert!(validate_chapter_media(root.path()).is_err());
     }
 
     #[test]
-    fn chapter_file_transfer_requires_archive_entries_even_with_a_completion_marker() {
+    fn chapter_file_transfer_tracks_missing_entries_without_trusting_completion_markers() {
         let root = workspace();
         fs::write(root.path().join("content.html"), b"<img src=\"https://example.com/page.png\">").unwrap();
         fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":[
             {"fileName":"page.png","path":"","status":"remote","bytes":0}]}}).to_string()).unwrap();
-        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+        chapter_file_manifest(root.path(), metadata()).unwrap();
+        assert!(validate_chapter_media(root.path()).is_err());
         fs::write(root.path().join("media.zip"), original_media_archive()).unwrap();
         chapter_file_manifest(root.path(), metadata()).unwrap();
     }
@@ -916,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn chapter_file_transfer_rejects_media_inventory_mismatch_without_rewriting() {
+    fn chapter_file_transfer_preserves_incomplete_media_inventory_without_rewriting() {
         let root = workspace();
         fs::write(root.path().join("content.html"), b"<p>Original</p>").unwrap();
         let archive = original_media_archive();
@@ -925,7 +939,8 @@ mod tests {
         chapter_file_manifest(root.path(), metadata()).unwrap();
         for files in [json!([{"fileName":"missing.png","path":"media/missing.png","status":"stored","bytes":5}])] {
             fs::write(root.path().join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":files}}).to_string()).unwrap();
-            assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+            chapter_file_manifest(root.path(), metadata()).unwrap();
+            assert!(validate_chapter_media(root.path()).is_err());
             assert_eq!(fs::read(root.path().join("media.zip")).unwrap(), archive);
         }
         fs::remove_file(root.path().join("manifest.json")).unwrap();
@@ -1040,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_snapshot_is_discarded_without_changing_original_files() {
+    fn incomplete_snapshot_is_preserved_without_changing_original_files() {
         let root = workspace();
         let source = root.path().join("chapter");
         let stage = root.path().join("stage");
@@ -1050,10 +1065,51 @@ mod tests {
         let manifest = json!({"version":1,"complete":true,"media":{"files":[
             {"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}}).to_string();
         fs::write(source.join("manifest.json"), &manifest).unwrap();
-        assert!(snapshot_directory(&source, &stage).is_err());
-        assert!(!stage.join("source").exists());
+        snapshot_directory(&source, &stage).unwrap();
+        chapter_file_manifest(&stage.join("source"), metadata()).unwrap();
+        assert!(validate_chapter_media(&stage.join("source")).is_err());
+        assert_eq!(fs::read_to_string(stage.join("source/content.html")).unwrap(), "original");
+        assert_eq!(fs::read_to_string(stage.join("source/manifest.json")).unwrap(), manifest);
         assert_eq!(fs::read_to_string(source.join("content.html")).unwrap(), "original");
         assert_eq!(fs::read_to_string(source.join("manifest.json")).unwrap(), manifest);
+    }
+
+    #[test]
+    fn snapshot_rejects_partial_body_without_media_inventory() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(source.join(".chapter-content.partial"), "uninspected body").unwrap();
+        assert!(snapshot_directory(&source, &stage).is_err());
+        assert!(!stage.join("source").exists());
+        assert_eq!(fs::read_to_string(source.join(".chapter-content.partial")).unwrap(), "uninspected body");
+    }
+
+    #[test]
+    fn snapshot_uploads_partial_body_and_media_without_marking_them_complete() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(source.join(".chapter-content.partial"), "partial body").unwrap();
+        let archive = original_media_archive();
+        fs::write(source.join("media.zip"), &archive).unwrap();
+        let manifest = json!({"version":1,"complete":false,"media":{"files":[
+            {"fileName":"page.png","path":"media/page.png"},
+            {"fileName":"missing.png","path":"","status":"remote"}]}}).to_string();
+        fs::write(source.join("manifest.json"), &manifest).unwrap();
+        snapshot_directory(&source, &stage).unwrap();
+        let snapshot = stage.join("source");
+        chapter_file_manifest(&snapshot, metadata()).unwrap();
+        assert!(validate_chapter_media(&snapshot).is_err());
+        assert_eq!(fs::read_to_string(snapshot.join("content.html")).unwrap(), "partial body");
+        assert_eq!(fs::read(snapshot.join("media.zip")).unwrap(), archive);
+        assert_eq!(fs::read_to_string(snapshot.join("manifest.json")).unwrap(), manifest);
+        assert!(!source.join("content.html").exists());
+        assert_eq!(fs::read_to_string(source.join(".chapter-content.partial")).unwrap(), "partial body");
     }
 
     #[test]

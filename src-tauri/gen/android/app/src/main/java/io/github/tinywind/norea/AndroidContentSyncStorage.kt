@@ -43,7 +43,7 @@ internal class AndroidContentSyncStorage(
         val files = snapshotFiles(source)
         var total = 0L
         for (file in files) {
-          val target = File(destination, file.name)
+          val target = File(destination, if (file.name == ".chapter-content.partial") "content.html" else file.name)
           var bytes = 0L
           context.contentResolver.openInputStream(file.uri)?.use { input ->
             target.outputStream().use { output ->
@@ -76,13 +76,18 @@ internal class AndroidContentSyncStorage(
       check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
       require(child.name.isNotEmpty() && child.name != "." && child.name != ".." && !child.name.contains('/') && !child.name.contains('\\')) { "Unsafe chapter file." }
       check(child.name != "media") { "Chapter media must use media.zip." }
-      if (child.name in setOf("content.html", "content.pdf", "manifest.json", "media.zip")) {
+      if (child.name in setOf("content.html", "content.pdf", ".chapter-content.partial", "manifest.json", "media.zip")) {
         check(!child.isDirectory) { "Invalid chapter artifact." }
         val document = storage.storageChildDocumentFile(child) ?: error("Chapter file disappeared.")
         files.add(SnapshotFile(child.name, document.uri, document.length(), document.lastModified()))
       }
     }
-    return files.sortedBy { it.name }
+    val hasPublishedBody = files.any { it.name == "content.html" || it.name == "content.pdf" }
+    if (!hasPublishedBody && files.any { it.name == ".chapter-content.partial" && it.bytes > 0 }) {
+      check(files.any { it.name == "manifest.json" }) { "Partial chapter media manifest is missing." }
+    }
+    return files.filter { it.name != ".chapter-content.partial" || (!hasPublishedBody && it.bytes > 0) }
+      .sortedBy { it.name }
   }
 
   fun install(rootUri: String, storageDir: String, stagePath: String) = snapshotGuard.install(rootUri, storageDir) {

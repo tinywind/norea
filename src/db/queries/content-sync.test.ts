@@ -56,7 +56,7 @@ it("keeps persisted and leased downloads out of upload readiness even before sch
     VALUES (1,'{}',1,1,NULL), (2,'{}',1,1,1)`);
   const rows = await listContentSyncChapters(undefined, true);
   expect(rows.filter(row => row.isDownloadQueued).map(row => row.chapterId)).toEqual([1, 2]);
-  expect(await Promise.all([1, 2, 3, 4, 5, 999].map(canUploadContentChapter))).toEqual([false, false, true, false, false, false]);
+  expect(await Promise.all([1, 2, 3, 4, 5, 999].map(canUploadContentChapter))).toEqual([false, false, true, false, true, false]);
   sqlite.exec("DELETE FROM chapter_download_queue WHERE chapter_id=1");
   expect(await canUploadContentChapter(1)).toBe(true);
 });
@@ -211,6 +211,16 @@ it("retains chapter tombstones and local checkpoints", async () => {
 
 it("returns no cached state before the first sync", async () => {
   expect(await readContentSyncCache("missing")).toBeNull();
+});
+
+it("discovers and permits stored incomplete chapters while excluding missing bodies and queued downloads", async () => {
+  sqlite.exec(`INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,media_repair_needed,content_bytes) VALUES
+    (1,42,'/partial','Partial',1,0,1,12), (2,42,'/missing','Missing',2,0,1,0),
+    (3,42,'/queued','Queued',3,0,1,12);
+    INSERT INTO chapter_download_queue(chapter_id,job_json,created_at_ms,updated_at_ms) VALUES (3,'{}',1,1)`);
+  expect((await listContentSyncChapters(undefined, true)).map(row => row.chapterId)).toEqual([1, 3]);
+  expect((await listContentSyncWorkChapters(['["source","/work"]'])).map(row => row.chapterId)).toEqual([1, 3]);
+  expect(await Promise.all([1, 2, 3].map(canUploadContentChapter))).toEqual([true, false, false]);
 });
 
 it("limits initial upload discovery to downloaded chapters", async () => {

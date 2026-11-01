@@ -158,6 +158,30 @@ it("rechecks unchanged local chapters after switching from keeping server data t
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: "replace-server" }));
 });
 
+it.each(["prefer-complete", "keep-server", "replace-server"] as const)("uploads an incomplete stored chapter to an empty server (%s)", async (uploadConflictPolicy) => {
+  useContentSyncStore.setState({ uploadConflictPolicy });
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n", chapterPath: "c",
+    novelName: "Novel", chapterName: "Chapter", position: 1, chapterNumber: "1", contentType: "html", isDownloaded: false, mediaRepairNeeded: true, contentBytes: 12,
+  }] as never);
+  await syncContentServer(true, true);
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: uploadConflictPolicy }));
+});
+
+it("discovers previously skipped incomplete chapters once when upgrading a saved upload cursor", async () => {
+  const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n", chapterPath: "c",
+    position: 1, chapterNumber: "1", contentType: "html", isDownloaded: false, mediaRepairNeeded: true, contentBytes: 12 };
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0,
+    uploadConflictPolicy: "prefer-complete", tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  vi.mocked(listContentSyncChapters).mockImplementation(async (requested) => requested === undefined ? [row] as never : []);
+  await syncContentServer();
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+  expect(listContentSyncChapters).toHaveBeenLastCalledWith(undefined, true);
+  await syncContentServer();
+  expect(listContentSyncChapters).toHaveBeenLastCalledWith([], false);
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+});
+
 it("uploads a complete local chapter over an incomplete server copy when preferring complete chapters", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
@@ -288,7 +312,7 @@ it("rechecks persisted completion and queue state after preparing the upload sna
 
 it("rechecks a persisted server deletion without a rescan or a new local journal entry", async () => {
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
   await syncContentServer();
   expect(listContentSyncChapters).toHaveBeenCalledWith([], false);
   expect(listContentSyncWorkChapters).toHaveBeenCalledExactlyOnceWith(['["p","n"]']);
@@ -301,7 +325,7 @@ it("rechecks a persisted server deletion without a rescan or a new local journal
 
 it("allows a local content change to upload a chapter previously deleted on the server", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   changed('content:["p","n","c"]', null);
   await syncContentServer();
   expect(uploadContentChapter).toHaveBeenCalledOnce();
@@ -319,7 +343,7 @@ it("skips every local chapter belonging to a deleted server work", async () => {
 it("queues a remote deletion before advancing the catalog checkpoint without local changes", async () => {
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 10, mediaBytes: 0 };
-  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/changes?") ? Promise.resolve(Response.json({
@@ -327,7 +351,7 @@ it("queues a remote deletion before advancing the catalog checkpoint without loc
     cursor: 1, hasMore: false,
   })) : original(url, init));
   vi.mocked(uploadContentChapter).mockImplementationOnce(async () => {
-    expect(JSON.parse(memory.get(key)!)).toMatchObject({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, pendingUploads: ['["p","n","c"]'] });
+    expect(JSON.parse(memory.get(key)!)).toMatchObject({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: {}, pendingUploads: ['["p","n","c"]'] });
     return {} as never;
   });
   await syncContentServer();
@@ -339,7 +363,7 @@ it.each([false, true])("handles a deletion discovered only in the final catalog 
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c",
     novelName: "Novel", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false };
-  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   let catalogRequests = 0;
   const original = vi.mocked(appFetch).getMockImplementation()!;
@@ -360,7 +384,7 @@ it.each([false, true])("handles a deletion discovered only in the final catalog 
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chapterId: 1 }));
   expect(listContentSyncWorkChapters).toHaveBeenCalledExactlyOnceWith(['["p","n"]']);
   expect(JSON.parse(memory.get(key)!)).toMatchObject({
-    cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: {}, pendingUploads: failUpload ? ['["p","n","c"]'] : [],
+    cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: {}, pendingUploads: failUpload ? ['["p","n","c"]'] : [],
   });
 });
 
@@ -372,7 +396,7 @@ it.each([
   const chapters = [1, 2].map(chapterId => ({ chapterId, novelId: 1, pluginId: "p", sourceNovelId: "n", position: chapterId, novelPath: "/work",
     chapterPath: chapterId === 1 ? localPath : "/chapter/2", chapterNumber: String(chapterId),
     novelName: "Novel", chapterName: `Chapter ${chapterId}`, isDownloaded: true, mediaRepairNeeded: false }));
-  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { [JSON.stringify(["p", "/work", remotePath])]: true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { [JSON.stringify(["p", "/work", remotePath])]: true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue(chapters as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?") && new URL(String(url)).searchParams.get("chapterPath") === "/chapter/2"
@@ -390,7 +414,7 @@ it("retains the resolved local identity after a deleted chapter upload fails", a
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "/work", chapterPath: "norea-folder:1", chapterNumber: "1",
     novelName: "Novel", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false };
-  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","/work","/chapter/1"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","/work","/chapter/1"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   vi.mocked(uploadContentChapter).mockRejectedValueOnce(new Error("offline"));
   await expect(syncContentServer()).rejects.toThrow("offline");
@@ -406,7 +430,7 @@ it("retains the resolved local identity after a deleted chapter upload fails", a
 
 it("does not restore a whole work while processing its deleted chapter signals", async () => {
   const key = "norea-content-catalog:http://localhost:7788";
-  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   vi.mocked(syncWorkMetadata).mockResolvedValue(new Set(["work-id"]));
   await syncContentServer();

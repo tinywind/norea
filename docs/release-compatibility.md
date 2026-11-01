@@ -61,8 +61,13 @@ requirements must be decided explicitly before implementation.
   and per-asset status flags do not override the files. Folder recovery and
   portable file backup restore retain incomplete chapter rows with media repair
   required and the downloaded flag cleared. Inspection does not rewrite the original files.
-  Content-server uploads and folder scans persist this result in the catalog;
-  incomplete copies are unavailable for download. Upload conflicts follow the
+  Content-server uploads include stored incomplete chapters and persist their
+  actual completeness in the catalog, as do folder scans. Upload snapshots copy
+  a partial HTML body as `content.html` without changing the original file.
+  Partial bodies require a valid media manifest so missing assets remain tracked.
+  The first sync after enabling incomplete uploads rediscovers stored chapters
+  once, preserving the saved deletion exclusions and later incremental cursors.
+  Incomplete copies are unavailable for download. Upload conflicts follow the
   app's selected policy, checked again when the server publishes the files.
 - Media repair keeps the stored chapter body and uses its manifest as the asset
   inventory. It validates ZIP entries individually, reuses intact entries from
@@ -89,7 +94,7 @@ requirements must be decided explicitly before implementation.
   inspected body and archive sizes together with completeness and repair state,
   so partial-only folders are not mistaken for missing chapters. These persisted
   counts and repair flags remain available after restart without another scan.
-  Package completeness, server eligibility, and media repair flags continue to
+  Package completeness, server download eligibility, and media repair flags continue to
   use the full manifest and validated asset inventory.
 - Source refreshes, server metadata installation, and storage recovery preserve
   known optional metadata when incoming fields are missing, null, or blank.
