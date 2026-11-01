@@ -188,8 +188,9 @@ export async function listUnqueuedChapterDownloadIds(
 
 export async function getChapterById(
   chapterId: number,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<ChapterRow | null> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const rows = await db.select<RawChapterRow[]>(
     `SELECT ${CHAPTER_DETAIL_SELECT_FIELDS}
      FROM chapter

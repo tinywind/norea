@@ -54,7 +54,7 @@ afterEach(async () => {
 it.each([false, true])("opens saved work details and chapters during queued metadata writes (rollback: %s)", async rollback => {
   const { runDatabaseTransaction } = await import("./client");
   const { getNovelById } = await import("./queries/novel");
-  const { listChaptersByNovel } = await import("./queries/chapter");
+  const { getChapterById, listChaptersByNovel } = await import("./queries/chapter");
   let started!: () => void;
   const active = new Promise<void>(resolve => { started = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -68,20 +68,22 @@ it.each([false, true])("opens saved work details and chapters during queued meta
   const result = writes.catch(error => error);
   await active;
   let queuedReadFinished = false;
-  const queuedRead = Promise.all([getNovelById(1), listChaptersByNovel(1)])
+  const queuedRead = Promise.all([getNovelById(1), listChaptersByNovel(1), getChapterById(1)])
     .then(value => { queuedReadFinished = true; return value; });
   let timeout!: ReturnType<typeof setTimeout>;
   try {
-    const [novel, chapters] = await Promise.race([
-      Promise.all([getNovelById(1, "committed"), listChaptersByNovel(1, "committed")]),
+    const [novel, chapters, chapter] = await Promise.race([
+      Promise.all([getNovelById(1, "committed"), listChaptersByNovel(1, "committed"), getChapterById(1, "committed")]),
       new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Work home waited for metadata publication")), 1000); }),
     ]);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(queuedReadFinished).toBe(false);
+    expect(chapter).toMatchObject({ name: "Saved chapter", progress: 0.5, bookmark: true });
     expect(novel).toMatchObject({ name: "Saved work", inLibrary: true });
     expect(chapters).toMatchObject([{ name: "Saved chapter", progress: 0.5, bookmark: true }]);
   } finally { clearTimeout(timeout); release(); await queuedRead; }
   await result;
   expect(await getNovelById(1, "committed")).toMatchObject({ name: rollback ? "Saved work" : "Refreshed work" });
+  expect(await getChapterById(1, "committed")).toMatchObject({ name: rollback ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true });
   expect(await listChaptersByNovel(1, "committed")).toMatchObject([{ name: rollback ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true }]);
 });

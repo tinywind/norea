@@ -23,12 +23,13 @@ export interface WorkMetadataOperation {
   reset?: boolean;
 }
 export interface WorkMetadataOperationResult { paths?: string[]; body?: string | null; changed?: boolean; cover?: { fileName: string; modifiedAt: number } | null }
-const listeners = new Set<() => void>();
+export type WorkMetadataChange = Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">;
+const listeners = new Set<(identity?: WorkMetadataChange) => void>();
 let publicationSnapshots: Map<string, string | null> | null = null;
-export function subscribeWorkMetadataChanges(listener: () => void): () => void {
+export function subscribeWorkMetadataChanges(listener: (identity?: WorkMetadataChange) => void): () => void {
   listeners.add(listener); return () => listeners.delete(listener);
 }
-export function notifyWorkMetadataChanges(): void { for (const listener of listeners) listener(); }
+export function notifyWorkMetadataChanges(identity?: WorkMetadataChange): void { for (const listener of listeners) listener(identity); }
 
 export async function registerNativeWorkChapterDirectories(directories: Record<string, string>, reset = false): Promise<void> {
   if (!reset && Object.keys(directories).length === 0) return;
@@ -217,7 +218,7 @@ export async function writeStoredNovelMetadata(directory: string, input: NovelMe
   const current = await readNovelMetadataForReplacement(directory, metadata.identity);
   if (current && JSON.stringify(canonicalMetadataValue(current.document)) === JSON.stringify(canonicalMetadataValue(metadata))) return;
   const { changed } = await workMetadataOperation({ operation: "write", path: `${directory}/novel.json`, body: bytesToBase64(new TextEncoder().encode(JSON.stringify(metadata, null, 2))) });
-  if (notifyChanges && changed) notifyWorkMetadataChanges();
+  if (notifyChanges && changed) notifyWorkMetadataChanges(metadata.identity);
 }
 
 export async function readStoredNovelCover(directory: string, metadata: NovelMetadataV1): Promise<Uint8Array | null> {
@@ -237,7 +238,7 @@ export async function writeStoredNovelCover(directory: string, metadata: NovelMe
   if (notifyChanges && changed) {
     const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
     invalidateAllNovelCoverSources();
-    notifyWorkMetadataChanges();
+    notifyWorkMetadataChanges(metadata.identity);
   }
   return changed;
 }
@@ -277,19 +278,19 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
   });
 }
 
-export async function removeStoredNovelCover(directory: string, cover: NovelMetadataV1["cover"], notifyChanges = true): Promise<void> {
+export async function removeStoredNovelCover(directory: string, cover: NovelMetadataV1["cover"], notifyChanges = true, identity?: WorkMetadataChange): Promise<void> {
   if (cover) await workMetadataOperation({ operation: "remove", path: `${directory}/${cover.fileName}` });
   if (notifyChanges) {
     const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
     invalidateAllNovelCoverSources();
-    notifyWorkMetadataChanges();
+    notifyWorkMetadataChanges(identity);
   }
 }
 
 export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null }, options: { preserveExisting?: boolean } = {}): Promise<void> {
   const { runDatabaseTransaction } = await import("../db/client");
   const { hasWorkMetadataConflict, rememberStoredNovelMetadata } = await import("../db/work-metadata");
-  await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
+  const identity = await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
     if (options.preserveExisting) {
       const { cover: existing } = await workMetadataOperation({ operation: "cover", path: `${directory}/novel.json` });
       if (existing) return;
@@ -305,6 +306,7 @@ export async function persistNovelCover(directory: string, cover: { body: Uint8A
     if (previousCover && previousCover.fileName !== cover.fileName) await removeStoredNovelCover(directory, previousCover, false);
     await writeStoredNovelMetadata(directory, metadata, false);
     await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);
+    return metadata.identity;
   }, { preserveCoverSourcesOnRollback: options.preserveExisting }));
-  notifyWorkMetadataChanges();
+  if (identity) notifyWorkMetadataChanges(identity);
 }

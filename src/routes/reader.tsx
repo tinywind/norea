@@ -57,7 +57,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const currentNovelId = chapter?.novelId ?? 0;
   const currentNovelQuery = useQuery({
     queryKey: novelDetailQueryKey(currentNovelId),
-    queryFn: () => getNovelById(currentNovelId),
+    queryFn: () => getNovelById(currentNovelId, "committed"),
     enabled: currentNovelId > 0,
   });
   const currentNovel = currentNovelQuery.data ?? null;
@@ -101,7 +101,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
 
   const chapterListQuery = useQuery({
     queryKey: chapterListQueryKey(currentNovelId),
-    queryFn: () => listChaptersByNovel(currentNovelId),
+    queryFn: () => listChaptersByNovel(currentNovelId, "committed"),
     enabled: currentNovelId > 0,
   });
   const chapters = chapterListQuery.data ?? [];

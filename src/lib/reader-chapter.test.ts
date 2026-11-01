@@ -59,7 +59,9 @@ describe("reader chapter preloading", () => {
     const result = await queryClient.fetchQuery(readerChapterQueryOptions(chapter.id));
 
     expect(result).toEqual({ ...chapter, content: "<p>Next</p>" });
-    expect(readStoredChapterContentMirror).toHaveBeenCalledExactlyOnceWith(chapter.id);
+    expect(readStoredChapterContentMirror).toHaveBeenCalledExactlyOnceWith(chapter.id, "committed");
+    expect(getChapterById).toHaveBeenNthCalledWith(1, chapter.id, "committed");
+    expect(getChapterById).toHaveBeenNthCalledWith(2, chapter.id, "committed");
     expect(getChapterById).toHaveBeenCalledTimes(2);
     expect(result?.progress).toBe(0);
     expect(result?.unread).toBe(true);

@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("../db/client", () => ({
   getDb: vi.fn(),
+  getReadOnlyDb: vi.fn(),
 }));
 
 vi.mock("../db/queries/chapter", () => ({
@@ -29,7 +30,7 @@ vi.mock("./tauri-runtime", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../db/client";
+import { getDb, getReadOnlyDb } from "../db/client";
 import {
   adoptStoredChapterContentMetadata,
   markStoredChapterContentMissing,
@@ -100,6 +101,7 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
     lastReadAt: null,
     libraryAddedAt: 1_700_000_000,
     mediaBytes: 0,
+    mediaRepairNeeded: 0,
     novelCreatedAt: 1_700_000_000,
     novelId: 1,
     novelName: "Sample Novel",
@@ -123,6 +125,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectMock = vi.fn().mockResolvedValue([chapterRow()]);
   getDbMock.mockResolvedValue({ select: selectMock } as never);
+  vi.mocked(getReadOnlyDb).mockResolvedValue({ select: selectMock } as never);
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
   invokeMock.mockImplementation(async (command) => {
@@ -150,6 +153,44 @@ beforeEach(() => {
 });
 
 describe("chapter content storage", () => {
+  it.each([false, true])("reads matching committed artifacts without the writer queue (incomplete: %s)", async incomplete => {
+    const artifacts = {
+      status: "present", mediaComplete: !incomplete,
+      contentFile: "contents/demo/1/1/content.html", contentBytes: 10, mediaBytes: 0,
+    };
+    selectMock.mockResolvedValue([chapterRow({
+      isDownloaded: incomplete ? 0 : 1,
+      mediaRepairNeeded: incomplete ? 1 : 0,
+    })]);
+    invokeMock.mockImplementation(async command =>
+      command === "chapter_content_mirror_inspect" ? artifacts : "<p>stored</p>");
+    getDbMock.mockImplementation(() => { throw new Error("Reader entered writer queue"); });
+    adoptStoredChapterContentMetadataMock.mockImplementation(() => {
+      throw new Error("Reader queued unchanged metadata");
+    });
+
+    await expect(readStoredChapterContentMirror(10, "committed")).resolves.toBe("<p>stored</p>");
+    expect(getReadOnlyDb).toHaveBeenCalledOnce();
+    expect(getDbMock).not.toHaveBeenCalled();
+    expect(adoptStoredChapterContentMetadataMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { contentBytes: 9 },
+    { mediaBytes: 1 },
+    { storedContentType: null },
+    { isDownloaded: 0 },
+    { mediaRepairNeeded: 1 },
+  ])("reconciles changed artifacts when reading committed metadata: %j", async metadata => {
+    selectMock.mockResolvedValue([chapterRow(metadata)]);
+    invokeMock.mockImplementation(async command => command === "chapter_content_mirror_inspect"
+      ? { status: "present", mediaComplete: true, contentFile: "contents/demo/1/1/content.html", contentBytes: 10, mediaBytes: 0 }
+      : "<p>stored</p>");
+
+    await expect(readStoredChapterContentMirror(10, "committed")).resolves.toBe("<p>stored</p>");
+    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledExactlyOnceWith(10, 10, 0, "html", false);
+  });
+
   it("reads chapter content from the storage file", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "chapter_content_mirror_inspect") {

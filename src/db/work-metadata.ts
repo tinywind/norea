@@ -549,7 +549,7 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
         : { ...sourceCatalog, ...(fetched?.novelId === novel.id ? fetched.chapters : {}) } });
     const coverChanged = localCoverBytes ? await writeStoredNovelCover(directory, metadata, localCoverBytes) : false;
     await writeStoredNovelMetadata(directory, metadata);
-    if (!cover && previous?.cover) await removeStoredNovelCover(directory, previous.cover);
+    if (!cover && previous?.cover) await removeStoredNovelCover(directory, previous.cover, true, metadata.identity);
     rememberResolvedNovelStorageDir(novel.id, directory);
     await persistWorkChapterDirectories(db, novel.id, mapped);
     await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);

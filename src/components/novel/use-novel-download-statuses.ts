@@ -1,20 +1,29 @@
 import { useEffect, useState } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import {
-  listChapterDownloadStatuses,
+  getChapterDownloadStatus,
   subscribeChapterDownloads,
   type ChapterDownloadStatus,
 } from "../../lib/tasks/chapter-download";
 
+function sameStatus(current: ChapterDownloadStatus | undefined, next: ChapterDownloadStatus) {
+  return current?.kind === next.kind &&
+    ((current.kind !== "queued" && current.kind !== "running") ||
+      ((next.kind === "queued" || next.kind === "running") && current.phase === next.phase)) &&
+    (current.kind !== "failed" || (next.kind === "failed" && current.error === next.error));
+}
+
 export function useNovelDownloadStatuses(
   id: number,
   rows: readonly ChapterListRow[],
+  active = true,
 ) {
   const [statuses, setStatuses] = useState<
     ReadonlyMap<number, ChapterDownloadStatus>
   >(() => new Map());
 
   useEffect(() => {
+    if (!active) return;
     let animationFrame: number | null = null;
     let pendingStatuses = new Map<number, ChapterDownloadStatus | null>();
 
@@ -32,20 +41,7 @@ export function useNovelDownloadStatuses(
             next.delete(chapterId);
           } else {
             const current = (next ?? prev).get(chapterId);
-            const currentPhase =
-              current?.kind === "queued" || current?.kind === "running"
-                ? current.phase
-                : undefined;
-            const nextPhase =
-              status.kind === "queued" || status.kind === "running"
-                ? status.phase
-                : undefined;
-            if (
-              current?.kind === status.kind &&
-              currentPhase === nextPhase &&
-              (current.kind !== "failed" ||
-                (status.kind === "failed" && current.error === status.error))
-            ) {
+            if (sameStatus(current, status)) {
               continue;
             }
             next ??= new Map(prev);
@@ -69,28 +65,24 @@ export function useNovelDownloadStatuses(
       unsubscribe();
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
     };
-  }, [id]);
+  }, [id, active]);
 
   useEffect(() => {
-    if (rows.length === 0) return;
-    const currentStatuses = listChapterDownloadStatuses();
+    if (!active) return;
+    const currentStatuses = new Map<number, ChapterDownloadStatus>();
+    for (const row of rows) {
+      const status = getChapterDownloadStatus(row.id);
+      if (status && status.kind !== "cancelled") currentStatuses.set(row.id, status);
+    }
 
     setStatuses((prev) => {
-      let changed = false;
-      const next = new Map(prev);
+      if (prev.size !== currentStatuses.size) return currentStatuses;
       for (const [chapterId, status] of currentStatuses) {
-        if (status?.kind === "cancelled") {
-          if (next.delete(chapterId)) changed = true;
-          continue;
-        }
-        if (next.get(chapterId) !== status) {
-          next.set(chapterId, status);
-          changed = true;
-        }
+        if (!sameStatus(prev.get(chapterId), status)) return currentStatuses;
       }
-      return changed ? next : prev;
+      return prev;
     });
-  }, [rows]);
+  }, [id, rows, active]);
 
   return statuses;
 }

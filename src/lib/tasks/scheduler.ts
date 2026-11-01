@@ -89,6 +89,7 @@ export type { SourceAccessBlock } from "./source-access-gate";
 export type * from "./task-types";
 
 const TASK_BULK_EVENT_CHUNK_SIZE = 250;
+const SNAPSHOT_FLUSH_FALLBACK_MS = 100;
 
 export function taskWorkQueueKey(subject: TaskSubject | undefined): string | null {
   if (!subject) return null;
@@ -264,6 +265,7 @@ export class TaskScheduler {
   private snapshotDirty = false;
   private snapshotFlushScheduled = false;
   private snapshotRafHandle: number | null = null;
+  private snapshotTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private readonly sourceLastServedAt = new Map<string, number>();
   private snapshotRecordIndexes = new Map<string, number>();
   private snapshot: TaskSnapshot = {
@@ -1545,7 +1547,7 @@ export class TaskScheduler {
         this.publishSnapshotAfterBatch = false;
         this.drainAfterBatch = false;
         this.taskEventsAfterBatch = [];
-        if (shouldPublishSnapshot) this.flushSnapshot();
+        if (shouldPublishSnapshot) this.scheduleSnapshotFlush();
         this.publishTaskEventsInChunks(taskEvents);
         if (shouldDrain) this.drain();
       }
@@ -2356,7 +2358,6 @@ export class TaskScheduler {
       this.taskEventsAfterBatch.push(...events);
       return;
     }
-    this.materializeSnapshotIfDirty();
     this.publishTaskEventsInChunks(events);
   }
 
@@ -2386,7 +2387,7 @@ export class TaskScheduler {
   }
 
   private refreshSnapshotRecord(entry: TaskEntry): void {
-    this.materializeSnapshotIfDirty();
+    if (this.snapshotDirty) return;
     const index = this.snapshotRecordIndexes.get(entry.record.id);
     if (index === undefined) return;
     const current = this.snapshot.records[index];
@@ -2430,6 +2431,10 @@ export class TaskScheduler {
       cancelAnimationFrame(this.snapshotRafHandle);
     }
     this.snapshotRafHandle = null;
+    if (this.snapshotTimeoutHandle !== null) {
+      clearTimeout(this.snapshotTimeoutHandle);
+      this.snapshotTimeoutHandle = null;
+    }
     this.materializeSnapshotIfDirty();
     for (const listener of this.snapshotListeners) listener();
   }
@@ -2437,9 +2442,13 @@ export class TaskScheduler {
   private scheduleSnapshotFlush(): void {
     if (this.snapshotFlushScheduled) return;
     this.snapshotFlushScheduled = true;
-    // The webview coalesces to a frame; tests (node, no rAF) coalesce to a
-    // microtask so synchronous bursts still collapse to one fan-out.
+    // Hidden WebViews can stop animation frames while native notifications
+    // still need current task state.
     if (typeof requestAnimationFrame === "function") {
+      this.snapshotTimeoutHandle = setTimeout(
+        () => this.runScheduledSnapshotFlush(),
+        SNAPSHOT_FLUSH_FALLBACK_MS,
+      );
       this.snapshotRafHandle = requestAnimationFrame(() => {
         this.snapshotRafHandle = null;
         this.runScheduledSnapshotFlush();
@@ -2903,7 +2912,7 @@ export class TaskScheduler {
       const entry = this.entries.get(id);
       if (entry) this.deleteEntry(entry);
     }
-    if (overflowIds.length > 0) this.snapshot = this.buildSnapshot();
+    if (overflowIds.length > 0) this.publishSnapshot();
   }
 
   private deleteEntry(entry: TaskEntry): void {

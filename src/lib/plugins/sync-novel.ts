@@ -406,7 +406,7 @@ async function performNovelSourceRefresh(
     };
   });
   if (!result) return null;
-  notifyWorkMetadataChanges();
+  notifyWorkMetadataChanges({ pluginId: plugin.id, novelPath: item.path });
 
   rememberSourceDuplicateChapters(result.novelId, duplicateChapters);
 

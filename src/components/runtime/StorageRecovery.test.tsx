@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   effects: [] as (() => (() => void))[],
   invalidateQueries: vi.fn<QueryClient["invalidateQueries"]>(),
   refetchQueries: vi.fn<QueryClient["refetchQueries"]>(),
+  getQueriesData: vi.fn<QueryClient["getQueriesData"]>(),
 }));
 vi.mock("react", async importOriginal => ({
   ...await importOriginal<typeof import("react")>(),
@@ -12,7 +13,7 @@ vi.mock("react", async importOriginal => ({
 }));
 vi.mock("@tanstack/react-query", async importOriginal => ({
   ...await importOriginal<typeof import("@tanstack/react-query")>(),
-  useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries, refetchQueries: mocks.refetchQueries }),
+  useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries, refetchQueries: mocks.refetchQueries, getQueriesData: mocks.getQueriesData }),
 }));
 vi.mock("../../db/client", () => ({ startWorkMetadataRecovery: vi.fn() }));
 import { StorageRecoveryNotifications } from "./StorageRecovery";
@@ -24,6 +25,7 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.effects = [];
   mocks.invalidateQueries.mockReset().mockResolvedValue(undefined);
   mocks.refetchQueries.mockReset().mockResolvedValue(undefined);
+  mocks.getQueriesData.mockReset().mockReturnValue([]);
   useStorageRecoveryStore.setState({ status: "idle", error: null, progress: null });
   StorageRecoveryNotifications();
   cleanup = mocks.effects[0]!();
@@ -48,6 +50,45 @@ it("refreshes visible work details and titles after a background metadata public
     expect(novel.getCurrentResult().data).toEqual({ name: "After refresh" });
     expect(chapters.getCurrentResult().data).toEqual([{ name: "After refresh" }]);
   } finally { unsubscribeNovel(); unsubscribeChapters(); client.clear(); }
+});
+
+it("invalidates only the published work and refreshes a hidden work when activated", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  mocks.invalidateQueries.mockImplementation((...args) => client.invalidateQueries(...args));
+  mocks.refetchQueries.mockImplementation((...args) => client.refetchQueries(...args));
+  mocks.getQueriesData.mockImplementation((...args) => client.getQueriesData(...args));
+  client.setQueryData(["novel", "detail", 7], { pluginId: "source", path: "/first" });
+  client.setQueryData(["novel", "detail", 8], { pluginId: "source", path: "/second" });
+  let title = "Before refresh";
+  const firstRead = vi.fn(async () => [{ name: title }]);
+  const secondRead = vi.fn(async () => [{ name: title }]);
+  const firstOptions = { queryKey: ["novel", "detail", 7, "chapters"], queryFn: firstRead };
+  const first = new QueryObserver(client, { ...firstOptions, enabled: false });
+  const second = new QueryObserver(client, { queryKey: ["novel", "detail", 8, "chapters"], queryFn: secondRead });
+  const unsubscribeFirst = first.subscribe(() => undefined);
+  const unsubscribeSecond = second.subscribe(() => undefined);
+  try {
+    await first.refetch(); await second.refetch();
+    firstRead.mockClear(); secondRead.mockClear();
+    title = "After refresh";
+    notifyWorkMetadataChanges({ pluginId: "source", novelPath: "/first" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(firstRead).not.toHaveBeenCalled();
+    expect(secondRead).not.toHaveBeenCalled();
+    expect(client.getQueryState(firstOptions.queryKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["novel", "detail", 8])?.isInvalidated).toBe(false);
+    first.setOptions({ ...firstOptions, enabled: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(firstRead).toHaveBeenCalledTimes(1);
+    expect(first.getCurrentResult().data).toEqual([{ name: "After refresh" }]);
+    firstRead.mockClear();
+    title = "Visible refresh";
+    notifyWorkMetadataChanges({ pluginId: "source", novelPath: "/first" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(firstRead).toHaveBeenCalledTimes(1);
+    expect(secondRead).not.toHaveBeenCalled();
+    expect(first.getCurrentResult().data).toEqual([{ name: "Visible refresh" }]);
+  } finally { unsubscribeFirst(); unsubscribeSecond(); client.clear(); }
 });
 
 it("refreshes the visible library after each recovered work without waiting for completion", async () => {

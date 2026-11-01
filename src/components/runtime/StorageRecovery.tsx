@@ -2,6 +2,7 @@ import { Group, Progress, Stack, Text } from "@mantine/core";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { startWorkMetadataRecovery } from "../../db/client";
+import type { NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { useStorageRecoveryStore } from "../../store/storage-recovery";
 import { TextButton } from "../TextButton";
@@ -12,25 +13,40 @@ export function StorageRecoveryNotifications() {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let metadataChanged = false;
+    let refreshAll = true;
+    const changedWorks = new Set<string>();
     const refresh = () => {
       timer = undefined;
       for (const queryKey of [["novel", "library"], ["category", "counts"], ["download-cache"]]) {
         void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
       }
-      void queryClient.invalidateQueries({ queryKey: ["novel", "detail"], refetchType: metadataChanged ? "active" : "none" });
-      if (!metadataChanged) void queryClient.refetchQueries({
+      if (refreshAll) {
+        void queryClient.invalidateQueries({ queryKey: ["novel", "detail"], refetchType: metadataChanged ? "active" : "none" });
+        if (!metadataChanged) void queryClient.refetchQueries({
           queryKey: ["novel", "detail"],
           predicate: query => query.queryKey[3] === "chapters",
           type: "active",
         });
+      } else {
+        const cachedNovels = queryClient.getQueriesData<NovelDetailRecord | null>({ queryKey: ["novel", "detail"] });
+        for (const [queryKey, novel] of cachedNovels) {
+          if (queryKey.length !== 3 || !novel || !changedWorks.has(JSON.stringify([novel.pluginId, novel.path]))) continue;
+          void queryClient.invalidateQueries({ queryKey });
+        }
+      }
       metadataChanged = false;
+      refreshAll = false;
+      changedWorks.clear();
     };
     const unsubscribe = useStorageRecoveryStore.subscribe((state, previous) => {
       if (state.progress?.recoveredWorks === previous.progress?.recoveredWorks && state.status !== "complete" && state.status !== "error") return;
+      refreshAll = true;
       if (timer === undefined) timer = setTimeout(refresh, 100);
     });
-    const unsubscribeMetadata = subscribeWorkMetadataChanges(() => {
+    const unsubscribeMetadata = subscribeWorkMetadataChanges((identity) => {
       metadataChanged = true;
+      if (identity) changedWorks.add(JSON.stringify([identity.pluginId, identity.novelPath]));
+      else refreshAll = true;
       if (timer === undefined) timer = setTimeout(refresh, 100);
     });
     refresh();

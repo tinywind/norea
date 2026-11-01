@@ -666,6 +666,8 @@ describe("TaskScheduler", () => {
         workKey: firstNovelKey!,
       }),
     ).toBe(2);
+    expect(snapshots).toBe(0);
+    await settle();
     expect(snapshots).toBe(1);
     await expect(running.promise).rejects.toThrow("Task was cancelled.");
     await expect(queuedSameNovel.promise).rejects.toThrow(
@@ -751,6 +753,8 @@ describe("TaskScheduler", () => {
         sourceId: source.id,
       }),
     ).toBe(3);
+    expect(snapshots).toBe(0);
+    await settle();
     expect(snapshots).toBe(1);
     expect(scheduler.getSnapshot().queued).toBe(0);
     expect(scheduler.getSnapshot().cancelled).toBe(0);
@@ -3883,7 +3887,7 @@ describe("TaskScheduler", () => {
     expect(order).toEqual(["cancelled:start", "retry:start"]);
   });
 
-  it("coalesces snapshot publishes during a scheduler batch", () => {
+  it("coalesces snapshot publishes during a scheduler batch", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
     let snapshots = 0;
     let events = 0;
@@ -3914,8 +3918,11 @@ describe("TaskScheduler", () => {
       expect(events).toBe(0);
     });
 
-    expect(snapshots).toBe(1);
+    expect(snapshots).toBe(0);
     expect(events).toBe(10);
+    expect(snapshotBuilds).toBe(0);
+    await settle();
+    expect(snapshots).toBe(1);
     expect(snapshotBuilds).toBe(1);
     expect(scheduler.getSnapshot().queued).toBe(10);
     unsubscribeObservations();

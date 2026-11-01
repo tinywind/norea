@@ -58,6 +58,7 @@ import {
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
 import { pluginManager } from "../lib/plugins/manager";
+import { usePageActivity } from "../lib/page-activity";
 import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
 import { useLibraryStore } from "../store/library";
 import { useReaderStore } from "../store/reader";
@@ -69,11 +70,8 @@ interface NovelDetailPageProps {
 export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const currentHref = useRouterState({
-    select: (state) => state.location.href,
-  });
-  const activeLocation = new URL(currentHref, "http://norea.local");
-  const active = activeLocation.pathname === "/novel" && Number(activeLocation.searchParams.get("id")) === id;
+  const currentHref = useRouterState({ select: (state) => state.location.href });
+  const active = usePageActivity();
   const defaultChapterSort = useLibraryStore((s) => s.defaultChapterSort);
   const setDefaultChapterSort = useLibraryStore((s) => s.setDefaultChapterSort);
   const lastReadChapterId = useReaderStore(
@@ -90,20 +88,20 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     meta: { errorPresentation: "inline" },
     queryKey: novelKey(id),
     queryFn: () => getNovelById(id, "committed"),
-    enabled: id > 0,
+    enabled: active && id > 0,
     staleTime: Infinity,
   });
 
   const chaptersQuery = useQuery({
     queryKey: chaptersKey(id),
     queryFn: () => listChaptersByNovel(id, "committed"),
-    enabled: id > 0,
+    enabled: active && id > 0,
     staleTime: Infinity,
   });
   const serverSourceQuery = useQuery({
     queryKey: ["content-server", "novel-source", id],
     queryFn: () => readServerNovelSource(id),
-    enabled: id > 0,
+    enabled: active && id > 0,
     networkMode: "always",
     staleTime: Infinity,
   });
@@ -157,7 +155,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     downloadChapter,
     downloadChapters,
   } = useNovelChapterActions(id, displayNovel, chapters);
-  const statuses = useNovelDownloadStatuses(id, rows);
+  const statuses = useNovelDownloadStatuses(id, rows, active);
   const {
     addLocalChapters,
     reorderLocalChapters,

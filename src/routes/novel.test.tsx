@@ -48,6 +48,7 @@ vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(), listServerChapterAvailability: vi.fn() }));
 
 import { NovelDetailPage } from "./novel";
+import { PageActivityContext } from "../lib/page-activity";
 import { buildBatchDownloadTargets, buildPreviousChapterDownloadTargets } from "../components/novel/novel-detail-model";
 
 const chapter: ChapterListRow = {
@@ -89,8 +90,8 @@ it("excludes stored partial bodies from missing-chapter batch scopes", () => {
   expect(partial.mediaRepairNeeded).toBe(true);
 });
 
-function renderPage() {
-  return load(renderToStaticMarkup(<MantineProvider><NovelDetailPage id={3} /></MantineProvider>));
+function renderPage(active = true) {
+  return load(renderToStaticMarkup(<MantineProvider><PageActivityContext.Provider value={active}><NovelDetailPage id={3} /></PageActivityContext.Provider></MantineProvider>));
 }
 
 beforeEach(() => {
@@ -111,6 +112,17 @@ beforeEach(() => {
   mocks.sync.sourceError = null;
   mocks.metadataError = null;
   mocks.installed = false;
+});
+
+it("pauses detail, chapter, and server queries while its page slot is hidden", () => {
+  mocks.source.data = { serverUrl: "http://server", workId: "work" };
+  renderPage(false);
+  const pageQueries = () => mocks.queries.filter(query => query.queryKey[1] === "detail" || query.queryKey[1] === "novel-source" || query.queryKey[1] === "novel-chapters");
+  expect(pageQueries()).toHaveLength(4);
+  expect(pageQueries().every(query => query.enabled === false)).toBe(true);
+  mocks.queries.length = 0;
+  renderPage();
+  expect(pageQueries().every(query => query.enabled === true)).toBe(true);
 });
 
 it("presents server-published local works as downloadable without changing stored metadata", () => {

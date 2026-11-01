@@ -1,4 +1,4 @@
-import { getDb } from "../db/client";
+import { getDb, getReadOnlyDb, type DatabaseReadMode } from "../db/client";
 import {
   adoptStoredChapterContentMetadata,
   markStoredChapterContentMissing,
@@ -48,6 +48,7 @@ interface ChapterStorageRow {
   storedContentType: string | null;
   isDownloaded: unknown;
   mediaBytes: number;
+  mediaRepairNeeded: unknown;
   novelId: number;
   novelName: string;
   novelPath: string;
@@ -101,6 +102,7 @@ const SELECT_CHAPTER_STORAGE_ROW = `
     c.stored_content_type AS storedContentType,
     c.content_bytes AS contentBytes,
     c.media_bytes AS mediaBytes,
+    c.media_repair_needed AS mediaRepairNeeded,
     n.plugin_id AS pluginId,
     n.path AS novelPath,
     n.source_novel_id AS sourceNovelId,
@@ -154,8 +156,11 @@ function storageMetadata(
   };
 }
 
-async function getChapterStorageRow(chapterId: number) {
-  const db = await getDb();
+async function getChapterStorageRow(
+  chapterId: number,
+  readMode: DatabaseReadMode = "queued",
+) {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const rows = await db.select<ChapterStorageRow[]>(
     SELECT_CHAPTER_STORAGE_METADATA_ROW,
     [chapterId],
@@ -227,6 +232,7 @@ async function inspectStoredChapterArtifactsForRow(
 
 async function reconcileStoredChapterStorageRow(
   row: ChapterStorageRow,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<ReconciledStoredChapterContent> {
   const artifacts = await inspectStoredChapterArtifactsForRow(row);
   let content: string | null = null;
@@ -256,13 +262,21 @@ async function reconcileStoredChapterStorageRow(
         };
       }
     }
-    await adoptStoredChapterContentMetadata(
-      row.chapterId,
-      artifacts.contentBytes,
-      artifacts.mediaBytes,
-      contentType,
-      !artifacts.mediaComplete,
-    );
+    const metadataMatchesArtifacts =
+      row.contentBytes === artifacts.contentBytes &&
+      row.mediaBytes === artifacts.mediaBytes &&
+      row.storedContentType === contentType &&
+      sqliteBoolean(row.mediaRepairNeeded) === !artifacts.mediaComplete &&
+      sqliteBoolean(row.isDownloaded) === artifacts.mediaComplete;
+    if (readMode === "queued" || !metadataMatchesArtifacts) {
+      await adoptStoredChapterContentMetadata(
+        row.chapterId,
+        artifacts.contentBytes,
+        artifacts.mediaBytes,
+        contentType,
+        !artifacts.mediaComplete,
+      );
+    }
   } else if (
     sqliteBoolean(row.isDownloaded) ||
     row.contentBytes > 0 ||
@@ -278,6 +292,7 @@ async function reconcileStoredChapterStorageRow(
 
 async function reconcileStoredChapterContentState(
   chapterId: number,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<ReconciledStoredChapterContent> {
   if (!isTauriRuntime()) {
     return {
@@ -290,7 +305,7 @@ async function reconcileStoredChapterContentState(
       content: null,
     };
   }
-  const row = await getChapterStorageRow(chapterId);
+  const row = await getChapterStorageRow(chapterId, readMode);
   if (!row) {
     return {
       artifacts: {
@@ -302,7 +317,7 @@ async function reconcileStoredChapterContentState(
       content: null,
     };
   }
-  return reconcileStoredChapterStorageRow(row);
+  return reconcileStoredChapterStorageRow(row, readMode);
 }
 
 export async function reconcileStoredChapterContent(
@@ -313,14 +328,16 @@ export async function reconcileStoredChapterContent(
 
 export async function readStoredChapterContentMirror(
   chapterId: number,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<string | null> {
-  return (await reconcileAndReadStoredChapterContent(chapterId)).content;
+  return (await reconcileAndReadStoredChapterContent(chapterId, readMode)).content;
 }
 
 export async function reconcileAndReadStoredChapterContent(
   chapterId: number,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<ReconciledStoredChapterContent> {
-  const reconciled = await reconcileStoredChapterContentState(chapterId);
+  const reconciled = await reconcileStoredChapterContentState(chapterId, readMode);
   const { artifacts } = reconciled;
   if (artifacts.status !== "present" || !artifacts.contentFile) {
     return { artifacts, content: null };

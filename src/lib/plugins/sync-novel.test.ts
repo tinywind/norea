@@ -171,6 +171,7 @@ describe("syncNovelFromSource", () => {
       expect((await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" })).changed).toBe(false);
       expect(mockExecute).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), ["demo", "/novel"]);
       expect(changed).toHaveBeenCalledOnce();
+      expect(changed).toHaveBeenCalledWith({ pluginId: "demo", novelPath: "/novel" });
     } finally { unsubscribe(); }
   });
 

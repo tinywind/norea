@@ -37,12 +37,12 @@ export function readerChapterQueryOptions(chapterId: number) {
   return queryOptions({
     queryKey: chapterDetailQueryKey(chapterId),
     queryFn: async ({ signal }): Promise<ReaderChapterRow | null> => {
-      const chapter = await getChapterById(chapterId);
+      const chapter = await getChapterById(chapterId, "committed");
       signal.throwIfAborted();
       if (!chapter) return null;
-      const content = await readStoredChapterContentMirror(chapter.id);
+      const content = await readStoredChapterContentMirror(chapter.id, "committed");
       signal.throwIfAborted();
-      const reconciledChapter = await getChapterById(chapterId);
+      const reconciledChapter = await getChapterById(chapterId, "committed");
       signal.throwIfAborted();
       return { ...(reconciledChapter ?? chapter), content };
     },

@@ -3,6 +3,7 @@ import type {
   ChapterDownloadEvent,
   ChapterDownloadStatus,
 } from "../../lib/tasks/chapter-download";
+import type { ChapterListRow } from "../../db/queries/chapter";
 
 const state = vi.hoisted(() => ({
   effects: [] as Array<() => (() => void) | undefined>,
@@ -10,6 +11,7 @@ const state = vi.hoisted(() => ({
   listener: undefined as ((event: ChapterDownloadEvent) => void) | undefined,
   frame: undefined as FrameRequestCallback | undefined,
   cleanup: undefined as (() => void) | undefined,
+  current: new Map<number, ChapterDownloadStatus>(),
 }));
 
 vi.mock("react", () => ({
@@ -23,7 +25,7 @@ vi.mock("react", () => ({
 }));
 
 vi.mock("../../lib/tasks/chapter-download", () => ({
-  listChapterDownloadStatuses: () => new Map(),
+  getChapterDownloadStatus: (id: number) => state.current.get(id),
   subscribeChapterDownloads: (listener: typeof state.listener) => {
     state.listener = listener;
     return () => { state.listener = undefined; };
@@ -35,6 +37,7 @@ import { useNovelDownloadStatuses } from "./use-novel-download-statuses";
 beforeEach(() => {
   state.effects.length = 0;
   state.statuses = new Map();
+  state.current = new Map();
   state.frame = undefined;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     state.frame = callback;
@@ -78,6 +81,25 @@ function emitStatus(status: ChapterDownloadStatus) {
 }
 
 describe("novel download status updates", () => {
+  it("does not subscribe or initialize statuses while hidden", () => {
+    state.cleanup?.();
+    state.effects = [];
+    state.current.set(1, { kind: "running" });
+    useNovelDownloadStatuses(42, [{ id: 1 } as ChapterListRow], false);
+    state.effects.forEach(effect => effect());
+    expect(state.listener).toBeUndefined();
+    expect(state.statuses.size).toBe(0);
+  });
+
+  it("loads only this novel's statuses on activation and drops obsolete entries", () => {
+    state.effects = [];
+    state.statuses.set(9, { kind: "running" });
+    state.current.set(1, { kind: "queued" });
+    state.current.set(2, { kind: "running" });
+    useNovelDownloadStatuses(42, [{ id: 1 } as ChapterListRow], true);
+    state.effects[1]!();
+    expect([...state.statuses]).toEqual([[1, { kind: "queued" }]]);
+  });
   it.each(["running", "queued"] as const)(
     "keeps phase changes while the status remains %s",
     (kind) => {
