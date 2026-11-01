@@ -99,6 +99,8 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        app.deep_link().handle_cli_arguments(args.iter());
         desktop_file_open::enqueue_new_instance(app, args, cwd);
         tray::show_main_window(app);
     }));
@@ -118,6 +120,7 @@ pub fn run() {
         .manage(desktop_open_files)
         .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
+        .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
         // Register plugins here, not in `setup`: registering a plugin after the
         // WebView exists deadlocks the Android main thread (tauri-apps/tauri#13990).
@@ -241,8 +244,7 @@ pub fn run() {
             scraper::scraper_clear_cookies,
             scraper::scraper_open_devtools,
             set_runtime_log_level,
-            task_notifications::task_notification_show_download_progress,
-            task_notifications::task_notification_update_download_progress,
+            task_notifications::task_notification_reconcile,
             tray::tray_set_task_progress,
             update::download_and_open_update,
             update::get_build_info,

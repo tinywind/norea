@@ -2,9 +2,7 @@ package io.github.tinywind.norea
 
 import android.annotation.SuppressLint
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -12,46 +10,34 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
-import androidx.core.app.NotificationCompat
 
 class TaskForegroundService : Service() {
   private var wakeLock: PowerManager.WakeLock? = null
+  private var anchorId: Int? = null
+  private var stopping = false
 
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onCreate() {
     super.onCreate()
-    ensureChannels()
+    instance = this
+    AndroidTaskNotifications.ensureChannels(this)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    when (intent?.action) {
-      ACTION_UPDATE -> {
-        if (TaskBackgroundExecution.policy.suspended) {
-          stopSelf()
-          return START_NOT_STICKY
-        }
-        val title = intent.getStringExtra(EXTRA_TITLE) ?: DEFAULT_TITLE
-        val body = intent.getStringExtra(EXTRA_BODY) ?: ""
-        val current = intent.getIntExtra(EXTRA_CURRENT, -1)
-        val total = intent.getIntExtra(EXTRA_TOTAL, -1)
-        val quiet = intent.getBooleanExtra(EXTRA_QUIET, false)
-        try {
-          val notification = buildNotification(title, body, current, total, quiet)
-          acquireWakeLock()
-          startForeground(NOTIFICATION_ID, notification)
-        } catch (error: RuntimeException) {
-          Log.w("NoreaTasks", "Foreground execution unavailable", error)
-          TaskBackgroundExecution.suspend()
-          releaseWakeLock()
-          stopSelf()
-        }
-      }
-      ACTION_STOP -> {
-        stopForegroundCompat()
-        releaseWakeLock()
-        stopSelf()
-      }
+    instance = this
+    val request = desired
+    if (intent?.action != ACTION_START || request == null || TaskBackgroundExecution.policy.suspended) {
+      stop(this)
+      return START_NOT_STICKY
+    }
+    try {
+      stopping = false
+      applyRequest(request)
+    } catch (error: RuntimeException) {
+      Log.w("NoreaTasks", "Foreground execution unavailable", error)
+      TaskBackgroundExecution.suspend()
+      stop(this)
     }
     return START_NOT_STICKY
   }
@@ -62,84 +48,58 @@ class TaskForegroundService : Service() {
     try {
       TaskBackgroundExecution.suspend()
     } finally {
-      try {
-        stopForegroundCompat()
-        releaseWakeLock()
-      } finally {
-        stopSelf()
-      }
+      stop(this)
     }
   }
 
   override fun onDestroy() {
+    if (instance === this) {
+      instance = null
+      startRequested = false
+      val unexpectedlyStopped = !stopping && desired != null
+      desired = null
+      if (unexpectedlyStopped) TaskBackgroundExecution.suspend()
+    }
     releaseWakeLock()
     super.onDestroy()
   }
 
-  private fun ensureChannels() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-    val channel = NotificationChannel(
-      CHANNEL_ID,
-      CHANNEL_NAME,
-      NotificationManager.IMPORTANCE_LOW,
-    ).apply {
-      description = CHANNEL_DESCRIPTION
-      setShowBadge(false)
+  private fun applyRequest(request: ExecutionRequest) {
+    val previous = anchorId
+    if (previous != request.anchorId) {
+      startForeground(request.anchorId, request.notification)
+      anchorId = request.anchorId
+      if (previous != null) {
+        val retained = request.groups[previous]
+        if (retained == null) notificationManager().cancel(previous)
+        else updateNotification(previous, retained)
+      }
+    } else {
+      updateNotification(request.anchorId, request.notification)
     }
-    val quietChannel = NotificationChannel(
-      QUIET_CHANNEL_ID,
-      QUIET_CHANNEL_NAME,
-      NotificationManager.IMPORTANCE_MIN,
-    ).apply {
-      description = QUIET_CHANNEL_DESCRIPTION
-      setShowBadge(false)
-    }
-    notificationManager().createNotificationChannels(listOf(channel, quietChannel))
+    if (request.working) acquireWakeLock() else releaseWakeLock()
   }
 
-  private fun buildNotification(
-    title: String,
-    body: String,
-    current: Int,
-    total: Int,
-    quiet: Boolean,
-  ): Notification {
-    val pendingIntent = PendingIntent.getActivity(
-      this,
-      0,
-      Intent(this, MainActivity::class.java).apply {
-        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-      },
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-    )
-    val builder = NotificationCompat.Builder(this, if (quiet) QUIET_CHANNEL_ID else CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.stat_sys_download)
-      .setContentTitle(title)
-      .setContentText(body)
-      .setContentIntent(pendingIntent)
-      .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-      .setOngoing(true)
-      .setOnlyAlertOnce(true)
-      .setPriority(if (quiet) NotificationCompat.PRIORITY_MIN else NotificationCompat.PRIORITY_LOW)
-    if (!quiet) {
-      val hasProgress = total > 0 && current >= 0
-      builder.setProgress(
-        if (hasProgress) total else 0,
-        if (hasProgress) current.coerceIn(0, total) else 0,
-        !hasProgress,
-      )
+  private fun updateNotification(id: Int, notification: Notification) {
+    try {
+      notificationManager().notify(id, notification)
+    } catch (error: SecurityException) {
+      Log.w("NoreaTasks", "Notification permission is unavailable", error)
     }
-    return builder.build()
   }
 
-  private fun notificationManager(): NotificationManager =
-    getSystemService(NotificationManager::class.java)
+  private fun stopRuntime() {
+    stopping = true
+    stopForegroundCompat()
+    anchorId = null
+    releaseWakeLock()
+  }
+
+  private fun notificationManager(): NotificationManager = getSystemService(NotificationManager::class.java)
 
   @SuppressLint("WakelockTimeout")
   private fun acquireWakeLock() {
-    val current = wakeLock
-    if (current?.isHeld == true) return
-
+    if (wakeLock?.isHeld == true) return
     wakeLock = getSystemService(PowerManager::class.java)
       .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:TaskForegroundService")
       .apply {
@@ -149,11 +109,7 @@ class TaskForegroundService : Service() {
   }
 
   private fun releaseWakeLock() {
-    wakeLock?.let { lock ->
-      if (lock.isHeld) {
-        lock.release()
-      }
-    }
+    wakeLock?.let { if (it.isHeld) it.release() }
     wakeLock = null
   }
 
@@ -166,48 +122,52 @@ class TaskForegroundService : Service() {
     }
   }
 
-  companion object {
-    private const val ACTION_UPDATE = "io.github.tinywind.norea.task.UPDATE"
-    private const val ACTION_STOP = "io.github.tinywind.norea.task.STOP"
-    private const val CHANNEL_DESCRIPTION = "Progress for downloads and library tasks."
-    private const val CHANNEL_ID = "task-progress"
-    private const val CHANNEL_NAME = "Task progress"
-    private const val DEFAULT_TITLE = "Norea tasks"
-    private const val EXTRA_BODY = "body"
-    private const val EXTRA_CURRENT = "current"
-    private const val EXTRA_QUIET = "quiet"
-    private const val EXTRA_TITLE = "title"
-    private const val EXTRA_TOTAL = "total"
-    private const val NOTIFICATION_ID = 1001
-    private const val QUIET_CHANNEL_DESCRIPTION =
-      "Keeps downloads and library tasks running while task progress notifications are off."
-    private const val QUIET_CHANNEL_ID = "task-background"
-    private const val QUIET_CHANNEL_NAME = "Background tasks"
+  private data class ExecutionRequest(
+    val anchorId: Int,
+    val notification: Notification,
+    val working: Boolean,
+    val groups: Map<Int, Notification>,
+  )
 
-    fun update(
+  companion object {
+    private const val ACTION_START = "io.github.tinywind.norea.task.START"
+    private var instance: TaskForegroundService? = null
+    private var desired: ExecutionRequest? = null
+    private var startRequested = false
+
+    internal fun update(
       context: Context,
-      title: String,
-      body: String,
-      current: Int?,
-      total: Int?,
-      quiet: Boolean,
+      anchorId: Int,
+      notification: Notification,
+      working: Boolean,
+      groups: Map<Int, Notification>,
     ) {
-      val intent = Intent(context, TaskForegroundService::class.java).apply {
-        action = ACTION_UPDATE
-        putExtra(EXTRA_TITLE, title)
-        putExtra(EXTRA_BODY, body)
-        putExtra(EXTRA_CURRENT, current ?: -1)
-        putExtra(EXTRA_TOTAL, total ?: -1)
-        putExtra(EXTRA_QUIET, quiet)
+      val request = ExecutionRequest(anchorId, notification, working, groups)
+      desired = request
+      instance?.takeUnless { it.stopping }?.let {
+        it.applyRequest(request)
+        return
       }
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.startForegroundService(intent)
-      } else {
-        context.startService(intent)
+      if (startRequested) return
+      startRequested = true
+      try {
+        val intent = Intent(context, TaskForegroundService::class.java).apply { action = ACTION_START }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+        else context.startService(intent)
+      } catch (error: RuntimeException) {
+        startRequested = false
+        desired = null
+        throw error
       }
     }
 
     fun stop(context: Context) {
+      if (desired == null && instance == null && !startRequested) return
+      desired = null
+      startRequested = false
+      val active = instance
+      instance = null
+      active?.stopRuntime()
       // A stop request must not start a new background service.
       context.stopService(Intent(context, TaskForegroundService::class.java))
     }

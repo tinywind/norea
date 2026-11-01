@@ -74,6 +74,9 @@ internal class AndroidTaskNotificationBridge(
   @JavascriptInterface
   fun isExecutionSuspended(): Boolean = TaskBackgroundExecution.policy.suspended
 
+  @JavascriptInterface
+  fun drainActions(): String = AndroidTaskNotificationActions.drain(activity)
+
   fun suspendExecution() {
     isForegroundServiceActive = false
     releaseBackgroundWorkWebViews()
@@ -81,34 +84,24 @@ internal class AndroidTaskNotificationBridge(
 
   @JavascriptInterface
   fun update(payload: String) {
+    val update = runCatching { AndroidTaskNotificationPayload.parse(payload) }.getOrNull() ?: return
     activity.runOnUiThread {
-      if (TaskBackgroundExecution.policy.suspended) return@runOnUiThread
-      val json = try { JSONObject(payload) } catch (_: RuntimeException) { return@runOnUiThread }
-      try {
-        val quiet = json.optBoolean("quiet", false)
-        if (!quiet) {
-          try {
-            requestNotificationPermission()
-          } catch (_: Throwable) {
-            // Permission prompts are best-effort; task execution must continue.
-          }
+      if (update.requestPermission) {
+        try {
+          requestNotificationPermission()
+        } catch (_: RuntimeException) {
+          // Permission prompts are best-effort; task execution must continue.
         }
-        val progress = json.optJSONObject("progress")
-        val current = progress?.takeIf { it.has("current") }?.optInt("current")
-        val total = progress?.takeIf { it.has("total") }?.optInt("total")
-        TaskForegroundService.update(
-          activity,
-          json.optString("title", "Norea tasks"),
-          json.optString("body", ""),
-          current,
-          total,
-          quiet,
-        )
-        isForegroundServiceActive = true
-        resumeBackgroundWorkWebViews()
+      }
+      try {
+        val active = AndroidTaskNotifications.update(activity, update)
+        val changed = active != isForegroundServiceActive
+        isForegroundServiceActive = active
+        if (changed) {
+          if (active) resumeBackgroundWorkWebViews() else releaseBackgroundWorkWebViews()
+        }
       } catch (error: RuntimeException) {
-        android.util.Log.w("NoreaTasks", "Background service start rejected", error)
-        TaskBackgroundExecution.suspend()
+        android.util.Log.w("NoreaTasks", "Task notification update failed", error)
       }
     }
   }
@@ -116,12 +109,12 @@ internal class AndroidTaskNotificationBridge(
   @JavascriptInterface
   fun stop() {
     activity.runOnUiThread {
+      isForegroundServiceActive = false
+      releaseBackgroundWorkWebViews()
       try {
-        isForegroundServiceActive = false
-        releaseBackgroundWorkWebViews()
-        TaskForegroundService.stop(activity)
-      } catch (_: Throwable) {
-        // The service may already be stopped by Android.
+        AndroidTaskNotifications.stopRuntime(activity)
+      } catch (error: RuntimeException) {
+        android.util.Log.w("NoreaTasks", "Background execution cleanup failed", error)
       }
     }
   }

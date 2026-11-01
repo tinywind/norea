@@ -42,6 +42,14 @@ class MainActivity : TauriActivity() {
     )
     taskNotificationBridge.suspendExecution()
   }
+  private val onTaskNotificationAction: () -> Unit = {
+    mainWebView?.post {
+      mainWebView?.evaluateJavascript(
+        "window.dispatchEvent(new Event('norea-task-notification-action'));",
+        null,
+      )
+    }
+  }
   private val windowVisibilityProbe by lazy {
     WindowVisibilityProbe(this, ::resumeTaskWebViewsForBackgroundWork)
   }
@@ -61,6 +69,14 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     TaskBackgroundExecution.attach(onBackgroundExecutionSuspended)
+    AndroidTaskNotificationActions.attach(onTaskNotificationAction)
+    AndroidTaskNotificationActions.acceptActivityIntent(this, intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    AndroidTaskNotificationActions.acceptActivityIntent(this, intent)
   }
 
   override fun onContentChanged() {
@@ -133,6 +149,7 @@ class MainActivity : TauriActivity() {
 
   override fun onDestroy() {
     TaskBackgroundExecution.detach(onBackgroundExecutionSuspended)
+    AndroidTaskNotificationActions.detach(onTaskNotificationAction)
     resetMainBackEvaluation()
     scraperBackPressedCallback?.remove()
     scraperBackPressedCallback = null
