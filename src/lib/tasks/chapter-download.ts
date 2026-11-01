@@ -140,9 +140,18 @@ export interface ChapterDownloadBatchJob {
   windowSize?: number;
 }
 
-export interface ChapterDownloadBatchProgress {
+export interface ChapterDownloadBatchHandle extends TaskHandle<ChapterDownloadBatchResult> {
+  materialized: Promise<void>;
+}
+
+export interface ChapterDownloadBatchProgress extends ChapterDownloadBatchResult {
   current: number;
-  total: number;
+}
+
+export interface ChapterDownloadBatchProgressEvent {
+  batchId: string;
+  active: boolean;
+  progress: ChapterDownloadBatchProgress;
 }
 
 interface ChapterDownloadBatchState extends ChapterDownloadBatchResult {
@@ -165,6 +174,9 @@ const chapterDownloadBatchStates = new Map<
   string,
   ChapterDownloadBatchState
 >();
+const chapterDownloadBatchProgressListeners = new Set<
+  (event: ChapterDownloadBatchProgressEvent) => void
+>();
 const chapterDownloadBatchSettledListeners = new Set<
   (batchId: string) => void
 >();
@@ -184,6 +196,7 @@ const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 const CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE = 500;
 
 let chapterDownloadQueueExecutorStarted = false;
+let chapterDownloadQueueRestoration = Promise.resolve();
 let chapterDownloadLifecycleSuspending = false;
 let chapterDownloadLifecycleListenersInstalled = false;
 let backendChapterDownloadQueueMutation: Promise<void> = Promise.resolve();
@@ -719,6 +732,7 @@ function settleChapterDownloadBatchJob(
 
   state.settledChapterIds.add(chapterId);
   state[settlement] += 1;
+  emitChapterDownloadBatchProgress(batchId, state, true);
 }
 
 function completeChapterDownloadJob(job: ChapterDownloadJob, ownerId: string): void {
@@ -769,6 +783,7 @@ export function cancelChapterDownloadBatches(
     if (queuedChapterIds.length > 0) {
       scheduleQueuedChapterDownloadJobsRemoval(queuedChapterIds);
     }
+    emitChapterDownloadBatchProgress(batchId, state, true);
   }
 
   return cancelled;
@@ -784,9 +799,52 @@ export function getActiveChapterDownloadBatchProgress():
     (sum, batch) => ({
       current: sum.current + chapterDownloadBatchProgressCount(batch),
       total: sum.total + batch.total,
+      succeeded: sum.succeeded + batch.succeeded,
+      failed: sum.failed + batch.failed,
+      cancelled: sum.cancelled + chapterDownloadBatchCancelledCount(batch),
     }),
-    { current: 0, total: 0 },
+    { current: 0, total: 0, succeeded: 0, failed: 0, cancelled: 0 },
   );
+}
+
+function batchProgressEvent(
+  batchId: string,
+  state: ChapterDownloadBatchState,
+  active: boolean,
+): ChapterDownloadBatchProgressEvent {
+  return {
+    batchId,
+    active,
+    progress: {
+      current: chapterDownloadBatchProgressCount(state),
+      total: state.total,
+      succeeded: state.succeeded,
+      failed: state.failed,
+      cancelled: chapterDownloadBatchCancelledCount(state),
+    },
+  };
+}
+
+export function getChapterDownloadBatchProgress(): ChapterDownloadBatchProgressEvent[] {
+  return [...chapterDownloadBatchStates].map(([batchId, state]) =>
+    batchProgressEvent(batchId, state, true),
+  );
+}
+
+function emitChapterDownloadBatchProgress(
+  batchId: string,
+  state: ChapterDownloadBatchState,
+  active: boolean,
+): void {
+  const event = batchProgressEvent(batchId, state, active);
+  for (const listener of chapterDownloadBatchProgressListeners) listener(event);
+}
+
+export function subscribeChapterDownloadBatchProgress(
+  listener: (event: ChapterDownloadBatchProgressEvent) => void,
+): () => void {
+  chapterDownloadBatchProgressListeners.add(listener);
+  return () => { chapterDownloadBatchProgressListeners.delete(listener); };
 }
 
 function emitChapterPartialContentUpdate(event: ChapterPartialContentEvent): void {
@@ -1492,7 +1550,7 @@ export function enqueueChapterDownloadBatch({
   title,
   total: requestedTotal,
   windowSize: requestedWindowSize,
-}: ChapterDownloadBatchJob): TaskHandle<ChapterDownloadBatchResult> {
+}: ChapterDownloadBatchJob): ChapterDownloadBatchHandle {
   const batchId = makeChapterDownloadBatchId();
   const batchJobs = Array.isArray(jobs) ? jobs : null;
   const total = normalizeChapterDownloadBatchTotal(jobs, requestedTotal);
@@ -1514,7 +1572,7 @@ export function enqueueChapterDownloadBatch({
   }
   const persistMaterializedJobs = persist && !batchJobs;
   const waitForBatchQueue = persist && Boolean(batchJobs);
-  chapterDownloadBatchStates.set(batchId, {
+  const state: ChapterDownloadBatchState = {
     cancelRequested: false,
     cancelledChapterIds: new Set(),
     cancelled: 0,
@@ -1529,11 +1587,13 @@ export function enqueueChapterDownloadBatch({
     settledChapterIds: new Set(),
     succeeded: 0,
     total,
-  });
+  };
+  chapterDownloadBatchStates.set(batchId, state);
+  emitChapterDownloadBatchProgress(batchId, state, true);
   const materializedTaskCompletions: Promise<void>[] = [];
   const localWorkScans = new Map<number, Promise<void>>();
 
-  const promise = runBoundedTaskBatch({
+  const materialized = runBoundedTaskBatch({
     items: jobs,
     windowSize,
     materializeBatch: taskScheduler.batch.bind(taskScheduler),
@@ -1590,7 +1650,8 @@ export function enqueueChapterDownloadBatch({
         );
       }
     },
-  })
+  });
+  const promise = materialized
     .then(() => Promise.all(materializedTaskCompletions))
     .then(() => {
       const state = chapterDownloadBatchStates.get(batchId);
@@ -1608,11 +1669,13 @@ export function enqueueChapterDownloadBatch({
       return result;
     })
     .finally(() => {
+      const state = chapterDownloadBatchStates.get(batchId);
       chapterDownloadBatchStates.delete(batchId);
+      if (state) emitChapterDownloadBatchProgress(batchId, state, false);
       emitChapterDownloadBatchSettled(batchId);
     });
 
-  return { id: batchId, promise };
+  return { id: batchId, materialized, promise };
 }
 
 export function getChapterDownloadStatus(
@@ -1732,7 +1795,7 @@ async function pendingBackendChapterDownloadJobs(): Promise<
   return { leased: jobs.length, pendingJobs };
 }
 
-async function runBackendChapterDownloadExecutor(): Promise<void> {
+async function runBackendChapterDownloadExecutor(onRestored: () => void): Promise<void> {
   for (;;) {
     const { leased, restoreHandle } =
       await runExclusiveChapterStorageOperation(
@@ -1764,6 +1827,8 @@ async function runBackendChapterDownloadExecutor(): Promise<void> {
           }
         },
       );
+    await restoreHandle?.materialized;
+    onRestored();
     if (!restoreHandle) {
       if (leased === 0) return;
       continue;
@@ -1777,13 +1842,20 @@ async function runBackendChapterDownloadExecutor(): Promise<void> {
   }
 }
 
+export function waitForChapterDownloadQueueRestoration(): Promise<void> {
+  return chapterDownloadQueueRestoration;
+}
+
 export function startChapterDownloadQueueExecutor(
   onError?: (error: unknown) => void,
 ): void {
   if (chapterDownloadQueueExecutorStarted || !isTauriRuntime()) return;
   chapterDownloadQueueExecutorStarted = true;
 
-  void runBackendChapterDownloadExecutor().catch((error) => {
+  let onRestored!: () => void;
+  chapterDownloadQueueRestoration = new Promise<void>((resolve) => { onRestored = resolve; });
+  void runBackendChapterDownloadExecutor(onRestored).catch((error) => {
+    onRestored();
     chapterDownloadQueueExecutorStarted = false;
     console.warn("[chapter-download] failed to run download queue:", error);
     onError?.(error);

@@ -64,6 +64,7 @@ import {
   type SourceAccessBlock,
   type SourceAccessBlockState,
 } from "./source-access-gate";
+import { taskNotificationGroupForKind } from "./task-types";
 import type {
   MainTaskSpec,
   SourceQueueSortMode,
@@ -73,6 +74,7 @@ import type {
   TaskHandle,
   TaskKind,
   TaskMoveTarget,
+  TaskNotificationGroupKey,
   TaskPriority,
   TaskQueueSortMode,
   TaskRecord,
@@ -235,6 +237,7 @@ export class TaskScheduler {
   private readonly history: TaskHistory;
   private readonly mainQueue: string[] = [];
   private readonly pausedSourceIds = new Set<string>();
+  private readonly pausedTaskGroups = new Set<TaskNotificationGroupKey>();
   private readonly snapshotListeners = new Set<() => void>();
   private readonly sourceTaskSettlementWaiters = new Map<
     string,
@@ -265,6 +268,7 @@ export class TaskScheduler {
   private snapshotRecordIndexes = new Map<string, number>();
   private snapshot: TaskSnapshot = {
     pausedSourceIds: [],
+    pausedTaskGroups: [],
     records: [],
     recordLimit: 0,
     recordsTruncated: false,
@@ -334,6 +338,7 @@ export class TaskScheduler {
       lane: entry?.record.lane,
       mainQueueLength: this.mainQueue.length,
       pausedSourceIds: [...this.pausedSourceIds].sort(),
+      pausedTaskGroups: [...this.pausedTaskGroups].sort(),
       priority: entry?.record.priority,
       sourceAccessScopeKey: entry?.spec.sourceAccessScopeKey,
       sourceAccessScopesBlocked: this.sourceAccess.size,
@@ -1214,6 +1219,30 @@ export class TaskScheduler {
     if (!suspended) this.requestDrain();
   }
 
+  pauseTaskGroup(group: TaskNotificationGroupKey): boolean {
+    if (this.pausedTaskGroups.has(group)) return false;
+    this.pausedTaskGroups.add(group);
+    this.pauseRunningSourceTasks(undefined, entry => this.isTaskGroupPaused(entry));
+    this.debug("task group paused", undefined, { group });
+    this.publishSnapshot();
+    this.requestDrain();
+    return true;
+  }
+
+  resumeTaskGroup(group: TaskNotificationGroupKey): boolean {
+    if (!this.pausedTaskGroups.delete(group)) return false;
+    this.debug("task group resumed", undefined, { group });
+    this.publishSnapshot();
+    this.requestDrain();
+    return true;
+  }
+
+  private isTaskGroupPaused(entry: TaskEntry): boolean {
+    if (entry.sourceAccessVerificationRevision !== undefined) return false;
+    const group = taskNotificationGroupForKind(entry.record.kind);
+    return group !== null && this.pausedTaskGroups.has(group);
+  }
+
   pauseSourceQueue(sourceId?: string): boolean {
     const paused = this.pauseRunningSourceTasks(sourceId, entry => !isUiInteraction(entry));
     if (!sourceId) {
@@ -1560,7 +1589,7 @@ export class TaskScheduler {
   private nextQueuedMainEntry(): { entry: TaskEntry; index: number } | null {
     for (let index = 0; index < this.mainQueue.length; index += 1) {
       const candidate = this.entries.get(this.mainQueue[index]);
-      if (!candidate || candidate.record.status !== "queued") continue;
+      if (!candidate || candidate.record.status !== "queued" || this.isTaskGroupPaused(candidate)) continue;
       return { entry: candidate, index };
     }
     return null;
@@ -1794,6 +1823,7 @@ export class TaskScheduler {
   }
 
   private isSourceQueuePaused(entry: TaskEntry): boolean {
+    if (this.isTaskGroupPaused(entry)) return true;
     if (isUiInteraction(entry)) return false;
     const sourceId = entry.record.source?.id;
     return (
@@ -1856,7 +1886,8 @@ export class TaskScheduler {
       entry.record.status !== "running" ||
       entry.controller.signal.aborted ||
       !this.networkAvailable ||
-      entry.pauseRequested
+      entry.pauseRequested ||
+      this.isTaskGroupPaused(entry)
     ) {
       entry.sourceAccessDeferred = true;
       return false;
@@ -2566,6 +2597,7 @@ export class TaskScheduler {
     const sourceQueuesTotal = sourceIdsInActiveEntries.size;
     const snapshot = {
       pausedSourceIds: [...this.pausedSourceIds].sort(),
+      pausedTaskGroups: [...this.pausedTaskGroups].sort(),
       records,
       recordLimit: records.length,
       recordsTruncated: false,

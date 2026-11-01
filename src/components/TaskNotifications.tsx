@@ -1,4 +1,6 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { Button } from "@mantine/core";
+import { useNavigate } from "@tanstack/react-router";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
@@ -17,59 +19,27 @@ import {
   subscribeChapterDownloads,
 } from "../lib/tasks/chapter-download";
 import { startDownloadCacheDeleteWorkExecutor } from "../lib/tasks/download-cache-delete";
-import {
-  openSourceAccessBrowser,
-  sourceAccessBlockSourceNames,
-} from "../lib/tasks/source-access-coordinator";
-import {
-  taskScheduler,
-  type SourceAccessBlock,
-} from "../lib/tasks/scheduler";
+import { SourceAccessNotificationTracker } from "../lib/tasks/source-access-notifications";
+import { applyTaskNotificationAction } from "../lib/tasks/task-notification-actions";
+import type { TaskNotificationAction } from "../lib/tasks/native-notification-actions";
+import { showErrorToast } from "../lib/runtime/error-toast";
+import { taskScheduler } from "../lib/tasks/scheduler";
 import { startTrayTaskProgress } from "../lib/tasks/tray-progress";
 import { useNotificationStore } from "../store/notifications";
 import { WindowsTaskNotificationBridge } from "./WindowsTaskNotificationBridge";
 
-const SOURCE_ACCESS_NOTIFICATION_ID = "source-access-required";
-
-export function nextAutoOpenSourceAccessBlock(
-  blocks: readonly SourceAccessBlock[],
-  knownScopes: Set<string>,
-  pendingScopes: Set<string>,
-  canBegin: (scopeKey: string) => boolean,
-): SourceAccessBlock | undefined {
-  const currentScopes = new Set<string>();
-  for (const block of blocks) {
-    currentScopes.add(block.scopeKey);
-    if (!knownScopes.has(block.scopeKey)) {
-      pendingScopes.add(block.scopeKey);
-    }
-  }
-  for (const scopeKey of pendingScopes) {
-    if (!currentScopes.has(scopeKey)) pendingScopes.delete(scopeKey);
-  }
-  knownScopes.clear();
-  for (const scopeKey of currentScopes) knownScopes.add(scopeKey);
-  return blocks.find(
-    (block) => pendingScopes.has(block.scopeKey) && canBegin(block.scopeKey),
-  );
-}
-
-export function completeAutoOpenSourceAccessAttempt(
-  scopeKey: string,
-  opened: boolean,
-  pendingScopes: Set<string>,
-  inFlightScopes: Set<string>,
-): void {
-  inFlightScopes.delete(scopeKey);
-  if (opened) pendingScopes.delete(scopeKey);
-}
-
 export function TaskNotifications() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const taskProgressMode = useNotificationStore(
     (state) => state.taskProgressMode,
   );
+
+  const handleNotificationAction = useCallback((action: TaskNotificationAction) => {
+    void applyTaskNotificationAction(action, () => navigate({ to: "/tasks" }), t)
+      .catch(error => showErrorToast(t("common.actionFailed"), error, "task-notification-action"));
+  }, [navigate, t]);
 
   useEffect(() => {
     let completionFrame: number | null = null;
@@ -173,127 +143,72 @@ export function TaskNotifications() {
   }, [queryClient, t]);
 
   useEffect(() => {
-    const initialSnapshot = taskScheduler.getSnapshot();
-    const knownScopes = new Set(
-      initialSnapshot.sourceAccessBlocks.map((block) => block.scopeKey),
-    );
-    const pendingAutoOpenScopes = new Set(knownScopes);
-    const autoOpenInFlightScopes = new Set<string>();
-    const dismissedRevisions = new Map<string, number>();
-    let notificationVisible = false;
-
+    const sourceTracker = new SourceAccessNotificationTracker(taskScheduler.getSnapshot());
+    const shown = new Map<string, string>();
+    const dismissed = new Map<string, string>();
+    let lastRevision: string | undefined;
     const syncSourceAccess = () => {
       const snapshot = taskScheduler.getSnapshot();
-      const autoOpenBlock = nextAutoOpenSourceAccessBlock(
-        snapshot.sourceAccessBlocks,
-        knownScopes,
-        pendingAutoOpenScopes,
-        (scopeKey) =>
-          !autoOpenInFlightScopes.has(scopeKey) &&
-          taskScheduler.canBeginSourceAccessVerification(scopeKey),
-      );
-
-      for (const scopeKey of dismissedRevisions.keys()) {
-        if (!knownScopes.has(scopeKey)) dismissedRevisions.delete(scopeKey);
+      const revision = sourceTracker.revision(snapshot.sourceAccessBlocks);
+      if (lastRevision === revision) return;
+      lastRevision = revision;
+      const items = sourceTracker.notifications(snapshot.sourceAccessBlocks, t);
+      const currentSources = new Set(items.map(item => item.sourceId));
+      for (const sourceId of shown.keys()) {
+        if (currentSources.has(sourceId)) continue;
+        shown.delete(sourceId);
+        dismissed.delete(sourceId);
+        notifications.hide(`source-access-required:${sourceId}`);
       }
-      const firstBlock = snapshot.sourceAccessBlocks.find(
-        (block) => dismissedRevisions.get(block.scopeKey) !== block.revision,
-      );
-      if (!firstBlock) {
-        if (notificationVisible) {
-          notificationVisible = false;
-          notifications.hide(SOURCE_ACCESS_NOTIFICATION_ID);
-        }
-      } else {
-        const sourceNames = sourceAccessBlockSourceNames(firstBlock, snapshot);
-        const sourceName = sourceNames.join(", ") || firstBlock.scopeKey;
+      for (const sourceId of dismissed.keys()) {
+        if (!currentSources.has(sourceId)) dismissed.delete(sourceId);
+      }
+      for (const item of items) {
+        const id = `source-access-required:${item.sourceId}`;
+        const identity = JSON.stringify([item.scopeKey, item.revision, item.body]);
+        if (shown.get(item.sourceId) === identity || dismissed.get(item.sourceId) === identity) continue;
+        const wasShown = shown.has(item.sourceId);
+        shown.set(item.sourceId, identity);
         const notification = {
-          id: SOURCE_ACCESS_NOTIFICATION_ID,
-          autoClose: 5_000,
-          color: "orange",
-          message: t("sourceAccess.notificationMessage", {
-            source: sourceName,
-          }),
-          title: t("sourceAccess.notificationTitle"),
+          id, autoClose: 5_000, color: "orange", title: item.title,
+          message: <>{item.body} <Button variant="subtle" size="compact-xs" onClick={() => handleNotificationAction({ type: "verifySource", sourceId: item.sourceId, scopeKey: item.scopeKey, revision: item.revision })}>{item.actionLabel}</Button></>,
           withCloseButton: true,
-          closeButtonProps: {
-            "aria-label": t("sourceAccess.dismissNotification"),
-          },
+          closeButtonProps: { "aria-label": t("sourceAccess.dismissNotification") },
           onClose: () => {
-            if (!notificationVisible) return;
-            dismissedRevisions.set(firstBlock.scopeKey, firstBlock.revision);
-            notificationVisible = false;
+            if (shown.get(item.sourceId) !== identity) return;
+            shown.delete(item.sourceId);
+            dismissed.set(item.sourceId, identity);
           },
         };
-        if (notificationVisible) {
-          notifications.update(notification);
-        } else {
-          notifications.show(notification);
-          notificationVisible = true;
-        }
-      }
-
-      if (
-        autoOpenBlock &&
-        typeof document !== "undefined" &&
-        document.visibilityState !== "hidden"
-      ) {
-        const scopeKey = autoOpenBlock.scopeKey;
-        autoOpenInFlightScopes.add(scopeKey);
-        const title =
-          autoOpenBlock.challenge.kind === "captcha"
-            ? t("sourceAccess.captchaTitle")
-            : t("sourceAccess.cloudflareTitle");
-        const newSourceNames = sourceAccessBlockSourceNames(
-          autoOpenBlock,
-          snapshot,
-        );
-        void openSourceAccessBrowser(autoOpenBlock, {
-          sourceName: newSourceNames.join(", ") || scopeKey,
-          title,
-        }).then(
-          (opened) =>
-            completeAutoOpenSourceAccessAttempt(
-              scopeKey,
-              opened,
-              pendingAutoOpenScopes,
-              autoOpenInFlightScopes,
-            ),
-          () =>
-            completeAutoOpenSourceAccessAttempt(
-              scopeKey,
-              false,
-              pendingAutoOpenScopes,
-              autoOpenInFlightScopes,
-            ),
-        );
+        if (wasShown) notifications.update(notification);
+        else notifications.show(notification);
       }
     };
-
     const unsubscribe = taskScheduler.subscribe(syncSourceAccess);
+    const unsubscribeEvents = taskScheduler.subscribeEvents(event => {
+      if (sourceTracker.update(event)) syncSourceAccess();
+    });
     syncSourceAccess();
     return () => {
       unsubscribe();
-      notificationVisible = false;
-      notifications.hide(SOURCE_ACCESS_NOTIFICATION_ID);
+      unsubscribeEvents();
+      const sources = [...shown.keys()];
+      shown.clear();
+      for (const sourceId of sources) notifications.hide(`source-access-required:${sourceId}`);
     };
-  }, [t]);
+  }, [handleNotificationAction, t]);
 
   useEffect(() => {
     void startDownloadCacheDeleteWorkExecutor(
       t("tasks.task.deleteDownloadCache"),
     ).catch((error) => {
-      notifications.show({
-        color: "red",
-        title: t("tasks.task.deleteDownloadCache"),
-        message: describeError(error),
-      });
+      showErrorToast(t("tasks.task.deleteDownloadCache"), error, "download-cache-delete");
     });
   }, [t]);
 
   useEffect(() => {
-    return startAndroidTaskNotifications(t, taskProgressMode);
-  }, [t, taskProgressMode]);
+    return startAndroidTaskNotifications(t, taskProgressMode, handleNotificationAction);
+  }, [t, taskProgressMode, handleNotificationAction]);
 
   useEffect(() => {
     return startAndroidBackgroundDownloadRecovery();
@@ -304,6 +219,6 @@ export function TaskNotifications() {
   }, [t]);
 
   return (
-    <WindowsTaskNotificationBridge taskProgressMode={taskProgressMode} />
+    <WindowsTaskNotificationBridge taskProgressMode={taskProgressMode} onAction={handleNotificationAction} />
   );
 }

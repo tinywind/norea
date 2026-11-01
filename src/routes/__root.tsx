@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Anchor, AppShell } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -16,6 +16,7 @@ import { startAndroidBackNavigationBridge } from "../lib/android-back-navigation
 import { startAndroidFileOpenListener } from "../lib/android-file-open";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
+import { applyTaskNotificationAction } from "../lib/tasks/task-notification-actions";
 import {
   getAppNavigationHistoryIndex,
   recordAppNavigationEntry,
@@ -333,6 +334,8 @@ function AppNavLink({
 
 export function RootLayout() {
   const { t } = useTranslation();
+  const notificationTranslateRef = useRef(t);
+  notificationTranslateRef.current = t;
   const showLabelsInNav = useAppearanceStore((s) => s.showLabelsInNav);
   const showHistoryTab = useAppearanceStore((s) => s.showHistoryTab);
   const showUpdatesTab = useAppearanceStore((s) => s.showUpdatesTab);
@@ -411,17 +414,28 @@ export function RootLayout() {
   useEffect(() => startAndroidBackNavigationBridge(), []);
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     startDeepLinkListener({
       onRepoAdd: (repoUrl) => {
+        if (disposed) return;
         useBrowseStore.getState().setPendingRepoUrl(repoUrl);
         void navigate({
           to: "/browse",
           search: { q: "", tab: "sources" },
         });
       },
+      onTaskNotificationAction: action => {
+        if (disposed) return;
+        void applyTaskNotificationAction(
+          action,
+          () => navigate({ to: "/tasks" }),
+          notificationTranslateRef.current,
+        ).catch(error => console.warn("[task-notifications] deep-link action failed", error));
+      },
     })
       .then((cleanup) => {
+        if (disposed) { cleanup(); return; }
         unlisten = cleanup;
       })
       .catch(() => {
@@ -429,6 +443,7 @@ export function RootLayout() {
         // for vite-only dev). Listener registration silently no-ops.
       });
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [navigate]);

@@ -3,6 +3,33 @@ import type { SourceAccessBlock } from "./source-access-gate";
 
 export type TaskLane = "main" | "source";
 
+export type TaskNotificationGroupKey =
+  | "downloads"
+  | "libraryMetadata"
+  | "libraryUpdates"
+  | "search";
+
+export function taskNotificationGroupForKind(
+  kind: TaskKind,
+): TaskNotificationGroupKey | null {
+  switch (kind) {
+    case "chapter.download":
+    case "chapter.repairMedia":
+      return "downloads";
+    case "library.refreshMetadata":
+    case "source.refreshNovel":
+      return "libraryMetadata";
+    case "library.checkUpdates":
+    case "source.checkLibraryUpdates":
+      return "libraryUpdates";
+    case "source.globalSearch":
+    case "source.search":
+      return "search";
+    default:
+      return null;
+  }
+}
+
 export type TaskPriority =
   | "interactive"
   | "user"
@@ -121,6 +148,7 @@ export type SourceQueueSortMode =
   | "queuedCount";
 
 export interface TaskSnapshot {
+  pausedTaskGroups?: TaskNotificationGroupKey[];
   pausedSourceIds: string[];
   records: TaskRecord[];
   recordLimit: number;

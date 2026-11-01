@@ -7,20 +7,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import type { SourceAccessBlock } from "../lib/tasks/scheduler";
 import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
-import {
-  completeAutoOpenSourceAccessAttempt,
-  nextAutoOpenSourceAccessBlock,
-  TaskNotifications,
-} from "./TaskNotifications";
+import { TaskNotifications } from "./TaskNotifications";
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
   useEffect: vi.fn(),
+  useCallback: (callback: unknown) => callback,
 }));
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...await importOriginal<typeof import("@tanstack/react-query")>(),
   useQueryClient: vi.fn(),
 }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+
 vi.mock("../i18n", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -110,158 +109,46 @@ function accessBlock(): SourceAccessBlock {
   };
 }
 
-describe("nextAutoOpenSourceAccessBlock", () => {
-  it("keeps a new block pending until its origin task is queued", () => {
-    const block = accessBlock();
-    const knownScopes = new Set<string>();
-    const pendingScopes = new Set<string>();
-    let canBegin = false;
-
-    expect(
-      nextAutoOpenSourceAccessBlock(
-        [block],
-        knownScopes,
-        pendingScopes,
-        () => canBegin,
-      ),
-    ).toBeUndefined();
-    expect(pendingScopes).toEqual(new Set([block.scopeKey]));
-
-    canBegin = true;
-    expect(
-      nextAutoOpenSourceAccessBlock(
-        [block],
-        knownScopes,
-        pendingScopes,
-        () => canBegin,
-      ),
-    ).toBe(block);
-  });
-
-  it("keeps a block pending after a transient browser open failure", () => {
-    const scopeKey = "plugin:source-a:site:source.test";
-    const pendingScopes = new Set([scopeKey]);
-    const inFlightScopes = new Set([scopeKey]);
-
-    completeAutoOpenSourceAccessAttempt(
-      scopeKey,
-      false,
-      pendingScopes,
-      inFlightScopes,
-    );
-
-    expect(pendingScopes).toEqual(new Set([scopeKey]));
-    expect(inFlightScopes).toEqual(new Set());
-
-    inFlightScopes.add(scopeKey);
-    completeAutoOpenSourceAccessAttempt(
-      scopeKey,
-      true,
-      pendingScopes,
-      inFlightScopes,
-    );
-
-    expect(pendingScopes).toEqual(new Set());
-    expect(inFlightScopes).toEqual(new Set());
-  });
-});
-
-describe("source access notifications", () => {
+describe("per-plugin source access notifications", () => {
   let dispose: (() => void) | undefined;
-
-  afterEach(() => {
-    dispose?.();
-    dispose = undefined;
-    notifications.clean();
-    vi.restoreAllMocks();
-    vi.clearAllMocks();
-    vi.unstubAllGlobals();
-  });
-
-  function mountNotifications(initialBlocks: SourceAccessBlock[]) {
-    let blocks = initialBlocks;
-    const snapshot = taskScheduler.getSnapshot();
-    let sync = () => {};
-    vi.spyOn(taskScheduler, "getSnapshot").mockImplementation(() => ({
-      ...snapshot,
-      sourceAccessBlocks: blocks,
-    }));
-    vi.spyOn(taskScheduler, "subscribe").mockImplementation((listener) => {
-      sync = listener;
-      return () => {};
-    });
-    vi.spyOn(taskScheduler, "canBeginSourceAccessVerification").mockReturnValue(
-      false,
-    );
+  afterEach(() => { dispose?.(); dispose=undefined; notifications.clean(); vi.restoreAllMocks(); vi.clearAllMocks(); });
+  function mount(blocks: SourceAccessBlock[]) {
+    let current=blocks;
+    let sync=()=>{};
+    vi.mocked(useQueryClient).mockReturnValue(new QueryClient());
+    vi.spyOn(chapterDownloads,"startChapterDownloadQueueExecutor").mockImplementation(()=>{});
+    const baseSnapshot = taskScheduler.getSnapshot();
+    vi.spyOn(taskScheduler,"getSnapshot").mockImplementation(()=>({ ...baseSnapshot, records:[],sourceAccessBlocks:current }));
+    vi.spyOn(taskScheduler,"subscribe").mockImplementation(listener=>{sync=listener;return ()=>{};});
     TaskNotifications();
-    dispose = vi.mocked(useEffect).mock.calls[1]![0]() as () => void;
-    return (nextBlocks = blocks) => {
-      blocks = nextBlocks;
-      sync();
-    };
+    dispose=vi.mocked(useEffect).mock.calls[1]![0]() as ()=>void;
+    return (next: SourceAccessBlock[])=>{current=next;sync();};
   }
-
-  it("opens a restored challenge when a new source request becomes eligible", async () => {
-    vi.stubGlobal("document", { visibilityState: "visible" });
-    const open = vi.spyOn(sourceAccessCoordinator, "openSourceAccessBrowser")
-      .mockResolvedValue(true);
-    const sync = mountNotifications([accessBlock()]);
+  it("shows separate notices and does not open the verification browser automatically",()=>{
+    const open=vi.spyOn(sourceAccessCoordinator,"openSourceAccessBrowser").mockResolvedValue(true);
+    const a=accessBlock();
+    const b={...a,sourceId:"source-b",scopeKey:"plugin:source-b:site:source.test"};
+    mount([a,b]);
+    expect(notificationsStore.getState().notifications.map(item=>item.id)).toEqual(["source-access-required:source-a","source-access-required:source-b"]);
     expect(open).not.toHaveBeenCalled();
-    vi.mocked(taskScheduler.canBeginSourceAccessVerification).mockReturnValue(true);
-
-    sync();
-    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
-    sync();
-    expect(open).toHaveBeenCalledOnce();
   });
-
-  it("allows dismissal without reopening on task updates or unblocking access", () => {
-    const block = accessBlock();
-    const sync = mountNotifications([block]);
-    const notification = notificationsStore.getState().notifications[0]!;
-
-    expect(notification.autoClose).toBe(5_000);
-    expect(notification.withCloseButton).toBe(true);
-    expect(notification.closeButtonProps?.["aria-label"]).toBe(
-      "sourceAccess.dismissNotification",
-    );
-    notifications.hide(notification.id!);
-    sync([{ ...block }]);
-
+  it("removes only a resolved plugin notice",()=>{
+    const a=accessBlock();
+    const b={...a,sourceId:"source-b",scopeKey:"plugin:source-b:site:source.test"};
+    const sync=mount([a,b]);sync([b]);
+    expect(notificationsStore.getState().notifications.map(item=>item.id)).toEqual(["source-access-required:source-b"]);
+  });
+  it("preserves dismissal until the challenge identity changes",()=>{
+    const a=accessBlock();const sync=mount([a]);
+    expect(notificationsStore.getState().notifications[0]?.autoClose).toBe(5_000);
+    notifications.hide("source-access-required:source-a");sync([{...a}]);
     expect(notificationsStore.getState().notifications).toEqual([]);
-    expect(taskScheduler.getSnapshot().sourceAccessBlocks).toEqual([block]);
-  });
-
-  it("notifies again for a new challenge revision after dismissal", () => {
-    const block = accessBlock();
-    const sync = mountNotifications([block]);
-    notifications.hide(notificationsStore.getState().notifications[0]!.id!);
-
-    sync([{ ...block, revision: block.revision + 1 }]);
-
+    sync([{...a,revision:2}]);
     expect(notificationsStore.getState().notifications).toHaveLength(1);
   });
-
-  it("does not let a dismissed source hide other blocked sources", () => {
-    const block = accessBlock();
-    const secondBlock = { ...block, scopeKey: "plugin:source-a:site:second.test" };
-    const sync = mountNotifications([block, secondBlock]);
-    notifications.hide(notificationsStore.getState().notifications[0]!.id!);
-    sync();
-
-    expect(notificationsStore.getState().notifications).toHaveLength(1);
-    notifications.hide(notificationsStore.getState().notifications[0]!.id!);
-    sync();
-    expect(notificationsStore.getState().notifications).toEqual([]);
-  });
-
-  it("forgets dismissal after access is restored", () => {
-    const block = accessBlock();
-    const sync = mountNotifications([block]);
-    notifications.hide(notificationsStore.getState().notifications[0]!.id!);
-    sync([]);
-    sync([block]);
-
-    expect(notificationsStore.getState().notifications).toHaveLength(1);
+  it("does not update an unchanged notice on unrelated scheduler snapshots",()=>{
+    const a=accessBlock();const sync=mount([a]);const update=vi.spyOn(notifications,"update");
+    sync([{...a}]);sync([{...a}]);
+    expect(update).not.toHaveBeenCalled();
   });
 });

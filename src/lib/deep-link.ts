@@ -1,7 +1,12 @@
-import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import {
+  parseTaskNotificationAction,
+  type TaskNotificationAction,
+} from "./tasks/native-notification-actions";
 
 export type DeepLink =
   | { kind: "repo-add"; repoUrl: string }
+  | { kind: "task-notification"; action: TaskNotificationAction }
   | { kind: "unknown"; raw: string };
 
 export function parseDeepLink(raw: string): DeepLink {
@@ -20,11 +25,31 @@ export function parseDeepLink(raw: string): DeepLink {
       return { kind: "repo-add", repoUrl: repoUrl.trim() };
     }
   }
+  if (url.host === "tasks" && (url.pathname === "" || url.pathname === "/") &&
+      !url.username && !url.password && !url.hash) {
+    const fields = [...url.searchParams.keys()];
+    if (fields.length === 0) {
+      return { kind: "task-notification", action: { type: "openTasks" } };
+    }
+    const allowed = new Set(["action", "sourceId", "scopeKey", "revision"]);
+    const sourceId = url.searchParams.get("sourceId");
+    const scopeKey = url.searchParams.get("scopeKey");
+    const revision = url.searchParams.get("revision");
+    if (fields.length === 4 && new Set(fields).size === 4 && fields.every(field => allowed.has(field)) &&
+        url.searchParams.get("action") === "verifySource" && sourceId?.trim() && scopeKey?.trim() &&
+        revision !== null && /^[1-9]\d*$/.test(revision)) {
+      const action = parseTaskNotificationAction({
+        type: "verifySource", sourceId, scopeKey, revision: Number(revision),
+      });
+      if (action) return { kind: "task-notification", action };
+    }
+  }
   return { kind: "unknown", raw };
 }
 
 export interface DeepLinkHandlers {
   onRepoAdd: (repoUrl: string) => void;
+  onTaskNotificationAction?: (action: TaskNotificationAction) => void;
   onUnknown?: (raw: string) => void;
 }
 
@@ -38,18 +63,42 @@ export interface DeepLinkHandlers {
 export async function startDeepLinkListener(
   handlers: DeepLinkHandlers,
 ): Promise<() => void> {
-  const unlisten = await onOpenUrl((urls) => {
+  let active = true;
+  let initializing = true;
+  const pending: string[] = [];
+  const deliver = (urls: readonly string[]) => {
+    if (!active) return;
     for (const raw of urls) {
       const parsed = parseDeepLink(raw);
       switch (parsed.kind) {
         case "repo-add":
           handlers.onRepoAdd(parsed.repoUrl);
           break;
+        case "task-notification":
+          handlers.onTaskNotificationAction?.(parsed.action);
+          break;
         case "unknown":
           handlers.onUnknown?.(parsed.raw);
           break;
       }
     }
+  };
+  const unlisten = await onOpenUrl(urls => {
+    if (!active) return;
+    if (initializing) pending.push(...urls);
+    else deliver(urls);
   });
-  return unlisten;
+  try {
+    const current = await getCurrent();
+    initializing = false;
+    deliver([...new Set([...(current ?? []), ...pending])]);
+  } catch (error) {
+    active = false;
+    unlisten();
+    throw error;
+  }
+  return () => {
+    active = false;
+    unlisten();
+  };
 }

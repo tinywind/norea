@@ -138,10 +138,13 @@ import {
   enqueueChapterMediaRepair,
   discardQueuedChapterDownloads,
   getActiveChapterDownloadBatchProgress,
+  getChapterDownloadBatchProgress,
+  subscribeChapterDownloadBatchProgress,
   isChapterDownloadQueued,
   startChapterDownloadQueueExecutor,
   subscribeChapterDownloadBatchesSettled,
   waitForChapterDownloadQueueMutations,
+  waitForChapterDownloadQueueRestoration,
   type ChapterDownloadJob,
 } from "./chapter-download";
 
@@ -355,6 +358,38 @@ describe("chapter download queue membership", () => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
+  it("publishes batch outcomes separately from settled progress before removal", async () => {
+    const pending: Deferred<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation(() => {
+      const deferred = createDeferred<void>();
+      pending.push(deferred);
+      return { id: `progress-${pending.length}`, promise: deferred.promise };
+    });
+    const events: Array<Parameters<Parameters<typeof subscribeChapterDownloadBatchProgress>[0]>[0]> = [];
+    const unsubscribe = subscribeChapterDownloadBatchProgress(event => events.push(event));
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [910001, 910002, 910003].map(id => ({
+        id, pluginId: "source-a", chapterPath: `/chapter/${id}`, title: `Chapter ${id}`,
+      })),
+      persist: false, title: "Progress batch", windowSize: 3,
+    });
+    const rejected = expect(handle.promise).rejects.toThrow("1 chapter downloads failed.");
+    await flushMicrotasks();
+    expect(getChapterDownloadBatchProgress().find(event => event.batchId === handle.id)).toMatchObject({
+      active: true, progress: { current: 0, total: 3, succeeded: 0, failed: 0, cancelled: 0 },
+    });
+    pending[0].resolve();
+    pending[1].reject(new Error("Download failed"));
+    pending[2].reject(new DOMException("Cancelled", "AbortError"));
+    await rejected;
+    unsubscribe();
+    expect(events.filter(event => event.batchId === handle.id).at(-1)).toEqual({
+      batchId: handle.id, active: false,
+      progress: { current: 3, total: 3, succeeded: 1, failed: 1, cancelled: 1 },
+    });
+    expect(getChapterDownloadBatchProgress().some(event => event.batchId === handle.id)).toBe(false);
+  });
+
   it("checks one work once for a thousand downloads and skips files missing from the cache", async () => {
     let localChaptersDiscovered = false;
     vi.mocked(refreshStoredNovelChapterDownloads).mockImplementation(async () => { localChaptersDiscovered = true; });
@@ -680,7 +715,7 @@ describe("enqueueChapterDownloadBatch", () => {
       }),
     ).rejects.toBe(accessError);
 
-    expect(getActiveChapterDownloadBatchProgress()).toEqual({
+    expect(getActiveChapterDownloadBatchProgress()).toMatchObject({
       current: progressBefore.current,
       total: progressBefore.total + 1,
     });
@@ -918,8 +953,17 @@ describe("enqueueChapterDownloadBatch", () => {
 });
 
 describe("startChapterDownloadQueueExecutor", () => {
-  it("waits for storage operations and skips jobs deleted during restore inspection", async () => {
+  it("restores every verification candidate after storage operations and deletion checks", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const restoredScheduler = new TaskScheduler();
+    restoredScheduler.setBackgroundExecutionSuspended(true);
+    const verificationScope = "plugin:source-b:site:source.test";
+    restoredScheduler.hydrateSourceAccessBlocks([{
+      sourceId: "source-b", scopeKey: verificationScope, revision: 1,
+      detectedAt: 1, verificationRequested: false,
+      challenge: { kind: "captcha", url: "https://source.test/chapter/1035" },
+    }]);
     const deferreds: Deferred<void>[] = [];
     const storageOperationStarted = createDeferred<void>();
     const releaseStorageOperation = createDeferred<void>();
@@ -935,12 +979,11 @@ describe("startChapterDownloadQueueExecutor", () => {
     schedulerMocks.enqueueSource.mockImplementation(
       (spec: SourceTaskSpec<void>) => {
         capturedSpec = spec;
+        const handle = restoredScheduler.enqueueSource(spec);
+        void handle.promise.catch(() => undefined);
         const deferred = createDeferred<void>();
         deferreds.push(deferred);
-        return {
-          id: `task-${deferreds.length}`,
-          promise: deferred.promise,
-        };
+        return { id: handle.id, promise: deferred.promise };
       },
     );
     const invoke = tauriMocks.invoke.getMockImplementation()!;
@@ -959,7 +1002,7 @@ describe("startChapterDownloadQueueExecutor", () => {
       const id = index + 1;
       return {
         id,
-        pluginId: "source-a",
+        pluginId: id === restoredJobCount ? "source-b" : "source-a",
         chapterPath: `/chapter/${id}`,
         chapterName: `Chapter ${id}`,
         novelId: 11,
@@ -989,6 +1032,9 @@ describe("startChapterDownloadQueueExecutor", () => {
     startChapterDownloadQueueExecutor(onRestoreError);
 
     try {
+      await waitForChapterDownloadQueueRestoration();
+      expect(restoredScheduler.canBeginSourceAccessVerification(verificationScope)).toBe(true);
+      expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(restoredJobCount - 3);
       await vi.waitFor(() => {
         expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
           restoredJobCount - 3,
@@ -1015,6 +1061,7 @@ describe("startChapterDownloadQueueExecutor", () => {
       expect(capturedSpec?.kind).toBe("chapter.download");
       expect(capturedSpec?.subject?.batchTitle).toBe("Queued chapter downloads");
     } finally {
+      restoredScheduler.cancelActiveTasks({ discardQueued: true });
       for (const deferred of deferreds) {
         deferred.reject(new Error("executor failed"));
       }

@@ -57,6 +57,12 @@ function dispatch(target: BrowserEventTarget, type: string): void {
   listeners.get(eventKey(target, type))?.();
 }
 
+function notificationTask(overrides: Record<string, unknown> = {}) {
+  return { id: "notification-task", kind: "source.refreshNovel", lane: "source", createdAt: 1,
+    priority: "background", status: "running", title: "Metadata", canCancel: true, canRetry: false,
+    progress: { current: 0, total: 2 }, ...overrides };
+}
+
 beforeEach(() => {
   useNetworkStore.setState({ connectivity: "online", revision: 1 });
   vi.useFakeTimers();
@@ -68,13 +74,7 @@ beforeEach(() => {
   schedulerMocks.subscribe.mockReturnValue(vi.fn());
   schedulerMocks.subscribeEvents.mockReturnValue(vi.fn());
   schedulerMocks.getSnapshot.mockReturnValue({
-    records: [
-      {
-        kind: "chapter.download",
-        priority: "background",
-        status: "running",
-      },
-    ],
+    records: [notificationTask()], sourceAccessBlocks: [], pausedTaskGroups: [], sourceQueuesPaused: false,
   });
 });
 
@@ -85,187 +85,64 @@ afterEach(() => {
 });
 
 describe("startAndroidTaskNotifications", () => {
-  it("stops restarting the FGS after platform suspension and resumes on foreground", () => {
-    const update = vi.fn();
-    const stopNative = vi.fn();
-    let blocked = false;
-    Object.assign(window, { __NoreaAndroidTasks: { update, stop: stopNative, isExecutionSuspended: () => blocked } });
-    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
-    const stop = startAndroidTaskNotifications(t, "off");
-    blocked = true;
-    dispatch("window", "norea-background-execution-suspended");
-    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true, "tasks.backgroundExecutionSuspended");
-    update.mockClear();
-    dispatch("window", "norea-app-resumed");
-    expect(update).not.toHaveBeenCalled();
-    blocked = false;
-    dispatch("window", "norea-app-resumed");
+  it("keeps presentation alive without restarting execution after platform suspension", () => {
+    const update=vi.fn(), stopNative=vi.fn();let blocked=false;
+    Object.assign(window,{__NoreaAndroidTasks:{update,stop:stopNative,isExecutionSuspended:()=>blocked}});
+    const t=((key:string)=>key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop=startAndroidTaskNotifications(t,"off");
+    blocked=true;dispatch("window","norea-background-execution-suspended");
+    vi.advanceTimersByTime(250);
+    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true,"tasks.backgroundExecutionSuspended");
+    expect(JSON.parse(update.mock.calls.at(-1)![0]).executionActive).toBe(false);
+    dispatch("window","norea-app-resumed");
+    expect(JSON.parse(update.mock.calls.at(-1)![0]).executionActive).toBe(false);
+    blocked=false;dispatch("window","norea-app-resumed");
     expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenLastCalledWith(false);
-    stop();
-    const count = schedulerMocks.setBackgroundExecutionSuspended.mock.calls.length;
-    dispatch("window", "norea-background-execution-suspended");
+    expect(JSON.parse(update.mock.calls.at(-1)![0]).executionActive).toBe(true);
+    stop();const count=schedulerMocks.setBackgroundExecutionSuspended.mock.calls.length;
+    dispatch("window","norea-background-execution-suspended");
     expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledTimes(count);
   });
-
-  it("detects native suspension when a notification-mode change remounts the publisher", () => {
-    const update = vi.fn();
-    Object.assign(window, { __NoreaAndroidTasks: { update, stop: vi.fn(), isExecutionSuspended: () => true } });
-    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
-    const stop = startAndroidTaskNotifications(t, "off");
-    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true, "tasks.backgroundExecutionSuspended");
-    expect(update).not.toHaveBeenCalled();
-    stop();
+  it("detects native suspension after publisher remount",()=>{
+    const update=vi.fn();Object.assign(window,{__NoreaAndroidTasks:{update,stop:vi.fn(),isExecutionSuspended:()=>true}});
+    const t=((key:string)=>key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop=startAndroidTaskNotifications(t,"off");
+    expect(schedulerMocks.setBackgroundExecutionSuspended).toHaveBeenCalledWith(true,"tasks.backgroundExecutionSuspended");
+    expect(JSON.parse(update.mock.calls.at(-1)![0]).executionActive).toBe(false);stop();
   });
-
-  it("releases the foreground service while work is waiting for internet", async () => {
-    const update = vi.fn();
-    const stopNative = vi.fn();
-    Object.assign(window, { __NoreaAndroidTasks: { update, stop: stopNative } });
-    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
-    const stop = startAndroidTaskNotifications(t, "off");
-    expect(update).toHaveBeenCalledTimes(1);
-    useNetworkStore.setState({ connectivity: "offline", revision: 2 });
-    await vi.advanceTimersByTimeAsync(250);
-    expect(stopNative).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(600_000);
-    expect(update).toHaveBeenCalledTimes(1);
-    useNetworkStore.setState({ connectivity: "online", revision: 3 });
-    await vi.advanceTimersByTimeAsync(250);
-    expect(update).toHaveBeenCalledTimes(2);
-    stop();
+  it("releases execution while offline and restores it on reconnection",()=>{
+    const update=vi.fn();Object.assign(window,{__NoreaAndroidTasks:{update,stop:vi.fn()}});
+    const t=((key:string)=>key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop=startAndroidTaskNotifications(t,"off");
+    useNetworkStore.setState({connectivity:"offline",revision:2});vi.advanceTimersByTime(250);
+    expect(JSON.parse(update.mock.calls.at(-1)![0]).executionActive).toBe(false);
+    useNetworkStore.setState({connectivity:"online",revision:3});vi.advanceTimersByTime(250);
+    expect(JSON.parse(update.mock.calls.at(-1)![0]).executionActive).toBe(true);stop();
   });
-
-  it("coalesces task event bursts before rebuilding the notification", () => {
-    let eventListener: (() => void) | undefined;
-    const update = vi.fn();
-    const stopNative = vi.fn();
-    Object.assign(window, {
-      __NoreaAndroidTasks: { stop: stopNative, update },
-    });
-    schedulerMocks.subscribeEvents.mockImplementation(
-      (listener: () => void) => {
-        eventListener = listener;
-        return vi.fn();
-      },
-    );
-    schedulerMocks.getSnapshot.mockReturnValue({
-      records: [
-        {
-          canCancel: true,
-          canRetry: false,
-          createdAt: 1,
-          id: "download-1",
-          kind: "chapter.download",
-          lane: "source",
-          priority: "background",
-          progress: { current: 0, total: 2 },
-          status: "running",
-          title: "Chapter 1",
-        },
-      ],
-    });
-    const t = ((key: string) => key) as Parameters<
-      typeof startAndroidTaskNotifications
-    >[0];
-
-    const dispose = startAndroidTaskNotifications(t, "progress");
-    expect(update).toHaveBeenCalledTimes(1);
-
-    schedulerMocks.getSnapshot.mockReturnValue({
-      records: [
-        {
-          canCancel: true,
-          canRetry: false,
-          createdAt: 1,
-          id: "download-1",
-          kind: "chapter.download",
-          lane: "source",
-          priority: "background",
-          progress: { current: 1, total: 2 },
-          status: "running",
-          title: "Chapter 1",
-        },
-        {
-          canCancel: true,
-          canRetry: false,
-          createdAt: 2,
-          id: "download-2",
-          kind: "chapter.download",
-          lane: "source",
-          priority: "background",
-          status: "queued",
-          title: "Chapter 2",
-        },
-      ],
-    });
-    for (let index = 0; index < 20; index += 1) eventListener?.();
-
-    vi.advanceTimersByTime(249);
-    expect(update).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(1);
-    expect(update).toHaveBeenCalledTimes(2);
-
-    dispose();
-    expect(stopNative).toHaveBeenCalledTimes(1);
+  it("coalesces bursts and suppresses unchanged task data",()=>{
+    const update=vi.fn();let emit:(event:never)=>void=()=>{};
+    schedulerMocks.subscribeEvents.mockImplementation(listener=>{emit=listener;return vi.fn();});
+    Object.assign(window,{__NoreaAndroidTasks:{update,stop:vi.fn()}});
+    const t=((key:string)=>key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop=startAndroidTaskNotifications(t,"progress");
+    const event={task:notificationTask({progress:{current:1,total:2}}),previousStatus:"running"};
+    for(let i=0;i<20;i++)emit(event as never);
+    vi.advanceTimersByTime(249);expect(update).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);expect(update).toHaveBeenCalledTimes(2);
+    for(let i=0;i<20;i++)emit(event as never);
+    vi.advanceTimersByTime(250);expect(update).toHaveBeenCalledTimes(2);stop();
   });
-
-  it.each(["off", "completion"] as const)(
-    "keeps background work alive with a quiet notification in %s mode",
-    (mode) => {
-      let eventListener: (() => void) | undefined;
-      const update = vi.fn();
-      const stopNative = vi.fn();
-      Object.assign(window, {
-        __NoreaAndroidTasks: { stop: stopNative, update },
-      });
-      schedulerMocks.subscribeEvents.mockImplementation(
-        (listener: () => void) => {
-          eventListener = listener;
-          return vi.fn();
-        },
-      );
-      schedulerMocks.getSnapshot.mockReturnValue({
-        records: [
-          {
-            canCancel: true,
-            canRetry: false,
-            createdAt: 1,
-            id: "download-1",
-            kind: "chapter.download",
-            lane: "source",
-            priority: "background",
-            progress: { current: 0, total: 2 },
-            status: "running",
-            title: "Chapter 1",
-          },
-        ],
-      });
-      const t = ((key: string) => key) as Parameters<
-        typeof startAndroidTaskNotifications
-      >[0];
-
-      const dispose = startAndroidTaskNotifications(t, mode);
-      expect(update).toHaveBeenCalledExactlyOnceWith(
-        JSON.stringify({
-          body: "",
-          quiet: true,
-          title: "tasks.notification.title",
-        }),
-      );
-
-      schedulerMocks.getSnapshot.mockReturnValue({ records: [] });
-      eventListener?.();
-      vi.advanceTimersByTime(250);
-      expect(stopNative).toHaveBeenCalledTimes(1);
-      expect(update).toHaveBeenCalledTimes(1);
-
-      dispose();
-    },
-  );
+  it.each(["off","completion"] as const)("keeps background execution with hidden progress in %s mode",mode=>{
+    const update=vi.fn();Object.assign(window,{__NoreaAndroidTasks:{update,stop:vi.fn()}});
+    const t=((key:string)=>key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop=startAndroidTaskNotifications(t,mode);
+    expect(JSON.parse(update.mock.calls[0]![0])).toMatchObject({quiet:true,executionActive:true,groups:[]});stop();
+  });
 });
 
 describe("startAndroidBackgroundDownloadRecovery", () => {
   it("asks running background downloads to yield after returning to foreground", () => {
+    schedulerMocks.getSnapshot.mockReturnValue({ records: [notificationTask({kind: "chapter.download"})] });
     const stop = startAndroidBackgroundDownloadRecovery();
 
     visibilityState = "hidden";

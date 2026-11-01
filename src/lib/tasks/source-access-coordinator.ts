@@ -34,6 +34,7 @@ interface SourceAccessOutcomeScheduler {
 }
 
 interface OpenSourceAccessBrowserOptions {
+  isRequestCurrent?: () => boolean;
   sourceName: string;
   title: string;
 }
@@ -222,6 +223,7 @@ export function applySourceAccessBrowserOutcome(
 }
 
 let activeSourceAccessBrowserTaskId: string | null = null;
+let activeSourceAccessBrowserCompletion: Promise<unknown> | null = null;
 let sourceAccessBrowserOpening = false;
 
 export function cancelSourceAccessWait(
@@ -249,18 +251,25 @@ export async function openSourceAccessBrowser(
   block: SourceAccessBlock,
   options: OpenSourceAccessBrowserOptions,
 ): Promise<boolean> {
-  if (
-    sourceAccessBrowserOpening ||
-    activeSourceAccessBrowserTaskId ||
-    useSiteBrowserStore.getState().visible ||
-    !currentSourceAccessBlock(taskScheduler, block) ||
-    !taskScheduler.canBeginSourceAccessVerification(block.scopeKey)
-  ) {
-    return false;
-  }
+  if (options.isRequestCurrent?.() === false || sourceAccessBrowserOpening || !currentSourceAccessBlock(taskScheduler, block)) return false;
+  const browser = useSiteBrowserStore.getState();
+  if (browser.visible && browser.sourceId === block.sourceId &&
+      browser.context?.mode === "source-access" && browser.context.scopeKey === block.scopeKey &&
+      browser.context.revision === block.revision) return true;
 
   sourceAccessBrowserOpening = true;
   try {
+    const previousCompletion = activeSourceAccessBrowserCompletion;
+    if (browser.visible) {
+      if (browser.taskId && browser.context?.mode === "source-access") {
+        browser.complete(browser.taskId, browser.context.revision, "keep-paused");
+      } else {
+        if (browser.taskId) taskScheduler.cancel(browser.taskId);
+        browser.hide();
+      }
+    }
+    if (previousCompletion) await previousCompletion;
+    if (options.isRequestCurrent?.() === false || !taskScheduler.canBeginSourceAccessVerification(block.scopeKey)) return false;
     const target = await taskScheduler.resolveSourceAccessVerificationUrl(
       block.scopeKey,
       block.revision,
@@ -275,6 +284,7 @@ export async function openSourceAccessBrowser(
           )
       : undefined;
     if (
+      options.isRequestCurrent?.() === false ||
       !target ||
       !current ||
       activeSourceAccessBrowserTaskId ||
@@ -300,7 +310,7 @@ export async function openSourceAccessBrowser(
       options.title,
     );
     activeSourceAccessBrowserTaskId = handle.id;
-    void handle.promise
+    activeSourceAccessBrowserCompletion = handle.promise
       .then((outcome) =>
         applySourceAccessBrowserOutcome(
           taskScheduler,
@@ -312,6 +322,7 @@ export async function openSourceAccessBrowser(
       .finally(() => {
         if (activeSourceAccessBrowserTaskId === handle.id) {
           activeSourceAccessBrowserTaskId = null;
+          activeSourceAccessBrowserCompletion = null;
         }
       });
     return true;

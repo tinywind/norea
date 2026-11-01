@@ -1,14 +1,15 @@
 import { isAndroidRuntime } from "../tauri-runtime";
 import { isNetworkOnline, useNetworkStore } from "../network";
 import type { TaskNotificationMode } from "../../store/notifications";
-import {
-  buildActiveTaskNotificationPayload,
-  type TaskNotificationTranslate,
-} from "./task-notification-model";
+import { TaskNotificationTracker, type TaskNotificationTranslate } from "./task-notification-model";
+import { subscribeChapterDownloadBatchProgress } from "./chapter-download";
 import { taskScheduler, type TaskRecord } from "./scheduler";
+import { parseTaskNotificationActions, type TaskNotificationAction } from "./native-notification-actions";
+import { SourceAccessNotificationTracker, type SourceAccessNotification } from "./source-access-notifications";
 
 interface AndroidTaskNotificationBridge {
   isExecutionSuspended?: () => boolean;
+  drainActions?: () => string;
   stop: () => void;
   update: (payload: string) => void;
 }
@@ -22,16 +23,27 @@ declare global {
   }
 }
 
-// Android only keeps task work alive through the foreground service, so it
-// runs in every mode; without progress notifications it posts a quiet one.
 export function startAndroidTaskNotifications(
   t: TaskNotificationTranslate,
   mode: TaskNotificationMode,
+  onAction: (action: TaskNotificationAction) => void = () => undefined,
 ): () => void {
   if (!isAndroidRuntime()) return () => undefined;
 
+  let snapshot = taskScheduler.getSnapshot();
+  const tracker = new TaskNotificationTracker(snapshot);
+  const sourceTracker = new SourceAccessNotificationTracker(snapshot);
   let lastPayload = "";
   let executionSuspended = false;
+  let publishTimer: ReturnType<typeof setTimeout> | null = null;
+  let challengeRevision: string | undefined;
+  let challenges: SourceAccessNotification[] = [];
+
+  const drainActions = () => {
+    const raw = window.__NoreaAndroidTasks?.drainActions?.();
+    if (!raw) return;
+    for (const action of parseTaskNotificationActions(raw)) onAction(action);
+  };
   const suspendExecution = () => {
     if (executionSuspended) return;
     executionSuspended = true;
@@ -39,36 +51,44 @@ export function startAndroidTaskNotifications(
     window.__NoreaAndroidTasks?.stop();
     lastPayload = "";
   };
-  let publishTimer: ReturnType<typeof setTimeout> | null = null;
-
   const publish = () => {
     const bridge = window.__NoreaAndroidTasks;
     if (!bridge) return;
     if (bridge.isExecutionSuspended?.()) suspendExecution();
-    if (executionSuspended) return;
-
-    const payload = isNetworkOnline() ? buildActiveTaskNotificationPayload(
-      taskScheduler.getSnapshot(),
-      t,
-    ) : null;
-    if (!payload) {
-      if (lastPayload !== "") {
-        bridge.stop();
-        lastPayload = "";
-      }
-      return;
+    const groups = tracker.groups(t, snapshot);
+    const completed = tracker.takeCompletions(t);
+    const revision = sourceTracker.revision(snapshot.sourceAccessBlocks);
+    if (revision !== challengeRevision) {
+      challengeRevision = revision;
+      challenges = sourceTracker.notifications(snapshot.sourceAccessBlocks, t);
     }
-
-    const serialized = JSON.stringify(
-      mode === "progress"
-        ? payload
-        : { body: "", quiet: true, title: t("tasks.notification.title") },
-    );
+    const online = isNetworkOnline();
+    const quiet = mode !== "progress";
+    const completions = mode === "off" ? [] : completed.map(({ key, title, body }) => ({ key, title, body }));
+    const payload = {
+      title: t("tasks.notification.title"), quiet,
+      channels: {
+        verificationName: t("tasks.notification.verificationChannel"),
+        verificationDescription: t("tasks.notification.verificationChannelDescription"),
+        resultsName: t("tasks.notification.resultsChannel"),
+        resultsDescription: t("tasks.notification.resultsChannelDescription"),
+      },
+      executionActive: online && !executionSuspended && groups.length > 0,
+      working: online && !executionSuspended && tracker.hasRunningWork(),
+      requestPermission: challenges.length > 0 || (mode !== "off" && (groups.length > 0 || completions.length > 0)),
+      groups: quiet ? [] : groups.map(group => ({
+        key: group.key, title: group.title,
+        body: group.paused ? `${t("tasks.notification.paused")} · ${group.body}` : group.body,
+        paused: group.paused, progress: group.progress,
+        pauseLabel: t("tasks.notification.pause"), resumeLabel: t("tasks.notification.resume"),
+      })),
+      challenges, completions,
+    };
+    const serialized = JSON.stringify(payload);
     if (serialized === lastPayload) return;
     bridge.update(serialized);
     lastPayload = serialized;
   };
-
   const schedulePublish = () => {
     if (publishTimer !== null) return;
     publishTimer = globalThis.setTimeout(() => {
@@ -76,31 +96,44 @@ export function startAndroidTaskNotifications(
       publish();
     }, ANDROID_TASK_NOTIFICATION_PUBLISH_INTERVAL_MS);
   };
-
+  const onSuspended = () => { suspendExecution(); schedulePublish(); };
   const resumeExecution = () => {
-    if (window.__NoreaAndroidTasks?.isExecutionSuspended?.()) return;
-    if (executionSuspended) taskScheduler.setBackgroundExecutionSuspended(false);
-    executionSuspended = false;
+    if (!window.__NoreaAndroidTasks?.isExecutionSuspended?.()) {
+      if (executionSuspended) taskScheduler.setBackgroundExecutionSuspended(false);
+      executionSuspended = false;
+    }
+    snapshot = taskScheduler.getSnapshot();
     lastPayload = "";
     publish();
+    drainActions();
   };
-  window.addEventListener("norea-background-execution-suspended", suspendExecution);
+  window.addEventListener("norea-background-execution-suspended", onSuspended);
   window.addEventListener("norea-app-resumed", resumeExecution);
-  const unsubscribeSnapshots = taskScheduler.subscribe(schedulePublish);
-  const unsubscribeEvents = taskScheduler.subscribeEvents(schedulePublish);
+  window.addEventListener("norea-task-notification-action", drainActions);
+  const unsubscribeSnapshots = taskScheduler.subscribe(() => {
+    snapshot = taskScheduler.getSnapshot();
+    schedulePublish();
+  });
+  const unsubscribeEvents = taskScheduler.subscribeEvents(event => {
+    tracker.update(event);
+    sourceTracker.update(event);
+    schedulePublish();
+  });
+  const unsubscribeBatches = subscribeChapterDownloadBatchProgress(event => {
+    tracker.updateBatch(event);
+    schedulePublish();
+  });
   const unsubscribeNetwork = useNetworkStore.subscribe(schedulePublish);
   publish();
+  drainActions();
 
   return () => {
-    window.removeEventListener("norea-background-execution-suspended", suspendExecution);
+    window.removeEventListener("norea-background-execution-suspended", onSuspended);
     window.removeEventListener("norea-app-resumed", resumeExecution);
-    unsubscribeSnapshots();
-    unsubscribeEvents();
-    unsubscribeNetwork();
+    window.removeEventListener("norea-task-notification-action", drainActions);
+    unsubscribeSnapshots(); unsubscribeEvents(); unsubscribeBatches(); unsubscribeNetwork();
     if (publishTimer !== null) clearTimeout(publishTimer);
-    if (lastPayload !== "") {
-      window.__NoreaAndroidTasks?.stop();
-    }
+    window.__NoreaAndroidTasks?.stop();
   };
 }
 
