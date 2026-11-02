@@ -10,6 +10,14 @@ import org.junit.Test
 
 class AndroidScraperBridgePolicyTest {
   @Test
+  fun detachedServiceContainersNeverWaitForAnActivityLayoutPass() {
+    assertTrue(androidScraperNeedsExplicitLayout(detachedContainer = true, windowVisible = true))
+    assertTrue(androidScraperNeedsExplicitLayout(detachedContainer = true, windowVisible = false))
+    assertTrue(androidScraperNeedsExplicitLayout(detachedContainer = false, windowVisible = false))
+    assertFalse(androidScraperNeedsExplicitLayout(detachedContainer = false, windowVisible = true))
+  }
+
+  @Test
   fun deletesOnlyTheLegacyChapterPageCacheDirectory() {
     val cacheRoot = Files.createTempDirectory("norea-cache-root-test").toFile()
     val legacyCache = File(cacheRoot, "scraper-chapter-pages")

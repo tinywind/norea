@@ -10,26 +10,9 @@ import java.lang.ref.WeakReference
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal fun TaskNotificationAction.toJson(): JSONObject = JSONObject().apply {
-  put("type", type)
-  groupKey?.let { put("groupKey", it) }
-  sourceId?.let { put("sourceId", it) }
-  scopeKey?.let { put("scopeKey", it) }
-  revision?.let { put("revision", it) }
-}
+internal fun TaskNotificationAction.toJson(): JSONObject = JSONObject(toFields())
 
-private fun notificationActionFromJson(json: JSONObject): TaskNotificationAction? {
-  val action = TaskNotificationAction(
-    type = json.optString("type"),
-    groupKey = json.optString("groupKey").takeIf { it.isNotEmpty() },
-    sourceId = json.optString("sourceId").takeIf { it.isNotEmpty() },
-    scopeKey = json.optString("scopeKey").takeIf { it.isNotEmpty() },
-    revision = json.takeIf { it.has("revision") }?.optLong("revision", -1),
-  )
-  return action.takeIf {
-    it.accepts(TaskNotificationActionTarget.ACTIVITY) || it.accepts(TaskNotificationActionTarget.CONTROL)
-  }
-}
+internal fun notificationActionFromJson(json: JSONObject): TaskNotificationAction? = taskNotificationActionFromFields(json::opt)
 
 internal object AndroidTaskNotificationActions {
   private const val ACTION_OPEN = "io.github.tinywind.norea.task.OPEN"

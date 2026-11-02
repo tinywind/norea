@@ -23,6 +23,14 @@ internal fun taskSourceNotificationIdentity(sourceId: String) =
 internal fun taskCompletionNotificationIdentity(groupKey: String) =
   TaskNotificationIdentity(id = 1202, tag = "result/$groupKey")
 
+internal const val TASK_VPN_RANGE_NOTIFICATION_ID = 1203
+
+internal fun taskVpnDownloadNotificationIdentity(planId: String, rangeId: String) =
+  TaskNotificationIdentity(TASK_VPN_RANGE_NOTIFICATION_ID, "vpn/${planId.length}:$planId/${rangeId.length}:$rangeId")
+
+internal fun taskRemovedVpnDownloadNotificationIdentities(previousTags: Set<String>, currentTags: Set<String>) =
+  (previousTags - currentTags).map { TaskNotificationIdentity(TASK_VPN_RANGE_NOTIFICATION_ID, it) }
+
 internal data class TaskNotificationRuntimePlan(
   val anchorId: Int?,
   val quietAnchor: Boolean,
@@ -52,19 +60,45 @@ internal fun taskNotificationProgress(current: Int, total: Int?): TaskNotificati
 
 internal enum class TaskNotificationActionTarget { ACTIVITY, CONTROL }
 
+private const val TASK_NOTIFICATION_MAX_SAFE_INTEGER = 9_007_199_254_740_991L
+
+internal fun taskNotificationIdentifier(value: Any?, maxLength: Int = 512): String? =
+  (value as? String)?.takeIf { id ->
+    id.any { !it.isWhitespace() && it != '\uFEFF' } && id.length <= maxLength && id.none { it.code < 32 || it.code == 127 }
+  }
+
+private fun taskNotificationInteger(value: Any?, minimum: Long): Long? {
+  val number = value as? Number ?: return null
+  val integer = number.toLong()
+  return integer.takeIf {
+    it in minimum..TASK_NOTIFICATION_MAX_SAFE_INTEGER && number.toDouble().isFinite() && number.toDouble() == it.toDouble()
+  }
+}
+
 internal data class TaskNotificationAction(
   val type: String,
   val groupKey: String? = null,
   val sourceId: String? = null,
   val scopeKey: String? = null,
   val revision: Long? = null,
+  val planId: String? = null,
+  val rangeId: String? = null,
+  val profileId: String? = null,
+  val generation: Long? = null,
+  val checkpoint: Long? = null,
 ) {
   fun accepts(target: TaskNotificationActionTarget): Boolean = when (type) {
     "openTasks" -> target == TaskNotificationActionTarget.ACTIVITY
     "pause", "resume" -> target == TaskNotificationActionTarget.CONTROL &&
       TaskNotificationGroup.fromKey(groupKey ?: "") != null
     "verifySource" -> target == TaskNotificationActionTarget.ACTIVITY &&
-      !sourceId.isNullOrBlank() && !scopeKey.isNullOrBlank() && revision != null && revision >= 0
+      taskNotificationIdentifier(sourceId) != null && taskNotificationIdentifier(scopeKey, 2048) != null &&
+      revision != null && revision in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
+    "verifyVpnDownload" -> target == TaskNotificationActionTarget.ACTIVITY &&
+      taskNotificationIdentifier(planId, 128) != null && taskNotificationIdentifier(sourceId) != null &&
+      taskNotificationIdentifier(rangeId, 128) != null && taskNotificationIdentifier(profileId, 128) != null &&
+      generation != null && generation in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER &&
+      checkpoint != null && checkpoint in 0..TASK_NOTIFICATION_MAX_SAFE_INTEGER
     else -> false
   }
 
@@ -74,7 +108,46 @@ internal data class TaskNotificationAction(
     fun resume(groupKey: String) = TaskNotificationAction(type = "resume", groupKey = groupKey)
     fun verifySource(sourceId: String, scopeKey: String, revision: Long) =
       TaskNotificationAction("verifySource", sourceId = sourceId, scopeKey = scopeKey, revision = revision)
+    fun verifyVpnDownload(planId: String, sourceId: String, rangeId: String, profileId: String, generation: Long, checkpoint: Long) =
+      TaskNotificationAction("verifyVpnDownload", planId = planId, sourceId = sourceId, rangeId = rangeId,
+        profileId = profileId, generation = generation, checkpoint = checkpoint)
   }
+}
+
+internal fun taskNotificationActionFromFields(field: (String) -> Any?): TaskNotificationAction? {
+  val action = when (field("type")) {
+    "openTasks" -> TaskNotificationAction.openTasks()
+    "pause" -> TaskNotificationAction.pause(field("groupKey") as? String ?: return null)
+    "resume" -> TaskNotificationAction.resume(field("groupKey") as? String ?: return null)
+    "verifySource" -> TaskNotificationAction.verifySource(
+      field("sourceId") as? String ?: return null,
+      field("scopeKey") as? String ?: return null,
+      taskNotificationInteger(field("revision"), 1) ?: return null,
+    )
+    "verifyVpnDownload" -> TaskNotificationAction.verifyVpnDownload(
+      field("planId") as? String ?: return null,
+      field("sourceId") as? String ?: return null,
+      field("rangeId") as? String ?: return null,
+      field("profileId") as? String ?: return null,
+      taskNotificationInteger(field("generation"), 1) ?: return null,
+      taskNotificationInteger(field("checkpoint"), 0) ?: return null,
+    )
+    else -> return null
+  }
+  return action.takeIf { it.accepts(TaskNotificationActionTarget.ACTIVITY) || it.accepts(TaskNotificationActionTarget.CONTROL) }
+}
+
+internal fun TaskNotificationAction.toFields(): Map<String, Any> = buildMap {
+  put("type", type)
+  groupKey?.let { put("groupKey", it) }
+  sourceId?.let { put("sourceId", it) }
+  scopeKey?.let { put("scopeKey", it) }
+  revision?.let { put("revision", it) }
+  planId?.let { put("planId", it) }
+  rangeId?.let { put("rangeId", it) }
+  profileId?.let { put("profileId", it) }
+  generation?.let { put("generation", it) }
+  checkpoint?.let { put("checkpoint", it) }
 }
 
 internal data class TaskNotificationActionToken(

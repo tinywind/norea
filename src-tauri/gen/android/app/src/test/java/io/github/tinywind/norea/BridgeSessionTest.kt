@@ -8,6 +8,19 @@ import org.junit.Test
 
 class BridgeSessionTest {
   @Test
+  fun advertisesAuthenticatedVpnWorkerRequests() {
+    assertTrue(BridgeCapabilities.ALL.contains("vpn.worker"))
+    val session = BridgeSession()
+    assertThrows(IllegalArgumentException::class.java) {
+      session.validateAuthenticated("vpn.worker", BridgeAuthorityFields())
+    }
+    assertFalse(session.validateAuthenticated(
+      "vpn.worker",
+      BridgeAuthorityFields(session.sessionToken, "vpn.worker", session.newNonce()),
+    ).legacy)
+  }
+
+  @Test
   fun exposesWebViewCacheClearingCapability() {
     assertTrue(BridgeCapabilities.ALL.contains(BridgeCapabilities.SCRAPER_CLEAR_CACHE))
   }

@@ -54,8 +54,10 @@ class MainActivity : TauriActivity() {
     WindowVisibilityProbe(this, ::resumeTaskWebViewsForBackgroundWork)
   }
   private var androidScraperBridge: AndroidScraperBridge? = null
+  private var androidVpnDownloadWorkers: AndroidVpnDownloadWorkers? = null
   private var scraperBackPressedCallback: OnBackPressedCallback? = null
   private var mainWebView: WebView? = null
+  private var activityResumed = false
   private var notificationPermissionRequested = false
   private var mainBackEvaluationGeneration = 0L
   private var mainBackEvaluationPending = false
@@ -87,12 +89,15 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onPause() {
+    activityResumed = false
+    androidVpnDownloadWorkers?.onForegroundChanged()
     super.onPause()
     resumeTaskWebViewsForBackgroundWork()
   }
 
   override fun onResume() {
     super.onResume()
+    activityResumed = true
     TaskBackgroundExecution.policy.foreground()
     resumeTaskWebViewsForBackgroundWork()
     mainWebView?.post {
@@ -109,6 +114,10 @@ class MainActivity : TauriActivity() {
     mainWebView = webView
     val bridge = AndroidScraperBridge(webView, bridgeSession)
     androidScraperBridge = bridge
+    androidVpnDownloadWorkers?.destroy()
+    val vpnWorkers = AndroidVpnDownloadWorkers(this, webView, bridgeSession) { activityResumed }
+    androidVpnDownloadWorkers = vpnWorkers
+    if (taskNotificationBridge.isForegroundServiceActive) vpnWorkers.setBackgroundExecutionActive(true)
     webView.addJavascriptInterface(AndroidBridgeInfoBridge(bridgeSession), "__NoreaAndroidBridge")
     webView.addJavascriptInterface(bridge, "__NoreaAndroidScraper")
     webView.addJavascriptInterface(AndroidSafeAreaBridge { safeAreaInsetsJson }, "__NoreaAndroidSafeArea")
@@ -116,6 +125,7 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(AndroidUpdateInstallBridge(this, bridgeSession), "__NoreaAndroidUpdater")
     webView.addJavascriptInterface(storageBridge, "__NoreaAndroidStorage")
     webView.addJavascriptInterface(AndroidVpnProxyBridge(bridgeSession), "__NoreaAndroidVpn")
+    webView.addJavascriptInterface(vpnWorkers, "__NoreaAndroidVpnWorkers")
     webView.addJavascriptInterface(AndroidWindowMetricsBridge(this, webView), "__NoreaAndroidWindow")
     webView.settings.apply {
       allowContentAccess = false
@@ -155,6 +165,9 @@ class MainActivity : TauriActivity() {
     scraperBackPressedCallback = null
     androidScraperBridge?.destroy()
     androidScraperBridge = null
+    androidVpnDownloadWorkers?.destroy()
+    androidVpnDownloadWorkers = null
+    mainWebView?.removeJavascriptInterface("__NoreaAndroidVpnWorkers")
     storageBridge.destroy()
     super.onDestroy()
   }
@@ -262,10 +275,12 @@ class MainActivity : TauriActivity() {
         syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
       }
       androidScraperBridge?.resumeBackgroundWorkWebViews()
+      androidVpnDownloadWorkers?.setBackgroundExecutionActive(true)
     }
   }
 
   private fun releaseTaskWebViewsFromBackgroundWork() {
+    if (!taskNotificationBridge.isForegroundServiceActive) androidVpnDownloadWorkers?.setBackgroundExecutionActive(false)
     mainWebView?.post {
       if (taskNotificationBridge.isForegroundServiceActive) return@post
       mainWebView?.let { webView ->

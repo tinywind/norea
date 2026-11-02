@@ -31,6 +31,29 @@ internal data class AndroidTaskNotificationChallenge(
 
 internal data class AndroidTaskNotificationCompletion(val key: String, val title: String, val body: String)
 
+internal data class AndroidTaskNotificationRange(
+  val planId: String,
+  val rangeId: String,
+  val title: String,
+  val body: String,
+  val actionLabel: String,
+  val action: TaskNotificationAction,
+) {
+  val identity: TaskNotificationIdentity get() = taskVpnDownloadNotificationIdentity(planId, rangeId)
+}
+
+internal fun taskVpnDownloadNotificationFromFields(
+  field: (String) -> Any?,
+  action: TaskNotificationAction?,
+): AndroidTaskNotificationRange? {
+  val planId = taskNotificationIdentifier(field("planId"), 128) ?: return null
+  val rangeId = taskNotificationIdentifier(field("rangeId"), 128) ?: return null
+  if (action == null || !action.accepts(TaskNotificationActionTarget.ACTIVITY)) return null
+  if (action.type != "openTasks" && (action.type != "verifyVpnDownload" || action.planId != planId || action.rangeId != rangeId)) return null
+  return AndroidTaskNotificationRange(planId, rangeId, field("title") as? String ?: "",
+    field("body") as? String ?: "", field("actionLabel") as? String ?: "", action)
+}
+
 internal data class AndroidTaskNotificationChannels(
   val verificationName: String,
   val verificationDescription: String,
@@ -48,6 +71,7 @@ internal data class AndroidTaskNotificationPayload(
   val challenges: List<AndroidTaskNotificationChallenge>,
   val completions: List<AndroidTaskNotificationCompletion>,
   val channels: AndroidTaskNotificationChannels?,
+  val ranges: List<AndroidTaskNotificationRange> = emptyList(),
 ) {
   companion object {
     fun parse(payload: String): AndroidTaskNotificationPayload {
@@ -95,6 +119,9 @@ internal data class AndroidTaskNotificationPayload(
             entry.optString("title"), entry.optString("body"), entry.optString("actionLabel"),
           )
         }.distinctBy { it.sourceId },
+        ranges = objects("ranges").mapNotNull { entry ->
+          taskVpnDownloadNotificationFromFields(entry::opt, entry.optJSONObject("action")?.let(::notificationActionFromJson))
+        }.distinctBy { it.identity },
         completions = objects("completions").mapNotNull { entry ->
           val key = entry.optString("key").takeIf { it.isNotBlank() } ?: return@mapNotNull null
           AndroidTaskNotificationCompletion(key, entry.optString("title"), entry.optString("body"))
@@ -140,7 +167,7 @@ internal object AndroidTaskNotifications {
   fun update(context: Context, payload: AndroidTaskNotificationPayload): Boolean {
     ensureChannels(context, payload.channels)
     val identities = payload.groups.flatMap { listOf("group/${it.group.key}/open", "group/${it.group.key}/control") }.toSet() +
-      payload.challenges.map { "source/${it.sourceId}" }.toSet()
+      payload.challenges.map { "source/${it.sourceId}" }.toSet() + payload.ranges.map { it.identity.tag }.toSet()
     AndroidTaskNotificationActions.retainIdentities(context, identities)
     val groups = payload.groups.associate { it.group.notificationId to groupNotification(context, it) }
     val plan = taskNotificationRuntimePlan(
@@ -169,6 +196,7 @@ internal object AndroidTaskNotifications {
     }
     if (plan.anchorId != TASK_QUIET_NOTIFICATION_ID) manager(context).cancel(TASK_QUIET_NOTIFICATION_ID)
     reconcileChallenges(context, payload.challenges)
+    reconcileRanges(context, payload.ranges)
     payload.completions.forEach { completion ->
       val notification = base(context, COMPLETION_CHANNEL_ID, completion.title, completion.body)
         .setSmallIcon(android.R.drawable.stat_sys_download_done)
@@ -240,6 +268,29 @@ internal object AndroidTaskNotifications {
       notify(context, identity.id, notification, identity.tag)
     }
     preferences.edit().putStringSet("challengeSources", current).apply()
+  }
+
+  private fun reconcileRanges(context: Context, ranges: List<AndroidTaskNotificationRange>) {
+    val preferences = context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+    val previous = preferences.getStringSet("rangeNotificationTags", emptySet()).orEmpty().toSet()
+    val current = ranges.map { it.identity.tag }.toSet()
+    taskRemovedVpnDownloadNotificationIdentities(previous, current).forEach { identity ->
+      manager(context).cancel(identity.tag, identity.id)
+    }
+    ranges.forEach { range ->
+      val identity = range.identity
+      val intent = AndroidTaskNotificationActions.activityIntent(context, identity.tag, range.action)
+      val notification = base(context, CHALLENGE_CHANNEL_ID, range.title, range.body)
+        .setSmallIcon(android.R.drawable.stat_sys_warning)
+        .setContentIntent(intent)
+        .setCategory(NotificationCompat.CATEGORY_ERROR)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .addAction(android.R.drawable.ic_menu_view, range.actionLabel, intent)
+        .build()
+      notify(context, identity.id, notification, identity.tag)
+    }
+    preferences.edit().putStringSet("rangeNotificationTags", current).apply()
   }
 
   private fun base(context: Context, channel: String, title: String, body: String): NotificationCompat.Builder =

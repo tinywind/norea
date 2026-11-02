@@ -68,6 +68,18 @@ internal fun promoteScraperAuthentication(
   return true
 }
 
+internal fun promoteScraperWorkerBrowser(
+  queues: MutableMap<String, AndroidScraperState>,
+  sourceId: String,
+): Boolean {
+  val foreground = queues["immediate"] ?: return false
+  if (foreground.authenticationReturnQueue != null) return foreground.sourceId == sourceId
+  val worker = queues["pool:0"] ?: return false
+  if (worker.sourceId != sourceId || !swapIdleScraperStates(queues, foreground, worker)) return false
+  worker.authenticationReturnQueue = "pool:0"
+  return true
+}
+
 internal fun restoreScraperAuthentication(
   queues: MutableMap<String, AndroidScraperState>,
   targetQueue: String? = null,

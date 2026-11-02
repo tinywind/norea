@@ -1,6 +1,8 @@
 #[cfg(any(target_os = "android", target_os = "windows"))]
 mod engine;
 mod finder;
+pub(crate) mod download_workers;
+pub(crate) mod saved_profiles;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod netstack;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
@@ -156,8 +158,10 @@ const INLINE_DATA_DIRECTIVES: &[&str] = &[
 
 #[derive(Debug, PartialEq, Eq)]
 struct ValidatedProfile {
+    hash: String,
     is_vpn_gate_finder: bool,
     remote_host: String,
+    remote_hosts: Vec<String>,
     requires_username_password: bool,
 }
 
@@ -179,6 +183,7 @@ fn validate_profile(bytes: &[u8]) -> Result<ValidatedProfile, String> {
     let mut inline_block: Option<String> = None;
     let mut connection_block = false;
     let mut remote_host = None;
+    let mut remote_hosts = Vec::new();
     let mut requires_username_password = false;
 
     for (index, raw_line) in profile.lines().enumerate() {
@@ -300,14 +305,16 @@ fn validate_profile(bytes: &[u8]) -> Result<ValidatedProfile, String> {
         {
             return Err("OpenVPN TAP profiles are not supported".to_string());
         }
-        if directive == "remote" && remote_host.is_none() {
+        if directive == "remote" {
             let host = arguments
                 .first()
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| {
                     format!("OpenVPN profile line {line_number}: remote host is missing")
                 })?;
-            remote_host = Some(host.to_string());
+            let host = host.parse::<std::net::IpAddr>().map(|ip| ip.to_string()).unwrap_or_else(|_| host.to_ascii_lowercase());
+            if remote_host.is_none() { remote_host = Some(host.clone()); }
+            if !remote_hosts.contains(&host) { remote_hosts.push(host); }
         }
     }
 
@@ -319,9 +326,11 @@ fn validate_profile(bytes: &[u8]) -> Result<ValidatedProfile, String> {
     }
 
     Ok(ValidatedProfile {
+        hash: saved_profiles::profile_hash(bytes),
         is_vpn_gate_finder: is_vpn_gate_finder_profile(profile),
         remote_host: remote_host
             .ok_or_else(|| "OpenVPN profile has no remote server".to_string())?,
+        remote_hosts,
         requires_username_password,
     })
 }

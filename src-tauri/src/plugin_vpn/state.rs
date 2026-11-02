@@ -11,8 +11,14 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "android", target_os = "windows"))]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_sql::{DbInstances, DbPool};
 
 use super::finder::{VpnGateFinder, VpnGateServer};
+use super::saved_profiles::{
+    ForegroundVpnProfile, SavedProfileVault, SavedVpnProfileCaptureSource, SavedVpnProfileLease,
+    SavedVpnProfileSelection, SavedVpnProfileVaultSnapshot, VpnGateServerVerdictMutation,
+    VpnGateServerVerdictValue, read_active_capture,
+};
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 use super::proxy::{LocalProxy, ProxyConnector};
 use super::{
@@ -24,6 +30,8 @@ const PROFILE_DIRECTORY: &str = "plugin-vpn";
 const PROFILE_FILE: &str = "profile.ovpn";
 const PROFILE_PART_FILE: &str = "profile.ovpn.part";
 const PROFILE_BACKUP_FILE: &str = "profile.ovpn.backup";
+const ACTIVE_CHANGE_DIRECTORY: &str = "profile-change";
+const ACTIVE_CHANGE_METADATA: &str = "selection.json";
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const PLUGIN_VPN_STATUS_EVENT: &str = "plugin-vpn-status";
 const VPN_GATE_PUBLIC_CREDENTIAL: &str = "vpn";
@@ -40,6 +48,8 @@ struct PluginVpnShared {
     proxy: LocalProxy,
     finder: VpnGateFinder,
     profile_path: OnceLock<PathBuf>,
+    saved_profiles: OnceLock<Result<tokio::sync::Mutex<SavedProfileVault>, String>>,
+    recovered_saved_profiles: OnceLock<tokio::sync::Mutex<SavedProfileVault>>,
     operation: tokio::sync::Mutex<()>,
     state: Mutex<PluginVpnRuntime>,
 }
@@ -73,8 +83,11 @@ pub(crate) enum PluginVpnPhase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PluginVpnProfile {
+    hash: String,
     is_vpn_gate_finder: bool,
     remote_host: String,
+    #[serde(skip)]
+    remote_hosts: Vec<String>,
     requires_username_password: bool,
 }
 
@@ -117,6 +130,19 @@ pub(crate) struct PluginVpnCredentials {
     private_key_password: String,
     #[serde(default)]
     challenge_response: String,
+}
+
+pub(crate) struct SavedVpnProfileLeaseRead<'a> {
+    pub(crate) lease: SavedVpnProfileLease,
+    bytes: Vec<u8>,
+    _operation: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl SavedVpnProfileLeaseRead<'_> {
+    /// Keep this allocation alive through engine connection so revocation cannot race the connection.
+    pub(crate) fn take_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
 }
 
 impl PluginVpnCredentials {
@@ -162,6 +188,8 @@ impl PluginVpnState {
                 proxy,
                 finder: VpnGateFinder::new()?,
                 profile_path: OnceLock::new(),
+                saved_profiles: OnceLock::new(),
+                recovered_saved_profiles: OnceLock::new(),
                 operation: tokio::sync::Mutex::new(()),
                 state: Mutex::new(PluginVpnRuntime {
                     generation: 0,
@@ -190,10 +218,17 @@ impl PluginVpnState {
             .map_err(|error| format!("could not resolve the app data directory: {error}"))?
             .join(PROFILE_DIRECTORY)
             .join(PROFILE_FILE);
+        crate::device_backup::restore_checkpoint::require_complete(&profile_path)?;
         self.shared
             .profile_path
             .set(profile_path.clone())
             .map_err(|_| "plugin VPN state is already initialized".to_string())?;
+
+        let mut vault = SavedProfileVault::open(profile_path.parent().expect("profile directory").join("saved-profiles"));
+        let recovery_error = vault.as_mut().ok().and_then(|vault| recover_active_profile_change(&profile_path, vault).err());
+        let vault_error = vault.as_ref().err().cloned();
+        self.shared.saved_profiles.set(vault.map(tokio::sync::Mutex::new))
+            .map_err(|_| "saved VPN profile vault is already initialized".to_string())?;
 
         let loaded = load_stored_profile(&profile_path);
         let mut state = self.shared.state.lock().expect("plugin VPN state lock");
@@ -201,6 +236,8 @@ impl PluginVpnState {
             Ok(profile) => state.profile = profile,
             Err(error) => state.error = Some(error),
         }
+        if let Some(error) = vault_error { state.error = Some(error); }
+        if let Some(error) = recovery_error { state.error = Some(error); }
         Ok(())
     }
 
@@ -279,6 +316,69 @@ impl PluginVpnState {
             .get()
             .cloned()
             .ok_or_else(|| "plugin VPN state is not initialized".to_string())
+    }
+
+    fn saved_profiles(&self) -> Result<&tokio::sync::Mutex<SavedProfileVault>, String> {
+        if let Some(vault) = self.shared.recovered_saved_profiles.get() { return Ok(vault); }
+        self.shared.saved_profiles.get().ok_or_else(|| "saved VPN profile vault is not initialized".to_string())?
+            .as_ref().map_err(Clone::clone)
+    }
+
+    async fn prepare_manual_vault(&self) -> Result<(), String> {
+        let directory = self.profile_path()?.parent().expect("profile directory").join("saved-profiles");
+        let pin_current = self.status().profile.filter(|profile| profile.is_vpn_gate_finder)
+            .map(|profile| SavedVpnProfileSelection { id: profile.hash.clone(), hash: profile.hash });
+        match self.saved_profiles() {
+            Ok(vault) => {
+                let mut vault = vault.lock().await;
+                if !vault.needs_recovery() || vault.has_leases() { return Ok(()); }
+                let recovered = SavedProfileVault::quarantine_and_open(directory, pin_current)?;
+                *vault = recovered;
+            }
+            Err(_) => {
+                let recovered = SavedProfileVault::quarantine_and_open(directory, pin_current)?;
+                self.shared.recovered_saved_profiles.set(tokio::sync::Mutex::new(recovered))
+                    .map_err(|_| "saved VPN profile recovery was already initialized".to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn reserve_saved_profile<R: tauri::Runtime>(
+        &self, app: &AppHandle<R>, owner: &str, id: &str, expected_hash: &str,
+    ) -> Result<SavedVpnProfileLease, String> {
+        let _operation = self.shared.operation.lock().await;
+        let pool = saved_profile_database(app).await?;
+        let foreground = {
+            let runtime = self.shared.state.lock().expect("plugin VPN state lock");
+            let mut unsettled = runtime.connecting_cancellation.is_some();
+            #[cfg(any(target_os = "android", target_os = "windows"))]
+            { unsettled |= runtime.control.is_some() || runtime.session_completion.is_some(); }
+            foreground_profile_exclusion(runtime.profile.as_ref(), runtime.phase, runtime.connection_requested, unsettled)
+        };
+        self.saved_profiles()?.lock().await.reserve(&pool, owner, id, expected_hash, foreground.as_ref()).await
+    }
+
+    pub(crate) async fn read_saved_profile_lease<'a, R: tauri::Runtime>(
+        &'a self, app: &AppHandle<R>, owner: &str,
+    ) -> Result<SavedVpnProfileLeaseRead<'a>, String> {
+        let operation = self.shared.operation.lock().await;
+        let pool = saved_profile_database(app).await?;
+        let (lease, bytes) = self.saved_profiles()?.lock().await.read_lease(&pool, owner).await?;
+        Ok(SavedVpnProfileLeaseRead { lease, bytes, _operation: operation })
+    }
+
+    pub(crate) async fn saved_profile_lease<R: tauri::Runtime>(
+        &self, app: &AppHandle<R>, owner: &str,
+    ) -> Result<Option<SavedVpnProfileLease>, String> {
+        let _operation = self.shared.operation.lock().await;
+        let pool = saved_profile_database(app).await?;
+        self.saved_profiles()?.lock().await.lease(&pool, owner).await
+    }
+
+    pub(crate) async fn release_saved_profile(&self, owner: &str) -> Result<(), String> {
+        let _operation = self.shared.operation.lock().await;
+        self.saved_profiles()?.lock().await.release(owner)
     }
 
     fn status(&self) -> PluginVpnStatus {
@@ -475,7 +575,78 @@ pub(crate) async fn plugin_vpn_apply_finder_profile(
     state.require_disabled("apply a Finder profile")?;
     let bytes = state.shared.finder.profile_bytes(&candidate_id)?;
     let _operation = state.shared.operation.lock().await;
-    import_profile_bytes(state.inner(), bytes, "apply a Finder profile").await
+    import_profile_bytes(state.inner(), bytes, "apply a Finder profile", None).await
+}
+
+async fn saved_profile_database<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
+    let instances = app.state::<DbInstances>();
+    let databases = instances.0.read().await;
+    match databases.get("sqlite:norea.db") {
+        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
+        _ => Err("app database is not initialized for saved VPN profiles".to_string()),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_list_saved_profiles(
+    app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<SavedVpnProfileVaultSnapshot, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    let pool = saved_profile_database(&app).await?;
+    state.saved_profiles()?.lock().await.snapshot(&pool).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_capture_saved_profile(
+    ip: String, source: SavedVpnProfileCaptureSource, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<VpnGateServerVerdictMutation, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    let bytes = match source {
+        SavedVpnProfileCaptureSource::Finder { candidate_id } => state.shared.finder.profile_bytes(&candidate_id)?,
+        SavedVpnProfileCaptureSource::Active { expected_hash } => {
+            let current = state.status().profile.ok_or_else(|| "active VPN profile is unavailable".to_string())?;
+            if current.hash != expected_hash || current.remote_host != ip || !current.is_vpn_gate_finder {
+                return Err("active VPN profile changed before approval".to_string());
+            }
+            read_active_capture(&state.profile_path()?, &ip, &expected_hash)?
+        }
+    };
+    let pool = saved_profile_database(&app).await?;
+    state.saved_profiles()?.lock().await.capture(&pool, &ip, &bytes).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_revoke_saved_profile(
+    ip: String, verdict: Option<VpnGateServerVerdictValue>, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<VpnGateServerVerdictMutation, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    let pool = saved_profile_database(&app).await?;
+    state.saved_profiles()?.lock().await.revoke(&pool, &ip, verdict).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_set_saved_profile_limit(
+    limit: usize, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<SavedVpnProfileVaultSnapshot, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    let pool = saved_profile_database(&app).await?;
+    state.saved_profiles()?.lock().await.set_limit(&pool, limit).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_apply_saved_profile(
+    id: String, expected_hash: String, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<PluginVpnStatus, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    state.require_disabled("apply a saved profile")?;
+    let pool = saved_profile_database(&app).await?;
+    let (_, bytes) = state.saved_profiles()?.lock().await.read_for_apply(&pool, &id, &expected_hash).await?;
+    import_profile_bytes(state.inner(), bytes, "apply a saved profile", Some(SavedVpnProfileSelection { id, hash: expected_hash })).await
 }
 
 #[tauri::command]
@@ -491,7 +662,7 @@ pub(crate) async fn plugin_vpn_import_profile(
         .await
         .map_err(|error| format!("could not read the OpenVPN profile: {error}"))??;
     reject_reserved_vpn_gate_profile_marker(&bytes)?;
-    import_profile_bytes(state.inner(), bytes, "import a profile").await
+    import_profile_bytes(state.inner(), bytes, "import a profile", None).await
 }
 
 #[tauri::command]
@@ -501,15 +672,18 @@ pub(crate) async fn plugin_vpn_remove_profile(
     ensure_supported()?;
     let _operation = state.shared.operation.lock().await;
     state.require_disabled("remove the profile")?;
+    state.prepare_manual_vault().await?;
     let profile_path = state.profile_path()?;
-    tauri::async_runtime::spawn_blocking(move || remove_stored_profile(&profile_path))
-        .await
-        .map_err(|error| format!("could not remove the OpenVPN profile: {error}"))??;
+    {
+        let mut vault = state.saved_profiles()?.lock().await;
+        publish_active_profile(&profile_path, &mut vault, None, None)?;
+    }
 
-    let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
-    runtime.profile = None;
-    runtime.error = None;
-    drop(runtime);
+    {
+        let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        runtime.profile = None;
+        runtime.error = None;
+    }
     Ok(state.status())
 }
 
@@ -524,6 +698,13 @@ pub(crate) async fn plugin_vpn_connect(
     let _operation = state.shared.operation.lock().await;
     crate::network::require_online()?;
     let profile_path = state.profile_path()?;
+    if state.status().profile.as_ref().is_some_and(|profile| !profile.is_vpn_gate_finder) {
+        state.prepare_manual_vault().await?;
+    }
+    {
+        let mut vault = state.saved_profiles()?.lock().await;
+        recover_active_profile_change(&profile_path, &mut vault)?;
+    }
     let (generation, cancellation) = state.begin_connection(request_generation)?;
     let profile =
         tauri::async_runtime::spawn_blocking(move || read_profile_for_connection(&profile_path))
@@ -536,6 +717,15 @@ pub(crate) async fn plugin_vpn_connect(
             return Err(error);
         }
     };
+    {
+        let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        if runtime.generation == generation { runtime.profile = Some(PluginVpnProfile::from(validate_profile(profile.as_bytes())?)); }
+    }
+    let pool = saved_profile_database(&app).await?;
+    if let Err(error) = state.saved_profiles()?.lock().await.validate_active(&pool, profile.as_bytes()).await {
+        state.set_connection_error(generation, error.clone());
+        return Err(error);
+    }
     let credentials = credentials.resolve_for_profile(&profile);
     {
         let runtime = state.shared.state.lock().expect("plugin VPN state lock");
@@ -809,13 +999,17 @@ async fn import_profile_bytes(
     state: &PluginVpnState,
     bytes: Vec<u8>,
     action: &str,
+    retained: Option<SavedVpnProfileSelection>,
 ) -> Result<PluginVpnStatus, String> {
     state.require_disabled(action)?;
-    let profile = PluginVpnProfile::from(validate_profile(&bytes)?);
+    validate_profile(&bytes)?;
+    if retained.is_none() { state.prepare_manual_vault().await?; }
     let profile_path = state.profile_path()?;
-    tauri::async_runtime::spawn_blocking(move || store_profile(&profile_path, &bytes))
-        .await
-        .map_err(|error| format!("could not save the OpenVPN profile: {error}"))??;
+    let profile = {
+        let mut vault = state.saved_profiles()?.lock().await;
+        publish_active_profile(&profile_path, &mut vault, Some(&bytes), retained)?
+            .map(PluginVpnProfile::from).expect("published profile")
+    };
 
     let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
     runtime.profile = Some(profile);
@@ -827,11 +1021,151 @@ async fn import_profile_bytes(
 impl From<ValidatedProfile> for PluginVpnProfile {
     fn from(profile: ValidatedProfile) -> Self {
         Self {
+            hash: profile.hash,
             is_vpn_gate_finder: profile.is_vpn_gate_finder,
             remote_host: profile.remote_host,
+            remote_hosts: profile.remote_hosts,
             requires_username_password: profile.requires_username_password,
         }
     }
+}
+
+fn foreground_profile_exclusion(
+    profile: Option<&PluginVpnProfile>, phase: PluginVpnPhase, requested: bool, unsettled: bool,
+) -> Option<ForegroundVpnProfile> {
+    if !requested && !unsettled && !matches!(phase, PluginVpnPhase::Connecting | PluginVpnPhase::Connected | PluginVpnPhase::Reconnecting | PluginVpnPhase::Disconnecting) {
+        return None;
+    }
+    profile.map(|profile| ForegroundVpnProfile { remote_hosts: profile.remote_hosts.clone(), hash: profile.hash.clone() })
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ActiveProfileChange {
+    version: u8,
+    previous_hash: Option<String>,
+    previous_selection: Option<SavedVpnProfileSelection>,
+    next_hash: Option<String>,
+    next_selection: Option<SavedVpnProfileSelection>,
+    committed: bool,
+}
+
+fn active_change_directory(path: &Path) -> Result<PathBuf, String> {
+    Ok(path.parent().ok_or_else(|| "OpenVPN profile directory is invalid".to_string())?.join(ACTIVE_CHANGE_DIRECTORY))
+}
+
+fn optional_profile_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => read_profile_source(path).map(Some),
+        Ok(_) => Err("OpenVPN profile is not a regular file".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("could not inspect the OpenVPN profile: {error}")),
+    }
+}
+
+fn write_active_change(directory: &Path, change: &ActiveProfileChange) -> Result<(), String> {
+    let bytes = serde_json::to_vec(change).map_err(|error| format!("could not encode OpenVPN profile publication: {error}"))?;
+    super::saved_profiles::publish_private_file(&directory.join(ACTIVE_CHANGE_METADATA), &bytes)
+}
+
+fn clean_active_change(directory: &Path) -> Result<(), String> {
+    for name in [PROFILE_FILE, PROFILE_PART_FILE, PROFILE_BACKUP_FILE, "selection.json.part", "selection.json.backup", ACTIVE_CHANGE_METADATA] {
+        remove_file_if_exists(&directory.join(name))?;
+    }
+    match fs::remove_dir(directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("could not remove the OpenVPN profile publication checkpoint: {error}")),
+    }
+}
+
+fn prepare_active_profile_change(
+    path: &Path, vault: &SavedProfileVault, bytes: Option<&[u8]>, next_selection: Option<SavedVpnProfileSelection>,
+) -> Result<ActiveProfileChange, String> {
+    let previous = optional_profile_bytes(path)?;
+    let directory = active_change_directory(path)?;
+    if let Some(previous) = &previous { store_profile(&directory.join(PROFILE_FILE), previous)?; }
+    let change = ActiveProfileChange { version: 1, previous_hash: previous.as_deref().map(super::saved_profiles::profile_hash), previous_selection: vault.active_selection(), next_hash: bytes.map(super::saved_profiles::profile_hash), next_selection, committed: false };
+    write_active_change(&directory, &change)?;
+    sync_directory(directory.parent().expect("profile directory"))?;
+    Ok(change)
+}
+
+fn recover_active_profile_change(path: &Path, vault: &mut SavedProfileVault) -> Result<(), String> {
+    let directory = active_change_directory(path)?;
+    let metadata = directory.join(ACTIVE_CHANGE_METADATA);
+    let source = if metadata.try_exists().map_err(|error| error.to_string())? { metadata }
+        else { directory.join("selection.json.backup") };
+    let Some(bytes) = optional_profile_bytes(&source)? else {
+        if directory.try_exists().map_err(|error| error.to_string())? { clean_active_change(&directory)?; }
+        return Ok(());
+    };
+    if bytes.len() > 4096 { return Err("OpenVPN profile publication checkpoint is too large".to_string()); }
+    let change: ActiveProfileChange = serde_json::from_slice(&bytes).map_err(|error| format!("could not read OpenVPN profile publication: {error}"))?;
+    if change.version != 1 { return Err("OpenVPN profile publication version is unsupported".to_string()); }
+    let current = optional_profile_bytes(path)?;
+    let hash = current.as_deref().map(super::saved_profiles::profile_hash);
+    if change.committed {
+        let selection = vault.active_selection();
+        if hash == change.next_hash && selection == change.next_selection {
+            return clean_active_change(&directory);
+        }
+        if (hash != change.previous_hash && hash != change.next_hash) || (selection != change.previous_selection && selection != change.next_selection) {
+            return Err("committed OpenVPN profile file and retained selection do not match".to_string());
+        }
+    }
+    rollback_active_profile_change(path, vault, &change)?;
+    clean_active_change(&directory)
+}
+
+fn rollback_active_profile_change(path: &Path, vault: &mut SavedProfileVault, change: &ActiveProfileChange) -> Result<(), String> {
+        let directory = active_change_directory(path)?;
+        let hash = optional_profile_bytes(path)?.as_deref().map(super::saved_profiles::profile_hash);
+        if hash != change.previous_hash {
+            if let Some(expected) = &change.previous_hash {
+                let previous = read_profile_source(&directory.join(PROFILE_FILE))?;
+                if super::saved_profiles::profile_hash(&previous) != *expected { return Err("previous OpenVPN profile checkpoint hash does not match".to_string()); }
+                store_profile(path, &previous)?;
+            } else { remove_stored_profile(path)?; }
+        }
+        if vault.active_selection() != change.previous_selection || vault.needs_recovery() {
+            vault.restore_active_selection(change.previous_selection.clone())?;
+        }
+    Ok(())
+}
+
+fn publish_active_profile(
+    path: &Path, vault: &mut SavedProfileVault, bytes: Option<&[u8]>, retained: Option<SavedVpnProfileSelection>,
+) -> Result<Option<ValidatedProfile>, String> {
+    recover_active_profile_change(path, vault)?;
+    let validated = bytes.map(validate_profile).transpose()?;
+    if let Some(profile) = &validated {
+        for host in &profile.remote_hosts { vault.ensure_foreground_available(host, &profile.hash)?; }
+    }
+    if let Some(selection) = &retained {
+        if !validated.as_ref().is_some_and(|profile| profile.is_vpn_gate_finder && profile.hash == selection.hash && selection.id == selection.hash) {
+            return Err("retained OpenVPN selection does not match the active profile bytes".to_string());
+        }
+    }
+    let mut change = prepare_active_profile_change(path, vault, bytes, retained.clone())?;
+    let result = (|| {
+        if vault.active_selection() != retained { vault.set_active(retained)?; }
+        match bytes { Some(bytes) => store_profile(path, bytes)?, None => remove_stored_profile(path)? }
+        change.committed = true;
+        write_active_change(&active_change_directory(path)?, &change)
+    })();
+    if let Err(error) = result {
+        change.committed = false;
+        let _ = write_active_change(&active_change_directory(path)?, &change);
+        if let Err(rollback) = rollback_active_profile_change(path, vault, &change).and_then(|()| clean_active_change(&active_change_directory(path)?)) {
+            return Err(format!("{error}; previous profile recovery remains pending: {rollback}"));
+        }
+        return Err(error);
+    }
+    if let Err(error) = clean_active_change(&active_change_directory(path)?) {
+        log::warn!("OpenVPN profile was committed but checkpoint cleanup failed: {error}");
+    }
+    Ok(validated)
 }
 
 fn read_profile_source(path: &Path) -> Result<Vec<u8>, String> {
@@ -992,13 +1326,323 @@ fn sync_directory(_: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) struct DeviceBackupVpnGuard<'a> {
+    state: &'a PluginVpnState,
+    vault: tokio::sync::MutexGuard<'a, SavedProfileVault>,
+    _operation: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl PluginVpnState {
+    pub(crate) async fn lock_device_backup(&self) -> Result<DeviceBackupVpnGuard<'_>, String> {
+        let operation = self.shared.operation.lock().await;
+        let vault = self.saved_profiles()?.lock().await;
+        let mut guard = DeviceBackupVpnGuard { state: self, vault, _operation: operation };
+        let path = guard.profile_path()?;
+        let checkpoint = active_change_directory(&path)?;
+        match fs::symlink_metadata(&checkpoint) {
+            Ok(metadata) if !metadata.is_dir() => return Err("VPN profile publication checkpoint is not a regular directory".into()),
+            Ok(_) => recover_active_profile_change(&path, &mut guard.vault)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.to_string()),
+        }
+        Ok(guard)
+    }
+
+    pub(crate) async fn lock_device_backup_restore(&self, workers: &super::download_workers::DownloadVpnWorkers) -> Result<DeviceBackupVpnGuard<'_>, String> {
+        workers.stop_all(self).await?;
+        disconnect(self, Some(false)).await?;
+        {
+            let _operation = self.shared.operation.lock().await;
+            self.require_disabled("restore a device backup")?;
+            crate::device_backup::restore_checkpoint::require_complete(&self.profile_path()?)?;
+            self.prepare_manual_vault().await?;
+        }
+        let guard = self.lock_device_backup().await?;
+        self.require_disabled("restore a device backup")?;
+        guard.vault.require_idle_device_backup_restore()?;
+        Ok(guard)
+    }
+}
+
+impl DeviceBackupVpnGuard<'_> {
+    pub(crate) fn profile_path(&self) -> Result<PathBuf, String> {
+        let path = self.state.profile_path()?;
+        let root = path.parent().and_then(Path::parent).ok_or_else(|| "invalid managed VPN profile path".to_string())?;
+        fs::create_dir_all(root).map_err(|error| error.to_string())?;
+        Ok(root.canonicalize().map_err(|error| error.to_string())?.join(PROFILE_DIRECTORY).join(PROFILE_FILE))
+    }
+
+    pub(crate) async fn export_vault(
+        &self, pool: &sqlx::SqlitePool, directory: &Path,
+    ) -> Result<(Option<Vec<u8>>, super::saved_profiles::backup::VpnVaultBackupManifest), String> {
+        let profile = super::saved_profiles::backup::read_backup_active_profile(&self.profile_path()?)?;
+        let manifest = self.vault.export_device_backup(pool, profile.as_deref(), directory).await?;
+        Ok((profile, manifest))
+    }
+
+    pub(crate) fn reload_published_files(&mut self) -> Result<(), String> {
+        let path = self.profile_path()?;
+        let bytes = super::saved_profiles::backup::read_backup_active_profile(&path)?;
+        let profile = bytes.as_deref().map(validate_profile).transpose()?.map(PluginVpnProfile::from);
+        let vault = SavedProfileVault::open(path.parent().expect("profile directory").join("saved-profiles"))?;
+        *self.vault = vault;
+        let mut runtime = self.state.shared.state.lock().expect("plugin VPN state lock");
+        runtime.generation = runtime.generation.wrapping_add(1);
+        runtime.connection_requested = false;
+        runtime.connecting_cancellation = None;
+        runtime.profile = profile;
+        runtime.phase = PluginVpnPhase::Disabled;
+        runtime.error = None;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod active_profile_tests {
+    use super::*;
+    use super::super::saved_profiles::profile_hash;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    fn profile(ip: &str) -> Vec<u8> {
+        format!("client\ndev tun\nproto tcp\nremote {ip} 443\n<ca>\ncertificate\n</ca>\n{}\nauth-user-pass\n", super::super::VPN_GATE_PROFILE_MARKER).into_bytes()
+    }
+
+    async fn fixture() -> (tempfile::TempDir, sqlx::SqlitePool, SavedProfileVault, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true)).await.unwrap();
+        sqlx::query("CREATE TABLE vpn_gate_server_verdict (ip TEXT PRIMARY KEY NOT NULL, verdict TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))").execute(&pool).await.unwrap();
+        let vault = SavedProfileVault::open(directory.path().join("saved-profiles")).unwrap();
+        let path = directory.path().join(PROFILE_FILE);
+        (directory, pool, vault, path)
+    }
+
+    #[tokio::test]
+    async fn failed_active_file_publication_rolls_back_the_previous_retained_selector() {
+        let (_directory, pool, mut vault, path) = fixture().await;
+        let a = profile("8.8.4.4");
+        let b = profile("8.8.8.8");
+        let saved_a = vault.capture(&pool, "8.8.4.4", &a).await.unwrap().saved_profile.unwrap();
+        let saved_b = vault.capture(&pool, "8.8.8.8", &b).await.unwrap().saved_profile.unwrap();
+        store_profile(&path, &a).unwrap();
+        vault.set_active(Some(SavedVpnProfileSelection { id: saved_a.id, hash: saved_a.hash })).unwrap();
+        let fault = path.parent().unwrap().join(PROFILE_PART_FILE);
+        fs::create_dir(&fault).unwrap();
+        assert!(publish_active_profile(&path, &mut vault, Some(&b), Some(SavedVpnProfileSelection { id: saved_b.id, hash: saved_b.hash })).is_err());
+        assert_eq!(fs::read(&path).unwrap(), a);
+        vault.validate_active(&pool, &a).await.unwrap();
+        fs::remove_dir(fault).unwrap();
+        let mut reopened = SavedProfileVault::open(path.parent().unwrap().join("saved-profiles")).unwrap();
+        recover_active_profile_change(&path, &mut reopened).unwrap();
+        reopened.validate_active(&pool, &a).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_manual_replacement_preserves_the_old_retained_file_and_selector() {
+        let (_directory, pool, mut vault, path) = fixture().await;
+        let a = profile("8.8.4.4");
+        let saved = vault.capture(&pool, "8.8.4.4", &a).await.unwrap().saved_profile.unwrap();
+        store_profile(&path, &a).unwrap();
+        vault.set_active(Some(SavedVpnProfileSelection { id: saved.id, hash: saved.hash })).unwrap();
+        fs::create_dir(path.parent().unwrap().join(PROFILE_PART_FILE)).unwrap();
+        assert!(publish_active_profile(&path, &mut vault, Some(b"client\ndev tun\nremote 8.8.8.8 443\n"), None).is_err());
+        assert_eq!(fs::read(&path).unwrap(), a);
+        vault.validate_active(&pool, &a).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_active_change_recovers_the_last_committed_selection_and_file() {
+        let (_directory, pool, mut vault, path) = fixture().await;
+        let a = profile("8.8.4.4");
+        let b = profile("8.8.8.8");
+        let saved_a = vault.capture(&pool, "8.8.4.4", &a).await.unwrap().saved_profile.unwrap();
+        let saved_b = vault.capture(&pool, "8.8.8.8", &b).await.unwrap().saved_profile.unwrap();
+        store_profile(&path, &a).unwrap();
+        vault.set_active(Some(SavedVpnProfileSelection { id: saved_a.id, hash: saved_a.hash })).unwrap();
+        let next = Some(SavedVpnProfileSelection { id: saved_b.id, hash: saved_b.hash });
+        prepare_active_profile_change(&path, &vault, Some(&b), next.clone()).unwrap();
+        vault.set_active(next).unwrap();
+        store_profile(&path, &b).unwrap();
+        let mut reopened = SavedProfileVault::open(path.parent().unwrap().join("saved-profiles")).unwrap();
+        recover_active_profile_change(&path, &mut reopened).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), a);
+        reopened.validate_active(&pool, &a).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_accepts_a_verified_previous_pair_after_an_interrupted_rollback() {
+        let (_directory, pool, mut vault, path) = fixture().await;
+        let a = profile("8.8.4.4");
+        let b = profile("8.8.8.8");
+        let saved_a = vault.capture(&pool, "8.8.4.4", &a).await.unwrap().saved_profile.unwrap();
+        let saved_b = vault.capture(&pool, "8.8.8.8", &b).await.unwrap().saved_profile.unwrap();
+        let previous = Some(SavedVpnProfileSelection { id: saved_a.id, hash: saved_a.hash });
+        store_profile(&path, &a).unwrap();
+        vault.set_active(previous.clone()).unwrap();
+        let next = Some(SavedVpnProfileSelection { id: saved_b.id, hash: saved_b.hash });
+        let mut change = prepare_active_profile_change(&path, &vault, Some(&b), next.clone()).unwrap();
+        vault.set_active(next).unwrap();
+        store_profile(&path, &b).unwrap();
+        change.committed = true;
+        write_active_change(&active_change_directory(&path).unwrap(), &change).unwrap();
+        store_profile(&path, &a).unwrap();
+        vault.restore_active_selection(previous).unwrap();
+        recover_active_profile_change(&path, &mut vault).unwrap();
+        vault.validate_active(&pool, &a).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disabled_foreground_configuration_is_leasable_but_live_or_requested_remotes_are_not() {
+        let (_directory, pool, mut vault, _path) = fixture().await;
+        let saved = vault.capture(&pool, "8.8.4.4", &profile("8.8.4.4")).await.unwrap().saved_profile.unwrap();
+        let configured = PluginVpnProfile::from(validate_profile(b"client\ndev tun\nremote 8.8.8.8 443\n<connection>\nremote 8.8.4.4 443\n</connection>\n").unwrap());
+        for (phase, requested, resources, available) in [(PluginVpnPhase::Disabled, false, false, true), (PluginVpnPhase::Disabled, true, false, false), (PluginVpnPhase::Connecting, false, false, false), (PluginVpnPhase::Connected, false, true, false), (PluginVpnPhase::Disconnecting, false, true, false), (PluginVpnPhase::WaitingForNetwork, true, false, false), (PluginVpnPhase::Error, false, true, false)] {
+            let foreground = foreground_profile_exclusion(Some(&configured), phase, requested, resources);
+            let reserved = vault.reserve(&pool, "worker-a", &saved.id, &saved.hash, foreground.as_ref()).await;
+            assert_eq!(reserved.is_ok(), available, "{phase:?}, requested={requested}");
+            if reserved.is_ok() { vault.release("worker-a").unwrap(); }
+        }
+        assert_eq!(configured.hash, profile_hash(b"client\ndev tun\nremote 8.8.8.8 443\n<connection>\nremote 8.8.4.4 443\n</connection>\n"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::super::VPN_GATE_PROFILE_MARKER;
+    use super::super::saved_profiles::profile_hash;
     use super::*;
     use crate::plugin_vpn::proxy::{ConnectFuture, ProxyConnector, ProxyTarget};
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
+
+    pub(crate) fn backup_worker_test_state(path: PathBuf, vault: Result<SavedProfileVault, String>) -> PluginVpnState {
+        let state = PluginVpnState::bind().unwrap();
+        state.shared.profile_path.set(path).unwrap();
+        assert!(state.shared.saved_profiles.set(vault.map(tokio::sync::Mutex::new)).is_ok());
+        state
+    }
+
+    #[tokio::test]
+    async fn manual_vault_quarantine_preserves_revoked_active_identity_on_both_recovery_paths() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        for failed_initialization in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let pool = SqlitePoolOptions::new().max_connections(1).connect_with(
+                SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true)
+            ).await.unwrap();
+            sqlx::query("CREATE TABLE vpn_gate_server_verdict(ip TEXT PRIMARY KEY,verdict TEXT NOT NULL,updated_at INTEGER NOT NULL DEFAULT(unixepoch()))").execute(&pool).await.unwrap();
+            let path = directory.path().join("plugin-vpn/profile.ovpn");
+            let vault_path = path.parent().unwrap().join("saved-profiles");
+            let bytes = format!("client\ndev tun\nproto tcp\nremote 8.8.4.4 443\n<ca>\ncertificate\n</ca>\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n").into_bytes();
+            let mut vault = SavedProfileVault::open(vault_path.clone()).unwrap();
+            let saved = vault.capture(&pool, "8.8.4.4", &bytes).await.unwrap().saved_profile.unwrap();
+            let active = Some(SavedVpnProfileSelection { id: saved.id, hash: saved.hash });
+            vault.set_active(active.clone()).unwrap();
+            vault.revoke(&pool, "8.8.4.4", None).await.unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let state = PluginVpnState::bind().unwrap();
+            state.shared.profile_path.set(path.clone()).unwrap();
+            state.shared.state.lock().unwrap().profile = Some(PluginVpnProfile::from(validate_profile(&bytes).unwrap()));
+            if failed_initialization {
+                fs::write(vault_path.join("index.json"), b"invalid index").unwrap();
+                assert!(state.shared.saved_profiles.set(Err("invalid index".into())).is_ok());
+            } else {
+                fs::create_dir(vault_path.join("index.json.part")).unwrap();
+                assert!(vault.set_limit(&pool, 1).await.is_err());
+                assert!(state.shared.saved_profiles.set(Ok(tokio::sync::Mutex::new(vault))).is_ok());
+            }
+            state.prepare_manual_vault().await.unwrap();
+            assert_eq!(state.saved_profiles().unwrap().lock().await.active_selection(), active);
+            drop(state);
+            let mut restarted = SavedProfileVault::open(vault_path).unwrap();
+            assert_eq!(restarted.active_selection(), active);
+            assert!(restarted.snapshot(&pool).await.unwrap().profiles.is_empty());
+            assert!(restarted.validate_active(&pool, &bytes).await.is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[tokio::test]
+    async fn device_backup_guard_serializes_export_and_refuses_unsettled_worker_leases() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let directory = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(
+            SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true)
+        ).await.unwrap();
+        sqlx::query("CREATE TABLE vpn_gate_server_verdict(ip TEXT PRIMARY KEY,verdict TEXT NOT NULL,updated_at INTEGER NOT NULL DEFAULT(unixepoch()))").execute(&pool).await.unwrap();
+        let path = directory.path().join("plugin-vpn/profile.ovpn");
+        let bytes = format!("client\ndev tun\nproto tcp-client\nremote 8.8.4.4 443\n<ca>\ncertificate\n</ca>\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n").into_bytes();
+        let mut vault = SavedProfileVault::open(directory.path().join("plugin-vpn/saved-profiles")).unwrap();
+        let saved = vault.capture(&pool, "8.8.4.4", &bytes).await.unwrap().saved_profile.unwrap();
+        vault.reserve(&pool, "live-worker", &saved.id, &saved.hash, None).await.unwrap();
+        fs::write(&path, &bytes).unwrap();
+        prepare_active_profile_change(&path, &vault, Some(PROFILE), None).unwrap();
+        store_profile(&path, PROFILE).unwrap();
+        let state = PluginVpnState::bind().unwrap();
+        state.shared.profile_path.set(path.clone()).unwrap();
+        assert!(state.shared.saved_profiles.set(Ok(tokio::sync::Mutex::new(vault))).is_ok());
+        let guard = state.lock_device_backup().await.unwrap();
+        let (profile, manifest) = guard.export_vault(&pool, &directory.path().join("export")).await.unwrap();
+        assert_eq!(profile.unwrap(), bytes);
+        assert_eq!(manifest.profiles.len(), 1);
+        assert!(state.shared.operation.try_lock().is_err());
+        drop(guard);
+        let workers = super::super::download_workers::DownloadVpnWorkers::bind().unwrap();
+        assert!(state.lock_device_backup_restore(&workers).await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        state.release_saved_profile("live-worker").await.unwrap();
+        let mut guard = state.lock_device_backup_restore(&workers).await.unwrap();
+        guard.reload_published_files().unwrap();
+        assert_eq!(state.status().phase, PluginVpnPhase::Disabled);
+    }
+
+    #[tokio::test]
+    async fn saved_profile_engine_reads_hold_the_operation_lock_until_connection_settles() {
+        use std::collections::HashMap;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let directory = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(
+            SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true)
+        ).await.unwrap();
+        sqlx::query("CREATE TABLE vpn_gate_server_verdict (ip TEXT PRIMARY KEY NOT NULL, verdict TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))").execute(&pool).await.unwrap();
+        let app = tauri::test::mock_app();
+        let mut databases = HashMap::new();
+        databases.insert("sqlite:norea.db".to_string(), DbPool::Sqlite(pool.clone()));
+        app.manage(DbInstances(tokio::sync::RwLock::new(databases)));
+        let bytes = format!("client\ndev tun\nproto tcp\nremote 8.8.4.4 443\n<ca>\ncertificate\n</ca>\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n").into_bytes();
+        let mut vault = SavedProfileVault::open(directory.path().join("profiles")).unwrap();
+        let saved = vault.capture(&pool, "8.8.4.4", &bytes).await.unwrap().saved_profile.unwrap();
+        let state = PluginVpnState::bind().unwrap();
+        assert!(state.shared.saved_profiles.set(Ok(tokio::sync::Mutex::new(vault))).is_ok());
+        {
+            let mut runtime = state.shared.state.lock().unwrap();
+            runtime.profile = Some(PluginVpnProfile::from(validate_profile(&bytes).unwrap()));
+            runtime.phase = PluginVpnPhase::Connected;
+        }
+        assert!(state.reserve_saved_profile(app.handle(), "occupied", &saved.id, &saved.hash).await.is_err());
+        state.shared.state.lock().unwrap().phase = PluginVpnPhase::Disabled;
+        let lease = state.reserve_saved_profile(app.handle(), "worker-a", &saved.id, &saved.hash).await.unwrap();
+        assert_eq!(lease.owner, "worker-a");
+        let mut allocation = state.read_saved_profile_lease(app.handle(), "worker-a").await.unwrap();
+        assert_eq!(allocation.take_bytes(), bytes);
+        assert_eq!(allocation.lease.profile.hash, saved.hash);
+        assert!(state.shared.operation.try_lock().is_err());
+        let revoke = {
+            let state = state.clone();
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                let _operation = state.shared.operation.lock().await;
+                state.saved_profiles().unwrap().lock().await.revoke(&pool, "8.8.4.4", None).await.unwrap();
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(!revoke.is_finished());
+        drop(allocation);
+        revoke.await.unwrap();
+        assert!(state.saved_profile_lease(app.handle(), "worker-a").await.unwrap().unwrap().revoked);
+        assert!(state.read_saved_profile_lease(app.handle(), "worker-a").await.is_err());
+        state.release_saved_profile("worker-a").await.unwrap();
+        assert!(state.saved_profile_lease(app.handle(), "worker-a").await.unwrap().is_none());
+    }
 
     #[test]
     fn exports_original_profile_bytes_and_preserves_finder_classification() {
@@ -1056,8 +1700,10 @@ mod tests {
         {
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
             runtime.profile = Some(PluginVpnProfile {
+                hash: profile_hash(PROFILE),
                 is_vpn_gate_finder: false,
                 remote_host: "vpn.example.test".to_string(),
+                remote_hosts: vec!["vpn.example.test".to_string()],
                 requires_username_password: false,
             });
         }
@@ -1089,8 +1735,10 @@ mod tests {
         {
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
             runtime.profile = Some(PluginVpnProfile {
+                hash: profile_hash(PROFILE),
                 is_vpn_gate_finder: false,
                 remote_host: "vpn.example.test".to_string(),
+                remote_hosts: vec!["vpn.example.test".to_string()],
                 requires_username_password: false,
             });
         }
@@ -1139,8 +1787,10 @@ mod tests {
         {
             let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
             runtime.profile = Some(PluginVpnProfile {
+                hash: profile_hash(PROFILE),
                 is_vpn_gate_finder: false,
                 remote_host: "vpn.example.test".to_string(),
+                remote_hosts: vec!["vpn.example.test".to_string()],
                 requires_username_password: false,
             });
         }

@@ -35,6 +35,10 @@ pub struct ChapterDownloadQueueJob {
     id: i64,
     batch_id: Option<String>,
     batch_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vpn_plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vpn_range_id: Option<String>,
     plugin_id: String,
     plugin_name: Option<String>,
     chapter_path: String,
@@ -63,8 +67,8 @@ fn now_ms() -> u64 {
 fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
-        .app_data_dir()
-        .map_err(|err| format!("download queue: app data dir: {err}"))?
+        .app_config_dir()
+        .map_err(|err| format!("download queue: app config dir: {err}"))?
         .join(DB_FILE))
 }
 
@@ -102,6 +106,10 @@ async fn insert_queue_job(
           updated_at_ms = excluded.updated_at_ms,
           leased_at_ms = NULL,
           attempt_count = 0
+        WHERE json_extract(chapter_download_queue.job_json, '$.vpnPlanId') IS NULL
+          AND json_extract(chapter_download_queue.job_json, '$.vpnRangeId') IS NULL
+          AND json_extract(excluded.job_json, '$.vpnPlanId') IS NULL
+          AND json_extract(excluded.job_json, '$.vpnRangeId') IS NULL
         "#,
     )
     .bind(job.id)
@@ -110,7 +118,13 @@ async fn insert_queue_job(
     .bind(i64::try_from(updated_at_ms).unwrap_or(i64::MAX))
     .execute(executor)
     .await
-    .map(|_| ())
+    .and_then(|result| {
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(sqlx::Error::Protocol("chapter already belongs to an enrolled VPN download range".into()))
+        }
+    })
     .map_err(|err| format!("download queue: insert job: {err}"))
 }
 
@@ -175,6 +189,10 @@ pub async fn chapter_download_queue_remove(
     }
 
     let pool = queue_pool(&app, state.inner()).await?;
+    remove_queue_jobs(&pool, &chapter_ids).await
+}
+
+async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
     let mut query =
         QueryBuilder::<Sqlite>::new("DELETE FROM chapter_download_queue WHERE chapter_id IN (");
     let mut separated = query.separated(", ");
@@ -182,9 +200,10 @@ pub async fn chapter_download_queue_remove(
         separated.push_bind(chapter_id);
     }
     separated.push_unseparated(")");
+    query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL");
     query
         .build()
-        .execute(&pool)
+        .execute(pool)
         .await
         .map(|_| ())
         .map_err(|err| format!("download queue: remove jobs: {err}"))
@@ -197,6 +216,13 @@ pub async fn chapter_download_queue_lease(
     limit: Option<usize>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
     let pool = queue_pool(&app, state.inner()).await?;
+    lease_queue_jobs(&pool, limit).await
+}
+
+async fn lease_queue_jobs(
+    pool: &SqlitePool,
+    limit: Option<usize>,
+) -> Result<Vec<ChapterDownloadQueueJob>, String> {
     let mut tx = pool
         .begin()
         .await
@@ -207,6 +233,8 @@ pub async fn chapter_download_queue_lease(
                 r#"
                 SELECT chapter_id, job_json
                 FROM chapter_download_queue
+                WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
+                  AND json_extract(job_json, '$.vpnRangeId') IS NULL
                 ORDER BY created_at_ms, chapter_id
                 LIMIT ?1
                 "#,
@@ -220,6 +248,8 @@ pub async fn chapter_download_queue_lease(
                 r#"
                 SELECT chapter_id, job_json
                 FROM chapter_download_queue
+                WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
+                  AND json_extract(job_json, '$.vpnRangeId') IS NULL
                 ORDER BY created_at_ms, chapter_id
                 "#,
             )
@@ -267,4 +297,69 @@ pub async fn chapter_download_queue_lease(
         .await
         .map_err(|err| format!("download queue: commit lease: {err}"))?;
     Ok(jobs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(id: i64, plan: Option<&str>, range: Option<&str>) -> ChapterDownloadQueueJob {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "pluginId": "source", "chapterPath": format!("/{id}"), "title": "Chapter",
+            "vpnPlanId": plan, "vpnRangeId": range,
+        })).unwrap()
+    }
+
+    #[test]
+    fn vpn_membership_survives_json_roundtrip() {
+        let stored = serde_json::to_value(job(1, Some("plan"), Some("range"))).unwrap();
+        assert_eq!(stored["vpnPlanId"], "plan");
+        assert_eq!(stored["vpnRangeId"], "range");
+        let restored: ChapterDownloadQueueJob = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), stored);
+        let ordinary = serde_json::to_value(job(2, None, None)).unwrap();
+        assert!(ordinary.get("vpnPlanId").is_none());
+        assert!(ordinary.get("vpnRangeId").is_none());
+    }
+
+    #[tokio::test]
+    async fn native_lease_leaves_enrolled_jobs_unleased() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        insert_queue_job(&pool, &job(1, Some("plan"), Some("range")), 1, 1).await.unwrap();
+        insert_queue_job(&pool, &job(2, None, None), 2, 2).await.unwrap();
+        insert_queue_job(&pool, &job(3, Some("plan"), None), 0, 0).await.unwrap();
+        insert_queue_job(&pool, &job(4, None, Some("range")), 0, 0).await.unwrap();
+        let limited = lease_queue_jobs(&pool, Some(1)).await.unwrap();
+        assert_eq!(limited.iter().map(|job| job.id).collect::<Vec<_>>(), vec![2]);
+        let all = lease_queue_jobs(&pool, None).await.unwrap();
+        assert_eq!(all.iter().map(|job| job.id).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(sqlx::query_as::<_, (i64, Option<i64>, i64)>(
+            "SELECT chapter_id,leased_at_ms,attempt_count FROM chapter_download_queue WHERE chapter_id<>2 ORDER BY chapter_id")
+            .fetch_all(&pool).await.unwrap(), vec![(1,None,0), (3,None,0), (4,None,0)]);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT attempt_count FROM chapter_download_queue WHERE chapter_id=2")
+            .fetch_one(&pool).await.unwrap(), 2);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn enqueue_cannot_steal_enrolled_queue_ownership() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        insert_queue_job(&pool, &job(1, Some("plan"), Some("range")), 1, 1).await.unwrap();
+        assert!(insert_queue_job(&pool, &job(1, None, None), 2, 2).await.is_err());
+        remove_queue_jobs(&pool, &[1]).await.unwrap();
+        assert!(insert_queue_job(&pool, &job(1, Some("other"), Some("other")), 2, 2).await.is_err());
+        let stored: String = sqlx::query_scalar("SELECT job_json FROM chapter_download_queue WHERE chapter_id=1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap()["vpnPlanId"], "plan");
+        insert_queue_job(&pool, &job(2, None, None), 1, 1).await.unwrap();
+        assert!(insert_queue_job(&pool, &job(2, Some("plan"), Some("range")), 2, 2).await.is_err());
+        lease_queue_jobs(&pool, None).await.unwrap();
+        insert_queue_job(&pool, &job(2, None, None), 2, 2).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (i64, i64, Option<i64>, i64)>(
+            "SELECT created_at_ms,updated_at_ms,leased_at_ms,attempt_count FROM chapter_download_queue WHERE chapter_id=2")
+            .fetch_one(&pool).await.unwrap(), (1,2,None,0));
+        pool.close().await;
+    }
 }

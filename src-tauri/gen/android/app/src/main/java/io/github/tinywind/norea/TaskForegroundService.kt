@@ -135,6 +135,10 @@ class TaskForegroundService : Service() {
     private var desired: ExecutionRequest? = null
     private var startRequested = false
 
+    internal fun isExecutionAnchored(): Boolean =
+      desired != null && !TaskBackgroundExecution.policy.suspended &&
+        instance?.let { !it.stopping && it.anchorId != null } == true
+
     internal fun update(
       context: Context,
       anchorId: Int,

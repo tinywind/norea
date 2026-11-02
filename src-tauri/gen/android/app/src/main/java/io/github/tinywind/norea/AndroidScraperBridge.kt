@@ -23,7 +23,6 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
@@ -64,6 +63,9 @@ internal fun androidScraperSurfaceIsForeground(
 internal fun androidBackgroundScraperSurfaceIsReady(width: Int, height: Int): Boolean =
   width > 1 && height > 1
 
+internal fun androidScraperNeedsExplicitLayout(detachedContainer: Boolean, windowVisible: Boolean): Boolean =
+  detachedContainer || !windowVisible
+
 internal fun shouldCollapseAndroidScraperSurface(
   activeExtractId: String?,
   completedId: String,
@@ -73,6 +75,12 @@ internal fun shouldCollapseAndroidScraperSurface(
 class AndroidScraperBridge(
   private val mainWebView: WebView,
   private val bridgeSession: BridgeSession,
+  private val output: ((String, String) -> Unit)? = null,
+  private val profileNamespace: String? = null,
+  private val surfaceContainer: FrameLayout? = null,
+  private val onBrowserHidden: (() -> Unit)? = null,
+  private val commandAllowed: ((JSONObject) -> Boolean)? = null,
+  private val appUrl: String? = null,
 ) {
   private data class CssBounds(
     val x: Double,
@@ -106,6 +114,7 @@ class AndroidScraperBridge(
   private var browserVisible = false
   private var backgroundWorkActive = false
   private var bounds = CssBounds(0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+  private val scriptAppUrl: String? get() = appUrl ?: mainWebView.url
 
   init {
     runCatching {
@@ -169,7 +178,7 @@ class AndroidScraperBridge(
     requireMainThread()
     // Cookie summaries cost two synchronous cookie-store calls per line, so they
     // stay behind `setprop log.tag.NoreaScraper VERBOSE`.
-    val cookies = if (Log.isLoggable(TAG, Log.VERBOSE)) {
+    val cookies = if (profileNamespace == null && Log.isLoggable(TAG, Log.VERBOSE)) {
       " currentCookies=${cookieSummary(state, state.currentUrl)} " +
         "targetCookies=${cookieSummary(state, url)}"
     } else {
@@ -483,6 +492,53 @@ class AndroidScraperBridge(
     }
   }
 
+  internal fun showWorkerBrowser(sourceId: String, allowNewBrowser: Boolean = false): Boolean {
+    requireMainThread()
+    if (allowNewBrowser && queues.values.none { it.sourceId == sourceId }) {
+      val state = queueState("pool:0")
+      activateSource(state, sourceId)
+      scraper(state, mainWebView.settings.userAgentString)
+    }
+    if (!promoteScraperWorkerBrowser(queues, sourceId)) return false
+    showScraper()
+    return true
+  }
+
+  internal fun releaseWorkerBrowser() {
+    requireMainThread()
+    hideScraper(emitHiddenEvent = false)
+    val state = queueState(IMMEDIATE_EXECUTOR)
+    cancelQueuedWhere(state, "scraper: manual browser closed") { true }
+    cancelConcurrentFetches(state, "scraper: manual browser closed")
+    if (state.busy) cancelActive(state, "scraper: manual browser closed")
+    restoreScraperAuthentication(queues)
+  }
+
+  internal fun layoutWorkerBrowser() {
+    requireMainThread()
+    if (browserVisible) showScraper()
+  }
+
+  internal fun suspendWorkerWork(manualOpen: Boolean) {
+    requireMainThread()
+    queues.values.forEach { state ->
+      cancelQueuedWhere(state, "scraper: background execution stopped") { !manualOpen || !it.browserAction }
+      cancelConcurrentFetches(state, "scraper: background execution stopped")
+      if (state.activeAction?.let { !manualOpen || !it.browserAction } == true) cancelActive(state, "scraper: background execution stopped")
+      if (!manualOpen) state.webView?.let { webView ->
+        webView.stopLoading()
+        webView.onPause()
+        syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = false)
+      }
+    }
+    if (!manualOpen) mainWebView.pauseTimers()
+    backgroundWorkActive = false
+  }
+
+  internal fun afterPendingCommands(action: () -> Unit) {
+    parserExecutor.execute { mainHandler.post { if (!closed) action() } }
+  }
+
   private fun parseCommand(
     payload: String,
     capability: String,
@@ -500,7 +556,16 @@ class AndroidScraperBridge(
         mainHandler.post {
           if (closed) return@post
           parsed.fold(
-            onSuccess = onParsed,
+            onSuccess = { json ->
+              if (commandAllowed == null) {
+                onParsed(json)
+              } else {
+                runCatching {
+                  check(commandAllowed?.invoke(json) == true) { "worker execution is no longer allowed" }
+                  onParsed(json)
+                }.onFailure { error -> sendError(json.optString("id"), "scraper: ${error.message ?: "worker command failed"}") }
+              }
+            },
             onFailure = { error ->
               fallbackId?.let { id ->
                 sendError(id, "scraper: ${error.message ?: error.toString()}")
@@ -629,6 +694,7 @@ class AndroidScraperBridge(
 
   private fun runNext(state: AndroidScraperState) {
     requireMainThread()
+    if (closed) return
     if (
       !canStartQueuedAction(
         state.busy,
@@ -697,6 +763,7 @@ class AndroidScraperBridge(
   // parking stay exclusive until every in-flight fetch has settled.
   private fun startConcurrentFetches(state: AndroidScraperState) {
     requireMainThread()
+    if (closed) return
     val webView = state.webView ?: return
     if (
       !canStartConcurrentScraperFetches(
@@ -816,18 +883,6 @@ class AndroidScraperBridge(
     }
   }
 
-  private fun sourceProfileName(sourceId: String): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-      .digest(sourceId.toByteArray(Charsets.UTF_8))
-    val hex = buildString(digest.size * 2) {
-      for (byte in digest) {
-        append(HEX_DIGITS[(byte.toInt() ushr 4) and 0x0f])
-        append(HEX_DIGITS[byte.toInt() and 0x0f])
-      }
-    }
-    return "norea-source-$hex"
-  }
-
   private fun profileCookieManager(webView: WebView): CookieManager {
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
       throw UnsupportedOperationException(
@@ -893,7 +948,7 @@ class AndroidScraperBridge(
       )
     }
     val webView = WebView(mainWebView.context)
-    WebViewCompat.setProfile(webView, sourceProfileName(sourceId))
+    WebViewCompat.setProfile(webView, androidScraperProfileName(sourceId, profileNamespace))
     webView.settings.apply {
       allowContentAccess = false
       allowFileAccess = false
@@ -922,7 +977,7 @@ class AndroidScraperBridge(
     state.documentStartScriptEnabled =
       WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
     if (state.documentStartScriptEnabled) {
-      WebViewCompat.addDocumentStartJavaScript(webView, scripts.init(mainWebView.url), setOf("*"))
+      WebViewCompat.addDocumentStartJavaScript(webView, scripts.init(scriptAppUrl), setOf("*"))
     }
     webView.webViewClient = makeClient(state, null)
     webView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -932,12 +987,17 @@ class AndroidScraperBridge(
 
     scraperContainer().addView(webView, hiddenLayoutParams())
     if (backgroundWorkActive) {
+      if (surfaceContainer != null) {
+        webView.resumeTimers()
+        webView.onResume()
+      }
       syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
     }
     return webView
   }
 
   private fun scraperContainer(): ViewGroup {
+    surfaceContainer?.let { return it }
     val activity = mainWebView.context as? Activity
     return activity?.findViewById(android.R.id.content)
       ?: (mainWebView.parent as? ViewGroup)
@@ -966,6 +1026,13 @@ class AndroidScraperBridge(
   }
 
   private fun visibleLayoutParams(): FrameLayout.LayoutParams {
+    if (surfaceContainer != null) {
+      val metrics = mainWebView.resources.displayMetrics
+      return FrameLayout.LayoutParams(
+        surfaceContainer.width.takeIf { it > 1 } ?: metrics.widthPixels,
+        surfaceContainer.height.takeIf { it > 1 } ?: metrics.heightPixels,
+      )
+    }
     val nativeBounds = nativeBounds()
     return FrameLayout.LayoutParams(nativeBounds.width, nativeBounds.height).apply {
       leftMargin = nativeBounds.x
@@ -1072,7 +1139,10 @@ class AndroidScraperBridge(
   }
 
   private fun layoutHiddenScraperSurface(webView: WebView) {
-    if (scraperContainer().windowVisibility == View.VISIBLE) return
+    if (!androidScraperNeedsExplicitLayout(
+        detachedContainer = surfaceContainer != null && !surfaceContainer.isAttachedToWindow,
+        windowVisible = scraperContainer().windowVisibility == View.VISIBLE,
+      )) return
     // Hidden activity windows do not run layout passes, so waiting for a size
     // change would time out before navigation can reach the source or VPN.
     val layoutParams = webView.layoutParams as FrameLayout.LayoutParams
@@ -1214,6 +1284,7 @@ class AndroidScraperBridge(
   }
 
   private fun emitSiteBrowserHidden() {
+    onBrowserHidden?.let { it(); return }
     mainWebView.evaluateJavascript(
       "window.dispatchEvent(new CustomEvent('norea-site-browser-hidden'));",
       null,
@@ -1242,7 +1313,7 @@ class AndroidScraperBridge(
       state.contextReady = false
       state.currentUrl = url
       logState(state, "pageStarted url=$url", url)
-      if (!state.documentStartScriptEnabled) view.evaluateJavascript(scripts.init(mainWebView.url), null)
+      if (!state.documentStartScriptEnabled) view.evaluateJavascript(scripts.init(scriptAppUrl), null)
       onStarted?.invoke(url)
     }
 
@@ -1397,7 +1468,7 @@ class AndroidScraperBridge(
     if (beforeScript != null && useDocumentStartScript) {
       state.activeExtractScript = WebViewCompat.addDocumentStartJavaScript(
         webView,
-        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript, mainWebView.url),
+        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript, scriptAppUrl),
         setOf("*"),
       )
     }
@@ -1413,7 +1484,7 @@ class AndroidScraperBridge(
           )
           if (reuseDocument) {
             val prepareCapture = scripts.extractStart(
-              id, resultNonce.orEmpty(), beforeScript.orEmpty(), mainWebView.url,
+              id, resultNonce.orEmpty(), beforeScript.orEmpty(), scriptAppUrl,
             )
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
               if (state.activeExtractId == id && followed == "true") logState(state, "followed chapter link id=$id", targetUrl)
@@ -1774,6 +1845,7 @@ class AndroidScraperBridge(
   }
 
   private fun sendResult(id: String, envelope: JSONObject) {
+    output?.let { it(id, envelope.toString()); return }
     val script =
       "window.__noreaAndroidScraperResolve(${JSONObject.quote(id)}, ${JSONObject.quote(envelope.toString())});"
     mainWebView.evaluateJavascript(script, null)
@@ -1932,7 +2004,6 @@ class AndroidScraperBridge(
     private const val TAG = SCRAPER_LOG_TAG
     private const val BLANK_NAVIGATION_TIMEOUT_MS = 5_000L
     private const val FETCH_CONCURRENCY = 4
-    private const val HEX_DIGITS = "0123456789abcdef"
     private const val IMMEDIATE_EXECUTOR = "immediate"
     private const val LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY = "scraper-chapter-pages"
     private const val MAX_SOURCE_ID_BYTES = 512

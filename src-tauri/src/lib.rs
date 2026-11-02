@@ -94,6 +94,8 @@ pub fn run() {
         );
     }
     let plugin_vpn_for_setup = plugin_vpn.clone();
+    let download_vpn_workers = plugin_vpn::download_workers::DownloadVpnWorkers::bind()
+        .expect("could not start the VPN download worker proxies");
     let desktop_open_files = desktop_file_open::DesktopOpenFileState::from_process_args();
     let builder = tauri::Builder::default();
 
@@ -106,6 +108,11 @@ pub fn run() {
     }));
 
     builder
+        .plugin(
+            tauri::plugin::Builder::<_, ()>::new("device-restore-guard")
+                .setup(|app, _| device_backup::device_backup_restore_check(app.clone()).map_err(Into::into))
+                .build(),
+        )
         .plugin(
             tauri::plugin::Builder::<_, ()>::new("main-navigation")
                 .on_navigation(|webview, url| {
@@ -122,6 +129,7 @@ pub fn run() {
         .manage(native_stream::NativeStreamState::default())
         .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
+        .manage(download_vpn_workers)
         // Register plugins here, not in `setup`: registering a plugin after the
         // WebView exists deadlocks the Android main thread (tauri-apps/tauri#13990).
         .plugin(
@@ -168,6 +176,8 @@ pub fn run() {
             device_backup::device_backup_create,
             device_backup::device_backup_inspect,
             device_backup::device_backup_restore,
+            device_backup::device_backup_restore_check,
+            device_backup::device_backup_restore_complete,
             device_backup::device_backup_cleanup,
             device_backup::device_backup_upload,
             device_backup::device_backup_download,
@@ -225,6 +235,11 @@ pub fn run() {
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
             plugin_vpn::state::plugin_vpn_apply_finder_profile,
+            plugin_vpn::state::plugin_vpn_apply_saved_profile,
+            plugin_vpn::state::plugin_vpn_capture_saved_profile,
+            plugin_vpn::state::plugin_vpn_list_saved_profiles,
+            plugin_vpn::state::plugin_vpn_revoke_saved_profile,
+            plugin_vpn::state::plugin_vpn_set_saved_profile_limit,
             plugin_vpn::state::plugin_vpn_cancel_finder_query,
             plugin_vpn::state::plugin_vpn_connect,
             plugin_vpn::state::plugin_vpn_disconnect,
@@ -232,6 +247,12 @@ pub fn run() {
             plugin_vpn::state::plugin_vpn_import_profile,
             plugin_vpn::state::plugin_vpn_remove_profile,
             plugin_vpn::state::plugin_vpn_status,
+            plugin_vpn::download_workers::plugin_vpn_download_worker_connect,
+            plugin_vpn::download_workers::plugin_vpn_download_worker_disconnect,
+            plugin_vpn::download_workers::plugin_vpn_download_worker_status,
+            plugin_vpn::download_workers::plugin_vpn_download_worker_validate,
+            plugin_vpn::download_workers::plugin_vpn_download_workers_stop,
+            plugin_vpn::download_workers::plugin_vpn_download_workers_generation_floor,
             scraper::webview_fetch,
             scraper::scraper_take_captured_resource,
             scraper::scraper_take_captured_resource_handle,
@@ -264,6 +285,7 @@ pub fn run() {
                 .map_err(|err| format!("plugin VPN init: {err}"))?;
             network::initialize(app.handle());
             plugin_vpn_for_setup.watch_network(app.handle());
+            app.state::<plugin_vpn::download_workers::DownloadVpnWorkers>().watch_network(app.handle());
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -33,9 +33,9 @@ const MAX_SERVER_ROWS: usize = 512;
 const MAX_BASE64_PROFILE_BYTES: usize = MAX_PROFILE_BYTES.div_ceil(3) * 4;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum VpnGateProtocol {
+pub(crate) enum VpnGateProtocol {
     Tcp,
     Udp,
 }
@@ -544,7 +544,7 @@ fn candidate_id(profile: &[u8]) -> String {
         .collect()
 }
 
-fn inspect_profile_transport(
+pub(super) fn inspect_profile_transport(
     profile: &[u8],
     expected_ip: Ipv4Addr,
 ) -> Result<VpnGateProtocol, String> {
@@ -756,7 +756,7 @@ fn parse_u32(value: &str, name: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("VPN Gate server {name} is out of range"))
 }
 
-fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+pub(super) fn is_public_ipv4(ip: Ipv4Addr) -> bool {
     let [first, second, third, _] = ip.octets();
     !(ip.is_unspecified()
         || ip.is_private()
@@ -1029,6 +1029,24 @@ mod tests {
             b"client\n# norea:vpn-gate-finder\nauth-user-pass\n"
         );
         assert!(add_vpn_gate_authentication(vec![b'a'; MAX_PROFILE_BYTES]).is_err());
+    }
+
+    #[test]
+    fn profile_capture_keeps_exact_tcp_and_udp_candidates_for_one_ip() {
+        let finder = VpnGateFinder::new().unwrap();
+        let tcp = b"client\ndev tun\nproto tcp\nremote 93.184.216.34 443\n<ca>\ncertificate\n</ca>\n";
+        let udp = String::from_utf8(tcp.to_vec()).unwrap().replace("proto tcp", "proto udp");
+        let tcp = parse_candidate(&valid_row().replace(PROFILE_BASE64, &encode_base64(tcp))).unwrap();
+        let udp = parse_candidate(&valid_row().replace(PROFILE_BASE64, &encode_base64(udp.as_bytes()))).unwrap();
+        let tcp_id = tcp.server.candidate_id.clone();
+        let udp_id = udp.server.candidate_id.clone();
+        let tcp_bytes = tcp.profile.clone();
+        let udp_bytes = udp.profile.clone();
+        *finder.cache.lock().unwrap() = Some(CachedServers { fetched_at: Instant::now(), candidates: vec![tcp.clone(), udp] });
+        assert_eq!(finder.profile_bytes(&tcp_id).unwrap(), tcp_bytes);
+        assert_eq!(finder.profile_bytes(&udp_id).unwrap(), udp_bytes);
+        *finder.cache.lock().unwrap() = Some(CachedServers { fetched_at: Instant::now(), candidates: vec![tcp] });
+        assert!(finder.profile_bytes(&udp_id).is_err());
     }
 
     #[test]

@@ -8,6 +8,21 @@ import org.junit.Test
 
 class AndroidScraperAuthenticationTest {
   @Test
+  fun workerManualBrowserPromotesTheSameIdleSessionWithoutRequiringAChallenge() {
+    val worker = AndroidScraperState("pool:0").apply { sourceId = "source" }
+    val queues = mutableMapOf("immediate" to AndroidScraperState("immediate"), "pool:0" to worker)
+    assertTrue(promoteScraperWorkerBrowser(queues, "source"))
+    assertSame(worker, queues["immediate"])
+    assertEquals("pool:0", worker.authenticationReturnQueue)
+    assertTrue(restoreScraperAuthentication(queues))
+    assertSame(worker, queues["pool:0"])
+    worker.busy = true
+    assertFalse(promoteScraperWorkerBrowser(queues, "source"))
+    worker.busy = false
+    assertFalse(promoteScraperWorkerBrowser(queues, "other"))
+  }
+
+  @Test
   fun authenticationAndFollowingDownloadsKeepTheBlockedBrowserSession() {
     val foreground = AndroidScraperState("immediate").apply { sourceId = "other-source" }
     val worker = AndroidScraperState("pool:1").apply {

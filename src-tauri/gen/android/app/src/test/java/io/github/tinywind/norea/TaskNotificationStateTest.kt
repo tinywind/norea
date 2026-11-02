@@ -144,4 +144,98 @@ class TaskNotificationStateTest {
     assertNull(actions.enqueue(token, TaskNotificationActionTarget.ACTIVITY))
     assertTrue(actions.drain().isEmpty())
   }
+
+  private fun vpnActionFields(rangeId: String = "range-a"): Map<String, Any> = mapOf(
+    "type" to "verifyVpnDownload", "planId" to "plan-a", "sourceId" to "source-a", "rangeId" to rangeId,
+    "profileId" to "profile-a", "generation" to 7L, "checkpoint" to 0L,
+  )
+
+  @Test
+  fun vpnActionsKeepTheirExactOwnerAcrossPersistenceAndColdDelivery() {
+    val fields = vpnActionFields()
+    val action = taskNotificationActionFromFields(fields::get)!!
+    assertTrue(action.accepts(TaskNotificationActionTarget.ACTIVITY))
+    assertFalse(action.accepts(TaskNotificationActionTarget.CONTROL))
+    assertEquals(fields, action.toFields())
+    var persisted = TaskNotificationActionState()
+    var serial = 0
+    val first = TaskNotificationActionRegistry(tokenFactory = { "token-${++serial}" }, persist = { persisted = it })
+    val token = first.token("range/plan-a/range-a", action)
+    assertNotNull(first.enqueue(token, TaskNotificationActionTarget.ACTIVITY))
+    assertNull(first.enqueue(token, TaskNotificationActionTarget.ACTIVITY))
+    val restored = TaskNotificationActionState(
+      tokens = persisted.tokens.map { it.copy(action = taskNotificationActionFromFields(it.action.toFields()::get)!!) },
+      pending = persisted.pending.map { taskNotificationActionFromFields(it.toFields()::get)!! },
+    )
+    val restarted = TaskNotificationActionRegistry(initial = restored, persist = { persisted = it })
+    assertEquals(listOf(fields), restarted.drain().map { it.toFields() })
+    assertTrue(TaskNotificationActionRegistry(initial = persisted).drain().isEmpty())
+  }
+
+  @Test
+  fun resolvingOneSameSourceRangeKeepsItsSiblingTokenAndCardIdentity() {
+    var serial = 0
+    val actions = TaskNotificationActionRegistry(tokenFactory = { "token-${++serial}" })
+    val first = taskVpnDownloadNotificationIdentity("plan-a", "range-a")
+    val second = taskVpnDownloadNotificationIdentity("plan-a", "range-b")
+    assertNotEquals(first, second)
+    assertNotEquals(first, taskVpnDownloadNotificationIdentity("plan-b", "range-a"))
+    assertNotEquals(first, taskSourceNotificationIdentity("source-a"))
+    assertNotEquals(taskVpnDownloadNotificationIdentity("plan/a", "range"), taskVpnDownloadNotificationIdentity("plan", "a/range"))
+    val tokenA = actions.token(first.tag, taskNotificationActionFromFields(vpnActionFields()::get)!!)
+    val actionB = taskNotificationActionFromFields(vpnActionFields("range-b")::get)!!
+    val tokenB = actions.token(second.tag, actionB)
+    actions.retainIdentities(setOf(second.tag))
+    assertNull(actions.enqueue(tokenA, TaskNotificationActionTarget.ACTIVITY))
+    assertNotNull(actions.enqueue(tokenB, TaskNotificationActionTarget.ACTIVITY))
+    assertEquals(listOf(actionB), actions.drain())
+    assertEquals(listOf(first), taskRemovedVpnDownloadNotificationIdentities(setOf(first.tag, second.tag), setOf(second.tag)))
+  }
+
+  @Test
+  fun changedVpnProfileGenerationOrCheckpointInvalidatesOnlyThatRangeToken() {
+    for (replacement in listOf(mapOf("profileId" to "profile-b"), mapOf("generation" to 8L), mapOf("checkpoint" to 1L))) {
+      var serial = 0
+      val actions = TaskNotificationActionRegistry(tokenFactory = { "token-${++serial}" })
+      val identity = taskVpnDownloadNotificationIdentity("plan-a", "range-a").tag
+      val original = taskNotificationActionFromFields(vpnActionFields()::get)!!
+      val old = actions.token(identity, original)
+      val updated = taskNotificationActionFromFields((vpnActionFields() + replacement)::get)!!
+      val current = actions.token(identity, updated)
+      assertNull(actions.enqueue(old, TaskNotificationActionTarget.ACTIVITY))
+      assertNotNull(actions.enqueue(current, TaskNotificationActionTarget.ACTIVITY))
+      assertEquals(listOf(updated), actions.drain())
+    }
+  }
+
+  @Test
+  fun vpnActionParsingRejectsUnboundedIdentitiesAndNonSafeNumbersWithoutCoercion() {
+    for (key in listOf("planId", "sourceId", "rangeId", "profileId")) {
+      val limit = if (key == "sourceId") 512 else 128
+      for (invalid in listOf(null, "", " ", "\uFEFF", " \uFEFF ", "x".repeat(limit + 1), "bad\u0000id", "bad\u007fid", 1)) {
+        assertNull("$key=$invalid", taskNotificationActionFromFields((vpnActionFields() + (key to invalid))::get))
+      }
+      assertNotNull(taskNotificationActionFromFields((vpnActionFields() + (key to "x".repeat(limit)))::get))
+      assertEquals(" exact-id ", taskNotificationActionFromFields((vpnActionFields() + (key to " exact-id "))::get)!!.toFields()[key])
+    }
+    for (key in listOf("generation", "checkpoint")) {
+      for (invalid in listOf(null, -1L, 1.5, "7", true, Double.NaN, Double.POSITIVE_INFINITY, 9_007_199_254_740_992L)) {
+        assertNull("$key=$invalid", taskNotificationActionFromFields((vpnActionFields() + (key to invalid))::get))
+      }
+      assertNotNull(taskNotificationActionFromFields((vpnActionFields() + (key to 9_007_199_254_740_991L))::get))
+    }
+    assertNull(taskNotificationActionFromFields((vpnActionFields() + ("generation" to 0L))::get))
+    assertNotNull(taskNotificationActionFromFields((vpnActionFields() + ("checkpoint" to 0L))::get))
+  }
+
+  @Test
+  fun notificationActionsNeverCarryInjectedUrlsCommandsOrUnknownTypes() {
+    val fields = vpnActionFields() + mapOf("url" to "https://untrusted.test", "command" to "run", "scopeKey" to "forged")
+    assertEquals(vpnActionFields(), taskNotificationActionFromFields(fields::get)!!.toFields())
+    assertEquals(mapOf("type" to "openTasks"), taskNotificationActionFromFields((fields + ("type" to "openTasks"))::get)!!.toFields())
+    assertNull(taskNotificationActionFromFields((fields + ("type" to "runScript"))::get))
+    assertFalse(TaskNotificationAction.verifySource("source-a", "scope", 0).accepts(TaskNotificationActionTarget.ACTIVITY))
+    assertFalse(TaskNotificationAction.verifySource("x".repeat(513), "scope", 1).accepts(TaskNotificationActionTarget.ACTIVITY))
+    assertFalse(TaskNotificationAction.verifySource("source-a", "x".repeat(2049), 1).accepts(TaskNotificationActionTarget.ACTIVITY))
+  }
 }

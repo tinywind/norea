@@ -27,12 +27,26 @@ fn run_async_command<F: std::future::Future>(command: F) -> F::Output {
 }
 
 pub fn schema_migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create current application schema",
-        sql: include_str!("schema.sql"),
-        kind: MigrationKind::Up,
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "create current application schema",
+            sql: include_str!("schema.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "persist immutable VPN download plans",
+            sql: include_str!("migrations/0002_vpn_download_plans.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "persist batch-wide VPN profile exclusions",
+            sql: include_str!("migrations/0003_vpn_download_profile_issues.sql"),
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 async fn open_sqlite_pools(path: &std::path::Path) -> Result<(SqlitePool, SqlitePool), sqlx::Error> {
@@ -109,6 +123,72 @@ mod tests {
     }
 
     const CURRENT: &str = "CREATE TABLE sample (value INTEGER);";
+
+    #[tokio::test]
+    async fn registered_v2_upgrade_preserves_vpn_jobs_and_batch_issue_history_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..2]).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/work','Work')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(1,1,'/chapter','Chapter',1)").execute(&pool).await.unwrap();
+        let payload = r#"{"id":"plan","revision":3,"ranges":[{"checkpoint":1,"attemptedProfileIds":["failed"],"userPaused":true}]}"#;
+        let job = r#"{"id":1,"vpnPlanId":"plan","batchId":"shared-batch"}"#;
+        sqlx::query("INSERT INTO vpn_download_plan VALUES('plan',?1,3)").bind(payload).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter_download_queue VALUES(1,?1,10,20,30,4)").bind(job).execute(&pool).await.unwrap();
+        pool.close().await;
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        let migrated: String = sqlx::query_scalar("SELECT payload FROM vpn_download_plan").fetch_one(&pool).await.unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(payload).unwrap();
+        expected["batchId"] = "shared-batch".into();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&migrated).unwrap(), expected);
+        assert_eq!(sqlx::query_as::<_, (String, i64, i64, Option<i64>, i64)>(
+            "SELECT job_json,created_at_ms,updated_at_ms,leased_at_ms,attempt_count FROM chapter_download_queue")
+            .fetch_one(&pool).await.unwrap(), (job.into(),10,20,Some(30),4));
+        sqlx::query("INSERT INTO vpn_download_profile_issue VALUES('shared-batch','192.0.2.1','failed','hash','plan','range',4,'captcha',100,1,1)")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (String, i64, i64)>("SELECT cause,excluded,revision FROM vpn_download_profile_issue")
+            .fetch_one(&pool).await.unwrap(), ("captcha".into(),1,1));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v1_upgrade_preserves_library_chapters_and_ordinary_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..1]).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Retained work',1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,progress,content_bytes) VALUES(1,1,'/chapter','Retained chapter',1,1,73,456)")
+            .execute(&pool).await.unwrap();
+        let job = r#"{"id":1,"pluginId":"source","chapterPath":"/chapter","title":"Ordinary"}"#;
+        sqlx::query("INSERT INTO chapter_download_queue VALUES(1,?1,10,20,30,4)").bind(job)
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = bootstrap(&path, &migrations).await.unwrap();
+            assert_eq!(sqlx::query_as::<_, (i64, String, i64, i64, i64)>(
+                "SELECT n.in_library,c.name,c.is_downloaded,c.progress,c.content_bytes FROM novel n JOIN chapter c ON c.novel_id=n.id")
+                .fetch_one(&pool).await.unwrap(), (1,"Retained chapter".into(),1,73,456));
+            assert_eq!(sqlx::query_as::<_, (String, i64, i64, Option<i64>, i64)>(
+                "SELECT job_json,created_at_ms,updated_at_ms,leased_at_ms,attempt_count FROM chapter_download_queue")
+                .fetch_one(&pool).await.unwrap(), (job.into(),10,20,Some(30),4));
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_download_plan")
+                .fetch_one(&pool).await.unwrap(), 0);
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&pool).await.unwrap(), vec![1,2,3]);
+            pool.close().await;
+        }
+    }
 
     #[tokio::test]
     async fn registered_app_migrations_preserve_library_and_downloads_on_reopen() {
