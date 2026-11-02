@@ -55,7 +55,7 @@ pub(crate) fn require_complete(profile_path: &Path) -> Result<(), String> {
     let directory = parent(profile_path)?;
     for ancestor in directory.ancestors() {
         match fs::symlink_metadata(ancestor) {
-            Ok(metadata) if !metadata.is_dir() => return Err(failure("device restore checkpoint parent is not a regular directory")),
+            Ok(metadata) if !metadata.is_dir() => return Err(failure(format!("device restore checkpoint parent is not a regular directory: {}", ancestor.display()))),
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(failure(error)),
             _ => {},
         }

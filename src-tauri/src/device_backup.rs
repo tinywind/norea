@@ -672,7 +672,7 @@ pub async fn device_backup_restore(
 }
 
 fn managed_profile_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(failure)?.join("plugin-vpn/profile.ovpn"))
+    super::plugin_vpn::state::managed_profile_path(&app.path().app_data_dir().map_err(failure)?)
 }
 
 #[tauri::command]
@@ -1083,6 +1083,20 @@ mod tests {
                 assert_eq!(fs::read_to_string(checkpoint.join("unrecognized-recovery-data")).unwrap(), "preserve");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_device_restore_identifies_the_rejected_parent_path() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        let alias = directory.path().join("data-alias");
+        symlink(&app_data, &alias).unwrap();
+        let error = restore_checkpoint::require_complete(&alias.join("plugin-vpn/profile.ovpn")).unwrap_err();
+        assert!(error.contains(alias.to_str().unwrap()), "the rejected ancestor is missing from the diagnostic: {error}");
+        assert!(fs::symlink_metadata(&alias).unwrap().file_type().is_symlink());
     }
 
     #[cfg(unix)]

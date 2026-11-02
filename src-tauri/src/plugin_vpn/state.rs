@@ -38,6 +38,16 @@ const VPN_GATE_PUBLIC_CREDENTIAL: &str = "vpn";
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(crate) fn managed_profile_path(app_data_directory: &Path) -> Result<PathBuf, String> {
+    // Android's app namespace can alias /data/user/0. Resolve only the OS root,
+    // so linked managed directories and restore checkpoints are still rejected.
+    #[cfg(target_os = "android")]
+    let app_data_directory = app_data_directory.canonicalize().map_err(|error| {
+        format!("could not resolve the Android app data directory {}: {error}", app_data_directory.display())
+    })?;
+    Ok(app_data_directory.join(PROFILE_DIRECTORY).join(PROFILE_FILE))
+}
+
 #[derive(Clone)]
 pub(crate) struct PluginVpnState {
     shared: Arc<PluginVpnShared>,
@@ -212,12 +222,11 @@ impl PluginVpnState {
     }
 
     pub(crate) fn initialize(&self, app: &AppHandle) -> Result<(), String> {
-        let profile_path = app
+        let app_data_directory = app
             .path()
             .app_data_dir()
-            .map_err(|error| format!("could not resolve the app data directory: {error}"))?
-            .join(PROFILE_DIRECTORY)
-            .join(PROFILE_FILE);
+            .map_err(|error| format!("could not resolve the app data directory: {error}"))?;
+        let profile_path = managed_profile_path(&app_data_directory)?;
         crate::device_backup::restore_checkpoint::require_complete(&profile_path)?;
         self.shared
             .profile_path
@@ -1402,6 +1411,72 @@ mod active_profile_tests {
     use super::*;
     use super::super::saved_profiles::profile_hash;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn android_managed_profile_path_allows_the_platform_app_data_alias() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        let alias = directory.path().join("platform-alias");
+        symlink(&app_data, &alias).unwrap();
+
+        let profile = managed_profile_path(&alias).unwrap();
+        crate::device_backup::restore_checkpoint::require_complete(&profile).unwrap();
+        assert_eq!(profile, app_data.join("plugin-vpn/profile.ovpn"));
+        assert!(!app_data.join("plugin-vpn").exists());
+        assert!(fs::symlink_metadata(&alias).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn android_managed_profile_path_keeps_the_restore_acknowledgement_fence() {
+        use std::os::unix::fs::symlink;
+        use crate::device_backup::restore_checkpoint::{self, RestoreCheckpoint};
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        fs::write(app_data.join("original-content"), "preserve").unwrap();
+        let alias = directory.path().join("platform-alias");
+        symlink(&app_data, &alias).unwrap();
+
+        let profile = managed_profile_path(&alias).unwrap();
+        let mut checkpoint = RestoreCheckpoint::begin(&profile, None, Vec::new()).unwrap();
+        let publication = app_data.join("plugin-vpn/.device-backup-1");
+        fs::create_dir(&publication).unwrap();
+        fs::write(publication.join("old-profile.ovpn"), "retained original").unwrap();
+        let receipt = checkpoint.committed(".device-backup-1".into()).unwrap();
+        assert!(restore_checkpoint::require_complete(&profile).unwrap_err().contains("unfinished device restore"));
+        assert!(restore_checkpoint::complete(&profile, &"0".repeat(64)).is_err());
+        assert_eq!(fs::read_to_string(publication.join("old-profile.ovpn")).unwrap(), "retained original");
+
+        restore_checkpoint::complete(&profile, &receipt.id).unwrap();
+        restore_checkpoint::require_complete(&profile).unwrap();
+        assert!(!publication.exists());
+        assert!(!app_data.join("plugin-vpn/.device-restore").exists());
+        assert_eq!(fs::read_to_string(app_data.join("original-content")).unwrap(), "preserve");
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn android_managed_profile_path_still_rejects_a_linked_managed_directory() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        let external = directory.path().join("external");
+        fs::create_dir(&app_data).unwrap();
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("original"), "preserve").unwrap();
+        let alias = directory.path().join("platform-alias");
+        symlink(&app_data, &alias).unwrap();
+        symlink(&external, app_data.join("plugin-vpn")).unwrap();
+
+        let profile = managed_profile_path(&alias).unwrap();
+        assert!(crate::device_backup::restore_checkpoint::require_complete(&profile).is_err());
+        assert!(fs::symlink_metadata(app_data.join("plugin-vpn")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(external.join("original")).unwrap(), "preserve");
+    }
 
     fn profile(ip: &str) -> Vec<u8> {
         format!("client\ndev tun\nproto tcp\nremote {ip} 443\n<ca>\ncertificate\n</ca>\n{}\nauth-user-pass\n", super::super::VPN_GATE_PROFILE_MARKER).into_bytes()
