@@ -507,6 +507,22 @@ finder, the native host recognizes Norea's reserved profile marker and supplies
 VPN Gate's fixed public credential at connection time, including after an app
 restart. That credential is not persisted separately.
 
+Full-device backups include the active profile and the private retained-profile
+vault in archive manifest version 2. The vault contains only exact, validated
+VPN Gate profiles captured with an O approval. Restore requires matching profile
+hashes, protocols, SQL approvals and timestamps, and preserves the vault capacity,
+approval order and active selection. Native code handles the bytes; frontend
+backup JSON contains only the file inventory and hashes. Portable metadata/file
+backups remain unchanged and do not acquire this vault. Browser source cookies
+and session-only VPN passwords are excluded from full-device snapshots.
+
+Stop download-worker tunnels before replacing their profile files or database.
+Native restore rejects remaining worker leases and never restores them as live
+sessions. The range coordinator pauses unfinished restored plans before worker
+allocation, retains their attempted-profile/checkpoint state, and resumes only on
+an explicit request. Their frozen queue payloads survive device restore but are
+excluded from ordinary native queue dispatch. Ordinary pending jobs are discarded.
+
 DES-CBC and DES-EDE3-CBC data-channel ciphers are unsupported. Profile import and
 connection reject these ciphers, including optional entries in negotiated lists,
 with an error asking for AES. The native cipher backend rejects their handles as

@@ -40,6 +40,17 @@ requirements must be decided explicitly before implementation.
 
 ## Other Formats
 
+- Database migration 3 adds durable VPN download batch/IP problem records and
+  batch identity on existing plans. It preserves queue payloads, checkpoints,
+  generations and O/X verdicts. One unambiguous owned-job batch is retained;
+  plans without that evidence receive separate legacy identities. Automatic
+  exclusions preserve the saved file and do not change the user's verdict.
+  Explicit, revision-checked reallow keeps the recorded cause and cannot clear a
+  newer failure. Full device snapshots include this table under the existing
+  exact-schema policy. A restored or reloaded coordinator also reads the native
+  worker generation floor; an older snapshot cannot reuse a surviving worker's
+  generation. Ordinary queue cleanup cannot remove VPN-owned jobs.
+
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
   to titles. Source metadata fetches merge this catalog; downloads, download deletions,
   and reading changes do not edit it. Local works publish their chapter titles
@@ -195,20 +206,38 @@ format conversion, or database reset.
 
 ## Full Device Backups on the Content Server
 
-Device backup version 1 stores one current snapshot per device name. The app's
+The version 1 device-backup transport stores one current snapshot per device name. The app's
 device name is the default slot, and all registered, unblocked devices may list
 and restore every saved device name. Device registration remains the
 authentication mechanism; anonymous catalog access and console sessions do not
 authorize device backup requests. There is no separate private reading sync key.
 
-The archive contains `manifest.json`, `norea.db`, and, when present, the native
-`profile.ovpn`. The database snapshot includes every SQLite table, including
+The current archive manifest is version 2. Earlier archive versions are rejected
+without conversion. The archive contains `manifest.json`, `norea.db`, the native
+`profile.ovpn` when present, and `saved-profiles/index.json` with the retained
+private VPN profile files. The vault index preserves capacity, approval sequence,
+profile identity and protocol, and the active retained selection. Its manifest
+inventory records each retained file's path, size, and SHA-256. Profile bytes stay
+inside native file/archive operations and never pass through frontend JSON.
+The database snapshot includes every SQLite table, including
 repository URLs, complete installed plugin JavaScript, categories, library
 membership, read progress, bookmarks, history, and work and chapter metadata.
 The manifest carries all localStorage settings and the storage root setting.
 This includes server connection settings and device tokens, VPN preferences,
 and interface settings. Unlike portable file backups, device snapshots include
 device credentials and replace the current device's saved settings.
+
+Export holds the native VPN operation lock across the database snapshot and vault
+export, inside the existing frontend database and storage barriers. Restore checks
+the whole staged bundle before changing live state. Vault validation reuses the
+canonical profile and index checks and requires each retained file to match its
+SQL O verdict and approval timestamp. It rejects unmarked profiles, mismatched
+identity/protocol/hash, duplicate or undeclared entries, and unsafe paths. A vault
+contains at most 100 profiles of at most 1 MiB each, with an index of at most
+128 KiB. Staged and installed VPN files use private publication rules; symlinked
+managed files and directories are rejected.
+An unavailable active retained selection stays unavailable after restore; it
+does not recreate a revoked vault entry or bypass the normal connection checks.
 
 Downloaded bodies, covers, chapter images, and other original content files are
 excluded. Restore must not delete or overwrite those files. OS folder access
@@ -225,14 +254,72 @@ upgrade rules remain unchanged.
 
 The restore operation requires explicit overwrite confirmation, validates the
 selected snapshot's SHA-256, replaces database contents in a SQL transaction,
-and rolls settings back if installation fails. On success, reload the app so
+and leaves frontend settings unchanged until that transaction commits. After bundle validation, the
+frontend suspends VPN allocation and waits for range tasks, pending plan writes,
+worker browsers and tunnel cleanup before taking the sync, storage and database
+restore barriers. The allocation hold remains until reload; a failed restore
+releases the hold but leaves stopped ranges paused for explicit resume. Cleanup
+failure prevents settings and snapshot installation. Native restore also stops
+the tunnel manager before taking the VPN operation/vault locks and disconnects
+the foreground VPN. It refuses to proceed while worker leases remain. Install the
+active profile and retained vault before committing the database, retain the old
+managed files until success, and roll them back if settings or database
+installation fails. A completed native rollback also restores the previous storage
+root. Restored lease state is empty. On success, reload the app so
 in-memory state reflects the restored database and settings. Cancel or remove
-restored pending download and metadata publication jobs before normal startup
+restored ordinary download and metadata publication jobs before normal startup
 can process them; these jobs must not rewrite original content using snapshot
-state. Restore does not merge history or reconstruct the database from content
-files.
+state. VPN range jobs retain their frozen payloads and attempt counts, with queue
+leases cleared. Ordinary native queue leasing excludes these jobs. Before any
+worker allocation, the range coordinator must pause all unfinished restored plans
+and sessions while preserving attempted profile IDs and checkpoints. They require
+explicit resume. Restore does not merge history or reconstruct the database from
+content files.
 
-The server advertises `deviceBackupVersion: 1` through capabilities. Its list
+### Interrupted device restore
+
+Before changing live VPN files or the storage root, native restore publishes and
+syncs a private `plugin-vpn/.device-restore/restore.json` checkpoint and its parent
+directory. The checkpoint records the target settings, previous storage root and
+an operation ID. File publication preserves old managed files in its private
+`.device-backup-*` directory. The checkpoint and old files remain after SQLite
+commits. The frontend then installs and verifies the settings returned by that
+native operation, acknowledges its exact ID, and reloads. Only acknowledgement
+removes the old files and checkpoint. A stale or premature acknowledgement is
+rejected. A fully rolled-back native error may clear the checkpoint without
+changing frontend settings.
+
+If a process exits before acknowledgement, startup refuses to use the stores.
+The native startup guard runs before SQL-plugin preload; vault initialization
+also checks the checkpoint. The web entry checks it before importing app modules,
+including after a WebView-only reload. An unreadable, partial or malformed
+checkpoint, or an orphaned `.device-backup-*` directory, also blocks startup.
+The app preserves these paths and does not infer whether SQLite committed.
+An uncertain native response, failed frontend settings write or failed
+acknowledgement keeps the running restore barriers held and reloads into this
+check instead of returning to ordinary work.
+
+This protocol intentionally requires manual recovery after an interrupted
+restore, even when the database transaction committed. With the app stopped,
+preserve the checkpoint, rollback directories, staged archive and SQLite files
+(including any WAL/SHM files) together before diagnosis. Treat them as private
+credentials-bearing app data. Do not delete a checkpoint to bypass the guard,
+reset the database or independently select whichever profile/settings file looks
+newest. A recovery must establish one matching database, vault, storage root and
+frontend settings snapshot before normal startup is allowed. Automatic recovery
+is not implemented. Process-exit tests cover interruption; they do not establish
+power-loss guarantees for every filesystem or Windows ACL behavior.
+
+A valid full backup can replace a destination vault that failed initialization.
+After validating the complete staged bundle and stopping workers, restore uses
+the existing quarantine recovery under the VPN operation lock. The malformed
+index and private files remain in the quarantine directory; they are not reset
+or deleted. The idle-lease guard and interrupted-restore fence still apply.
+Ordinary export does not use this recovery path to invent a healthy snapshot.
+
+The server advertises `deviceBackupVersion: 1` through capabilities. This versions
+the opaque archive transport, independently of archive manifest version 2; the
+server does not extract or validate the manifest. Its list
 includes the device name, update time, byte size, and SHA-256. Uploads require
 `X-Backup-Sha256` and are limited to 512 MiB. Downloads pin the chosen SHA-256
 so a newer upload to the same device name cannot silently replace the selected
