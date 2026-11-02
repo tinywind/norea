@@ -4,6 +4,7 @@ import { useAppearanceStore } from "../../store/appearance";
 import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
 import { useContentSyncStore } from "../../store/content-sync";
 import { enqueueMainTask } from "../tasks/main-tasks";
+import { suspendVpnDownloadsForRestore } from "../tasks/vpn-download-runtime";
 import { contentServerRequest, normalizeContentServerUrl } from "./client";
 import { registerContentDevice, type ContentCapabilities } from "./device";
 import { runContentStorageOperation } from "./storage-operation";
@@ -17,13 +18,17 @@ export interface DeviceBackupEntry {
 }
 export interface DeviceSetting { key: string; value: string }
 interface BackupFile { path: string; size: number; sha256: string }
+interface VpnVaultBackupEntry { path: string; size: number; sha256: string }
 interface DeviceBackupManifest {
   format: "norea-device-backup";
-  version: 1;
+  version: 2;
   deviceName: string;
   createdAt: number;
   settings: DeviceSetting[];
+  storageRoot: string | null;
+  vpnVault: { index: VpnVaultBackupEntry; profiles: VpnVaultBackupEntry[] };
 }
+interface DeviceBackupRestoreReceipt { id: string; settings: DeviceSetting[] }
 export type DeviceBackupPhase = "preparing" | "uploading" | "downloading" | "restoring";
 export class DeviceBackupError extends Error {
   constructor(public code: "unsupported" | "changed" | "invalidResponse" | "busy" | "invalidName") { super(code); }
@@ -47,6 +52,16 @@ function validEntry(value: unknown): value is DeviceBackupEntry {
     Number.isSafeInteger(entry.updatedAt) && entry.updatedAt >= 0 &&
     Number.isSafeInteger(entry.size) && entry.size > 0 && entry.size <= 512 * 1024 * 1024 &&
     typeof entry.sha256 === "string" && /^[a-f0-9]{64}$/.test(entry.sha256);
+}
+function validVaultInventory(vault: DeviceBackupManifest["vpnVault"]): boolean {
+  if (!vault || !vault.index || !Array.isArray(vault.profiles) || vault.profiles.length > 100 ||
+      vault.index.path !== "saved-profiles/index.json") return false;
+  const entries = [vault.index, ...vault.profiles];
+  return entries.every((entry, index) => entry && typeof entry.path === "string" &&
+    (index === 0 || /^saved-profiles\/\d{1,3}(?:\.\d{1,3}){3}\.ovpn$/.test(entry.path)) &&
+    Number.isSafeInteger(entry.size) && entry.size > 0 && entry.size <= (index === 0 ? 128 * 1024 : 1024 * 1024) &&
+    typeof entry.sha256 === "string" && /^[a-f0-9]{64}$/.test(entry.sha256)) &&
+    new Set(entries.map(entry => entry.path)).size === entries.length;
 }
 async function access(server: string, signal?: AbortSignal): Promise<string> {
   assertServer(server);
@@ -139,6 +154,7 @@ export async function restoreDeviceBackup(
   if (!validEntry(entry)) throw new DeviceBackupError("invalidResponse");
   inFlight = true;
   let file: BackupFile | undefined;
+  let releaseVpn: (() => void) | undefined;
   try {
     const server = normalizeContentServerUrl(serverUrl);
     const token = await access(server);
@@ -146,20 +162,33 @@ export async function restoreDeviceBackup(
     file = await invoke<BackupFile>("device_backup_download", { serverUrl: server, deviceName: entry.deviceName, token, sha256: entry.sha256 });
     assertServer(server);
     const manifest = await invoke<DeviceBackupManifest>("device_backup_inspect", { path: file.path });
-    if (manifest.format !== "norea-device-backup" || manifest.version !== 1 || manifest.deviceName !== entry.deviceName ||
-        !Array.isArray(manifest.settings)) throw new DeviceBackupError("invalidResponse");
+    if (manifest.format !== "norea-device-backup" || manifest.version !== 2 || manifest.deviceName !== entry.deviceName ||
+        !Array.isArray(manifest.settings) || !validVaultInventory(manifest.vpnVault)) throw new DeviceBackupError("invalidResponse");
     onPhase?.("restoring");
     const path = file.path;
+    releaseVpn = await suspendVpnDownloadsForRestore();
+    assertServer(server);
     await exclusive("backup.restore", async () => {
       assertServer(server);
       cancelWorkMetadataRecovery();
-      const previous = readDeviceSettings();
+      let nativeCommitted = false;
       try {
-        replaceDeviceSettings(manifest.settings);
-        await invoke("device_backup_restore", { path });
+        const receipt = await invoke<DeviceBackupRestoreReceipt>("device_backup_restore", { path });
+        nativeCommitted = true;
+        if (!receipt || typeof receipt.id !== "string" || !/^[a-f0-9]{64}$/.test(receipt.id) || !Array.isArray(receipt.settings)) {
+          throw new DeviceBackupError("invalidResponse");
+        }
+        replaceDeviceSettings(receipt.settings);
+        await invoke("device_backup_restore_complete", { restoreId: receipt.id });
       } catch (error) {
-        replaceDeviceSettings(previous);
-        throw error;
+        let rolledBack = false;
+        if (!nativeCommitted) {
+          try { await invoke("device_backup_restore_check"); rolledBack = true; } catch { /* An unconfirmed restore must stay behind the startup fence. */ }
+        }
+        if (rolledBack) throw error;
+        file = undefined;
+        reload();
+        await new Promise<never>(() => {});
       }
       await cleanup(path);
       file = undefined;
@@ -168,6 +197,7 @@ export async function restoreDeviceBackup(
     });
   } finally {
     if (file) await cleanup(file.path);
+    releaseVpn?.();
     inFlight = false;
   }
 }

@@ -179,6 +179,33 @@ export const chapterDownloadQueueTable = sqliteTable(
   }),
 );
 
+export const vpnDownloadPlanTable = sqliteTable("vpn_download_plan", {
+  id: text("id").primaryKey().notNull(),
+  payload: text("payload").notNull(),
+  revision: integer("revision").notNull(),
+});
+
+export const vpnDownloadProfileIssueTable = sqliteTable("vpn_download_profile_issue", {
+  batchId: text("batch_id").notNull(),
+  ip: text("ip").notNull(),
+  profileId: text("profile_id").notNull(),
+  profileHash: text("profile_hash").notNull(),
+  planId: text("plan_id").notNull(),
+  rangeId: text("range_id").notNull(),
+  generation: integer("generation").notNull(),
+  cause: text("cause", { enum: ["captcha", "cloudflare", "connection-failed", "authentication-required", "tunnel-lost"] }).notNull(),
+  recordedAt: integer("recorded_at").notNull(),
+  excluded: integer("excluded", { mode: "boolean" }).notNull(),
+  revision: integer("revision").notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.batchId, t.ip] }),
+  generationCheck: check("vpn_profile_issue_generation", sql`${t.generation} >= 0`),
+  causeCheck: check("vpn_profile_issue_cause", sql`${t.cause} IN ('captcha', 'cloudflare', 'connection-failed', 'authentication-required', 'tunnel-lost')`),
+  recordedAtCheck: check("vpn_profile_issue_recorded_at", sql`${t.recordedAt} >= 0`),
+  excludedCheck: check("vpn_profile_issue_excluded", sql`${t.excluded} IN (0, 1)`),
+  revisionCheck: check("vpn_profile_issue_revision", sql`${t.revision} > 0`),
+}));
+
 // DownloadCacheWork: resumable maintenance work for bulk cache deletion.
 export const downloadCacheWorkTable = sqliteTable(
   "download_cache_work",

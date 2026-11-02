@@ -5,6 +5,8 @@ import {
 } from "../plugins/source-access";
 
 export interface SourceAccessBlock {
+  rangeId?: string;
+  workerGeneration?: number;
   challenge: SourceAccessChallenge;
   challengeUrlRedacted?: boolean;
   detectedAt: number;
@@ -21,6 +23,8 @@ export interface SourceAccessBlock {
 export type SourceAccessBlockState = Readonly<SourceAccessBlock>;
 
 interface SourceAccessChallengeOrigin {
+  rangeId?: string;
+  workerGeneration?: number;
   sourceId: string;
   taskId: string;
   taskKey: string | undefined;
@@ -30,9 +34,10 @@ export function normalizedSourceAccessUrl(
   value: string,
   scopeKey: string,
   sourceId: string,
+  rangeId?: string,
 ): string | null {
   try {
-    if (sourceAccessScopeKey(value, sourceId) !== scopeKey) return null;
+    if (sourceAccessScopeKey(value, sourceId, rangeId) !== scopeKey) return null;
     return new URL(value).href;
   } catch {
     return null;
@@ -63,9 +68,9 @@ export class SourceAccessGate {
     return this.blocks.values();
   }
 
-  isBlocked(sourceId: string | undefined): boolean {
+  isBlocked(sourceId: string | undefined, rangeId?: string): boolean {
     for (const block of this.blocks.values()) {
-      if (sourceId === block.sourceId) return true;
+      if (sourceId === block.sourceId && rangeId === block.rangeId) return true;
     }
     return false;
   }
@@ -73,6 +78,7 @@ export class SourceAccessGate {
   snapshot(): SourceAccessBlock[] {
     return [...this.blocks.values()]
       .map((block) => ({
+        ...(block.rangeId ? { rangeId: block.rangeId, workerGeneration: block.workerGeneration } : {}),
         challenge: { ...block.challenge },
         ...(block.challengeUrlRedacted ? { challengeUrlRedacted: true } : {}),
         detectedAt: block.detectedAt,
@@ -111,7 +117,7 @@ export class SourceAccessGate {
         existing.challenge.kind !== challenge.kind ||
         existing.challenge.url !== challenge.url),
     );
-    const replacesChallenge = invalidatesVerification || challengeChanged;
+    const replacesChallenge = invalidatesVerification || challengeChanged || existing?.workerGeneration !== origin.workerGeneration;
     const originTaskKey =
       replacesChallenge || !existing
         ? normalizedSourceAccessTaskKey(origin.taskKey)
@@ -119,6 +125,7 @@ export class SourceAccessGate {
     const revision =
       !existing || replacesChallenge ? this.nextRevision() : existing.revision;
     const block: SourceAccessBlock = {
+      ...(origin.rangeId ? { rangeId: origin.rangeId, workerGeneration: origin.workerGeneration } : {}),
       challenge: { ...challenge },
       detectedAt: Date.now(),
       originTaskId:
@@ -165,7 +172,8 @@ export class SourceAccessGate {
         continue;
       }
       try {
-        if (sourceAccessScopeKey(block.challenge.url, sourceId) !== scopeKey) continue;
+        if (sourceAccessScopeKey(block.challenge.url, sourceId, block.rangeId) !== scopeKey) continue;
+        if (block.rangeId !== undefined && (!Number.isSafeInteger(block.workerGeneration) || block.workerGeneration! <= 0)) continue;
       } catch {
         continue;
       }
@@ -173,6 +181,7 @@ export class SourceAccessGate {
       if (current && current.revision > revision) continue;
       const originTaskKey = normalizedSourceAccessTaskKey(block.originTaskKey);
       hydrated.set(scopeKey, {
+        ...(block.rangeId ? { rangeId: block.rangeId, workerGeneration: block.workerGeneration } : {}),
         challenge: { ...block.challenge },
         ...(block.challengeUrlRedacted ? { challengeUrlRedacted: true } : {}),
         detectedAt: block.detectedAt,

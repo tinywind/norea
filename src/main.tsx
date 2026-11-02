@@ -19,6 +19,7 @@ import { describeError } from "./lib/errors";
 import { startContentServerSync } from "./lib/content-sync/scheduler";
 import { initializeNetworkStatus } from "./lib/network";
 import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
+import { initializeVpnDownloadRuntime } from "./lib/tasks/vpn-download-runtime";
 import {
   installRuntimeLogLevelFilter,
   setRuntimeLogLevel,
@@ -306,6 +307,7 @@ function AppProviders() {
 initializeSourceAccessCoordinator();
 void initializeNetworkStatus();
 initializeTaskNetworkState();
+void initializeVpnDownloadRuntime().catch(error => console.error("[vpn-download] initialization failed", error));
 createRoot(rootElement).render(
   <StrictMode>
     <AppProviders />

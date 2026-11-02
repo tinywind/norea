@@ -1,4 +1,10 @@
 import { getDb } from "../client";
+import {
+  captureSavedPluginVpnProfile,
+  revokeSavedPluginVpnProfile,
+  type SavedVpnProfileCaptureSource,
+  type VpnGateServerVerdictMutation,
+} from "../../lib/plugin-vpn-profiles";
 
 export type VpnGateServerVerdictValue = "works" | "fails";
 
@@ -25,23 +31,13 @@ export async function listVpnGateServerVerdicts(): Promise<
 export async function setVpnGateServerVerdict(
   ip: string,
   verdict: VpnGateServerVerdictValue | null,
-): Promise<void> {
-  const db = await getDb();
-  if (verdict === null) {
-    await db.execute(
-      `DELETE FROM vpn_gate_server_verdict
-       WHERE ip = $1`,
-      [ip],
-    );
-    return;
+  source?: SavedVpnProfileCaptureSource,
+): Promise<VpnGateServerVerdictMutation> {
+  if (verdict === "works") {
+    if (!source) {
+      throw new Error("Approving a VPN Gate server requires its exact profile");
+    }
+    return captureSavedPluginVpnProfile(ip, source);
   }
-
-  await db.execute(
-    `INSERT INTO vpn_gate_server_verdict (ip, verdict)
-     VALUES ($1, $2)
-     ON CONFLICT(ip) DO UPDATE SET
-       verdict = excluded.verdict,
-       updated_at = unixepoch()`,
-    [ip, verdict],
-  );
+  return revokeSavedPluginVpnProfile(ip, verdict);
 }

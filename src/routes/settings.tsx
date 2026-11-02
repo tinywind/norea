@@ -28,6 +28,7 @@ import { ConsoleChip } from "../components/ConsolePrimitives";
 import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
 import { PluginVpnFinder } from "../components/PluginVpnFinder";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
+import { SavedVpnProfilesSettings } from "../components/SavedVpnProfilesSettings";
 import {
   SettingsFieldRow,
   SettingsInlineControls,
@@ -73,6 +74,10 @@ import {
   type PluginVpnPhase,
   type PluginVpnStatus,
 } from "../lib/plugin-vpn";
+import {
+  SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY,
+  type SavedVpnProfileCaptureSource,
+} from "../lib/plugin-vpn-profiles";
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
 import type { MainTaskKind } from "../lib/tasks/scheduler";
@@ -494,6 +499,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   async function updateServerVerdict(
     ip: string,
     verdict: VpnGateServerVerdictValue | null,
+    source?: SavedVpnProfileCaptureSource,
   ): Promise<void> {
     if (
       verdictControlsDisabled ||
@@ -504,21 +510,16 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
 
     updateVerdictSavingState(ip, true);
     try {
-      await setVpnGateServerVerdict(ip, verdict);
+      const result = await setVpnGateServerVerdict(ip, verdict, source);
       queryClient.setQueryData<VpnGateServerVerdict[]>(
         VPN_GATE_SERVER_VERDICTS_QUERY_KEY,
         (current = []) => {
           const next = current.filter((row) => row.ip !== ip);
-          if (verdict !== null) {
-            next.push({
-              ip,
-              updatedAt: Math.floor(Date.now() / 1000),
-              verdict,
-            });
-          }
+          if (result.verdict !== null) next.push(result.verdict);
           return next.sort((left, right) => left.ip.localeCompare(right.ip));
         },
       );
+      if (result.cleanupError) throw new Error(result.cleanupError);
     } catch (error) {
       showSettingsToast(
         "red",
@@ -528,6 +529,8 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
         }),
       );
     } finally {
+      void queryClient.invalidateQueries({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: VPN_GATE_SERVER_VERDICTS_QUERY_KEY });
       updateVerdictSavingState(ip, false);
     }
   }
@@ -796,7 +799,13 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
                   }
                   ip={currentFinderIp}
                   onChange={(verdict) =>
-                    updateServerVerdict(currentFinderIp, verdict)
+                    updateServerVerdict(
+                      currentFinderIp,
+                      verdict,
+                      status?.profile
+                        ? { kind: "active", expectedHash: status.profile.hash }
+                        : undefined,
+                    )
                   }
                   verdict={verdicts.get(currentFinderIp) ?? null}
                 />
@@ -904,6 +913,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
               ) : null}
             </SettingsInlineControls>
           </SettingsFieldRow>
+          <SavedVpnProfilesSettings disabled={isBusy || vpnOperation !== null} />
           <PluginVpnFinder
             connectionError={visibleStatusError}
             connectionPhase={displayPhase}

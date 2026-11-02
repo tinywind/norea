@@ -6,6 +6,8 @@ import { subscribeChapterDownloadBatchProgress } from "./chapter-download";
 import { taskScheduler, type TaskRecord } from "./scheduler";
 import { parseTaskNotificationActions, type TaskNotificationAction } from "./native-notification-actions";
 import { SourceAccessNotificationTracker, type SourceAccessNotification } from "./source-access-notifications";
+import { getVpnDownloadRuntimeSnapshot, subscribeVpnDownloadRuntime } from "./vpn-download-runtime";
+import { hasActiveVpnDownloads, vpnDownloadNotifications } from "./vpn-download-notifications";
 
 interface AndroidTaskNotificationBridge {
   isExecutionSuspended?: () => boolean;
@@ -63,6 +65,9 @@ export function startAndroidTaskNotifications(
       challenges = sourceTracker.notifications(snapshot.sourceAccessBlocks, t);
     }
     const online = isNetworkOnline();
+    const plans = getVpnDownloadRuntimeSnapshot().plans;
+    const ranges = vpnDownloadNotifications(plans, t);
+    const vpnActive = hasActiveVpnDownloads(plans);
     const quiet = mode !== "progress";
     const completions = mode === "off" ? [] : completed.map(({ key, title, body }) => ({ key, title, body }));
     const payload = {
@@ -73,16 +78,16 @@ export function startAndroidTaskNotifications(
         resultsName: t("tasks.notification.resultsChannel"),
         resultsDescription: t("tasks.notification.resultsChannelDescription"),
       },
-      executionActive: online && !executionSuspended && groups.length > 0,
-      working: online && !executionSuspended && tracker.hasRunningWork(),
-      requestPermission: challenges.length > 0 || (mode !== "off" && (groups.length > 0 || completions.length > 0)),
+      executionActive: online && !executionSuspended && (groups.length > 0 || vpnActive),
+      working: online && !executionSuspended && (tracker.hasRunningWork() || vpnActive),
+      requestPermission: ranges.length > 0 || challenges.length > 0 || (mode !== "off" && (groups.length > 0 || completions.length > 0)),
       groups: quiet ? [] : groups.map(group => ({
         key: group.key, title: group.title,
         body: group.paused ? `${t("tasks.notification.paused")} · ${group.body}` : group.body,
         paused: group.paused, progress: group.progress,
         pauseLabel: t("tasks.notification.pause"), resumeLabel: t("tasks.notification.resume"),
       })),
-      challenges, completions,
+      challenges, ranges, completions,
     };
     const serialized = JSON.stringify(payload);
     if (serialized === lastPayload) return;
@@ -124,6 +129,7 @@ export function startAndroidTaskNotifications(
     schedulePublish();
   });
   const unsubscribeNetwork = useNetworkStore.subscribe(schedulePublish);
+  const unsubscribeVpn = subscribeVpnDownloadRuntime(schedulePublish);
   publish();
   drainActions();
 
@@ -131,7 +137,7 @@ export function startAndroidTaskNotifications(
     window.removeEventListener("norea-background-execution-suspended", onSuspended);
     window.removeEventListener("norea-app-resumed", resumeExecution);
     window.removeEventListener("norea-task-notification-action", drainActions);
-    unsubscribeSnapshots(); unsubscribeEvents(); unsubscribeBatches(); unsubscribeNetwork();
+    unsubscribeSnapshots(); unsubscribeEvents(); unsubscribeBatches(); unsubscribeNetwork(); unsubscribeVpn();
     if (publishTimer !== null) clearTimeout(publishTimer);
     window.__NoreaAndroidTasks?.stop();
   };

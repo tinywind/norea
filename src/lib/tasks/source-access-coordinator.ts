@@ -77,6 +77,9 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
   const block = value as Record<string, unknown>;
   const scopeKey = typeof block.scopeKey === "string" ? block.scopeKey.trim() : "";
   const sourceId = typeof block.sourceId === "string" ? block.sourceId.trim() : "";
+  const rangeId = typeof block.rangeId === "string" ? block.rangeId : undefined;
+  const workerGeneration = typeof block.workerGeneration === "number" ? block.workerGeneration : undefined;
+  if (block.rangeId !== undefined && (!rangeId || !Number.isSafeInteger(workerGeneration) || workerGeneration! <= 0)) return null;
   const revision =
     typeof block.revision === "number" ? Math.floor(block.revision) : 0;
   const detectedAt =
@@ -98,7 +101,7 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
   const challenge = accessError.challenge;
 
   try {
-    if (sourceAccessScopeKey(challenge.url, sourceId) !== scopeKey) return null;
+    if (sourceAccessScopeKey(challenge.url, sourceId, rangeId) !== scopeKey) return null;
   } catch {
     return null;
   }
@@ -108,6 +111,7 @@ function persistedSourceAccessBlock(value: unknown): SourceAccessBlock | null {
     block.challengeUrlRedacted === true || persistedChallengeUrl.redacted;
   const originTaskKey = persistedOriginTaskKey(block.originTaskKey);
   return {
+    ...(rangeId ? { rangeId, workerGeneration } : {}),
     challenge: {
       kind: challenge.kind,
       url: persistedChallengeUrl.url,

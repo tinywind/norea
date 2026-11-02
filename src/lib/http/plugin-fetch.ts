@@ -32,7 +32,7 @@ async function pluginFetchInternal(
   const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   const timeoutMs = requestTimeoutMs(init.timeoutMs);
   let result: FetchResultWire;
-  await waitForPluginVpnReady(signal, init.vpnReadyDeadline);
+  await waitForPluginVpnReady(signal, init.vpnReadyDeadline, scraperExecutor);
   try {
     result = isAndroidRuntime()
       ? await androidWebviewFetch(

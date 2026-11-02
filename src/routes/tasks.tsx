@@ -23,6 +23,7 @@ import {
 } from "../components/ActionGlyphs";
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
+import { VpnDownloadPanel } from "../components/VpnDownloadPanel";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
@@ -1275,6 +1276,8 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           </div>
         }
       />
+
+      {active ? <VpnDownloadPanel /> : null}
 
       {snapshot.sourceAccessBlocks.length > 0 ? (
         <div className="norea-source-access-banners">

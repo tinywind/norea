@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: () => true }));
 vi.mock("./scheduler", () => ({ taskScheduler: mocks }));
+vi.mock("./vpn-download-runtime", () => ({
+  getVpnDownloadRuntimeSnapshot: () => ({ plans: [] }), subscribeVpnDownloadRuntime: () => () => {},
+}));
 
 import { startAndroidTaskNotifications } from "./android-notifications";
 import { useNetworkStore } from "../network";

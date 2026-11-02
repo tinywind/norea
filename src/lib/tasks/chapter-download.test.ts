@@ -127,17 +127,21 @@ import {
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import type { ChapterResource } from "../plugins/types";
+import type { PluginVpnDownloadWorkerStatus } from "../plugin-vpn-download-workers";
+import type { ScraperExecutorId } from "./scraper-queue";
 import { isTauriRuntime } from "../tauri-runtime";
 import { watchChapterDownloadActivity } from "./chapter-download-activity";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { TaskUserCancelledError } from "./task-errors";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
+import { installChapterDownloadBatchInterceptor } from "./chapter-download-batch-interceptor";
 import { withChapterDownloadDeletion } from "../chapter-download-writes";
 import {
   cancelChapterDownloadBatches,
   cancelChapterDownloadTasks,
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
+  enqueueVpnDownloadChapter,
   enqueueChapterMediaRepair,
   discardQueuedChapterDownloads,
   getActiveChapterDownloadBatchProgress,
@@ -201,6 +205,7 @@ function installBrowserHarness(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false });
   vi.mocked(taskScheduler.getTaskByDedupeKey).mockReset();
   backendQueueValues.clear();
   installBrowserHarness();
@@ -213,7 +218,7 @@ beforeEach(() => {
       return { id: "task-1", promise: new Promise<void>(() => {}) };
     },
   );
-  tauriMocks.invoke.mockImplementation(
+  tauriMocks.invoke.mockReset().mockImplementation(
     (command: string, args?: Record<string, unknown>) => {
       if (command === "chapter_download_queue_enqueue") {
         const jobs = Array.isArray(args?.jobs) ? args.jobs : [];
@@ -318,6 +323,155 @@ beforeEach(() => {
   });
 });
 
+describe("VPN range chapter acquisition", () => {
+  const worker = { rangeId: "range-a", slot: 0, generation: 8 } as const;
+  const connected: PluginVpnDownloadWorkerStatus = {
+    supported: true, worker, phase: "connected", proxyPort: 12000, error: null,
+    profile: { id: "profile-a", ip: "192.0.2.1", protocol: "tcp", hash: "a".repeat(64), approvedAt: 1, approvalSequence: 1 },
+  };
+  const job: ChapterDownloadJob = {
+    id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7",
+    novelId: 11, vpnPlanId: "plan-a", vpnRangeId: "range-a",
+  };
+
+  beforeEach(() => {
+    const invoke = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation((command, args) => command === "plugin_vpn_download_worker_validate"
+      ? Promise.resolve(connected) : invoke(command, args));
+  });
+
+  it("waits for authoritative lease validation at execution time before reading or acquiring a chapter", async () => {
+    const validation = createDeferred<PluginVpnDownloadWorkerStatus>();
+    tauriMocks.invoke.mockImplementationOnce(() => validation.promise);
+    let completed = false;
+    enqueueVpnDownloadChapter(job, worker, async () => { completed = true; });
+    expect(tauriMocks.invoke).not.toHaveBeenCalled();
+    const running = capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1" });
+    await flushMicrotasks();
+    try {
+      expect(tauriMocks.invoke).toHaveBeenCalledExactlyOnceWith("plugin_vpn_download_worker_validate", { worker });
+      expect(getChapterById).not.toHaveBeenCalled();
+      expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+      expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+      expect(saveStoredChapterContent).not.toHaveBeenCalled();
+      expect(completed).toBe(false);
+    } finally { validation.resolve(connected); await running; }
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "vpn:0:8");
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledOnce();
+    expect(saveStoredChapterContent).toHaveBeenCalledOnce();
+    expect(completed).toBe(true);
+  });
+
+  it("rechecks approval for the next chapter on an already connected worker", async () => {
+    let completed = 0;
+    enqueueVpnDownloadChapter(job, worker, async () => { completed++; });
+    const context = { executor: "vpn:0:8" as const, setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1" };
+    await capturedSpec!.run(context);
+    const revoked = new Error("The retained VPN profile is no longer approved or available");
+    tauriMocks.invoke.mockRejectedValueOnce(revoked);
+    enqueueVpnDownloadChapter({ ...job, id: 8, chapterPath: "/chapter/8" }, worker, async () => { completed++; });
+    await expect(capturedSpec!.run({ ...context, taskId: "task-2" })).rejects.toBe(revoked);
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === "plugin_vpn_download_worker_validate")).toHaveLength(2);
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledExactlyOnceWith("/chapter/7", "text");
+    expect(saveStoredChapterContent).toHaveBeenCalledOnce();
+    expect(completed).toBe(1);
+  });
+
+  it.each([
+    { reason: "unsupported runtime", status: { ...connected, supported: false } },
+    { reason: "disconnected tunnel", status: { ...connected, phase: "disabled" } },
+    { reason: "missing lease", status: { ...connected, profile: null } },
+    { reason: "different slot", status: { ...connected, worker: { ...worker, slot: 1 } } },
+    { reason: "different range", status: { ...connected, worker: { ...worker, rangeId: "range-b" } } },
+    { reason: "different generation", status: { ...connected, worker: { ...worker, generation: 9 } } },
+  ])("rejects $reason returned by native validation before source access", async value => {
+    tauriMocks.invoke.mockResolvedValueOnce(value.status);
+    let completed = false;
+    enqueueVpnDownloadChapter(job, worker, async () => { completed = true; });
+    await expect(capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1" })).rejects.toThrow(/VPN worker/i);
+    expect(getChapterById).not.toHaveBeenCalled();
+    expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+    expect(completed).toBe(false);
+  });
+
+  it.each(["pool:0", "vpn:1:8", "vpn:0:9"] satisfies ScraperExecutorId[])(
+    "rejects executor %s for the enrolled worker before validation or source access", async executor => {
+      enqueueVpnDownloadChapter(job, worker, async () => undefined);
+      await expect(capturedSpec!.run({ executor, setDetail: vi.fn(), setProgress: vi.fn(),
+        signal: new AbortController().signal, taskId: "task-1" })).rejects.toThrow(/VPN.*executor/i);
+      expect(tauriMocks.invoke).not.toHaveBeenCalled();
+      expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+      expect(saveStoredChapterContent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cancels while native validation is pending without publishing a late success", async () => {
+    const validation = createDeferred<PluginVpnDownloadWorkerStatus>();
+    tauriMocks.invoke.mockImplementationOnce(() => validation.promise);
+    let completed = false;
+    enqueueVpnDownloadChapter(job, worker, async () => { completed = true; });
+    const controller = new AbortController();
+    const running = capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: controller.signal, taskId: "task-1" });
+    const cancelled = expect(running).rejects.toMatchObject({ name: "AbortError" });
+    await flushMicrotasks();
+    controller.abort(new DOMException("Task cancelled", "AbortError"));
+    try { await cancelled; } finally { validation.resolve(connected); }
+    await flushMicrotasks();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+    expect(completed).toBe(false);
+  });
+
+  it("keeps the worker identity and settles its checkpoint only after content publication", async () => {
+    const events: string[] = [];
+    vi.mocked(saveStoredChapterContent).mockImplementation(async () => { events.push("content"); return { rowsAffected: 1 }; });
+    enqueueVpnDownloadChapter(job, worker, async () => { events.push("checkpoint"); });
+    expect(capturedSpec?.vpnWorker).toEqual(worker);
+    expect(capturedSpec?.sourceCooldownKey).toBe("chapter.download:range-a");
+    expect(capturedSpec?.retryManually).toBeUndefined();
+    await capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" });
+    expect(events).toEqual(["content", "checkpoint"]);
+  });
+
+  it("does not settle a chapter whose source-owned asset still requires authentication", async () => {
+    const chapter = (await getChapterById(7))!;
+    vi.mocked(getChapterById).mockResolvedValue({ ...chapter, sourceContentType: "html", contentType: "html" });
+    pluginMocks.getChapterResource.mockResolvedValue(contentResource("<img src='https://source.test/image'>"));
+    vi.mocked(cacheHtmlChapterMedia).mockRejectedValue(new SourceAccessRequiredError("CAPTCHA", { kind: "captcha", url: "https://source.test/chapter/7" }));
+    let settled = false;
+    enqueueVpnDownloadChapter(job, worker, async () => { settled = true; });
+    await expect(capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" }))
+      .rejects.toMatchObject({ code: "source-access-required" });
+    expect(settled).toBe(false);
+  });
+
+  it("verifies the real source rather than satisfying a VPN canary from a content server", async () => {
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    let settled = false;
+    enqueueVpnDownloadChapter(job, worker, async () => { settled = true; });
+    await capturedSpec!.run({ executor: "vpn:0:8", sourceAccessVerification: true, confirmSourceAccess: () => true,
+      setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" });
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledWith("/chapter/7", "text");
+    expect(settled).toBe(true);
+  });
+
+  it("rejects range ownership mismatches before a task can reach a default executor", () => {
+    expect(() => enqueueVpnDownloadChapter(job, { ...worker, rangeId: "other" }, async () => undefined)).toThrow(/range/i);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+  });
+
+  it("rejects enrolled jobs submitted through the ordinary default-route entrypoint", () => {
+    expect(() => enqueueChapterDownload(job)).toThrow(/worker/i);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+  });
+});
+
 describe("targeted cleanup cancellation", () => {
   it("cancels matching download and repair tasks outside the UI snapshot and waits for settlement", async () => {
     const pending = createDeferred<void>();
@@ -385,6 +539,17 @@ describe("chapter download queue membership", () => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
+  it("sends new automatic batches to range confirmation before ordinary queue publication", async () => {
+    const result = { total: 1, succeeded: 0, failed: 0, cancelled: 1 };
+    const intercepted = { id: "vpn-batch", materialized: Promise.resolve(), promise: Promise.resolve(result) };
+    installChapterDownloadBatchInterceptor({ enqueue: () => intercepted, cancel: id => id === "vpn-batch" });
+    const handle = enqueueChapterDownloadBatch({ jobs: [{ id: 100, pluginId: "source", chapterPath: "/chapter", title: "Chapter" }], title: "Batch" });
+    expect(handle).toBe(intercepted);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+    expect(cancelChapterDownloadBatches([handle.id])).toBe(1);
+    await expect(handle.promise).resolves.toEqual(result);
+  });
+
   it("publishes batch outcomes separately from settled progress before removal", async () => {
     const pending: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(() => {

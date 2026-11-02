@@ -7,6 +7,9 @@ import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { beginChapterDownloadQueueWrite, notifyChapterDownloadsSettled } from "./chapter-download-activity";
 import type { ChapterDownloadPhase } from "./task-types";
+import type { VpnDownloadWorkerRef } from "./vpn-download-types";
+import { vpnDownloadExecutor } from "./vpn-worker-context";
+import { validatePluginVpnDownloadWorker } from "../plugin-vpn-download-workers";
 import { useBrowseStore } from "../../store/browse";
 import {
   CHAPTER_BINARY_RESOURCE_MEDIA_TYPES,
@@ -74,9 +77,12 @@ import {
   runExclusiveChapterStorageOperation,
   waitForChapterStorageOperation,
 } from "./chapter-storage-operation";
+import { cancelInterceptedChapterDownloadBatch, interceptChapterDownloadBatch } from "./chapter-download-batch-interceptor";
 
 export interface ChapterDownloadJob {
   id: number;
+  vpnPlanId?: string;
+  vpnRangeId?: string;
   batchId?: string;
   batchTitle?: string;
   pluginId: string;
@@ -762,6 +768,7 @@ export function cancelChapterDownloadBatches(
   let cancelled = 0;
 
   for (const batchId of new Set(batchIds)) {
+    if (cancelInterceptedChapterDownloadBatch(batchId)) { cancelled += 1; continue; }
     const state = chapterDownloadBatchStates.get(batchId);
     if (!state || state.cancelRequested) continue;
 
@@ -845,6 +852,11 @@ export function subscribeChapterDownloadBatchProgress(
 ): () => void {
   chapterDownloadBatchProgressListeners.add(listener);
   return () => { chapterDownloadBatchProgressListeners.delete(listener); };
+}
+
+export function publishVpnDownloadBatchProgress(event: ChapterDownloadBatchProgressEvent): void {
+  for (const listener of chapterDownloadBatchProgressListeners) listener(event);
+  if (!event.active) emitChapterDownloadBatchSettled(event.batchId);
 }
 
 function emitChapterPartialContentUpdate(event: ChapterPartialContentEvent): void {
@@ -939,6 +951,8 @@ async function resolveChapterDownloadSourceAccessUrl(
 function enqueueChapterDownloadForExecutor(
   job: ChapterDownloadJob,
   options: {
+    vpnWorker?: VpnDownloadWorkerRef;
+    onCompleted?: () => Promise<void>;
     persistBeforeStart?: boolean;
     waitForBackendQueue?: boolean;
     backendQueueWrite?: Promise<void>;
@@ -946,7 +960,11 @@ function enqueueChapterDownloadForExecutor(
   } = {},
 ): TaskHandle<void> {
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
-  const sourceCooldownKey = job.pluginId;
+  const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
+  const completeJob = async (): Promise<void> => {
+    await options.onCompleted?.();
+    completeChapterDownloadJob(job, queueOwnerId);
+  };
   const waitForBackendQueue =
     options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
   const requestedQueueOwnerId = job.batchId ?? makeChapterDownloadBatchId();
@@ -961,10 +979,11 @@ function enqueueChapterDownloadForExecutor(
   const backendQueueWrite = registration?.write ?? requestedQueueWrite;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
-    retryManually: () => enqueueChapterDownload(job),
+    ...(!options.vpnWorker ? { retryManually: () => enqueueChapterDownload(job) } : {}),
     priority: job.priority ?? "background",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
+    ...(options.vpnWorker ? { vpnWorker: options.vpnWorker } : {}),
     subject: {
       chapterId: job.id,
       chapterName: job.chapterName,
@@ -1002,6 +1021,16 @@ function enqueueChapterDownloadForExecutor(
       let progressTotal = 1;
       reportProgress({ current: 0, total: progressTotal }, { force: true });
       try {
+        if (signal.aborted) throw abortReason(signal);
+        if (options.vpnWorker) {
+          const worker = options.vpnWorker;
+          if (executor !== vpnDownloadExecutor(worker)) throw new Error("VPN worker executor does not match its enrolled route.");
+          const status = await abortableStep(signal, validatePluginVpnDownloadWorker(worker));
+          if (!status.supported || status.phase !== "connected" || !status.profile ||
+              status.worker.rangeId !== worker.rangeId || status.worker.slot !== worker.slot || status.worker.generation !== worker.generation) {
+            throw new Error(status.error ?? "VPN worker lease is no longer connected to its enrolled route.");
+          }
+        }
         if (waitForBackendQueue) {
           await abortableStep(
             signal,
@@ -1032,16 +1061,16 @@ function enqueueChapterDownloadForExecutor(
           throw missingLocalChapterError(job);
         }
         if (!sourceAccessVerification && chapter.isDownloaded) {
-          completeChapterDownloadJob(job, queueOwnerId);
+          await completeJob();
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
           );
           return;
         }
-        if (await tryDownloadServerChapter(job, signal, setChapterDownloadPhase)) {
+        if (!(options.vpnWorker && sourceAccessVerification) && await tryDownloadServerChapter(job, signal, setChapterDownloadPhase)) {
           if (signal.aborted) throw abortReason(signal);
-          completeChapterDownloadJob(job, queueOwnerId);
+          await completeJob();
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -1135,7 +1164,7 @@ function enqueueChapterDownloadForExecutor(
               throw missingLocalChapterError(job);
             }
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
-            completeChapterDownloadJob(job, queueOwnerId);
+            await completeJob();
             reportProgress(
               { current: progressTotal, total: progressTotal },
               { force: true },
@@ -1173,7 +1202,7 @@ function enqueueChapterDownloadForExecutor(
           if (embedded.storedMediaCount === 0) {
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
           }
-          completeChapterDownloadJob(job, queueOwnerId);
+          await completeJob();
           reportProgress(
             { current: progressTotal, total: progressTotal },
             { force: true },
@@ -1317,7 +1346,7 @@ function enqueueChapterDownloadForExecutor(
             sourceId: job.pluginId,
           }));
         }
-        completeChapterDownloadJob(job, queueOwnerId);
+        await completeJob();
         reportProgress(
           { current: progressTotal, total: progressTotal },
           { force: true },
@@ -1351,7 +1380,26 @@ function enqueueChapterDownloadForExecutor(
 export function enqueueChapterDownload(
   job: ChapterDownloadJob,
 ): TaskHandle<void> {
+  if (job.vpnPlanId || job.vpnRangeId) {
+    throw new Error("An enrolled VPN download requires its owning worker.");
+  }
   return enqueueChapterDownloadForExecutor(job);
+}
+
+export function enqueueVpnDownloadChapter(
+  job: ChapterDownloadJob,
+  worker: VpnDownloadWorkerRef,
+  onCompleted: () => Promise<void>,
+): TaskHandle<void> {
+  if (!job.vpnPlanId || job.vpnRangeId !== worker.rangeId) {
+    throw new Error("VPN download chapter range ownership does not match its worker.");
+  }
+  return enqueueChapterDownloadForExecutor(job, {
+    persistBeforeStart: false,
+    waitForBackendQueue: false,
+    vpnWorker: worker,
+    onCompleted,
+  });
 }
 
 export function enqueueChapterMediaRepair(
@@ -1551,6 +1599,10 @@ export function enqueueChapterDownloadBatch({
   total: requestedTotal,
   windowSize: requestedWindowSize,
 }: ChapterDownloadBatchJob): ChapterDownloadBatchHandle {
+  if (persist) {
+    const intercepted = interceptChapterDownloadBatch({ jobs, title, total: requestedTotal, materializeAllTasks, persist, removeBackendQueuedJobsOnCancel, windowSize: requestedWindowSize });
+    if (intercepted) return intercepted;
+  }
   const batchId = makeChapterDownloadBatchId();
   const batchJobs = Array.isArray(jobs) ? jobs : null;
   const total = normalizeChapterDownloadBatchTotal(jobs, requestedTotal);

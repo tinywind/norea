@@ -6,6 +6,7 @@ import {
   pluginVpnFinderErrorMessage,
   pluginVpnFinderServerAction,
   pluginVpnFinderServerVerdict,
+  pluginVpnFinderVerdictCaptureSource,
 } from "./PluginVpnFinder";
 
 const SERVERS: PluginVpnFinderServer[] = [
@@ -57,6 +58,12 @@ const SERVERS: PluginVpnFinderServer[] = [
 ];
 
 describe("PluginVpnFinder", () => {
+  it("binds approval to the selected protocol row rather than another row with the same IP", () => {
+    const tcp = { ...SERVERS[0]!, candidateId: "exact-tcp", protocol: "tcp" as const };
+    const udp = { ...tcp, candidateId: "exact-udp", protocol: "udp" as const };
+    expect(pluginVpnFinderVerdictCaptureSource(tcp)).toEqual({ kind: "finder", candidateId: "exact-tcp" });
+    expect(pluginVpnFinderVerdictCaptureSource(udp)).toEqual({ kind: "finder", candidateId: "exact-udp" });
+  });
   it("filters by country, protocol, and normalized country or IP search", () => {
     expect(
       filterAndSortPluginVpnServers(SERVERS, {

@@ -137,9 +137,13 @@ export function normalizeSourceAccessRequiredError(
   return isSourceAccessRequiredError(normalized) ? normalized : null;
 }
 
-export function sourceAccessScopeKey(url: string, sourceId: string): string {
+export function sourceAccessScopeKey(url: string, sourceId: string, rangeId?: string): string {
   const parsed = safeHttpUrl(url);
   if (!parsed) throw new Error("Source access URL must be an absolute HTTP URL.");
   if (!sourceId.trim()) throw new Error("Source access requires a plugin id.");
-  return `plugin:${encodeURIComponent(sourceId)}:site:${normalizeHostname(parsed)}`;
+  if (rangeId !== undefined && (!rangeId.trim() || rangeId.length > 128)) {
+    throw new Error("Source access VPN range identity is invalid.");
+  }
+  const range = rangeId === undefined ? "" : `:range:${encodeURIComponent(rangeId)}`;
+  return `plugin:${encodeURIComponent(sourceId)}:site:${normalizeHostname(parsed)}${range}`;
 }

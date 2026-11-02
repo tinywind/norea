@@ -50,8 +50,10 @@ import { recordPerformanceObservation } from "../observability";
 import {
   normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
+  type SourceAccessChallenge,
   type SourceAccessRequiredErrorShape,
 } from "../plugins/source-access";
+import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { redactUrlsForLog } from "../url-log";
 import { SourceExecutorLeases } from "./source-executor-leases";
 import { TaskHistory } from "./task-history";
@@ -369,11 +371,22 @@ export class TaskScheduler {
     if (spec.lane === "source" && !spec.source?.id) {
       throw new Error("Source tasks require a source id.");
     }
+    if (spec.vpnWorker && (spec.lane !== "source" ||
+        ![0, 1].includes(spec.vpnWorker.slot) || !spec.vpnWorker.rangeId.trim() ||
+        spec.vpnWorker.rangeId.length > 128 || !Number.isSafeInteger(spec.vpnWorker.generation) ||
+        spec.vpnWorker.generation <= 0)) {
+      throw new Error("VPN worker identity is invalid.");
+    }
 
     if (spec.dedupeKey && spec.kind !== "source.openSite") {
       const activeId = this.activeDedupeByKey.get(spec.dedupeKey);
       const activeEntry = activeId ? this.entries.get(activeId) : undefined;
       if (activeEntry) {
+        const owner = activeEntry.spec.vpnWorker;
+        if (owner?.rangeId !== spec.vpnWorker?.rangeId || owner?.slot !== spec.vpnWorker?.slot ||
+            owner?.generation !== spec.vpnWorker?.generation) {
+          throw new Error("Active task VPN worker ownership does not match the requested route.");
+        }
         const requestedPriority = spec.priority ?? "normal";
         if (
           activeEntry.record.status === "queued" &&
@@ -421,6 +434,7 @@ export class TaskScheduler {
         priority: spec.priority ?? "normal",
         title: spec.title,
         source: spec.source,
+        ...(spec.vpnWorker ? { vpnWorker: { ...spec.vpnWorker } } : {}),
         subject: spec.subject,
         status: "queued",
         createdAt: Date.now(),
@@ -456,7 +470,8 @@ export class TaskScheduler {
 
     this.debug("queued", entry, { dedupeKey: entry.dedupeKey });
     this.publish(entry, null);
-    this.requestDrain();
+    if (spec.vpnWorker) queueMicrotask(() => this.requestDrain());
+    else this.requestDrain();
     return { id, promise: promise as Promise<T> };
   }
 
@@ -709,11 +724,11 @@ export class TaskScheduler {
     entry: TaskEntry,
     block: SourceAccessBlockState,
   ): boolean {
-    return entry.record.source?.id === block.sourceId;
+    return entry.record.source?.id === block.sourceId && entry.spec.vpnWorker?.rangeId === block.rangeId;
   }
 
   private isSourceAccessBlocked(entry: TaskEntry): boolean {
-    return this.sourceAccess.isBlocked(entry.record.source?.id);
+    return this.sourceAccess.isBlocked(entry.record.source?.id, entry.spec.vpnWorker?.rangeId);
   }
 
   private setSourceAccessUrlForEntry(entry: TaskEntry, url: string): boolean {
@@ -722,7 +737,7 @@ export class TaskScheduler {
     if (!sourceId) return false;
     let scopeKey: string;
     try {
-      scopeKey = sourceAccessScopeKey(url, sourceId);
+      scopeKey = sourceAccessScopeKey(url, sourceId, entry.spec.vpnWorker?.rangeId);
     } catch {
       return false;
     }
@@ -758,7 +773,7 @@ export class TaskScheduler {
   ): boolean {
     const sourceId = entry.record.source?.id;
     if (!sourceId) return false;
-    const challengeScopeKey = sourceAccessScopeKey(error.challenge.url, sourceId);
+    const challengeScopeKey = sourceAccessScopeKey(error.challenge.url, sourceId, entry.spec.vpnWorker?.rangeId);
     const configuredScopeKey = entry.spec.sourceAccessScopeKey?.trim();
     if (!configuredScopeKey || configuredScopeKey !== challengeScopeKey) {
       return false;
@@ -770,6 +785,10 @@ export class TaskScheduler {
       error.challenge,
       {
         sourceId,
+        ...(entry.spec.vpnWorker ? {
+          rangeId: entry.spec.vpnWorker.rangeId,
+          workerGeneration: entry.spec.vpnWorker.generation,
+        } : {}),
         taskId: entry.record.id,
         taskKey: entry.spec.sourceAccessVerificationKey,
       },
@@ -888,6 +907,7 @@ export class TaskScheduler {
         this.publishSnapshot();
         continue;
       }
+      if (entry.spec.vpnWorker && this.vpnWorkerSlotBusy(entry.spec.vpnWorker.slot)) continue;
 
       if (!entry.spec.sourceAccessScopeKey) {
         entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
@@ -1324,6 +1344,7 @@ export class TaskScheduler {
       block.challenge.url,
       scopeKey,
       block.sourceId,
+      block.rangeId,
     );
 
     const entry = this.preferredSourceAccessVerificationCandidate(
@@ -1343,8 +1364,8 @@ export class TaskScheduler {
     try {
       const value = await entry.spec.resolveSourceAccessUrl?.();
       if (typeof value === "string") {
-        const resolvedScopeKey = candidateScopeKey ?? sourceAccessScopeKey(value, sourceId);
-        rebuiltUrl = normalizedSourceAccessUrl(value, resolvedScopeKey, sourceId);
+        const resolvedScopeKey = candidateScopeKey ?? sourceAccessScopeKey(value, sourceId, entry.spec.vpnWorker?.rangeId);
+        rebuiltUrl = normalizedSourceAccessUrl(value, resolvedScopeKey, sourceId, entry.spec.vpnWorker?.rangeId);
         if (rebuiltUrl && !candidateScopeKey) {
           candidateScopeKey = resolvedScopeKey;
         }
@@ -1399,6 +1420,27 @@ export class TaskScheduler {
     });
     this.publishSnapshot();
     this.drain();
+    return true;
+  }
+
+  beginVpnSourceAccessVerification(taskId: string, worker: VpnDownloadWorkerRef, challenge: SourceAccessChallenge): boolean {
+    const entry = this.entries.get(taskId);
+    const enrolled = entry?.spec.vpnWorker;
+    const sourceId = entry?.record.source?.id;
+    if (!entry || entry.record.status !== "queued" || !sourceId || !enrolled ||
+      enrolled.rangeId !== worker.rangeId || enrolled.slot !== worker.slot || enrolled.generation !== worker.generation ||
+      (challenge.kind !== "captcha" && challenge.kind !== "cloudflare")) return false;
+    let scopeKey: string;
+    try { scopeKey = sourceAccessScopeKey(challenge.url, sourceId, worker.rangeId); } catch { return false; }
+    if (entry.spec.sourceAccessScopeKey && entry.spec.sourceAccessScopeKey !== scopeKey) return false;
+    entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
+    this.sourceAccess.recordChallenge(scopeKey, challenge, {
+      sourceId, rangeId: worker.rangeId, workerGeneration: worker.generation,
+      taskId, taskKey: entry.spec.sourceAccessVerificationKey,
+    }, "Source verification is required.");
+    this.sourceAccess.requestVerification(scopeKey);
+    this.publishSnapshot();
+    this.requestDrain();
     return true;
   }
 
@@ -1501,6 +1543,11 @@ export class TaskScheduler {
     return entry ? { ...entry.record } : undefined;
   }
 
+  getSourceAccessBlock(scopeKey: string): SourceAccessBlock | undefined {
+    const block = this.sourceAccess.get(scopeKey);
+    return block ? { ...block, challenge: { ...block.challenge } } : undefined;
+  }
+
   getTaskByDedupeKey(key: string): TaskRecord | undefined {
     const id = this.history.latestId(key);
     return id ? this.getTask(id) : undefined;
@@ -1559,6 +1606,7 @@ export class TaskScheduler {
     if (this.sourceDispatchBlockedByMainBarrier()) return;
     this.drainImmediateExecutor();
     this.drainSearchExecutors();
+    this.drainVpnWorkers();
     this.drainSourcePool();
   }
 
@@ -1624,8 +1672,8 @@ export class TaskScheduler {
     }
     const verification = this.prepareSourceAccessVerificationTask();
     if (verification) {
-      this.startSource(verification, "immediate");
-      return;
+      this.startSource(verification, this.vpnWorkerExecutor(verification) ?? "immediate");
+      if (!verification.spec.vpnWorker) return;
     }
     const browse = this.pickSourceTask(
       entry => isUiInteraction(entry) && !usesSearchExecutor(entry),
@@ -1646,6 +1694,26 @@ export class TaskScheduler {
       const next = this.pickSourceTask(usesSearchExecutor, { allowActiveSource: true });
       if (!next) return;
       this.startSource(next, executor);
+    }
+  }
+
+  private vpnWorkerExecutor(entry: TaskEntry): ScraperExecutorId | null {
+    const worker = entry.spec.vpnWorker;
+    return worker ? `vpn:${worker.slot}:${worker.generation}` : null;
+  }
+
+  private vpnWorkerSlotBusy(slot: 0 | 1): boolean {
+    for (const executor of this.sourceExecutors.activePoolTasks.keys()) {
+      if (executor.startsWith(`vpn:${slot}:`)) return true;
+    }
+    return false;
+  }
+
+  private drainVpnWorkers(): void {
+    for (const slot of [0, 1] as const) {
+      if (this.vpnWorkerSlotBusy(slot)) continue;
+      const next = this.pickSourceTask((entry) => entry.spec.vpnWorker?.slot === slot);
+      if (next) this.startSource(next, this.vpnWorkerExecutor(next)!);
     }
   }
 
@@ -1676,6 +1744,7 @@ export class TaskScheduler {
         const next =
           immediateInteraction ??
           this.pickSourceTaskFromQueue(sourceId, (entry) => {
+            if (entry.spec.vpnWorker) return false;
             if (shouldUseImmediateExecutor(entry) || usesSearchExecutor(entry)) return false;
             if (!this.canUseExecutorForSource(entry, executorId)) return false;
             if (
@@ -1699,6 +1768,7 @@ export class TaskScheduler {
     entry: TaskEntry,
     executorId: ScraperExecutorId,
   ): boolean {
+    if (entry.spec.vpnWorker) return this.vpnWorkerExecutor(entry) === executorId;
     return this.sourceExecutors.canUseExecutor(
       entry.record.source?.id,
       executorId,
@@ -1720,11 +1790,11 @@ export class TaskScheduler {
 
   private startSource(entry: TaskEntry, executorId: ScraperExecutorId): void {
     // Keep the slot while running so pauses, retries, and local checks preserve manual order.
-    const sourceId = entry.record.source!.id;
+    const sourceId = entry.spec.vpnWorker?.rangeId ?? entry.record.source!.id;
     this.sourceExecutors.acquire(entry.record.id, {
       sourceId,
       executorId,
-      background: isBackgroundPriority(entry.record.priority),
+      background: !entry.spec.vpnWorker && isBackgroundPriority(entry.record.priority),
     });
     entry.sourceExecutorId = executorId;
     entry.activeReleased = false;
@@ -1845,7 +1915,7 @@ export class TaskScheduler {
     if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
     if (!this.networkAvailable && this.requiresNetwork(entry)) return false;
     if (options.allowActiveSource) return true;
-    const sourceId = entry.record.source?.id;
+    const sourceId = entry.spec.vpnWorker?.rangeId ?? entry.record.source?.id;
     if (!sourceId) return true;
     return !this.hasActiveNonUiSourceTask(sourceId);
   }
@@ -1931,6 +2001,12 @@ export class TaskScheduler {
     let sourceAccessConfirmed = false;
     const context: TaskRunContext = {
       confirmSourceAccess: () => {
+        if (entry.spec.vpnWorker && sourceAccessVerificationRevision !== undefined) {
+          sourceAccessConfirmed = this.sourceAccess.matchesVerification(
+            entry.spec.sourceAccessScopeKey!, entry.record.id, sourceAccessVerificationRevision,
+          );
+          return sourceAccessConfirmed;
+        }
         const confirmed = this.confirmSourceAccessForEntry(
           entry,
           sourceAccessVerificationRevision,
@@ -1993,6 +2069,9 @@ export class TaskScheduler {
         if (entry.sourceAccessDeferred) {
           this.requeueDeferredSourceAccessAfterSettlement(entry);
           return;
+        }
+        if (entry.spec.vpnWorker && sourceAccessConfirmed) {
+          sourceAccessConfirmed = this.confirmSourceAccessForEntry(entry, sourceAccessVerificationRevision);
         }
         if (
           sourceAccessVerificationRevision !== undefined &&
@@ -2058,8 +2137,8 @@ export class TaskScheduler {
         }
         this.finishRunning(entry, cancelled ? "cancelled" : "failed", {
           canCancel: false,
-          canRetry: cancelled || entry.spec.canRetry === true ||
-            entry.spec.retryManually !== undefined || entry.spec.retry !== undefined,
+          canRetry: !entry.spec.vpnWorker && (cancelled || entry.spec.canRetry === true ||
+            entry.spec.retryManually !== undefined || entry.spec.retry !== undefined),
           error: cancelled ? undefined : describeTaskError(error),
           finishedAt: Date.now(),
         });
@@ -2177,7 +2256,7 @@ export class TaskScheduler {
   private cancelRunning(entry: TaskEntry): void {
     this.setStatus(entry, "cancelled", {
       canCancel: false,
-      canRetry: true,
+      canRetry: !entry.spec.vpnWorker,
       finishedAt: Date.now(),
     });
     if (
@@ -2641,7 +2720,7 @@ export class TaskScheduler {
     this.clearTaskRetry(entry);
     this.setStatus(entry, "cancelled", {
       canCancel: false,
-      canRetry: true,
+      canRetry: !entry.spec.vpnWorker,
       finishedAt: Date.now(),
     });
     this.debug("queued task cancelled", entry);
@@ -2679,7 +2758,7 @@ export class TaskScheduler {
         ...entry.record,
         status: "cancelled",
         canCancel: false,
-        canRetry: true,
+        canRetry: !entry.spec.vpnWorker,
         finishedAt,
       };
       this.entries.set(entry.record.id, entry);

@@ -24,6 +24,8 @@ import { applyTaskNotificationAction } from "../lib/tasks/task-notification-acti
 import type { TaskNotificationAction } from "../lib/tasks/native-notification-actions";
 import { showErrorToast } from "../lib/runtime/error-toast";
 import { taskScheduler } from "../lib/tasks/scheduler";
+import { vpnDownloadNotifications } from "../lib/tasks/vpn-download-notifications";
+import { getVpnDownloadRuntimeSnapshot, subscribeVpnDownloadRuntime } from "../lib/tasks/vpn-download-runtime";
 import { startTrayTaskProgress } from "../lib/tasks/tray-progress";
 import { useNotificationStore } from "../store/notifications";
 import { WindowsTaskNotificationBridge } from "./WindowsTaskNotificationBridge";
@@ -217,6 +219,55 @@ export function TaskNotifications() {
   useEffect(() => {
     return startTrayTaskProgress(t);
   }, [t]);
+
+  useEffect(() => {
+    const shown = new Map<string, string>();
+    const dismissed = new Map<string, string>();
+    let previousPlans: ReturnType<typeof getVpnDownloadRuntimeSnapshot>["plans"] | undefined;
+    const syncRanges = () => {
+      const { plans } = getVpnDownloadRuntimeSnapshot();
+      if (plans === previousPlans) return;
+      previousPlans = plans;
+      const items = vpnDownloadNotifications(plans, t);
+      const current = new Set(items.map(item => item.id));
+      for (const id of shown.keys()) {
+        if (current.has(id)) continue;
+        shown.delete(id);
+        dismissed.delete(id);
+        notifications.hide(id);
+      }
+      for (const id of dismissed.keys()) {
+        if (!current.has(id)) dismissed.delete(id);
+      }
+      for (const item of items) {
+        const identity = JSON.stringify([item.title, item.body, item.action]);
+        if (shown.get(item.id) === identity || dismissed.get(item.id) === identity) continue;
+        const wasShown = shown.has(item.id);
+        shown.set(item.id, identity);
+        const notification = {
+          id: item.id, autoClose: 5_000, color: "orange", title: item.title,
+          message: <>{item.body} <Button variant="subtle" size="compact-xs" onClick={() => handleNotificationAction(item.action)}>{item.actionLabel}</Button></>,
+          withCloseButton: true,
+          closeButtonProps: { "aria-label": t("sourceAccess.dismissNotification") },
+          onClose: () => {
+            if (shown.get(item.id) !== identity) return;
+            shown.delete(item.id);
+            dismissed.set(item.id, identity);
+          },
+        };
+        if (wasShown) notifications.update(notification);
+        else notifications.show(notification);
+      }
+    };
+    const unsubscribe = subscribeVpnDownloadRuntime(syncRanges);
+    syncRanges();
+    return () => {
+      unsubscribe();
+      const ids = [...shown.keys()];
+      shown.clear();
+      for (const id of ids) notifications.hide(id);
+    };
+  }, [handleNotificationAction, t]);
 
   return (
     <WindowsTaskNotificationBridge taskProgressMode={taskProgressMode} onAction={handleNotificationAction} />

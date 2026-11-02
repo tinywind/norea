@@ -1,4 +1,4 @@
-export type ScraperExecutorId = "immediate" | `pool:${number}` | `search:${number}`;
+export type ScraperExecutorId = "immediate" | `pool:${number}` | `search:${number}` | `vpn:${0 | 1}:${number}`;
 
 const DEFAULT_SCRAPER_EXECUTOR: ScraperExecutorId = "immediate";
 

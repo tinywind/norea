@@ -67,6 +67,7 @@ const STATUS: PluginVpnStatus = {
   error: null,
   phase: "disabled",
   profile: {
+    hash: "a".repeat(64),
     isVpnGateFinder: false,
     remoteHost: "vpn.example.test",
     requiresUsernamePassword: true,
@@ -134,6 +135,16 @@ describe("plugin VPN", () => {
   it("never restores a manually disabled VPN", async () => {
     await expect(restorePluginVpnConnection()).resolves.toBeNull();
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("signals explicit Off to download workers even if the foreground VPN was already disabled", async () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    const off = vi.fn(); target.addEventListener("norea-plugin-vpn-explicit-off", off);
+    await disconnectPluginVpn();
+    expect(off).toHaveBeenCalledOnce();
+    await disconnectPluginVpn(true);
+    expect(off).toHaveBeenCalledOnce();
   });
 
   it.each(["connecting", "connected", "reconnecting", "disconnecting"] as const)(

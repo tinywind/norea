@@ -27,6 +27,7 @@ export type PluginVpnPhase =
   | "error";
 
 export interface PluginVpnProfile {
+  hash: string;
   isVpnGateFinder: boolean;
   remoteHost: string;
   requiresUsernamePassword: boolean;
@@ -155,7 +156,7 @@ function trackPluginVpnConnection(
   return attempt;
 }
 
-async function preparePluginVpnProfileChange(): Promise<void> {
+export async function preparePluginVpnProfileChange(): Promise<void> {
   clearPluginVpnIntent();
   await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
 }
@@ -449,6 +450,9 @@ export function disconnectPluginVpn(
     sessionCredentials = null;
   } else {
     clearPluginVpnIntent();
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new Event("norea-plugin-vpn-explicit-off"));
+    }
   }
   return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock });
 }

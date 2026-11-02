@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { VpnDownloadRuntimeSnapshot } from "./vpn-download-drafts";
 
 const schedulerMocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
@@ -14,6 +15,10 @@ vi.mock("../tauri-runtime", () => ({
 }));
 vi.mock("./scheduler", () => ({
   taskScheduler: schedulerMocks,
+}));
+const vpnMocks = vi.hoisted(() => ({ getSnapshot: vi.fn(), subscribe: vi.fn() }));
+vi.mock("./vpn-download-runtime", () => ({
+  getVpnDownloadRuntimeSnapshot: vpnMocks.getSnapshot, subscribeVpnDownloadRuntime: vpnMocks.subscribe,
 }));
 
 import {
@@ -73,6 +78,8 @@ beforeEach(() => {
   installBrowserHarness();
   schedulerMocks.subscribe.mockReturnValue(vi.fn());
   schedulerMocks.subscribeEvents.mockReturnValue(vi.fn());
+  vpnMocks.getSnapshot.mockReturnValue({ plans: [] });
+  vpnMocks.subscribe.mockReturnValue(vi.fn());
   schedulerMocks.getSnapshot.mockReturnValue({
     records: [notificationTask()], sourceAccessBlocks: [], pausedTaskGroups: [], sourceQueuesPaused: false,
   });
@@ -85,6 +92,62 @@ afterEach(() => {
 });
 
 describe("startAndroidTaskNotifications", () => {
+  function runtimeSnapshot(phase: "paused" | "running" | "connecting" = "paused"): VpnDownloadRuntimeSnapshot {
+    return {
+      drafts: [], loading: false, error: null, chapterLabels: {},
+      capabilities: { supported: true, parallelSupported: true, maxWorkers: 2 },
+      plans: [{
+        id: "plan-a", batchId: "batch-a", pluginId: "source-a", novelId: 1, title: "Work", mode: "parallel",
+        policies: { captcha: "pause", cloudflare: "nextProfile" }, createdAt: 1, revision: 1,
+        ranges: ["a", "b"].map(id => ({
+          id, profileId: `profile-${id}`, profileHash: "hash", startChapterId: 1, endChapterId: 2,
+          chapterIds: [1, 2], selectedChapterIds: [1, 2], checkpoint: 0, phase, userPaused: false,
+          pauseReason: phase === "paused" ? "challenge-captcha" : null, generation: 5,
+          attemptedProfileIds: [], attemptProfileId: null, challenge: { kind: "captcha", url: "https://source.test/chapter" },
+        })),
+      }],
+    };
+  }
+
+  it.each(["off", "completion", "progress"] as const)("publishes independent same-source range notices in %s mode", mode => {
+    schedulerMocks.getSnapshot.mockReturnValue({ records: [], sourceAccessBlocks: [], pausedTaskGroups: [], sourceQueuesPaused: false });
+    let publish = () => {};
+    const unsubscribe = vi.fn();
+    vpnMocks.subscribe.mockImplementation(listener => { publish = listener; return unsubscribe; });
+    const snapshot = runtimeSnapshot();
+    vpnMocks.getSnapshot.mockReturnValue(snapshot);
+    const update = vi.fn();
+    Object.assign(window, { __NoreaAndroidTasks: { update, stop: vi.fn() } });
+    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop = startAndroidTaskNotifications(t, mode);
+    const payload = () => JSON.parse(update.mock.calls.at(-1)![0]);
+    expect(payload().ranges.map((item: { rangeId: string }) => item.rangeId)).toEqual(["a", "b"]);
+    expect(payload()).toMatchObject({ requestPermission: true, executionActive: false, working: false });
+    vpnMocks.getSnapshot.mockReturnValue({ ...snapshot, plans: [{ ...snapshot.plans[0]!, ranges: [snapshot.plans[0]!.ranges[1]!] }] });
+    publish(); vi.advanceTimersByTime(250);
+    expect(payload().ranges.map((item: { rangeId: string }) => item.rangeId)).toEqual(["b"]);
+    stop(); expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it.each(["connecting", "running"] as const)("keeps execution anchored and awake for %s VPN work between chapter tasks", phase => {
+    schedulerMocks.getSnapshot.mockReturnValue({ records: [], sourceAccessBlocks: [], pausedTaskGroups: [], sourceQueuesPaused: false });
+    let publish = () => {};
+    vpnMocks.subscribe.mockImplementation(listener => { publish = listener; return vi.fn(); });
+    vpnMocks.getSnapshot.mockReturnValue(runtimeSnapshot(phase));
+    const update = vi.fn();
+    Object.assign(window, { __NoreaAndroidTasks: { update, stop: vi.fn() } });
+    const t = ((key: string) => key) as Parameters<typeof startAndroidTaskNotifications>[0];
+    const stop = startAndroidTaskNotifications(t, "off");
+    const payload = () => JSON.parse(update.mock.calls.at(-1)![0]);
+    expect(payload()).toMatchObject({ executionActive: true, working: true, ranges: [], groups: [] });
+    useNetworkStore.setState({ connectivity: "offline", revision: 2 }); vi.advanceTimersByTime(250);
+    expect(payload()).toMatchObject({ executionActive: false, working: false });
+    vpnMocks.getSnapshot.mockReturnValue(runtimeSnapshot("paused")); publish(); vi.advanceTimersByTime(250);
+    useNetworkStore.setState({ connectivity: "online", revision: 3 }); vi.advanceTimersByTime(250);
+    expect(payload()).toMatchObject({ executionActive: false, working: false });
+    stop();
+  });
+
   it("keeps presentation alive without restarting execution after platform suspension", () => {
     const update=vi.fn(), stopNative=vi.fn();let blocked=false;
     Object.assign(window,{__NoreaAndroidTasks:{update,stop:stopNative,isExecutionSuspended:()=>blocked}});

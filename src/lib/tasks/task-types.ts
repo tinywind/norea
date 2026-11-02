@@ -1,5 +1,6 @@
 import type { ScraperExecutorId } from "./scraper-queue";
 import type { SourceAccessBlock } from "./source-access-gate";
+import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 
 export type TaskLane = "main" | "source";
 
@@ -121,6 +122,7 @@ export interface TaskRecord {
   priority: TaskPriority;
   title: string;
   source?: TaskSource;
+  vpnWorker?: VpnDownloadWorkerRef;
   subject?: TaskSubject;
   status: TaskStatus;
   createdAt: number;
@@ -198,6 +200,7 @@ export interface TaskSpec<T> {
   title: string;
   priority?: TaskPriority;
   source?: TaskSource;
+  vpnWorker?: VpnDownloadWorkerRef;
   subject?: TaskSubject;
   dedupeKey?: string;
   canCancel?: boolean;

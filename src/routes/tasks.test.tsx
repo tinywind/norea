@@ -7,6 +7,7 @@ import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
 const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined }));
 vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot }));
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
+vi.mock("../components/VpnDownloadPanel", () => ({ VpnDownloadPanel: () => null }));
 vi.mock("../lib/tasks/source-access-coordinator", () => ({
   applySourceAccessBrowserOutcome: vi.fn(), cancelSourceAccessWait: vi.fn(),
   openSourceAccessBrowser: vi.fn(), sourceAccessBlockSourceNames: () => [],

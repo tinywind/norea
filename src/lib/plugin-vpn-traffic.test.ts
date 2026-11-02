@@ -19,7 +19,7 @@ const statusMock = vi.mocked(getPluginVpnStatus);
 const recoveryMock = vi.mocked(requestPluginVpnRecovery);
 const CONNECTED: PluginVpnStatus = {
   phase: "connected", error: null, proxyPort: 43127, supported: true,
-  profile: { isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
+  profile: { hash: "a".repeat(64), isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
 };
 const RECONNECTING: PluginVpnStatus = { ...CONNECTED, phase: "reconnecting" };
 

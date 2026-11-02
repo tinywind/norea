@@ -1,6 +1,13 @@
 import { requestAbortedError } from "./abort";
 import { isAndroidRuntime } from "./tauri-runtime";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
+import { androidBridgeAuthority } from "./android-bridge";
+import type { VpnDownloadWorkerRef } from "./tasks/vpn-download-types";
+
+interface AndroidVpnDownloadWorkerBridge {
+  capabilities: () => string;
+  request: (payload: string) => void;
+}
 
 interface AndroidScraperBridge {
   cancel?(payload: string): void;
@@ -40,11 +47,40 @@ interface NativeEnvelope<T> {
 declare global {
   interface Window {
     __NoreaAndroidScraper?: AndroidScraperBridge;
+    __NoreaAndroidVpnWorkers?: AndroidVpnDownloadWorkerBridge;
     __noreaAndroidScraperResolve?: (id: string, payload: string) => void;
   }
 }
 
 let nextRequestId = 1;
+const vpnWorkerSources = new Map<string, string>();
+type AndroidScraperMethod = "clearCache" | "clearCookies" | "currentOrigin" | "currentUrl" | "extract" | "fetch" | "navigate";
+type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "closeWorker" | "showWorker" | "cancel" | "cancelBackground";
+
+function vpnWorkerQueue(worker: VpnDownloadWorkerRef): ScraperExecutorId {
+  if ((worker.slot !== 0 && worker.slot !== 1) || !Number.isSafeInteger(worker.generation) || worker.generation <= 0) {
+    throw new Error("Android VPN worker identity is invalid.");
+  }
+  return `vpn:${worker.slot}:${worker.generation}`;
+}
+
+function sendWorkerCommand(method: AndroidWorkerMethod, payload: Record<string, unknown>): void {
+  const match = typeof payload.queue === "string" ? /^vpn:([01]):([1-9]\d*)$/.exec(payload.queue) : null;
+  if (!match || !Number.isSafeInteger(Number(match[2])) || typeof payload.sourceId !== "string" || !payload.sourceId.trim()) {
+    throw new Error("Android VPN worker request identity is invalid.");
+  }
+  const workerBridge = window.__NoreaAndroidVpnWorkers;
+  if (!workerBridge) throw new Error("Android VPN worker bridge is unavailable.");
+  workerBridge.request(JSON.stringify({ ...payload, method, _bridge: androidBridgeAuthority("vpn.worker") }));
+}
+
+function cancelNativeRequest(id: string, payload: Record<string, unknown>, message: string): void {
+  if (typeof payload.queue === "string" && payload.queue.startsWith("vpn:")) {
+    sendWorkerCommand("cancel", { id, queue: payload.queue, sourceId: payload.sourceId, message });
+  } else {
+    bridge().cancel?.(JSON.stringify({ id, message }));
+  }
+}
 
 const pending = new Map<
   string,
@@ -95,14 +131,7 @@ function bridge(): AndroidScraperBridge {
 }
 
 function callNative<T>(
-  method:
-    | "clearCache"
-    | "clearCookies"
-    | "currentOrigin"
-    | "currentUrl"
-    | "extract"
-    | "fetch"
-    | "navigate",
+  method: AndroidScraperMethod | "configureWorker" | "closeWorker" | "showWorker",
   payload: Record<string, unknown>,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -123,12 +152,7 @@ function callNative<T>(
       pending.delete(id);
       cleanup();
       try {
-        bridge().cancel?.(
-          JSON.stringify({
-            id,
-            message: "Android scraper request cancelled",
-          }),
-        );
+        cancelNativeRequest(id, payload, "Android scraper request cancelled");
       } catch {
         // Best-effort native cleanup; the JS abort result is authoritative.
       }
@@ -138,12 +162,7 @@ function callNative<T>(
     timeoutId = window.setTimeout(() => {
       pending.delete(id);
       try {
-        bridge().cancel?.(
-          JSON.stringify({
-            id,
-            message: `Android scraper ${String(method)} timed out`,
-          }),
-        );
+        cancelNativeRequest(id, payload, `Android scraper ${String(method)} timed out`);
       } catch {
         // Best-effort native cleanup; the JS promise timeout is authoritative.
       }
@@ -164,12 +183,12 @@ function callNative<T>(
     }
 
     try {
-      bridge()[method](
-        JSON.stringify({
-          id,
-          ...payload,
-        }),
-      );
+      if (method === "configureWorker" || method === "closeWorker" || method === "showWorker" ||
+          (typeof payload.queue === "string" && payload.queue.startsWith("vpn:"))) {
+        sendWorkerCommand(method, { id, ...payload });
+      } else {
+        bridge()[method as AndroidScraperMethod](JSON.stringify({ id, ...payload }));
+      }
     } catch (error) {
       pending.delete(id);
       cleanup();
@@ -183,10 +202,46 @@ export function cancelAndroidScraperExecutor(
   executor: ScraperExecutorId,
 ): boolean {
   if (!isAndroidRuntime() || typeof window === "undefined") return false;
+  if (executor.startsWith("vpn:")) {
+    const sourceId = vpnWorkerSources.get(executor);
+    if (!sourceId) return false;
+    try {
+      sendWorkerCommand("cancelBackground", { id: `android-scraper-${nextRequestId++}`, queue: executor, sourceId, message });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const nativeBridge = window.__NoreaAndroidScraper;
   if (!nativeBridge?.cancelBackground) return false;
   nativeBridge.cancelBackground(JSON.stringify({ message, queue: executor }));
   return true;
+}
+
+export async function androidConfigureVpnDownloadWorker(
+  worker: VpnDownloadWorkerRef,
+  configuration: { sourceId: string; profileId: string; proxyPort: number },
+): Promise<void> {
+  const queue = vpnWorkerQueue(worker);
+  if (!Number.isInteger(configuration.proxyPort) || configuration.proxyPort < 1 || configuration.proxyPort > 65_535) {
+    throw new Error("Android VPN worker proxy port is invalid.");
+  }
+  if (!configuration.profileId.trim()) throw new Error("Android VPN worker profile identity is invalid.");
+  await callNative("configureWorker", { ...configuration, slot: worker.slot, generation: worker.generation, queue }, 15_000);
+  vpnWorkerSources.set(queue, configuration.sourceId);
+}
+
+export async function androidCloseVpnDownloadWorker(worker: VpnDownloadWorkerRef, sourceId: string): Promise<void> {
+  const queue = vpnWorkerQueue(worker);
+  try {
+    await callNative("closeWorker", { queue, sourceId }, 15_000);
+  } finally {
+    vpnWorkerSources.delete(queue);
+  }
+}
+
+export async function androidShowVpnDownloadWorker(worker: VpnDownloadWorkerRef, sourceId: string): Promise<void> {
+  await callNative("showWorker", { queue: vpnWorkerQueue(worker), sourceId }, 15_000);
 }
 
 export function androidScraperClearCookies(

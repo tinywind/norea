@@ -24,12 +24,14 @@ export class SourceAccessNotificationTracker {
   }
 
   revision(blocks: readonly SourceAccessBlock[]): string {
-    return JSON.stringify(blocks.map(block => [block.sourceId, block.scopeKey, block.revision, this.names.get(block.sourceId)]));
+    return JSON.stringify(blocks.filter(block => block.rangeId === undefined)
+      .map(block => [block.sourceId, block.scopeKey, block.revision, this.names.get(block.sourceId)]));
   }
 
   notifications(blocks: readonly SourceAccessBlock[], t: TaskNotificationTranslate): SourceAccessNotification[] {
     const groups = new Map<string, SourceAccessBlock[]>();
     for (const block of blocks) {
+      if (block.rangeId !== undefined) continue;
       const group = groups.get(block.sourceId);
       if (group) group.push(block);
       else groups.set(block.sourceId, [block]);

@@ -20,3 +20,14 @@ it("keeps challenge presentation stable for progress-only changes", () => {
   expect(tracker.update({task:{...task,progress:{current:8,total:10}}})).toBe(false);
   expect(tracker.revision([block])).toBe(previous);
 });
+
+it("never turns a range-owned block into a default source browser notification", () => {
+  const tracker = new SourceAccessNotificationTracker({ records: [task] });
+  const workerBlock = { ...block, rangeId: "range-a", workerGeneration: 4 };
+  const t = ((key: string) => key) as Parameters<SourceAccessNotificationTracker["notifications"]>[1];
+  expect(tracker.notifications([workerBlock], t)).toEqual([]);
+  expect(tracker.notifications([workerBlock, block], t)).toMatchObject([
+    { sourceId: "source-a", scopeKey: block.scopeKey, body: "sourceAccess.notificationMessage" },
+  ]);
+  expect(tracker.revision([workerBlock, block])).toBe(tracker.revision([block]));
+});

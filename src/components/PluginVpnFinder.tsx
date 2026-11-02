@@ -15,6 +15,7 @@ import {
 } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
+import type { SavedVpnProfileCaptureSource } from "../lib/plugin-vpn-profiles";
 import { useTranslation } from "../i18n";
 import { useNetworkStore } from "../lib/network";
 import {
@@ -51,6 +52,7 @@ interface PluginVpnFinderProps {
   onVerdictChange: (
     ip: string,
     verdict: VpnGateServerVerdictValue | null,
+    source: SavedVpnProfileCaptureSource,
   ) => Promise<void>;
   opened: boolean;
   pendingCandidateId: string | null;
@@ -83,6 +85,12 @@ export function pluginVpnFinderServerVerdict(
   verdicts: ReadonlyMap<string, VpnGateServerVerdictValue>,
 ): VpnGateServerVerdictValue | null {
   return verdicts.get(server.ip) ?? null;
+}
+
+export function pluginVpnFinderVerdictCaptureSource(
+  server: Pick<PluginVpnFinderServer, "candidateId">,
+): SavedVpnProfileCaptureSource {
+  return { kind: "finder", candidateId: server.candidateId };
 }
 
 function comparePing(
@@ -579,7 +587,11 @@ export function PluginVpnFinder({
                           }
                           ip={server.ip}
                           onChange={(verdict) =>
-                            onVerdictChange(server.ip, verdict)
+                            onVerdictChange(
+                              server.ip,
+                              verdict,
+                              pluginVpnFinderVerdictCaptureSource(server),
+                            )
                           }
                           verdict={pluginVpnFinderServerVerdict(server, verdicts)}
                         />
@@ -656,7 +668,11 @@ export function PluginVpnFinder({
                           }
                           ip={server.ip}
                           onChange={(verdict) =>
-                            onVerdictChange(server.ip, verdict)
+                            onVerdictChange(
+                              server.ip,
+                              verdict,
+                              pluginVpnFinderVerdictCaptureSource(server),
+                            )
                           }
                           verdict={pluginVpnFinderServerVerdict(
                             server,

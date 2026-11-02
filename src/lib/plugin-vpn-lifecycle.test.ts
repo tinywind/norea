@@ -21,7 +21,7 @@ const statusListenerMock = vi.mocked(startPluginVpnStatusListener);
 const CONNECTED_STATUS: PluginVpnStatus = {
   error: null,
   phase: "connected",
-  profile: { isVpnGateFinder: true, remoteHost: "203.0.113.10", requiresUsernamePassword: false },
+  profile: { hash: "a".repeat(64), isVpnGateFinder: true, remoteHost: "203.0.113.10", requiresUsernamePassword: false },
   proxyPort: 43127,
   supported: true,
 };

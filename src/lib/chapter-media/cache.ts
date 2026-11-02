@@ -102,11 +102,11 @@ async function fetchChapterMedia(
   const vpnDeadline = Date.now() + PLUGIN_VPN_READY_TIMEOUT_MS;
   let networkFailures = 0;
   for (;;) {
-    await waitForPluginVpnReady(signal, vpnDeadline);
+    await waitForPluginVpnReady(signal, vpnDeadline, request?.scraperExecutor);
     try {
       const response = await pluginMediaFetch(url, { ...request, vpnReadyDeadline: vpnDeadline });
       // Plain HTTP proxy refusals are 502 responses, not fetch exceptions.
-      if (response.status === 502 && await waitForPluginVpnReady(signal, vpnDeadline)) {
+      if (response.status === 502 && await waitForPluginVpnReady(signal, vpnDeadline, request?.scraperExecutor)) {
         continue;
       }
       return response;
@@ -118,7 +118,7 @@ async function fetchChapterMedia(
       ) {
         throw error;
       }
-      if (await waitForPluginVpnReady(signal, vpnDeadline)) continue;
+      if (await waitForPluginVpnReady(signal, vpnDeadline, request?.scraperExecutor)) continue;
       const delayMs = MEDIA_NETWORK_RETRY_DELAYS_MS[networkFailures];
       if (delayMs === undefined) throw error;
       networkFailures += 1;

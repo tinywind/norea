@@ -233,7 +233,7 @@ async function webViewFetchInternal(
     ? chapterNavigationScript(url, options.chapterLinkSelector)
     : undefined;
   return withNetworkRequest(signal, async (signal) => {
-    await waitForPluginVpnReady(signal);
+    await waitForPluginVpnReady(signal, undefined, scraperExecutor);
     if (isAndroidRuntime()) {
       return androidWebviewExtract(
         url,

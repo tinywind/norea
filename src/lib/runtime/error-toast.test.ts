@@ -24,6 +24,7 @@ vi.mock("../../components/runtime/PluginVpnProxyGate", () => ({ PluginVpnProxyGa
 vi.mock("../content-sync/scheduler", () => ({ startContentServerSync: vi.fn() }));
 vi.mock("../network", () => ({ initializeNetworkStatus: vi.fn() }));
 vi.mock("../tasks/network-lifecycle", () => ({ initializeTaskNetworkState: vi.fn() }));
+vi.mock("../tasks/vpn-download-runtime", () => ({ initializeVpnDownloadRuntime: vi.fn(async () => undefined) }));
 vi.mock("../tasks/source-access-coordinator", () => ({ initializeSourceAccessCoordinator: vi.fn() }));
 vi.mock("./viewport", () => ({ initializeRuntimeViewport: vi.fn(), useRuntimeViewport: vi.fn() }));
 vi.mock("../logging", () => ({ installRuntimeLogLevelFilter: vi.fn(), setRuntimeLogLevel: vi.fn() }));
