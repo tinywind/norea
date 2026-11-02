@@ -339,3 +339,68 @@ Evidence under `.tmp/vpn-profile-workers/` includes
 | `src-tauri/src/plugin_vpn/saved_profiles.rs` | 1 |
 | `src-tauri/src/migrations/0003_vpn_download_profile_issues.sql` | 1 |
 | `src-tauri/gen/android/app/src/main/java/io/github/tinywind/norea/AndroidVpnDownloadWorkerService.kt` | 132 |
+
+## Cloudflare automatic replacement follow-up
+
+Date: 2026-11-02. This closes the automatic Cloudflare acceptance gap left by
+the manual-verification check above. No production code or APK rebuild was
+needed. The installed QA APK's on-device SHA-256 was checked against the final
+artifact and matched
+`79cd807e9c11201fc99c66feb372a8c940f29562d7c6cf5f2b59388d1a25130b`.
+
+Before starting a new batch, the real Tasks controls displayed
+`Single VPN recovery` and Cloudflare `Next profile`. Persisted settings held
+`mode: "single"` and `cloudflarePolicy: "nextProfile"`. The newly published
+plan also held `policies.cloudflare: "nextProfile"`; the earlier Pause value
+was not used for this check.
+
+A normal uploaded QA-only source supplied two chapters over actual HTTPS.
+Its first chapter acquisition inserted visible `.cf-turnstile` challenge DOM
+using the existing `documentStartScript` contract. The second acquisition of
+that same chapter supplied normal content. The fixture was not changed after
+Start, and neither manual verification nor explicit Resume was used.
+
+The batch was `vpn-batch-30d45885-59c5-4df0-a988-cf9c6aba440b`, plan
+`vpn-plan-c9e7e3b1-dc1a-4434-ba3d-5cb73e88e3d4`. Read-only debugger breakpoints
+recorded actual native IPC requests and completion callbacks. An Android
+bridge observer forwarded original requests and responses unchanged while
+recording their ownership and acknowledgements. No VPN, browser, scheduler or
+database result was mocked, and bridge authority fields were not logged.
+
+| Event sequence | Observed result |
+| --- | --- |
+| 2, 3 | Profile `219.100.37.212` connected on slot 0, generation 21. |
+| 8, 9 | The original chapter 31 capture request returned; the host recorded one `cloudflare` exclusion for that exact profile and generation. |
+| 14 | The old generation's `closeWorker` completion acknowledged `true`. |
+| 15 | Native disconnection of generation 21 completed with phase `disabled`. |
+| 16 | Only after both completions, the host requested another profile connection on generation 22. The range still showed checkpoint `0 / 2` and current chapter `CF auto chapter 1`. |
+| 17 | Replacement profile `219.100.37.53` connected successfully. |
+| 22, 23 | The replacement worker captured the same first chapter again. Its fixture attempt count changed from 1 to 2, without skipping to chapter 32. |
+| 28, 29 | Chapter 32 was acquired only after that retry completed. |
+| 32, 33 | The replacement browser closed and its tunnel completed disconnection after both chapters settled. |
+
+The final range checkpoint was 2/2, both chapter rows were downloaded, both
+stored HTTPS bodies were 1,191 bytes, and no jobs remained for the plan.
+The failed profile retained its user O verdict while its single batch-specific
+Cloudflare issue remained excluded. No `showWorker` request occurred.
+
+The device assertion command was:
+
+```bash
+python3 .tmp/vpn-profile-workers/assert-cloudflare-auto.py
+```
+
+It returned exit code 0 and:
+
+```text
+PASS: persisted Cloudflare Next profile; old capture/browser/tunnel settled before new VPN; same chapter 31 retried automatically; 2/2 real HTTPS bodies stored; queue empty.
+```
+
+Evidence under `.tmp/vpn-profile-workers/`:
+`cf-auto-policy-confirmed.json`, `cf-auto-settings-confirmed.json`,
+`cf-auto-draft-confirmed.json`, `cf-auto-device-trace.json`,
+`cf-auto-assertions.{json,log}`, `cf-auto-installed-apk.log` and
+`cf-auto-chapter-{1,2}.html`. The trace contained 33 ordered events and no
+debugger errors. This establishes automatic handling of a controlled Cloudflare
+block in the latest production APK; it does not claim solving a live
+third-party Cloudflare challenge.
