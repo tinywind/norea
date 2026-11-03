@@ -121,6 +121,10 @@ requirements must be decided explicitly before implementation.
   exclude it, restore leaves it in place, and an unreadable index starts an empty
   pool instead of disabling approved profiles. The "Use tested servers
   automatically" choice is part of the VPN download settings in localStorage.
+  "Approve all working" under Network > Advanced is the user's explicit verdict:
+  it publishes each pool entry without a recent failure into `saved-profiles/`
+  with an O row and the same bytes and hash, so running worker leases continue,
+  and the entries then leave the pool. It adds no new file or table format.
 
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
   to titles. Source metadata fetches merge this catalog; downloads, download deletions,

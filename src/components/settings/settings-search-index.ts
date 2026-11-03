@@ -81,6 +81,7 @@ export const SETTINGS_SEARCH_ROWS: readonly SettingsSearchRow[] = [
   { section: "network", label: "settings.data.pluginVpn.profile.label", condition: "settingsSearch.condition.android", synonyms: "settingsSearch.synonyms.vpn" },
   { section: "network", label: "settings.data.pluginVpn.credentials.label", advanced: true, condition: "settingsSearch.condition.vpnSignIn" },
   { section: "network", label: "settings.data.pluginVpn.finder.verdict.label", advanced: true, condition: "settingsSearch.condition.android" },
+  { section: "network", label: "settings.data.pluginVpn.tested.label", advanced: true, condition: "settingsSearch.condition.android", synonyms: "settingsSearch.synonyms.vpn" },
 
   { section: "reset", label: "settings.data.libraryMembership.label" },
   { section: "reset", label: "settings.data.readingProgress.label" },

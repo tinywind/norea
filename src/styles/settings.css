@@ -692,3 +692,19 @@
 .norea-settings-advanced[data-search-hit="true"] {
   background: var(--norea-color-accent-soft);
 }
+
+.norea-tested-vpn-servers {
+  display: grid;
+  gap: var(--norea-space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.norea-tested-vpn-server {
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: grid;
+  gap: var(--norea-space-1);
+  overflow-wrap: anywhere;
+  padding-block-end: var(--norea-space-2);
+}

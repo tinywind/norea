@@ -16,7 +16,7 @@ use tauri_plugin_sql::{DbInstances, DbPool};
 use super::finder::{VpnGateFinder, VpnGateServer};
 use super::saved_profiles::automatic::AutomaticVpnProfile;
 use super::saved_profiles::{
-    ForegroundVpnProfile, SavedProfileVault, SavedVpnProfileCaptureSource, SavedVpnProfileLease,
+    ForegroundVpnProfile, SavedProfileVault, SavedVpnProfile, SavedVpnProfileCaptureSource, SavedVpnProfileLease,
     SavedVpnProfileSelection, SavedVpnProfileVaultSnapshot, VpnGateServerVerdictMutation,
     VpnGateServerVerdictValue, read_active_capture,
 };
@@ -603,6 +603,17 @@ pub(crate) async fn plugin_vpn_list_automatic_profiles(
     let _operation = state.shared.operation.lock().await;
     let pool = saved_profile_database(&app).await?;
     state.saved_profiles()?.lock().await.automatic_profiles(&pool).await
+}
+
+/// "Approve all working": saves every tested server without a recent tunnel failure as O.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_approve_working_automatic_profiles(
+    app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<Vec<SavedVpnProfile>, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    let pool = saved_profile_database(&app).await?;
+    state.saved_profiles()?.lock().await.approve_working_automatic(&pool).await
 }
 
 #[tauri::command]

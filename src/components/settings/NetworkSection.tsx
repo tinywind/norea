@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConsoleChip } from "../ConsolePrimitives";
 import { PluginVpnFinder } from "../PluginVpnFinder";
 import { SavedVpnProfilesSettings } from "../SavedVpnProfilesSettings";
+import { TestedVpnServers } from "../TestedVpnServers";
 import {
   SettingsAdvancedGroup,
   SettingsFieldRow,
@@ -614,6 +615,15 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
               </SettingsFieldRow>
             ) : null}
             <SavedVpnProfilesSettings disabled={isBusy || vpnOperation !== null} />
+            <SettingsFieldRow
+              description={t("settings.data.pluginVpn.tested.description")}
+              label={t("settings.data.pluginVpn.tested.label")}
+              layout="stacked"
+            >
+              <SettingsWideField>
+                <TestedVpnServers disabled={isBusy || vpnOperation !== null} />
+              </SettingsWideField>
+            </SettingsFieldRow>
           </SettingsAdvancedGroup>
           <PluginVpnFinder
             connectionError={visibleStatusError}

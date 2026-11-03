@@ -252,6 +252,7 @@ pub fn run() {
             plugin_vpn::state::plugin_vpn_revoke_saved_profile,
             plugin_vpn::state::plugin_vpn_set_saved_profile_limit,
             plugin_vpn::state::plugin_vpn_list_automatic_profiles,
+            plugin_vpn::state::plugin_vpn_approve_working_automatic_profiles,
             plugin_vpn::state::plugin_vpn_record_automatic_profile_result,
             plugin_vpn::state::plugin_vpn_test_automatic_candidate,
             plugin_vpn::state::plugin_vpn_cancel_finder_query,

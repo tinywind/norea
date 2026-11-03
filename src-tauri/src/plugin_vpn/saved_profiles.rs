@@ -601,6 +601,54 @@ impl SavedProfileVault {
         Ok(profile)
     }
 
+    /// Approves, as O, every tested server without a recent worker tunnel failure ("Approve all
+    /// working"). The best-scored server is approved last so capacity eviction keeps it longest.
+    /// A worker already leasing one keeps running: the approved file has the same bytes and hash.
+    /// Returns the newly approved profiles.
+    pub(crate) async fn approve_working_automatic(&mut self, pool: &SqlitePool) -> Result<Vec<SavedVpnProfile>, String> {
+        self.require_healthy()?;
+        self.reconcile(pool).await?;
+        let mut working: Vec<_> = self.automatic.profiles().into_iter().filter(|profile| profile.failures == 0).collect();
+        working.reverse();
+        let mut approved = Vec::new();
+        for candidate in working {
+            let Ok(Some((tested, bytes))) = self.automatic.read(&candidate.id, &candidate.hash) else { continue };
+            let protocol = validate_saved_profile(&tested.ip, &bytes)?;
+            publish_private_file(&self.directory.join(format!("{}.ovpn", tested.ip)), &bytes)?;
+            let updated_at: i64 = sqlx::query_scalar("INSERT INTO vpn_gate_server_verdict (ip, verdict) VALUES (?, 'works') ON CONFLICT(ip) DO UPDATE SET verdict = excluded.verdict, updated_at = unixepoch() RETURNING updated_at")
+                .bind(&tested.ip).fetch_one(pool).await.map_err(|error| format!("could not save VPN Gate approval: {error}"))?;
+            let sequence = self
+                .index
+                .sequence
+                .checked_add(1)
+                .filter(|sequence| *sequence <= MAX_SAFE_INTEGER)
+                .ok_or_else(|| "saved VPN profile approval sequence is exhausted".to_string())?;
+            let profile = SavedVpnProfile {
+                id: tested.hash.clone(),
+                ip: tested.ip.clone(),
+                protocol,
+                hash: tested.hash.clone(),
+                approved_at: updated_at,
+                approval_sequence: sequence,
+            };
+            self.index.sequence = sequence;
+            self.index.profiles.push(profile.clone());
+            for lease in self.leases.values_mut().filter(|lease| lease.profile.ip == profile.ip && lease.profile.hash == profile.hash) {
+                lease.profile = profile.clone();
+            }
+            self.evict_oldest();
+            self.persist()?;
+            approved.push(profile);
+        }
+        let approved_ips: HashSet<&str> = approved.iter().map(|profile| profile.ip.as_str()).collect();
+        for ip in self.automatic.reconcile(&marked_ips(pool).await?)? {
+            if !approved_ips.contains(ip.as_str()) { self.invalidate_ip(&ip); }
+        }
+        if let Some(error) = self.cleanup_orphans() { log::warn!("{error}"); }
+        let retained: HashSet<&str> = self.index.profiles.iter().map(|profile| profile.ip.as_str()).collect();
+        Ok(approved.into_iter().filter(|profile| retained.contains(profile.ip.as_str())).collect())
+    }
+
     pub(crate) fn record_automatic_result(&mut self, id: &str, hash: &str, connected: bool) -> Result<(), String> {
         validate_selection(id, hash)?;
         if let Some(ip) = self.automatic.record_result(id, hash, connected)? { self.invalidate_ip(&ip); }
@@ -997,6 +1045,29 @@ mod tests {
         assert!(vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 2).await.is_err());
         let rows: Vec<(String, String)> = sqlx::query_as("SELECT ip, verdict FROM vpn_gate_server_verdict ORDER BY ip").fetch_all(&pool).await.unwrap();
         assert_eq!(rows, vec![("8.8.4.4".to_string(), "works".to_string()), ("8.8.8.8".to_string(), "fails".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn approves_working_tested_servers_as_o_without_interrupting_their_leases() {
+        let (directory, pool, mut vault) = fixture().await;
+        let best = vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 9, 1).await.unwrap();
+        let other = vault.add_automatic(&pool, "1.1.1.1", &profile("1.1.1.1", "udp"), 5, 1).await.unwrap();
+        let failing = vault.add_automatic(&pool, "8.8.4.4", &profile("8.8.4.4", "tcp"), 7, 1).await.unwrap();
+        vault.record_automatic_result(&failing.id, &failing.hash, false).unwrap();
+        vault.reserve(&pool, "download:0:1:range", &best.id, &best.hash, None).await.unwrap();
+
+        let approved = vault.approve_working_automatic(&pool).await.unwrap();
+
+        assert_eq!(approved.iter().map(|profile| profile.ip.as_str()).collect::<Vec<_>>(), vec!["1.1.1.1", "8.8.8.8"]);
+        assert!(approved[1].approval_sequence > approved[0].approval_sequence);
+        assert_eq!(approved[1].hash, best.hash);
+        assert_eq!(vault.read_lease(&pool, "download:0:1:range").await.unwrap().1, profile("8.8.8.8", "tcp"));
+        assert!(vault.read_for_apply(&pool, &other.id, &other.hash).await.is_ok());
+        assert!(directory.path().join("profiles/8.8.8.8.ovpn").exists());
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT ip, verdict FROM vpn_gate_server_verdict ORDER BY ip").fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![("1.1.1.1".to_string(), "works".to_string()), ("8.8.8.8".to_string(), "works".to_string())]);
+        assert_eq!(vault.automatic_profiles(&pool).await.unwrap().iter().map(|profile| profile.ip.as_str()).collect::<Vec<_>>(), vec!["8.8.4.4"]);
+        assert!(vault.approve_working_automatic(&pool).await.unwrap().is_empty());
     }
 
     #[tokio::test]
