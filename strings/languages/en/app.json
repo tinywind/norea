@@ -192,6 +192,7 @@
   "contentSync.progress": "Checked {completed}/{total} chapters · Uploaded {uploaded} · Failed {failed}",
   "contentSync.description": "Share downloaded chapters and work details across your devices. Reading progress and library stay on each device.",
   "contentSync.serverUrl": "Server URL",
+  "contentSync.serverUrlPlaceholder": "https://server.example.com",
   "contentSync.deviceName": "Device name",
   "contentSync.resetDeviceName": "Reset device name",
   "contentSync.mode": "Sync mode",

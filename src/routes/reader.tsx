@@ -405,7 +405,15 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const retryChapterQuery = () => {
     void chapterQuery.refetch();
   };
-  const readerContent = readerPreparation.error ? (
+  const readerContent = chapterId <= 0 ? (
+    <Box className="norea-reader-state-frame">
+      <StateView
+        color="warn"
+        title={t("reader.chapterNotFound")}
+        message={t("reader.chapterNotFoundMessage")}
+      />
+    </Box>
+  ) : readerPreparation.error ? (
     <Box className="norea-reader-state-frame">
       <StateView
         action={{ label: t("common.retry"), onClick: readerPreparation.retry }}

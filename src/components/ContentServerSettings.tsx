@@ -74,7 +74,7 @@ export function ContentServerSettings() {
         <div className="norea-settings-connection">
           <TextInput
             aria-label={t("contentSync.serverUrl")}
-            placeholder="http://127.0.0.1:8080"
+            placeholder={t("contentSync.serverUrlPlaceholder")}
             value={urlDraft}
             disabled={disabled}
             onChange={(event) => setUrlDraft(event.currentTarget.value)}

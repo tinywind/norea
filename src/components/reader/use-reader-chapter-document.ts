@@ -59,40 +59,6 @@ function logReaderMediaPipeline(
   console.warn("[reader-media:route]", event, details);
 }
 
-const SAMPLE_CHAPTER_HTML = `
-<h1>Chapter 1 - A long road begins</h1>
-<p>
-  The wind carried the scent of pine and old rain across the road, and
-  for a moment the boy thought he could hear the river even before he
-  could see it. He paused at the crest of the hill and looked back the
-  way he had come. The village was already a smudge of slate against
-  the morning grey. He had not expected leaving to feel this small.
-</p>
-<p>
-  His father had said only that the journey would not be a kind one.
-  His mother, who had no patience for either drama or doubt, had
-  packed his satchel with practical things: flatbread wrapped in
-  oiled paper, three apples, a little sealed pot of honey, the knife
-  he had been allowed to whet but not yet to keep, and three coins of
-  middling worth.
-</p>
-<p>
-  The road wound down into the valley between elms. He had been told
-  they would change colour soon. He had also been told that the wolves
-  this year were thin and bold. He hoped neither would inconvenience
-  him before sundown.
-</p>
-<h2>I.</h2>
-<p>
-  The river crossing came at noon, exactly when his father had said
-  it would. There was a stone bridge with a moss-furred handrail and
-  a toll-house, and the toll-keeper was asleep against the doorpost
-  with a long-stemmed pipe gone cold in his hand. The boy laid one of
-  his middling coins on the windowsill and walked across without
-  waking him.
-</p>
-`;
-
 type ReaderChapterDocument = Pick<
   ReaderChapterRow,
   | "id"
@@ -361,10 +327,10 @@ export function useReaderChapterDocument({
   );
 
   const hasChapterContent = Boolean(activeReaderHtml);
-  const content = activeReaderHtml ?? SAMPLE_CHAPTER_HTML;
+  const content = activeReaderHtml ?? "";
   const isPdfChapter = hasChapterContent && activeContentType === "pdf";
   const readerPreparation = useReaderDocument(
-    isPdfChapter || (chapterId > 0 && !hasChapterContent) ? null : content,
+    isPdfChapter || !hasChapterContent ? null : content,
     bionicReading,
     readerContentKey,
   );

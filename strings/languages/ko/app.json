@@ -192,6 +192,7 @@
   "contentSync.progress": "챕터 {completed}/{total}개 확인 · 업로드 {uploaded} · 실패 {failed}",
   "contentSync.description": "다운로드한 챕터와 작품 정보를 기기 간에 공유합니다. 읽기 진도와 서재는 각 기기에 남습니다.",
   "contentSync.serverUrl": "서버 주소",
+  "contentSync.serverUrlPlaceholder": "https://server.example.com",
   "contentSync.deviceName": "기기 이름",
   "contentSync.resetDeviceName": "기기 이름 초기화",
   "contentSync.mode": "동기화 방식",
