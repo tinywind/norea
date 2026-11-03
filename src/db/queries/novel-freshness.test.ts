@@ -4,7 +4,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn() }));
 import { getDb } from "../client";
-import { countRecentChecksBySource, getNovelFreshness, listCheckCandidates, recordNovelCheck } from "./novel-freshness";
+import {
+  countRecentChecksBySource, getLatestLibraryCheckAt, getNovelFreshness, listCheckCandidates, recordNovelCheck,
+} from "./novel-freshness";
 
 let sqlite: DatabaseSync;
 const params = (values: unknown[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
@@ -58,4 +60,13 @@ it("lists library source novels with their reading state, goal and freshness, an
       totalChapters: 0, unreadChapters: 0, hasGoal: false },
   ]);
   expect(await countRecentChecksBySource(500)).toEqual(new Map([["source", 1]]));
+});
+
+it("reports when a library novel was last checked, ignoring novels outside the library", async () => {
+  expect(await getLatestLibraryCheckAt()).toBeNull();
+  sqlite.exec(`UPDATE novel SET in_library=1 WHERE id=1;
+    INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(2,'source','/two','Two',0)`);
+  await recordNovelCheck(1, { ok: false }, 30);
+  await recordNovelCheck(2, { ok: true, newChapters: 0 }, 90);
+  expect(await getLatestLibraryCheckAt()).toBe(30);
 });

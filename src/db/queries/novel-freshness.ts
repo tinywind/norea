@@ -96,3 +96,11 @@ export async function countRecentChecksBySource(sinceSeconds: number): Promise<M
      WHERE f.last_checked_at >= $1 GROUP BY n.plugin_id`, [sinceSeconds]);
   return new Map(rows.map((row) => [row.pluginId, row.count]));
 }
+
+/** When any library novel was last checked for new chapters, for "Last checked" on Updates. */
+export async function getLatestLibraryCheckAt(readMode: DatabaseReadMode = "queued"): Promise<number | null> {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
+  const [row] = await db.select<{ checkedAt: number | null }[]>(
+    `SELECT MAX(f.last_checked_at) AS checkedAt FROM novel_freshness f JOIN novel n ON n.id=f.novel_id WHERE n.in_library=1`);
+  return row?.checkedAt ?? null;
+}

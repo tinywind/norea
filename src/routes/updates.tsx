@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Button, Loader, Progress, Stack } from "@mantine/core";
 import { PageFrame, StateView } from "../components/AppFrame";
@@ -41,7 +41,8 @@ import {
 } from "../lib/updates/update-index-events";
 import { isAbortError } from "../lib/abort";
 import { describeError } from "../lib/errors";
-import { useTranslation, type AppLocale } from "../i18n";
+import { formatRelativeTimeForLocale, useTranslation, type AppLocale } from "../i18n";
+import { getLatestLibraryCheckAt } from "../db/queries/novel-freshness";
 import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 import { useUpdatesStore } from "../store/updates";
 import { useUpdatesSeenStore } from "../store/updates-seen";
@@ -97,6 +98,8 @@ function formatUpdateDay(
   }).format(date);
 }
 
+const LAST_CHECKED_KEY = ["updates", "last-checked"] as const;
+
 interface UpdatesPageProps {
   active?: boolean;
 }
@@ -134,6 +137,15 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
     ReadonlyMap<number, ChapterDownloadStatus>
   >(() => new Map());
 
+  const lastCheckedAt = useQuery({
+    queryKey: LAST_CHECKED_KEY,
+    queryFn: () => getLatestLibraryCheckAt("committed"),
+    enabled: active,
+  });
+  useEffect(() => subscribeUpdatesIndexChanges(() => {
+    void queryClient.invalidateQueries({ queryKey: LAST_CHECKED_KEY });
+  }), [queryClient]);
+
   const refresh = useMutation({
     meta: { errorPresentation: hasLoaded ? "toast" : "inline" },
     mutationFn: async () => {
@@ -160,6 +172,9 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       });
     },
     onMutate: () => setCheckProgress(null),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: LAST_CHECKED_KEY });
+    },
     onSuccess: (result, novelIds) => {
       applyCheckResult(result, novelIds);
       void queryClient.invalidateQueries({
@@ -542,6 +557,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
               {t("common.cancel")}
             </Button>
           </div>
+        ) : null}
+        {!check.isPending && view === "new" && lastCheckedAt.data ? (
+          <p className="norea-updates-note">
+            {t("updates.lastChecked", { time: formatRelativeTimeForLocale(locale, lastCheckedAt.data) })}
+          </p>
         ) : null}
         {!check.isPending && lastCheckResult && lastCheckResult.deferredNovels > 0 ? (
           <p className="norea-updates-note" role="status">
