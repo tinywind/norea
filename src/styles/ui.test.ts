@@ -34,10 +34,11 @@ function rules(source: string): Rule[] {
   }));
 }
 
+/** Every declaration that applies to the exact selector, across all rules that list it. */
 function ruleFor(source: string, selector: string): Rule {
-  const rule = rules(source).find((candidate) => candidate.selectors.includes(selector));
-  expect(rule, selector).toBeDefined();
-  return rule as Rule;
+  const matching = rules(source).filter((candidate) => candidate.selectors.includes(selector));
+  expect(matching, selector).not.toEqual([]);
+  return { selectors: [selector], body: matching.map((rule) => rule.body).join("\n") };
 }
 
 describe("state layer utility", () => {
@@ -89,6 +90,78 @@ describe("focus indicator", () => {
         if (!rule.selectors.some((selector) => /:focus(-visible)?\b/.test(selector))) continue;
         expect(rule.body, `${name} ${rule.selectors.join(", ")}`).not.toMatch(/--norea-focus-ring/);
       }
+    }
+  });
+});
+
+describe("coarse pointer touch floor", () => {
+  const coarse = mediaBlock(css, "(any-pointer: coarse)");
+
+  it("raises shared controls, nav links and chip buttons to the 44px control token", () => {
+    for (const selector of [
+      "html:root .norea-icon-button",
+      "html:root .mantine-ActionIcon-root",
+      "html:root .norea-text-button",
+      "html:root .mantine-Button-root",
+      "html:root .mantine-CloseButton-root",
+      "html:root .norea-rail-link",
+      "html:root button.norea-console-chip",
+      "html:root .norea-library-source-chip",
+    ]) {
+      const { body } = ruleFor(coarse, selector);
+      expect(body, selector).toMatch(/min-height: var\(--norea-control-md\);/);
+      expect(body, selector).toMatch(/min-width: var\(--norea-control-md\);/);
+    }
+  });
+
+  it("grows the hit area with a transparent pseudo-element where the bar height is fixed", () => {
+    for (const control of [
+      ".mantine-Input-section .mantine-ActionIcon-root",
+      ".norea-reader-icon-button",
+      ".norea-reader-strip-link",
+      ".norea-library-selection-icon",
+      ".norea-novel-selection-icon",
+      ".norea-mobile-nav-link",
+    ]) {
+      const { body } = ruleFor(coarse, `html:root ${control}::before`);
+      expect(body, control).toMatch(/content: "";/);
+      expect(body, control).toMatch(/height: max\(100%, var\(--norea-control-md\)\);/);
+      expect(body, control).toMatch(/width: max\(100%, var\(--norea-control-md\)\);/);
+      expect(body, control).not.toMatch(/background/);
+      expect(ruleFor(coarse, `html:root ${control}`).body, control).toMatch(/position: relative;/);
+    }
+    for (const control of [
+      ".mantine-Input-section .mantine-ActionIcon-root",
+      ".norea-reader-icon-button.mantine-ActionIcon-root",
+    ]) {
+      expect(ruleFor(coarse, `html:root ${control}`).body, control).toMatch(/min-height: 0;/);
+    }
+  });
+
+  it("keeps the touch floor out of fine pointer layouts", () => {
+    expect(css.replace(coarse, "")).not.toMatch(/--norea-control-md/);
+  });
+});
+
+describe("tap highlight", () => {
+  it("is suppressed only on reader tap surfaces and controls with their own pressed state", () => {
+    const reader = readFileSync(new URL("./reader.css", stylesDir), "utf8");
+    const suppressed = rules(reader)
+      .filter((rule) => /-webkit-tap-highlight-color: transparent/.test(rule.body))
+      .flatMap((rule) => rule.selectors)
+      .sort();
+    expect(suppressed).toEqual([
+      ".norea-pdf-reader-viewport",
+      ".norea-reader-chapter-row",
+      ".norea-reader-floating-seekbar",
+      ".norea-reader-icon-button",
+      ".norea-reader-strip-link",
+      ".reader-viewport",
+    ]);
+    const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css") && name !== "reader.css");
+    for (const name of sheets) {
+      const source = readFileSync(new URL(`./${name}`, stylesDir), "utf8");
+      expect(source, name).not.toMatch(/-webkit-tap-highlight-color/);
     }
   });
 });

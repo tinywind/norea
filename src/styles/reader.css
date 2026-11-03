@@ -1,5 +1,4 @@
 .norea-reader-shell {
-  -webkit-tap-highlight-color: transparent;
   background: var(--norea-color-bg);
   box-sizing: border-box;
   color: var(--norea-color-ink);
@@ -274,7 +273,8 @@
 
 .norea-reader-icon-button,
 .norea-reader-strip-link,
-.norea-reader-chapter-row {
+.norea-reader-chapter-row,
+.norea-reader-floating-seekbar {
   -webkit-tap-highlight-color: transparent;
 }
 

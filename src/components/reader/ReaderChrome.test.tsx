@@ -21,14 +21,18 @@ const chapter = {
   isDownloaded: true, bookmark: false, unread: true, progress: 0,
 } as unknown as ChapterRow;
 
-function readerMeta(overrides: { chapter?: ChapterRow; novelName?: string }) {
-  const tree = elements(ReaderTopChrome({
+function topChrome(overrides: { chapter?: ChapterRow; novelName?: string; showMediaRepair?: boolean }) {
+  return elements(ReaderTopChrome({
     chapter: overrides.chapter ?? chapter, chapterCount: 12, chapterIndex: 2, novelName: overrides.novelName,
     bookmarkDisabled: false, bookmarkLoading: false, incognitoMode: false, onBack: vi.fn(), onOpenSettings: vi.fn(),
     onRepairMedia: vi.fn(), onToggleBookmark: vi.fn(), progress: 40, repairMediaDisabled: false,
-    repairMediaLoading: false, repairMediaAttention: false, settingsOpen: false, showMediaRepair: false,
+    repairMediaLoading: false, repairMediaAttention: false, settingsOpen: false,
+    showMediaRepair: overrides.showMediaRepair ?? false,
   }));
-  return tree.find((element) => element.props.className === "norea-reader-meta")!.props.children;
+}
+
+function readerMeta(overrides: { chapter?: ChapterRow; novelName?: string }) {
+  return topChrome(overrides).find((element) => element.props.className === "norea-reader-meta")!.props.children;
 }
 
 it("shows the novel name and position without an offline label for a stored chapter", () => {
@@ -37,4 +41,11 @@ it("shows the novel name and position without an offline label for a stored chap
 
 it("omits a missing novel name and keeps the not-downloaded status", () => {
   expect(readerMeta({ chapter: { ...chapter, isDownloaded: false } })).toBe("3 / 12 / reader.notDownloaded");
+});
+
+it("gives every top chrome button the state layer that replaces the tap highlight", () => {
+  const buttons = topChrome({ showMediaRepair: true })
+    .filter((element) => element.props.className?.includes("norea-reader-icon-button"));
+  expect(buttons).toHaveLength(4);
+  for (const button of buttons) expect(button.props.className).toContain("norea-state-layer");
 });

@@ -97,7 +97,7 @@ export function ReaderTopChrome({
   return (
     <header className="norea-reader-topbar">
       <BackIconButton
-        className="norea-reader-icon-button"
+        className="norea-reader-icon-button norea-state-layer"
         label={t("reader.backToNovel")}
         onClick={onBack}
       />
@@ -118,7 +118,7 @@ export function ReaderTopChrome({
       <span className="norea-reader-status">{Math.round(progress)}%</span>
       {showMediaRepair ? (
         <IconButton
-          className="norea-reader-icon-button"
+          className="norea-reader-icon-button norea-state-layer"
           disabled={repairMediaDisabled || repairMediaLoading}
           label={t("reader.repairMedia")}
           onClick={onRepairMedia}
@@ -130,7 +130,7 @@ export function ReaderTopChrome({
       ) : null}
       <IconButton
         active={Boolean(chapter?.bookmark)}
-        className="norea-reader-icon-button"
+        className="norea-reader-icon-button norea-state-layer"
         disabled={bookmarkDisabled || bookmarkLoading}
         label={
           chapter?.bookmark
@@ -144,7 +144,7 @@ export function ReaderTopChrome({
       </IconButton>
       <IconButton
         active={settingsOpen}
-        className="norea-reader-icon-button"
+        className="norea-reader-icon-button norea-state-layer"
         label={t("reader.openSettings")}
         onClick={onOpenSettings}
         size="sm"
@@ -227,7 +227,7 @@ export function ReaderSettingsOverlay({
           </h2>
           <div className="norea-reader-settings-actions">
             <IconButton
-              className="norea-reader-icon-button"
+              className="norea-reader-icon-button norea-state-layer"
               label={t("reader.openFullSettings")}
               onClick={onOpenSettingsPage}
               size="sm"
@@ -235,7 +235,7 @@ export function ReaderSettingsOverlay({
               <ReaderSettingsGlyph />
             </IconButton>
             <IconButton
-              className="norea-reader-icon-button"
+              className="norea-reader-icon-button norea-state-layer"
               label={t("reader.closeSettings")}
               onClick={onClose}
               size="sm"
@@ -354,7 +354,7 @@ export function ReaderChapterPanel({
               return (
                 <button
                   aria-current={current ? "true" : undefined}
-                  className="norea-reader-chapter-row"
+                  className="norea-reader-chapter-row norea-state-layer"
                   data-current={current}
                   data-status={status}
                   key={item.id}
@@ -403,7 +403,7 @@ export function ReaderBottomStrip({
   return (
     <footer className="norea-reader-bottom-strip">
       <button
-        className="norea-reader-strip-link"
+        className="norea-reader-strip-link norea-state-layer"
         disabled={!hasPreviousChapter}
         onClick={onPreviousChapter}
         type="button"
@@ -427,7 +427,7 @@ export function ReaderBottomStrip({
         </div>
       </div>
       <button
-        className="norea-reader-strip-link"
+        className="norea-reader-strip-link norea-state-layer"
         disabled={!hasNextChapter}
         onClick={onNextChapter}
         type="button"
