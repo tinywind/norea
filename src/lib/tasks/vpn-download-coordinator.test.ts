@@ -10,7 +10,7 @@ import type {
   VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileCandidate, VpnDownloadProfileIssue, VpnDownloadProfileIssueInput,
   VpnDownloadRangeState, VpnDownloadWorkerRef,
 } from "./vpn-download-types";
-import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
+import { VpnDownloadCoordinator, type VpnDownloadChapterFailure, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -77,6 +77,13 @@ class Runtime implements VpnDownloadRuntime {
   readonly tested: string[] = [];
   readonly results: [string, boolean][] = [];
   test: ((candidate: VpnDownloadProfileCandidate) => Promise<boolean>) | null = null;
+  readonly chapterFailures: { chapterId: number; error: unknown }[] = [];
+  chapterFailure: (attempts: number, error: unknown) => VpnDownloadChapterFailure = () => ({ failureClass: "content", nextRetryAt: null });
+
+  async recordChapterFailure(job: ChapterDownloadJob, error: unknown): Promise<VpnDownloadChapterFailure> {
+    this.chapterFailures.push({ chapterId: job.id, error });
+    return this.chapterFailure(this.chapterFailures.filter(item => item.chapterId === job.id).length, error);
+  }
 
   async findProfileCandidates(options: { poolEmpty: boolean }): Promise<readonly VpnDownloadProfileCandidate[]> {
     this.discoveries.push(options.poolEmpty);
@@ -794,6 +801,55 @@ describe("VPN download coordinator", () => {
     await coordinator.cancelPlan(value.id);
   });
 
+  it("retries a transient chapter failure on the same route after its backoff instead of pausing the range", async () => {
+    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    runtime.chapterFailure = attempts => attempts === 1
+      ? { failureClass: "transient", nextRetryAt: Date.now() + 20 } : { failureClass: "transient", nextRetryAt: null };
+    try {
+      await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(1));
+      const [, first] = runtime.task("a"); first.result.reject(new Error("Request failed (HTTP 503)")); first.cleanup.resolve(undefined);
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      expect(runtime.task("a", 1)[1].job.id).toBe(9);
+      expect(runtime.chapterFailures.map(item => item.chapterId)).toEqual([9]);
+      expect(runtime.events.filter(event => event.startsWith("connect:"))).toHaveLength(1);
+      expect(runtime.issues).toEqual([]);
+      expect(current(coordinator, "a")).toMatchObject({ checkpoint: 0, pauseReason: null });
+      runtime.succeed("a", 1);
+      await until(() => expect(current(coordinator, "a").checkpoint).toBe(1));
+      expect(runtime.events).toContain("settle:a:9");
+    } finally { await coordinator.cancelPlan(value.id); }
+  });
+
+  it("pauses the range per chapter once the retry budget is spent, without blaming the server", async () => {
+    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    runtime.chapterFailure = attempts => ({ failureClass: "transient", nextRetryAt: attempts <= 2 ? Date.now() + 5 : null });
+    await coordinator.start(value, jobsFor(value));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await until(() => expect(runtime.tasks.size).toBe(attempt + 1));
+      const [, item] = runtime.task("a", attempt); item.result.reject(new Error("Failed to fetch")); item.cleanup.resolve(undefined);
+    }
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
+    expect(runtime.tasks.size).toBe(3);
+    expect(runtime.chapterFailures).toHaveLength(3);
+    expect(runtime.issues).toEqual([]);
+    expect(current(coordinator, "a")).toMatchObject({ phase: "paused", checkpoint: 0, attemptedProfileIds: [] });
+    await coordinator.cancelPlan(value.id);
+  });
+
+  it("stops a waiting chapter retry when the user pauses the range", async () => {
+    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    runtime.chapterFailure = () => ({ failureClass: "transient", nextRetryAt: Date.now() + 60_000 });
+    try {
+      await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(1));
+      const [, first] = runtime.task("a"); first.result.reject(new Error("Failed to fetch")); first.cleanup.resolve(undefined);
+      await until(() => expect(runtime.chapterFailures).toHaveLength(1));
+      await coordinator.pauseRange("plan", "a");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(runtime.tasks.size).toBe(1);
+      expect(current(coordinator, "a")).toMatchObject({ phase: "paused", userPaused: true, pauseReason: "user-paused", checkpoint: 0 });
+    } finally { await coordinator.cancelPlan(value.id); }
+  });
+
   it("excludes a confirmed lost tunnel and retries its chapter but does not blame a parser or cancellation", async () => {
     const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
     await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(1));
@@ -802,7 +858,7 @@ describe("VPN download coordinator", () => {
     expect(runtime.task("a", 1)[1].job.id).toBe(9);
     expect(runtime.issues).toEqual([expect.objectContaining({ profileId: "a", cause: "tunnel-lost", excluded: true })]);
     const [, retry] = runtime.task("a", 1); retry.result.reject(new Error("Plugin parse failed")); retry.cleanup.resolve(undefined);
-    await until(() => expect(current(coordinator, "a").pauseReason).toBe("download-failed"));
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
     expect(runtime.issues).toHaveLength(1);
     await coordinator.cancelPlan(value.id);
   });
@@ -1102,7 +1158,7 @@ describe("VPN download coordinator", () => {
     const [, item] = runtime.task("a");
     item.result.reject(new Error(message));
     item.cleanup.resolve(undefined);
-    await until(() => expect(current(coordinator, "a").pauseReason).toBe("download-failed"));
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
     expect(current(coordinator, "a").checkpoint).toBe(0);
     expect(runtime.events.filter(event => event.startsWith("connect:"))).toHaveLength(1);
     expect(runtime.notices.at(-1)?.error).toBeInstanceOf(Error);
@@ -1706,7 +1762,7 @@ describe("VPN download coordinator", () => {
     await until(() => expect(runtime.tasks.size).toBe(1));
     runtime.task("a")[1].result.reject(new SourceAccessRequiredError("Blocked", { kind: "captcha", url: "https://source.test/challenge" }));
     runtime.task("a")[1].cleanup.resolve(undefined);
-    await until(() => expect(current(coordinator, "a").pauseReason).toBe("download-failed"));
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
     expect(runtime.events.filter(event => event.startsWith("connect:"))).toHaveLength(1);
     expect(current(coordinator, "a").challenge).toBeNull();
   });

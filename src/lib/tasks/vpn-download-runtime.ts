@@ -24,6 +24,7 @@ import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import { installChapterDownloadBatchInterceptor } from "./chapter-download-batch-interceptor";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot, subscribeChapterDownloadRequests } from "./chapter-download-requests";
 import { beginChapterDownloadVpnHandover, cancelChapterDownloadTasks, discardQueuedChapterDownloads, enqueueVpnDownloadChapter, publishVpnDownloadBatchProgress, type ChapterDownloadVpnHandover, type ChapterDownloadBatchHandle, type ChapterDownloadBatchJob, type ChapterDownloadBatchResult, type ChapterDownloadJob } from "./chapter-download";
+import { recordFailedChapterDownloadAttempt } from "./chapter-download-failures";
 import { taskScheduler } from "./scheduler";
 import type { TaskHandle } from "./task-types";
 import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
@@ -253,6 +254,10 @@ const adapter: VpnDownloadRuntime = {
     if (job.vpnPlanId !== planId || job.vpnRangeId !== worker.rangeId) throw new Error("VPN chapter ownership changed.");
     // The coordinator serializes the durable checkpoint only after executor cleanup.
     return enqueueVpnDownloadChapter(job, worker, async () => undefined);
+  },
+  recordChapterFailure: async (job, error) => {
+    const stored = await recordFailedChapterDownloadAttempt(job, error);
+    return { failureClass: stored?.failureClass ?? "transient", nextRetryAt: stored?.nextRetryAt ?? null };
   },
   cancelTask: id => {
     for (const block of taskScheduler.getSnapshot().sourceAccessBlocks) {

@@ -124,6 +124,7 @@
   "vpnDownload.reason.verificationUnavailable": "The worker's verification browser is unavailable.",
   "vpnDownload.reason.authentication": "This profile requires authentication before it can continue.",
   "vpnDownload.reason.downloadFailed": "The chapter download failed. Its checkpoint has not advanced.",
+  "vpnDownload.reason.chapterFailed": "A chapter could not be downloaded. It is listed under Needs attention.",
   "vpnDownload.reason.runtimeError": "The VPN worker stopped with an error.",
   "vpnDownload.reason.off": "The VPN run is paused. Resume it to continue.",
   "deviceBackup.title": "Device backup",

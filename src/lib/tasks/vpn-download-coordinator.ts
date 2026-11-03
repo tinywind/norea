@@ -1,6 +1,7 @@
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
+import type { DownloadFailureClass } from "./download-failure";
 import type { SourceAccessBlock } from "./source-access-gate";
 import { isTaskUserCancelledError } from "./task-errors";
 import type { TaskHandle } from "./task-types";
@@ -9,6 +10,12 @@ import type {
   VpnDownloadProfileIssueInput, VpnDownloadRangeState, VpnDownloadWorkerRef,
 } from "./vpn-download-types";
 import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
+
+/** A chapter failure after its retry rules: a new attempt time inside the persisted budget, or null. */
+export interface VpnDownloadChapterFailure {
+  failureClass: DownloadFailureClass;
+  nextRetryAt: number | null;
+}
 
 export interface VpnDownloadNotice {
   planId: string;
@@ -42,6 +49,8 @@ export interface VpnDownloadRuntime {
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
   showWorker(worker: VpnDownloadWorkerRef, url: string): Promise<void>;
   enqueueChapter(job: ChapterDownloadJob, worker: VpnDownloadWorkerRef, planId: string): TaskHandle<unknown>;
+  /** Persists a failed chapter attempt with its class and returns when to try it again, if ever. */
+  recordChapterFailure(job: ChapterDownloadJob, error: unknown): Promise<VpnDownloadChapterFailure>;
   cancelTask(taskId: string): void | Promise<void>;
   waitForTask(taskId: string, worker: VpnDownloadWorkerRef): Promise<void>;
   requestVerification(taskId: string, worker: VpnDownloadWorkerRef, challenge: SourceAccessChallenge): boolean;
@@ -90,6 +99,8 @@ interface RangeRuntime {
   awaitingDiscovery?: boolean;
   /** The epoch whose discovery already ran without yielding an eligible profile. */
   discoveredEpoch?: number;
+  /** Wakes a chapter retry backoff early when the range halts. */
+  retryWait?: AbortController;
 }
 
 const MAX_PROFILE_TESTS = 3;
@@ -828,7 +839,17 @@ export class VpnDownloadCoordinator {
           }
           continue;
         }
-        else await this.fail(range, epoch, "download-failed", outcome.error);
+        else {
+          const failure = await this.recordChapterFailure(job, outcome.error);
+          if (!this.owns(range, epoch, lease)) return;
+          if (failure.nextRetryAt !== null) {
+            // A fresh attempt of the same chapter after the backoff; the route keeps its lease.
+            await this.waitForChapterRetry(range, failure.nextRetryAt);
+            continue;
+          }
+          // Reported per chapter, not as a VPN problem: the route itself worked.
+          await this.fail(range, epoch, "chapter-failed", outcome.error);
+        }
         return;
       }
       await this.serialize(range.planId, async () => {
@@ -945,6 +966,28 @@ export class VpnDownloadCoordinator {
     }
   }
 
+  private async recordChapterFailure(job: ChapterDownloadJob, error: unknown): Promise<VpnDownloadChapterFailure> {
+    try {
+      return await this.runtime.recordChapterFailure(clone(job), error);
+    } catch (recordError) {
+      this.runtime.notice({ planId: job.vpnPlanId ?? "", rangeId: job.vpnRangeId ?? "", reason: "chapter-failure-record", error: recordError });
+      return { failureClass: "transient", nextRetryAt: null };
+    }
+  }
+
+  private async waitForChapterRetry(range: RangeRuntime, until: number): Promise<void> {
+    const wait = new AbortController();
+    range.retryWait = wait;
+    try {
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, Math.max(0, Math.min(2_147_483_647, until - Date.now())));
+        wait.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    } finally {
+      if (range.retryWait === wait) range.retryWait = undefined;
+    }
+  }
+
   private detach(range: RangeRuntime, task: EnrolledChapter): void {
     if (this.enrolled.get(task.handle.id) === range) this.enrolled.delete(task.handle.id);
     if (range.task === task) range.task = undefined;
@@ -964,6 +1007,7 @@ export class VpnDownloadCoordinator {
   private halt(range: RangeRuntime, reason: string, userPaused: boolean, disconnect: boolean, intent: boolean): Promise<void> {
     range.intent = intent;
     range.userHeld = userPaused;
+    range.retryWait?.abort();
     const epoch = ++range.epoch;
     const previous = this.settleTransition(range);
     const lease = range.worker;

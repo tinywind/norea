@@ -124,6 +124,7 @@
   "vpnDownload.reason.verificationUnavailable": "이 작업의 인증 브라우저를 사용할 수 없습니다.",
   "vpnDownload.reason.authentication": "계속하려면 이 프로필의 인증이 필요합니다.",
   "vpnDownload.reason.downloadFailed": "챕터 다운로드에 실패했습니다. 완료 위치는 변경하지 않았습니다.",
+  "vpnDownload.reason.chapterFailed": "챕터를 다운로드하지 못했습니다. 확인 필요 항목에 표시됩니다.",
   "vpnDownload.reason.runtimeError": "VPN 작업이 오류로 중단됐습니다.",
   "vpnDownload.reason.off": "VPN 실행이 일시 정지됐습니다. 재개하면 이어서 진행합니다.",
   "deviceBackup.title": "기기 백업",

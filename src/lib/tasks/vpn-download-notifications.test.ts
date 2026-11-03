@@ -107,6 +107,10 @@ it("asks the Queue page about one VPN problem the app cannot solve by itself", (
     .toEqual({ kind: "failed", ranges: [{ planId: "plan-a", rangeId: "a" }, { planId: "plan-a", rangeId: "b" }] });
 });
 
+it("leaves a range paused by a chapter failure to the per-chapter failure list", () => {
+  expect(vpnDownloadAttention([plan([range("a", { pauseReason: "chapter-failed", challenge: null })])], "running")).toBeNull();
+});
+
 it("stays quiet for waits the app resolves and for pauses the user chose", () => {
   const quiet = plan([
     range("offline", { pauseReason: "offline", challenge: null }), range("lease", { pauseReason: "profile-in-use", challenge: null }),

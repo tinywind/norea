@@ -23,6 +23,7 @@ const MANUAL_PAUSE_KEYS: Readonly<Record<string, TranslationKey>> = {
   "verification-unavailable": "vpnDownload.reason.verificationUnavailable",
   "authentication-required": "vpnDownload.reason.authentication",
   "download-failed": "vpnDownload.reason.downloadFailed",
+  "chapter-failed": "vpnDownload.reason.chapterFailed",
   "runtime-error": "vpnDownload.reason.runtimeError",
 };
 
