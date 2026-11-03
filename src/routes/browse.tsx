@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Anchor,
-  Badge,
   Box,
   Group,
   Loader,
@@ -28,8 +27,9 @@ import {
   SettingsGlyph,
   TrashGlyph,
 } from "../components/ActionGlyphs";
-import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
-import { ContentServerBrowse } from "../components/ContentServerBrowse";
+import { PageFrame, StateView } from "../components/AppFrame";
+import { BrowseSearchTab } from "../components/browse/BrowseSearchTab";
+import { BrowseServerTab } from "../components/browse/BrowseServerTab";
 import {
   ConsoleChip,
   ConsolePanel,
@@ -60,13 +60,13 @@ import {
   enqueueOpenSiteTask,
   enqueueSourceTask,
 } from "../lib/tasks/source-tasks";
-import { PluginSearchSection } from "./global-search";
 import { getPluginBaseUrl } from "../lib/plugins/base-url";
 import { clearPluginCookies } from "../lib/plugin-cookies";
 import { isValidPluginItem, pluginManager } from "../lib/plugins/manager";
 import { clearSourceFilterStorage } from "../lib/plugins/source-filter-storage";
 import type { Plugin, PluginItem } from "../lib/plugins/types";
 import { useBrowseStore } from "../store/browse";
+import { useContentSyncStore } from "../store/content-sync";
 
 const REPO_QUERY_KEY = ["repository", "list"] as const;
 const AVAILABLE_QUERY_KEY = ["plugin", "available"] as const;
@@ -388,6 +388,8 @@ export function BrowsePage({
     });
 
   const installedPlugins = installed.data ?? [];
+  const serverConfigured = useContentSyncStore((state) => state.serverUrl !== "");
+  const showServerTab = serverConfigured || tab === "server";
   const activeRepository = repos.data?.[0] ?? null;
   const hasRepository = activeRepository !== null;
   const repositoryDialogTitle = hasRepository
@@ -676,18 +678,12 @@ export function BrowsePage({
   });
 
   return (
-    <PageFrame size="wide" className="norea-browse-page">
-      <PageHeader
-        title={
-          <span className="norea-browse-title-inline">
-            <span>{t("browse.title")}</span>
-            <span className="norea-browse-title-description">
-              {t("browse.description")}
-            </span>
-          </span>
-        }
-      />
+    <div className="norea-browse-page">
+      <header className="norea-browse-app-bar">
+        <h1 className="norea-browse-app-bar-title">{t("browse.title")}</h1>
+      </header>
 
+      <PageFrame size="wide" className="norea-browse-frame">
       <Tabs
         value={tab}
         onChange={(value) => {
@@ -698,48 +694,35 @@ export function BrowsePage({
             replace: true,
           });
         }}
-        keepMounted
         className="norea-browse-tabs"
       >
         <Tabs.List grow className="norea-browse-tab-list">
-          <Tabs.Tab
-            value="search"
-            rightSection={
-              <Badge size="xs">{installedPlugins.length}</Badge>
-            }
-          >
-            {t("browse.tab.search")}
-          </Tabs.Tab>
-          <Tabs.Tab
-            value="sources"
-            rightSection={
-              <Badge size="xs">{installedPlugins.length}</Badge>
-            }
-          >
-            {t("browse.tab.sources")}
-          </Tabs.Tab>
-          <Tabs.Tab value="server">{t("contentSync.title")}</Tabs.Tab>
+          <Tabs.Tab value="search">{t("browse.tab.search")}</Tabs.Tab>
+          <Tabs.Tab value="sources">{t("browse.tab.sources")}</Tabs.Tab>
+          {showServerTab ? (
+            <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
+          ) : null}
         </Tabs.List>
 
-        <Tabs.Panel value="server" className="norea-browse-tab-panel">
-          {active && tab === "server" ? <ContentServerBrowse active /> : null}
-        </Tabs.Panel>
+        {showServerTab ? (
+          <Tabs.Panel value="server" className="norea-browse-tab-panel">
+            {active && tab === "server" ? <BrowseServerTab active /> : null}
+          </Tabs.Panel>
+        ) : null}
 
         <Tabs.Panel value="search" className="norea-browse-tab-panel">
-          <div className="norea-browse-tab-stack">
-            <ConsolePanel className="norea-browse-search-panel">
-              {active && tab === "search" ? <PluginSearchSection
-                installedPlugins={installedPlugins}
-                query={q}
-                onSearch={(nextQuery) => {
-                  void navigate({
-                    to: "/browse",
-                    search: { q: nextQuery, tab: "search" },
-                  });
-                }}
-              /> : null}
-            </ConsolePanel>
-          </div>
+          {active && tab === "search" ? (
+            <BrowseSearchTab
+              installedPlugins={installedPlugins}
+              query={q}
+              onSearch={(nextQuery) => {
+                void navigate({
+                  to: "/browse",
+                  search: { q: nextQuery, tab: "search" },
+                });
+              }}
+            />
+          ) : null}
         </Tabs.Panel>
 
         <Tabs.Panel value="sources" className="norea-browse-tab-panel">
@@ -843,6 +826,7 @@ export function BrowsePage({
           </div>
         </Tabs.Panel>
       </Tabs>
+      </PageFrame>
 
       <Modal
         opened={active && addOpen}
@@ -1090,7 +1074,7 @@ export function BrowsePage({
           </Group>
         </Stack>
       </Modal>
-    </PageFrame>
+    </div>
   );
 }
 

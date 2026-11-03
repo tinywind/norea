@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { withRetryPluginId } from "./global-search";
+import { withRetryPluginId } from "./BrowseSearchTab";
 
 describe("withRetryPluginId", () => {
   it("queues only the requested source for retry", () => {

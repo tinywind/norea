@@ -9,13 +9,13 @@ import {
 } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { BlockingLoadingOverlay } from "../components/AppFrame";
+import { BlockingLoadingOverlay } from "../AppFrame";
 import {
   ConsoleChip,
   ConsoleSectionHeader,
   ConsoleStatusDot,
   ConsoleStatusStrip,
-} from "../components/ConsolePrimitives";
+} from "../ConsolePrimitives";
 import {
   ChevronDownGlyph,
   ChevronUpGlyph,
@@ -25,32 +25,32 @@ import {
   RefreshGlyph,
   RetryGlyph,
   UnpinGlyph,
-} from "../components/ActionGlyphs";
-import { IconButton } from "../components/IconButton";
-import { SearchBar } from "../components/SearchBar";
-import { SegmentedToggle } from "../components/SegmentedToggle";
-import { SourceNovelCover } from "../components/SourceNovelCover";
-import { TextButton } from "../components/TextButton";
-import { useTranslation } from "../i18n";
-import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
+} from "../ActionGlyphs";
+import { IconButton } from "../IconButton";
+import { SearchBar } from "../SearchBar";
+import { SegmentedToggle } from "../SegmentedToggle";
+import { SourceNovelCover } from "../SourceNovelCover";
+import { TextButton } from "../TextButton";
+import { useTranslation } from "../../i18n";
+import { registerPageBackNavigationHandler } from "../../lib/android-back-navigation";
 import {
   globalSearch,
   type GlobalSearchResult,
-} from "../lib/plugins/global-search";
-import { getPluginBaseUrl } from "../lib/plugins/base-url";
-import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
-import { pluginManager } from "../lib/plugins/manager";
-import type { NovelItem, Plugin } from "../lib/plugins/types";
+} from "../../lib/plugins/global-search";
+import { getPluginBaseUrl } from "../../lib/plugins/base-url";
+import { enqueueOpenNovelFromSourceTask } from "../../lib/plugins/open-novel-task";
+import { pluginManager } from "../../lib/plugins/manager";
+import type { NovelItem, Plugin } from "../../lib/plugins/types";
 import {
   taskScheduler,
   type TaskHandle,
-} from "../lib/tasks/scheduler";
-import { enqueueOpenSiteTask } from "../lib/tasks/source-tasks";
-import { isAbortError } from "../lib/abort";
-import { describeError } from "../lib/errors";
-import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
-import { useBrowseStore } from "../store/browse";
-import "../styles/browse.css";
+} from "../../lib/tasks/scheduler";
+import { enqueueOpenSiteTask } from "../../lib/tasks/source-tasks";
+import { isAbortError } from "../../lib/abort";
+import { describeError } from "../../lib/errors";
+import { useLibraryNovelMembership } from "../../lib/use-library-novel-membership";
+import { useBrowseStore } from "../../store/browse";
+import "../../styles/browse.css";
 
 const PREVIEW_RESULT_COUNT = 20;
 const activeSearchControllers = new Map<string, Set<AbortController>>();
@@ -687,17 +687,17 @@ function SearchResultSection({
   );
 }
 
-interface PluginSearchSectionProps {
+interface BrowseSearchTabProps {
   installedPlugins?: readonly Plugin[];
   query: string;
   onSearch: (query: string) => void;
 }
 
-export function PluginSearchSection({
+export function BrowseSearchTab({
   installedPlugins: installedPluginSnapshot,
   query,
   onSearch,
-}: PluginSearchSectionProps) {
+}: BrowseSearchTabProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

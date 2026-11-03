@@ -2,22 +2,22 @@ import { useEffect, useState } from "react";
 import { Group, Loader, Select, Stack, Text } from "@mantine/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useTranslation } from "../i18n";
-import { listServerWorks, openServerNovel, type ServerSourceSummary, type ServerWorkSummary } from "../lib/content-sync/browse";
-import { contentServerRequest } from "../lib/content-sync/client";
-import { registerContentDevice } from "../lib/content-sync/device";
-import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
-import { useContentSyncStore } from "../store/content-sync";
-import { EMPTY_CONTENT_SERVER_BROWSE_FILTERS, useContentServerBrowseStore } from "../store/content-server-browse";
-import { LibraryAddedGlyph } from "./ActionGlyphs";
-import { StateView } from "./AppFrame";
-import { ConsolePanel, ConsoleSectionHeader } from "./ConsolePrimitives";
-import { ContentServerCover } from "./ContentServerCover";
-import { SearchBar } from "./SearchBar";
-import { ServerWorkDeleteButton } from "./ServerWorkDeleteButton";
-import { TextButton } from "./TextButton";
+import { useTranslation } from "../../i18n";
+import { listServerWorks, openServerNovel, type ServerSourceSummary, type ServerWorkSummary } from "../../lib/content-sync/browse";
+import { contentServerRequest } from "../../lib/content-sync/client";
+import { registerContentDevice } from "../../lib/content-sync/device";
+import { useLibraryNovelMembership } from "../../lib/use-library-novel-membership";
+import { useContentSyncStore } from "../../store/content-sync";
+import { EMPTY_CONTENT_SERVER_BROWSE_FILTERS, useContentServerBrowseStore } from "../../store/content-server-browse";
+import { LibraryAddedGlyph } from "../ActionGlyphs";
+import { StateView } from "../AppFrame";
+import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
+import { ContentServerCover } from "../ContentServerCover";
+import { SearchBar } from "../SearchBar";
+import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
+import { TextButton } from "../TextButton";
 
-export function ContentServerBrowse({ active }: { active: boolean }) {
+export function BrowseServerTab({ active }: { active: boolean }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

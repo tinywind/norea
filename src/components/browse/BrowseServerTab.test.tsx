@@ -1,6 +1,6 @@
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ServerWorkPage, ServerWorkSummary } from "../lib/content-sync/browse";
+import type { ServerWorkPage, ServerWorkSummary } from "../../lib/content-sync/browse";
 
 const mocks = vi.hoisted(() => ({
   state: [] as unknown[],
@@ -31,23 +31,23 @@ vi.mock("@tanstack/react-query", () => ({
   useMutation: () => ({ mutate: mocks.open, isPending: false }),
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../store/content-sync", () => ({ useContentSyncStore: (select: (state: { serverUrl: string; deviceName: string }) => unknown) => select({ serverUrl: mocks.server, deviceName: "Phone" }) }));
-vi.mock("../store/content-server-browse", async original => {
-  const actual = await original<typeof import("../store/content-server-browse")>();
+vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../../store/content-sync", () => ({ useContentSyncStore: (select: (state: { serverUrl: string; deviceName: string }) => unknown) => select({ serverUrl: mocks.server, deviceName: "Phone" }) }));
+vi.mock("../../store/content-server-browse", async original => {
+  const actual = await original<typeof import("../../store/content-server-browse")>();
   const store = actual.useContentServerBrowseStore;
   return { ...actual, useContentServerBrowseStore: Object.assign(
     (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()),
     store,
   ) };
 });
-vi.mock("../lib/use-library-novel-membership", () => ({ useLibraryNovelMembership: () => () => false }));
+vi.mock("../../lib/use-library-novel-membership", () => ({ useLibraryNovelMembership: () => () => false }));
 
-import { ContentServerBrowse } from "./ContentServerBrowse";
-import { ServerWorkDeleteButton } from "./ServerWorkDeleteButton";
-import { SearchBar } from "./SearchBar";
+import { BrowseServerTab } from "./BrowseServerTab";
+import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
+import { SearchBar } from "../SearchBar";
 import { Select } from "@mantine/core";
-import { useContentServerBrowseStore } from "../store/content-server-browse";
+import { useContentServerBrowseStore } from "../../store/content-server-browse";
 
 interface ControlProps {
   children?: ReactNode;
@@ -67,7 +67,7 @@ function controls(node: ReactNode): ReactElement<ControlProps>[] {
 const work = (id: string) => ({ id, novel: { name: id }, identity: { pluginId: "plugin", novelPath: `/${id}` } }) as ServerWorkSummary;
 const render = () => {
   mocks.stateIndex = 0; mocks.effects.length = 0;
-  return controls(ContentServerBrowse({ active: true }));
+  return controls(BrowseServerTab({ active: true }));
 };
 beforeEach(() => {
   vi.clearAllMocks(); mocks.state.length = 0;

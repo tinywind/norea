@@ -1,20 +1,31 @@
-.norea-browse-page {
-  --norea-page-max-width: 90rem;
+.norea-browse-app-bar {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  gap: var(--norea-space-1);
+  min-height: 3.5rem;
+  padding: 0 var(--norea-space-2) 0 var(--norea-space-4);
+  position: sticky;
+  top: 0;
+  z-index: 3;
 }
 
-.norea-browse-title-inline {
-  align-items: baseline;
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: var(--norea-space-2);
+.norea-browse-app-bar-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.norea-browse-title-description {
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-weight: 500;
-  line-height: 1.2;
+.norea-browse-frame {
+  --norea-page-block: var(--norea-space-3);
 }
 
 .norea-browse-tabs,
@@ -40,14 +51,6 @@
 
 .norea-source-workbench {
   align-items: start;
-}
-
-.norea-browse-search-panel {
-  overflow: hidden;
-}
-
-.norea-browse-search-panel > .mantine-Paper-root {
-  border: 0;
 }
 
 .norea-browse-panel {
