@@ -4,13 +4,17 @@ import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 /** The default keep-ahead applies to library novels opened within this window. */
 export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * 24 * 60 * 60;
 
-/** A novel's own goal, else the default keep-ahead for an active library source novel, else none. */
+/**
+ * A novel's own goal, else the default keep-ahead for an active library source novel, else none.
+ * An explicit `none` opts the novel out of the default as well.
+ */
 export function effectiveDownloadGoal(
   own: NovelDownloadGoal | null,
   novel: { inLibrary: boolean; isLocal: boolean; lastReadAt: number | null },
   defaultKeepAhead: number,
   nowSeconds: number,
 ): { goal: NovelDownloadGoal | null; isDefault: boolean } {
+  if (own?.kind === "none") return { goal: null, isDefault: false };
   if (own) return { goal: own, isDefault: false };
   const active = novel.inLibrary && !novel.isLocal && novel.lastReadAt !== null &&
     novel.lastReadAt >= nowSeconds - ACTIVE_NOVEL_WINDOW_SECONDS;
@@ -57,6 +61,7 @@ export function goalTargetChapters<C extends GoalChapter>(
   readingOrder: readonly C[],
   readingChapterId: number | undefined,
 ): C[] {
+  if (goal.kind === "none") return [];
   if (goal.kind === "entire") return [...readingOrder];
   const current = readingChapterId === undefined ? -1 : readingOrder.findIndex((chapter) => chapter.id === readingChapterId);
   const after = readingOrder.slice(current + 1);

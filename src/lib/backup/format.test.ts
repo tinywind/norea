@@ -98,6 +98,7 @@ const VALID_MANIFEST: BackupManifest = {
   ],
   downloadGoals: [
     { novelId: 1, kind: "keep_ahead", count: 3, updatedAt: 1_700_000_000 },
+    { novelId: 2, kind: "none", count: null, updatedAt: 1_700_000_001 },
   ],
 };
 
@@ -337,6 +338,7 @@ describe("parseBackupManifest error cases", () => {
     { novelId: 1, kind: "keep_ahead", count: null, updatedAt: 1 },
     { novelId: 1, kind: "keep_ahead", count: 0, updatedAt: 1 },
     { novelId: 1, kind: "entire", count: 3, updatedAt: 1 },
+    { novelId: 1, kind: "none", count: 3, updatedAt: 1 },
     { novelId: 1, kind: "next10", count: null, updatedAt: 1 },
     { novelId: "1", kind: "entire", count: null, updatedAt: 1 },
   ])("throws on a malformed download goal %j", (goal) => {

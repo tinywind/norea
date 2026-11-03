@@ -71,6 +71,20 @@ it("lists novels with their own goal and active library novels for the default",
   expect(await listDownloadGoalNovels(400, [])).toEqual([]);
 });
 
+it("keeps an explicit None out of goal work, including the default keep-ahead", async () => {
+  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library,last_read_at) VALUES
+    (3,'source','/active','Active',1,500),(4,'source','/opted-out','Opted out',1,600)`);
+  expect(await setNovelDownloadGoal(4, { kind: "none" }, 10)).toBe(true);
+  expect(await getNovelDownloadGoal(4)).toEqual({ novelId: 4, goal: { kind: "none" }, updatedAt: 10 });
+  expect((await listDownloadGoalNovels(400)).map((novel) => novel.id)).toEqual([3]);
+  expect(await listDownloadGoalNovels(400, [4])).toEqual([]);
+  expect(await listGoalNovelIdsForDownloadScope("novel", [4])).toEqual([]);
+  expect(await listGoalNovelIdsForDownloadScope("all", [])).toEqual([]);
+
+  expect(await setNovelDownloadGoal(4, null)).toBe(true);
+  expect((await listDownloadGoalNovels(400)).map((novel) => novel.id)).toEqual([4, 3]);
+});
+
 it("finds the goal novels a download deletion touches", async () => {
   sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(10,1,'/a','A',1),(20,2,'/b','B',1)");
   await setNovelDownloadGoal(2, { kind: "keep_ahead", count: 3 });

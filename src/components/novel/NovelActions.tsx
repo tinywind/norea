@@ -76,7 +76,6 @@ function NovelDownloadGoalChoices({
   const [saving, setSaving] = useState(false);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const { goal, isDefault } = effectiveDownloadGoal(ownGoal, novel, defaultKeepAhead, nowSeconds);
-  const fallbackDefault = effectiveDownloadGoal(null, novel, defaultKeepAhead, nowSeconds);
   const progress = describeDownloadGoalProgress(goal, chapters, lastReadChapterId, downloadStatuses);
   const shownKeepAheadCount = ownGoal?.kind === "keep_ahead" ? ownGoal.count : keepAheadCount;
   const sourceMissing = goal !== null && !pluginManager.getPlugin(novel.pluginId);
@@ -143,9 +142,10 @@ function NovelDownloadGoalChoices({
     <Stack gap="xs">
       <Text c="dimmed" data-download-goal-status={progress.kind} role="status" size="sm">{status}</Text>
       <Stack gap={0}>
-        {choiceRow("none", null, t("downloadGoals.kind.none"), fallbackDefault.goal?.kind === "keep_ahead"
-          ? t("downloadGoals.kind.none.default", { count: fallbackDefault.goal.count })
-          : t("downloadGoals.kind.none.description"))}
+        {choiceRow("default", null, t("downloadGoals.kind.default"), defaultKeepAhead > 0
+          ? t("downloadGoals.kind.default.keepAhead", { count: defaultKeepAhead })
+          : t("downloadGoals.kind.default.off"))}
+        {choiceRow("none", { kind: "none" }, t("downloadGoals.kind.none"), t("downloadGoals.kind.none.description"))}
         {choiceRow("keep", { kind: "keep_ahead", count: shownKeepAheadCount }, t("downloadGoals.kind.keepAhead"),
           t("downloadGoals.kind.keepAhead.description", { count: shownKeepAheadCount }))}
         <SegmentedToggle

@@ -214,7 +214,10 @@ function submitGoalWork(
   void handle.promise.catch(() => undefined);
 }
 
-/** Stores a novel's goal (null clears it), withdraws goal work it no longer wants, and reconciles. */
+/**
+ * Stores a novel's goal, withdraws goal work it no longer wants, and reconciles.
+ * Null returns the novel to the default keep-ahead; `none` stops automatic downloads for it.
+ */
 export async function setDownloadGoal(novelId: number, goal: NovelDownloadGoal | null): Promise<void> {
   await setNovelDownloadGoal(novelId, goal);
   await withdrawGoalWork([novelId]);
@@ -224,8 +227,14 @@ export async function setDownloadGoal(novelId: number, goal: NovelDownloadGoal |
   reconcileDownloadGoals([novelId]);
 }
 
-/** Removing a novel from the library ends its goal; queued goal work is withdrawn, downloads are kept. */
+/** The user stopped keeping these novels downloaded: no goal and no default keep-ahead; downloads are kept. */
 export async function stopDownloadGoals(novelIds: readonly number[]): Promise<void> {
+  for (const novelId of novelIds) await setNovelDownloadGoal(novelId, { kind: "none" });
+  await withdrawGoalWork(novelIds);
+}
+
+/** Removing a novel from the library ends its goal; queued goal work is withdrawn, downloads are kept. */
+export async function removeDownloadGoals(novelIds: readonly number[]): Promise<void> {
   for (const novelId of novelIds) await setNovelDownloadGoal(novelId, null);
   await withdrawGoalWork(novelIds);
 }

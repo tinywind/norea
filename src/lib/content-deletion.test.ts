@@ -13,7 +13,7 @@ vi.mock("./content-sync/device", () => ({ registerContentDevice: vi.fn(async () 
 vi.mock("../store/reader", () => ({ useReaderStore: { getState: () => ({ removeNovelReaderState: vi.fn() }) } }));
 vi.mock("./novel-cover-storage", () => ({ clearNovelCoverDisplayCache: vi.fn() }));
 vi.mock("./chapter-storage-transfer", () => ({ removeChapterStorageDirectory: vi.fn() }));
-vi.mock("./download-goals/goal-service", () => ({ stopDownloadGoals: vi.fn() }));
+vi.mock("./download-goals/goal-service", () => ({ removeDownloadGoals: vi.fn() }));
 vi.mock("./content-sync/storage-operation", () => ({ runWorkContentStorageOperation: (_p: string, _n: string, run: () => Promise<unknown>) => run() }));
 
 import { getNovelById, setNovelInLibrary } from "../db/queries/novel";
@@ -27,7 +27,7 @@ import { ContentServerError, contentServerRequest } from "./content-sync/client"
 import { removeChapterStorageDirectory } from "./chapter-storage-transfer";
 import { prepareContentDeletion, runContentDeletion, matchDeletionChapter } from "./content-deletion";
 import { runContentSyncOperation } from "./content-sync/sync";
-import { stopDownloadGoals } from "./download-goals/goal-service";
+import { removeDownloadGoals } from "./download-goals/goal-service";
 
 const novel = { id: 12, pluginId: "source", sourceNovelId: "book-42", path: "/book/42", name: "Book", isLocal: false };
 const source = { serverUrl: "http://chosen-server", workId: "work-42" };
@@ -47,7 +47,7 @@ it("unregisters without deleting either copy by default", async () => {
   const results = await runContentDeletion(plan);
   expect(results.map(result => result.status)).toEqual(["succeeded"]);
   expect(setNovelInLibrary).toHaveBeenCalledExactlyOnceWith(12, false);
-  expect(stopDownloadGoals).toHaveBeenCalledExactlyOnceWith([12]);
+  expect(removeDownloadGoals).toHaveBeenCalledExactlyOnceWith([12]);
   expect(deleteDownloadCache).not.toHaveBeenCalled();
   expect(deleteServerWork).not.toHaveBeenCalled();
 });

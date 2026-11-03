@@ -58,6 +58,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0005_novel_download_goals.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "allow an explicit no-download goal and persist goal exclusions",
+            sql: include_str!("migrations/0006_download_goal_opt_out.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -237,6 +243,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registered_v5_upgrade_keeps_goals_and_allows_an_explicit_opt_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..5]).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',1),(3,'source','/third','Third',1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40),(2,2,'/two','Two',1,0)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO novel_download_goal VALUES(1,'keep_ahead',5,10),(2,'entire',NULL,20)").execute(&pool).await.unwrap();
+        assert!(sqlx::query("INSERT INTO novel_download_goal VALUES(3,'none',NULL,30)").execute(&pool).await.is_err());
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = bootstrap(&path, &migrations).await.unwrap();
+            assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>, i64)>("SELECT novel_id,kind,count,updated_at FROM novel_download_goal ORDER BY novel_id")
+                .fetch_all(&pool).await.unwrap(), [(1, "keep_ahead".into(), Some(5), 10), (2, "entire".into(), None, 20)]);
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT progress FROM chapter WHERE id=1").fetch_one(&pool).await.unwrap(), 40);
+            pool.close().await;
+        }
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query("INSERT INTO novel_download_goal VALUES(3,'none',NULL,30)").execute(&pool).await.unwrap();
+        assert!(sqlx::query("UPDATE novel_download_goal SET count=2 WHERE novel_id=3").execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE novel_download_goal SET kind='skip' WHERE novel_id=3").execute(&pool).await.is_err());
+        sqlx::query("INSERT INTO chapter_download_goal_exclusion VALUES(1,50),(2,60)").execute(&pool).await.unwrap();
+        assert!(sqlx::query("INSERT INTO chapter_download_goal_exclusion VALUES(99,70)").execute(&pool).await.is_err());
+        sqlx::query("DELETE FROM novel WHERE id IN (2,3)").execute(&pool).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT chapter_id FROM chapter_download_goal_exclusion").fetch_all(&pool).await.unwrap(), [1]);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT novel_id FROM novel_download_goal").fetch_all(&pool).await.unwrap(), [1]);
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn registered_v1_upgrade_preserves_library_chapters_and_ordinary_queue() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
@@ -264,7 +305,7 @@ mod tests {
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_download_plan")
                 .fetch_one(&pool).await.unwrap(), 0);
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
-                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5]);
+                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5,6]);
             pool.close().await;
         }
     }

@@ -83,6 +83,7 @@ import {
   resumeDownloadGoalsAfterRestore,
   setDownloadGoal,
   startDownloadGoals,
+  stopDownloadGoals,
   waitForDownloadGoalReconcile,
 } from "./goal-service";
 
@@ -199,6 +200,17 @@ it("withdraws queued goal work when the goal is cleared", async () => {
   expect(setNovelDownloadGoal).toHaveBeenCalledWith(1, null);
   expect(discardQueuedChapterDownloads).toHaveBeenCalledWith([11, 13]);
   expect(cancelChapterDownloadTasks).toHaveBeenCalledWith([11, 13]);
+});
+
+it("stores an explicit None when the user stops keeping a novel downloaded", async () => {
+  startDownloadGoals();
+  await settle();
+  mocks.queued = new Set([11, 13]);
+
+  await stopDownloadGoals([1]);
+
+  expect(setNovelDownloadGoal).toHaveBeenCalledWith(1, { kind: "none" });
+  expect(discardQueuedChapterDownloads).toHaveBeenCalledWith([11, 13]);
 });
 
 it("keeps deleted and cancelled chapters out of later goal work", async () => {

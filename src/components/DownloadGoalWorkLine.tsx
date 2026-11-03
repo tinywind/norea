@@ -23,6 +23,7 @@ export function DownloadGoalWorkLine({ records, tasks }: { records: readonly Tas
   const cooldownSeconds = useBrowseStore((state) => state.chapterDownloadCooldownSeconds);
   if (novelId === undefined || !goals) return null;
   const goal: NovelDownloadGoal | undefined = goals.find((row) => row.novelId === novelId)?.goal;
+  if (goal?.kind === "none") return null;
   const label = !goal
     ? t("downloadGoals.goal.defaultKeepAhead", { count: defaultKeepAhead })
     : goal.kind === "keep_ahead"

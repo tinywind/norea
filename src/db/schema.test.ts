@@ -141,3 +141,28 @@ it("upgrades populated v4 storage to novel download goals without changing exist
       .toEqual([{ novelId: 1, kind: "keep_ahead", count: 3 }]);
   } finally { db.close(); }
 });
+
+it("upgrades populated v5 storage to explicit goal opt-outs and persisted exclusions without changing existing rows", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("PRAGMA foreign_keys=ON");
+    applyRegisteredMigrations(db, 0, 5);
+    db.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',1),(3,'source','/third','Third',1);
+      INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40),(2,2,'/two','Two',1,0);
+      INSERT INTO chapter_download_failure VALUES(1,'source','transient','Timed out',NULL,1,30000,'{}',10);
+      INSERT INTO novel_download_goal VALUES(1,'keep_ahead',5,10),(2,'entire',NULL,20)`);
+    expect(() => db.exec("INSERT INTO novel_download_goal VALUES(3,'none',NULL,30)")).toThrow();
+    const tables = ["novel", "chapter", "chapter_download_failure", "novel_download_goal"];
+    const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+    applyRegisteredMigrations(db, 5);
+    expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    db.exec("INSERT INTO novel_download_goal VALUES(3,'none',NULL,30)");
+    expect(() => db.exec("UPDATE novel_download_goal SET count=2 WHERE novel_id=3")).toThrow();
+    expect(() => db.exec("UPDATE novel_download_goal SET kind='skip' WHERE novel_id=3")).toThrow();
+    db.exec("INSERT INTO chapter_download_goal_exclusion VALUES(1,50),(2,60)");
+    expect(() => db.exec("INSERT INTO chapter_download_goal_exclusion VALUES(99,70)")).toThrow();
+    db.exec("DELETE FROM novel WHERE id IN (2,3)");
+    expect(db.prepare("SELECT chapter_id AS chapterId FROM chapter_download_goal_exclusion").all()).toEqual([{ chapterId: 1 }]);
+    expect(db.prepare("SELECT novel_id AS novelId,kind FROM novel_download_goal").all()).toEqual([{ novelId: 1, kind: "keep_ahead" }]);
+  } finally { db.close(); }
+});

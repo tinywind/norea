@@ -111,7 +111,8 @@ export interface BackupVpnGateServerVerdict {
 /** A novel's persistent download intent, keyed by the backup's novel ID. */
 export interface BackupNovelDownloadGoal {
   novelId: number;
-  kind: "keep_ahead" | "all_remaining" | "entire";
+  /** `none` is an explicit opt-out that also stops the default keep-ahead. */
+  kind: "keep_ahead" | "all_remaining" | "entire" | "none";
   /** Set only for keep-ahead goals. */
   count: number | null;
   updatedAt: number;
@@ -291,7 +292,7 @@ function isNovelDownloadGoal(value: unknown): value is BackupNovelDownloadGoal {
   const keepAhead = value.kind === "keep_ahead";
   return (
     Number.isSafeInteger(value.novelId) &&
-    (keepAhead || value.kind === "all_remaining" || value.kind === "entire") &&
+    (keepAhead || value.kind === "all_remaining" || value.kind === "entire" || value.kind === "none") &&
     (keepAhead
       ? Number.isSafeInteger(value.count) && (value.count as number) > 0
       : value.count === null) &&

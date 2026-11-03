@@ -1,7 +1,7 @@
 import { getChapterById, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
 import { deleteLocalNovelRecords, findLocalDeletionNovel, listStoredDeletionNovelIds } from "../db/queries/content-deletion";
 import { getNovelById, setNovelInLibrary, type NovelDetailRecord } from "../db/queries/novel";
-import { stopDownloadGoals } from "./download-goals/goal-service";
+import { removeDownloadGoals } from "./download-goals/goal-service";
 import { useContentSyncStore } from "../store/content-sync";
 import { useReaderStore } from "../store/reader";
 import { forgetNovelStorageDirs } from "./chapter-storage-resolution";
@@ -167,7 +167,7 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
   for (const id of new Set(ids)) {
     const novel = await getNovelById(id);
     if (!novel) continue;
-    if (request.kind === "library") actions.push({ id: `library:${id}`, side: "library", name: novel.name, run: async () => { await setNovelInLibrary(id, false); await stopDownloadGoals([id]); } });
+    if (request.kind === "library") actions.push({ id: `library:${id}`, side: "library", name: novel.name, run: async () => { await setNovelInLibrary(id, false); await removeDownloadGoals([id]); } });
     if (!allDownloads && (request.kind === "downloads" || options.local)) actions.push({ id: `device:${id}`, side: "device", name: novel.name, waitForSync: true, run: () => deleteLocalDownloads("novel", [id], request.title) });
     if (options.server && request.kind === "library") {
       let deleted: WorkCatalogEntry | undefined;

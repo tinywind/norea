@@ -204,9 +204,12 @@ export const chapterDownloadFailureTable = sqliteTable("chapter_download_failure
   updatedAtCheck: check("chapter_download_failure_updated_at", sql`${t.updatedAt} >= 0`),
 }));
 
-export const NOVEL_DOWNLOAD_GOAL_KINDS = ["keep_ahead", "all_remaining", "entire"] as const;
+export const NOVEL_DOWNLOAD_GOAL_KINDS = ["keep_ahead", "all_remaining", "entire", "none"] as const;
 
-/** A novel's persistent download intent; `count` is set only for keep-ahead goals. */
+/**
+ * A novel's persistent download intent; `count` is set only for keep-ahead goals.
+ * `none` is the user's explicit opt-out, which also stops the default keep-ahead.
+ */
 export const novelDownloadGoalTable = sqliteTable("novel_download_goal", {
   novelId: integer("novel_id").primaryKey().notNull()
     .references(() => novelTable.id, { onDelete: "cascade" }),
@@ -214,10 +217,19 @@ export const novelDownloadGoalTable = sqliteTable("novel_download_goal", {
   count: integer("count"),
   updatedAt: integer("updated_at").notNull(),
 }, (t) => ({
-  kindCheck: check("novel_download_goal_kind", sql`${t.kind} IN ('keep_ahead', 'all_remaining', 'entire')`),
+  kindCheck: check("novel_download_goal_kind", sql`${t.kind} IN ('keep_ahead', 'all_remaining', 'entire', 'none')`),
   countCheck: check("novel_download_goal_count",
     sql`(${t.kind} = 'keep_ahead' AND ${t.count} > 0) OR (${t.kind} <> 'keep_ahead' AND ${t.count} IS NULL)`),
   updatedAtCheck: check("novel_download_goal_updated_at", sql`${t.updatedAt} >= 0`),
+}));
+
+/** Chapters the user deleted or cancelled while a goal covered them; goals do not request them again. */
+export const chapterDownloadGoalExclusionTable = sqliteTable("chapter_download_goal_exclusion", {
+  chapterId: integer("chapter_id").primaryKey().notNull()
+    .references(() => chapterTable.id, { onDelete: "cascade" }),
+  createdAt: integer("created_at").notNull(),
+}, (t) => ({
+  createdAtCheck: check("chapter_download_goal_exclusion_created_at", sql`${t.createdAt} >= 0`),
 }));
 
 export const vpnDownloadPlanTable = sqliteTable("vpn_download_plan", {

@@ -164,6 +164,7 @@ enum BackupRestoreNovelDownloadGoalKind {
     KeepAhead,
     AllRemaining,
     Entire,
+    None,
 }
 
 impl BackupRestoreNovelDownloadGoalKind {
@@ -172,6 +173,7 @@ impl BackupRestoreNovelDownloadGoalKind {
             Self::KeepAhead => "keep_ahead",
             Self::AllRemaining => "all_remaining",
             Self::Entire => "entire",
+            Self::None => "none",
         }
     }
 }
@@ -1293,14 +1295,14 @@ mod tests {
             "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "keep_ahead", "count": 3, "updatedAt": 10 },
-                { "novelId": 2, "kind": "all_remaining", "count": null, "updatedAt": 11 }]
+                { "novelId": 2, "kind": "none", "count": null, "updatedAt": 11 }]
         })).expect("parse manifest");
         let mut tx = pool.begin().await.expect("begin");
         execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default()).await.expect("restore");
         tx.commit().await.expect("commit");
         assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>, i64)>("SELECT novel_id,kind,count,updated_at FROM novel_download_goal ORDER BY novel_id")
             .fetch_all(&pool).await.expect("read goals"),
-            [(1, "keep_ahead".to_string(), Some(3), 10), (2, "all_remaining".to_string(), None, 11)]);
+            [(1, "keep_ahead".to_string(), Some(3), 10), (2, "none".to_string(), None, 11)]);
 
         let invalid: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
             "version": 3, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
@@ -1312,6 +1314,14 @@ mod tests {
         tx.rollback().await.expect("rollback");
         assert!(serde_json::from_value::<BackupRestoreNovelDownloadGoal>(serde_json::json!({
             "novelId": 1, "kind": "next10", "count": null, "updatedAt": 1 })).is_err());
+        let opt_out_with_count: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
+            "version": 3, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "installedPlugins": [], "vpnGateServerVerdicts": [],
+            "downloadGoals": [{ "novelId": 1, "kind": "none", "count": 2, "updatedAt": 10 }]
+        })).expect("parse manifest");
+        let mut tx = pool.begin().await.expect("begin");
+        assert!(execute_restore_snapshot(&mut tx, opt_out_with_count, &BackupRestoreCache::default()).await.unwrap_err().contains("novel_download_goal"));
+        tx.rollback().await.expect("rollback");
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM novel_download_goal").fetch_one(&pool).await.expect("count"), 2);
     }
 

@@ -14,6 +14,7 @@ it("covers the chapters after the reading position, or every chapter for the ent
   expect(ids(goalTargetChapters({ kind: "all_remaining" }, order, 4))).toEqual([5, 6]);
   expect(ids(goalTargetChapters({ kind: "entire" }, order, 4))).toEqual([1, 2, 3, 4, 5, 6]);
   expect(ids(goalTargetChapters({ kind: "keep_ahead", count: 2 }, order, undefined))).toEqual([1, 2]);
+  expect(goalTargetChapters({ kind: "none" }, order, 2)).toEqual([]);
 });
 
 it("uses the remembered position, else the latest read chapter", () => {
@@ -48,4 +49,10 @@ it("applies the default keep-ahead only to active library source novels without 
     expect(effectiveDownloadGoal(null, novel, 3, now)).toEqual({ goal: null, isDefault: false });
   }
   expect(effectiveDownloadGoal(null, active, 0, now)).toEqual({ goal: null, isDefault: false });
+});
+
+it("lets an explicit None opt an active library novel out of the default keep-ahead", () => {
+  const now = 10 * ACTIVE_NOVEL_WINDOW_SECONDS;
+  const active = { inLibrary: true, isLocal: false, lastReadAt: now };
+  expect(effectiveDownloadGoal({ kind: "none" }, active, 3, now)).toEqual({ goal: null, isDefault: false });
 });

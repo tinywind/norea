@@ -83,8 +83,18 @@ it("explains the default for an active library novel without its own goal and re
   mocks.pause = "metered";
   const $ = render([chapter(1), chapter(2)], null);
   expect($("[role='status']").text()).toBe("downloadGoals.status.paused");
-  expect($("button[aria-pressed='true']").text()).toContain('downloadGoals.kind.none.default({"count":3})');
+  expect($("button[aria-pressed='true']").text()).toContain("downloadGoals.kind.default");
+  expect($("button[aria-pressed='true']").text()).toContain('downloadGoals.kind.default.keepAhead({"count":3})');
   expect($.text()).toContain('downloadGoals.status.defaultApplies({"count":3})');
+});
+
+it("keeps an active library novel set to None out of the default keep-ahead", () => {
+  const $ = render([chapter(1, { isDownloaded: true, contentBytes: 1 }), chapter(2)], { kind: "none" });
+  expect($("[role='status']").text()).toBe('downloadGoals.status.onDevice({"count":1})');
+  const selected = $("button[aria-pressed='true']");
+  expect(selected).toHaveLength(1);
+  expect(selected.text()).toContain("downloadGoals.kind.none.description");
+  expect($.text()).not.toContain("downloadGoals.status.defaultApplies");
 });
 
 it("reports an uninstalled source for a goal", () => {
