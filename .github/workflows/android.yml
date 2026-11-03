@@ -104,7 +104,7 @@ jobs:
       - name: Verify and collect signed APK
         run: |
           set -euo pipefail
-          apk="src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk"
+          apk="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
           test -f "$apk"
           "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" verify --verbose "$apk"
           mkdir -p .tmp/y700-ci
