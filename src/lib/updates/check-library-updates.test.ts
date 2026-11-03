@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   recent: new Map<string, number>(),
   latest: undefined as { status: string } | undefined,
   activeChecks: new Map<string, Promise<unknown>>(),
+  task: undefined as { startedAt: number; finishedAt: number } | undefined,
 }));
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(async () => ({ select: async () => mocks.novels })) }));
@@ -45,6 +46,7 @@ vi.mock("../tasks/scheduler", () => ({
   taskScheduler: {
     cancel: mocks.cancel,
     getTaskByDedupeKey: () => mocks.latest,
+    getTask: () => mocks.task,
     getSnapshot: () => ({ records: mocks.records }),
     enqueueMain: mocks.enqueueMain.mockImplementation((task: { run: (context: unknown) => Promise<unknown> }) => ({
       id: "main",
@@ -66,6 +68,7 @@ beforeEach(() => {
   mocks.records = [];
   mocks.recent = new Map();
   mocks.latest = undefined;
+  mocks.task = undefined;
   mocks.novels = [novel(1), novel(2), novel(3, "gone")];
   vi.mocked(syncNovelFromSource).mockImplementation(async (_plugin, item) => {
     if (item.path === "/n/2") throw new Error("Timed out");
@@ -143,4 +146,27 @@ it("joins a manual check to the running automatic one instead of checking its no
   expect(manualResult).toMatchObject({ checkedNovels: 3, newChapters: 3 });
   expect(automaticResult.checkedNovels).toBe(3);
   expect(progress).toHaveBeenLastCalledWith(expect.objectContaining({ current: 3, total: 3 }));
+});
+
+it("leaves a source for later after three failed checks in a row in an automatic run", async () => {
+  mocks.novels = [novel(1), novel(2), novel(4), novel(5), novel(6, "other")];
+  vi.mocked(syncNovelFromSource).mockRejectedValue(new Error("Timed out"));
+
+  const result = await checkForNewChapters({ automatic: true, limit: 1, novelIds: [1, 2, 4, 5, 6] });
+
+  expect(vi.mocked(syncNovelFromSource).mock.calls.map(([, item]) => item.path)).toEqual(["/n/1", "/n/2", "/n/4", "/n/6"]);
+  expect(result).toMatchObject({ deferredNovels: 1 });
+  expect(result.failures).toHaveLength(4);
+});
+
+it("counts slow checks toward the backoff, and a manual check keeps going", async () => {
+  mocks.novels = [novel(1), novel(2), novel(4), novel(5)];
+  mocks.task = { startedAt: 0, finishedAt: 31_000 };
+
+  const automatic = await checkForNewChapters({ automatic: true, limit: 1, novelIds: [1, 2, 4, 5] });
+  expect(automatic).toMatchObject({ checkedNovels: 2, deferredNovels: 1 });
+
+  vi.mocked(syncNovelFromSource).mockClear();
+  await checkForNewChapters({ limit: 1 });
+  expect(vi.mocked(syncNovelFromSource)).toHaveBeenCalledTimes(4);
 });

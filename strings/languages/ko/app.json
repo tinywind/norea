@@ -1688,7 +1688,7 @@
   "updates.newChapters.emptyMessage": "서재 작품에서 확인으로 찾은 새 챕터가 여기에 표시됩니다. 예전부터 읽지 않은 챕터는 '이전에 읽지 않은 챕터'에 있습니다.",
   "updates.manualCheck": "수동 확인",
   "updates.checkNow": "지금 확인",
-  "updates.deferredBySourceLimit": "소스별 시간당 확인 한도를 넘지 않도록 소설 {count}개는 나중에 확인합니다.",
+  "updates.deferredBySourceLimit": "소스가 시간당 확인 한도에 도달했거나 실패 또는 지연이 이어져 소설 {count}개는 나중에 확인합니다.",
   "updates.manualCheckMessage": "설치된 소스 플러그인을 새로고침하려면 확인 버튼을 사용하세요.",
   "updates.noCheckRun": "아직 확인을 실행하지 않음",
   "updates.manualRefresh": "수동 새로고침",

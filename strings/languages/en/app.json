@@ -1688,7 +1688,7 @@
   "updates.newChapters.emptyMessage": "New chapters that checks find in your library novels appear here. Chapters you have not read from before are under Earlier unread chapters.",
   "updates.manualCheck": "Manual check",
   "updates.checkNow": "Check now",
-  "updates.deferredBySourceLimit": "{count} novels will be checked later to stay within their source's hourly check limit.",
+  "updates.deferredBySourceLimit": "{count} novels will be checked later, because their source reached its hourly check limit or kept failing or slowing down.",
   "updates.manualCheckMessage": "Use the check button to refresh installed source plugins.",
   "updates.noCheckRun": "No check run yet",
   "updates.manualRefresh": "Manual refresh",

@@ -25,6 +25,10 @@ export interface NovelForCheck {
 
 const LIBRARY_UPDATE_CHECK_KEY = "library.checkUpdates";
 const HOUR_SECONDS = 60 * 60;
+/** An automatic run stops checking a source after this many failed or slow checks in a row. */
+const SOURCE_BACKOFF_STRIKES = 3;
+/** A check that runs longer than this counts as the source slowing down. */
+const SLOW_CHECK_MS = 30_000;
 
 export interface UpdateCheckFailure {
   novelId: number;
@@ -143,8 +147,12 @@ interface CheckRun {
   inFlight: Set<number>;
   /** Novels a user asked for, checked at user priority. */
   userRequested: Set<number>;
-  /** Novels left out because their source used its hourly budget. */
+  /** Novels left for later: their source used its hourly budget, or kept failing or slowing down. */
   deferredNovels: number;
+  /** Failed or slow checks in a row per source, in an automatic run. */
+  strikes: Map<string, number>;
+  /** Source check task per novel handed to its source. */
+  taskIds: Map<number, string>;
   onProgress: Set<(progress: CheckProgress) => void>;
   taskTitle: (novel: NovelForCheck) => string;
   /** Settles once the run has listed its own novels. */
@@ -222,6 +230,8 @@ async function runNewChapterCheck(
     inFlight: new Set(),
     userRequested: new Set(),
     deferredNovels: 0,
+    strikes: new Map(),
+    taskIds: new Map(),
     onProgress: new Set(options.onProgress ? [options.onProgress] : []),
     taskTitle: (novel) => options.taskTitle?.(novel) ?? novel.name,
     listed: new Promise((resolve) => { finishListing = resolve; }),
@@ -260,7 +270,34 @@ async function runNewChapterCheck(
     if (detail) context?.setDetail(detail);
   };
 
+  const backedOff = (novel: NovelForCheck) =>
+    run.automatic && !run.userRequested.has(novel.id) && (run.strikes.get(novel.pluginId) ?? 0) >= SOURCE_BACKOFF_STRIKES;
+
+  /**
+   * Spec F2 backoff: after 3 failed or slow checks of a source in a row, an automatic run leaves
+   * that source's remaining novels for a later run, cancelling the ones still queued.
+   */
+  const recordSourceOutcome = (novel: NovelForCheck, taskId: string, ok: boolean) => {
+    const task = taskScheduler.getTask(taskId);
+    const slow = task?.startedAt !== undefined && task.finishedAt !== undefined && task.finishedAt - task.startedAt > SLOW_CHECK_MS;
+    const strikes = ok && !slow ? 0 : (run.strikes.get(novel.pluginId) ?? 0) + 1;
+    run.strikes.set(novel.pluginId, strikes);
+    if (strikes !== SOURCE_BACKOFF_STRIKES || !run.automatic) return;
+    for (const id of run.inFlight) {
+      const queued = run.covered.get(id)!;
+      const queuedTaskId = run.taskIds.get(id);
+      if (queued.pluginId !== novel.pluginId || run.userRequested.has(id) || !queuedTaskId) continue;
+      if (taskScheduler.getTask(queuedTaskId)?.status === "queued") taskScheduler.cancel(queuedTaskId);
+    }
+  };
+
   const checkNovel = async (novel: NovelForCheck) => {
+    if (backedOff(novel)) {
+      run.deferredNovels += 1;
+      processedNovels += 1;
+      reportProgress(novel.name);
+      return;
+    }
     if (novel.pluginId === LOCAL_PLUGIN_ID) {
       skippedNovels += 1;
       processedNovels += 1;
@@ -282,14 +319,22 @@ async function runNewChapterCheck(
     }
 
     run.inFlight.add(novel.id);
+    const handle = checkNovelForNewChapters(plugin, novel, {
+      priority: run.userRequested.has(novel.id) ? "user" : "deferred",
+      title: run.taskTitle(novel),
+    });
+    run.taskIds.set(novel.id, handle.id);
     try {
-      const result = await checkNovelForNewChapters(plugin, novel, {
-        priority: run.userRequested.has(novel.id) ? "user" : "deferred",
-        title: run.taskTitle(novel),
-      }).promise;
+      const result = await handle.promise;
       checkedNovels += 1;
       newChapters += result.newChapters;
+      recordSourceOutcome(novel, handle.id, true);
     } catch (error) {
+      if (isAbortError(error) && backedOff(novel) && !context?.signal.aborted) {
+        run.deferredNovels += 1;
+        return;
+      }
+      if (!isAbortError(error)) recordSourceOutcome(novel, handle.id, false);
       failures.push({
         novelId: novel.id,
         novelName: novel.name,
@@ -299,6 +344,7 @@ async function runNewChapterCheck(
       });
     } finally {
       run.inFlight.delete(novel.id);
+      run.taskIds.delete(novel.id);
       processedNovels += 1;
       reportProgress(novel.name);
     }
