@@ -96,7 +96,7 @@ it("reports a failed deletion and refreshes the affected chapter state", async (
   mutation.onError?.(failure);
   mutation.onSettled?.();
   expect(mocks.showNotification).toHaveBeenCalledWith(expect.objectContaining({
-    color: "red", message: "Storage permission was revoked",
+    color: "danger", message: "Storage permission was revoked",
   }));
   expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["download-cache"] });
 });

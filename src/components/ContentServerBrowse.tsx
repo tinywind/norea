@@ -82,7 +82,7 @@ export function ContentServerBrowse({ active }: { active: boolean }) {
       </aside>
       <section className="norea-source-results-panel">
         <ConsoleSectionHeader title={query || t("contentSync.catalog")} count={t("contentSync.workCount", { count: works.data?.pages[0]?.total ?? 0 })} />
-        {error ? <StateView color="red" title={t("source.error")} message={error.message} /> : null}
+        {error ? <StateView color="danger" title={t("source.error")} message={error.message} /> : null}
         {device.isLoading || works.isLoading ? <Group p="md"><Loader size="sm" /><Text>{t("common.loading")}</Text></Group> : null}
         {!error && enabled && !works.isLoading && items.length === 0 ? <StateView title={t("source.noResults")} /> : null}
         <div className="norea-source-grid">

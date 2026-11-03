@@ -91,7 +91,7 @@ export function CategorySubpanel({
               {t("common.loading")}
             </Text>
           ) : error ? (
-            <Text className="norea-library-subpanel-note" c="red">
+            <Text className="norea-library-subpanel-note" c="danger">
               {error instanceof Error ? error.message : String(error)}
             </Text>
           ) : categories.length > 0 ? (

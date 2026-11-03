@@ -241,7 +241,7 @@ describe("per-range VPN notifications", () => {
   it("navigates to Tasks for exhaustion without reconnecting or opening a browser", async () => {
     mount([plan([range("a", { pauseReason: "profiles-exhausted" })])]);
     const item = notificationsStore.getState().notifications[0]!;
-    expect(item).toMatchObject({ id: id("a"), autoClose: false, color: "orange" });
+    expect(item).toMatchObject({ id: id("a"), autoClose: false, color: "warn" });
     expect((actionButton(id("a")) as ReactElement<{ size?: string }>).props.size).toBeUndefined();
     actionButton(id("a")).props.onClick();
     await vi.waitFor(() => expect(vpnMocks.navigate).toHaveBeenCalledWith({ to: "/tasks" }));

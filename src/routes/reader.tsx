@@ -309,7 +309,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const readerContent = readerPreparation.error ? (
     <Box className="norea-reader-state-frame">
       <StateView
-        color="red"
+        color="danger"
         title={t("reader.loadFailed")}
         message={readerPreparation.error.message}
       />
@@ -318,7 +318,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     (chapterId > 0 && !hasChapterContent && chapterQuery.isLoading) ? (
     <Box className="norea-reader-state-frame">
       <StateView
-        color="blue"
+        color="info"
         title={t("reader.loadingChapter")}
         message={t("reader.loadingContent")}
       />
@@ -326,7 +326,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   ) : chapterId > 0 && !hasChapterContent && chapterQuery.error ? (
     <Box className="norea-reader-state-frame">
       <StateView
-        color="red"
+        color="danger"
         title={t("reader.loadFailed")}
         message={
           chapterQuery.error instanceof Error
@@ -338,7 +338,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   ) : chapterId > 0 && !hasChapterContent && chapterQuery.data === null ? (
     <Box className="norea-reader-state-frame">
       <StateView
-        color="orange"
+        color="warn"
         title={t("reader.chapterNotFound")}
         message={t("reader.chapterNotFoundMessage", { id: chapterId })}
       />
@@ -349,7 +349,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     <Box className="norea-reader-state-frame">
       <StateView
         action={{ label: t("common.retry"), onClick: retryChapterDownload }}
-        color="red"
+        color="danger"
         title={t("reader.downloadFailed")}
         message={chapterUnavailable.message}
       />
@@ -359,7 +359,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     chapterUnavailable?.reason === "offline" ? (
     <Box className="norea-reader-state-frame">
       <StateView
-        color="orange"
+        color="warn"
         title={t("reader.offline")}
         message={t("network.waiting")}
       />
@@ -367,7 +367,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   ) : chapterId > 0 && chapter && !hasChapterContent ? (
     <Box className="norea-reader-state-frame">
       <StateView
-        color="blue"
+        color="info"
         title={
           autoDownloadingChapterId === chapter.id
             ? t("reader.downloadingChapter")

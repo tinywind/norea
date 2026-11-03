@@ -76,13 +76,13 @@ export function VpnDownloadPanel({ snapshot }: { snapshot: VpnDownloadRuntimeSna
       </Group>
       {snapshot.loading || vault.isPending ? <Text size="sm" role="status">{t("vpnDownload.loading")}</Text> : null}
       {!snapshot.capabilities.supported && !snapshot.loading ? <Text size="sm">{t("vpnDownload.unsupported")}</Text> : null}
-      {snapshot.error ? <Alert color="red" role="alert">{snapshot.error}</Alert> : null}
-      {error && !opened ? <Alert color="red" role="alert">{error}</Alert> : null}
-      {vault.isError ? <Alert color="red" role="alert">
+      {snapshot.error ? <Alert color="danger" role="alert">{snapshot.error}</Alert> : null}
+      {error && !opened ? <Alert color="danger" role="alert">{error}</Alert> : null}
+      {vault.isError ? <Alert color="danger" role="alert">
         <Text size="sm">{describeError(vault.error)}</Text>
         <TextButton onClick={() => { void vault.refetch(); }}>{t("common.retry")}</TextButton>
       </Alert> : null}
-      {vault.data?.cleanupError ? <Alert color="red" role="alert">{vault.data.cleanupError}</Alert> : null}
+      {vault.data?.cleanupError ? <Alert color="danger" role="alert">{vault.data.cleanupError}</Alert> : null}
       <VpnDownloadRanges snapshot={snapshot} profiles={vault.data?.profiles ?? []} actions={actions} />
       {!snapshot.loading && !snapshot.drafts.length && !snapshot.plans.length && !snapshot.handover?.length ? <Text size="sm" c="dimmed">{t("vpnDownload.empty")}</Text> : null}
       <Modal opened={opened} onClose={() => { if (!busy.current) setOpened(false); }} title={t("vpnDownload.launch")}
@@ -91,15 +91,15 @@ export function VpnDownloadPanel({ snapshot }: { snapshot: VpnDownloadRuntimeSna
           <Text size="sm">{t("vpnDownload.launchHint")}</Text>
           <Text size="sm" fw={600}>{t("vpnDownload.workerTarget", { count: options.workerCount })}</Text>
           <Text size="sm">{t("vpnDownload.policySummary", { captcha: t(`vpnDownload.policy.${options.captchaPolicy}`), cloudflare: t(`vpnDownload.policy.${options.cloudflarePolicy}`) })}</Text>
-          {!snapshot.capabilities.supported ? <Alert color="yellow">{t("vpnDownload.unsupported")}</Alert> : null}
-          {!vault.isPending && !vault.isError && vault.data?.profiles.length === 0 ? <Alert color="yellow">{t("vpnDownload.noProfiles")}</Alert> : null}
+          {!snapshot.capabilities.supported ? <Alert color="warn">{t("vpnDownload.unsupported")}</Alert> : null}
+          {!vault.isPending && !vault.isError && vault.data?.profiles.length === 0 ? <Alert color="warn">{t("vpnDownload.noProfiles")}</Alert> : null}
           <Accordion variant="default">
             <Accordion.Item value="options">
               <Accordion.Control>{t("vpnDownload.optionalSettings")}</Accordion.Control>
               <Accordion.Panel><VpnDownloadSettings capabilities={snapshot.capabilities} value={options} onChange={setOptions} disabled={pending} /></Accordion.Panel>
             </Accordion.Item>
           </Accordion>
-          {error ? <Alert color="red" role="alert">{error}</Alert> : null}
+          {error ? <Alert color="danger" role="alert">{error}</Alert> : null}
           <SettingsInlineControls>
             <TextButton tone="accent" data-autofocus disabled={!canStart || pending} loading={pending}
               onClick={() => { if (canStart) return act(() => startVpnDownloadRun(options), true); }}>{t("vpnDownload.start")}</TextButton>

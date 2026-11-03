@@ -704,7 +704,7 @@
 
 .norea-library-local-import-row[data-status="error"] .norea-library-local-import-detail,
 .norea-library-local-import-row[data-status="unsupported"] .norea-library-local-import-detail {
-  color: var(--mantine-color-red-6);
+  color: var(--norea-color-danger);
 }
 
 .norea-library-local-import-status {
@@ -727,14 +727,14 @@
 }
 
 .norea-library-local-import-row[data-status="duplicate"] .norea-library-local-import-status {
-  border-color: var(--mantine-color-yellow-6);
-  color: var(--mantine-color-yellow-6);
+  border-color: var(--norea-color-warn);
+  color: var(--norea-color-warn);
 }
 
 .norea-library-local-import-row[data-status="unsupported"] .norea-library-local-import-status,
 .norea-library-local-import-row[data-status="error"] .norea-library-local-import-status {
-  border-color: var(--mantine-color-red-6);
-  color: var(--mantine-color-red-6);
+  border-color: var(--norea-color-danger);
+  color: var(--norea-color-danger);
 }
 
 .norea-library-selection-strip {

@@ -71,7 +71,7 @@ export function StorageRecoveryStatus() {
         <Text size="sm" truncate>{progress?.currentWork ?? t("storageRecovery.discovering")}</Text>
         <Progress aria-label={t("storageRecovery.title")} animated value={progress?.totalWorks ? progress.completedWorks / progress.totalWorks * 100 : 0} />
       </> : null}
-      {error ? <Text c="red" size="sm">{error}</Text> : null}
+      {error ? <Text c="danger" size="sm">{error}</Text> : null}
       {status !== "scanning" ? <Group gap="xs">
         {status === "error" ? <TextButton onClick={() => startWorkMetadataRecovery(true)}>{t("common.retry")}</TextButton> : null}
         <TextButton onClick={() => useStorageRecoveryStore.setState({ status: "idle" })}>{t("storageRecovery.dismiss")}</TextButton>

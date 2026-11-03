@@ -40,7 +40,7 @@ export function showErrorToast(
   lastShownAt.set(key, now);
   notifications.show({
     id: errorToastId(key),
-    color: "red",
+    color: "danger",
     title,
     message,
     autoClose: ERROR_TOAST_LIFETIME_MS,

@@ -91,8 +91,8 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
       {!serverUrl ? <Text className="norea-settings-feedback">{t("deviceBackup.serverRequired")}</Text> : null}
       {serverUrl && backups.data?.length === 0 ? <Text className="norea-settings-feedback">{t("deviceBackup.empty")}</Text> : null}
       {phase ? <Text className="norea-settings-feedback" role="status">{t(`deviceBackup.${phase}`)}</Text> : null}
-      {notice ? <Alert className="norea-settings-feedback" color="green" role="status">{notice}</Alert> : null}
-      {error || backups.error || ownName.error ? <Alert className="norea-settings-error" color="red" role="alert">
+      {notice ? <Alert className="norea-settings-feedback" color="ok" role="status">{notice}</Alert> : null}
+      {error || backups.error || ownName.error ? <Alert className="norea-settings-error" color="danger" role="alert">
         {error || message(backups.error || ownName.error)}
       </Alert> : null}
       <Modal opened={confirmRestore} onClose={() => setConfirmRestore(false)} title={t("deviceBackup.restore")} centered>

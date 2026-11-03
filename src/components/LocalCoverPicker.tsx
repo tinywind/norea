@@ -85,7 +85,7 @@ export function LocalCoverPicker({
         </Stack>
       </Group>
       {error ? (
-        <Text c="red" size="sm">
+        <Text c="danger" size="sm">
           {error}
         </Text>
       ) : null}

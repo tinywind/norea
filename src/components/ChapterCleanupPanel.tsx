@@ -147,7 +147,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
             <Text size="sm">{page + 1} / {Math.ceil(groups.length / 50)}</Text><TextButton size="sm" disabled={(page + 1) * 50 >= groups.length} onClick={() => setPage(page + 1)}>{t("chapterCleanup.next")}</TextButton></Group> : null}
         </details> : null}
         {!running && !confirming ? <TextButton tone="danger" disabled={!preview.targets.length} onClick={() => setConfirming(true)}>{t("chapterCleanup.review")}</TextButton> : null}
-        {confirming ? <Alert color="orange" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: preview.targets.length })}</Text><Group>
+        {confirming ? <Alert color="warn" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: preview.targets.length })}</Text><Group>
           <TextButton onClick={() => setConfirming(false)}>{t("common.cancel")}</TextButton><TextButton tone="danger" onClick={() => { void execute(); }}>{t("chapterCleanup.delete")}</TextButton>
         </Group></Stack></Alert> : null}
       </Stack> : null}
@@ -163,7 +163,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
             <Text size="sm" key={item.chapterId}>#{item.chapterId}: {cleanupFailureDetail(item.reason!)}</Text>)}
         </details> : null}
         <Text size="sm" c="dimmed">{t("chapterCleanup.retryHint")}</Text></Stack> : null}
-      {error ? <Alert color="red" title={t("common.actionFailed")}>{error}</Alert> : null}
+      {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
       <Group justify="flex-end"><TextButton onClick={onClose}>{t("common.done")}</TextButton></Group>
     </Stack>
   </Modal>;

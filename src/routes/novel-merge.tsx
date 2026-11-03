@@ -715,7 +715,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       if (result.cleanupWarnings.length > 0) {
         console.warn("[novel-merge] cleanup warnings", result.cleanupWarnings);
         notifications.show({
-          color: "yellow",
+          color: "warn",
           title: t("novelMerge.cleanupWarning.title"),
           message: t("novelMerge.cleanupWarning.description"),
         });
@@ -814,7 +814,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     return (
       <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
-          color="orange"
+          color="warn"
           title={t("novelMerge.missingSource")}
           message={t("novelMerge.missingSourceDescription")}
         />
@@ -838,7 +838,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     return (
       <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
-          color="red"
+          color="danger"
           title={t("novelMerge.loadSourceFailed")}
           message={describeError(error)}
           action={{ label: t("common.back"), onClick: backToSourceNovel }}
@@ -851,7 +851,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     return (
       <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
-          color="orange"
+          color="warn"
           title={t("novelMerge.sourceNotFound")}
           message={t("novel.notFoundMessage", { id: sourceNovelId })}
           action={{ label: t("common.back"), onClick: backToSourceNovel }}
@@ -864,7 +864,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     return (
       <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
-          color="orange"
+          color="warn"
           title={t("novelMerge.localSourceBlocked")}
           message={t("novelMerge.localSourceBlockedDescription")}
           action={{ label: t("common.back"), onClick: backToSourceNovel }}
@@ -877,7 +877,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     return (
       <PageFrame className="norea-novel-merge-page" size="wide">
         <StateView
-          color="orange"
+          color="warn"
           title={t("novelMerge.librarySourceRequired")}
           message={t("novelMerge.librarySourceRequiredDescription")}
           action={{ label: t("common.back"), onClick: backToSourceNovel }}
@@ -977,21 +977,21 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
             />
 
             {validation.undecidedSourceChapterIds.length > 0 ? (
-              <Alert color="yellow" variant="light">
+              <Alert color="warn" variant="light">
                 {t("novelMerge.decisions.undecided", {
                   count: validation.undecidedSourceChapterIds.length,
                 })}
               </Alert>
             ) : null}
             {validation.artifactChoiceRequiredTargetPaths.length > 0 ? (
-              <Alert color="yellow" variant="light">
+              <Alert color="warn" variant="light">
                 {t("novelMerge.artifact.required", {
                   count: validation.artifactChoiceRequiredTargetPaths.length,
                 })}
               </Alert>
             ) : null}
             {mergeNovel.isError ? (
-              <Alert color="red" title={t("novelMerge.mergeFailed")}>
+              <Alert color="danger" title={t("novelMerge.mergeFailed")}>
                 {describeError(mergeNovel.error)}
               </Alert>
             ) : null}
@@ -1030,11 +1030,11 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
               {t("novelMerge.findTarget.description", { source: sourceName })}
             </Text>
             {installedPluginsQuery.isError ? (
-              <Alert color="red" title={t("common.loadFailed")}>
+              <Alert color="danger" title={t("common.loadFailed")}>
                 {describeError(installedPluginsQuery.error)}
               </Alert>
             ) : targetPlugins.length === 0 && !installedPluginsQuery.isPending ? (
-              <Alert color="yellow">
+              <Alert color="warn">
                 {t("novelMerge.findTarget.noPlugins")}
               </Alert>
             ) : (
@@ -1053,12 +1053,12 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
               </Group>
             ) : null}
             {searchTargets.isError ? (
-              <Alert color="red" title={t("novelMerge.findTarget.searchFailed")}>
+              <Alert color="danger" title={t("novelMerge.findTarget.searchFailed")}>
                 {describeError(searchTargets.error)}
               </Alert>
             ) : null}
             {previewTarget.isError ? (
-              <Alert color="red" title={t("novelMerge.findTarget.previewFailed")}>
+              <Alert color="danger" title={t("novelMerge.findTarget.previewFailed")}>
                 {previewTarget.error instanceof NovelMergePreviewValidationError
                   ? t("novelMerge.findTarget.previewInvalid")
                   : describeError(previewTarget.error)}
@@ -1077,7 +1077,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
                     </Text>
                   </Group>
                   {result.error ? (
-                    <Alert color="red" variant="light">
+                    <Alert color="danger" variant="light">
                       {result.error}
                     </Alert>
                   ) : result.novels.length === 0 ? (
@@ -1159,11 +1159,11 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
               target: selectedTarget?.novel.name ?? "",
             })}
           </Text>
-          <Alert color="orange" variant="light">
+          <Alert color="warn" variant="light">
             {t("novelMerge.confirmation.warning")}
           </Alert>
           {mergeNovel.isError ? (
-            <Alert color="red">{describeError(mergeNovel.error)}</Alert>
+            <Alert color="danger">{describeError(mergeNovel.error)}</Alert>
           ) : null}
           <Group justify="flex-end" gap="sm">
             <TextButton

@@ -144,7 +144,7 @@ it("keeps fallback presentation for a query without an inline owner", async () =
   })).rejects.toBe(failure);
 
   expect(notificationsStore.getState().notifications).toEqual([
-    expect.objectContaining({ color: "red", message: "Background query failed", autoClose: 5000 }),
+    expect.objectContaining({ color: "danger", message: "Background query failed", autoClose: 5000 }),
   ]);
 });
 

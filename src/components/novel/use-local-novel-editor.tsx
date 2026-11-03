@@ -323,7 +323,7 @@ export function useLocalNovelEditor(
               value={localMetadataForm.summary ?? ""}
             />
             {updateLocalMetadata.error ? (
-              <Text c="red" size="sm">
+              <Text c="danger" size="sm">
                 {updateLocalMetadata.error instanceof Error
                   ? updateLocalMetadata.error.message
                   : String(updateLocalMetadata.error)}

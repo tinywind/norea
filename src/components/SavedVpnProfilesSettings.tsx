@@ -99,7 +99,7 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
           </SettingsInlineControls>
           {vault.isPending || verdicts.isPending ? <Text role="status" size="sm">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
           {vault.isError || verdicts.isError ? (
-            <Alert color="red" role="alert">
+            <Alert color="danger" role="alert">
               <Text size="sm">{describeError(vault.error ?? verdicts.error)}</Text>
               <TextButton onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch()]); }}>{t("common.retry")}</TextButton>
             </Alert>
@@ -108,8 +108,8 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
           {vault.data && !verdicts.isPending && !verdicts.isError && missingCount !== undefined ? (
             <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.missingFiles", { count: missingCount })}</Text>
           ) : null}
-          {vault.data?.cleanupError ? <Alert color="red" role="alert">{t("settings.data.pluginVpn.saved.cleanupError", { error: vault.data.cleanupError })}</Alert> : null}
-          {actionError && !opened ? <Alert color="red" role="alert">{actionError}</Alert> : null}
+          {vault.data?.cleanupError ? <Alert color="danger" role="alert">{t("settings.data.pluginVpn.saved.cleanupError", { error: vault.data.cleanupError })}</Alert> : null}
+          {actionError && !opened ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
           {vault.data?.profiles.length === 0 && !vault.isError ? <Text size="sm">{t("settings.data.pluginVpn.saved.empty")}</Text> : null}
           <TextButton disabled={disabled} onClick={() => { setActionError(null); setOpened(true); }}>{t("settings.data.pluginVpn.saved.manage")}</TextButton>
           <Modal opened={opened} onClose={() => { if (!busy) setOpened(false); }} centered size="lg"
@@ -118,8 +118,8 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
             <Stack gap="md">
               <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
               {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
-              {issues.isError ? <Alert color="red" role="alert">{describeError(issues.error)} <TextButton onClick={() => { void issues.refetch(); }}>{t("common.retry")}</TextButton></Alert> : null}
-              {actionError ? <Alert color="red" role="alert">{actionError}</Alert> : null}
+              {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <TextButton onClick={() => { void issues.refetch(); }}>{t("common.retry")}</TextButton></Alert> : null}
+              {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
               {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
               {ips.map(ip => {
                 const profile = profileByIp.get(ip);

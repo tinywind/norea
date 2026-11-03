@@ -91,7 +91,7 @@ export function CategoriesDrawer({
                 {t("common.loading")}
               </Text>
             ) : error ? (
-              <Text c="red" size="sm" px="md" py="xs">
+              <Text c="danger" size="sm" px="md" py="xs">
                 {error instanceof Error ? error.message : String(error)}
               </Text>
             ) : categories.length > 0 ? (

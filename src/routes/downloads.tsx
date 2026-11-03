@@ -122,7 +122,7 @@ function DownloadCacheErrorState({
   const { t } = useTranslation();
   return (
     <StateView
-      color="red"
+      color="danger"
       title={t("downloads.loadFailed")}
       message={error instanceof Error ? error.message : String(error)}
       action={{
@@ -179,7 +179,7 @@ function DownloadCacheChapterRow({
       </Box>
       <Group className="norea-downloads-row-actions" gap={6} wrap="nowrap">
         {chapter.mediaRepairNeeded ? (
-          <Badge color="yellow" variant="light">
+          <Badge color="warn" variant="light">
             {t("downloads.mediaFallback")}
           </Badge>
         ) : null}
@@ -261,7 +261,7 @@ function DownloadCacheChapters({
   if (chapters.error) {
     return (
       <div className="norea-downloads-chapter-list">
-        <Text c="red" size="sm">
+        <Text c="danger" size="sm">
           {chapters.error instanceof Error
             ? chapters.error.message
             : String(chapters.error)}
@@ -400,16 +400,16 @@ function DownloadCacheNovelCard({
           <div className="norea-downloads-novel-badge-line">
             <Badge
               className="norea-downloads-library-badge"
-              color={novel.inLibrary ? "green" : "gray"}
+              color="ok"
               title={libraryLabel}
-              variant="light"
+              variant={novel.inLibrary ? "light" : "default"}
             >
               {libraryLabel}
             </Badge>
             {novel.mediaRepairNeededChapters > 0 ? (
               <Badge
                 className="norea-downloads-library-badge"
-                color="yellow"
+                color="warn"
                 title={t("downloads.mediaFallback")}
                 variant="light"
               >
@@ -537,7 +537,7 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
               {t("downloads.summary.size", { size: totalSize })}
             </Badge>
             {totals.repairNeeded > 0 ? (
-              <Badge color="yellow" variant="light">
+              <Badge color="warn" variant="light">
                 {t("downloads.mediaFallback")}
               </Badge>
             ) : null}
@@ -603,13 +603,13 @@ export function DownloadsPage({ active = true }: DownloadsPageProps = {}) {
           />
         ) : rows.length === 0 ? (
           <StateView
-            color="blue"
+            color="info"
             title={t("downloads.empty.title")}
             message={t("downloads.empty.message")}
           />
         ) : visibleRows.length === 0 ? (
           <StateView
-            color="blue"
+            color="info"
             title={t("downloads.emptyFiltered.title")}
             message={t("downloads.emptyFiltered.message")}
           />

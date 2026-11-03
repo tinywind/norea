@@ -79,7 +79,7 @@ export function NovelCategoryEditor({ active, novelId, novelName }: NovelCategor
           setOpened(true);
         }}>{t("categories.editWork")}</TextButton>
       </Group>
-      {queryError ? <Alert color="red" mt="sm">
+      {queryError ? <Alert color="danger" mt="sm">
         {describeError(queryError)}
         <TextButton size="sm" onClick={() => {
           void categoriesQuery.refetch();
@@ -93,7 +93,7 @@ export function NovelCategoryEditor({ active, novelId, novelName }: NovelCategor
       <Stack gap="md">
         <Text fw={600}>{novelName}</Text>
         <Text c="dimmed" size="sm">{t("categories.editWorkDescription")}</Text>
-        {errorMessage ? <Alert color="red">{errorMessage}</Alert> : null}
+        {errorMessage ? <Alert color="danger">{errorMessage}</Alert> : null}
         <ScrollArea.Autosize mah="calc(100dvh - 20rem)">
           <Stack gap="md">
             {categories.map((category) => <Checkbox key={category.id} label={category.name}

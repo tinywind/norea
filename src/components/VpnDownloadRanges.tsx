@@ -94,13 +94,13 @@ export function VpnDownloadRanges({ snapshot, profiles, actions }: {
                   ...unfinished.map(({ planId, range }) => actions.cancelRange(planId, range.id)),
                 ]))}>{t("vpnDownload.cancelWork")}</TextButton>
             </SettingsInlineControls> : null}
-            {errors[workKey] ? <Alert color="red" role="alert">{errors[workKey]}</Alert> : null}
+            {errors[workKey] ? <Alert color="danger" role="alert">{errors[workKey]}</Alert> : null}
             {work.handover.map(waiting => <Stack key={waiting.id} gap="xs" className="norea-vpn-download-range">
               <Text size="sm" role="status">{t("vpnDownload.phase.waitingHandover")}</Text>
               <SettingsInlineControls>
                 <TextButton tone="danger" disabled={workBusy || pendingKeys.has(waiting.id)} onClick={() => run(waiting.id, () => actions.cancelHandoverWork(waiting.id))}>{t("vpnDownload.cancelDraft")}</TextButton>
               </SettingsInlineControls>
-              {errors[waiting.id] ? <Alert color="red" role="alert">{errors[waiting.id]}</Alert> : null}
+              {errors[waiting.id] ? <Alert color="danger" role="alert">{errors[waiting.id]}</Alert> : null}
             </Stack>)}
             {work.drafts.map(draft => {
               const key = JSON.stringify(["draft", draft.id]);
@@ -108,13 +108,13 @@ export function VpnDownloadRanges({ snapshot, profiles, actions }: {
                 draft.phase === "failed" ? "vpnDownload.phase.failed" : "vpnDownload.phase.preparing";
               return <Stack key={draft.id} gap="xs" className="norea-vpn-download-range">
                 <Text size="sm" role="status">{t(phaseKey)}</Text>
-                {draft.error ? <Alert color="red" role="alert">{draft.error}</Alert> : null}
+                {draft.error ? <Alert color="danger" role="alert">{draft.error}</Alert> : null}
                 <SettingsInlineControls>
                   {draft.phase === "failed" ? <TextButton disabled={workBusy || pendingKeys.has(key) || !runEnabled || draft.userPaused} loading={pendingKeys.has(key)}
                     onClick={() => { if (runEnabled && !draft.userPaused) return run(key, () => actions.retryDraft(draft.id)); }}>{t("common.retry")}</TextButton> : null}
                   <TextButton tone="danger" disabled={workBusy || pendingKeys.has(key)} onClick={() => run(key, () => actions.cancelDraft(draft.id))}>{t("vpnDownload.cancelDraft")}</TextButton>
                 </SettingsInlineControls>
-                {errors[key] ? <Alert color="red" role="alert">{errors[key]}</Alert> : null}
+                {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
               </Stack>;
             })}
             {work.plans.flatMap(plan => plan.ranges.map(range => {
@@ -155,7 +155,7 @@ export function VpnDownloadRanges({ snapshot, profiles, actions }: {
                     <TextButton tone="danger" aria-label={actionLabel(t("vpnDownload.cancelRange"))} disabled={busy}
                       onClick={() => run(key, () => actions.cancelRange(plan.id, range.id))}>{t("vpnDownload.cancelRange")}</TextButton>
                   </SettingsInlineControls> : null}
-                  {errors[key] ? <Alert color="red" role="alert">{errors[key]}</Alert> : null}
+                  {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
                 </Stack>
               );
             }))}

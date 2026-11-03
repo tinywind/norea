@@ -59,7 +59,7 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
         const eventLocale = useAppearanceStore.getState().appLocale;
         notifications.show({
           autoClose: 5_000,
-          color: "green",
+          color: "ok",
           message: translate(
             eventLocale,
             "settings.data.pluginVpn.toast.reconnected",

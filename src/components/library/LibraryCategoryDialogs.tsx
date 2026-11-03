@@ -172,7 +172,7 @@ export const LibraryCategoryDialogs = forwardRef<
               value={categoryName}
             />
             {categoryMutationError ? (
-              <Text c="red" size="sm">
+              <Text c="danger" size="sm">
                 {categoryMutationError instanceof Error
                   ? categoryMutationError.message
                   : String(categoryMutationError)}
@@ -211,7 +211,7 @@ export const LibraryCategoryDialogs = forwardRef<
               : ""}
           </Text>
           {deleteCategoryMutation.error ? (
-            <Text c="red" size="sm">
+            <Text c="danger" size="sm">
               {deleteCategoryMutation.error instanceof Error
                 ? deleteCategoryMutation.error.message
                 : String(deleteCategoryMutation.error)}

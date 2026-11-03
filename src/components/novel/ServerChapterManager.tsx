@@ -117,7 +117,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
               onClick={() => remove.mutate(rows.filter(chapter => selected.has(chapter.id)))}>{t("contentSync.deleteSelectedServer", { count: selectedIds.length })}</TextButton>
           </Group>
         </div>
-        {error ? <Alert color="red" title={t("common.actionFailed")}>{describeError(error)}</Alert> : null}
+        {error ? <Alert color="danger" title={t("common.actionFailed")}>{describeError(error)}</Alert> : null}
         {chapters.isFetching ? <Group p="md"><Loader size="sm" /><Text>{t("contentSync.loadingServerChapters")}</Text></Group> : null}
         {!chapters.isPending && !error && !rows.length ? <StateView title={t("contentSync.noServerChapters")} /> : null}
         <div className="norea-server-chapter-list" aria-label={t("contentSync.serverChapters")}>
@@ -126,7 +126,7 @@ function ServerChapterManagerContent({ source, name, onClose }: { source: Server
               const next = new Set(current); if (next.has(chapter.id)) next.delete(chapter.id); else next.add(chapter.id); return next;
             })} />
             <span className="norea-server-chapter-number">{chapter.chapterNumber ?? chapter.position}</span>
-            <span className="norea-server-chapter-title">{chapter.name} <Badge component="span" color={chapter.complete ? "green" : "yellow"} variant="light">
+            <span className="norea-server-chapter-title">{chapter.name} <Badge component="span" color={chapter.complete ? "ok" : "warn"} variant="light">
               {t(chapter.complete ? "contentSync.complete" : "contentSync.incomplete")}
             </Badge></span>
           </label>)}

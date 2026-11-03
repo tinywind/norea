@@ -839,7 +839,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
             label: t("common.retry"),
             onClick: () => refreshFirstPage(),
           }}
-          color="red"
+          color="danger"
           title={t("updates.loadFailed")}
           message={
             refresh.error instanceof Error
@@ -866,7 +866,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                 label: t("common.retry"),
                 onClick: () => check.mutate(),
               }}
-              color="red"
+              color="danger"
               title={t("updates.checkFailed")}
               message={
                 check.error instanceof Error
@@ -957,7 +957,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
               </Stack>
             ) : (
               <StateView
-                color="blue"
+                color="info"
                 title={t("updates.caughtUp")}
                 message={t("updates.caughtUpCurrentMessage")}
               />

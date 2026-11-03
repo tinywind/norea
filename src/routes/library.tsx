@@ -604,7 +604,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 />
               ) : libraryError ? (
                 <StateView
-                  color="red"
+                  color="danger"
                   title={t("library.databaseError")}
                   message={
                     libraryError instanceof Error
@@ -647,13 +647,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 </>
               ) : filterActive ? (
                 <StateView
-                  color="yellow"
+                  color="warn"
                   title={t("common.noMatches")}
                   message={t("library.noMatches.message")}
                 />
               ) : (
                 <StateView
-                  color="blue"
+                  color="info"
                   title={t("library.empty.title")}
                   message={t("library.empty.message")}
                   action={{

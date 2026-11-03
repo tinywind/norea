@@ -152,15 +152,15 @@
 .norea-task-summary-pill[data-tone="warning"] {
   background: color-mix(
     in srgb,
-    var(--mantine-color-orange-6) 10%,
+    var(--norea-color-warn) 10%,
     var(--norea-design-surface)
   );
   border-color: color-mix(
     in srgb,
-    var(--mantine-color-orange-6) 35%,
+    var(--norea-color-warn) 35%,
     var(--norea-design-rule)
   );
-  color: var(--mantine-color-orange-7);
+  color: var(--norea-color-on-warn-soft);
 }
 
 .norea-source-access-banners {
@@ -172,13 +172,13 @@
   align-items: center;
   background: color-mix(
     in srgb,
-    var(--mantine-color-orange-6) 7%,
+    var(--norea-color-warn) 7%,
     var(--norea-design-surface)
   );
   border: 1px solid
     color-mix(
       in srgb,
-      var(--mantine-color-orange-6) 35%,
+      var(--norea-color-warn) 35%,
       var(--norea-design-rule)
     );
   border-radius: 8px;

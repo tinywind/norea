@@ -663,7 +663,7 @@ export function BrowsePage({
     onSuccess: (count, plugin) => {
       setCookiePlugin(null);
       notifications.show({
-        color: "green",
+        color: "ok",
         title: t("browse.cookies.clearedTitle"),
         message: t("browse.cookies.cleared", {
           count,
@@ -841,7 +841,7 @@ export function BrowsePage({
           />
           {addRepoMutation.error && (
             <StateView
-              color="red"
+              color="danger"
               title={t("common.saveFailed")}
               message={
                 addRepoMutation.error instanceof Error
@@ -973,7 +973,7 @@ export function BrowsePage({
           />
           {installSourceMutation.error && (
             <StateView
-              color="red"
+              color="danger"
               title={t("common.saveFailed")}
               message={
                 installSourceMutation.error instanceof Error
@@ -1152,7 +1152,7 @@ function RepositoriesSection({
           />
         ) : query.error ? (
           <StateView
-            color="red"
+            color="danger"
             title={t("library.databaseError")}
             message={
               query.error instanceof Error
@@ -1303,7 +1303,7 @@ function LocalPluginSection({
         </div>
         {error ? (
           <StateView
-            color="red"
+            color="danger"
             title={t("browse.localPlugin.installFailed")}
             message={error instanceof Error ? error.message : String(error)}
           />
@@ -1535,7 +1535,7 @@ export function InstalledSection({
           </Stack>
         ) : (
           <StateView
-            color="blue"
+            color="info"
             title={t("browse.noInstalledPlugins.title")}
             message={t("browse.noInstalledPlugins.message")}
           />
@@ -1579,7 +1579,7 @@ export function AvailableSection({
             {failures.map((failure) => (
               <StateView
                 key={failure.repoUrl}
-                color="red"
+                color="danger"
                 title={t("browse.couldNotFetchRepo", {
                   url: failure.repoUrl,
                 })}
@@ -1599,7 +1599,7 @@ export function AvailableSection({
           />
         ) : query.error ? (
           <StateView
-            color="red"
+            color="danger"
             title={t("browse.repositoryFetchError")}
             message={
               query.error instanceof Error
@@ -1627,7 +1627,7 @@ export function AvailableSection({
           </Stack>
         ) : (
           <StateView
-            color="blue"
+            color="info"
             title={t("browse.noAvailablePlugins.title")}
             message={
               !hasRepository

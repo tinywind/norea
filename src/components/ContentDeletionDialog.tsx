@@ -90,7 +90,7 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
         onChange={event => { const checked = event.currentTarget.checked; setOptions(current => ({ ...current, server: checked })); }}
         label={t(request.kind === "library" ? "contentDeletion.serverWork" : "contentDeletion.serverChapters")} /> : null}
       {serverUrl ? <Text size="xs" c="dimmed" className="norea-server-address">{serverUrl}</Text> : <Text size="xs" c="dimmed">{t("contentSync.notConfigured")}</Text>}
-      {request.kind === "server-work" && options.local ? <Alert color="orange">{t("contentDeletion.localWorkHint")}</Alert> : null}
+      {request.kind === "server-work" && options.local ? <Alert color="warn">{t("contentDeletion.localWorkHint")}</Alert> : null}
       {actions ? <Stack gap="xs" aria-live="polite">
         {(["library", "device", "server"] as const).map(side => {
           const targets = actions.filter(action => action.side === side);
@@ -98,13 +98,13 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
           const done = targets.filter(action => succeeded.has(action.id)).length;
           return <Text size="sm" key={side}>{t(`contentDeletion.${side}`)}: {done}/{targets.length}</Text>;
         })}
-        {failed.length ? <Alert color="red" title={t("contentDeletion.partialFailure", { count: failed.length })}>
+        {failed.length ? <Alert color="danger" title={t("contentDeletion.partialFailure", { count: failed.length })}>
           <Stack gap="xs">{failed.slice(0, 10).map(result => <Text size="sm" key={result.id}>
             {actions.find(action => action.id === result.id)?.name}: {result.error}
           </Text>)}</Stack>
         </Alert> : null}
       </Stack> : null}
-      {error ? <Alert color="red" title={t("common.actionFailed")}>{error}</Alert> : null}
+      {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
       <Group justify="flex-end">
         <TextButton disabled={busy} onClick={close}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
         <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : "contentDeletion.confirm")}</TextButton>

@@ -278,7 +278,7 @@ export const LibraryLocalImport = forwardRef<
           ) : null}
 
           {localImportMutation.error ? (
-            <Text c="red" size="sm">
+            <Text c="danger" size="sm">
               {getLocalImportErrorMessage(localImportMutation.error)}
             </Text>
           ) : null}
@@ -321,7 +321,7 @@ export const LibraryLocalImport = forwardRef<
         onClose={() => openLocalHome.reset()}
         title={t("library.localNovel.title")}
       >
-        <Text c="red">{getLocalImportErrorMessage(openLocalHome.error)}</Text>
+        <Text c="danger">{getLocalImportErrorMessage(openLocalHome.error)}</Text>
       </Modal>
     </>
   );

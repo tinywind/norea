@@ -171,12 +171,18 @@ interface StateViewProps {
 
 export function StateView({
   action,
-  color = "gray",
+  color,
   message,
   title,
 }: StateViewProps) {
   return (
-    <Alert className="norea-surface" color={color} radius="sm" title={title}>
+    <Alert
+      className="norea-surface"
+      color={color}
+      radius="sm"
+      title={title}
+      variant={color ? "light" : "default"}
+    >
       {message ? <Text size="sm">{message}</Text> : null}
       {action?.iconOnly && action.icon ? (
         <IconButton

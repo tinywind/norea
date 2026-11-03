@@ -361,7 +361,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     return (
       <PageFrame>
         <StateView
-          color="yellow"
+          color="warn"
           title={t("novel.missingId")}
           message={t("novel.missingIdMessage")}
         />
@@ -373,7 +373,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     return (
       <PageFrame>
         <StateView
-          color="blue"
+          color="info"
           title={t("novel.loading")}
           message={t("novel.loadingMessage")}
         />
@@ -386,7 +386,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     return (
       <PageFrame>
         <StateView
-          color="red"
+          color="danger"
           title={t("novel.loadFailed")}
           message={
             loadError instanceof Error
@@ -403,7 +403,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     return (
       <PageFrame>
         <StateView
-          color="orange"
+          color="warn"
           title={t("novel.notFound")}
           message={t("novel.notFoundMessage", { id })}
         />
@@ -640,13 +640,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             ) : null}
 
             {localChapterError ? (
-              <Text c="red" className="norea-novel-local-error" size="sm">
+              <Text c="danger" className="norea-novel-local-error" size="sm">
                 {localChapterError}
               </Text>
             ) : null}
 
             {metadataRefreshError ? (
-              <Text c="red" className="norea-novel-local-error" size="sm">
+              <Text c="danger" className="norea-novel-local-error" size="sm">
                 {metadataRefreshError instanceof Error
                   ? metadataRefreshError.message
                   : String(metadataRefreshError)}
@@ -656,7 +656,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             {sourceRefreshFailure ? (
               <StateView
                 action={{ label: t("common.retry"), onClick: serverSync.retry }}
-                color="yellow"
+                color="warn"
                 title={t("novel.syncFailed")}
                 message={
                   <span title={describeError(sourceRefreshFailure)}>
@@ -668,13 +668,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
             {chaptersQuery.isLoading ? (
               <StateView
-                color="blue"
+                color="info"
                 title={t("novel.loadingChapters")}
                 message={t("novel.loadingChaptersMessage")}
               />
             ) : chapters.length === 0 ? (
               <StateView
-                color="blue"
+                color="info"
                 title={t("novel.noChapters")}
                 message={t("novel.noChaptersMessage")}
                 action={

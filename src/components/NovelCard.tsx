@@ -98,17 +98,17 @@ export function NovelCard({
       style={{ zIndex: 1 }}
     >
       {showNumberBadge && itemNumber != null ? (
-        <Badge size="xs" variant="filled" color="gray">
+        <Badge size="xs" variant="default">
           {itemNumber}
         </Badge>
       ) : null}
       {showDownloadBadge && chaptersDownloaded > 0 ? (
-        <Badge size="xs" variant="filled" color="green">
+        <Badge size="xs" variant="filled" color="ok">
           {chaptersDownloaded}
         </Badge>
       ) : null}
       {showUnreadBadge && chaptersUnread > 0 ? (
-        <Badge size="xs" variant="filled" color="blue">
+        <Badge size="xs" variant="filled">
           {chaptersUnread}
         </Badge>
       ) : null}

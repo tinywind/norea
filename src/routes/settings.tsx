@@ -154,7 +154,7 @@ const LOG_LEVEL_LABEL_KEYS: Record<LogLevel, TranslationKey> = {
 
 const SETTINGS_TOAST_AUTO_CLOSE_MS = 5000;
 
-type SettingsToastColor = "blue" | "green" | "red";
+type SettingsToastColor = "info" | "ok" | "danger";
 
 function showSettingsToast(
   color: SettingsToastColor,
@@ -176,7 +176,7 @@ function showSettingsLoadingToast(
 ): void {
   notifications.show({
     id,
-    color: "blue",
+    color: "info",
     title,
     message,
     loading: true,
@@ -187,7 +187,7 @@ function showSettingsLoadingToast(
 
 function updateSettingsToast(
   id: string,
-  color: Exclude<SettingsToastColor, "blue">,
+  color: Exclude<SettingsToastColor, "info">,
   title: string,
   message: string,
 ): void {
@@ -251,7 +251,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
       .then(setMediaStorageRoot)
       .catch((error: unknown) => {
         showSettingsToast(
-          "red",
+          "danger",
           t("settings.data.mediaStorage.loadFailed", {
             error: describeError(error),
           }),
@@ -267,7 +267,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
         setMediaStorageRoot(root);
         reconcileChapterStorage(queryClient);
         showSettingsToast(
-          "green",
+          "ok",
           t("settings.toast.saved"),
         );
         void queryClient.invalidateQueries({ queryKey: ["novel"] });
@@ -275,7 +275,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
       }
     } catch (error) {
       showSettingsToast(
-        "red",
+        "danger",
         t("settings.data.mediaStorage.selectFailed", {
           error: describeError(error),
         }),
@@ -500,7 +500,7 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       if (result.cleanupError) throw new Error(result.cleanupError);
     } catch (error) {
       showSettingsToast(
-        "red",
+        "danger",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.finder.verdict.saveFailed", {
           error: describeError(error),
@@ -531,14 +531,14 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
         setCredentials(emptyPluginVpnCredentials());
         updateStatus(nextStatus);
         showSettingsToast(
-          "green",
+          "ok",
           t("settings.data.pluginVpn.title"),
           t("settings.data.pluginVpn.toast.imported"),
         );
       }
     } catch (error) {
       showSettingsToast(
-        "red",
+        "danger",
         t("settings.data.pluginVpn.title"),
         describeError(error),
       );
@@ -557,13 +557,13 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       updateStatus(await removePluginVpnProfile());
       setCredentials(emptyPluginVpnCredentials());
       showSettingsToast(
-        "green",
+        "ok",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.toast.removed"),
       );
     } catch (error) {
       showSettingsToast(
-        "red",
+        "danger",
         t("settings.data.pluginVpn.title"),
         describeError(error),
       );
@@ -592,14 +592,14 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       if (!nextStatus || !isCurrentConnectionRequest(request)) return;
       updateStatus(nextStatus);
       showSettingsToast(
-        "green",
+        "ok",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.finder.toast.connected"),
       );
     } catch (error) {
       if (isCurrentConnectionRequest(request)) {
         showSettingsToast(
-          "red",
+          "danger",
           t("settings.data.pluginVpn.title"),
           describeConnectionError(error),
         );
@@ -625,14 +625,14 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       updateStatus(nextStatus);
       setCredentials(emptyPluginVpnCredentials());
       showSettingsToast(
-        "green",
+        "ok",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.toast.connected"),
       );
     } catch (error) {
       if (isCurrentConnectionRequest(request)) {
         showSettingsToast(
-          "red",
+          "danger",
           t("settings.data.pluginVpn.title"),
           describeConnectionError(error),
         );
@@ -653,14 +653,14 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
       if (!isCurrentConnectionRequest(request)) return;
       updateStatus(nextStatus);
       showSettingsToast(
-        "green",
+        "ok",
         t("settings.data.pluginVpn.title"),
         t("settings.data.pluginVpn.toast.disconnected"),
       );
     } catch (error) {
       if (isCurrentConnectionRequest(request)) {
         showSettingsToast(
-          "red",
+          "danger",
           t("settings.data.pluginVpn.title"),
           describeError(error),
         );
@@ -1228,7 +1228,7 @@ function DataSettingsSection({
                   tone="accent"
                   onClick={() => {
                     setUserAgent(userAgentInput);
-                    showSettingsToast("green", t("settings.toast.saved"));
+                    showSettingsToast("ok", t("settings.toast.saved"));
                   }}
                 >
                   {t("common.save")}
@@ -1238,7 +1238,7 @@ function DataSettingsSection({
                   onClick={() => {
                     const userAgent = resetUserAgent();
                     setUserAgentInput(userAgent);
-                    showSettingsToast("green", t("settings.toast.reset"));
+                    showSettingsToast("ok", t("settings.toast.reset"));
                   }}
                 >
                   {t("common.reset")}
@@ -1433,7 +1433,7 @@ function AboutSettingsSection({
       .catch((error: unknown) => {
         if (!cancelled) {
           showSettingsToast(
-            "red",
+            "danger",
             t("settings.about.build.title"),
             t("settings.about.buildInfoFailed", {
               error: describeError(error),
@@ -1478,14 +1478,14 @@ function AboutSettingsSection({
       }
       updateSettingsToast(
         toastId,
-        "green",
+        "ok",
         title,
         updateStatusMessage(t, candidate),
       );
     } catch (error) {
       updateSettingsToast(
         toastId,
-        "red",
+        "danger",
         title,
         t("settings.about.update.checkFailed", {
           error: describeError(error),
@@ -1522,14 +1522,14 @@ function AboutSettingsSection({
       const path = await installUpdate(candidate, buildInfo);
       updateSettingsToast(
         toastId,
-        "green",
+        "ok",
         title,
         t("settings.about.update.installerOpened", { path }),
       );
     } catch (error) {
       updateSettingsToast(
         toastId,
-        "red",
+        "danger",
         title,
         t("settings.about.update.installFailed", {
           error: describeError(error),
@@ -1816,7 +1816,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       if (path) {
         updateSettingsToast(
           toastId,
-          "green",
+          "ok",
           t("settings.data.exportBackup"),
           t("settings.data.backupSaved", { path }),
         );
@@ -1826,7 +1826,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     } catch (error) {
       updateSettingsToast(
         toastId,
-        "red",
+        "danger",
         t("settings.data.exportBackup"),
         t("settings.data.exportFailed", {
           error: describeError(error),
@@ -1866,7 +1866,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       if (path) {
         updateSettingsToast(
           toastId,
-          "green",
+          "ok",
           t("settings.data.importBackup"),
           t("settings.data.restoredBackup", { path }),
         );
@@ -1876,7 +1876,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     } catch (error) {
       updateSettingsToast(
         toastId,
-        "red",
+        "danger",
         t("settings.data.importBackup"),
         t("settings.data.restoreFailed", {
           error: describeError(error),
@@ -1917,14 +1917,14 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       }
       updateSettingsToast(
         kind,
-        "green",
+        "ok",
         title,
         successMessage(result.rowsAffected),
       );
     } catch (error) {
       updateSettingsToast(
         kind,
-        "red",
+        "danger",
         title,
         t("settings.data.maintenanceFailed", {
           error: describeError(error),
@@ -1948,7 +1948,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       });
     } catch (error) {
       showSettingsToast(
-        "red",
+        "danger",
         title,
         t("settings.data.maintenanceFailed", {
           error: describeError(error),
@@ -1979,7 +1979,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
           await clearWebViewCache();
           updateSettingsToast(
             kind,
-            "green",
+            "ok",
             title,
             t("settings.data.webViewCache.done"),
           );
@@ -1988,7 +1988,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     } catch (error) {
       updateSettingsToast(
         kind,
-        "red",
+        "danger",
         title,
         t("settings.data.maintenanceFailed", {
           error: describeError(error),
@@ -2002,7 +2002,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   function openLatestRelease(): void {
     void openUrl(LATEST_RELEASE_URL).catch((error: unknown) => {
       showSettingsToast(
-        "red",
+        "danger",
         t("settings.about.githubReleases"),
         t("settings.data.openReleaseFailed", {
           error: describeError(error),

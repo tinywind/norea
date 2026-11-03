@@ -521,7 +521,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     return (
       <PageFrame>
         <StateView
-          color={installed.error ? "red" : "orange"}
+          color={installed.error ? "danger" : "warn"}
           title={t("source.pluginNotLoaded")}
           message={
             installed.error instanceof Error
@@ -622,7 +622,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
               </IconButton>
             ) : null}
             <Badge variant="light">{plugin.lang}</Badge>
-            <Badge variant="light" color="gray">
+            <Badge variant="default">
               v{plugin.version}
             </Badge>
           </>
@@ -761,7 +761,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           />
 
           {isKeywordMode && !hasKeywordSearch ? (
-            <StateView color="blue" title={t("source.keywordPrompt")} />
+            <StateView color="info" title={t("source.keywordPrompt")} />
           ) : listing.isLoading && page === 1 ? (
             <StateView
               title={
@@ -778,7 +778,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             />
           ) : listing.error ? (
             <StateView
-              color="red"
+              color="danger"
               title={t("source.error")}
               message={
                 listing.error instanceof Error
@@ -788,7 +788,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             />
           ) : accumulated.length === 0 ? (
             <StateView
-              color="blue"
+              color="info"
               title={t("source.noResults")}
             />
           ) : (
@@ -827,7 +827,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
           {open.error && !isAbortError(open.error) ? (
             <StateView
-              color="red"
+              color="danger"
               title={t("common.openFailed")}
               message={
                 open.error instanceof Error

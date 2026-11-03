@@ -639,7 +639,7 @@ function SearchResultSection({
 
       {error ? (
         <Alert
-          color={cloudflare ? "yellow" : "red"}
+          color={cloudflare ? "warn" : "danger"}
           variant="light"
           className="norea-search-diagnostic"
         >
@@ -1185,13 +1185,13 @@ export function PluginSearchSection({
         />
 
         {installedCount === 0 ? (
-          <Alert color="blue" title={t("globalSearch.noPlugins.title")}>
+          <Alert color="info" title={t("globalSearch.noPlugins.title")}>
             {t("globalSearch.noPlugins.message")}
           </Alert>
         ) : null}
 
         {hasSearchTerm && scopedPlugins.length === 0 ? (
-          <Alert color="yellow" title={t("globalSearch.noSources.title")}>
+          <Alert color="warn" title={t("globalSearch.noSources.title")}>
             {t("globalSearch.noSources.message")}
           </Alert>
         ) : null}
@@ -1221,13 +1221,13 @@ export function PluginSearchSection({
         ) : null}
 
         {openError ? (
-          <Alert color="red" variant="light" title={t("common.openFailed")}>
+          <Alert color="danger" variant="light" title={t("common.openFailed")}>
             {openError}
           </Alert>
         ) : null}
 
         {!searching && hasOnlyEmptyResults ? (
-          <Alert color="yellow" title={t("common.noMatches")}>
+          <Alert color="warn" title={t("common.noMatches")}>
             {t("globalSearch.noMatches.message", { query })}
           </Alert>
         ) : null}

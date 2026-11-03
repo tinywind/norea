@@ -690,7 +690,7 @@ export function SiteBrowserOverlay() {
             </Text>
             <Group gap="xs">
               <Button
-                color="red"
+                color="danger"
                 variant="light"
                 onClick={() =>
                   cancelSourceAccessWait(

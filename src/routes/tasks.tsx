@@ -872,7 +872,7 @@ function SourceAccessBanner({
           {t("sourceAccess.scopeBlocked", { sources: sourceLabel })}
         </Text>
         {block.verificationError ? (
-          <Text c="red" component="p" size="sm">
+          <Text c="danger" component="p" size="sm">
             {t("sourceAccess.verificationFailed", {
               error: block.verificationError,
             })}
@@ -915,7 +915,7 @@ function SourceAccessBanner({
             : t("sourceAccess.verifyAndResume")}
         </Button>
         <Button
-          color="red"
+          color="danger"
           onClick={() => cancelSourceAccessWait(block.scopeKey, block.revision)}
           size="xs"
           variant="light"
@@ -1318,7 +1318,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
         }
       />
 
-      {queueError ? <Alert color="red" role="alert">{queueError}</Alert> : null}
+      {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
 
       {active ? <VpnDownloadPanel snapshot={vpn} /> : null}
 
@@ -1333,7 +1333,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
             <TextButton tone="danger" aria-label={t("tasks.cancelDownloadRequest", { title: request.title })}
               onClick={() => cancelChapterDownloadRequest(request.id)}>{t("vpnDownload.cancelDraft")}</TextButton>
           </Group>
-          {request.error ? <Alert color="red" role="alert">{request.error}</Alert> : null}
+          {request.error ? <Alert color="danger" role="alert">{request.error}</Alert> : null}
         </div>)}
       </section> : null}
 
@@ -1351,7 +1351,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
 
       {tasks.length === 0 && !requests.length && !hasVpnRun && !vpn.drafts.length && !vpn.plans.length ? (
         <StateView
-          color="blue"
+          color="info"
           title={t("tasks.empty.title")}
           message={t("tasks.empty.message")}
         />
