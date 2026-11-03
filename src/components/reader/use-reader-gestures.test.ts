@@ -105,13 +105,18 @@ function mountGestures(
 
 type Handlers = ReturnType<typeof mountGestures>["handlers"];
 
+function pointerDown(handlers: Handlers, pointerType = "touch") {
+  handlers.handlePointerDown({ pointerType } as unknown as Parameters<Handlers["handlePointerDown"]>[0]);
+}
+
 function tap(
   handlers: Handlers,
   point: { clientX: number; clientY: number },
   target: FakeElement = new FakeElement("p"),
+  { detail = 1, pointerType = "touch" }: { detail?: number; pointerType?: string } = {},
 ) {
-  const event = { ...point, target, preventDefault: vi.fn() };
-  handlers.handlePointerDown();
+  const event = { ...point, detail, target, preventDefault: vi.fn() };
+  pointerDown(handlers, pointerType);
   handlers.handleClick(event as unknown as Parameters<Handlers["handleClick"]>[0]);
   return event;
 }
@@ -258,7 +263,7 @@ describe("reader tap contract", () => {
   it("only clears an existing selection with the next tap, then pages again", () => {
     const { handlers, scrollByPage } = mountGestures();
     selectionText = "selected words";
-    handlers.handlePointerDown();
+    pointerDown(handlers);
     selectionText = "";
     handlers.handleClick({
       ...ZONE_POINTS.middleRight,
@@ -268,6 +273,35 @@ describe("reader tap contract", () => {
     expect(scrollByPage).not.toHaveBeenCalled();
     tap(handlers, ZONE_POINTS.middleRight);
     expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
+  });
+
+  it("waits out a double-click before a mouse tap pages", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
+    expect(scrollByPage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(299);
+    expect(scrollByPage).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
+  });
+
+  it("leaves a mouse double-click to select a word instead of paging or toggling chrome", () => {
+    const { handlers, scrollByPage, onToggleChrome } = mountGestures();
+    tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
+    tap(handlers, ZONE_POINTS.middleRight, undefined, { detail: 2, pointerType: "mouse" });
+    tap(handlers, ZONE_POINTS.middleCenter, undefined, { pointerType: "mouse" });
+    tap(handlers, ZONE_POINTS.middleCenter, undefined, { detail: 2, pointerType: "mouse" });
+    vi.advanceTimersByTime(1000);
+    expect(scrollByPage).not.toHaveBeenCalled();
+    expect(onToggleChrome).not.toHaveBeenCalled();
+  });
+
+  it("drops a pending mouse tap once the click has selected text", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
+    selectionText = "word";
+    vi.advanceTimersByTime(1000);
+    expect(scrollByPage).not.toHaveBeenCalled();
   });
 
   it("opens a chapter link outside the app instead of paging or toggling chrome", () => {
