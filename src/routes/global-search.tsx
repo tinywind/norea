@@ -95,6 +95,13 @@ function hasSameStringItems(
   return current.every((item) => nextItems.has(item));
 }
 
+export function withRetryPluginId(
+  current: string[],
+  pluginId: string,
+): string[] {
+  return current.includes(pluginId) ? current : [...current, pluginId];
+}
+
 function getActivePluginIds(searchKey: string): string[] {
   return [...(activeSearchPluginIds.get(searchKey) ?? new Set<string>())];
 }
@@ -533,7 +540,7 @@ interface SearchResultSectionProps {
   onMore: (row: GlobalSearchResult) => void;
   onOpen: (row: GlobalSearchResult, novel: NovelItem) => void;
   onOpenWebView: (plugin: Plugin) => void;
-  onRetry: () => void;
+  onRetry: (pluginId: string) => void;
 }
 
 function SearchResultSection({
@@ -604,7 +611,7 @@ function SearchResultSection({
                 label={t("common.retry")}
                 size="lg"
                 variant="subtle"
-                onClick={onRetry}
+                onClick={() => onRetry(plugin.id)}
               >
                 <RetryGlyph />
               </IconButton>
@@ -1111,6 +1118,10 @@ export function PluginSearchSection({
     );
   }, [failedPluginIds]);
 
+  const retrySource = useCallback((pluginId: string) => {
+    setRetryPluginIds((current) => withRetryPluginId(current, pluginId));
+  }, []);
+
   const toggleSelectedPlugin = useCallback((pluginId: string) => {
     setSelectedPluginIds((current) =>
       current.includes(pluginId)
@@ -1234,7 +1245,7 @@ export function PluginSearchSection({
               }}
               onMore={openPluginResults}
               onOpenWebView={openSite}
-              onRetry={retryFailed}
+              onRetry={retrySource}
             />
           ))}
         </Stack>
