@@ -74,6 +74,7 @@ export function RepositoriesDialog({
 
   return (
     <Modal
+      classNames={{ content: "norea-repositories-modal" }}
       fullScreen={!desktop}
       onClose={onClose}
       opened={opened}
