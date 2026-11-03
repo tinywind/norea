@@ -7,23 +7,30 @@ const mocks = vi.hoisted(() => ({
   online: true,
   records: [] as { kind: string; status: string }[],
   check: vi.fn(),
+  checkNovel: vi.fn(),
+  novel: null as unknown,
+  serverSource: null as unknown,
+  lastCheckedAt: null as number | null,
 }));
 vi.mock("../../db/queries/novel-freshness", () => ({
   listCheckCandidates: async () => mocks.candidates,
   countRecentChecksBySource: async () => mocks.recent,
+  getNovelFreshness: async () => ({ lastCheckedAt: mocks.lastCheckedAt }),
 }));
+vi.mock("../../db/queries/novel", () => ({ getNovelById: async () => mocks.novel }));
+vi.mock("../content-sync/novel-source", () => ({ readServerNovelSource: async () => mocks.serverSource }));
 vi.mock("../../i18n", () => ({ translate: (_locale: string, key: string) => key }));
 vi.mock("../download-goals/budget", () => ({ readDownloadBudgetStatus: async () => mocks.budget }));
 vi.mock("../network", () => ({ isNetworkOnline: () => mocks.online }));
 vi.mock("../plugins/manager", () => ({
   pluginManager: { loadInstalledFromDb: async () => undefined, getPlugin: (id: string) => (id === "gone" ? undefined : { id }) },
 }));
-vi.mock("../tasks/scheduler", () => ({ taskScheduler: { getSnapshot: () => ({ records: mocks.records }) } }));
-vi.mock("./check-library-updates", () => ({ checkForNewChapters: mocks.check }));
+vi.mock("../tasks/scheduler", () => ({ taskScheduler: { getSnapshot: () => ({ records: mocks.records }), cancel: vi.fn() } }));
+vi.mock("./check-library-updates", () => ({ checkForNewChapters: mocks.check, checkNovelForNewChapters: mocks.checkNovel }));
 
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { useLibraryStore } from "../../store/library";
-import { resetFreshnessChecksForTests, runDueChecks } from "./freshness-scheduler";
+import { checkNovelIfStale, resetFreshnessChecksForTests, runDueChecks } from "./freshness-scheduler";
 
 const candidate = (novelId: number, pluginId = "s") => ({
   novelId, pluginId, status: null, lastReadAt: 10, lastCheckedAt: null, consecutiveFailures: 0,
@@ -37,6 +44,10 @@ beforeEach(() => {
   mocks.online = true;
   mocks.records = [];
   mocks.check.mockReset().mockResolvedValue({});
+  mocks.checkNovel.mockReset().mockReturnValue({ id: "task", promise: Promise.resolve({}) });
+  mocks.novel = { id: 7, pluginId: "s", path: "/n", name: "N", isLocal: false, inLibrary: true };
+  mocks.serverSource = null;
+  mocks.lastCheckedAt = null;
   useLibraryStore.setState({ checkIntervalHours: 12 });
   useDownloadGoalSettingsStore.setState({ automaticOnMobileData: false });
 });
@@ -77,4 +88,29 @@ it("waits for the next interval after the user cancels an automatic check", asyn
   expect(mocks.check).toHaveBeenCalledOnce();
   await runDueChecks(1_000_000 + 12 * 3_600_000);
   expect(mocks.check).toHaveBeenCalledTimes(2);
+});
+
+it("checks a novel opened after 6 hours without a check, once within the source budget", async () => {
+  const now = 100 * 3_600_000;
+  const onStart = vi.fn();
+  expect(await checkNovelIfStale(7, "title", new AbortController().signal, { nowMs: now, onStart })).toBe(true);
+  expect(onStart).toHaveBeenCalledOnce();
+  expect(mocks.checkNovel).toHaveBeenCalledWith({ id: "s" }, mocks.novel, { title: "title" });
+
+  mocks.lastCheckedAt = now / 1000 - 5 * 3600;
+  expect(await checkNovelIfStale(7, "title", new AbortController().signal, { nowMs: now })).toBe(false);
+  mocks.lastCheckedAt = now / 1000 - 6 * 3600;
+  mocks.recent = new Map([["s", 30]]);
+  expect(await checkNovelIfStale(7, "title", new AbortController().signal, { nowMs: now })).toBe(false);
+  expect(mocks.checkNovel).toHaveBeenCalledOnce();
+});
+
+it("checks a content-server work outside the library but never a browsed novel or a local work", async () => {
+  mocks.novel = { id: 7, pluginId: "s", path: "/n", name: "N", isLocal: false, inLibrary: false };
+  expect(await checkNovelIfStale(7, "title", new AbortController().signal)).toBe(false);
+  mocks.serverSource = { serverUrl: "http://server", workId: "w" };
+  expect(await checkNovelIfStale(7, "title", new AbortController().signal)).toBe(true);
+  mocks.novel = { id: 7, pluginId: "local", path: "/n", name: "N", isLocal: true, inLibrary: true };
+  expect(await checkNovelIfStale(7, "title", new AbortController().signal)).toBe(false);
+  expect(mocks.checkNovel).toHaveBeenCalledOnce();
 });

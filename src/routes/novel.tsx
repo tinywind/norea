@@ -895,6 +895,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 </Text>
               ) : null}
 
+              {serverSync.checking ? (
+                <Text c="dimmed" role="status" size="sm">
+                  {t("novel.checkingNewChapters")}
+                </Text>
+              ) : null}
+
               {sourcePlugin ? (
                 <SourceAccessNotice
                   active={active}

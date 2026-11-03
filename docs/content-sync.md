@@ -72,6 +72,10 @@ cover, and chapter summaries without downloading chapter bodies. Metadata transf
 to the same server run sequentially, so this lookup may wait for an active work
 metadata sync. Navigation cancellation also cancels a waiting lookup. Chapter file
 transfers and local source refreshes do not hold this metadata queue.
+The work's original source is checked for new chapters on open only when its
+last check is older than 6 hours, within that source's hourly check budget; it
+is no longer parsed in full on every open. "Rebuild chapter list" still runs the
+full source refresh.
 Locally known chapters remain available when absent from the server response.
 
 For a work opened from the server catalog, an installed source plugin also
@@ -221,7 +225,7 @@ work cursor, per-work fingerprints, and local metadata/cover change revisions.
 Normal sync reads only changed work files; external edits require an explicit
 rescan. A check for new chapters advances the upload revision only when it
 changed the stored details or chapter list. Other successful source refreshes
-(Rebuild chapter list, opening a work, import) advance it even when nothing
+(Rebuild chapter list, import) advance it even when nothing
 changed, which republishes the retained details. A revision is acknowledged only after both metadata and
 cover upload succeed. Remote installations record their exact committed revision;
 local refreshes that complete during transfer stay pending. Server lookups cannot

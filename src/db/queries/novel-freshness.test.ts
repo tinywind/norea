@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn() }));
 import { getDb } from "../client";
-import { getNovelFreshness, recordNovelCheck } from "./novel-freshness";
+import { countRecentChecksBySource, getNovelFreshness, listCheckCandidates, recordNovelCheck } from "./novel-freshness";
 
 let sqlite: DatabaseSync;
 const params = (values: unknown[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
@@ -41,4 +41,21 @@ it("skips a novel that no longer exists", async () => {
   await recordNovelCheck(99, { ok: true, newChapters: 1 }, 10);
   await recordNovelCheck(99, { ok: false }, 10);
   expect(await getNovelFreshness(99)).toBeNull();
+});
+
+it("lists library source novels with their reading state, goal and freshness, and counts recent checks per source", async () => {
+  sqlite.exec(`UPDATE novel SET in_library=1,last_read_at=50,status='Ongoing' WHERE id=1;
+    INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(2,'other','/two','Two',1),(3,'source','/three','Three',0);
+    INSERT INTO novel(id,plugin_id,path,name,in_library,is_local) VALUES(4,'local','/four','Four',1,1);
+    INSERT INTO chapter(novel_id,path,name,position,unread) VALUES(1,'/a','A',1,0),(1,'/b','B',2,1);
+    INSERT INTO novel_download_goal VALUES(1,'entire',NULL,1),(2,'none',NULL,1)`);
+  await recordNovelCheck(1, { ok: false }, 900);
+  await recordNovelCheck(2, { ok: true, newChapters: 0 }, 100);
+  expect(await listCheckCandidates()).toEqual([
+    { novelId: 1, pluginId: "source", status: "Ongoing", lastReadAt: 50, lastCheckedAt: 900, consecutiveFailures: 1,
+      totalChapters: 2, unreadChapters: 1, hasGoal: true },
+    { novelId: 2, pluginId: "other", status: null, lastReadAt: null, lastCheckedAt: 100, consecutiveFailures: 0,
+      totalChapters: 0, unreadChapters: 0, hasGoal: false },
+  ]);
+  expect(await countRecentChecksBySource(500)).toEqual(new Map([["source", 1]]));
 });

@@ -1,18 +1,24 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n";
-import { refreshServerNovelFromSource, syncServerNovelOnOpen } from "../../lib/content-sync/work-refresh";
+import { syncServerNovelOnOpen } from "../../lib/content-sync/work-refresh";
+import { checkNovelIfStale } from "../../lib/updates/freshness-scheduler";
 import { useContentSyncStore } from "../../store/content-sync";
 import { chaptersKey, novelKey } from "./novel-detail-model";
 
+/**
+ * On open, looks the work up on the content server and, when its last check is older than
+ * 6 hours, checks its source for new chapters in the background.
+ */
 export function useServerNovelSync(id: number, active: boolean, name: string) {
   const queryClient = useQueryClient();
   const serverUrl = useContentSyncStore(state => state.serverUrl);
   const { t } = useTranslation();
   const title = useRef("");
-  title.current = t("tasks.task.refreshNovelMetadata", { name });
+  title.current = t("tasks.task.checkUpdates", { name });
   const [serverError, setServerError] = useState<unknown>(null);
   const [sourceError, setSourceError] = useState<unknown>(null);
+  const [checking, setChecking] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || id <= 0) return;
@@ -35,13 +41,16 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
     })();
     void (async () => {
       try {
-        sourceRefreshed = await refreshServerNovelFromSource(id, title.current, controller.signal);
+        sourceRefreshed = await checkNovelIfStale(id, title.current, controller.signal, {
+          onStart: () => { if (!controller.signal.aborted) setChecking(true); },
+        });
         if (sourceRefreshed) await invalidate();
       }
       catch (error) { if (!controller.signal.aborted) setSourceError(error); }
+      finally { if (!controller.signal.aborted) setChecking(false); }
     })();
-    return () => controller.abort();
+    return () => { controller.abort(); setChecking(false); };
   }, [id, active, serverUrl, queryClient, attempt]);
   const retry = useCallback(() => setAttempt(current => current + 1), []);
-  return { serverError, sourceError, retry };
+  return { checking, serverError, sourceError, retry };
 }

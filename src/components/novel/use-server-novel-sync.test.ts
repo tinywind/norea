@@ -19,7 +19,8 @@ const queryClient = { invalidateQueries: mocks.invalidateQueries };
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => queryClient }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: (selector: (state: unknown) => unknown) => selector({ serverUrl: mocks.serverUrl }) }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../../lib/content-sync/work-refresh", () => ({ syncServerNovelOnOpen: mocks.server, refreshServerNovelFromSource: mocks.source }));
+vi.mock("../../lib/content-sync/work-refresh", () => ({ syncServerNovelOnOpen: mocks.server }));
+vi.mock("../../lib/updates/freshness-scheduler", () => ({ checkNovelIfStale: mocks.source }));
 vi.mock("./novel-detail-model", () => ({ novelKey: (id: number) => ["novel", id], chaptersKey: (id: number) => ["novel", id, "chapters"] }));
 import { useServerNovelSync } from "./use-server-novel-sync";
 
@@ -33,18 +34,18 @@ it("keeps rendering independent of pending work refresh and cancels on exit", as
   let complete!: (value: boolean) => void;
   mocks.server.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
   mocks.source.mockImplementation(() => new Promise(() => undefined));
-  expect(useServerNovelSync(42, true, "Book")).toEqual({ serverError: null, sourceError: null, retry: expect.any(Function) });
+  expect(useServerNovelSync(42, true, "Book")).toEqual({ checking: null, serverError: null, sourceError: null, retry: expect.any(Function) });
   const cleanup = mocks.effects[0]!()!;
   const signal = mocks.server.mock.calls[0]![1] as AbortSignal;
   expect(signal.aborted).toBe(false);
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
   cleanup(); complete(true);
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
-  expect(mocks.source).toHaveBeenCalledWith(42, "tasks.task.refreshNovelMetadata", signal);
+  expect(mocks.source).toHaveBeenCalledWith(42, "tasks.task.checkUpdates", signal, { onStart: expect.any(Function) });
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
 });
 
-it("refreshes source metadata and the visible cache while the server is still pending", async () => {
+it("checks a stale source and refreshes the visible cache while the server is still pending", async () => {
   let complete!: (value: boolean) => void;
   mocks.server.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
   useServerNovelSync(42, true, "Book");

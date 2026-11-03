@@ -1,4 +1,5 @@
-import { countRecentChecksBySource, listCheckCandidates } from "../../db/queries/novel-freshness";
+import { getNovelById } from "../../db/queries/novel";
+import { countRecentChecksBySource, getNovelFreshness, listCheckCandidates } from "../../db/queries/novel-freshness";
 import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
@@ -8,8 +9,9 @@ import { readDownloadBudgetStatus } from "../download-goals/budget";
 import { isNetworkOnline } from "../network";
 import { pluginManager } from "../plugins/manager";
 import { taskScheduler } from "../tasks/scheduler";
-import { selectDueChecks } from "./check-cadence";
-import { checkForNewChapters } from "./check-library-updates";
+import { readServerNovelSource } from "../content-sync/novel-source";
+import { SOURCE_CHECKS_PER_HOUR, STALE_ON_OPEN_SECONDS, selectDueChecks } from "./check-cadence";
+import { checkForNewChapters, checkNovelForNewChapters } from "./check-library-updates";
 
 const TICK_MS = 30 * 60_000;
 const HOUR_SECONDS = 60 * 60;
@@ -65,6 +67,39 @@ export async function runDueChecks(nowMs = Date.now()): Promise<void> {
     }
   } finally {
     running = false;
+  }
+}
+
+/**
+ * Opening a library novel or a content-server work whose last check is older than 6 hours checks
+ * it in the background, within its source's hourly budget. Resolves true when a check ran.
+ */
+export async function checkNovelIfStale(
+  novelId: number,
+  title: string,
+  signal: AbortSignal,
+  options: { nowMs?: number; onStart?: () => void } = {},
+): Promise<boolean> {
+  const nowMs = options.nowMs ?? Date.now();
+  const novel = await getNovelById(novelId);
+  if (!novel || novel.isLocal || novel.path.startsWith("norea-folder:") || !isNetworkOnline()) return false;
+  if (!novel.inLibrary && !await readServerNovelSource(novelId)) return false;
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const lastCheckedAt = (await getNovelFreshness(novelId))?.lastCheckedAt ?? null;
+  if (lastCheckedAt !== null && nowSeconds - lastCheckedAt < STALE_ON_OPEN_SECONDS) return false;
+  if (((await countRecentChecksBySource(nowSeconds - HOUR_SECONDS)).get(novel.pluginId) ?? 0) >= SOURCE_CHECKS_PER_HOUR) return false;
+  await pluginManager.loadInstalledFromDb();
+  const plugin = pluginManager.getPlugin(novel.pluginId);
+  if (!plugin || signal.aborted) return false;
+  options.onStart?.();
+  const task = checkNovelForNewChapters(plugin, novel, { title });
+  const cancel = () => { taskScheduler.cancel(task.id); };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    await task.promise;
+    return true;
+  } finally {
+    signal.removeEventListener("abort", cancel);
   }
 }
 
