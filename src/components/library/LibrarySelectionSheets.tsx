@@ -5,106 +5,72 @@ import {
   countNovelsByCategory,
   type LibraryCategory,
 } from "../../db/queries/category";
-import { useTranslation, type TranslationKey } from "../../i18n";
-import { useReaderStore } from "../../store/reader";
-import { PlusIcon } from "../ui/icons";
-import { ListRow } from "../ui/ListRow";
-import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import {
-  countLibraryBatchDownloadTargets,
-  LIBRARY_BATCH_DOWNLOAD_MODES,
-  type LibraryBatchDownloadMode,
-} from "./library-batch-download";
-
-const DOWNLOAD_MODE_LABELS: Record<
-  LibraryBatchDownloadMode,
-  { description: TranslationKey; label: TranslationKey }
-> = {
-  all: {
-    description: "library.batchDownload.allDescription",
-    label: "novel.batchDownload.all",
-  },
-  unread: {
-    description: "library.batchDownload.unreadDescription",
-    label: "novel.batchDownload.unread",
-  },
-  next10: {
-    description: "library.batchDownload.next10Description",
-    label: "novel.batchDownload.next10",
-  },
-  next30: {
-    description: "library.batchDownload.next30Description",
-    label: "novel.batchDownload.next30",
-  },
-};
+  listNovelDownloadGoals,
+  type NovelDownloadGoal,
+  type StoredNovelDownloadGoal,
+} from "../../db/queries/novel-download-goal";
+import { useTranslation } from "../../i18n";
+import { DownloadGoalChoices, sameDownloadGoal } from "../DownloadGoalChoices";
+import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
+import { PlusIcon } from "../ui/icons";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 function sortedIds(novelIds: readonly number[]): number[] {
   return [...novelIds].sort((left, right) => left - right);
 }
 
-interface LibraryDownloadSheetProps {
+/** The own goal every novel shares, null when none has one, undefined when they differ. */
+export function sharedDownloadGoal(
+  novelIds: readonly number[],
+  goals: readonly StoredNovelDownloadGoal[],
+): NovelDownloadGoal | null | undefined {
+  const byNovel = new Map(goals.map((row) => [row.novelId, row.goal]));
+  let shared: NovelDownloadGoal | null | undefined;
+  for (const [index, novelId] of novelIds.entries()) {
+    const goal = byNovel.get(novelId) ?? null;
+    if (index === 0) shared = goal;
+    else if (!sameDownloadGoal(goal, shared ?? null)) return undefined;
+  }
+  return shared;
+}
+
+interface LibraryDownloadGoalSheetProps {
+  applying: boolean;
   novelIds: readonly number[];
+  onApply: (goal: NovelDownloadGoal | null) => void;
   onClose: () => void;
-  onDownload: (mode: LibraryBatchDownloadMode) => void;
   opened: boolean;
 }
 
-/** The four batch download choices for the selection, with chapter counts. */
-export function LibraryDownloadSheet({
+/** The download goal choices for the selected novels; the goal they share is marked. */
+export function LibraryDownloadGoalSheet({
+  applying,
   novelIds,
+  onApply,
   onClose,
-  onDownload,
   opened,
-}: LibraryDownloadSheetProps) {
+}: LibraryDownloadGoalSheetProps) {
   const { t } = useTranslation();
-  const counts = useQuery({
-    enabled: opened && novelIds.length > 0,
-    queryKey: ["novel", "library", "batch-download", "counts", sortedIds(novelIds)],
-    queryFn: ({ signal }) =>
-      countLibraryBatchDownloadTargets(
-        novelIds,
-        useReaderStore.getState().lastReadChapterByNovel,
-        signal,
-      ),
-  });
+  const goals = useQuery({ enabled: opened, queryKey: DOWNLOAD_GOALS_QUERY_KEY, queryFn: listNovelDownloadGoals });
+  const current = goals.data ? sharedDownloadGoal(novelIds, goals.data) : undefined;
 
   return (
     <ResponsiveSheet
       onClose={onClose}
       opened={opened}
-      title={t("library.batchDownload.open")}
+      title={t("library.downloadGoal.title", { count: novelIds.length })}
     >
-      <Stack gap={0}>
-        {LIBRARY_BATCH_DOWNLOAD_MODES.map((mode) => {
-          const count = counts.data?.[mode];
-          return (
-            <ListRow
-              disabled={count === 0}
-              key={mode}
-              onClick={() => {
-                onDownload(mode);
-                onClose();
-              }}
-              subtitle={t(DOWNLOAD_MODE_LABELS[mode].description)}
-              title={t(DOWNLOAD_MODE_LABELS[mode].label)}
-              trailing={
-                count === undefined ? (
-                  counts.isFetching ? <Loader size="xs" /> : null
-                ) : (
-                  <Text c="dimmed" size="sm">
-                    {t("novel.batchDownload.available", { count })}
-                  </Text>
-                )
-              }
-            />
-          );
-        })}
-        {counts.isError ? (
-          <Text c="danger" role="alert" size="sm">
-            {t("library.batchDownload.countFailed")}
-          </Text>
-        ) : null}
-      </Stack>
+      <DownloadGoalChoices
+        allRemainingDescription={t("downloadGoals.kind.allRemaining.many")}
+        current={current}
+        disabled={applying || novelIds.length === 0}
+        entireDescription={t("downloadGoals.kind.entire.many")}
+        onChoose={(goal) => {
+          if (current !== undefined && sameDownloadGoal(goal, current)) return;
+          onApply(goal);
+        }}
+      />
     </ResponsiveSheet>
   );
 }

@@ -21,14 +21,12 @@ import { useTaskSnapshot } from "../../lib/tasks/hooks";
 import { useBrowseStore } from "../../store/browse";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { type DefaultChapterSort } from "../../store/library";
+import { DownloadGoalChoices, DownloadGoalSpacer, sameDownloadGoal } from "../DownloadGoalChoices";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { IconButton } from "../IconButton";
-import { SegmentedToggle } from "../SegmentedToggle";
-import { CheckIcon, SortIcon } from "../ui/icons";
+import { SortIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
-
-export const KEEP_AHEAD_GOAL_CHOICES = [3, 5, 10, 30] as const;
 
 export const novelDownloadGoalQueryKey = (novelId: number) => ["download-goal", novelId] as const;
 
@@ -42,9 +40,6 @@ interface NovelDownloadGoalSheetProps {
   onSelectChapters: () => void;
   opened: boolean;
 }
-
-const sameGoal = (left: NovelDownloadGoal | null, right: NovelDownloadGoal | null) =>
-  JSON.stringify(left) === JSON.stringify(right);
 
 /** The novel's download goal choices with a status line for the goal in effect. */
 export function NovelDownloadGoalSheet({ onClose, opened, ...props }: NovelDownloadGoalSheetProps) {
@@ -72,16 +67,14 @@ function NovelDownloadGoalChoices({
   const cooldownSeconds = useBrowseStore((state) => state.chapterDownloadCooldownSeconds);
   const { pause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
   const snapshot = useTaskSnapshot();
-  const [keepAheadCount, setKeepAheadCount] = useState<number>(KEEP_AHEAD_GOAL_CHOICES[0]);
   const [saving, setSaving] = useState(false);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const { goal, isDefault } = effectiveDownloadGoal(ownGoal, novel, defaultKeepAhead, nowSeconds);
   const progress = describeDownloadGoalProgress(goal, chapters, lastReadChapterId, downloadStatuses);
-  const shownKeepAheadCount = ownGoal?.kind === "keep_ahead" ? ownGoal.count : keepAheadCount;
   const sourceMissing = goal !== null && !pluginManager.getPlugin(novel.pluginId);
 
   const choose = async (next: NovelDownloadGoal | null) => {
-    if (saving || sameGoal(next, ownGoal)) return;
+    if (saving || sameDownloadGoal(next, ownGoal)) return;
     setSaving(true);
     try {
       await setDownloadGoal(novel.id, next);
@@ -122,56 +115,25 @@ function NovelDownloadGoalChoices({
   })();
 
   const remaining = goalTargetChapters({ kind: "all_remaining" }, chapters, lastReadChapterId).length;
-  const choiceRow = (key: string, choice: NovelDownloadGoal | null, title: string, subtitle: string) => {
-    const selected = sameGoal(choice, ownGoal) || (choice?.kind === "keep_ahead" && ownGoal?.kind === "keep_ahead");
-    return (
-      <ListRow
-        aria-pressed={selected}
-        disabled={saving}
-        key={key}
-        leading={selected ? <CheckIcon size="1.125rem" /> : <span aria-hidden="true" className="norea-download-goal-spacer" />}
-        onClick={() => void choose(choice)}
-        selected={selected}
-        subtitle={subtitle}
-        title={title}
-      />
-    );
-  };
 
   return (
     <Stack gap="xs">
       <Text c="dimmed" data-download-goal-status={progress.kind} role="status" size="sm">{status}</Text>
-      <Stack gap={0}>
-        {choiceRow("default", null, t("downloadGoals.kind.default"), defaultKeepAhead > 0
-          ? t("downloadGoals.kind.default.keepAhead", { count: defaultKeepAhead })
-          : t("downloadGoals.kind.default.off"))}
-        {choiceRow("none", { kind: "none" }, t("downloadGoals.kind.none"), t("downloadGoals.kind.none.description"))}
-        {choiceRow("keep", { kind: "keep_ahead", count: shownKeepAheadCount }, t("downloadGoals.kind.keepAhead"),
-          t("downloadGoals.kind.keepAhead.description", { count: shownKeepAheadCount }))}
-        <SegmentedToggle
-          aria-label={t("downloadGoals.kind.keepAhead.countLabel")}
-          className="norea-download-goal-count"
-          data={KEEP_AHEAD_GOAL_CHOICES.map((count) => ({ value: String(count), label: String(count) }))}
-          disabled={saving}
-          onChange={(value) => {
-            const count = Number(value);
-            setKeepAheadCount(count);
-            if (ownGoal?.kind === "keep_ahead") void choose({ kind: "keep_ahead", count });
-          }}
-          value={String(shownKeepAheadCount)}
-        />
-        {choiceRow("remaining", { kind: "all_remaining" }, t("downloadGoals.kind.allRemaining"),
-          t("downloadGoals.kind.allRemaining.description", { count: remaining }))}
-        {choiceRow("entire", { kind: "entire" }, t("downloadGoals.kind.entire"),
-          t("downloadGoals.kind.entire.description", { count: chapters.length }))}
+      <DownloadGoalChoices
+        allRemainingDescription={t("downloadGoals.kind.allRemaining.description", { count: remaining })}
+        current={ownGoal}
+        disabled={saving}
+        entireDescription={t("downloadGoals.kind.entire.description", { count: chapters.length })}
+        onChoose={(next) => void choose(next)}
+      >
         <ListRow
           disabled={chapters.length === 0}
-          leading={<span aria-hidden="true" className="norea-download-goal-spacer" />}
+          leading={<DownloadGoalSpacer />}
           onClick={() => { onClose(); onSelectChapters(); }}
           subtitle={t("downloadGoals.kind.selected.description")}
           title={t("downloadGoals.kind.selected")}
         />
-      </Stack>
+      </DownloadGoalChoices>
       {isDefault ? (
         <Text c="dimmed" size="xs">{t("downloadGoals.status.defaultApplies", { count: defaultKeepAhead })}</Text>
       ) : null}

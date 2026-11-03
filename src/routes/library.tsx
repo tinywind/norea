@@ -13,7 +13,7 @@ import {
 } from "../components/library/LibraryCategories";
 import {
   LibraryCategorySheet,
-  LibraryDownloadSheet,
+  LibraryDownloadGoalSheet,
 } from "../components/library/LibrarySelectionSheets";
 import { LibraryAppBar } from "../components/library/LibraryAppBar";
 import {
@@ -170,8 +170,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     exitSelection,
     selectAllMutation,
     assignCategoryMutation,
-    batchDownloadMutation,
-    batchDownloadAvailability,
+    setDownloadGoalMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
@@ -377,11 +376,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               actions={
                 <>
                   <SelectionAction
-                    disabled={
-                      selectedIds.size === 0 ||
-                      batchDownloadAvailability.data !== true ||
-                      batchDownloadMutation.isPending
-                    }
+                    disabled={selectedIds.size === 0 || setDownloadGoalMutation.isPending}
                     icon={DownloadIcon}
                     label={t("library.selection.download")}
                     onClick={() => setDownloadSheetOpen(true)}
@@ -609,10 +604,16 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         sourcesLoading={sourceFilters.isLoading}
         tab={viewOptionsTab}
       />
-      <LibraryDownloadSheet
+      <LibraryDownloadGoalSheet
+        applying={setDownloadGoalMutation.isPending}
         novelIds={selectedNovelIds}
+        onApply={(goal) =>
+          setDownloadGoalMutation.mutate(
+            { goal, novelIds: selectedNovelIds },
+            { onSuccess: () => setDownloadSheetOpen(false) },
+          )
+        }
         onClose={() => setDownloadSheetOpen(false)}
-        onDownload={(mode) => batchDownloadMutation.mutate(mode)}
         opened={active && selectionMode && downloadSheetOpen}
       />
       <LibraryCategorySheet

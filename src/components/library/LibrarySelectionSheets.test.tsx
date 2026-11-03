@@ -12,13 +12,17 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: mocks.data, isError: false, isFetching: false, isLoading: false }),
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: {} }) } }));
+vi.mock("../DownloadGoalChoices", () => ({
+  DownloadGoalChoices: () => null,
+  sameDownloadGoal: (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right),
+}));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
 
 import {
   LibraryCategorySheet,
-  LibraryDownloadSheet,
+  LibraryDownloadGoalSheet,
   nextCategoryMembership,
+  sharedDownloadGoal,
 } from "./LibrarySelectionSheets";
 
 let harness: BackNavigationHarness | undefined;
@@ -80,24 +84,32 @@ it("shows all, some or none per category and applies only the explicit changes",
   expect(onApply).toHaveBeenCalledWith({ add: [5, 6], remove: [4] });
 });
 
-it("offers each download mode with its chapter count and disables the empty ones", async () => {
-  mocks.data = { all: 12, unread: 4, next10: 0, next30: 0 };
-  const onDownload = vi.fn();
-  const onClose = vi.fn();
-  function DownloadProbe() {
-    tree = LibraryDownloadSheet({ novelIds: [1, 2], onClose, onDownload, opened: true }) as ReactElement<Record<string, unknown>>;
+it("marks the goal every selected novel shares and nothing when they differ", () => {
+  const goals = [
+    { novelId: 1, goal: { kind: "entire" as const }, updatedAt: 1 },
+    { novelId: 2, goal: { kind: "entire" as const }, updatedAt: 2 },
+    { novelId: 3, goal: { kind: "none" as const }, updatedAt: 3 },
+  ];
+  expect(sharedDownloadGoal([1, 2], goals)).toEqual({ kind: "entire" });
+  expect(sharedDownloadGoal([1, 3], goals)).toBeUndefined();
+  expect(sharedDownloadGoal([4, 5], goals)).toBeNull();
+  expect(sharedDownloadGoal([1, 4], goals)).toBeUndefined();
+});
+
+it("applies a goal choice to the selection unless it is the goal they already share", async () => {
+  mocks.data = [{ novelId: 1, goal: { kind: "entire" }, updatedAt: 1 }, { novelId: 2, goal: { kind: "entire" }, updatedAt: 1 }];
+  const apply = vi.fn();
+  function GoalProbe() {
+    tree = LibraryDownloadGoalSheet({ applying: false, novelIds: [1, 2], onApply: apply, onClose: vi.fn(), opened: true }) as
+      ReactElement<Record<string, unknown>>;
     return null;
   }
   harness = mountBackNavigationHarness();
-  await harness.render(<DownloadProbe />);
-  const rows = elements().filter((element) => typeof element.props.title === "string" && "subtitle" in element.props);
-  expect(rows.map((row) => [row.props.title, row.props.disabled])).toEqual([
-    ["novel.batchDownload.all", false],
-    ["novel.batchDownload.unread", false],
-    ["novel.batchDownload.next10", true],
-    ["novel.batchDownload.next30", true],
-  ]);
-  await harness.run(() => (rows[1]!.props.onClick as () => void)());
-  expect(onDownload).toHaveBeenCalledWith("unread");
-  expect(onClose).toHaveBeenCalled();
+  await harness.render(<GoalProbe />);
+  const choices = tree.props.children as ReactElement<{ current: unknown; onChoose: (goal: unknown) => void }>;
+  expect(choices.props.current).toEqual({ kind: "entire" });
+  choices.props.onChoose({ kind: "entire" });
+  expect(apply).not.toHaveBeenCalled();
+  choices.props.onChoose({ kind: "none" });
+  expect(apply).toHaveBeenCalledWith({ kind: "none" });
 });

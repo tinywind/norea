@@ -3,28 +3,18 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
 import {
-  listLibraryDownloadChapters,
-  type LibraryDownloadChapter,
-} from "../../db/queries/chapter";
-import {
   getNovelById,
   listLibraryNovelIds,
-  type LibraryNovel,
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
+import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
+import { setDownloadGoal } from "../../lib/download-goals/goal-service";
 import { showErrorToast } from "../../lib/runtime/error-toast";
-import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
-import { REQUEST_CANCELLED_ERROR, throwIfAborted } from "../../lib/abort";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
-import { useReaderStore } from "../../store/reader";
-import {
-  getLibraryBatchDownloadTargets,
-  type LibraryBatchDownloadMode,
-} from "./library-batch-download";
-import { useLibraryDownloadAvailability } from "./use-library-download-availability";
+import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 
 export function useLibrarySelection(
   libraryFilter: LibraryNovelRefreshFilter,
@@ -52,10 +42,6 @@ export function useLibrarySelection(
   const selectionScope = JSON.stringify([libraryFilter, sortOrder, active]);
   const selectionScopeRef = useRef(selectionScope);
   selectionScopeRef.current = selectionScope;
-  const batchDownloadAvailability = useLibraryDownloadAvailability(
-    selectedIds,
-    active,
-  );
   useEffect(() => {
     selectionRequestRef.current += 1;
     setSelectedIds(new Set());
@@ -100,70 +86,27 @@ export function useLibrarySelection(
     },
   });
 
-  const batchDownloadMutation = useMutation({
-    mutationFn: async (mode: LibraryBatchDownloadMode) => {
-      const novelIds = [...selectedIds];
-      const lastReadChapterByNovel =
-        useReaderStore.getState().lastReadChapterByNovel;
-      let total = 0;
-      const handle = submitChapterDownloadRequest({
-        key: JSON.stringify(["library", mode, [...novelIds].sort((left, right) => left - right), novelIds.map(novelId => lastReadChapterByNovel[novelId])]),
-        title: t("library.batchDownload.open"),
-        novelIds,
-        prepare: async signal => {
-          const batchSources: Array<{
-            chapters: LibraryDownloadChapter[];
-            novel: Pick<LibraryNovel, "id" | "name" | "path" | "pluginId">;
-          }> = [];
-          for (const novelId of novelIds) {
-            throwIfAborted(signal, REQUEST_CANCELLED_ERROR);
-            const novel = await getNovelById(novelId);
-            throwIfAborted(signal, REQUEST_CANCELLED_ERROR);
-            if (!novel || novel.isLocal) continue;
-            const chapters = await listLibraryDownloadChapters(novel.id);
-            throwIfAborted(signal, REQUEST_CANCELLED_ERROR);
-            const targetChapters = getLibraryBatchDownloadTargets(mode, chapters, lastReadChapterByNovel[novel.id]);
-            if (targetChapters.length > 0) batchSources.push({ chapters: targetChapters, novel });
-          }
-          const jobs = batchSources.flatMap(({ chapters, novel }) =>
-            getLibraryBatchDownloadTargets("all", chapters, undefined).map(chapter => ({
-              id: chapter.id,
-              pluginId: novel.pluginId,
-              chapterPath: chapter.path,
-              chapterName: chapter.name,
-              chapterNumber: chapter.chapterNumber ?? undefined,
-              contentType: chapter.contentType,
-              novelId: novel.id,
-              novelName: novel.name,
-              novelPath: novel.path,
-              title: t("tasks.task.downloadChapter", { name: chapter.name }),
-            })),
-          );
-          total = jobs.length;
-          return { jobs, materializeAllTasks: true, title: t("tasks.task.downloadChapterBatch", { count: total }), total };
-        },
-      });
-      void handle.promise
-        .finally(() => total > 0 ? queryClient.invalidateQueries({ queryKey: ["novel", "library"] }) : undefined)
-        .catch(() => undefined);
-      await handle.materialized;
-      return total;
+  const setDownloadGoalMutation = useMutation({
+    mutationFn: async ({ goal, novelIds }: SetDownloadGoalInput) => {
+      let count = 0;
+      for (const novelId of novelIds) {
+        const novel = await getNovelById(novelId);
+        if (!novel || novel.isLocal) continue;
+        await setDownloadGoal(novelId, goal);
+        count += 1;
+      }
+      return count;
     },
-    onSuccess: (total) => {
-      notifications.show({
-        color: total > 0 ? "ok" : undefined,
-        message: total > 0
-          ? t("library.batchDownload.queued", { count: total })
-          : t("library.batchDownload.nothingQueued"),
-      });
+    onSuccess: (count) => {
+      exitSelection();
+      notifications.show({ color: "ok", message: t("library.downloadGoal.done", { count }) });
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["novel", "library", "batch-download"],
-      });
+      void queryClient.invalidateQueries({ queryKey: DOWNLOAD_GOALS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["download-goal"] });
     },
     onError: (error) => {
-      showErrorToast(t("library.batchDownload.open"), error);
+      showErrorToast(t("library.selection.download"), error);
     },
   });
 
@@ -246,11 +189,15 @@ export function useLibrarySelection(
     exitSelection,
     selectAllMutation,
     assignCategoryMutation,
-    batchDownloadMutation,
-    batchDownloadAvailability,
+    setDownloadGoalMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
   };
+}
+
+interface SetDownloadGoalInput {
+  goal: NovelDownloadGoal | null;
+  novelIds: readonly number[];
 }
 
 interface DeleteSelectedDownloadsInput {

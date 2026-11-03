@@ -545,13 +545,3 @@
     min-height: var(--norea-control-md);
   }
 }
-
-.norea-download-goal-spacer {
-  display: inline-block;
-  width: 1.125rem;
-}
-
-.norea-download-goal-count {
-  /* Line the counts up under the keep-ahead row's title: row padding, check icon and gap. */
-  margin: 0 var(--norea-space-4) var(--norea-space-2) calc(var(--norea-space-4) + 1.125rem + var(--norea-space-3));
-}
