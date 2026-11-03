@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   submitted: [] as { key: string; novelIds: readonly number[]; prepare: (signal: AbortSignal) => Promise<{ jobs: unknown[] }> }[],
   records: [] as unknown[],
   downloadListener: null as ((event: unknown) => void) | null,
+  excluded: new Set<number>(),
 }));
 
 vi.mock("../../db/queries/chapter", () => ({
@@ -20,6 +21,9 @@ vi.mock("../../db/queries/novel-download-goal", () => ({
     ids ? mocks.novels.filter((novel) => ids.includes((novel as { id: number }).id)) : mocks.novels),
   listGoalNovelIdsForDownloadScope: vi.fn(async () => [5]),
   setNovelDownloadGoal: vi.fn(async () => true),
+  excludeChaptersFromDownloadGoals: vi.fn(async (ids: readonly number[]) => { for (const id of ids) mocks.excluded.add(id); }),
+  listDownloadGoalExcludedChapterIds: vi.fn(async () => [...mocks.excluded]),
+  clearDownloadGoalExclusions: vi.fn(async () => { mocks.excluded.clear(); }),
 }));
 vi.mock("../../i18n", () => ({ translate: (_locale: string, key: string) => key }));
 vi.mock("../../store/appearance", () => ({ useAppearanceStore: { getState: () => ({ appLocale: "en" }) } }));
@@ -38,7 +42,9 @@ vi.mock("../plugins/manager", () => ({
   pluginManager: { loadInstalledFromDb: vi.fn(async () => undefined), getPlugin: (id: string) => ({ id, name: "Source" }) },
 }));
 vi.mock("../tasks/chapter-download", () => ({
-  cancelChapterDownloadTasks: vi.fn(async () => undefined),
+  cancelChapterDownloadTasks: vi.fn(async (ids: readonly number[]) => {
+    for (const id of ids) mocks.downloadListener?.({ job: { id, goal: true }, status: { kind: "cancelled" } });
+  }),
   discardQueuedChapterDownloads: vi.fn(async () => undefined),
   getChapterDownloadStatus: vi.fn(() => undefined),
   isChapterDownloadQueued: (id: number) => mocks.queued.has(id),
@@ -124,6 +130,7 @@ beforeEach(() => {
   mocks.budget = { metered: false, powerSave: false, freeBytes: null };
   mocks.submitted = [];
   mocks.records = [];
+  mocks.excluded = new Set();
   useDownloadGoalSettingsStore.setState({ defaultKeepAhead: 3, automaticOnMobileData: false });
   useReaderStore.setState({ lastReadChapterByNovel: {} });
   vi.clearAllMocks();
@@ -200,6 +207,7 @@ it("withdraws queued goal work when the goal is cleared", async () => {
   expect(setNovelDownloadGoal).toHaveBeenCalledWith(1, null);
   expect(discardQueuedChapterDownloads).toHaveBeenCalledWith([11, 13]);
   expect(cancelChapterDownloadTasks).toHaveBeenCalledWith([11, 13]);
+  expect(mocks.excluded).toEqual(new Set());
 });
 
 it("stores an explicit None when the user stops keeping a novel downloaded", async () => {
@@ -224,4 +232,27 @@ it("keeps deleted and cancelled chapters out of later goal work", async () => {
   await settle();
 
   expect(mocks.submitted).toEqual([]);
+});
+
+it("keeps chapters the user deleted or cancelled excluded after a restart until a goal is chosen again", async () => {
+  startDownloadGoals();
+  await settle();
+  await noteDownloadDeletion("chapter", [11]);
+  mocks.downloadListener?.({ job: { id: 13, goal: true }, status: { kind: "cancelled" } });
+  await settle();
+  expect(mocks.excluded).toEqual(new Set([11, 13]));
+
+  resetDownloadGoalsForTests();
+  mocks.submitted = [];
+  startDownloadGoals();
+  await settle();
+  expect(mocks.submitted.map((request) => request.novelIds)).toEqual([[2]]);
+
+  mocks.submitted = [];
+  const chosen = setDownloadGoal(1, { kind: "keep_ahead", count: 3 });
+  await vi.advanceTimersByTimeAsync(10);
+  await chosen;
+  await settle();
+  expect(mocks.excluded).toEqual(new Set());
+  expect((await jobsOf(0)).map((job) => job.id)).toEqual([11, 13]);
 });

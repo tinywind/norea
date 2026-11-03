@@ -1,5 +1,8 @@
 import { listLibraryDownloadChapters, type LibraryDownloadChapter } from "../../db/queries/chapter";
 import {
+  clearDownloadGoalExclusions,
+  excludeChaptersFromDownloadGoals,
+  listDownloadGoalExcludedChapterIds,
   listDownloadGoalNovels,
   listGoalNovelIdsForDownloadScope,
   setNovelDownloadGoal,
@@ -55,8 +58,11 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let pausedRecheck: ReturnType<typeof setTimeout> | null = null;
 let running: Promise<void> = Promise.resolve();
 const pauseListeners = new Set<() => void>();
-/** Chapters the user deleted or cancelled while a goal covered them; kept out of goal work until restart. */
-const excludedChapterIds = new Set<number>();
+/** User cancellations of goal chapters waiting to be persisted as goal exclusions. */
+const pendingExclusionIds = new Set<number>();
+let exclusionWrite: Promise<void> = Promise.resolve();
+/** Goal chapters this service is withdrawing itself; their cancellation is not the user's. */
+const withdrawingChapterIds = new Set<number>();
 /** Goal chapters this session queued, per novel, so stopping a goal can withdraw them. */
 const submittedByNovel = new Map<number, Set<number>>();
 /** Goal chapters whose request is still being prepared and not yet visible as queued work. */
@@ -136,15 +142,31 @@ function isOwned(chapter: LibraryDownloadChapter): boolean {
   return chapter.isDownloadQueued || preparingChapterIds.has(chapter.id) || isChapterDownloadQueued(chapter.id);
 }
 
+function activeSinceSeconds(): number | null {
+  return useDownloadGoalSettingsStore.getState().defaultKeepAhead > 0
+    ? Math.floor(Date.now() / 1000) - ACTIVE_NOVEL_WINDOW_SECONDS
+    : null;
+}
+
+function persistExclusions(chapterIds: readonly number[]): Promise<void> {
+  for (const id of chapterIds) pendingExclusionIds.add(id);
+  exclusionWrite = exclusionWrite.then(async () => {
+    const ids = [...pendingExclusionIds];
+    pendingExclusionIds.clear();
+    if (ids.length > 0) await excludeChaptersFromDownloadGoals(ids);
+  }).catch((error: unknown) => console.warn("[download-goals] could not save goal exclusions:", error));
+  return exclusionWrite;
+}
+
 async function runReconcile(novelIds: number[] | undefined): Promise<void> {
+  await exclusionWrite;
   const pause = await currentPause();
   publishPause(pause);
   if (pause !== null) {
     if (pause !== "restore") schedulePausedRecheck();
     return;
   }
-  const defaultKeepAhead = useDownloadGoalSettingsStore.getState().defaultKeepAhead;
-  const activeSince = defaultKeepAhead > 0 ? Math.floor(Date.now() / 1000) - ACTIVE_NOVEL_WINDOW_SECONDS : null;
+  const activeSince = activeSinceSeconds();
   const novels = await listDownloadGoalNovels(activeSince, novelIds);
   if (novels.length === 0) return;
   await pluginManager.loadInstalledFromDb();
@@ -158,9 +180,10 @@ async function runReconcile(novelIds: number[] | undefined): Promise<void> {
     const plugin = pluginManager.getPlugin(novel.pluginId);
     if (!plugin) continue;
     const chapters = await listLibraryDownloadChapters(novel.id);
+    const excluded = new Set(await listDownloadGoalExcludedChapterIds(novel.id));
     const readingChapterId = goalReadingChapterId(chapters, useReaderStore.getState().lastReadChapterByNovel[novel.id]);
     const targets = resolveGoalTargets(goal, chapters, readingChapterId, isOwned,
-      (chapter) => excludedChapterIds.has(chapter.id) || failed.has(chapter.id));
+      (chapter) => excluded.has(chapter.id) || failed.has(chapter.id));
     if (targets.pending.length > 0) submitGoalWork(novel, plugin.name, targets.pending, novel.id === focusNovelId);
   }
 }
@@ -221,9 +244,9 @@ function submitGoalWork(
 export async function setDownloadGoal(novelId: number, goal: NovelDownloadGoal | null): Promise<void> {
   await setNovelDownloadGoal(novelId, goal);
   await withdrawGoalWork([novelId]);
-  // A goal the user just chose covers chapters they cancelled or deleted earlier in this session.
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  for (const chapter of await listLibraryDownloadChapters(novelId)) excludedChapterIds.delete(chapter.id);
+  // A goal the user just chose covers chapters they cancelled or deleted before.
+  await exclusionWrite;
+  await clearDownloadGoalExclusions(novelId);
   reconcileDownloadGoals([novelId]);
 }
 
@@ -262,20 +285,25 @@ async function withdrawGoalWork(novelIds: readonly number[]): Promise<void> {
   const ids = queuedGoalChapterIds(novelIds).filter((id) => getChapterDownloadStatus(id)?.kind !== "running");
   for (const novelId of novelIds) submittedByNovel.delete(novelId);
   if (ids.length === 0) return;
-  await discardQueuedChapterDownloads(ids);
-  await cancelChapterDownloadTasks(ids);
+  for (const id of ids) withdrawingChapterIds.add(id);
+  try {
+    await discardQueuedChapterDownloads(ids);
+    await cancelChapterDownloadTasks(ids);
+  } finally {
+    for (const id of ids) withdrawingChapterIds.delete(id);
+  }
 }
 
 /**
- * Called after the user deleted downloads. Deleted chapters stay out of goal work until
- * the app restarts; returns the novels with their own goal so the caller can offer to stop it.
+ * Called after the user deleted downloads. Deleted chapters stay out of goal work until the
+ * novel's goal is set again; returns the novels with a goal in effect so the caller can offer to stop it.
  */
 export async function noteDownloadDeletion(
   scope: "chapter" | "novel" | "all",
   ids: readonly number[],
 ): Promise<number[]> {
-  if (scope === "chapter") for (const id of ids) excludedChapterIds.add(id);
-  return listGoalNovelIdsForDownloadScope(scope, ids);
+  if (scope === "chapter") await persistExclusions(ids);
+  return listGoalNovelIdsForDownloadScope(scope, ids, activeSinceSeconds());
 }
 
 /** "Allow once": lifts the mobile-data and battery budgets until the app restarts. */
@@ -322,9 +350,9 @@ export function startDownloadGoals(): void {
     }),
     subscribeChapterDownloadFailuresCleared(() => reconcileDownloadGoals()),
     subscribeChapterDownloads((event) => {
-      if (event.job.goal && event.status.kind === "cancelled" &&
+      if (event.job.goal && event.status.kind === "cancelled" && !withdrawingChapterIds.has(event.job.id) &&
           (typeof document === "undefined" || document.visibilityState === "visible")) {
-        excludedChapterIds.add(event.job.id);
+        void persistExclusions([event.job.id]);
       }
     }),
   );
@@ -352,5 +380,6 @@ export function resetDownloadGoalsForTests(): void {
   timer = null; pausedRecheck = null; pendingNovelIds = null;
   started = false; allowedOnce = false; pauseState = { pause: null };
   running = Promise.resolve();
-  excludedChapterIds.clear(); submittedByNovel.clear(); preparingChapterIds.clear(); preparingRequestsByNovel.clear();
+  pendingExclusionIds.clear(); exclusionWrite = Promise.resolve(); withdrawingChapterIds.clear();
+  submittedByNovel.clear(); preparingChapterIds.clear(); preparingRequestsByNovel.clear();
 }

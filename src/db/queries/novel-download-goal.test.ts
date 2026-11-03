@@ -5,7 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("../client", () => ({ getDb: vi.fn() }));
 import { getDb } from "../client";
 import {
-  getNovelDownloadGoal, listDownloadGoalNovels, listGoalNovelIdsForDownloadScope, listNovelDownloadGoals, setNovelDownloadGoal,
+  clearDownloadGoalExclusions, excludeChaptersFromDownloadGoals, getNovelDownloadGoal, listDownloadGoalExcludedChapterIds,
+  listDownloadGoalNovels, listGoalNovelIdsForDownloadScope, listNovelDownloadGoals, setNovelDownloadGoal,
 } from "./novel-download-goal";
 
 let sqlite: DatabaseSync;
@@ -92,4 +93,30 @@ it("finds the goal novels a download deletion touches", async () => {
   expect(await listGoalNovelIdsForDownloadScope("novel", [1])).toEqual([]);
   expect(await listGoalNovelIdsForDownloadScope("novel", [1, 2])).toEqual([2]);
   expect(await listGoalNovelIdsForDownloadScope("all", [])).toEqual([2]);
+});
+
+it("counts the default keep-ahead of active library novels as a goal a deletion touches", async () => {
+  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library,last_read_at) VALUES
+    (3,'source','/active','Active',1,500),(4,'source','/stale','Stale',1,100),(5,'source','/opted-out','Opted out',1,500);
+    INSERT INTO chapter(id,novel_id,path,name,position) VALUES(30,3,'/a','A',1),(40,4,'/b','B',1),(50,5,'/c','C',1)`);
+  await setNovelDownloadGoal(5, { kind: "none" });
+  expect(await listGoalNovelIdsForDownloadScope("chapter", [30, 40, 50], 400)).toEqual([3]);
+  expect(await listGoalNovelIdsForDownloadScope("novel", [3, 4, 5], 400)).toEqual([3]);
+  expect(await listGoalNovelIdsForDownloadScope("all", [], 400)).toEqual([3]);
+  expect(await listGoalNovelIdsForDownloadScope("all", [], null)).toEqual([]);
+});
+
+it("persists goal exclusions per chapter until the novel's goal is set again", async () => {
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(10,1,'/a','A',1),(11,1,'/b','B',2),(20,2,'/c','C',1)");
+  await excludeChaptersFromDownloadGoals([11, 10, 11, 20, 99], 5);
+  await excludeChaptersFromDownloadGoals([10], 9);
+  expect(await listDownloadGoalExcludedChapterIds(1)).toEqual([10, 11]);
+  expect(sqlite.prepare("SELECT created_at AS createdAt FROM chapter_download_goal_exclusion WHERE chapter_id=10").get())
+    .toEqual({ createdAt: 5 });
+
+  await clearDownloadGoalExclusions(1);
+  expect(await listDownloadGoalExcludedChapterIds(1)).toEqual([]);
+  expect(await listDownloadGoalExcludedChapterIds(2)).toEqual([20]);
+  sqlite.exec("DELETE FROM chapter WHERE id=20");
+  expect(await listDownloadGoalExcludedChapterIds(2)).toEqual([]);
 });

@@ -112,27 +112,69 @@ export async function listDownloadGoalNovels(
   });
 }
 
-/** Novels with their own active goal among the novels, the chapters' novels, or every novel for "all". */
+/**
+ * Novels with a goal in effect among the novels, the chapters' novels, or every novel for "all":
+ * their own goal, or the default keep-ahead for library novels opened since `activeSince` (Unix seconds).
+ */
 export async function listGoalNovelIdsForDownloadScope(
   scope: "chapter" | "novel" | "all",
   ids: readonly number[],
+  activeSince: number | null = null,
 ): Promise<number[]> {
   const db = await getDb();
+  const covered = `((g.novel_id IS NOT NULL AND g.kind <> 'none')
+    OR (g.novel_id IS NULL AND $1 IS NOT NULL AND n.in_library=1 AND n.is_local=0 AND n.last_read_at >= $1))`;
   if (scope === "all") {
     return (await db.select<{ novelId: number }[]>(
-      "SELECT novel_id AS novelId FROM novel_download_goal WHERE kind <> 'none' ORDER BY novel_id"))
-      .map((row) => row.novelId);
+      `SELECT n.id AS novelId FROM novel n LEFT JOIN novel_download_goal g ON g.novel_id=n.id
+       WHERE ${covered} ORDER BY n.id`, [activeSince])).map((row) => row.novelId);
   }
   const unique = [...new Set(ids)].filter(Number.isSafeInteger);
   const found = new Set<number>();
   for (let index = 0; index < unique.length; index += 500) {
     const chunk = unique.slice(index, index + 500);
-    const placeholders = chunk.map((_, offset) => `$${offset + 1}`).join(",");
+    const placeholders = chunk.map((_, offset) => `$${offset + 2}`).join(",");
     const rows = await db.select<{ novelId: number }[]>(scope === "novel"
-      ? `SELECT novel_id AS novelId FROM novel_download_goal WHERE kind <> 'none' AND novel_id IN (${placeholders})`
-      : `SELECT DISTINCT g.novel_id AS novelId FROM chapter c JOIN novel_download_goal g ON g.novel_id=c.novel_id
-         WHERE g.kind <> 'none' AND c.id IN (${placeholders})`, chunk);
+      ? `SELECT n.id AS novelId FROM novel n LEFT JOIN novel_download_goal g ON g.novel_id=n.id
+         WHERE ${covered} AND n.id IN (${placeholders})`
+      : `SELECT DISTINCT n.id AS novelId FROM chapter c JOIN novel n ON n.id=c.novel_id
+         LEFT JOIN novel_download_goal g ON g.novel_id=n.id
+         WHERE ${covered} AND c.id IN (${placeholders})`, [activeSince, ...chunk]);
     for (const row of rows) found.add(row.novelId);
   }
   return [...found].sort((left, right) => left - right);
+}
+
+/**
+ * Keeps chapters the user deleted or cancelled out of goal work until the novel's goal is set again.
+ * Chapters that no longer exist are skipped.
+ */
+export async function excludeChaptersFromDownloadGoals(chapterIds: readonly number[], now = Date.now()): Promise<void> {
+  const db = await getDb();
+  const unique = [...new Set(chapterIds)].filter(Number.isSafeInteger);
+  for (let index = 0; index < unique.length; index += 500) {
+    const chunk = unique.slice(index, index + 500);
+    const placeholders = chunk.map((_, offset) => `$${offset + 2}`).join(",");
+    await db.execute(
+      `INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at)
+       SELECT id,$1 FROM chapter WHERE id IN (${placeholders}) ON CONFLICT(chapter_id) DO NOTHING`,
+      [now, ...chunk],
+    );
+  }
+}
+
+export async function listDownloadGoalExcludedChapterIds(novelId: number): Promise<number[]> {
+  const db = await getDb();
+  const rows = await db.select<{ chapterId: number }[]>(
+    `SELECT e.chapter_id AS chapterId FROM chapter_download_goal_exclusion e JOIN chapter c ON c.id=e.chapter_id
+     WHERE c.novel_id=$1 ORDER BY e.chapter_id`, [novelId]);
+  return rows.map((row) => row.chapterId);
+}
+
+/** A goal the user just chose covers the chapters they deleted or cancelled before. */
+export async function clearDownloadGoalExclusions(novelId: number): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    "DELETE FROM chapter_download_goal_exclusion WHERE chapter_id IN (SELECT id FROM chapter WHERE novel_id=$1)",
+    [novelId]);
 }

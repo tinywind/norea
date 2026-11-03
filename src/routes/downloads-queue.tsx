@@ -31,9 +31,11 @@ import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
 import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
 import { TextButton } from "../components/TextButton";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { goalNovelIdsOf, stopsGoalsLine, useCancelDownloadTask } from "../components/use-cancel-goal-work";
 import { VpnIcon } from "../components/ui/icons";
 import { OverflowMenu } from "../components/ui/OverflowMenu";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { stopDownloadGoals } from "../lib/download-goals/goal-service";
 import { describeError } from "../lib/errors";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
 import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
@@ -467,6 +469,7 @@ const TaskRow = memo(function TaskRow({
   task: TaskRecord;
 }) {
   const { t } = useTranslation();
+  const cancelTask = useCancelDownloadTask();
   const currentTask = useLiveTaskRecord(task);
   const label = progressLabel(currentTask);
   const chapterHeading = chapterDownloadTaskHeading(currentTask);
@@ -597,7 +600,7 @@ const TaskRow = memo(function TaskRow({
         {showActions && currentTask.canCancel ? (
           <IconButton
             label={t("common.cancel")}
-            onClick={() => taskScheduler.cancel(currentTask.id)}
+            onClick={() => void cancelTask(currentTask)}
             size="lg"
             tone="danger"
           >
@@ -697,11 +700,13 @@ function TaskWorkGroup({
             <IconButton
               label={t("tasks.cancelWorkCurrent")}
               onClick={async () => {
+                const goalNovelIds = goalNovelIdsOf(group.tasks);
                 const confirmed = await confirm({
                   title: t("tasks.cancelGroupConfirm.title", { name: group.title }),
-                  message: t("tasks.cancelWorkConfirm.message", {
-                    count: cancellableActiveTaskCount(group.tasks),
-                  }),
+                  message: [
+                    t("tasks.cancelWorkConfirm.message", { count: cancellableActiveTaskCount(group.tasks) }),
+                    stopsGoalsLine(t, goalNovelIds),
+                  ].filter(Boolean).join(" "),
                   confirmLabel: t("tasks.cancelWorkCurrent"),
                   cancelLabel: t("common.keep"),
                   danger: true,
@@ -715,6 +720,7 @@ function TaskWorkGroup({
                   sourceId,
                   workKey: group.workKey,
                 });
+                if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
               }}
               size="lg"
               tone="danger"
@@ -1061,11 +1067,13 @@ function TaskGroup({
             <IconButton
               label={t("tasks.cancelSourceCurrent")}
               onClick={async () => {
+                const goalNovelIds = goalNovelIdsOf(tasks);
                 const confirmed = await confirm({
                   title: t("tasks.cancelGroupConfirm.title", { name: title }),
-                  message: t("tasks.cancelSourceConfirm.message", {
-                    count: cancellableActiveTaskCount(tasks),
-                  }),
+                  message: [
+                    t("tasks.cancelSourceConfirm.message", { count: cancellableActiveTaskCount(tasks) }),
+                    stopsGoalsLine(t, goalNovelIds),
+                  ].filter(Boolean).join(" "),
                   confirmLabel: t("tasks.cancelSourceCurrent"),
                   cancelLabel: t("common.keep"),
                   danger: true,
@@ -1078,6 +1086,7 @@ function TaskGroup({
                   discardQueued: true,
                   sourceId,
                 });
+                if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
               }}
               size="lg"
               tone="danger"
@@ -1339,9 +1348,11 @@ export function DownloadsQueueView({
               label={t("tasks.cancelAllCurrent")}
               onClick={async () => {
                 const count = cancellableActiveTaskCount(tasks) + requests.length;
+                const goalNovelIds = goalNovelIdsOf(tasks);
                 const message = [
                   count > 0 ? t("tasks.cancelAllConfirm.message", { count }) : null,
                   hasVpnRun ? t("tasks.cancelAllConfirm.vpnRun") : null,
+                  stopsGoalsLine(t, goalNovelIds),
                 ].filter(Boolean).join(" ");
                 const confirmed = await confirm({
                   title: t("tasks.cancelAllConfirm.title"),
@@ -1359,6 +1370,7 @@ export function DownloadsQueueView({
                   );
                   taskScheduler.cancelActiveTasks({ discardQueued: true });
                   await cancellingVpn;
+                  if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
                 });
               }}
               size="lg"
