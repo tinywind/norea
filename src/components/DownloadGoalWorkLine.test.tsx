@@ -39,6 +39,9 @@ it("names the goal and its estimate on a work's queued goal downloads", () => {
   expect(render(tasks, [])).toBe('downloadGoals.goal.defaultKeepAhead({"count":3}) · downloadGoals.eta.minutes({"count":10})');
 });
 
-it("stays empty for work that no goal queued", () => {
+it("shows only the estimate for work that no goal queued, and nothing before a chapter is measured", () => {
   expect(render([task({})], [])).toBe("");
+  recordChapterDownloadDuration({ task: task({ status: "succeeded", startedAt: 0, finishedAt: 59_000 }), previousStatus: "running" });
+  expect(render([task({ queueIndex: 4 })], [{ novelId: 4, goal: { kind: "entire" }, updatedAt: 1 }]))
+    .toBe('downloadGoals.eta.minutes({"count":5})');
 });

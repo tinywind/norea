@@ -45,6 +45,18 @@ async function verifyGroup(group: ChapterDownloadFailureGroup, title: string): P
   await retryGroup(group);
 }
 
+/** How many failed chapters wait for an automatic retry; a status line, not something the user must act on. */
+export function ChapterDownloadRetryingStatus() {
+  const { t } = useTranslation();
+  const { retrying } = chapterDownloadFailureAttention(useChapterDownloadFailureSnapshot());
+  if (retrying === 0) return null;
+  return (
+    <Text c="dimmed" role="status" size="sm" data-download-failures="retrying">
+      {t("downloads.failures.retrying", { count: retrying })}
+    </Text>
+  );
+}
+
 /** Needs attention lines for persisted chapter failures, one action per source and failure class. */
 export function ChapterDownloadFailureAttention() {
   const { t } = useTranslation();
@@ -53,7 +65,7 @@ export function ChapterDownloadFailureAttention() {
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   const busy = useRef(false);
   const attention = chapterDownloadFailureAttention(rows);
-  if (attention.groups.length === 0 && attention.retrying === 0) return null;
+  if (attention.groups.length === 0) return null;
 
   async function act(key: string, action: () => Promise<void>): Promise<void> {
     if (busy.current) return;
@@ -65,19 +77,13 @@ export function ChapterDownloadFailureAttention() {
 
   return (
     <>
-      {attention.retrying > 0 ? (
-        <Text c="dimmed" role="status" size="sm" data-download-failures="retrying">
-          {t("downloads.failures.retrying", { count: attention.retrying })}
-        </Text>
-      ) : null}
       {attention.groups.map((group) => {
         const source = pluginManager.getPlugin(group.pluginId)?.name ?? group.pluginId;
         const message = t(MESSAGE_KEYS[group.failureClass], { source, count: group.chapterIds.length, host: group.challengeHost });
         return (
           <section className="norea-source-access-banner" data-download-failures={group.failureClass} key={group.key} role="alert">
             <div className="norea-source-access-copy">
-              <Text component="h2" fw={700} size="sm">{t("vpnDownload.attention.title")}</Text>
-              <Text c="dimmed" component="p" size="sm">{message}</Text>
+              <Text component="h3" fw={700} size="sm">{message}</Text>
               <Text c="dimmed" component="p" lineClamp={2} size="xs">
                 {t("downloads.failures.latest", { message: group.latestSummary })}
               </Text>

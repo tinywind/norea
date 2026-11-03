@@ -31,9 +31,10 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string, values?: R
 const confirm = vi.hoisted(() => vi.fn());
 vi.mock("./ui/ConfirmDialog", () => ({ useConfirm: () => confirm }));
 import { OverflowMenu } from "./ui/OverflowMenu";
-import { VpnDownloadWorkDetails, VpnDownloadWorkRow, vpnDownloadWorks } from "./VpnDownloadWorks";
+import { DownloadWorkStatusLabel } from "./DownloadWorkStatusLabel";
+import { VpnDownloadWorkDetails, VpnDownloadWorkRow, vpnDownloadWorks, vpnDownloadWorkStatus } from "./VpnDownloadWorks";
 
-interface Props { children?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: OverflowMenuItem[]; "data-vpn-range"?: string }
+interface Props { children?: ReactNode; status?: string; label?: string; disabled?: boolean; onClick?: () => unknown; items?: OverflowMenuItem[]; "data-vpn-range"?: string }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -105,6 +106,17 @@ it("shows a plain novel row with progress and a VPN label but no range rows or r
   expect(menu(view).map(entry => entry.label)).toEqual(["vpnDownload.pauseWork", "vpnDownload.details", "vpnDownload.cancelWork"]);
 });
 
+it("gives a VPN work one status from its most urgent part", () => {
+  expect(vpnDownloadWorkStatus(vpnDownloadWorks(snapshot())[0]!, snapshot())).toBe("preparing");
+  const plan = activePlan();
+  expect(vpnDownloadWorkStatus(vpnDownloadWorks(withPlans(plan))[0]!, withPlans(plan))).toBe("attention");
+  plan.ranges[0]!.pauseReason = "offline";
+  expect(vpnDownloadWorkStatus(vpnDownloadWorks(withPlans(plan))[0]!, withPlans(plan))).toBe("downloading");
+  plan.ranges[1]!.phase = "paused";
+  plan.ranges[1]!.pauseReason = "offline";
+  expect(vpnDownloadWorkStatus(vpnDownloadWorks(withPlans(plan))[0]!, withPlans(plan))).toBe("waiting");
+});
+
 it("opens the technical breakdown only from the row's Details action", () => {
   expect(renderRow(withPlans(activePlan())).some(element => element.type === VpnDownloadWorkDetails)).toBe(false);
   item(renderRow(withPlans(activePlan())), "vpnDownload.details")!.onClick();
@@ -118,7 +130,11 @@ it("routes work pause and resume through the whole-work boundary and holds them 
   value.plans[0]!.ranges[1]!.phase = "paused";
   value.plans[0]!.ranges[1]!.userPaused = true;
   value.plans[0]!.ranges[1]!.pauseReason = "work-paused";
-  expect(text(renderRow(value))).toContain("vpnDownload.phase.paused");
+  const status = () => renderRow(value).find(element => element.type === DownloadWorkStatusLabel)?.props.status;
+  expect(status()).toBe("attention");
+  value.plans[0]!.ranges[0]!.userPaused = true;
+  value.plans[0]!.ranges[0]!.pauseReason = "work-paused";
+  expect(status()).toBe("paused");
   item(renderRow(value), "vpnDownload.resumeWork")!.onClick();
   await vi.waitFor(() => expect(actions.resumeWork).toHaveBeenCalledExactlyOnceWith("source", 42));
   value.run = { ...value.run!, status: "paused" };

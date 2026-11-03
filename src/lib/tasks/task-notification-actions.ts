@@ -15,6 +15,7 @@ let taskNotificationSourceOpening: Promise<unknown> | null = null;
 /** The page a notification tap opens; the queue holds Needs attention at its top. */
 export type TaskNotificationDestination =
   | { kind: "queue" }
+  | { kind: "attention" }
   | { kind: "updates" }
   | { kind: "novel"; novelId: number }
   | { kind: "chapter"; chapterId: number };
@@ -58,6 +59,7 @@ export function navigateToTaskNotificationDestination(
 ): Promise<void> {
   switch (destination.kind) {
     case "queue": return navigate({ to: "/downloads", search: { view: "queue" } });
+    case "attention": return navigate({ to: "/downloads", search: { view: "queue", focus: "attention" } });
     case "updates": return navigate({ to: "/updates" });
     case "novel": return navigate({ to: "/novel", search: { id: destination.novelId } });
     case "chapter": return navigate({ to: "/reader", search: { chapterId: destination.chapterId } });
@@ -82,6 +84,10 @@ export async function applyTaskNotificationAction(
     return;
   }
   const generation = ++taskNotificationNavigationGeneration;
+  if (action.type === "openAttention") {
+    await open({ kind: "attention" });
+    return;
+  }
   if (action.type === "openUpdates" || action.type === "openNovel" || action.type === "openChapter") {
     const destination = await resolveTaskNotificationDestination(action, lookup);
     if (generation === taskNotificationNavigationGeneration) await open(destination);

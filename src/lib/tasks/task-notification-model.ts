@@ -327,7 +327,8 @@ export function taskNotificationCompletionAction(
 ): TaskNotificationAction {
   const queue: TaskNotificationAction = { type: "openTasks" };
   if (key === "libraryUpdates") return { type: "openUpdates" };
-  if (key !== "downloads" || results.failed > 0 || results.succeeded === 0) return queue;
+  if (key === "downloads" && results.failed > 0) return { type: "openAttention" };
+  if (key !== "downloads" || results.succeeded === 0) return queue;
   let novelId: number | undefined;
   const chapterIds = new Set<number>();
   let count = 0;

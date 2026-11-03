@@ -58,23 +58,8 @@
 }
 
 .norea-task-sort-menu {
-  display: inline-flex;
-  position: relative;
-}
-
-.norea-task-sort-popover {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-md);
-  box-shadow: var(--norea-shadow-floating);
   display: grid;
-  gap: var(--norea-space-2);
-  min-width: 13rem;
-  padding: var(--norea-space-2);
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.35rem);
-  z-index: 10;
+  gap: var(--norea-space-3);
 }
 
 .norea-task-sort-section {
@@ -288,6 +273,65 @@
   display: flex;
   gap: var(--norea-space-2);
   min-width: 0;
+}
+
+.norea-task-work-copy-stacked {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.norea-task-work-heading {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-2);
+  min-width: 0;
+}
+
+.norea-task-work-status {
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 var(--norea-space-2);
+  white-space: nowrap;
+}
+
+.norea-task-work-status[data-status="downloading"],
+.norea-task-work-status[data-status="preparing"] {
+  background: var(--norea-color-accent-soft);
+  color: var(--norea-color-on-accent-soft);
+}
+
+.norea-task-work-status[data-status="waiting"],
+.norea-task-work-status[data-status="paused"],
+.norea-task-work-status[data-status="done"] {
+  background: var(--norea-color-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--norea-color-rule);
+}
+
+.norea-task-work-status[data-status="attention"] {
+  background: var(--norea-color-warn-soft);
+  color: var(--norea-color-on-warn-soft);
+}
+
+.norea-downloads-attention,
+.norea-downloads-list {
+  display: grid;
+  gap: var(--norea-space-2);
+  min-width: 0;
+  scroll-margin-top: var(--norea-space-4);
+}
+
+.norea-downloads-section-title {
+  color: var(--norea-color-ink);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-md);
+  font-weight: 700;
+  margin: 0;
 }
 
 .norea-task-work-title {

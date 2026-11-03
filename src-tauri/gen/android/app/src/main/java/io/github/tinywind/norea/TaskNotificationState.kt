@@ -90,7 +90,7 @@ internal data class TaskNotificationAction(
   val chapterId: Long? = null,
 ) {
   fun accepts(target: TaskNotificationActionTarget): Boolean = when (type) {
-    "openTasks", "openUpdates" -> target == TaskNotificationActionTarget.ACTIVITY
+    "openTasks", "openAttention", "openUpdates" -> target == TaskNotificationActionTarget.ACTIVITY
     "openNovel" -> target == TaskNotificationActionTarget.ACTIVITY &&
       novelId != null && novelId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
     "openChapter" -> target == TaskNotificationActionTarget.ACTIVITY &&
@@ -111,6 +111,7 @@ internal data class TaskNotificationAction(
 
   companion object {
     fun openTasks() = TaskNotificationAction(type = "openTasks")
+    fun openAttention() = TaskNotificationAction(type = "openAttention")
     fun openUpdates() = TaskNotificationAction(type = "openUpdates")
     fun openNovel(novelId: Long) = TaskNotificationAction("openNovel", novelId = novelId)
     fun openChapter(novelId: Long, chapterId: Long) =
@@ -128,6 +129,7 @@ internal data class TaskNotificationAction(
 internal fun taskNotificationActionFromFields(field: (String) -> Any?): TaskNotificationAction? {
   val action = when (field("type")) {
     "openTasks" -> TaskNotificationAction.openTasks()
+    "openAttention" -> TaskNotificationAction.openAttention()
     "openUpdates" -> TaskNotificationAction.openUpdates()
     "openNovel" -> TaskNotificationAction.openNovel(taskNotificationInteger(field("novelId"), 1) ?: return null)
     "openChapter" -> TaskNotificationAction.openChapter(

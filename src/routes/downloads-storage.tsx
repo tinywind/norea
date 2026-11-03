@@ -526,7 +526,7 @@ export function DownloadsStorageView({
   const totalSize = formatBytes(totals.bytes, locale);
 
   return (
-    <PageFrame className="norea-downloads-page" size="wide">
+    <PageFrame className="norea-downloads-page norea-downloads-hub" size="wide">
       <PageHeader
         title={t("downloads.title")}
         description={t("downloads.description")}

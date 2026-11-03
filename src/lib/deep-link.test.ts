@@ -105,6 +105,7 @@ describe("parseDeepLink", () => {
 
   it.each([
     ["norea://updates", { type: "openUpdates" }],
+    ["norea://attention", { type: "openAttention" }],
     ["norea://novel/3", { type: "openNovel", novelId: 3 }],
     ["norea://novel/3/chapter/9", { type: "openChapter", novelId: 3, chapterId: 9 }],
   ])("opens the notification target %s", (raw, action) => {

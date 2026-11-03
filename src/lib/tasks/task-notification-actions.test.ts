@@ -176,6 +176,12 @@ describe("notification targets", () => {
     expect(await resolveTaskNotificationDestination({ type: "openChapter", novelId: 3, chapterId: 9 }, broken)).toEqual({ kind: "queue" });
   });
 
+  it("opens Needs attention in the queue for a failure result", async () => {
+    const open = vi.fn();
+    await applyTaskNotificationAction({ type: "openAttention" }, open, t);
+    expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "attention" });
+  });
+
   it("opens the resolved target once and only for the latest tap", async () => {
     const open = vi.fn();
     let release!: () => void;

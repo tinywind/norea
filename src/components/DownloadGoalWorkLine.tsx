@@ -13,27 +13,31 @@ export const DOWNLOAD_GOALS_QUERY_KEY = ["download-goals"] as const;
 /** The goal behind a novel's queued work and when it should finish, shown on its Downloads row. */
 export function DownloadGoalWorkLine({ records, tasks }: { records: readonly TaskRecord[]; tasks: readonly TaskRecord[] }) {
   const { t } = useTranslation();
-  const novelId = tasks.find((task) => task.automatic)?.subject?.novelId;
+  const novelId = tasks.find((task) => task.subject?.novelId !== undefined)?.subject?.novelId;
+  const automatic = tasks.some((task) => task.automatic);
   const goals = useQuery({
     queryKey: DOWNLOAD_GOALS_QUERY_KEY,
     queryFn: listNovelDownloadGoals,
-    enabled: novelId !== undefined,
+    enabled: novelId !== undefined && automatic,
   }).data;
   const defaultKeepAhead = useDownloadGoalSettingsStore((state) => state.defaultKeepAhead);
   const cooldownSeconds = useBrowseStore((state) => state.chapterDownloadCooldownSeconds);
-  if (novelId === undefined || !goals) return null;
-  const goal: NovelDownloadGoal | undefined = goals.find((row) => row.novelId === novelId)?.goal;
-  if (goal?.kind === "none") return null;
-  const label = !goal
-    ? t("downloadGoals.goal.defaultKeepAhead", { count: defaultKeepAhead })
-    : goal.kind === "keep_ahead"
-      ? t("downloadGoals.goal.keepAhead", { count: goal.count })
-      : t(goal.kind === "entire" ? "downloadGoals.goal.entire" : "downloadGoals.goal.allRemaining");
+  if (novelId === undefined) return null;
+  const goal: NovelDownloadGoal | undefined = goals?.find((row) => row.novelId === novelId)?.goal;
+  const label = !automatic || !goals || goal?.kind === "none"
+    ? null
+    : !goal
+      ? t("downloadGoals.goal.defaultKeepAhead", { count: defaultKeepAhead })
+      : goal.kind === "keep_ahead"
+        ? t("downloadGoals.goal.keepAhead", { count: goal.count })
+        : t(goal.kind === "entire" ? "downloadGoals.goal.entire" : "downloadGoals.goal.allRemaining");
   const etaMs = estimateNovelDownloadMs(novelId, records, cooldownSeconds * 1000);
   const eta = etaMs === null ? null : formatDownloadEta(etaMs);
+  const line = [label, eta ? t(eta.key, { count: eta.minutes }) : null].filter(Boolean).join(" · ");
+  if (!line) return null;
   return (
     <Text c="dimmed" data-download-goal-work={novelId} size="xs">
-      {eta ? `${label} · ${t(eta.key, { count: eta.minutes })}` : label}
+      {line}
     </Text>
   );
 }

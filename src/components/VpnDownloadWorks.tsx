@@ -12,6 +12,7 @@ import {
   pauseVpnDownloadWork, resumeVpnDownloadRange, resumeVpnDownloadWork, startVpnDownloadDraft,
 } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "../lib/tasks/vpn-download-types";
+import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "./DownloadWorkStatusLabel";
 import { SettingsInlineControls } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 import { useConfirm } from "./ui/ConfirmDialog";
@@ -98,6 +99,22 @@ export function vpnDownloadWorks(snapshot: VpnDownloadRuntimeSnapshot): VpnDownl
   });
 }
 
+/** Reasons a VPN range stops that only the user can resolve; other pauses clear by themselves. */
+const ATTENTION_PAUSES = new Set([
+  "profiles-exhausted", "challenge-captcha", "challenge-cloudflare", "manual-verification",
+  "verification-unavailable", "authentication-required", "download-failed", "runtime-error",
+]);
+
+/** One status for a VPN work, from its most urgent range, draft or handover state. */
+export function vpnDownloadWorkStatus(work: VpnDownloadWork, snapshot: VpnDownloadRuntimeSnapshot): DownloadWorkStatus {
+  if (work.drafts.some(draft => draft.phase === "failed") ||
+    work.unfinished.some(({ range }) => range.phase === "paused" && ATTENTION_PAUSES.has(range.pauseReason ?? ""))) return "attention";
+  if (work.held || (snapshot.run && snapshot.run.status !== "running")) return "paused";
+  if (work.unfinished.some(({ range }) => range.phase === "running" || range.phase === "connecting")) return "downloading";
+  if (work.drafts.length > 0) return "preparing";
+  return "waiting";
+}
+
 function usePendingActions() {
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<Record<string, string | null>>({});
@@ -149,7 +166,7 @@ export function VpnDownloadWorkRow({ work, snapshot, actions = runtimeActions }:
           <Text className="norea-task-work-title" lineClamp={1}>{work.title}</Text>
           <span className="norea-task-route-label">{t("vpnDownload.routeLabel")}</span>
           <span className="norea-task-group-count">{t("vpnDownload.workProgress", { completed: work.completed, total: work.total })}</span>
-          {work.held ? <span className="norea-task-group-count">{t("vpnDownload.phase.paused")}</span> : null}
+          <DownloadWorkStatusLabel status={vpnDownloadWorkStatus(work, snapshot)} />
         </div>
         <div className="norea-task-group-actions">
           <OverflowMenu items={items} label={t("vpnDownload.workOptions", { title: work.title })} />

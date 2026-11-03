@@ -2,6 +2,7 @@ import type { TaskNotificationGroupKey } from "./task-types";
 
 export type TaskNotificationAction =
   | { type: "openTasks" }
+  | { type: "openAttention" }
   | { type: "openUpdates" }
   | { type: "openNovel"; novelId: number }
   | { type: "openChapter"; novelId: number; chapterId: number }
@@ -24,6 +25,7 @@ export function parseTaskNotificationAction(value: unknown): TaskNotificationAct
   if (value === null || typeof value !== "object") return null;
   const action = value as Record<string, unknown>;
   if (action.type === "openTasks") return { type: "openTasks" };
+  if (action.type === "openAttention") return { type: "openAttention" };
   if (action.type === "openUpdates") return { type: "openUpdates" };
   if (action.type === "openNovel" && isRowId(action.novelId)) {
     return { type: "openNovel", novelId: action.novelId };

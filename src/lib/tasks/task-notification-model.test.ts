@@ -191,10 +191,15 @@ describe("completion targets", () => {
     expect(tracker.takeCompletions(t)).toMatchObject([{ action: { type: "openNovel", novelId: 3 } }]);
   });
 
-  it("opens the queue for failures, several novels, unseen successes or unnamed subjects", () => {
-    const queue = { type: "openTasks" };
+  it("opens Needs attention when any download failed", () => {
     expect(taskNotificationCompletionAction("downloads", results({ succeeded: 1, failed: 1 }), [{ novelId: 3, chapterId: 9 }]))
-      .toEqual(queue);
+      .toEqual({ type: "openAttention" });
+    expect(taskNotificationCompletionAction("downloads", results({ failed: 2 }), [])).toEqual({ type: "openAttention" });
+    expect(taskNotificationCompletionAction("search", results({ failed: 1 }), [])).toEqual({ type: "openTasks" });
+  });
+
+  it("opens the queue for several novels, unseen successes or unnamed subjects", () => {
+    const queue = { type: "openTasks" };
     expect(taskNotificationCompletionAction("downloads", results({ succeeded: 2 }), [
       { novelId: 3, chapterId: 9 }, { novelId: 4, chapterId: 10 },
     ])).toEqual(queue);

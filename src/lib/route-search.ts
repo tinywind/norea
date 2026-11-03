@@ -19,6 +19,8 @@ export type DownloadsView = "queue" | "storage";
 
 export interface DownloadsSearch {
   view: DownloadsView;
+  /** Scrolls the queue to Needs attention once, as a failure notification asks. */
+  focus?: "attention";
 }
 
 function asPositiveId(raw: unknown): number {
@@ -58,5 +60,6 @@ export function parseSourceSearch(
 export function parseDownloadsSearch(
   search: Record<string, unknown>,
 ): DownloadsSearch {
-  return { view: search.view === "storage" ? "storage" : "queue" };
+  const view = search.view === "storage" ? "storage" : "queue";
+  return view === "queue" && search.focus === "attention" ? { view, focus: "attention" } : { view };
 }

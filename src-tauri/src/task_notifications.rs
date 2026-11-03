@@ -61,6 +61,7 @@ struct TaskNotificationChallenge {
 enum TaskNotificationCompletionAction {
     #[default]
     OpenTasks,
+    OpenAttention,
     OpenUpdates,
     OpenNovel {
         novel_id: u64,
@@ -117,6 +118,7 @@ mod model {
     )]
     pub(super) enum TaskNotificationAction {
         OpenTasks,
+        OpenAttention,
         OpenUpdates,
         OpenNovel {
             novel_id: u64,
@@ -245,6 +247,9 @@ mod model {
         let valid = |id: u64| (1..=MAX_SAFE_ROW_ID).contains(&id);
         match action {
             TaskNotificationCompletionAction::OpenTasks => Ok(TaskNotificationAction::OpenTasks),
+            TaskNotificationCompletionAction::OpenAttention => {
+                Ok(TaskNotificationAction::OpenAttention)
+            }
             TaskNotificationCompletionAction::OpenUpdates => {
                 Ok(TaskNotificationAction::OpenUpdates)
             }
@@ -326,6 +331,7 @@ mod model {
     ) -> Option<String> {
         match action {
             TaskNotificationAction::OpenTasks => Some("norea://tasks".into()),
+            TaskNotificationAction::OpenAttention => Some("norea://attention".into()),
             TaskNotificationAction::OpenUpdates => Some("norea://updates".into()),
             TaskNotificationAction::OpenNovel { novel_id } => {
                 Some(format!("norea://novel/{novel_id}"))
@@ -848,6 +854,7 @@ mod tests {
     fn result_targets_open_fixed_protocol_paths() {
         for (action, launch) in [
             (serde_json::json!({"type":"openTasks"}), "norea://tasks"),
+            (serde_json::json!({"type":"openAttention"}), "norea://attention"),
             (serde_json::json!({"type":"openUpdates"}), "norea://updates"),
             (
                 serde_json::json!({"type":"openNovel", "novelId": 3, "url": "https://untrusted.example/"}),

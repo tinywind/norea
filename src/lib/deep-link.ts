@@ -14,13 +14,16 @@ const NOVEL_PATH = new RegExp(`^/${ROW_ID}$`);
 const NOVEL_CHAPTER_PATH = new RegExp(`^/${ROW_ID}/chapter/${ROW_ID}$`);
 
 /**
- * Notification targets as fixed paths: `norea://updates`,
+ * Notification targets as fixed paths: `norea://updates`, `norea://attention`,
  * `norea://novel/<novelId>` and `norea://novel/<novelId>/chapter/<chapterId>`.
  */
 function parseNotificationTargetLink(url: URL): TaskNotificationAction | null {
   if (url.search || url.hash || url.username || url.password || url.port) return null;
   if (url.host === "updates" && (url.pathname === "" || url.pathname === "/")) {
     return { type: "openUpdates" };
+  }
+  if (url.host === "attention" && (url.pathname === "" || url.pathname === "/")) {
+    return { type: "openAttention" };
   }
   if (url.host !== "novel") return null;
   const chapter = NOVEL_CHAPTER_PATH.exec(url.pathname);

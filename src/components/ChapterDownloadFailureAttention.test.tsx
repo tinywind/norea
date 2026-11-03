@@ -11,7 +11,7 @@ vi.mock("../lib/tasks/chapter-download-failures", () => ({ forgetChapterDownload
 vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ resumeVpnDownloadRange: vi.fn() }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { getPlugin: (id: string) => ({ id, name: "Foo" }) } }));
-import { ChapterDownloadFailureAttention } from "./ChapterDownloadFailureAttention";
+import { ChapterDownloadFailureAttention, ChapterDownloadRetryingStatus } from "./ChapterDownloadFailureAttention";
 
 function row(chapterId: number, patch: Partial<StoredChapterDownloadFailure>): StoredChapterDownloadFailure {
   return {
@@ -21,7 +21,7 @@ function row(chapterId: number, patch: Partial<StoredChapterDownloadFailure>): S
 }
 
 function render() {
-  return load(renderToStaticMarkup(<MantineProvider><ChapterDownloadFailureAttention /></MantineProvider>));
+  return load(renderToStaticMarkup(<MantineProvider><ChapterDownloadFailureAttention /><ChapterDownloadRetryingStatus /></MantineProvider>));
 }
 
 it("renders nothing without persisted failures", () => {
@@ -45,4 +45,11 @@ it("shows grouped failures with one action and waiting retries as a status line"
   expect($('[data-download-failures="challenge"] button').text()).toBe("Verify");
   expect($('[data-download-failures="media-incomplete"] button').text()).toBe("Repair all");
   expect($('[data-download-failures="transient"]')).toHaveLength(0);
+  expect($('[data-download-failures="retrying"]').closest("[role=alert]")).toHaveLength(0);
+});
+
+it("keeps waiting retries out of Needs attention", () => {
+  state.rows = [row(5, { failureClass: "transient", nextRetryAt: 10 })];
+  const $ = load(renderToStaticMarkup(<MantineProvider><ChapterDownloadFailureAttention /></MantineProvider>));
+  expect($("[data-download-failures]")).toHaveLength(0);
 });

@@ -15,11 +15,17 @@ vi.mock("react", async original => ({
     return [mocks.states[index], (next: unknown) => { mocks.states[index] = typeof next === "function" ? next(mocks.states[index]) : next; }];
   },
   useRef: (initial: unknown) => mocks.refs[mocks.refIndex++] ?? (mocks.refs[mocks.refIndex - 1] = { current: initial }),
+  useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
+}));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => vi.fn(),
+  useRouterState: ({ select }: { select: (value: unknown) => unknown }) => select({ location: { pathname: "/downloads", search: { view: "queue" } } }),
 }));
 vi.mock("../lib/tasks/hooks", async () => {
   const { taskScheduler } = await import("../lib/tasks/scheduler");
   return { useTaskSnapshot: () => taskScheduler.getSnapshot(), useVpnDownloadRuntimeSnapshot: () => mocks.vpn,
-    useChapterDownloadRequestSnapshot: () => [{ id: "preparing", title: "Preparing work", phase: "preparing", total: null, novelIds: [42], error: null }] };
+    useChapterDownloadRequestSnapshot: () => [{ id: "preparing", title: "Preparing work", phase: "preparing", total: null, novelIds: [42], error: null }],
+    useChapterDownloadFailureSnapshot: () => [] };
 });
 vi.mock("../components/VpnDownloadAttention", () => ({ VpnDownloadAttention: function VpnDownloadAttention() { return null; } }));
 vi.mock("../components/VpnDownloadLaunchDialog", () => ({ VpnDownloadLaunchDialog: function VpnDownloadLaunchDialog() { return null; } }));
@@ -36,7 +42,7 @@ vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => confirm }))
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { DownloadsQueueView } from "./downloads-queue";
 
-interface Props { children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: { label: string; onClick: () => void }[]; work?: { title: string } }
+interface Props { children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: { label: string; onClick: () => void; disabled?: boolean }[]; work?: { title: string } }
 function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -44,7 +50,9 @@ function elements(node: ReactNode): ReactElement<Props>[] {
   return [element, ...elements(element.props.children), ...elements(element.props.actions)];
 }
 function render() { mocks.index = 0; mocks.refIndex = 0; return elements(DownloadsQueueView()); }
-const button = (label: string) => render().find(element => element.props.label === label)!;
+const pageMenu = () => render().find(element => element.props.label === "common.more" && element.props.items)!.props.items!;
+const menuItem = (label: string) => pageMenu().find(item => item.label === label)!;
+const pauseButton = (label: string) => render().find(element => element.props.children === label)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
   confirm.mockResolvedValue(true);
@@ -56,51 +64,54 @@ beforeEach(() => {
 it("cancels a VPN run and preparing requests even before any ordinary chapter row exists", async () => {
   let finish!: () => void;
   mocks.cancel.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
-  const control = button("tasks.cancelAllCurrent");
-  expect(control.props.disabled).toBe(false);
-  const cancelling = control.props.onClick!();
+  const control = menuItem("tasks.cancelAllCurrent");
+  expect(control.disabled).toBe(false);
+  control.onClick();
+  const cancelling = vi.waitFor(() => expect(mocks.cancel).toHaveBeenCalledOnce());
   await vi.waitFor(() => expect(mocks.cancel).toHaveBeenCalledOnce());
   expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
     danger: true, message: "tasks.cancelAllConfirm.message tasks.cancelAllConfirm.vpnRun",
   }));
   expect(mocks.cancelRequest).toHaveBeenCalledWith("preparing");
-  expect(button("tasks.cancelAllCurrent").props.disabled).toBe(true);
+  expect(menuItem("tasks.cancelAllCurrent").disabled).toBe(true);
   finish(); await cancelling;
+  await vi.waitFor(() => expect(menuItem("tasks.cancelAllCurrent").disabled).toBe(false));
 });
 
 it("includes the VPN run in global pause and resume rather than only changing ordinary queues", async () => {
-  await button("tasks.pauseAll").props.onClick!();
+  await pauseButton("downloads.queue.pause").props.onClick!();
   expect(mocks.pause).toHaveBeenCalledOnce();
   expect(taskScheduler.getSnapshot().sourceQueuesPaused).toBe(true);
   mocks.vpn!.run = { ...mocks.vpn!.run!, status: "paused" };
-  await button("tasks.resumeAll").props.onClick!();
+  await pauseButton("downloads.queue.resume").props.onClick!();
   expect(mocks.resume).toHaveBeenCalledOnce();
   expect(taskScheduler.getSnapshot().sourceQueuesPaused).toBe(false);
 });
 
 it("keeps a failed global cancellation visible and allows an explicit retry", async () => {
   mocks.cancel.mockRejectedValueOnce(new Error("VPN browser cleanup failed"));
-  await button("tasks.cancelAllCurrent").props.onClick!();
-  expect(render().some(element => element.props.children === "VPN browser cleanup failed")).toBe(true);
-  await button("tasks.cancelAllCurrent").props.onClick!();
-  expect(mocks.cancel).toHaveBeenCalledTimes(2);
+  menuItem("tasks.cancelAllCurrent").onClick();
+  await vi.waitFor(() => expect(render().some(element => element.props.children === "VPN browser cleanup failed")).toBe(true));
+  menuItem("tasks.cancelAllCurrent").onClick();
+  await vi.waitFor(() => expect(mocks.cancel).toHaveBeenCalledTimes(2));
 });
 
 it("lists VPN works as novel rows in the downloads list instead of a separate VPN section", () => {
-  mocks.vpn!.plans = [{ id: "plan", title: "VPN novel" } as VpnDownloadRuntimeSnapshot["plans"][number]];
+  mocks.vpn!.plans = [{ id: "plan", title: "VPN novel", ranges: [] } as unknown as VpnDownloadRuntimeSnapshot["plans"][number]];
   const view = render();
   const rows = view.filter(element => typeof element.type === "function" && element.type.name === "VpnDownloadWorkRow");
   expect(rows.map(element => element.props.work?.title)).toEqual(["VPN novel"]);
-  expect(view.some(element => typeof element.type === "function" && element.type.name === "VpnDownloadAttention")).toBe(true);
   expect(view.some(element => element.props.items?.some(item => item.label === "vpnDownload.launchMenu"))).toBe(false);
+  mocks.vpn!.run = { ...mocks.vpn!.run!, status: "interrupted" };
+  expect(render().some(element => typeof element.type === "function" && element.type.name === "NeedsAttentionSection")).toBe(true);
 });
 
 it("keeps the VPN launch dialog behind the page overflow when no VPN run exists", () => {
   mocks.vpn!.run = null;
-  const launch = render().find(element => element.props.items)!.props.items!.find(item => item.label === "vpnDownload.launchMenu")!;
+  const launch = menuItem("vpnDownload.launchMenu");
   expect(render().some(element => typeof element.type === "function" && element.type.name === "VpnDownloadLaunchDialog")).toBe(false);
   launch.onClick();
   expect(render().some(element => typeof element.type === "function" && element.type.name === "VpnDownloadLaunchDialog")).toBe(true);
   mocks.vpn!.capabilities = { supported: false, parallelSupported: false, maxWorkers: 0 };
-  expect(render().some(element => element.props.items)).toBe(false);
+  expect(pageMenu().some(item => item.label === "vpnDownload.launchMenu")).toBe(false);
 });

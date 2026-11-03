@@ -39,6 +39,7 @@ describe("VPN notification action validation", () => {
 describe("notification target actions", () => {
   it("keeps only the typed target identity", () => {
     expect(parseTaskNotificationAction({ type: "openUpdates", url: "https://untrusted.test" })).toEqual({ type: "openUpdates" });
+    expect(parseTaskNotificationAction({ type: "openAttention", url: "https://untrusted.test" })).toEqual({ type: "openAttention" });
     expect(parseTaskNotificationAction({ type: "openNovel", novelId: 3, path: "/x" })).toEqual({ type: "openNovel", novelId: 3 });
     expect(parseTaskNotificationAction({ type: "openChapter", novelId: 3, chapterId: 9 }))
       .toEqual({ type: "openChapter", novelId: 3, chapterId: 9 });

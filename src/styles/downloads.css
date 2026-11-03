@@ -170,16 +170,16 @@
   padding: var(--norea-space-3) var(--norea-space-3) var(--norea-space-3) 5rem;
 }
 
+/* The shared phone rule hides page titles; the Downloads hub draws no app bar of its own, so its title stays. */
 @media (max-width: 767px) {
-  .norea-downloads-page .norea-page-header {
-    align-items: flex-start;
-  }
-
-  .norea-downloads-page .norea-page-header-copy {
+  .norea-downloads-hub .norea-page-header .norea-page-header-copy {
     display: block;
   }
 
-  .norea-downloads-page .norea-page-title,
+  .norea-downloads-hub .norea-page-header {
+    align-items: center;
+  }
+
   .norea-downloads-page .norea-page-description {
     display: none;
   }

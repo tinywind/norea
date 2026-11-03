@@ -1,45 +1,68 @@
-import { Alert, Button, Group, Progress, Text } from "@mantine/core";
+import { Alert, Button, Group, Progress, Stack, Text } from "@mantine/core";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   memo,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
+  type RefObject,
   type UIEvent,
 } from "react";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import {
   ArrowDownGlyph,
   ArrowUpGlyph,
-  ChevronDownGlyph,
-  ChevronUpGlyph,
   CloseGlyph,
-  PauseGlyph,
-  PlayGlyph,
   RetryGlyph,
-  SortGlyph,
-  TrashGlyph,
 } from "../components/ActionGlyphs";
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
-import { ChapterDownloadFailureAttention } from "../components/ChapterDownloadFailureAttention";
+import {
+  ChapterDownloadFailureAttention,
+  ChapterDownloadRetryingStatus,
+} from "../components/ChapterDownloadFailureAttention";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
+import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/DownloadWorkStatusLabel";
 import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
 import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
 import { TextButton } from "../components/TextButton";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { goalNovelIdsOf, stopsGoalsLine, useCancelDownloadTask } from "../components/use-cancel-goal-work";
-import { VpnIcon } from "../components/ui/icons";
-import { OverflowMenu } from "../components/ui/OverflowMenu";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CloseIcon,
+  PauseIcon,
+  PlayIcon,
+  SortIcon,
+  TrashIcon,
+  VpnIcon,
+} from "../components/ui/icons";
+import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
+import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
 import { useTranslation, type TranslationKey } from "../i18n";
-import { stopDownloadGoals } from "../lib/download-goals/goal-service";
+import {
+  getDownloadGoalPauseSnapshot,
+  stopDownloadGoals,
+  subscribeDownloadGoalPause,
+} from "../lib/download-goals/goal-service";
 import { describeError } from "../lib/errors";
+import { parseDownloadsSearch } from "../lib/route-search";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
+import { chapterDownloadFailureAttention } from "../lib/tasks/chapter-download-failure-attention";
 import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
-import { useTaskSnapshot, useVpnDownloadRuntimeSnapshot, useChapterDownloadRequestSnapshot } from "../lib/tasks/hooks";
+import {
+  useChapterDownloadFailureSnapshot,
+  useChapterDownloadRequestSnapshot,
+  useTaskSnapshot,
+  useVpnDownloadRuntimeSnapshot,
+} from "../lib/tasks/hooks";
+import { vpnDownloadAttention } from "../lib/tasks/vpn-download-notifications";
 import { pauseVpnDownloadRun, resumeVpnDownloadRun, cancelVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
 import {
   applySourceAccessBrowserOutcome,
@@ -69,6 +92,8 @@ const TASK_ROW_HEIGHT = 72;
 const TASK_ROW_OVERSCAN = 8;
 const TASK_VIRTUAL_FALLBACK_ROWS = 14;
 const TASK_VIRTUALIZATION_THRESHOLD = 80;
+/** How long an attention focus request waits for its items to load before it is dropped. */
+const ATTENTION_FOCUS_TIMEOUT_MS = 3_000;
 
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 
@@ -88,6 +113,14 @@ type SourceWorkTaskGroup = {
 type SourceTaskGroupItem =
   | { type: "task"; task: TaskRecord }
   | { type: "work"; group: SourceWorkTaskGroup };
+
+/** A novel's chapter downloads from one source, shown as one row of the Downloads list. */
+type NovelWork = {
+  group: SourceWorkTaskGroup;
+  key: string;
+  sourceId: string;
+  sourceName: string;
+};
 
 type ChapterDownloadTaskHeading = {
   chapterLabel: string;
@@ -312,71 +345,6 @@ function groupSourceTasksByWork(tasks: TaskRecord[]): SourceTaskGroupItem[] {
 
 function sourceWorkOpenKey(sourceId: string, workKey: string): string {
   return `${sourceId}::${workKey}`;
-}
-
-function TaskSortMenu() {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const sortTasks = (mode: TaskQueueSortMode) => {
-    taskScheduler.sortQueuedTasks(mode);
-    setOpen(false);
-  };
-  const sortSources = (mode: SourceQueueSortMode) => {
-    taskScheduler.sortSourceQueues(mode);
-    setOpen(false);
-  };
-
-  return (
-    <div className="norea-task-sort-menu">
-      <IconButton
-        active={open}
-        aria-expanded={open}
-        label={t("tasks.sort")}
-        onClick={() => setOpen((value) => !value)}
-        size="lg"
-      >
-        <SortGlyph />
-      </IconButton>
-      {open ? (
-        <div className="norea-task-sort-popover" role="menu">
-          <div className="norea-task-sort-section">
-            <span className="norea-task-sort-heading">
-              {t("tasks.sortTasks")}
-            </span>
-            <button type="button" onClick={() => sortTasks("oldest")}>
-              {t("tasks.sortTasksOldest")}
-            </button>
-            <button type="button" onClick={() => sortTasks("newest")}>
-              {t("tasks.sortTasksNewest")}
-            </button>
-            <button type="button" onClick={() => sortTasks("priority")}>
-              {t("tasks.sortTasksPriority")}
-            </button>
-            <button type="button" onClick={() => sortTasks("title")}>
-              {t("tasks.sortTasksTitle")}
-            </button>
-          </div>
-          <div className="norea-task-sort-section">
-            <span className="norea-task-sort-heading">
-              {t("tasks.sortSources")}
-            </span>
-            <button type="button" onClick={() => sortSources("sourceName")}>
-              {t("tasks.sortSourcesName")}
-            </button>
-            <button type="button" onClick={() => sortSources("oldestTask")}>
-              {t("tasks.sortSourcesOldest")}
-            </button>
-            <button type="button" onClick={() => sortSources("newestTask")}>
-              {t("tasks.sortSourcesNewest")}
-            </button>
-            <button type="button" onClick={() => sortSources("queuedCount")}>
-              {t("tasks.sortSourcesCount")}
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function activeSourceTaskCounts(records: TaskRecord[]): Map<string, number> {
@@ -617,143 +585,6 @@ const TaskRow = memo(function TaskRow({
   );
 });
 
-function TaskWorkGroup({
-  group,
-  open,
-  onSelectTask,
-  onToggleOpen,
-  selectedTaskId,
-  sourceActiveTaskCounts,
-  snapshot,
-  sourceId,
-}: {
-  group: SourceWorkTaskGroup;
-  open: boolean;
-  onSelectTask: (taskId: string) => void;
-  onToggleOpen: () => void;
-  selectedTaskId: string | null;
-  sourceActiveTaskCounts: Map<string, number>;
-  snapshot: TaskSnapshot;
-  sourceId: string;
-}) {
-  const { t } = useTranslation();
-  const confirm = useConfirm();
-  const canMove = hasQueuedTask(group.tasks);
-  const canCancel = hasCancellableActiveTask(group.tasks);
-  const retryWaits = group.tasks.filter(isRetryWaiting).map((task) => task.retryAt!);
-  const nextRetryAt = retryWaits.length > 0 ? Math.min(...retryWaits) : null;
-
-  return (
-    <div
-      className="norea-task-work-group"
-      data-collapsed={open ? undefined : "true"}
-    >
-      <div className="norea-task-work-header">
-        <div className="norea-task-work-copy">
-          <Text className="norea-task-work-title" lineClamp={1}>
-            {group.title}
-          </Text>
-          <span className="norea-task-group-count">
-            {t("tasks.count", { count: group.tasks.length })}
-          </span>
-          {nextRetryAt !== null ? <RetryCountdown retryAt={nextRetryAt} /> : null}
-          <DownloadGoalWorkLine records={snapshot.records} tasks={group.tasks} />
-        </div>
-        <div className="norea-task-group-actions">
-          <IconButton
-            active={!open}
-            label={open ? t("tasks.collapse") : t("tasks.expand")}
-            onClick={onToggleOpen}
-            size="lg"
-          >
-            {open ? <ChevronUpGlyph /> : <ChevronDownGlyph />}
-          </IconButton>
-          <IconButton
-            disabled={!canMove}
-            label={t("tasks.moveWorkTop")}
-            onClick={() =>
-              taskScheduler.moveSourceWorkQueue(
-                sourceId,
-                group.workKey,
-                "top",
-              )
-            }
-            size="lg"
-          >
-            <ArrowUpGlyph />
-          </IconButton>
-          <IconButton
-            disabled={!canMove}
-            label={t("tasks.moveWorkBottom")}
-            onClick={() =>
-              taskScheduler.moveSourceWorkQueue(
-                sourceId,
-                group.workKey,
-                "bottom",
-              )
-            }
-            size="lg"
-          >
-            <ArrowDownGlyph />
-          </IconButton>
-          {canCancel ? (
-            <IconButton
-              label={t("tasks.cancelWorkCurrent")}
-              onClick={async () => {
-                const goalNovelIds = goalNovelIdsOf(group.tasks);
-                const confirmed = await confirm({
-                  title: t("tasks.cancelGroupConfirm.title", { name: group.title }),
-                  message: [
-                    t("tasks.cancelWorkConfirm.message", { count: cancellableActiveTaskCount(group.tasks) }),
-                    stopsGoalsLine(t, goalNovelIds),
-                  ].filter(Boolean).join(" "),
-                  confirmLabel: t("tasks.cancelWorkCurrent"),
-                  cancelLabel: t("common.keep"),
-                  danger: true,
-                });
-                if (!confirmed) return;
-                cancelChapterDownloadBatches(
-                  activeChapterDownloadBatchIds(group.tasks),
-                );
-                taskScheduler.cancelActiveTasks({
-                  discardQueued: true,
-                  sourceId,
-                  workKey: group.workKey,
-                });
-                if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
-              }}
-              size="lg"
-              tone="danger"
-            >
-              <CloseGlyph />
-            </IconButton>
-          ) : null}
-        </div>
-      </div>
-      {open ? (
-        <TaskRows
-          className="norea-task-work-rows"
-          renderTask={(task) => (
-            <TaskRow
-              blockingSourceTask={hasBlockingSourceTask(
-                task,
-                sourceActiveTaskCounts,
-              )}
-              key={task.id}
-              onSelect={() => onSelectTask(task.id)}
-              selected={selectedTaskId === task.id}
-              sourcePaused={isSourceQueuePaused(task, snapshot)}
-              sourceQueuesPaused={snapshot.sourceQueuesPaused}
-              task={task}
-            />
-          )}
-          tasks={group.tasks}
-        />
-      ) : null}
-    </div>
-  );
-}
-
 function TaskRows({
   className,
   renderTask,
@@ -892,6 +723,206 @@ function SummaryPill({
   );
 }
 
+function TaskSortSheet({ onClose, opened }: { onClose: () => void; opened: boolean }) {
+  const { t } = useTranslation();
+  const sortTasks = (mode: TaskQueueSortMode) => {
+    taskScheduler.sortQueuedTasks(mode);
+    onClose();
+  };
+  const sortSources = (mode: SourceQueueSortMode) => {
+    taskScheduler.sortSourceQueues(mode);
+    onClose();
+  };
+
+  return (
+    <ResponsiveSheet onClose={onClose} opened={opened} title={t("tasks.sort")}>
+      <div className="norea-task-sort-menu">
+        <div className="norea-task-sort-section" role="group" aria-label={t("tasks.sortTasks")}>
+          <span className="norea-task-sort-heading">{t("tasks.sortTasks")}</span>
+          <button type="button" onClick={() => sortTasks("oldest")}>{t("tasks.sortTasksOldest")}</button>
+          <button type="button" onClick={() => sortTasks("newest")}>{t("tasks.sortTasksNewest")}</button>
+          <button type="button" onClick={() => sortTasks("priority")}>{t("tasks.sortTasksPriority")}</button>
+          <button type="button" onClick={() => sortTasks("title")}>{t("tasks.sortTasksTitle")}</button>
+        </div>
+        <div className="norea-task-sort-section" role="group" aria-label={t("tasks.sortSources")}>
+          <span className="norea-task-sort-heading">{t("tasks.sortSources")}</span>
+          <button type="button" onClick={() => sortSources("sourceName")}>{t("tasks.sortSourcesName")}</button>
+          <button type="button" onClick={() => sortSources("oldestTask")}>{t("tasks.sortSourcesOldest")}</button>
+          <button type="button" onClick={() => sortSources("newestTask")}>{t("tasks.sortSourcesNewest")}</button>
+          <button type="button" onClick={() => sortSources("queuedCount")}>{t("tasks.sortSourcesCount")}</button>
+        </div>
+      </div>
+    </ResponsiveSheet>
+  );
+}
+
+function sourceAccessBlockFor(snapshot: TaskSnapshot, sourceId: string): SourceAccessBlock | undefined {
+  return snapshot.sourceAccessBlocks.find((block) => !block.rangeId && block.sourceId === sourceId);
+}
+
+/** One status for a novel's chapter downloads, from the most urgent state any of them is in. */
+export function novelWorkStatus(
+  tasks: readonly TaskRecord[],
+  sourceId: string,
+  snapshot: TaskSnapshot,
+  automaticPaused: boolean,
+): DownloadWorkStatus {
+  if (tasks.some((task) => task.status === "failed") || sourceAccessBlockFor(snapshot, sourceId)) return "attention";
+  const active = tasks.filter(isActiveTask);
+  if (active.length === 0) return "done";
+  if (active.some((task) => task.status === "running")) return "downloading";
+  if (snapshot.sourceQueuesPaused || snapshot.pausedSourceIds.includes(sourceId)) return "paused";
+  if (automaticPaused && active.every((task) => task.automatic)) return "paused";
+  return "waiting";
+}
+
+function NovelWorkGroup({
+  automaticPaused,
+  onSelectTask,
+  onToggleOpen,
+  open,
+  selectedTaskId,
+  snapshot,
+  sourceActiveTaskCounts,
+  work,
+}: {
+  automaticPaused: boolean;
+  onSelectTask: (taskId: string) => void;
+  onToggleOpen: () => void;
+  open: boolean;
+  selectedTaskId: string | null;
+  snapshot: TaskSnapshot;
+  sourceActiveTaskCounts: Map<string, number>;
+  work: NovelWork;
+}) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
+  const { group, sourceId, sourceName } = work;
+  const canMove = hasQueuedTask(group.tasks);
+  const canCancel = hasCancellableActiveTask(group.tasks);
+  const sourceTasks = snapshot.records.filter((task) => task.lane === "source" && task.source?.id === sourceId);
+  const sourcePaused = snapshot.pausedSourceIds.includes(sourceId);
+  const retryWaits = group.tasks.filter(isRetryWaiting).map((task) => task.retryAt!);
+  const nextRetryAt = retryWaits.length > 0 ? Math.min(...retryWaits) : null;
+  const status = novelWorkStatus(group.tasks, sourceId, snapshot, automaticPaused);
+  const done = group.tasks.filter((task) => task.status === "succeeded").length;
+  const toggleLabel = open ? t("tasks.collapse") : t("tasks.expand");
+
+  const cancelWork = async () => {
+    const goalNovelIds = goalNovelIdsOf(group.tasks);
+    const confirmed = await confirm({
+      title: t("tasks.cancelGroupConfirm.title", { name: group.title }),
+      message: [
+        t("tasks.cancelWorkConfirm.message", { count: cancellableActiveTaskCount(group.tasks) }),
+        stopsGoalsLine(t, goalNovelIds),
+      ].filter(Boolean).join(" "),
+      confirmLabel: t("tasks.cancelWorkCurrent"),
+      cancelLabel: t("common.keep"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    cancelChapterDownloadBatches(activeChapterDownloadBatchIds(group.tasks));
+    taskScheduler.cancelActiveTasks({ discardQueued: true, sourceId, workKey: group.workKey });
+    if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
+  };
+  const cancelSource = async () => {
+    const goalNovelIds = goalNovelIdsOf(sourceTasks);
+    const confirmed = await confirm({
+      title: t("tasks.cancelGroupConfirm.title", { name: sourceName }),
+      message: [
+        t("tasks.cancelSourceConfirm.message", { count: cancellableActiveTaskCount(sourceTasks) }),
+        stopsGoalsLine(t, goalNovelIds),
+      ].filter(Boolean).join(" "),
+      confirmLabel: t("tasks.cancelSourceCurrent"),
+      cancelLabel: t("common.keep"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    cancelChapterDownloadBatches(activeChapterDownloadBatchIds(sourceTasks));
+    taskScheduler.cancelActiveTasks({ discardQueued: true, sourceId });
+    if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
+  };
+  const items: OverflowMenuItem[] = [
+    { icon: ChevronUpIcon, label: t("tasks.moveWorkTop"), disabled: !canMove,
+      onClick: () => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "top") },
+    { icon: ChevronDownIcon, label: t("tasks.moveWorkBottom"), disabled: !canMove,
+      onClick: () => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "bottom") },
+  ];
+  if (!snapshot.sourceQueuesPaused) {
+    items.push(sourcePaused
+      ? { icon: PlayIcon, label: t("downloads.queue.resumeSource", { source: sourceName }),
+        onClick: () => taskScheduler.resumeSourceQueue(sourceId) }
+      : { icon: PauseIcon, label: t("downloads.queue.pauseSource", { source: sourceName }),
+        onClick: () => taskScheduler.pauseSourceQueue(sourceId) });
+  }
+  if (canCancel) {
+    items.push({ icon: CloseIcon, label: t("tasks.cancelWorkCurrent"), danger: true, onClick: () => { void cancelWork(); } });
+  }
+  if (hasCancellableActiveTask(sourceTasks)) {
+    items.push({ icon: CloseIcon, label: t("downloads.queue.cancelSource", { source: sourceName }), danger: true,
+      onClick: () => { void cancelSource(); } });
+  }
+
+  return (
+    <div
+      className="norea-task-work-group"
+      data-collapsed={open ? undefined : "true"}
+      data-work-status={status}
+    >
+      <div className="norea-task-work-header">
+        <div className="norea-task-work-copy norea-task-work-copy-stacked">
+          <div className="norea-task-work-heading">
+            <Text className="norea-task-work-title" lineClamp={1}>
+              {group.title}
+            </Text>
+            <span className="norea-task-group-count">
+              {t("vpnDownload.workProgress", { completed: done, total: group.tasks.length })}
+            </span>
+            <DownloadWorkStatusLabel status={status} />
+          </div>
+          {nextRetryAt !== null ? <RetryCountdown retryAt={nextRetryAt} /> : null}
+          <DownloadGoalWorkLine records={snapshot.records} tasks={group.tasks} />
+        </div>
+        <div className="norea-task-group-actions">
+          <IconButton
+            active={open}
+            aria-expanded={open}
+            label={toggleLabel}
+            onClick={onToggleOpen}
+            size="lg"
+          >
+            {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+          </IconButton>
+          <OverflowMenu items={items} label={t("vpnDownload.workOptions", { title: group.title })} />
+        </div>
+      </div>
+      <Progress
+        aria-label={t("vpnDownload.workProgressLabel", { title: group.title })}
+        className="norea-task-work-progress"
+        size="xs"
+        value={group.tasks.length ? (done / group.tasks.length) * 100 : 0}
+      />
+      {open ? (
+        <TaskRows
+          className="norea-task-work-rows"
+          renderTask={(task) => (
+            <TaskRow
+              blockingSourceTask={hasBlockingSourceTask(task, sourceActiveTaskCounts)}
+              key={task.id}
+              onSelect={() => onSelectTask(task.id)}
+              selected={selectedTaskId === task.id}
+              sourcePaused={isSourceQueuePaused(task, snapshot)}
+              sourceQueuesPaused={snapshot.sourceQueuesPaused}
+              task={task}
+            />
+          )}
+          tasks={group.tasks}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function SourceAccessBanner({
   block,
   snapshot,
@@ -918,11 +949,12 @@ function SourceAccessBanner({
     block.verificationRequested || block.verificationTaskId !== undefined;
   const canOpenVerification =
     taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
+  const verifyDisabled = browserVisible || verifying || !canOpenVerification;
 
   return (
-    <section className="norea-source-access-banner" role="alert">
+    <section className="norea-source-access-banner" data-source-access={block.scopeKey} role="alert">
       <div className="norea-source-access-copy">
-        <Text component="h2" fw={700} size="sm">
+        <Text component="h3" fw={700} size="sm">
           {title} · {hostname}
         </Text>
         <Text c="dimmed" component="p" size="sm">
@@ -940,13 +972,11 @@ function SourceAccessBanner({
             {t("sourceAccess.queueTaskToVerify")}
           </Text>
         ) : null}
-        <Text c="dimmed" component="p" size="sm">
-          {t("sourceAccess.forceStopHelp")}
-        </Text>
       </div>
-      <Group gap="xs" justify="flex-end">
+      <Group gap="xs" justify="flex-end" wrap="nowrap">
         <Button
-          disabled={browserVisible || verifying || !canOpenVerification}
+          disabled={verifyDisabled}
+          loading={verifying}
           onClick={() => {
             void openSourceAccessBrowser(block, {
               sourceName: sourceLabel,
@@ -956,193 +986,121 @@ function SourceAccessBanner({
           size="xs"
           variant="light"
         >
-          {t("sourceAccess.openVerification")}
+          {verifying ? t("sourceAccess.verifying") : t("updates.failure.verify")}
         </Button>
-        <Button
-          disabled={browserVisible || verifying || !canOpenVerification}
-          loading={verifying}
-          onClick={() =>
-            applySourceAccessBrowserOutcome(taskScheduler, block, "verify")
-          }
-          size="xs"
-          variant="light"
-        >
-          {verifying
-            ? t("sourceAccess.verifying")
-            : t("sourceAccess.verifyAndResume")}
-        </Button>
-        <Button
-          color="danger"
-          onClick={() => cancelSourceAccessWait(block.scopeKey, block.revision)}
-          size="xs"
-          variant="light"
-        >
-          {t("sourceAccess.forceStopAndContinue")}
-        </Button>
+        <OverflowMenu
+          items={[
+            { label: t("sourceAccess.verifyAndResume"), disabled: verifyDisabled,
+              onClick: () => applySourceAccessBrowserOutcome(taskScheduler, block, "verify") },
+            { label: t("sourceAccess.forceStopAndContinue"), danger: true,
+              onClick: () => cancelSourceAccessWait(block.scopeKey, block.revision) },
+          ]}
+          label={t("downloads.queue.verifyOptions", { source: sourceLabel })}
+        />
       </Group>
     </section>
   );
 }
 
-function TaskGroup({
-  collapsed,
+/** Whether any Needs attention line has something to show, from the same state each line reads. */
+function useHasDownloadAttention(
+  active: boolean,
+  vpn: ReturnType<typeof useVpnDownloadRuntimeSnapshot>,
+  ordinaryBlocks: readonly SourceAccessBlock[],
+): boolean {
+  const failures = useChapterDownloadFailureSnapshot(active);
+  const { pause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
+  const vpnItem = vpn.loading ? null : vpnDownloadAttention(vpn.plans, vpn.run?.status);
+  return ordinaryBlocks.length > 0 || pause !== null || vpnItem !== null ||
+    chapterDownloadFailureAttention(failures).groups.length > 0;
+}
+
+function NeedsAttentionSection({
+  active,
+  blocks,
+  sectionRef,
+  snapshot,
+  vpn,
+}: {
+  active: boolean;
+  blocks: readonly SourceAccessBlock[];
+  sectionRef: RefObject<HTMLElement | null>;
+  snapshot: TaskSnapshot;
+  vpn: ReturnType<typeof useVpnDownloadRuntimeSnapshot>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <section
+      aria-labelledby="norea-downloads-attention-title"
+      className="norea-downloads-attention"
+      ref={sectionRef}
+    >
+      <Text className="norea-downloads-section-title" component="h2" id="norea-downloads-attention-title">
+        {t("vpnDownload.attention.title")}
+      </Text>
+      {blocks.map((block) => (
+        <SourceAccessBanner block={block} key={block.scopeKey} snapshot={snapshot} />
+      ))}
+      {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
+      {active ? <ChapterDownloadFailureAttention /> : null}
+      {active ? <DownloadGoalAttention /> : null}
+    </section>
+  );
+}
+
+function OtherActivity({
   onSelectTask,
-  onToggleCollapsed,
-  onToggleWorkGroup,
-  openWorkGroupKey,
   selectedTaskId,
   snapshot,
   sourceActiveTaskCounts,
-  sourceId,
-  sourcePaused,
   tasks,
-  title,
 }: {
-  collapsed?: boolean;
   onSelectTask: (taskId: string) => void;
-  onToggleCollapsed?: () => void;
-  onToggleWorkGroup?: (key: string) => void;
-  openWorkGroupKey?: string | null;
   selectedTaskId: string | null;
   snapshot: TaskSnapshot;
   sourceActiveTaskCounts: Map<string, number>;
-  sourceId?: string;
-  sourcePaused?: boolean;
   tasks: TaskRecord[];
-  title: string;
 }) {
   const { t } = useTranslation();
-  const confirm = useConfirm();
-  const hasCancellableTasks = hasCancellableActiveTask(tasks);
-  const sourceCollapsed = Boolean(sourceId && collapsed);
-  const sourceItems = sourceId ? groupSourceTasksByWork(tasks) : [];
+  const running = tasks.filter((task) => task.status === "running").length;
+  const failed = tasks.some((task) => task.status === "failed");
+  const [openOverride, setOpenOverride] = useState<boolean | null>(null);
+  const open = openOverride ?? (running > 0 || failed);
+  const toggleLabel = open ? t("tasks.collapse") : t("tasks.expand");
 
   return (
     <section
-      className="norea-task-group"
-      data-collapsed={sourceCollapsed ? "true" : undefined}
-      data-source-group={sourceId ? "true" : undefined}
+      aria-labelledby="norea-downloads-other-title"
+      className="norea-task-group norea-downloads-other"
+      data-collapsed={open ? undefined : "true"}
     >
       <header className="norea-task-group-header">
         <div className="norea-task-group-copy">
-          <Text className="norea-task-group-title" lineClamp={1}>
-            {title}
+          <Text className="norea-task-group-title" component="h2" id="norea-downloads-other-title" lineClamp={1}>
+            {t("downloads.queue.otherActivity")}
           </Text>
           <span className="norea-task-group-count">
-            {t("tasks.count", { count: tasks.length })}
+            {running > 0 ? t("tasks.summary.running", { count: running }) : t("tasks.count", { count: tasks.length })}
           </span>
         </div>
         <div className="norea-task-group-actions">
-          {sourceId ? (
-            <IconButton
-              active={sourceCollapsed}
-              label={
-                sourceCollapsed ? t("tasks.expand") : t("tasks.collapse")
-              }
-              onClick={onToggleCollapsed}
-              size="lg"
-            >
-              {sourceCollapsed ? <ChevronDownGlyph /> : <ChevronUpGlyph />}
-            </IconButton>
-          ) : null}
-          {sourceId && !snapshot.sourceQueuesPaused ? (
-            <IconButton
-              active={sourcePaused}
-              label={
-                sourcePaused ? t("tasks.resumeSource") : t("tasks.pauseSource")
-              }
-              onClick={() => {
-                if (sourcePaused) {
-                  taskScheduler.resumeSourceQueue(sourceId);
-                } else {
-                  taskScheduler.pauseSourceQueue(sourceId);
-                }
-              }}
-              size="lg"
-            >
-              {sourcePaused ? <PlayGlyph /> : <PauseGlyph />}
-            </IconButton>
-          ) : null}
-          {sourceId && hasCancellableTasks ? (
-            <IconButton
-              label={t("tasks.cancelSourceCurrent")}
-              onClick={async () => {
-                const goalNovelIds = goalNovelIdsOf(tasks);
-                const confirmed = await confirm({
-                  title: t("tasks.cancelGroupConfirm.title", { name: title }),
-                  message: [
-                    t("tasks.cancelSourceConfirm.message", { count: cancellableActiveTaskCount(tasks) }),
-                    stopsGoalsLine(t, goalNovelIds),
-                  ].filter(Boolean).join(" "),
-                  confirmLabel: t("tasks.cancelSourceCurrent"),
-                  cancelLabel: t("common.keep"),
-                  danger: true,
-                });
-                if (!confirmed) return;
-                cancelChapterDownloadBatches(
-                  activeChapterDownloadBatchIds(tasks),
-                );
-                taskScheduler.cancelActiveTasks({
-                  discardQueued: true,
-                  sourceId,
-                });
-                if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
-              }}
-              size="lg"
-              tone="danger"
-            >
-              <CloseGlyph />
-            </IconButton>
-          ) : null}
+          <IconButton
+            active={open}
+            aria-expanded={open}
+            label={toggleLabel}
+            onClick={() => setOpenOverride(!open)}
+            size="lg"
+          >
+            {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+          </IconButton>
         </div>
       </header>
-      {sourceCollapsed ? null : sourceId ? (
-        <div className="norea-task-rows">
-          {sourceItems.map((item) =>
-            item.type === "work" ? (
-              <TaskWorkGroup
-                group={item.group}
-                key={`work:${item.group.workKey}`}
-                onToggleOpen={() =>
-                  onToggleWorkGroup?.(
-                    sourceWorkOpenKey(sourceId, item.group.workKey),
-                  )
-                }
-                open={
-                  openWorkGroupKey ===
-                  sourceWorkOpenKey(sourceId, item.group.workKey)
-                }
-                onSelectTask={onSelectTask}
-                selectedTaskId={selectedTaskId}
-                sourceActiveTaskCounts={sourceActiveTaskCounts}
-                snapshot={snapshot}
-                sourceId={sourceId}
-              />
-            ) : (
-              <TaskRow
-                blockingSourceTask={hasBlockingSourceTask(
-                  item.task,
-                  sourceActiveTaskCounts,
-                )}
-                key={item.task.id}
-                onSelect={() => onSelectTask(item.task.id)}
-                selected={selectedTaskId === item.task.id}
-                sourcePaused={isSourceQueuePaused(item.task, snapshot)}
-                sourceQueuesPaused={snapshot.sourceQueuesPaused}
-                task={item.task}
-              />
-            ),
-          )}
-        </div>
-      ) : (
+      {open ? (
         <TaskRows
           className="norea-task-rows"
           renderTask={(task) => (
             <TaskRow
-              blockingSourceTask={hasBlockingSourceTask(
-                task,
-                sourceActiveTaskCounts,
-              )}
+              blockingSourceTask={hasBlockingSourceTask(task, sourceActiveTaskCounts)}
               key={task.id}
               onSelect={() => onSelectTask(task.id)}
               selected={selectedTaskId === task.id}
@@ -1153,9 +1111,34 @@ function TaskGroup({
           )}
           tasks={tasks}
         />
-      )}
+      ) : null}
     </section>
   );
+}
+
+/** Scrolls to Needs attention once when the route asks for it, then drops the request from the URL. */
+function useAttentionFocus(active: boolean, hasAttention: boolean, sectionRef: RefObject<HTMLElement | null>): void {
+  const navigate = useNavigate();
+  const focus = useRouterState({
+    select: (state) => state.location.pathname === "/downloads"
+      ? parseDownloadsSearch(state.location.search as Record<string, unknown>).focus
+      : undefined,
+  });
+  const requested = active && focus === "attention";
+
+  useEffect(() => {
+    if (!requested) return;
+    const clear = () => { void navigate({ to: "/downloads", search: { view: "queue" }, replace: true }); };
+    if (hasAttention) {
+      const frame = window.requestAnimationFrame(() => {
+        sectionRef.current?.scrollIntoView({ block: "start" });
+        clear();
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    const timer = window.setTimeout(clear, ATTENTION_FOCUS_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [hasAttention, navigate, requested, sectionRef]);
 }
 
 interface DownloadsQueueViewProps {
@@ -1172,17 +1155,15 @@ export function DownloadsQueueView({
   const snapshot = useTaskSnapshot(active);
   const vpn = useVpnDownloadRuntimeSnapshot(active);
   const requests = useChapterDownloadRequestSnapshot(active);
+  const { pause: goalPause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
   const [queueActionPending, setQueueActionPending] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const queueAction = useRef(false);
-  const [collapsedSourceIds, setCollapsedSourceIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [openWorkGroupKey, setOpenWorkGroupKey] = useState<string | null>(
-    null,
-  );
+  const attentionRef = useRef<HTMLElement>(null);
+  const [openOverrides, setOpenOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [vpnLaunchOpened, setVpnLaunchOpened] = useState(false);
+  const [sortOpened, setSortOpened] = useState(false);
   const vpnWorks = useMemo(() => vpnDownloadWorks(vpn), [vpn]);
   const tasks = useMemo(
     () => {
@@ -1202,10 +1183,6 @@ export function DownloadsQueueView({
     () => activeSourceTaskCounts(tasks),
     [tasks],
   );
-  const mainTasks = useMemo(
-    () => tasks.filter((task) => task.lane === "main"),
-    [tasks],
-  );
   const sourceTasks = useMemo(
     () => tasks.filter((task) => task.lane === "source"),
     [tasks],
@@ -1214,6 +1191,8 @@ export function DownloadsQueueView({
   const allPaused = hasVpnRun ? (vpn.run?.status === "paused" || vpn.run?.status === "interrupted") &&
     (!sourceTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
   const ordinaryBlocks = snapshot.sourceAccessBlocks.filter(block => !block.rangeId);
+  const hasAttention = useHasDownloadAttention(active, vpn, ordinaryBlocks);
+  useAttentionFocus(active, hasAttention, attentionRef);
   const taskStats = useMemo(() => {
     const count = (status: TaskRecord["status"]) =>
       tasks.filter((task) => task.status === status).length;
@@ -1271,35 +1250,30 @@ export function DownloadsQueueView({
       .map((sourceId) => sourceGroupsById.get(sourceId))
       .filter((group): group is SourceTaskGroup => Boolean(group));
   }, [snapshot.sourceQueueOrder, sourceTasks]);
-  const visibleWorkGroupKeys = useMemo(() => {
-    const keys = new Set<string>();
+  const { novelWorks, otherTasks } = useMemo(() => {
+    const works: NovelWork[] = [];
+    const other: TaskRecord[] = tasks.filter((task) => task.lane === "main");
     for (const sourceGroup of sourceGroups) {
       for (const item of groupSourceTasksByWork(sourceGroup.tasks)) {
         if (item.type === "work") {
-          keys.add(sourceWorkOpenKey(sourceGroup.sourceId, item.group.workKey));
+          works.push({
+            group: item.group,
+            key: sourceWorkOpenKey(sourceGroup.sourceId, item.group.workKey),
+            sourceId: sourceGroup.sourceId,
+            sourceName: sourceGroup.sourceName,
+          });
+        } else {
+          other.push(item.task);
         }
       }
     }
-    return keys;
-  }, [sourceGroups]);
-  useEffect(() => {
-    if (openWorkGroupKey && !visibleWorkGroupKeys.has(openWorkGroupKey)) {
-      setOpenWorkGroupKey(null);
-    }
-  }, [openWorkGroupKey, visibleWorkGroupKeys]);
-  const toggleSourceCollapsed = (sourceId: string) => {
-    setCollapsedSourceIds((current) => {
-      const next = new Set(current);
-      if (next.has(sourceId)) {
-        next.delete(sourceId);
-      } else {
-        next.add(sourceId);
-      }
-      return next;
-    });
-  };
-  const toggleWorkGroup = (key: string) => {
-    setOpenWorkGroupKey((current) => (current === key ? null : key));
+    return { novelWorks: works, otherTasks: other.sort(compareTaskQueueOrder) };
+  }, [sourceGroups, tasks]);
+  const isWorkOpen = (work: NovelWork) =>
+    openOverrides.get(work.key) ?? work.group.tasks.some((task) => task.status === "failed");
+  const toggleWork = (work: NovelWork) => {
+    const open = isWorkOpen(work);
+    setOpenOverrides((current) => new Map(current).set(work.key, !open));
   };
 
   async function runQueueAction(action: () => void | Promise<void>): Promise<void> {
@@ -1310,8 +1284,45 @@ export function DownloadsQueueView({
     finally { queueAction.current = false; setQueueActionPending(false); }
   }
 
+  const cancelAll = async () => {
+    const count = cancellableActiveTaskCount(tasks) + requests.length;
+    const goalNovelIds = goalNovelIdsOf(tasks);
+    const message = [
+      count > 0 ? t("tasks.cancelAllConfirm.message", { count }) : null,
+      hasVpnRun ? t("tasks.cancelAllConfirm.vpnRun") : null,
+      stopsGoalsLine(t, goalNovelIds),
+    ].filter(Boolean).join(" ");
+    const confirmed = await confirm({
+      title: t("tasks.cancelAllConfirm.title"),
+      message,
+      confirmLabel: t("tasks.cancelAllCurrent"),
+      cancelLabel: t("common.keep"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    await runQueueAction(async () => {
+      const cancellingVpn = hasVpnRun ? cancelVpnDownloadRun() : Promise.resolve();
+      for (const request of requests) cancelChapterDownloadRequest(request.id);
+      cancelChapterDownloadBatches(activeChapterDownloadBatchIds(tasks));
+      taskScheduler.cancelActiveTasks({ discardQueued: true });
+      await cancellingVpn;
+      if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
+    });
+  };
+  const overflowItems: OverflowMenuItem[] = [
+    { icon: SortIcon, label: t("tasks.sort"), onClick: () => setSortOpened(true) },
+    { icon: TrashIcon, label: t("tasks.clearErrors"), disabled: taskStats.failed === 0,
+      onClick: () => taskScheduler.clearFailedTasks() },
+  ];
+  if (vpn.capabilities.supported && !hasVpnRun) {
+    overflowItems.push({ icon: VpnIcon, label: t("vpnDownload.launchMenu"), onClick: () => setVpnLaunchOpened(true) });
+  }
+  overflowItems.push({ icon: CloseIcon, label: t("tasks.cancelAllCurrent"), danger: true,
+    disabled: !hasCancellableTasks || queueActionPending, onClick: () => { void cancelAll(); } });
+  const hasDownloads = novelWorks.length > 0 || requests.length > 0 || vpnWorks.length > 0;
+
   return (
-    <PageFrame className="norea-tasks-page" size="wide">
+    <PageFrame className="norea-tasks-page norea-downloads-hub" size="wide">
       <PageHeader
         title={
           <span className="norea-task-page-title">
@@ -1321,15 +1332,9 @@ export function DownloadsQueueView({
         }
         actions={
           <div className="norea-task-header-actions">
-            <TaskSortMenu />
-            <IconButton
-              active={allPaused}
+            <Button
               disabled={queueActionPending || (!sourceTasks.length && !hasVpnRun && !requests.length)}
-              label={
-                allPaused
-                  ? t("tasks.resumeAll")
-                  : t("tasks.pauseAll")
-              }
+              leftSection={allPaused ? <PlayIcon size="1.125rem" /> : <PauseIcon size="1.125rem" />}
               onClick={() => runQueueAction(async () => {
                 if (allPaused) {
                   taskScheduler.resumeSourceQueue();
@@ -1339,60 +1344,11 @@ export function DownloadsQueueView({
                   if (hasVpnRun) await pauseVpnDownloadRun();
                 }
               })}
-              size="lg"
+              variant={allPaused ? "light" : "default"}
             >
-              {allPaused ? <PlayGlyph /> : <PauseGlyph />}
-            </IconButton>
-            <IconButton
-              disabled={!hasCancellableTasks || queueActionPending}
-              label={t("tasks.cancelAllCurrent")}
-              onClick={async () => {
-                const count = cancellableActiveTaskCount(tasks) + requests.length;
-                const goalNovelIds = goalNovelIdsOf(tasks);
-                const message = [
-                  count > 0 ? t("tasks.cancelAllConfirm.message", { count }) : null,
-                  hasVpnRun ? t("tasks.cancelAllConfirm.vpnRun") : null,
-                  stopsGoalsLine(t, goalNovelIds),
-                ].filter(Boolean).join(" ");
-                const confirmed = await confirm({
-                  title: t("tasks.cancelAllConfirm.title"),
-                  message,
-                  confirmLabel: t("tasks.cancelAllCurrent"),
-                  cancelLabel: t("common.keep"),
-                  danger: true,
-                });
-                if (!confirmed) return;
-                await runQueueAction(async () => {
-                  const cancellingVpn = hasVpnRun ? cancelVpnDownloadRun() : Promise.resolve();
-                  for (const request of requests) cancelChapterDownloadRequest(request.id);
-                  cancelChapterDownloadBatches(
-                    activeChapterDownloadBatchIds(tasks),
-                  );
-                  taskScheduler.cancelActiveTasks({ discardQueued: true });
-                  await cancellingVpn;
-                  if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
-                });
-              }}
-              size="lg"
-              tone="danger"
-            >
-              <CloseGlyph />
-            </IconButton>
-            <IconButton
-              disabled={taskStats.failed === 0}
-              label={t("tasks.clearErrors")}
-              onClick={() => taskScheduler.clearFailedTasks()}
-              size="lg"
-              tone="danger"
-            >
-              <TrashGlyph />
-            </IconButton>
-            {vpn.capabilities.supported && !hasVpnRun ? (
-              <OverflowMenu
-                items={[{ icon: VpnIcon, label: t("vpnDownload.launchMenu"), onClick: () => setVpnLaunchOpened(true) }]}
-                label={t("common.more")}
-              />
-            ) : null}
+              {allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
+            </Button>
+            <OverflowMenu items={overflowItems} label={t("common.more")} />
           </div>
         }
         meta={
@@ -1430,77 +1386,77 @@ export function DownloadsQueueView({
 
       {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
 
-      {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
-      {active ? <ChapterDownloadFailureAttention /> : null}
-      {active ? <DownloadGoalAttention /> : null}
-      {vpnLaunchOpened ? <VpnDownloadLaunchDialog snapshot={vpn} onClose={() => setVpnLaunchOpened(false)} /> : null}
-
-      {requests.length ? <section className="norea-download-requests" aria-label={t("tasks.downloadRequests")}>
-        {requests.map(request => <div className="norea-vpn-download-work" key={request.id} data-download-request={request.id}>
-          <Group justify="space-between" gap="sm" align="flex-start">
-            <div className="norea-vpn-download-heading">
-              <Text component="h3" size="sm" fw={600}>{request.title}</Text>
-              <Text size="sm" role="status">{t(request.phase === "failed" ? "vpnDownload.phase.failed" :
-                request.phase === "publishing" ? "tasks.downloadPublishing" : "vpnDownload.phase.preparing")}</Text>
-            </div>
-            <TextButton tone="danger" aria-label={t("tasks.cancelDownloadRequest", { title: request.title })}
-              onClick={() => cancelChapterDownloadRequest(request.id)}>{t("vpnDownload.cancelDraft")}</TextButton>
-          </Group>
-          {request.error ? <Alert color="danger" role="alert">{request.error}</Alert> : null}
-        </div>)}
-      </section> : null}
-
-      {ordinaryBlocks.length > 0 ? (
-        <div className="norea-source-access-banners">
-          {ordinaryBlocks.map((block) => (
-            <SourceAccessBanner
-              block={block}
-              key={block.scopeKey}
-              snapshot={snapshot}
-            />
-          ))}
-        </div>
+      {hasAttention ? (
+        <NeedsAttentionSection active={active} blocks={ordinaryBlocks} sectionRef={attentionRef} snapshot={snapshot} vpn={vpn} />
       ) : null}
+      {vpnLaunchOpened ? <VpnDownloadLaunchDialog snapshot={vpn} onClose={() => setVpnLaunchOpened(false)} /> : null}
+      <TaskSortSheet onClose={() => setSortOpened(false)} opened={sortOpened} />
 
-      {tasks.length === 0 && !requests.length && !vpnWorks.length ? (
+      {!hasDownloads && otherTasks.length === 0 ? (
         <StateView
           color="info"
           title={t("tasks.empty.title")}
           message={t("tasks.empty.message")}
         />
       ) : (
-        <div className="norea-task-shell">
-          {mainTasks.length > 0 ? (
-            <TaskGroup
-              onSelectTask={setSelectedTaskId}
-              selectedTaskId={selectedTaskId}
-              snapshot={snapshot}
-              sourceActiveTaskCounts={sourceActiveTaskCounts}
-              tasks={mainTasks}
-              title={t("tasks.mainQueue")}
-            />
+        <Stack gap="md">
+          {hasDownloads ? (
+            <section aria-labelledby="norea-downloads-list-title" className="norea-downloads-list">
+              <Text className="norea-downloads-section-title" component="h2" id="norea-downloads-list-title">
+                {t("downloads.title")}
+              </Text>
+              {active ? <ChapterDownloadRetryingStatus /> : null}
+              <div className="norea-task-shell">
+                {requests.map(request => (
+                  <div className="norea-task-work-group" data-collapsed="true" data-download-request={request.id} key={request.id}>
+                    <div className="norea-task-work-header">
+                      <div className="norea-task-work-copy norea-task-work-copy-stacked">
+                        <div className="norea-task-work-heading">
+                          <Text className="norea-task-work-title" lineClamp={1}>{request.title}</Text>
+                          <DownloadWorkStatusLabel status={request.phase === "failed" ? "attention" : "preparing"} />
+                        </div>
+                        <Text c="dimmed" size="xs" role="status">{t(request.phase === "failed" ? "vpnDownload.phase.failed" :
+                          request.phase === "publishing" ? "tasks.downloadPublishing" : "vpnDownload.phase.preparing")}</Text>
+                      </div>
+                      <div className="norea-task-group-actions">
+                        <TextButton tone="danger" aria-label={t("tasks.cancelDownloadRequest", { title: request.title })}
+                          onClick={() => cancelChapterDownloadRequest(request.id)}>{t("vpnDownload.cancelDraft")}</TextButton>
+                      </div>
+                    </div>
+                    {request.error ? <Alert color="danger" role="alert">{request.error}</Alert> : null}
+                  </div>
+                ))}
+                {vpnWorks.map((work) => (
+                  <VpnDownloadWorkRow key={work.key} snapshot={vpn} work={work} />
+                ))}
+                {novelWorks.map((work) => (
+                  <NovelWorkGroup
+                    automaticPaused={goalPause !== null}
+                    key={work.key}
+                    onSelectTask={setSelectedTaskId}
+                    onToggleOpen={() => toggleWork(work)}
+                    open={isWorkOpen(work)}
+                    selectedTaskId={selectedTaskId}
+                    snapshot={snapshot}
+                    sourceActiveTaskCounts={sourceActiveTaskCounts}
+                    work={work}
+                  />
+                ))}
+              </div>
+            </section>
           ) : null}
-          {vpnWorks.map((work) => (
-            <VpnDownloadWorkRow key={work.key} snapshot={vpn} work={work} />
-          ))}
-          {sourceGroups.map((group) => (
-            <TaskGroup
-              collapsed={collapsedSourceIds.has(group.sourceId)}
-              key={group.sourceId}
-              onSelectTask={setSelectedTaskId}
-              onToggleCollapsed={() => toggleSourceCollapsed(group.sourceId)}
-              onToggleWorkGroup={toggleWorkGroup}
-              openWorkGroupKey={openWorkGroupKey}
-              selectedTaskId={selectedTaskId}
-              snapshot={snapshot}
-              sourceActiveTaskCounts={sourceActiveTaskCounts}
-              sourceId={group.sourceId}
-              sourcePaused={snapshot.pausedSourceIds.includes(group.sourceId)}
-              tasks={group.tasks}
-              title={group.sourceName}
-            />
-          ))}
-        </div>
+          {otherTasks.length > 0 ? (
+            <div className="norea-task-shell">
+              <OtherActivity
+                onSelectTask={setSelectedTaskId}
+                selectedTaskId={selectedTaskId}
+                snapshot={snapshot}
+                sourceActiveTaskCounts={sourceActiveTaskCounts}
+                tasks={otherTasks}
+              />
+            </div>
+          ) : null}
+        </Stack>
       )}
     </PageFrame>
   );

@@ -1,5 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
@@ -10,13 +11,21 @@ const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefine
   vpn: { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {}, ownedChapterIds: [] } as VpnDownloadRuntimeSnapshot,
   requests: [] as ChapterDownloadRequestState[],
   fontScalePercent: 100,
+  focus: undefined as string | undefined,
+  navigate: vi.fn(),
 }));
-vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, useVpnDownloadRuntimeSnapshot: () => state.vpn, useChapterDownloadRequestSnapshot: () => state.requests }));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => state.navigate,
+  useRouterState: ({ select }: { select: (value: unknown) => unknown }) =>
+    select({ location: { pathname: "/downloads", search: { view: "queue", focus: state.focus } } }),
+}));
+vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, useVpnDownloadRuntimeSnapshot: () => state.vpn,
+  useChapterDownloadRequestSnapshot: () => state.requests, useChapterDownloadFailureSnapshot: () => [] }));
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn(), resumeVpnDownloadRun: vi.fn(), cancelVpnDownloadRun: vi.fn() }));
 vi.mock("../components/VpnDownloadAttention", () => ({ VpnDownloadAttention: () => null }));
-vi.mock("../components/ChapterDownloadFailureAttention", () => ({ ChapterDownloadFailureAttention: () => null }));
+vi.mock("../components/ChapterDownloadFailureAttention", () => ({ ChapterDownloadFailureAttention: () => null, ChapterDownloadRetryingStatus: () => null }));
 vi.mock("../components/DownloadGoalAttention", () => ({ DownloadGoalAttention: () => null }));
 vi.mock("../components/DownloadGoalWorkLine", () => ({ DownloadGoalWorkLine: () => null }));
 vi.mock("../components/VpnDownloadLaunchDialog", () => ({ VpnDownloadLaunchDialog: () => null }));
@@ -104,13 +113,72 @@ describe("task work group order", () => {
     const banner = $(".norea-source-access-banner");
     expect(banner.attr("role")).toBe("alert");
     expect(banner.text()).toContain("CAPTCHA");
-    expect(banner.find("button").length).toBe(3);
+    expect(banner.closest("#norea-downloads-attention-title, .norea-downloads-attention").find("h2").text()).toBe("Needs attention");
+    expect(banner.find("button").map((_, element) => $(element).text() || $(element).attr("aria-label")).get())
+      .toEqual(["Verify", "More options for source.test"]);
   });
   it("shows a promoted work above the work whose transfer is still running", () => {
     expect(workTitles([
       chapter(1, 1, "running", 2), chapter(2, 1, "queued", 3),
       chapter(3, 2, "queued", 0), chapter(4, 2, "queued", 1),
     ])).toEqual(["Novel 2", "Novel 1"]);
+  });
+
+  it("gives each novel one status, its progress and starts a novel with failures expanded", () => {
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [
+        chapter(1, 1, "running", 0), chapter(2, 1, "succeeded"), chapter(3, 2, "queued", 1),
+        chapter(4, 3, "failed"), chapter(5, 3, "succeeded"),
+      ],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const rows = $(".norea-task-work-group").map((_, element) => ({
+      title: $(element).find(".norea-task-work-title").text(),
+      status: $(element).find(".norea-task-work-status").text(),
+      count: $(element).find(".norea-task-group-count").first().text(),
+      open: $(element).attr("data-collapsed") === undefined,
+    })).get();
+    expect(rows).toEqual([
+      { title: "Novel 1", status: "Downloading", count: "1 / 2", open: false },
+      { title: "Novel 2", status: "Waiting", count: "0 / 1", open: false },
+      { title: "Novel 3", status: "Needs attention", count: "1 / 2", open: true },
+    ]);
+  });
+
+  it("shows a paused source's novels as paused and keeps non-download work under Other activity", () => {
+    const scheduler = new TaskScheduler();
+    scheduler.pauseSourceQueue();
+    state.snapshot = {
+      ...scheduler.getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [chapter(1, 1, "queued", 0), {
+        id: "install", lane: "main", kind: "plugin.install", priority: "user", title: "Install Foo",
+        status: "running", createdAt: 1, canCancel: true, canRetry: false,
+      }],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-task-work-status").text()).toBe("Paused");
+    expect($("#norea-downloads-other-title").text()).toBe("Other activity");
+    expect($(".norea-downloads-other .norea-task-row-title").text()).toBe("Install Foo");
+    expect($("button").filter((_, element) => $(element).text() === "Resume downloads")).toHaveLength(1);
+  });
+
+  it("labels the pause control and moves rare queue actions into the page overflow", () => {
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1, records: [chapter(1, 1, "queued", 0)] };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const header = $(".norea-task-header-actions");
+    expect(header.find("button").first().text()).toBe("Pause downloads");
+    expect(header.find('button[aria-label="More"]')).toHaveLength(1);
+    expect($(".norea-page-title").text()).toContain("Downloads");
+    const css = readFileSync(new URL("../styles/downloads.css", import.meta.url), "utf8");
+    expect(css.slice(css.indexOf("@media (max-width: 767px)")))
+      .toMatch(/\.norea-downloads-hub \.norea-page-header \.norea-page-header-copy \{\s*display: block;/);
+  });
+
+  it("omits Needs attention when nothing needs the user", () => {
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), records: [chapter(1, 1, "queued", 0)], sourceQueueOrder: ["source"], sourceQueuesTotal: 1 };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-downloads-attention")).toHaveLength(0);
   });
 
   it("places completed history after pending work", () => {
@@ -125,7 +193,7 @@ describe("virtual task row geometry", () => {
     state.fontScalePercent = fontScalePercent;
     const records: TaskRecord[] = Array.from({ length: 81 }, (_, index) => ({
       id: `main-${index}`, lane: "main", kind: "plugin.install", priority: "user",
-      title: `Install ${index}`, status: "queued", createdAt: index, canCancel: true, canRetry: false,
+      title: `Install ${index}`, status: index === 0 ? "running" : "queued", createdAt: index, canCancel: true, canRetry: false,
     }));
     state.snapshot = { ...new TaskScheduler().getSnapshot(), records, total: records.length };
     try {
