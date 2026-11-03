@@ -15,6 +15,7 @@ import {
   type SourceDuplicateChapterInfo,
 } from "../../lib/plugins/sync-novel";
 import { enqueueSourceTask } from "../../lib/tasks/source-tasks";
+import { checkNovelForNewChapters } from "../../lib/updates/check-library-updates";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import {
   chaptersKey,
@@ -127,7 +128,21 @@ export function useNovelMetadata(
         if (changed) invalidateNovelMetadataRefresh();
         return null;
       }, error => ({ error }));
-      try { sourceRefreshed = await refreshServerNovelFromSource(novel.id, t("tasks.task.refreshNovelMetadataFull", { name: novel.name }), undefined, { priority: "user", refreshCover: true }); }
+      try {
+        if (mode === "since") {
+          const plugin = novel.isLocal || novel.path.startsWith("norea-folder:")
+            ? undefined : pluginManager.getPlugin(novel.pluginId);
+          if (plugin) {
+            await checkNovelForNewChapters(plugin, novel, {
+              priority: "user", title: t("tasks.task.checkUpdates", { name: novel.name }),
+            }).promise;
+            sourceRefreshed = true;
+          }
+        } else {
+          sourceRefreshed = await refreshServerNovelFromSource(novel.id,
+            t("tasks.task.refreshNovelMetadataFull", { name: novel.name }), undefined, { priority: "user", refreshCover: true });
+        }
+      }
       finally { invalidateNovelMetadataRefresh(); }
       if (!sourceRefreshed) {
         const failure = await serverRefresh;
@@ -140,26 +155,23 @@ export function useNovelMetadata(
     if (!plugin) {
       throw new Error(t("source.pluginNotLoaded"));
     }
+    if (mode === "since") {
+      return checkNovelForNewChapters(plugin, novel, {
+        priority: "user", title: t("tasks.task.checkUpdates", { name: novel.name }),
+      }).promise;
+    }
 
     return enqueueSourceTask({
       plugin,
       kind: "source.refreshNovel",
       priority: "user",
-      title: t(
-        mode === "full"
-          ? "tasks.task.refreshNovelMetadataFull"
-          : "tasks.task.refreshNovelMetadata",
-        { name: novel.name },
-      ),
+      title: t("tasks.task.refreshNovelMetadataFull", { name: novel.name }),
       subject: {
         novelId: novel.id,
         novelName: novel.name,
         path: novel.path,
       },
-      dedupeKey:
-        mode === "full"
-          ? `source.refreshNovel:full:${novel.pluginId}:${novel.path}`
-          : `source.refreshNovel:${novel.pluginId}:${novel.path}`,
+      dedupeKey: `source.refreshNovel:full:${novel.pluginId}:${novel.path}`,
       run: (context) =>
         syncNovelFromSource(
           pluginManager.getPluginForExecutor(
@@ -172,7 +184,7 @@ export function useNovelMetadata(
             path: novel.path,
           },
           {
-            chapterRefreshMode: mode,
+            chapterRefreshMode: "full",
             novelId: novel.id,
             preserveMissingMetadata: true,
             refreshCover: true,

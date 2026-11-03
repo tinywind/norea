@@ -49,7 +49,7 @@ function render(failures: UpdateCheckFailure[]) {
         <UpdateFailures
           active
           onOpenNovel={vi.fn()}
-          onRetryAll={vi.fn()}
+          onRetry={vi.fn()}
           sources={groupFailuresBySource(failures)}
         />
       </MantineProvider>,

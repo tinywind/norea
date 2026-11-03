@@ -60,19 +60,23 @@ function friendlyReason(
 interface UpdateFailuresProps {
   active: boolean;
   onOpenNovel: (novelId: number) => void;
-  onRetryAll: () => void;
+  /** Checks only these novels again. */
+  onRetry: (novelIds: readonly number[]) => void;
   sources: readonly FailedUpdateSource[];
 }
+
+const novelIdsOf = (sources: readonly FailedUpdateSource[]) =>
+  sources.flatMap((source) => source.failures.map((failure) => failure.novelId));
 
 /**
  * The recovery surface for a finished check. One failed source shows its
  * action in place; more collapse into a chip that opens a sheet per source.
- * A check runs every library novel, so Retry always reruns the whole check.
+ * Retry checks only the failed novels: one source's, or all of them.
  */
 export function UpdateFailures({
   active,
   onOpenNovel,
-  onRetryAll,
+  onRetry,
   sources,
 }: UpdateFailuresProps) {
   const { t } = useTranslation();
@@ -118,7 +122,7 @@ export function UpdateFailures({
             ) : (
               <Button
                 leftSection={<RetryIcon size="1rem" />}
-                onClick={onRetryAll}
+                onClick={() => onRetry(novelIdsOf([single]))}
                 size="compact-sm"
                 variant="light"
               >
@@ -156,7 +160,7 @@ export function UpdateFailures({
             leftSection={<RetryIcon size="1rem" />}
             onClick={() => {
               setSheetOpen(false);
-              onRetryAll();
+              onRetry(novelIdsOf(sources));
             }}
           >
             {t("updates.failure.retryAll")}
@@ -190,7 +194,19 @@ export function UpdateFailures({
                       label={t("updates.failure.verify")}
                       sourceName={source.name}
                     />
-                  ) : null}
+                  ) : source.pluginMissing ? null : (
+                    <Button
+                      leftSection={<RetryIcon size="1rem" />}
+                      onClick={() => {
+                        setSheetOpen(false);
+                        onRetry(novelIdsOf([source]));
+                      }}
+                      size="compact-sm"
+                      variant="light"
+                    >
+                      {t("common.retry")}
+                    </Button>
+                  )}
                 </div>
                 <Text c="dimmed" size="sm">
                   {friendlyReason(source, block, t)}

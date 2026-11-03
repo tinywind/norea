@@ -65,7 +65,7 @@ import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
 import { showErrorToast } from "../lib/runtime/error-toast";
-import { refreshLibraryMetadata } from "../lib/updates/refresh-library-metadata";
+import { checkForNewChapters } from "../lib/updates/check-library-updates";
 import { useLibraryStore } from "../store/library";
 import "../styles/library.css";
 
@@ -224,27 +224,26 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
   const metadataRefreshMutation = useMutation({
     mutationFn: () =>
-      refreshLibraryMetadata({
-        aggregateTaskTitle: t("tasks.task.refreshLibraryMetadata"),
+      checkForNewChapters({
+        aggregateTaskTitle: t("tasks.task.checkLibraryUpdates"),
         filter: libraryFilter,
-        taskTitle: (novel) =>
-          t("tasks.task.refreshNovelMetadata", { name: novel.name }),
+        limit: 1,
+        taskTitle: (novel) => t("tasks.task.checkUpdates", { name: novel.name }),
       }),
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["category"] });
       void queryClient.invalidateQueries({ queryKey: ["novel"] });
       notifications.show({
         color: result.failures.length > 0 ? "warn" : "ok",
-        message: t("library.refreshMetadataResult", {
+        message: t(result.failures.length > 0 ? "library.checkResult.failed" : "library.checkResult", {
           checked: result.checkedNovels,
           failed: result.failures.length,
-          skipped: result.skippedNovels,
-          total: result.targetNovels,
+          found: result.newChapters,
         }),
       });
     },
     onError: (error) => {
-      showErrorToast(t("library.refreshMetadataFailed"), error);
+      showErrorToast(t("library.checkFailed"), error);
     },
   });
 

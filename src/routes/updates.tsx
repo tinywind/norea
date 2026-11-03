@@ -32,7 +32,7 @@ import {
 } from "../lib/tasks/chapter-download";
 import {
   cancelLibraryUpdateCheck,
-  checkLibraryUpdates,
+  checkForNewChapters,
 } from "../lib/updates/check-library-updates";
 import {
   getUpdatesIndexRevision,
@@ -136,18 +136,21 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
 
   const check = useMutation({
     meta: { errorPresentation: "inline" },
-    mutationFn: () => {
+    /** Without novels, checks the whole library; with them, retries only those novels. */
+    mutationFn: (novelIds?: readonly number[]) => {
       const loadedWindowSize = useUpdatesStore.getState().updates.length;
-      return checkLibraryUpdates(Math.max(UPDATES_PAGE_SIZE, loadedWindowSize), {
+      return checkForNewChapters({
         aggregateTaskTitle: t("tasks.task.checkLibraryUpdates"),
+        limit: Math.max(UPDATES_PAGE_SIZE, loadedWindowSize),
+        novelIds,
         onProgress: ({ current, total }) => setCheckProgress({ current, total }),
         taskTitle: (novel) =>
           t("tasks.task.checkUpdates", { name: novel.name }),
       });
     },
     onMutate: () => setCheckProgress(null),
-    onSuccess: (result) => {
-      applyCheckResult(result);
+    onSuccess: (result, novelIds) => {
+      applyCheckResult(result, novelIds);
       void queryClient.invalidateQueries({
         queryKey: ["novel"],
         refetchType: "active",
@@ -468,7 +471,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
           <IconButton
             disabled={check.isPending}
             label={t("updates.check")}
-            onClick={() => check.mutate()}
+            onClick={() => check.mutate(undefined)}
             size="lg"
           >
             {check.isPending ? <Loader size="sm" /> : <RefreshIcon />}
@@ -507,7 +510,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
         <UpdateFailures
           active={active}
           onOpenNovel={openNovel}
-          onRetryAll={() => check.mutate()}
+          onRetry={(novelIds) => check.mutate(novelIds)}
           sources={failedSources}
         />
       )}
@@ -534,7 +537,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
               <StateView
                 action={{
                   label: t("common.retry"),
-                  onClick: () => check.mutate(),
+                  onClick: () => check.mutate(undefined),
                 }}
                 color="danger"
                 details={{
@@ -581,7 +584,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
               <StateView
                 action={{
                   label: t("updates.check"),
-                  onClick: () => check.mutate(),
+                  onClick: () => check.mutate(undefined),
                 }}
                 message={t("updates.caughtUpCurrentMessage")}
                 title={t("updates.caughtUp")}

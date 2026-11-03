@@ -4,16 +4,18 @@ import {
   type LibraryUpdateEntry,
   type LibraryUpdatesCursor,
 } from "../../db/queries/chapter";
+import { listLibraryNovelRefreshTargets, type LibraryNovelRefreshFilter } from "../../db/queries/novel";
 import { recordNovelCheck } from "../../db/queries/novel-freshness";
+import { isAbortError } from "../abort";
 import { pluginManager } from "../plugins/manager";
-import { syncNovelFromSource } from "../plugins/sync-novel";
+import { syncNovelFromSource, type SyncNovelFromSourceResult } from "../plugins/sync-novel";
 import { describeError } from "../errors";
-import { LOCAL_PLUGIN_ID } from "../plugins/types";
+import { LOCAL_PLUGIN_ID, type Plugin } from "../plugins/types";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { enqueueSourceTask } from "../tasks/source-tasks";
-import { taskScheduler, type TaskRunContext } from "../tasks/scheduler";
+import { taskScheduler, type TaskHandle, type TaskRunContext } from "../tasks/scheduler";
 
-interface LibraryNovelForUpdate {
+export interface NovelForCheck {
   id: number;
   pluginId: string;
   path: string;
@@ -34,6 +36,8 @@ export interface UpdateCheckFailure {
 
 export interface UpdateCheckResult {
   checkedNovels: number;
+  /** Chapters the check inserted into novels that already had chapters. */
+  newChapters: number;
   skippedNovels: number;
   failures: UpdateCheckFailure[];
   hasMoreUpdates: boolean;
@@ -41,44 +45,93 @@ export interface UpdateCheckResult {
   updates: LibraryUpdateEntry[];
 }
 
-export interface UpdateCheckOptions {
+export interface NewChapterCheckOptions {
+  /** Novels to check; every library novel when omitted, unless `filter` narrows the library. */
+  novelIds?: readonly number[];
+  filter?: LibraryNovelRefreshFilter;
+  /** Rows of the Updates list returned with the result. */
+  limit: number;
   aggregateTaskTitle?: string;
   onProgress?: (progress: {
     current: number;
     detail?: string;
     total: number;
   }) => void;
-  taskTitle?: (novel: LibraryNovelForUpdate) => string;
+  taskTitle?: (novel: NovelForCheck) => string;
 }
 
-const SELECT_LIBRARY_NOVELS_FOR_UPDATE = `
-  SELECT
-    id,
-    plugin_id AS pluginId,
-    path,
-    name
+/** Library novels, the ones being read first. */
+const SELECT_LIBRARY_NOVELS_FOR_CHECK = `
+  SELECT id, plugin_id AS pluginId, path, name
   FROM novel
   WHERE in_library = 1
-  ORDER BY name COLLATE NOCASE ASC
+  ORDER BY last_read_at IS NULL, last_read_at DESC, name COLLATE NOCASE ASC
 `;
 
-async function listLibraryNovelsForUpdate(): Promise<
-  LibraryNovelForUpdate[]
-> {
+async function listNovelsForCheck(options: NewChapterCheckOptions): Promise<NovelForCheck[]> {
+  if (options.filter) return listLibraryNovelRefreshTargets(options.filter);
   const db = await getDb();
-  return db.select<LibraryNovelForUpdate[]>(
-    SELECT_LIBRARY_NOVELS_FOR_UPDATE,
-  );
+  const novels = await db.select<NovelForCheck[]>(SELECT_LIBRARY_NOVELS_FOR_CHECK);
+  if (!options.novelIds) return novels;
+  const wanted = new Set(options.novelIds);
+  return novels.filter((novel) => wanted.has(novel.id));
 }
 
-async function runLibraryUpdateCheck(
-  limit: number,
-  options: UpdateCheckOptions = {},
+/** One novel's check, shared by every entry point so a novel is never fetched twice at once. */
+export function newChapterCheckDedupeKey(pluginId: string, path: string): string {
+  return `source.checkLibraryUpdates:${pluginId}:${path}`;
+}
+
+/**
+ * Checks one novel for new chapters: metadata plus chapters since the latest one, falling back
+ * to the full list when the anchor is missing or inconsistent. Chapters it inserts into a novel
+ * that already had chapters show in Updates, and the outcome is recorded for the check cadence.
+ */
+export function checkNovelForNewChapters(
+  plugin: Pick<Plugin, "getBaseUrl" | "id" | "name">,
+  novel: NovelForCheck,
+  options: { priority?: "deferred" | "user"; title: string },
+): TaskHandle<SyncNovelFromSourceResult> {
+  return enqueueSourceTask({
+    plugin,
+    kind: "source.checkLibraryUpdates",
+    priority: options.priority ?? "deferred",
+    title: options.title,
+    subject: { novelId: novel.id, novelName: novel.name, path: novel.path },
+    dedupeKey: newChapterCheckDedupeKey(plugin.id, novel.path),
+    run: async (context) => {
+      try {
+        const result = await syncNovelFromSource(
+          pluginManager.getPluginForExecutor(novel.pluginId, context.executor ?? "immediate"),
+          { name: novel.name, path: novel.path },
+          {
+            chapterRefreshMode: "since",
+            markFoundByCheck: true,
+            novelId: novel.id,
+            preserveMissingMetadata: true,
+            signal: context.signal,
+          },
+        );
+        await recordNovelCheck(novel.id, { ok: true, newChapters: result.newChapters });
+        return result;
+      } catch (error) {
+        if (!isAbortError(error) && !context.signal.aborted) {
+          await recordNovelCheck(novel.id, { ok: false }).catch(() => undefined);
+        }
+        throw error;
+      }
+    },
+  });
+}
+
+async function runNewChapterCheck(
+  options: NewChapterCheckOptions,
   context?: TaskRunContext,
 ): Promise<UpdateCheckResult> {
-  const novels = await listLibraryNovelsForUpdate();
+  const novels = await listNovelsForCheck(options);
   const failures: UpdateCheckFailure[] = [];
   let checkedNovels = 0;
+  let newChapters = 0;
   let processedNovels = 0;
   let skippedNovels = 0;
 
@@ -119,49 +172,11 @@ async function runLibraryUpdateCheck(
       }
 
       try {
-        const handle = enqueueSourceTask({
-          plugin,
-          kind: "source.checkLibraryUpdates",
-          priority: "deferred",
+        const result = await checkNovelForNewChapters(plugin, novel, {
           title: options.taskTitle?.(novel) ?? novel.name,
-          subject: {
-            novelId: novel.id,
-            novelName: novel.name,
-            path: novel.path,
-          },
-          dedupeKey: `source.checkLibraryUpdates:${plugin.id}:${novel.path}`,
-          run: (context) =>
-            syncNovelFromSource(
-              pluginManager.getPluginForExecutor(
-                novel.pluginId,
-                context.executor ?? "immediate",
-              ),
-              { name: novel.name, path: novel.path },
-              {
-                chapterRefreshMode: "since",
-                markFoundByCheck: true,
-                novelId: novel.id,
-                notifyUpdatesIndex: false,
-                preserveMissingMetadata: true,
-                signal: context.signal,
-              },
-            ),
-        });
-        await handle.promise
-          .then(async (result) => {
-            checkedNovels += 1;
-            await recordNovelCheck(novel.id, { ok: true, newChapters: result.newChapters });
-          })
-          .catch(async (error) => {
-            await recordNovelCheck(novel.id, { ok: false }).catch(() => undefined);
-            failures.push({
-              novelId: novel.id,
-              novelName: novel.name,
-              pluginId: novel.pluginId,
-              pluginName: plugin.name,
-              reason: { kind: "error", message: describeError(error) },
-            });
-          });
+        }).promise;
+        checkedNovels += 1;
+        newChapters += result.newChapters;
       } catch (error) {
         failures.push({
           novelId: novel.id,
@@ -177,10 +192,11 @@ async function runLibraryUpdateCheck(
     },
   });
 
-  const updatesPage = await listLibraryUpdatesPage(limit);
+  const updatesPage = await listLibraryUpdatesPage(options.limit);
 
   return {
     checkedNovels,
+    newChapters,
     skippedNovels,
     failures,
     hasMoreUpdates: updatesPage.hasMore,
@@ -189,24 +205,32 @@ async function runLibraryUpdateCheck(
   };
 }
 
-export async function checkLibraryUpdates(
-  limit: number,
-  options: UpdateCheckOptions = {},
-): Promise<UpdateCheckResult> {
+/**
+ * "Check for new chapters" for the library, a filtered part of it, or chosen novels such as the
+ * ones that failed last time. Sources run in parallel and each source stays serial.
+ */
+export async function checkForNewChapters(options: NewChapterCheckOptions): Promise<UpdateCheckResult> {
+  const scope = options.novelIds ? { novelIds: [...options.novelIds].sort((left, right) => left - right) }
+    : options.filter ? { filter: options.filter } : null;
   return taskScheduler.enqueueMain<UpdateCheckResult>({
     kind: "library.checkUpdates",
     priority: "deferred",
-    title: options.aggregateTaskTitle ?? "Check library updates",
-    dedupeKey: LIBRARY_UPDATE_CHECK_KEY,
-    run: (context) => runLibraryUpdateCheck(limit, options, context),
+    title: options.aggregateTaskTitle ?? "Check for new chapters",
+    dedupeKey: scope ? `${LIBRARY_UPDATE_CHECK_KEY}:${JSON.stringify(scope)}` : LIBRARY_UPDATE_CHECK_KEY,
+    run: (context) => runNewChapterCheck(options, context),
   }).promise;
 }
 
 /**
- * Cancels the running library update check. Novels already handed to their
+ * Cancels running checks for new chapters. Novels already handed to their
  * source finish their check; the remaining novels are not started.
  */
 export function cancelLibraryUpdateCheck(): boolean {
-  const record = taskScheduler.getTaskByDedupeKey(LIBRARY_UPDATE_CHECK_KEY);
-  return record ? taskScheduler.cancel(record.id) : false;
+  let cancelled = false;
+  for (const record of taskScheduler.getSnapshot().records) {
+    if (record.kind === "library.checkUpdates" && (record.status === "queued" || record.status === "running")) {
+      cancelled = taskScheduler.cancel(record.id) || cancelled;
+    }
+  }
+  return cancelled;
 }

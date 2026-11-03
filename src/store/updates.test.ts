@@ -57,3 +57,20 @@ describe("updates store download completion", () => {
     unsubscribe();
   });
 });
+
+describe("updates store check results", () => {
+  const result = (failedNovelIds: number[]) => ({
+    checkedNovels: 1, newChapters: 0, skippedNovels: 0, hasMoreUpdates: false, nextUpdateCursor: null, updates: [],
+    failures: failedNovelIds.map((novelId) => ({
+      novelId, novelName: `Novel ${novelId}`, pluginId: "s", reason: { kind: "error" as const, message: "x" },
+    })),
+  });
+
+  it("keeps the failures of novels a retry did not cover", () => {
+    useUpdatesStore.getState().applyCheckResult(result([1, 2, 3]));
+    useUpdatesStore.getState().applyCheckResult(result([2]), [1, 2]);
+    expect(useUpdatesStore.getState().lastCheckResult?.failures.map((failure) => failure.novelId)).toEqual([3, 2]);
+    useUpdatesStore.getState().applyCheckResult(result([]));
+    expect(useUpdatesStore.getState().lastCheckResult?.failures).toEqual([]);
+  });
+});

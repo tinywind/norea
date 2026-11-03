@@ -44,3 +44,12 @@ export async function recordNovelCheck(
      ON CONFLICT(novel_id) DO UPDATE SET last_checked_at=excluded.last_checked_at,consecutive_failures=consecutive_failures+1`,
     [novelId, nowSeconds]);
 }
+
+/** Notes when the novel's cover was last fetched, or the baseline for a cover stored before tracking. */
+export async function recordNovelCoverFetched(novelId: number, nowSeconds = Math.floor(Date.now() / 1000)): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `INSERT INTO novel_freshness(novel_id,cover_fetched_at) SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$1)
+     ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
+    [novelId, nowSeconds]);
+}

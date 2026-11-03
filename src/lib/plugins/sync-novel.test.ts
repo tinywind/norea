@@ -93,6 +93,15 @@ function applyCapturedNovelUpsert() {
   } finally { sqlite.close(); }
 }
 
+function registeredDatabase(): DatabaseSync {
+  const sqlite = new DatabaseSync(":memory:");
+  const registration = readFileSync("src-tauri/src/database.rs", "utf8");
+  for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
+    sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
+  }
+  return sqlite;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockExecute = vi.fn().mockResolvedValue({ rowsAffected: 0 });
@@ -249,8 +258,7 @@ describe("syncNovelFromSource", () => {
   });
 
   it.each(["deleted", "replaced", "renamed"])("rejects a delayed existing-work refresh after the work is %s", async change => {
-    const sqlite = new DatabaseSync(":memory:");
-    sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+    const sqlite = registeredDatabase();
     sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(7,'demo','novel','/novel','Original')");
     const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
     const db = {
@@ -286,11 +294,7 @@ describe("syncNovelFromSource", () => {
   });
 
   it("flags only chapters a check inserts into a novel that already had chapters", async () => {
-    const sqlite = new DatabaseSync(":memory:");
-    const registration = readFileSync("src-tauri/src/database.rs", "utf8");
-    for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
-      sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
-    }
+    const sqlite = registeredDatabase();
     const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
     const db = {
       select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
@@ -611,6 +615,37 @@ describe("syncNovelFromSource", () => {
       { refresh: false },
     );
     expect(mockSelect.mock.calls[2]?.[0]).toContain("SELECT id, cover");
+  });
+
+  it("fetches a library cover again only when its value changes, after 30 days or on a rebuild", async () => {
+    const sqlite = registeredDatabase();
+    const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
+    const db = {
+      select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
+      execute: async (sql: string, values: SQLInputValue[] = []) => ({ rowsAffected: Number(sqlite.prepare(sql).run(parameters(values)).changes) }),
+    };
+    mockedGetDb.mockResolvedValue(db as never);
+    mockedRunDatabaseTransaction.mockImplementation(async run => run(db as never));
+    sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,cover,in_library) VALUES(7,'demo','novel','/novel','Novel','https://source.test/a.jpg',1)");
+    let cover = "https://source.test/a.jpg";
+    const plugin = makePlugin({ parseNovel: vi.fn(async () => ({ ...makeDetail([1]), cover })) });
+    const refreshes = async (options = {}) => {
+      mockedSaveNovelCoverFromSource.mockClear();
+      await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, options);
+      return mockedSaveNovelCoverFromSource.mock.calls.map((call) => call[3]?.refresh);
+    };
+    try {
+      expect(await refreshes()).toEqual([false]);
+      const baseline = sqlite.prepare("SELECT cover_fetched_at AS fetched FROM novel_freshness WHERE novel_id=7").get() as { fetched: number };
+      expect(baseline.fetched).toBeGreaterThan(0);
+      expect(await refreshes()).toEqual([false]);
+      cover = "https://source.test/b.jpg";
+      expect(await refreshes()).toEqual([true]);
+      expect(await refreshes()).toEqual([false]);
+      sqlite.exec(`UPDATE novel_freshness SET cover_fetched_at=cover_fetched_at-${30 * 24 * 60 * 60} WHERE novel_id=7`);
+      expect(await refreshes()).toEqual([true]);
+      expect(await refreshes({ refreshCover: true })).toEqual([true]);
+    } finally { sqlite.close(); }
   });
 
   it("does not persist a cover when opening a novel outside the library", async () => {

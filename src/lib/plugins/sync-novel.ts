@@ -12,6 +12,7 @@ import {
   isKnownChapterContentType,
   type ChapterContentType,
 } from "../chapter-content";
+import { recordNovelCoverFetched } from "../../db/queries/novel-freshness";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { markUpdatesIndexDirty } from "../updates/update-index-events";
 import { normalizeSourceAccessRequiredError } from "./source-access";
@@ -61,6 +62,9 @@ interface ParsedSourceNovelResult {
   duplicateChapters: SourceDuplicateChapterInfo[];
   startPosition: number;
 }
+
+/** A cover whose source value is unchanged is fetched again at most this often. */
+export const COVER_REFRESH_SECONDS = 30 * 24 * 60 * 60;
 
 const sourceDuplicateChaptersByNovelId = new Map<
   number,
@@ -335,8 +339,12 @@ async function performNovelSourceRefresh(
       pluginId: plugin.id, path: item.path, name: item.name,
     }, chapterInputs);
     options.signal?.throwIfAborted();
-    const [storedIdentity] = await db.select<{ sourceNovelId: string | null }[]>(
-      "SELECT source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2", [plugin.id, item.path]);
+    const [storedIdentity] = await db.select<
+      { sourceNovelId: string | null; previousCover?: string | null; coverFetchedAt?: number | null }[]
+    >(
+      `SELECT n.source_novel_id AS sourceNovelId, n.cover AS previousCover, f.cover_fetched_at AS coverFetchedAt
+       FROM novel n LEFT JOIN novel_freshness f ON f.novel_id = n.id WHERE n.plugin_id=$1 AND n.path=$2`,
+      [plugin.id, item.path]);
     if (storedIdentity?.sourceNovelId && storedIdentity.sourceNovelId !== detail.novelId) {
       throw new Error(`Plugin '${plugin.id}' changed a stored novel ID.`);
     }
@@ -418,6 +426,9 @@ async function performNovelSourceRefresh(
       changedChapters: chapterMutation.rowsAffected,
       newChapters,
       cover: optionalText(novelRow.cover) ?? cover,
+      coverChanged: optionalText(storedIdentity?.previousCover) !== null &&
+        optionalText(storedIdentity?.previousCover) !== optionalText(novelRow.cover),
+      coverFetchedAt: storedIdentity?.coverFetchedAt ?? null,
       novelChanged: novelResult.rowsAffected > 0 || (reconciled?.changed ?? false),
       inLibrary: sqliteBoolean(novelRow.inLibrary),
       novelId,
@@ -436,6 +447,11 @@ async function performNovelSourceRefresh(
   if (superseded) return null;
 
   if (result.inLibrary || options.refreshCover) {
+    // Covers are fetched again when the source value changes, on an explicit rebuild, or after
+    // 30 days for an unchanged value, since sites sometimes replace the image behind a URL.
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const refresh = options.refreshCover === true || result.coverChanged ||
+      (result.coverFetchedAt !== null && nowSeconds - result.coverFetchedAt >= COVER_REFRESH_SECONDS);
     try {
       await saveNovelCoverFromSource(
         plugin,
@@ -446,8 +462,9 @@ async function performNovelSourceRefresh(
           pluginId: plugin.id,
         },
         result.cover,
-        { refresh: options.refreshCover ?? false },
+        { refresh },
       );
+      if (refresh || result.coverFetchedAt === null) await recordNovelCoverFetched(result.novelId, nowSeconds);
     } catch (error) {
       const sourceAccessError = normalizeSourceAccessRequiredError(error);
       if (sourceAccessError) throw sourceAccessError;

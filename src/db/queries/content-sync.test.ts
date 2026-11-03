@@ -17,6 +17,7 @@ beforeEach(() => {
   clearAuthoritativeStorageDirs();
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(42,'source','work','/work','A work')");
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),

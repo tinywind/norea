@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   mutations: [] as { mutationFn: () => Promise<unknown>; onSuccess: (result: never) => Promise<void> | void }[],
   queryClient: { setQueryData: vi.fn(), invalidateQueries: vi.fn(), cancelQueries: vi.fn(), getQueryData: vi.fn() },
   source: vi.fn(), refresh: vi.fn(), refreshSource: vi.fn(), cover: vi.fn(), plugin: vi.fn(), library: vi.fn(),
-  enqueue: vi.fn(), sync: vi.fn(), confirmDeletion: vi.fn(),
+  enqueue: vi.fn(), sync: vi.fn(), confirmDeletion: vi.fn(), check: vi.fn(),
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => mocks.queryClient,
@@ -20,6 +20,7 @@ vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: mocks.
 vi.mock("../../lib/plugins/sync-novel", () => ({ getSourceDuplicateChapterInfo: () => [], syncNovelFromSource: mocks.sync }));
 vi.mock("../../lib/tasks/source-tasks", () => ({ enqueueSourceTask: mocks.enqueue }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
+vi.mock("../../lib/updates/check-library-updates", () => ({ checkNovelForNewChapters: mocks.check }));
 vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: mocks.confirmDeletion }));
 
 import { useNovelMetadata } from "./use-novel-metadata";
@@ -35,14 +36,24 @@ beforeEach(() => {
   mocks.plugin.mockReturnValue(undefined);
   mocks.enqueue.mockImplementation(options => ({ promise: options.run({ signal: new AbortController().signal, executor: "background" }) }));
   mocks.sync.mockResolvedValue({ duplicateChapters: [] });
+  mocks.check.mockReset().mockReturnValue({ promise: Promise.resolve({ duplicateChapters: [] }) });
 });
 
 it("refreshes a bound work on its server without requiring an installed source plugin", async () => {
   useNovelMetadata(3, novel);
   await mocks.mutations[1]!.mutationFn();
   expect(mocks.refresh).toHaveBeenCalledWith(3, undefined, expect.any(Function));
+  expect(mocks.check).not.toHaveBeenCalled();
+  await mocks.mutations[2]!.mutationFn();
   expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull", undefined, { priority: "user", refreshCover: true });
-  expect(mocks.plugin).not.toHaveBeenCalled();
+});
+
+it("checks a bound work's source for new chapters with the same check as Updates", async () => {
+  mocks.plugin.mockReturnValue({ id: "source-a" });
+  useNovelMetadata(3, novel);
+  await mocks.mutations[1]!.mutationFn();
+  expect(mocks.check).toHaveBeenCalledWith({ id: "source-a" }, novel, { priority: "user", title: "tasks.task.checkUpdates" });
+  expect(mocks.refreshSource).not.toHaveBeenCalled();
 });
 
 it("refreshes server-published local metadata through its server binding", async () => {
@@ -84,12 +95,12 @@ it("attempts source metadata even when the server refresh fails", async () => {
 it("finishes a source refresh before a delayed optional server refresh", async () => {
   let complete!: (value: boolean) => void;
   mocks.refresh.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
-  mocks.refreshSource.mockResolvedValue(true);
+  mocks.plugin.mockReturnValue({ id: "source-a" });
   useNovelMetadata(3, novel);
   const finished = vi.fn();
   const pending = mocks.mutations[1]!.mutationFn().then(finished);
   await vi.waitFor(() => expect(finished).toHaveBeenCalledWith({ duplicateChapters: [] }));
-  expect(mocks.refreshSource).toHaveBeenCalledOnce();
+  expect(mocks.check).toHaveBeenCalledOnce();
   expect((mocks.refresh.mock.calls[0]![2] as () => boolean)()).toBe(false);
   complete(true);
   await pending;
@@ -100,7 +111,8 @@ it("reports a source failure before a delayed optional server refresh", async ()
   let complete!: (value: boolean) => void;
   const failure = new Error("Source unavailable");
   mocks.refresh.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
-  mocks.refreshSource.mockRejectedValue(failure);
+  mocks.plugin.mockReturnValue({ id: "source-a" });
+  mocks.check.mockReturnValue({ promise: Promise.reject(failure) });
   useNovelMetadata(3, novel);
   const rejected = vi.fn();
   const pending = mocks.mutations[1]!.mutationFn().catch(rejected);
@@ -111,21 +123,24 @@ it("reports a source failure before a delayed optional server refresh", async ()
 
 it("keeps a successful source refresh successful when the optional server fails", async () => {
   mocks.refresh.mockRejectedValue(new Error("Server offline"));
-  mocks.refreshSource.mockResolvedValue(true);
+  mocks.plugin.mockReturnValue({ id: "source-a" });
   useNovelMetadata(3, novel);
   await expect(mocks.mutations[1]!.mutationFn()).resolves.toEqual({ duplicateChapters: [] });
 });
 
-it.each(["since", "full"] as const)("refreshes the web cover during an explicit %s metadata update", async mode => {
+it("rebuilds the chapter list with a fresh cover, and checks for new chapters through the shared check", async () => {
   mocks.source.mockResolvedValue(null);
   mocks.plugin.mockReturnValue({ id: "source-a" });
   useNovelMetadata(3, novel);
-  await mocks.mutations[mode === "since" ? 1 : 2]!.mutationFn();
+  await mocks.mutations[2]!.mutationFn();
   expect(mocks.sync).toHaveBeenCalledWith(
     { id: "source-a" },
     expect.objectContaining({ path: "/novel" }),
-    expect.objectContaining({ chapterRefreshMode: mode, refreshCover: true }),
+    expect.objectContaining({ chapterRefreshMode: "full", refreshCover: true }),
   );
+  await mocks.mutations[1]!.mutationFn();
+  expect(mocks.check).toHaveBeenCalledWith({ id: "source-a" }, novel, { priority: "user", title: "tasks.task.checkUpdates" });
+  expect(mocks.sync).toHaveBeenCalledOnce();
 });
 
 it("asks before removing a library novel and sizes the optional deletions", async () => {

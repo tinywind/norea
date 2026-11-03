@@ -75,6 +75,7 @@ beforeEach(() => {
   storage.files.clear(); storage.chapters.clear(); storage.chapters.set(path, ["contents/source/book/1/content.html"]); storage.writes = 0; storage.fail = false; storage.failOncePath = ""; storage.failReadPath = ""; storage.lists = 0; storage.reads = 0; storage.directories = {};
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   db = {
     select: async (query: string, params: unknown[] = []) => sqlite.prepare(query).all(Object.fromEntries(params.map((value, i) => [`$${i + 1}`, value])) as never),
     execute: async (query: string, params: unknown[] = []) => {
@@ -258,6 +259,7 @@ it("keeps refreshed work details durable when a later server document omits them
   sqlite.close();
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   await initializeWorkMetadata(db);
   expect(sqlite.prepare("SELECT author,artist,summary,status,genres,rating FROM novel").get())
     .toEqual({ author: "Current author", artist: "Current artist", summary: "Complete summary", status: "Ongoing", genres: "Fantasy", rating: 4.5 });
@@ -323,7 +325,6 @@ it("preserves a plugin novel ID through source sync, work files, upload discover
   expect(written.chapters).toEqual({ "1.5": "Side story" });
   expect((await listContentSyncChapters())[0]).toMatchObject({ sourceNovelId: "literal-42", novelPath: "/source-route?book=42" });
   sqlite.exec(readFileSync("src-tauri/src/migrations/0005_novel_download_goals.sql", "utf8"));
-  sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   const backup = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
   expect(backup.novels[0]!.sourceNovelId).toBe("literal-42");
   const restored = await prepareBackupRestore(db, backup);

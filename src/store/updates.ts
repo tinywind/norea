@@ -13,7 +13,8 @@ interface UpdatesState {
   nextUpdateCursor: LibraryUpdatesCursor | null;
   updates: LibraryUpdateEntry[];
   appendPage: (page: LibraryUpdatesPage) => void;
-  applyCheckResult: (result: UpdateCheckResult) => void;
+  /** A retry of some novels keeps the earlier failures of the novels it did not retry. */
+  applyCheckResult: (result: UpdateCheckResult, retriedNovelIds?: readonly number[]) => void;
   markChapterDownloaded: (chapterId: number) => void;
   markChaptersDownloaded: (chapterIds: Iterable<number>) => void;
   mergeFirstPage: (page: LibraryUpdatesPage) => void;
@@ -112,14 +113,22 @@ export const useUpdatesStore = create<UpdatesState>((set) => ({
         updates,
       };
     }),
-  applyCheckResult: (result) =>
-    set({
+  applyCheckResult: (result, retriedNovelIds) =>
+    set((state) => ({
       hasLoaded: true,
       hasMoreUpdates: result.hasMoreUpdates,
-      lastCheckResult: result,
+      lastCheckResult: retriedNovelIds && state.lastCheckResult
+        ? {
+            ...result,
+            failures: [
+              ...state.lastCheckResult.failures.filter((failure) => !retriedNovelIds.includes(failure.novelId)),
+              ...result.failures,
+            ],
+          }
+        : result,
       nextUpdateCursor: result.nextUpdateCursor,
       updates: result.updates,
-    }),
+    })),
   markChapterDownloaded: (chapterId) =>
     set((state) => markChaptersDownloadedState(state, new Set([chapterId]))),
   markChaptersDownloaded: (chapterIds) =>
