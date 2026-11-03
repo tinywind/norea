@@ -29,7 +29,7 @@ import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { usePageActivity } from "../lib/page-activity";
 import { pluginManager } from "../lib/plugins/manager";
-import { readerChapterQueryOptions } from "../lib/reader-chapter";
+import { readerChapterQueryOptions, type ReaderChapterRow } from "../lib/reader-chapter";
 import {
   chapterDetailQueryKey,
   chapterListQueryKey,
@@ -120,11 +120,27 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       ? chapters[chapterIndex + 1]
       : undefined;
   const bookmarkMutation = useMutation({
+    meta: { errorPresentation: "toast" },
     mutationFn: async () => {
       if (!chapter) return;
       await setChapterBookmark(chapter.id, !chapter.bookmark);
     },
-    onSuccess: () => {
+    // The bookmark icon flips at once; a failed write puts it back.
+    onMutate: async () => {
+      const queryKey = chapterDetailQueryKey(chapterId);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<ReaderChapterRow | null>(queryKey);
+      queryClient.setQueryData<ReaderChapterRow | null>(queryKey, (current) =>
+        current ? { ...current, bookmark: !current.bookmark } : current,
+      );
+      return { previous, queryKey };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(context.queryKey, context.previous);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({
         queryKey: chapterDetailQueryKey(chapterId),
       });

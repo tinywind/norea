@@ -53,6 +53,21 @@ export function useNovelMetadata(
       await setNovelInLibrary(novel.id, inLibrary);
       return { inLibrary, novel, serverSource };
     },
+    meta: { errorPresentation: "toast" },
+    // Adding shows as added at once and rolls back if the write fails; removing waits for its confirmation.
+    onMutate: async () => {
+      if (!novel || novel.inLibrary) return undefined;
+      const queryKey = novelKey(novel.id);
+      await queryClient.cancelQueries({ exact: true, queryKey });
+      const previous = queryClient.getQueryData<NovelDetailRecord | null>(queryKey);
+      queryClient.setQueryData<NovelDetailRecord | null>(queryKey, (current) =>
+        current ? { ...current, inLibrary: true } : current,
+      );
+      return { previous, queryKey };
+    },
+    onError: (_error, _unshelve, context) => {
+      if (context) queryClient.setQueryData(context.queryKey, context.previous);
+    },
     onSuccess: (result) => {
       if (!result) return;
       markUpdatesIndexDirty("library-membership");

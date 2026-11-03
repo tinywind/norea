@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   mutations: [] as { mutationFn: () => Promise<unknown>; onSuccess: (result: never) => Promise<void> | void }[],
-  queryClient: { setQueryData: vi.fn(), invalidateQueries: vi.fn() },
+  queryClient: { setQueryData: vi.fn(), invalidateQueries: vi.fn(), cancelQueries: vi.fn(), getQueryData: vi.fn() },
   source: vi.fn(), refresh: vi.fn(), refreshSource: vi.fn(), cover: vi.fn(), plugin: vi.fn(), library: vi.fn(),
   enqueue: vi.fn(), sync: vi.fn(), confirmDeletion: vi.fn(),
 }));
@@ -137,4 +137,30 @@ it("asks before removing a library novel and sizes the optional deletions", asyn
     kind: "library", ids: [3], title: "Novel", downloadedCount: 4, serverWork: false,
   });
   expect(mocks.library).not.toHaveBeenCalled();
+});
+
+type ToggleMutation = {
+  onMutate: () => Promise<{ previous: unknown; queryKey: unknown } | undefined>;
+  onError: (error: Error, variables: undefined, context: unknown) => void;
+};
+
+it("shows a novel as added at once and rolls back when the write fails", async () => {
+  const record = { ...novel, inLibrary: false };
+  mocks.queryClient.getQueryData.mockReturnValue(record);
+  useNovelMetadata(3, novel);
+  const mutation = mocks.mutations[0]! as unknown as ToggleMutation;
+  const context = await mutation.onMutate();
+  const [queryKey, update] = mocks.queryClient.setQueryData.mock.calls[0]!;
+  expect(update(record)).toEqual({ ...record, inLibrary: true });
+  expect(mocks.queryClient.cancelQueries).toHaveBeenCalledWith({ exact: true, queryKey });
+
+  mutation.onError(new Error("Disk full"), undefined, context);
+  expect(mocks.queryClient.setQueryData).toHaveBeenLastCalledWith(queryKey, record);
+});
+
+it("does not mark a removal before its confirmation", async () => {
+  useNovelMetadata(3, { ...novel, inLibrary: true });
+  const mutation = mocks.mutations[0]! as unknown as ToggleMutation;
+  expect(await mutation.onMutate()).toBeUndefined();
+  expect(mocks.queryClient.setQueryData).not.toHaveBeenCalled();
 });
