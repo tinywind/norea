@@ -239,7 +239,11 @@ export function ReaderSettingsOverlay({
           </div>
         </header>
         <div className="norea-reader-settings-scroll">
-          <ReaderSettingsPanel inlineAutomation target={settingsTarget} />
+          <ReaderSettingsPanel
+            editEffectiveScope
+            inlineAutomation
+            target={settingsTarget}
+          />
         </div>
       </section>
     </div>

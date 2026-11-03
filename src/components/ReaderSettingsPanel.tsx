@@ -91,6 +91,32 @@ interface ReaderSettingsPanelProps {
   inlineAutomation?: boolean;
   target?: ReaderSettingsPanelTarget;
   novelId?: number | null;
+  /**
+   * For a novel target, edit the scope the reader currently applies and show
+   * a scope switch instead of the override toggle.
+   */
+  editEffectiveScope?: boolean;
+}
+
+type ReaderNovelSettingsPanelTarget = Extract<
+  ReaderSettingsPanelTarget,
+  { kind: "novel" }
+>;
+
+function getEffectiveReaderSettingsTarget(
+  target: ReaderNovelSettingsPanelTarget,
+  novelOverride: ReaderSettingsOverride | undefined,
+  sourceOverride: ReaderSettingsOverride | undefined,
+): ReaderSettingsPanelTarget {
+  if (novelOverride?.enabled) return target;
+  if (target.sourceId && sourceOverride?.enabled) {
+    return {
+      kind: "source",
+      sourceId: target.sourceId,
+      label: target.sourceLabel ?? undefined,
+    };
+  }
+  return { kind: "global" };
 }
 
 const PDF_PAGE_FIT_OPTIONS: Array<{
@@ -146,15 +172,39 @@ export function ReaderSettingsPanel({
   inlineAutomation = false,
   target,
   novelId = null,
+  editEffectiveScope = false,
 }: ReaderSettingsPanelProps = {}) {
   const { t } = useTranslation();
   const legacyNovelId =
     typeof novelId === "number" && novelId > 0 ? novelId : null;
-  const resolvedTarget: ReaderSettingsPanelTarget =
+  const requestedTarget: ReaderSettingsPanelTarget =
     target ??
     (legacyNovelId
       ? { kind: "novel", novelId: legacyNovelId }
       : { kind: "global" });
+  const effectiveScopeTarget =
+    editEffectiveScope &&
+    requestedTarget.kind === "novel" &&
+    requestedTarget.novelId > 0
+      ? requestedTarget
+      : null;
+  const readerNovelOverride = useReaderStore((state) =>
+    effectiveScopeTarget
+      ? state.readerSettingsByNovel[effectiveScopeTarget.novelId]
+      : undefined,
+  );
+  const readerSourceOverride = useReaderStore((state) =>
+    effectiveScopeTarget?.sourceId
+      ? state.readerSettingsBySource[effectiveScopeTarget.sourceId]
+      : undefined,
+  );
+  const resolvedTarget = effectiveScopeTarget
+    ? getEffectiveReaderSettingsTarget(
+        effectiveScopeTarget,
+        readerNovelOverride,
+        readerSourceOverride,
+      )
+    : requestedTarget;
   const targetKind = resolvedTarget.kind;
   const scopedSourceId =
     targetKind === "source"
@@ -421,6 +471,16 @@ export function ReaderSettingsPanel({
     }
   }
 
+  function handleEffectiveScopeChange(scope: string): void {
+    if (!effectiveScopeTarget) return;
+    const { novelId: readerNovelId, sourceId: readerSourceId } =
+      effectiveScopeTarget;
+    setNovelReaderSettingsEnabled(readerNovelId, scope === "novel");
+    if (scope !== "novel" && readerSourceId && readerSourceOverride) {
+      setSourceReaderSettingsEnabled(readerSourceId, scope === "source");
+    }
+  }
+
   function handleApplyTapZonePreset(presetId: ReaderTapPresetId): void {
     const preset = READER_TAP_PRESETS.find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -517,24 +577,55 @@ export function ReaderSettingsPanel({
 
   return (
     <Stack gap="md">
-      <div
-        className="norea-reader-settings-scope-card"
-        data-enabled={targetSettingsEnabled}
-        data-scope={targetKind}
-      >
-        <div className="norea-reader-settings-scope-main">
-          <span className="norea-reader-settings-scope-title">
-            {scopeTitle}
-          </span>
-          <span className="norea-reader-settings-scope-description">
-            {scopeDescription}
+      {effectiveScopeTarget ? (
+        <SettingsFieldRow
+          label={t("readerSettings.scope.applyTo")}
+          description={scopeDescription}
+        >
+          <SegmentedToggle
+            aria-label={t("readerSettings.scope.applyTo")}
+            data={[
+              {
+                value: "novel",
+                label: t("readerSettings.scope.applyToNovel"),
+              },
+              ...(effectiveScopeTarget.sourceId && readerSourceOverride
+                ? [
+                    {
+                      value: "source",
+                      label: t("readerSettings.scope.applyToSource"),
+                    },
+                  ]
+                : []),
+              {
+                value: "global",
+                label: t("readerSettings.scope.applyToAll"),
+              },
+            ]}
+            value={targetKind}
+            onChange={handleEffectiveScopeChange}
+          />
+        </SettingsFieldRow>
+      ) : (
+        <div
+          className="norea-reader-settings-scope-card"
+          data-enabled={targetSettingsEnabled}
+          data-scope={targetKind}
+        >
+          <div className="norea-reader-settings-scope-main">
+            <span className="norea-reader-settings-scope-title">
+              {scopeTitle}
+            </span>
+            <span className="norea-reader-settings-scope-description">
+              {scopeDescription}
+            </span>
+          </div>
+          <span className="norea-reader-settings-scope-badge">
+            {scopeBadge}
           </span>
         </div>
-        <span className="norea-reader-settings-scope-badge">
-          {scopeBadge}
-        </span>
-      </div>
-      {targetKind !== "global" ? (
+      )}
+      {targetKind !== "global" && !effectiveScopeTarget ? (
         <SettingsSection title={t("readerSettings.scope.title")}>
           <SettingsFieldRow
             label={t(
