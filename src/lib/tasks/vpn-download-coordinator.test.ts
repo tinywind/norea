@@ -932,6 +932,21 @@ describe("VPN download coordinator", () => {
     expect(current(coordinator, "a").attemptedProfileIds).toEqual(["a", "b", "c"]);
   });
 
+  it("keeps user pauses and run holds through restore and interrupts only the ranges a restart stopped", async () => {
+    const runtime = new Runtime();
+    const value = plan([range("a", "a", [1]), range("b", "b", [2]), range("c", "c", [3]), range("d", "d", [4])]);
+    Object.assign(value.ranges[0]!, { phase: "running" });
+    Object.assign(value.ranges[1]!, { pauseReason: "user-paused", userPaused: true });
+    Object.assign(value.ranges[2]!, { pauseReason: "automatic-off" });
+    Object.assign(value.ranges[3]!, { pauseReason: "profile-in-use" });
+    runtime.seed(value);
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    await coordinator.restore();
+    expect(coordinator.getPlans()[0]!.ranges.map(item => [item.phase, item.pauseReason])).toEqual([
+      ["paused", "interrupted"], ["paused", "user-paused"], ["paused", "automatic-off"], ["paused", "interrupted"],
+    ]);
+  });
+
   it("owns internal cancellation before rejection and waits for A's source cleanup while B progresses", async () => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime);

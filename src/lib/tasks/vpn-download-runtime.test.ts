@@ -189,6 +189,11 @@ beforeEach(async () => {
     getItem: (key: string) => settings.get(key) ?? null, setItem: (key: string, value: string) => { settings.set(key, value); },
     removeItem: (key: string) => { settings.delete(key); }, clear: () => { settings.clear(); },
   });
+  const session = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => { session.set(key, value); },
+    removeItem: (key: string) => { session.delete(key); },
+  });
   vi.stubGlobal("window", new EventTarget());
   Object.assign(window, { localStorage });
   ({ useVpnDownloadStore } = await import("../../store/vpn-download"));
@@ -375,7 +380,83 @@ describe("automatic VPN run admission", () => {
     await runtime.cancelVpnDownloadRun();
   });
 
+  async function restartProcess() {
+    vi.resetModules(); boundary.listeners.clear();
+    vi.stubGlobal("window", new EventTarget());
+    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
+    ({ interceptChapterDownloadBatch } = await import("./chapter-download-batch-interceptor"));
+    return import("./vpn-download-runtime");
+  }
+
+  async function startTwoRanges(runtime: typeof import("./vpn-download-runtime")) {
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs, title: "Restarted work" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
+    return { plan, automatic: plan.ranges[0]!, manual: plan.ranges[1]! };
+  }
+
+  it("resumes the whole run after an ordinary restart while an individually paused range stays paused", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    const { plan, automatic, manual } = await startTwoRanges(runtime);
+    await runtime.pauseVpnDownloadRange(plan.id, manual.id);
+    const restored = await restartProcess();
+    await restored.initializeVpnDownloadRuntime();
+    try {
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      expect(boundary.enqueue.mock.calls[2]![0].id).toBe(8);
+      expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("running");
+      const ranges = restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges;
+      expect(ranges.find(range => range.id === automatic.id)).toMatchObject({ phase: "running", userPaused: false });
+      expect(ranges.find(range => range.id === manual.id)).toMatchObject({ phase: "paused", userPaused: true, pauseReason: "user-paused" });
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps a run paused by the user across a restart even when restart resume is on", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await startTwoRanges(runtime);
+    await runtime.pauseVpnDownloadRun();
+    const restored = await restartProcess();
+    await restored.initializeVpnDownloadRuntime(); await tick();
+    try {
+      expect(boundary.enqueue).toHaveBeenCalledTimes(2);
+      expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("interrupted");
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.pauseReason === "automatic-off")).toBe(true);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("waits for one run-level Resume after a restart when restart resume is off", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    const { automatic } = await startTwoRanges(runtime);
+    useVpnDownloadStore.getState().setResumeAfterRestart(false);
+    const restored = await restartProcess();
+    await restored.initializeVpnDownloadRuntime(); await tick();
+    try {
+      expect(boundary.enqueue).toHaveBeenCalledTimes(2);
+      expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("interrupted");
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.find(range => range.id === automatic.id)).toMatchObject({ phase: "paused", pauseReason: "interrupted" });
+      await restored.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(4));
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("never resumes restored plans automatically after a device restore reload", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await startTwoRanges(runtime);
+    await runtime.suspendVpnDownloadsForRestore();
+    for (const plan of boundary.plans.values()) for (const range of plan.ranges) Object.assign(range, { phase: "running", pauseReason: null });
+    const connections = boundary.connect.mock.calls.length;
+    const restored = await restartProcess();
+    await restored.initializeVpnDownloadRuntime(); await tick();
+    try {
+      expect(boundary.connect).toHaveBeenCalledTimes(connections);
+      expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("interrupted");
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.pauseReason === "interrupted")).toBe(true);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
   it("restores pending ownership as interrupted and requires explicit resume before connecting", async () => {
+    useVpnDownloadStore.getState().setResumeAfterRestart(false);
     boundary.pendingJobs.set(8, { ...jobs[0]!, vpnBatchId: "retained-run" });
     const runtime = await import("./vpn-download-runtime");
     await runtime.initializeVpnDownloadRuntime(); await tick();

@@ -1,7 +1,8 @@
-import { NumberInput, Select, Stack } from "@mantine/core";
+import { NumberInput, Select, Stack, Switch } from "@mantine/core";
 import { useTranslation } from "../i18n";
 import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import { MAX_VPN_DOWNLOAD_WORKERS, type VpnDownloadLaunchOptions } from "../lib/tasks/vpn-download-types";
+import { useVpnDownloadStore } from "../store/vpn-download";
 import { SettingsFieldRow } from "./SettingsPrimitives";
 
 export function VpnDownloadSettings({ capabilities, value, onChange, disabled = false }: {
@@ -11,6 +12,8 @@ export function VpnDownloadSettings({ capabilities, value, onChange, disabled = 
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
+  const resumeAfterRestart = useVpnDownloadStore(state => state.resumeAfterRestart);
+  const setResumeAfterRestart = useVpnDownloadStore(state => state.setResumeAfterRestart);
   const maxWorkers = capabilities.parallelSupported ? Math.max(1, Math.min(MAX_VPN_DOWNLOAD_WORKERS, capabilities.maxWorkers)) : 1;
   const unavailable = disabled || !capabilities.supported;
   const policyOptions = [{ value: "nextProfile", label: t("vpnDownload.policy.nextProfile") }, { value: "pause", label: t("vpnDownload.policy.pause") }];
@@ -32,6 +35,9 @@ export function VpnDownloadSettings({ capabilities, value, onChange, disabled = 
         <Select aria-label={t("vpnDownload.cloudflarePolicy")} value={value.cloudflarePolicy} data={policyOptions} allowDeselect={false} disabled={unavailable}
           onChange={policy => { if (!unavailable && (policy === "pause" || policy === "nextProfile")) onChange({ ...value, cloudflarePolicy: policy }); }} />
       </SettingsFieldRow>
+      <Switch aria-label={t("vpnDownload.resumeAfterRestart")} checked={resumeAfterRestart} disabled={unavailable}
+        label={t("vpnDownload.resumeAfterRestart")} description={t("vpnDownload.resumeAfterRestartHint")} labelPosition="left"
+        onChange={event => { if (!unavailable) setResumeAfterRestart(event.currentTarget.checked); }} />
     </Stack>
   );
 }

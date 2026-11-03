@@ -170,6 +170,8 @@ export class VpnDownloadCoordinator {
             this.pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
             continue;
           }
+          // User pauses and run holds (run Pause, VPN off, device-restore suspension) survive the restart unchanged.
+          if (range.phase === "paused" && (range.userPaused || range.pauseReason === "automatic-off")) continue;
           changed ||= range.phase !== "paused" || range.pauseReason !== "interrupted";
           range.phase = "paused";
           range.pauseReason = "interrupted";

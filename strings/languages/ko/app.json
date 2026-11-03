@@ -64,6 +64,8 @@
   "vpnDownload.offHint": "사용 안 함으로 바꾸면 진행 중인 자동 VPN 작업을 일시 정지합니다. 저장된 챕터 배정은 유지됩니다.",
   "vpnDownload.workerCount": "동시 VPN 연결 수",
   "vpnDownload.workerCountHint": "1~10개 중 선택하세요. 전체 대기 작품에 필요한 만큼 사용 가능한 프로필을 배정합니다.",
+  "vpnDownload.resumeAfterRestart": "재시작 후 VPN 다운로드 이어서 받기",
+  "vpnDownload.resumeAfterRestartHint": "앱을 다시 시작하면 끝나지 않은 VPN 다운로드를 이어서 받습니다. 직접 일시 정지한 다운로드와 기기 복원으로 멈춘 다운로드는 일시 정지 상태로 남습니다.",
   "vpnDownload.captchaPolicy": "CAPTCHA 발생 시",
   "vpnDownload.cloudflarePolicy": "Cloudflare 보호 감지 시",
   "vpnDownload.policy.pause": "일시 정지",

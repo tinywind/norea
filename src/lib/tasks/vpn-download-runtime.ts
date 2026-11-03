@@ -27,7 +27,7 @@ import type { TaskHandle } from "./task-types";
 import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "./vpn-download-drafts";
 import { planVpnDownloadRanges, type VpnDownloadRangeAssignment } from "./vpn-download-ranges";
-import type { VpnDownloadLaunchOptions, VpnDownloadPlan, VpnDownloadRunSnapshot, VpnDownloadWorkerRef } from "./vpn-download-types";
+import type { VpnDownloadLaunchOptions, VpnDownloadPlan, VpnDownloadRangeState, VpnDownloadRunSnapshot, VpnDownloadWorkerRef } from "./vpn-download-types";
 import { MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
 import { registerVpnDownloadWorkerContext, vpnDownloadExecutor } from "./vpn-worker-context";
 
@@ -279,6 +279,7 @@ function capabilities(): VpnDownloadRuntimeSnapshot["capabilities"] {
 
 export function initializeVpnDownloadRuntime(): Promise<void> {
   initialization ??= (async () => {
+    const afterDeviceRestore = takeDeviceRestoreMarker();
     publish({ capabilities: capabilities() });
     const settings = useVpnDownloadStore.getState();
     coordinator.setWorkerLimit(settings.mode === "single" ? 1 : Math.min(settings.workerCount, snapshot.capabilities.maxWorkers || MAX_VPN_DOWNLOAD_WORKERS));
@@ -301,6 +302,7 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
         options: { workerCount: settings.workerCount, captchaPolicy: settings.captchaPolicy, cloudflarePolicy: settings.cloudflarePolicy },
         status: "interrupted", originalPlanIds: new Set(coordinator.getPlans().map(plan => plan.id)), transfers: new Set(), receivedWork: true, resumeRangeIds: new Set(), waitingHandover: new Map() };
     }
+    const resumeAfterRestart = activeRun?.status === "interrupted" && !afterDeviceRestore && resumesAfterRestart(pending.map(({ job }) => job));
     const labels: Record<string, Record<number, string>> = {};
     for (const plan of coordinator.getPlans()) {
       const catalog = await listChaptersByNovel(plan.novelId);
@@ -355,6 +357,11 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
       const plan = coordinator.getPlans().find(plan => plan.pluginId === session.sourceId && plan.ranges.some(range => range.id === session.worker.rangeId && range.generation === session.worker.generation && range.pauseReason === "manual-verification"));
       if (plan) void coordinator.finishVerification(plan.id, session.worker.rangeId, { resume: true }).catch(report);
     });
+    const run = activeRun;
+    if (resumeAfterRestart && run) queueMicrotask(() => {
+      if (activeRun !== run || run.status !== "interrupted" || deviceRestore) return;
+      void launchVpnDownloadRun(run.options, range => !range.userPaused && range.pauseReason === "interrupted").catch(() => undefined);
+    });
   })().catch(error => { publish({ loading: false, error: describeError(error) }); throw error; });
   return initialization;
 }
@@ -362,6 +369,32 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
 export function getVpnDownloadRuntimeSnapshot(): VpnDownloadRuntimeSnapshot { return snapshot; }
 export function subscribeVpnDownloadRuntime(listener: () => void): () => void {
   listeners.add(listener); return () => { listeners.delete(listener); };
+}
+
+const DEVICE_RESTORE_MARKER = "norea.vpnDownloads.deviceRestore";
+
+function setDeviceRestoreMarker(present: boolean): void {
+  try {
+    if (present) sessionStorage.setItem(DEVICE_RESTORE_MARKER, "1");
+    else sessionStorage.removeItem(DEVICE_RESTORE_MARKER);
+  } catch { /* Without session storage a restored database still pauses as interrupted. */ }
+}
+
+function takeDeviceRestoreMarker(): boolean {
+  try {
+    const present = sessionStorage.getItem(DEVICE_RESTORE_MARKER) !== null;
+    sessionStorage.removeItem(DEVICE_RESTORE_MARKER);
+    return present;
+  } catch { return false; }
+}
+
+/** An ordinary restart resumes the run unless the user turned that off or a run hold (run Pause, VPN off) was in place. */
+function resumesAfterRestart(pending: readonly ChapterDownloadJob[]): boolean {
+  const settings = useVpnDownloadStore.getState();
+  if (!settings.resumeAfterRestart || settings.mode === "off" || !snapshot.capabilities.supported) return false;
+  const ranges = coordinator.getPlans().flatMap(plan => plan.ranges).filter(range => range.phase !== "completed" && range.phase !== "cancelled" && !range.userPaused);
+  if (ranges.some(range => range.pauseReason === "automatic-off")) return false;
+  return ranges.some(range => range.pauseReason === "interrupted") || pending.some(job => !job.vpnWorkPaused);
 }
 
 function requireNoDeviceRestore(): void {
@@ -385,9 +418,10 @@ export async function suspendVpnDownloadsForRestore(): Promise<() => void> {
   const run = activeRun;
   if (run && ["starting", "running"].includes(run.status)) holdRunAdmission(run);
   publish();
-  const release = () => { if (deviceRestore === hold) deviceRestore = undefined; };
+  const release = () => { if (deviceRestore === hold) { deviceRestore = undefined; setDeviceRestoreMarker(false); } };
   try {
     await initializeVpnDownloadRuntime();
+    setDeviceRestoreMarker(true);
     await coordinator.stopForRestore();
     await run?.handoverReady;
     await Promise.all(run?.transfers ?? []);
@@ -409,7 +443,11 @@ function canAdmitRunWork(run: ActiveRun): boolean {
   return activeRun === run && !deviceRestore && ["starting", "running", "paused"].includes(run.status);
 }
 
-export async function startVpnDownloadRun(options: VpnDownloadLaunchOptions): Promise<void> {
+export function startVpnDownloadRun(options: VpnDownloadLaunchOptions): Promise<void> {
+  return launchVpnDownloadRun(options, range => !range.userPaused);
+}
+
+async function launchVpnDownloadRun(options: VpnDownloadLaunchOptions, shouldResume: (range: VpnDownloadRangeState) => boolean): Promise<void> {
   validateLaunchOptions(options);
   requireNoDeviceRestore();
   if (activeRun && (["starting", "running", "cancelling"].includes(activeRun.status) ||
@@ -465,7 +503,7 @@ export async function startVpnDownloadRun(options: VpnDownloadLaunchOptions): Pr
       for (const plan of coordinator.getPlans()) {
         for (const range of plan.ranges) {
           if (!current()) return;
-          if (range.phase === "paused" && !range.userPaused) await coordinator.resumeRange(plan.id, range.id);
+          if (range.phase === "paused" && shouldResume(range)) await coordinator.resumeRange(plan.id, range.id);
         }
       }
     })();

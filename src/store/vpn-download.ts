@@ -9,6 +9,7 @@ interface VpnDownloadSettings {
   workerCount: number;
   captchaPolicy: VpnDownloadChallengePolicy;
   cloudflarePolicy: VpnDownloadChallengePolicy;
+  resumeAfterRestart: boolean;
 }
 
 interface VpnDownloadStore extends VpnDownloadSettings {
@@ -16,6 +17,7 @@ interface VpnDownloadStore extends VpnDownloadSettings {
   setWorkerCount: (count: number) => void;
   setCaptchaPolicy: (policy: VpnDownloadChallengePolicy) => void;
   setCloudflarePolicy: (policy: VpnDownloadChallengePolicy) => void;
+  setResumeAfterRestart: (resume: boolean) => void;
 }
 
 export function normalizeVpnDownloadSettings(value: unknown): VpnDownloadSettings {
@@ -27,6 +29,7 @@ export function normalizeVpnDownloadSettings(value: unknown): VpnDownloadSetting
       : Math.max(1, Math.min(3, useBrowseStore.getState().sourceWorkConcurrency)),
     captchaPolicy: stored.captchaPolicy === "pause" ? "pause" : "nextProfile",
     cloudflarePolicy: stored.cloudflarePolicy === "pause" ? "pause" : "nextProfile",
+    resumeAfterRestart: stored.resumeAfterRestart !== false,
   };
 }
 
@@ -37,10 +40,11 @@ export const useVpnDownloadStore = create<VpnDownloadStore>()(persist(
     setWorkerCount: (workerCount) => set({ workerCount: normalizeVpnDownloadSettings({ workerCount }).workerCount }),
     setCaptchaPolicy: (captchaPolicy) => set({ captchaPolicy }),
     setCloudflarePolicy: (cloudflarePolicy) => set({ cloudflarePolicy }),
+    setResumeAfterRestart: (resumeAfterRestart) => set({ resumeAfterRestart }),
   }),
   {
     name: "vpn-download-settings",
-    partialize: ({ mode, workerCount, captchaPolicy, cloudflarePolicy }) => ({ mode, workerCount, captchaPolicy, cloudflarePolicy }),
+    partialize: ({ mode, workerCount, captchaPolicy, cloudflarePolicy, resumeAfterRestart }) => ({ mode, workerCount, captchaPolicy, cloudflarePolicy, resumeAfterRestart }),
     merge: (persisted, current) => ({ ...current, ...normalizeVpnDownloadSettings(persisted) }),
   },
 ));

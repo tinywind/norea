@@ -3,9 +3,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { VpnDownloadLaunchOptions } from "../lib/tasks/vpn-download-types";
 
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+const store = vi.hoisted(() => ({ resumeAfterRestart: true, setResumeAfterRestart: vi.fn() }));
 vi.mock("../store/vpn-download", () => ({ useVpnDownloadStore: (select: (value: unknown) => unknown) => select({
   mode: "parallel", workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile",
-  setMode: vi.fn(), setWorkerCount: vi.fn(), setCaptchaPolicy: vi.fn(), setCloudflarePolicy: vi.fn(),
+  setMode: vi.fn(), setWorkerCount: vi.fn(), setCaptchaPolicy: vi.fn(), setCloudflarePolicy: vi.fn(), ...store,
 }) }));
 import { VpnDownloadSettings } from "./VpnDownloadSettings";
 
@@ -16,6 +17,7 @@ interface Props {
   disabled?: boolean;
   min?: number;
   max?: number;
+  checked?: boolean;
   onChange?: (value: string | number | null) => void;
 }
 function controls(node: ReactNode): ReactElement<Props>[] {
@@ -58,10 +60,19 @@ it.each([0, 11, 1.5, "", null])("does not submit an invalid worker count %s", co
 it("limits a single-worker device and guards callbacks while submission is pending", () => {
   expect(get(render({ supported: true, parallelSupported: false, maxWorkers: 1 }), "vpnDownload.workerCount").props.max).toBe(1);
   const view = render(capabilities, true);
-  for (const key of ["vpnDownload.workerCount", "vpnDownload.captchaPolicy", "vpnDownload.cloudflarePolicy"]) {
+  for (const key of ["vpnDownload.workerCount", "vpnDownload.captchaPolicy", "vpnDownload.cloudflarePolicy", "vpnDownload.resumeAfterRestart"]) {
     expect(get(view, key).props.disabled).toBe(true);
   }
   get(view, "vpnDownload.workerCount").props.onChange!(3);
   get(view, "vpnDownload.captchaPolicy").props.onChange!("pause");
+  expect(change).not.toHaveBeenCalled();
+});
+
+it("stores the restart resume choice directly instead of in the unsubmitted launch options", () => {
+  const toggle = get(render(), "vpnDownload.resumeAfterRestart");
+  expect(toggle.props.checked).toBe(true);
+  const onToggle = toggle.props.onChange as unknown as (event: { currentTarget: { checked: boolean } }) => void;
+  onToggle({ currentTarget: { checked: false } });
+  expect(store.setResumeAfterRestart).toHaveBeenCalledWith(false);
   expect(change).not.toHaveBeenCalled();
 });
