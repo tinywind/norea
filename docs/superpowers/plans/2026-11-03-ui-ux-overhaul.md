@@ -368,58 +368,59 @@ Mobile uses a category list, then a detail screen with back, replacing the 50%-w
 
 Each item is one `fix(...)` commit with a regression test, using existing components (`StateView` already accepts `action`, `src/components/AppFrame.tsx:173`; `usePageBackNavigation`; Mantine `Modal`).
 
-- [ ] **0.1 Device name typing.**
+- [x] **0.1 Device name typing.**
   - Problem: `setDeviceName` trims on every keystroke (`src/store/content-sync.ts:39`). So a trailing space is removed as it is typed, and a space between words cannot be entered from the keyboard. Clearing the field shows the default name again (`src/components/ContentServerSettings.tsx:82-83`).
   - Fix: keep a local draft and trim on save or blur.
   - Test: typing "My Phone" character by character keeps the space.
-- [ ] **0.2 Settings section re-entry.**
+- [x] **0.2 Settings section re-entry.**
   - Problem: after a local selection (`src/routes/settings.tsx:2115-2117`), navigating again with the same `section` value does not switch back, because the effect at `:1826-1828` only reacts to changes, and the page stays mounted (`src/routes/__root.tsx:641`).
   - Fix: write `section` to the route on select.
   - Test: open `?section=reader`, select Library, then trigger "open settings" from the reader. Reader shows.
-- [ ] **0.3 Phone reachability.**
+- [x] **0.3 Phone reachability.**
   - Problem: `.norea-library-icon-button { display: none }` below 768px (`src/styles/library.css:1281-1283`) hides "Open local files" and Library settings (`src/routes/library.tsx:424,452`).
   - Fix: show both on phones until 4.2 replaces the header.
-- [ ] **0.4 Reader stuck on failed download or offline.**
+- [x] **0.4 Reader stuck on failed download or offline.**
   - Problem: the failure is swallowed (`src/components/reader/use-reader-chapter-navigation.ts:191-192`), and `readerBusy` stays true (`src/routes/reader.tsx:177-181`).
   - Fix: record the terminal failure and render `StateView` with a Retry `action` instead of the blocking overlay.
   - Test: a rejected download yields Retry and `readerBusy === false`.
-- [ ] **0.5 Reader settings sheet opens locked.**
+- [x] **0.5 Reader settings sheet opens locked.**
   - Problem: the sheet targets `kind: "novel"` (`src/components/reader/ReaderChrome.tsx:185-194`), and disabled novel overrides lock the panel (`src/components/ReaderSettingsPanel.tsx:215`).
   - Fix: edit the effective scope directly. Show an inline "This novel / All novels" switch. Turning on "This novel" copies the effective values, so source inheritance is preserved.
   - Test: on first open, changing text size changes the rendered size.
-- [ ] **0.6 Reset scope.**
+- [x] **0.6 Reset scope.**
   - Problem 1: the global reader Reset clears every per-novel and per-source override (`src/store/reader.ts:1299-1307`, triggered at `ReaderSettingsPanel.tsx:840`) with no confirmation.
   - Problem 2: "Appearance defaults" also resets the language (`src/store/appearance.ts:124`).
   - Fix: confirm through a Mantine `Modal` that states the scope, and keep overrides by default. Exclude `appLocale` from the appearance reset.
-- [ ] **0.7 History search clear.**
+- [x] **0.7 History search clear.**
   - Problem: the clear button empties the input only (`src/components/SearchBar.tsx:53`), while the applied query changes only on submit (`src/routes/history.tsx:865`).
   - Fix: clearing also clears the applied query.
-- [ ] **0.8 Android back precedence.**
+- [x] **0.8 Android back precedence.**
   - Problems:
     - the novel category drawer is shadowed by the page handler (`NovelCategoryEditor.tsx:65` vs `novel.tsx:320-337`)
     - the novel reader-settings drawer (`novel.tsx:699`) and the local metadata modal (`use-local-novel-editor.tsx:227`) have no handler
     - the library import modal (`LibraryLocalImport.tsx:247`), the category dialogs (`LibraryCategoryDialogs.tsx:103,153`) and library selection have no handler
   - Fix: overlays register their handler only while open, so they are on top of the stack (`src/lib/android-back-navigation.ts:34-37`, last registered first). Page handlers must return false while a child overlay is open.
   - Test: one test per overlay asserts that Back closes the overlay and does not leave the page.
-- [ ] **0.9 Novel sync errors.**
+- [x] **0.9 Novel sync errors.**
   - Problem: the `useServerNovelSync` result is ignored (`src/routes/novel.tsx:124`), though the hook keeps its error (`use-server-novel-sync.ts:14`).
-  - Fix: show a non-blocking inline notice with a Retry that re-runs the sync.
-- [ ] **0.10 Per-row pending state.**
+  - Fix: a non-blocking notice with Retry, **only for actionable source-refresh failures**. Automatic content-server lookup failures stay off normal pages, as `docs/content-sync.md` requires and commit `11a38a4` decided. Offline and verification failures are left to the task queue and its notifications.
+
+- [x] **0.10 Per-row pending state.**
   - Problem: install and uninstall share one pending boolean across rows (`src/routes/browse.tsx:752,777,1446,1583,1694`).
   - Fix: key it by operation and plugin id.
-- [ ] **0.11 Wrong targets.**
+- [x] **0.11 Wrong targets.**
   - Continue reading: today it is disabled without history and reopens the last chapter (`src/components/novel/NovelWorkspace.tsx:402,404`).
     - Fix: if the last-read chapter is unfinished, resume it. If it is finished, open the next chapter. With no history, open the first unread chapter.
   - Global search per-row Retry retries every failed source (`src/routes/global-search.tsx:1108,1237`).
     - Fix: add a source-scoped retry.
-- [ ] **0.12 Misleading UI.**
+- [x] **0.12 Misleading UI.**
   - Remove the Ctrl K hint (`LibraryFilters.tsx:202`), the arrow-key footer (`LibraryCategories.tsx:126`, `library.footer.shortcuts`), and "or jump" in `library.search.placeholder`. No handlers exist for any of them.
   - Show the novel name in place of `reader.novelMeta` "Novel {id}" (`ReaderChrome.tsx:48`).
   - Make the Tasks header and pill counts use the same filtered set as the list (`tasks.tsx:1103,1132,1229`).
-- [ ] **0.13 Actionable notifications.**
+- [x] **0.13 Actionable notifications.**
   - Problem: source-verification and VPN-action toasts auto-close after 5s (`src/components/TaskNotifications.tsx:175,248`).
   - Fix: actionable interruptions persist until resolved or dismissed. Informational notices keep auto-close. The action button uses a normal size, not `compact-xs`.
-- [ ] **0.14 Task row geometry.**
+- [x] **0.14 Task row geometry.**
   - Problem: `TASK_ROW_HEIGHT = 64` (`src/routes/tasks.tsx:54,734`) does not match `4rem` (`src/styles/tasks.css:385`) when the UI scale is not 100%.
   - Fix: derive the height from the root font size, as `NovelChapterList.tsx:494` does.
 
