@@ -69,7 +69,7 @@ export function startAndroidTaskNotifications(
     const ranges = vpnDownloadNotifications(plans, t, run?.status);
     const vpnActive = hasActiveVpnDownloads(plans);
     const quiet = mode !== "progress";
-    const completions = mode === "off" ? [] : completed.map(({ key, title, body }) => ({ key, title, body }));
+    const completions = mode === "off" ? [] : completed.map(({ action, key, title, body }) => ({ action, key, title, body }));
     const payload = {
       title: t("tasks.notification.title"), quiet,
       channels: {

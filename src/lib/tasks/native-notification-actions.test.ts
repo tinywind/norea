@@ -35,3 +35,18 @@ describe("VPN notification action validation", () => {
     expect(parseTaskNotificationAction({ ...sourceAction, scopeKey: "a".repeat(2049) })).toBeNull();
   });
 });
+
+describe("notification target actions", () => {
+  it("keeps only the typed target identity", () => {
+    expect(parseTaskNotificationAction({ type: "openUpdates", url: "https://untrusted.test" })).toEqual({ type: "openUpdates" });
+    expect(parseTaskNotificationAction({ type: "openNovel", novelId: 3, path: "/x" })).toEqual({ type: "openNovel", novelId: 3 });
+    expect(parseTaskNotificationAction({ type: "openChapter", novelId: 3, chapterId: 9 }))
+      .toEqual({ type: "openChapter", novelId: 3, chapterId: 9 });
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "3", null, undefined])("rejects the row id %s", id => {
+    expect(parseTaskNotificationAction({ type: "openNovel", novelId: id })).toBeNull();
+    expect(parseTaskNotificationAction({ type: "openChapter", novelId: 3, chapterId: id })).toBeNull();
+    expect(parseTaskNotificationAction({ type: "openChapter", novelId: id, chapterId: 9 })).toBeNull();
+  });
+});

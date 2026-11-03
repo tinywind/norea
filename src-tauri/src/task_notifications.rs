@@ -51,11 +51,33 @@ struct TaskNotificationChallenge {
     action_label: String,
 }
 
+/// Where tapping a result opens; each target is a fixed `norea://` path.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum TaskNotificationCompletionAction {
+    #[default]
+    OpenTasks,
+    OpenUpdates,
+    OpenNovel {
+        novel_id: u64,
+    },
+    OpenChapter {
+        novel_id: u64,
+        chapter_id: u64,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 struct TaskNotificationCompletion {
     key: TaskNotificationGroupKey,
     title: String,
     body: String,
+    #[serde(default)]
+    action: TaskNotificationCompletionAction,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +117,14 @@ mod model {
     )]
     pub(super) enum TaskNotificationAction {
         OpenTasks,
+        OpenUpdates,
+        OpenNovel {
+            novel_id: u64,
+        },
+        OpenChapter {
+            novel_id: u64,
+            chapter_id: u64,
+        },
         Pause {
             group_key: TaskNotificationGroupKey,
         },
@@ -207,6 +237,31 @@ mod model {
         }
     }
 
+    const MAX_SAFE_ROW_ID: u64 = 9_007_199_254_740_991;
+
+    fn completion_body_action(
+        action: TaskNotificationCompletionAction,
+    ) -> Result<TaskNotificationAction, String> {
+        let valid = |id: u64| (1..=MAX_SAFE_ROW_ID).contains(&id);
+        match action {
+            TaskNotificationCompletionAction::OpenTasks => Ok(TaskNotificationAction::OpenTasks),
+            TaskNotificationCompletionAction::OpenUpdates => {
+                Ok(TaskNotificationAction::OpenUpdates)
+            }
+            TaskNotificationCompletionAction::OpenNovel { novel_id } if valid(novel_id) => {
+                Ok(TaskNotificationAction::OpenNovel { novel_id })
+            }
+            TaskNotificationCompletionAction::OpenChapter {
+                novel_id,
+                chapter_id,
+            } if valid(novel_id) && valid(chapter_id) => Ok(TaskNotificationAction::OpenChapter {
+                novel_id,
+                chapter_id,
+            }),
+            _ => Err("Task result notification has an invalid target".into()),
+        }
+    }
+
     pub(super) fn desired_cards(
         payload: TaskNotificationPayload,
     ) -> Result<Vec<NotificationCard>, String> {
@@ -221,24 +276,21 @@ mod model {
             }
             cards.push(challenge_card(challenge));
         }
-        cards.extend(
-            payload
-                .completions
-                .into_iter()
-                .map(|result| NotificationCard {
-                    identity: NotificationIdentity {
-                        group: COMPLETION_NOTIFICATION_GROUP.into(),
-                        tag: result.key.as_str().into(),
-                    },
-                    kind: NotificationKind::Completion,
-                    title: result.title,
-                    body: result.body,
-                    progress: None,
+        for result in payload.completions {
+            cards.push(NotificationCard {
+                identity: NotificationIdentity {
+                    group: COMPLETION_NOTIFICATION_GROUP.into(),
+                    tag: result.key.as_str().into(),
+                },
+                kind: NotificationKind::Completion,
+                title: result.title,
+                body: result.body,
+                progress: None,
 
-                    body_action: TaskNotificationAction::OpenTasks,
-                    button: None,
-                }),
-        );
+                body_action: completion_body_action(result.action)?,
+                button: None,
+            });
+        }
         let mut identities = HashSet::new();
         if cards
             .iter()
@@ -274,6 +326,14 @@ mod model {
     ) -> Option<String> {
         match action {
             TaskNotificationAction::OpenTasks => Some("norea://tasks".into()),
+            TaskNotificationAction::OpenUpdates => Some("norea://updates".into()),
+            TaskNotificationAction::OpenNovel { novel_id } => {
+                Some(format!("norea://novel/{novel_id}"))
+            }
+            TaskNotificationAction::OpenChapter {
+                novel_id,
+                chapter_id,
+            } => Some(format!("norea://novel/{novel_id}/chapter/{chapter_id}")),
             TaskNotificationAction::VerifySource {
                 source_id,
                 scope_key,
@@ -773,6 +833,48 @@ mod tests {
             notification_update_kind(Some(&card), &card),
             NotificationUpdateKind::Replace
         );
+    }
+
+    fn completion_card(action: serde_json::Value) -> Result<NotificationCard, String> {
+        let payload: TaskNotificationPayload = serde_json::from_value(serde_json::json!({
+            "groups": [], "challenges": [],
+            "completions": [{"key":"downloads", "title":"Completed", "body":"2 chapters", "action": action}]
+        }))
+        .map_err(|error| error.to_string())?;
+        desired_cards(payload).map(|mut cards| cards.pop().unwrap())
+    }
+
+    #[test]
+    fn result_targets_open_fixed_protocol_paths() {
+        for (action, launch) in [
+            (serde_json::json!({"type":"openTasks"}), "norea://tasks"),
+            (serde_json::json!({"type":"openUpdates"}), "norea://updates"),
+            (
+                serde_json::json!({"type":"openNovel", "novelId": 3, "url": "https://untrusted.example/"}),
+                "norea://novel/3",
+            ),
+            (
+                serde_json::json!({"type":"openChapter", "novelId": 3, "chapterId": 9}),
+                "norea://novel/3/chapter/9",
+            ),
+        ] {
+            let xml = toast_xml(&completion_card(action).unwrap());
+            assert!(xml.contains(&format!("activationType=\"protocol\" launch=\"{launch}\"")));
+        }
+    }
+
+    #[test]
+    fn result_targets_reject_unknown_types_and_out_of_range_ids() {
+        for action in [
+            serde_json::json!({"type":"verifySource", "sourceId":"a", "scopeKey":"b", "revision":1}),
+            serde_json::json!({"type":"openNovel", "novelId": 0}),
+            serde_json::json!({"type":"openNovel", "novelId": -1}),
+            serde_json::json!({"type":"openNovel", "novelId": 9_007_199_254_740_992_u64}),
+            serde_json::json!({"type":"openChapter", "novelId": 3}),
+            serde_json::json!({"type":"openChapter", "novelId": 3, "chapterId": 0}),
+        ] {
+            assert!(completion_card(action).is_err());
+        }
     }
 
     #[test]

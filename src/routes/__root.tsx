@@ -29,7 +29,10 @@ import { startAndroidFileOpenListener } from "../lib/android-file-open";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
 import { useTaskAttentionCount } from "../lib/tasks/hooks";
-import { applyTaskNotificationAction } from "../lib/tasks/task-notification-actions";
+import {
+  applyTaskNotificationAction,
+  navigateToTaskNotificationDestination,
+} from "../lib/tasks/task-notification-actions";
 import {
   getAppNavigationHistoryIndex,
   recordAppNavigationEntry,
@@ -383,7 +386,7 @@ export function RootLayout() {
         if (disposed) return;
         void applyTaskNotificationAction(
           action,
-          () => navigate({ to: "/downloads", search: { view: "queue" } }),
+          (destination) => navigateToTaskNotificationDestination(navigate, destination),
           notificationTranslateRef.current,
         ).catch(error => console.warn("[task-notifications] deep-link action failed", error));
       },

@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceAccessBlock, TaskRecord } from "./scheduler";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "./vpn-download-types";
 const mocks=vi.hoisted(()=>({pauseTaskGroup:vi.fn(),resumeTaskGroup:vi.fn(),getSnapshot:vi.fn(),open:vi.fn(),restored:vi.fn(),canBeginSourceAccessVerification:vi.fn(),waitForSourceTaskSettlement:vi.fn()}));
@@ -9,7 +9,7 @@ const vpn = vi.hoisted(() => ({ getSnapshot: vi.fn(), initialize: vi.fn(), open:
 vi.mock("./vpn-download-runtime", () => ({
   getVpnDownloadRuntimeSnapshot: vpn.getSnapshot, initializeVpnDownloadRuntime: vpn.initialize, openVpnDownloadVerification: vpn.open,
 }));
-import { applyTaskNotificationAction } from "./task-notification-actions";
+import { applyTaskNotificationAction, resolveTaskNotificationDestination, type TaskNotificationTargetLookup } from "./task-notification-actions";
 const t=((key:string)=>key) as Parameters<typeof applyTaskNotificationAction>[2];
 const block: SourceAccessBlock={sourceId:"source-a",scopeKey:"plugin:source-a:site:source.test",revision:2,detectedAt:1,verificationRequested:false,challenge:{kind:"captcha",url:"https://source.test/trusted-chapter"}};
 beforeEach(()=>{vi.clearAllMocks();mocks.restored.mockResolvedValue(undefined);mocks.canBeginSourceAccessVerification.mockReturnValue(true);mocks.waitForSourceTaskSettlement.mockResolvedValue(undefined);mocks.getSnapshot.mockReturnValue({records:[],sourceAccessBlocks:[block]});mocks.open.mockResolvedValue(true);vpn.initialize.mockResolvedValue(undefined);vpn.open.mockResolvedValue(undefined);});
@@ -148,4 +148,45 @@ it("rechecks a rotated owner after restoration and lets a newer task tap cancel 
  await applyTaskNotificationAction({type:"openTasks"},vi.fn(),t);
  restore();await pending;
  expect(vpn.open).not.toHaveBeenCalled();
+});
+
+describe("notification targets", () => {
+  const lookup = (novels: number[], chapters: Record<number, number>): TaskNotificationTargetLookup => ({
+    chapterNovelId: async (chapterId) => chapters[chapterId] ?? null,
+    novelExists: async (novelId) => novels.includes(novelId),
+  });
+
+  it("opens Updates, a present novel and a present chapter of that novel", async () => {
+    const data = lookup([3], { 9: 3 });
+    expect(await resolveTaskNotificationDestination({ type: "openUpdates" }, data)).toEqual({ kind: "updates" });
+    expect(await resolveTaskNotificationDestination({ type: "openNovel", novelId: 3 }, data)).toEqual({ kind: "novel", novelId: 3 });
+    expect(await resolveTaskNotificationDestination({ type: "openChapter", novelId: 3, chapterId: 9 }, data))
+      .toEqual({ kind: "chapter", chapterId: 9 });
+  });
+
+  it("falls back from a stale chapter to its novel and from a stale novel to the queue", async () => {
+    expect(await resolveTaskNotificationDestination({ type: "openChapter", novelId: 3, chapterId: 9 }, lookup([3], {})))
+      .toEqual({ kind: "novel", novelId: 3 });
+    expect(await resolveTaskNotificationDestination({ type: "openChapter", novelId: 3, chapterId: 9 }, lookup([3], { 9: 4 })))
+      .toEqual({ kind: "novel", novelId: 3 });
+    expect(await resolveTaskNotificationDestination({ type: "openChapter", novelId: 3, chapterId: 9 }, lookup([], {})))
+      .toEqual({ kind: "queue" });
+    expect(await resolveTaskNotificationDestination({ type: "openNovel", novelId: 3 }, lookup([], {}))).toEqual({ kind: "queue" });
+    const broken: TaskNotificationTargetLookup = { chapterNovelId: async () => { throw new Error("locked"); }, novelExists: async () => true };
+    expect(await resolveTaskNotificationDestination({ type: "openChapter", novelId: 3, chapterId: 9 }, broken)).toEqual({ kind: "queue" });
+  });
+
+  it("opens the resolved target once and only for the latest tap", async () => {
+    const open = vi.fn();
+    let release!: () => void;
+    const slow: TaskNotificationTargetLookup = {
+      chapterNovelId: () => new Promise((resolve) => { release = () => resolve(3); }),
+      novelExists: async () => true,
+    };
+    const older = applyTaskNotificationAction({ type: "openChapter", novelId: 3, chapterId: 9 }, open, t, slow);
+    await applyTaskNotificationAction({ type: "openNovel", novelId: 3 }, open, t, lookup([3], {}));
+    release();
+    await older;
+    expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "novel", novelId: 3 });
+  });
 });

@@ -86,8 +86,29 @@ describe("parseDeepLink", () => {
     "norea://tasks/other",
     "norea://user@tasks",
     "norea://tasks#code",
+    "norea://updates/other",
+    "norea://updates?url=https://untrusted.example/",
+    "norea://novel",
+    "norea://novel/0",
+    "norea://novel/03",
+    "norea://novel/1.5",
+    "norea://novel/9007199254740992",
+    "norea://novel/3/chapter",
+    "norea://novel/3/chapter/0",
+    "norea://novel/3/chapter/9/extra",
+    "norea://novel/3?chapterId=9",
+    "norea://novel/3#top",
+    "norea://user@novel/3",
   ])("rejects malformed or unsupported notification link %s", raw => {
     expect(parseDeepLink(raw)).toEqual({ kind: "unknown", raw });
+  });
+
+  it.each([
+    ["norea://updates", { type: "openUpdates" }],
+    ["norea://novel/3", { type: "openNovel", novelId: 3 }],
+    ["norea://novel/3/chapter/9", { type: "openChapter", novelId: 3, chapterId: 9 }],
+  ])("opens the notification target %s", (raw, action) => {
+    expect(parseDeepLink(raw)).toEqual({ kind: "task-notification", action });
   });
 });
 

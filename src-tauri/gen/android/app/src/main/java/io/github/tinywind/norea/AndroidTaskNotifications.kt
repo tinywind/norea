@@ -29,7 +29,19 @@ internal data class AndroidTaskNotificationChallenge(
   val actionLabel: String,
 )
 
-internal data class AndroidTaskNotificationCompletion(val key: String, val title: String, val body: String)
+internal data class AndroidTaskNotificationCompletion(
+  val key: String,
+  val title: String,
+  val body: String,
+  val action: TaskNotificationAction = TaskNotificationAction.openTasks(),
+)
+
+/** A result opens its typed target; anything missing, invalid or not an activity target opens the queue. */
+internal fun taskCompletionNotificationAction(action: TaskNotificationAction?): TaskNotificationAction =
+  action?.takeIf {
+    it.type in setOf("openTasks", "openUpdates", "openNovel", "openChapter") &&
+      it.accepts(TaskNotificationActionTarget.ACTIVITY)
+  } ?: TaskNotificationAction.openTasks()
 
 internal data class AndroidTaskNotificationRange(
   val planId: String,
@@ -124,7 +136,10 @@ internal data class AndroidTaskNotificationPayload(
         }.distinctBy { it.identity },
         completions = objects("completions").mapNotNull { entry ->
           val key = entry.optString("key").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-          AndroidTaskNotificationCompletion(key, entry.optString("title"), entry.optString("body"))
+          AndroidTaskNotificationCompletion(
+            key, entry.optString("title"), entry.optString("body"),
+            taskCompletionNotificationAction(entry.optJSONObject("action")?.let(::notificationActionFromJson)),
+          )
         }.distinctBy { it.key },
       )
     }
@@ -200,7 +215,7 @@ internal object AndroidTaskNotifications {
     payload.completions.forEach { completion ->
       val notification = base(context, COMPLETION_CHANNEL_ID, completion.title, completion.body)
         .setSmallIcon(android.R.drawable.stat_sys_download_done)
-        .setContentIntent(AndroidTaskNotificationActions.activityIntent(context, "completion/${completion.key}"))
+        .setContentIntent(AndroidTaskNotificationActions.activityIntent(context, "completion/${completion.key}", completion.action))
         .setAutoCancel(true)
         .setOnlyAlertOnce(true)
         .build()

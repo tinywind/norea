@@ -86,9 +86,16 @@ internal data class TaskNotificationAction(
   val profileId: String? = null,
   val generation: Long? = null,
   val checkpoint: Long? = null,
+  val novelId: Long? = null,
+  val chapterId: Long? = null,
 ) {
   fun accepts(target: TaskNotificationActionTarget): Boolean = when (type) {
-    "openTasks" -> target == TaskNotificationActionTarget.ACTIVITY
+    "openTasks", "openUpdates" -> target == TaskNotificationActionTarget.ACTIVITY
+    "openNovel" -> target == TaskNotificationActionTarget.ACTIVITY &&
+      novelId != null && novelId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
+    "openChapter" -> target == TaskNotificationActionTarget.ACTIVITY &&
+      novelId != null && novelId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER &&
+      chapterId != null && chapterId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
     "pause", "resume" -> target == TaskNotificationActionTarget.CONTROL &&
       TaskNotificationGroup.fromKey(groupKey ?: "") != null
     "verifySource" -> target == TaskNotificationActionTarget.ACTIVITY &&
@@ -104,6 +111,10 @@ internal data class TaskNotificationAction(
 
   companion object {
     fun openTasks() = TaskNotificationAction(type = "openTasks")
+    fun openUpdates() = TaskNotificationAction(type = "openUpdates")
+    fun openNovel(novelId: Long) = TaskNotificationAction("openNovel", novelId = novelId)
+    fun openChapter(novelId: Long, chapterId: Long) =
+      TaskNotificationAction("openChapter", novelId = novelId, chapterId = chapterId)
     fun pause(groupKey: String) = TaskNotificationAction(type = "pause", groupKey = groupKey)
     fun resume(groupKey: String) = TaskNotificationAction(type = "resume", groupKey = groupKey)
     fun verifySource(sourceId: String, scopeKey: String, revision: Long) =
@@ -117,6 +128,12 @@ internal data class TaskNotificationAction(
 internal fun taskNotificationActionFromFields(field: (String) -> Any?): TaskNotificationAction? {
   val action = when (field("type")) {
     "openTasks" -> TaskNotificationAction.openTasks()
+    "openUpdates" -> TaskNotificationAction.openUpdates()
+    "openNovel" -> TaskNotificationAction.openNovel(taskNotificationInteger(field("novelId"), 1) ?: return null)
+    "openChapter" -> TaskNotificationAction.openChapter(
+      taskNotificationInteger(field("novelId"), 1) ?: return null,
+      taskNotificationInteger(field("chapterId"), 1) ?: return null,
+    )
     "pause" -> TaskNotificationAction.pause(field("groupKey") as? String ?: return null)
     "resume" -> TaskNotificationAction.resume(field("groupKey") as? String ?: return null)
     "verifySource" -> TaskNotificationAction.verifySource(
@@ -148,6 +165,8 @@ internal fun TaskNotificationAction.toFields(): Map<String, Any> = buildMap {
   profileId?.let { put("profileId", it) }
   generation?.let { put("generation", it) }
   checkpoint?.let { put("checkpoint", it) }
+  novelId?.let { put("novelId", it) }
+  chapterId?.let { put("chapterId", it) }
 }
 
 internal data class TaskNotificationActionToken(

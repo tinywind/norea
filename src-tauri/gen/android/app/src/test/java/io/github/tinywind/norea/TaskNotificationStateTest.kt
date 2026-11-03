@@ -145,6 +145,49 @@ class TaskNotificationStateTest {
     assertTrue(actions.drain().isEmpty())
   }
 
+  @Test
+  fun resultTargetsKeepOnlyTheirTypedRowIdsAcrossPersistence() {
+    for (fields in listOf(
+      mapOf<String, Any>("type" to "openUpdates"),
+      mapOf<String, Any>("type" to "openNovel", "novelId" to 3L),
+      mapOf<String, Any>("type" to "openChapter", "novelId" to 3L, "chapterId" to 9L),
+    )) {
+      val action = taskNotificationActionFromFields((fields + ("url" to "https://untrusted.test"))::get)!!
+      assertTrue(action.accepts(TaskNotificationActionTarget.ACTIVITY))
+      assertFalse(action.accepts(TaskNotificationActionTarget.CONTROL))
+      assertEquals(fields, action.toFields())
+    }
+    for (id in listOf<Any?>(0L, -1L, 1.5, 9_007_199_254_740_992L, "3", null)) {
+      assertNull(taskNotificationActionFromFields(mapOf("type" to "openNovel", "novelId" to id)::get))
+      assertNull(taskNotificationActionFromFields(mapOf("type" to "openChapter", "novelId" to 3L, "chapterId" to id)::get))
+    }
+  }
+
+  @Test
+  fun aResultOpensItsTargetAndFallsBackToTheQueue() {
+    val chapter = TaskNotificationAction.openChapter(3, 9)
+    assertEquals(chapter, taskCompletionNotificationAction(chapter))
+    assertEquals(TaskNotificationAction.openUpdates(), taskCompletionNotificationAction(TaskNotificationAction.openUpdates()))
+    assertEquals(TaskNotificationAction.openTasks(), taskCompletionNotificationAction(null))
+    assertEquals(TaskNotificationAction.openTasks(), taskCompletionNotificationAction(TaskNotificationAction.pause("downloads")))
+    assertEquals(
+      TaskNotificationAction.openTasks(),
+      taskCompletionNotificationAction(TaskNotificationAction.verifySource("source-a", "scope", 1)),
+    )
+  }
+
+  @Test
+  fun aNewResultTargetInvalidatesTheEarlierResultTap() {
+    var serial = 0
+    val actions = TaskNotificationActionRegistry(tokenFactory = { "token-${++serial}" })
+    val old = actions.token("completion/downloads", TaskNotificationAction.openNovel(3))
+    val current = actions.token("completion/downloads", TaskNotificationAction.openChapter(4, 9))
+
+    assertNull(actions.enqueue(old, TaskNotificationActionTarget.ACTIVITY))
+    assertNotNull(actions.enqueue(current, TaskNotificationActionTarget.ACTIVITY))
+    assertEquals(listOf(TaskNotificationAction.openChapter(4, 9)), actions.drain())
+  }
+
   private fun vpnActionFields(rangeId: String = "range-a"): Map<String, Any> = mapOf(
     "type" to "verifyVpnDownload", "planId" to "plan-a", "sourceId" to "source-a", "rangeId" to rangeId,
     "profileId" to "profile-a", "generation" to 7L, "checkpoint" to 0L,

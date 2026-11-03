@@ -21,7 +21,10 @@ import {
 } from "../lib/tasks/chapter-download";
 import { startDownloadCacheDeleteWorkExecutor } from "../lib/tasks/download-cache-delete";
 import { SourceAccessNotificationTracker } from "../lib/tasks/source-access-notifications";
-import { applyTaskNotificationAction } from "../lib/tasks/task-notification-actions";
+import {
+  applyTaskNotificationAction,
+  navigateToTaskNotificationDestination,
+} from "../lib/tasks/task-notification-actions";
 import type { TaskNotificationAction } from "../lib/tasks/native-notification-actions";
 import { showErrorToast } from "../lib/runtime/error-toast";
 import { taskScheduler } from "../lib/tasks/scheduler";
@@ -40,7 +43,7 @@ export function TaskNotifications() {
   );
 
   const handleNotificationAction = useCallback((action: TaskNotificationAction) => {
-    void applyTaskNotificationAction(action, () => navigate({ to: "/downloads", search: { view: "queue" } }), t)
+    void applyTaskNotificationAction(action, (destination) => navigateToTaskNotificationDestination(navigate, destination), t)
       .catch(error => showErrorToast(t("common.actionFailed"), error, "task-notification-action"));
   }, [navigate, t]);
 

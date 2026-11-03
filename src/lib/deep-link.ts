@@ -9,6 +9,30 @@ export type DeepLink =
   | { kind: "task-notification"; action: TaskNotificationAction }
   | { kind: "unknown"; raw: string };
 
+const ROW_ID = "([1-9]\\d{0,15})";
+const NOVEL_PATH = new RegExp(`^/${ROW_ID}$`);
+const NOVEL_CHAPTER_PATH = new RegExp(`^/${ROW_ID}/chapter/${ROW_ID}$`);
+
+/**
+ * Notification targets as fixed paths: `norea://updates`,
+ * `norea://novel/<novelId>` and `norea://novel/<novelId>/chapter/<chapterId>`.
+ */
+function parseNotificationTargetLink(url: URL): TaskNotificationAction | null {
+  if (url.search || url.hash || url.username || url.password || url.port) return null;
+  if (url.host === "updates" && (url.pathname === "" || url.pathname === "/")) {
+    return { type: "openUpdates" };
+  }
+  if (url.host !== "novel") return null;
+  const chapter = NOVEL_CHAPTER_PATH.exec(url.pathname);
+  if (chapter) {
+    return parseTaskNotificationAction({
+      type: "openChapter", novelId: Number(chapter[1]), chapterId: Number(chapter[2]),
+    });
+  }
+  const novel = NOVEL_PATH.exec(url.pathname);
+  return novel ? parseTaskNotificationAction({ type: "openNovel", novelId: Number(novel[1]) }) : null;
+}
+
 export function parseDeepLink(raw: string): DeepLink {
   let url: URL;
   try {
@@ -25,6 +49,8 @@ export function parseDeepLink(raw: string): DeepLink {
       return { kind: "repo-add", repoUrl: repoUrl.trim() };
     }
   }
+  const target = parseNotificationTargetLink(url);
+  if (target) return { kind: "task-notification", action: target };
   if (url.host === "tasks" && (url.pathname === "" || url.pathname === "/") &&
       !url.username && !url.password && !url.hash) {
     const fields = [...url.searchParams.keys()];

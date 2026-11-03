@@ -3,6 +3,7 @@ import {
   TaskNotificationTracker,
   buildTaskEventNotificationBody,
   sumTaskNotificationProgress,
+  taskNotificationCompletionAction,
   taskNotificationRouteForTask,
   type TaskNotificationTranslate,
 } from "./task-notification-model";
@@ -159,5 +160,53 @@ describe("task notification routes", () => {
     ["plugin.install", "/downloads?view=queue"],
   ] as const)("routes %s notifications to %s", (kind, route) => {
     expect(taskNotificationRouteForTask(task(kind, { kind }))).toBe(route);
+  });
+});
+
+describe("completion targets", () => {
+  const results = (patch: Partial<{ succeeded: number; failed: number; cancelled: number }> = {}) => {
+    const value = { succeeded: 0, failed: 0, cancelled: 0, ...patch };
+    return { ...value, total: value.succeeded + value.failed + value.cancelled };
+  };
+
+  it("opens the one downloaded chapter, or the novel for several of its chapters", () => {
+    const chapter = task("chapter", { status: "running", subject: { novelId: 3, chapterId: 9 } });
+    const tracker = new TaskNotificationTracker(snapshot([chapter]));
+    tracker.update({ task: { ...chapter, status: "succeeded" }, previousStatus: "running" });
+    expect(tracker.takeCompletions(t)).toMatchObject([{ action: { type: "openChapter", novelId: 3, chapterId: 9 } }]);
+
+    expect(taskNotificationCompletionAction("downloads", results({ succeeded: 2 }), [
+      { novelId: 3, chapterId: 9 }, { novelId: 3, chapterId: 10 },
+    ])).toEqual({ type: "openNovel", novelId: 3 });
+  });
+
+  it("opens a novel for batch downloads once every batch success was seen", () => {
+    const children = [1, 2].map((id) => task(`child-${id}`, {
+      status: "running", subject: { batchId: "batch", novelId: 3, chapterId: id },
+    }));
+    const progress = { current: 0, total: 2, succeeded: 0, failed: 0, cancelled: 0 };
+    const tracker = new TaskNotificationTracker(snapshot(children), [{ batchId: "batch", active: true, progress }]);
+    for (const child of children) tracker.update({ task: { ...child, status: "succeeded" }, previousStatus: "running" });
+    tracker.updateBatch({ batchId: "batch", active: false, progress: { ...progress, current: 2, succeeded: 2 } });
+    expect(tracker.takeCompletions(t)).toMatchObject([{ action: { type: "openNovel", novelId: 3 } }]);
+  });
+
+  it("opens the queue for failures, several novels, unseen successes or unnamed subjects", () => {
+    const queue = { type: "openTasks" };
+    expect(taskNotificationCompletionAction("downloads", results({ succeeded: 1, failed: 1 }), [{ novelId: 3, chapterId: 9 }]))
+      .toEqual(queue);
+    expect(taskNotificationCompletionAction("downloads", results({ succeeded: 2 }), [
+      { novelId: 3, chapterId: 9 }, { novelId: 4, chapterId: 10 },
+    ])).toEqual(queue);
+    expect(taskNotificationCompletionAction("downloads", results({ succeeded: 2 }), [{ novelId: 3, chapterId: 9 }]))
+      .toEqual(queue);
+    expect(taskNotificationCompletionAction("downloads", results({ succeeded: 1 }), [{ chapterId: 9 }])).toEqual(queue);
+    expect(taskNotificationCompletionAction("downloads", results({ cancelled: 1 }), [])).toEqual(queue);
+    expect(taskNotificationCompletionAction("search", results({ succeeded: 1 }), [])).toEqual(queue);
+  });
+
+  it("opens Updates for a finished update check, failed or not", () => {
+    expect(taskNotificationCompletionAction("libraryUpdates", results({ succeeded: 4, failed: 1 }), []))
+      .toEqual({ type: "openUpdates" });
   });
 });

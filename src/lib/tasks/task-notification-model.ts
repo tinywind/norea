@@ -5,6 +5,7 @@ import {
   type ChapterDownloadBatchProgressEvent,
   type ChapterDownloadBatchResult,
 } from "./chapter-download";
+import type { TaskNotificationAction } from "./native-notification-actions";
 import { taskNotificationGroupForKind } from "./task-types";
 import type {
   TaskEvent,
@@ -38,8 +39,16 @@ export interface ActiveTaskNotificationGroup extends ActiveTaskNotificationPaylo
 }
 
 export interface TaskNotificationCompletion extends ActiveTaskNotificationPayload, ChapterDownloadBatchResult {
+  /** What tapping the result opens. */
+  action: TaskNotificationAction;
   key: TaskNotificationGroupKey;
   route: TaskNotificationRoute;
+}
+
+/** The novel and chapter a succeeded task worked on, when its subject names them. */
+export interface TaskNotificationSucceededSubject {
+  chapterId?: number;
+  novelId?: number;
 }
 
 export interface TrayTaskProgressPayload {
@@ -71,6 +80,7 @@ interface NotificationGroupState {
   taskProgress: ProgressTotals;
   batches: Map<string, ChapterDownloadBatchProgressEvent>;
   batchProgress: ChapterDownloadBatchProgress;
+  succeededSubjects: Map<string, TaskNotificationSucceededSubject>;
 }
 
 function emptyResults(): ChapterDownloadBatchResult {
@@ -89,6 +99,7 @@ function newGroupState(): NotificationGroupState {
     aggregateResults: emptyResults(), taskResults: emptyResults(),
     aggregateProgress: emptyProgress(), taskProgress: emptyProgress(),
     batches: new Map(), batchProgress: { ...emptyResults(), current: 0 },
+    succeededSubjects: new Map(),
   };
 }
 
@@ -181,6 +192,7 @@ export class TaskNotificationTracker {
       if (results.total > 0) {
         completions.push({
           key, ...results,
+          action: taskNotificationCompletionAction(key, results, state.succeededSubjects.values()),
           title: taskNotificationGroupTitle(t, key),
           body: t("tasks.notification.results", { ...results }),
           route: taskNotificationGroupRoute(key),
@@ -219,6 +231,13 @@ function updateTaskContribution(state: NotificationGroupState, task: TaskRecord,
     const details = task.status === "running" ? running : queued;
     if (direction > 0) details.set(task.id, task);
     else details.delete(task.id);
+  }
+  if (task.status === "succeeded") {
+    if (direction > 0) {
+      state.succeededSubjects.set(task.id, { chapterId: task.subject?.chapterId, novelId: task.subject?.novelId });
+    } else {
+      state.succeededSubjects.delete(task.id);
+    }
   }
   if (isChapterDownloadNotificationTask(task) && task.subject?.batchId) return;
   const results = aggregate ? state.aggregateResults : state.taskResults;
@@ -292,6 +311,38 @@ function groupBody(
     queued: state.queued.size + state.queuedAggregates.size,
   });
   return detail && key !== "downloads" ? `${detail} - ${active}` : active;
+}
+
+/**
+ * Where a finished group's notification opens. Downloads that all succeeded
+ * for one novel open that chapter (one) or the novel (several); downloads with
+ * a failure open the queue, where Needs attention lists it; update checks open
+ * Updates. Anything else, or a result whose every success was not seen, opens
+ * the queue.
+ */
+export function taskNotificationCompletionAction(
+  key: TaskNotificationGroupKey,
+  results: ChapterDownloadBatchResult,
+  succeeded: Iterable<TaskNotificationSucceededSubject>,
+): TaskNotificationAction {
+  const queue: TaskNotificationAction = { type: "openTasks" };
+  if (key === "libraryUpdates") return { type: "openUpdates" };
+  if (key !== "downloads" || results.failed > 0 || results.succeeded === 0) return queue;
+  let novelId: number | undefined;
+  const chapterIds = new Set<number>();
+  let count = 0;
+  for (const subject of succeeded) {
+    count += 1;
+    if (!subject.novelId || !subject.chapterId) return queue;
+    if (novelId !== undefined && novelId !== subject.novelId) return queue;
+    novelId = subject.novelId;
+    chapterIds.add(subject.chapterId);
+  }
+  if (novelId === undefined || count !== results.succeeded) return queue;
+  const [chapterId] = chapterIds;
+  return chapterIds.size === 1 && chapterId !== undefined
+    ? { type: "openChapter", novelId, chapterId }
+    : { type: "openNovel", novelId };
 }
 
 export function isTerminalTaskStatus(

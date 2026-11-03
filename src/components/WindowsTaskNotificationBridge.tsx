@@ -134,7 +134,7 @@ export function WindowsTaskNotificationBridge({
           pauseLabel: t("tasks.notification.pause"), resumeLabel: t("tasks.notification.resume"),
         })),
         challenges,
-        completions: [...pendingCompletions.values()].map(({ key, title, body }) => ({ key, title, body })),
+        completions: [...pendingCompletions.values()].map(({ action, key, title, body }) => ({ action, key, title, body })),
       };
       const serialized = JSON.stringify({ ...payload, completions: [] });
       if (serialized === lastPayload && payload.completions.length === 0) return;

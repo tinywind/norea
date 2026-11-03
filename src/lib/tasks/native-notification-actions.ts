@@ -2,6 +2,9 @@ import type { TaskNotificationGroupKey } from "./task-types";
 
 export type TaskNotificationAction =
   | { type: "openTasks" }
+  | { type: "openUpdates" }
+  | { type: "openNovel"; novelId: number }
+  | { type: "openChapter"; novelId: number; chapterId: number }
   | { type: "pause" | "resume"; groupKey: TaskNotificationGroupKey }
   | { type: "verifySource"; sourceId: string; scopeKey: string; revision: number }
   | { type: "verifyVpnDownload"; planId: string; sourceId: string; rangeId: string; profileId: string; generation: number; checkpoint: number };
@@ -13,10 +16,21 @@ function isBoundedIdentity(value: unknown, maxLength = 512): value is string {
     !/[\u0000-\u001f\u007f]/.test(value);
 }
 
+function isRowId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 export function parseTaskNotificationAction(value: unknown): TaskNotificationAction | null {
   if (value === null || typeof value !== "object") return null;
   const action = value as Record<string, unknown>;
   if (action.type === "openTasks") return { type: "openTasks" };
+  if (action.type === "openUpdates") return { type: "openUpdates" };
+  if (action.type === "openNovel" && isRowId(action.novelId)) {
+    return { type: "openNovel", novelId: action.novelId };
+  }
+  if (action.type === "openChapter" && isRowId(action.novelId) && isRowId(action.chapterId)) {
+    return { type: "openChapter", novelId: action.novelId, chapterId: action.chapterId };
+  }
   if ((action.type === "pause" || action.type === "resume") &&
       typeof action.groupKey === "string" && GROUP_KEYS.has(action.groupKey)) {
     return { type: action.type, groupKey: action.groupKey as TaskNotificationGroupKey };
