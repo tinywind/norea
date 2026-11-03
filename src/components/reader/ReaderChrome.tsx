@@ -1,7 +1,7 @@
 import { Popover, Switch } from "@mantine/core";
 import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
-import { useTranslation, type TranslationKey } from "../../i18n";
+import { useTranslation } from "../../i18n";
 import {
   normalizeFontScalePercent,
   useAppearanceStore,
@@ -37,14 +37,13 @@ interface ReaderChromeFocusHandlers {
   onBlur: (event: FocusEvent<HTMLElement>) => void;
 }
 
-export function getChapterLabel(
+function getChapterLabel(
   chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
-  t: (key: TranslationKey) => string,
+  t: ReturnType<typeof useTranslation>["t"],
 ) {
-  const prefix = t("history.chapterPrefix");
-  return chapter.chapterNumber
-    ? `${prefix} ${chapter.chapterNumber}`
-    : `${prefix} ${chapter.position}`;
+  return t("history.chapterNumber", {
+    number: chapter.chapterNumber || chapter.position,
+  });
 }
 
 export function ReaderTopBar({

@@ -435,8 +435,7 @@ function HistoryRow({
           title={entry.chapterName}
         >
           <span>
-            {t("history.chapterPrefix")}
-            {entry.position}
+            {t("history.chapterNumber", { number: entry.position })}
           </span>{" "}
           - <em>{entry.chapterName}</em>
         </Text>
@@ -513,11 +512,11 @@ function ResumePanel({
   const detailsLabel = `${t("common.details")} - ${entry.novelName}`;
   const nextLabel =
     entry.progress < FINISHED_PROGRESS
-      ? `${t("history.currentChapter")} - ${t("history.chapterPrefix")}${entry.position} ${entry.chapterName}`
+      ? `${t("history.currentChapter")} - ${t("history.chapterNumber", { number: entry.position })} ${entry.chapterName}`
       : checkingNextChapter
         ? t("history.checkingNextChapter")
         : nextChapterName
-          ? `${t("history.nextChapter")} - ${t("history.chapterPrefix")}${nextChapterPosition} ${nextChapterName}`
+          ? `${t("history.nextChapter")} - ${t("history.chapterNumber", { number: nextChapterPosition ?? "" })} ${nextChapterName}`
           : t("history.nextChapterMissing");
 
   return (
@@ -531,8 +530,7 @@ function ResumePanel({
         <Text className="norea-history-resume-last" lineClamp={1}>
           {t("history.lastRead")} -{" "}
           <span>
-            {t("history.chapterPrefix")}
-            {entry.position}
+            {t("history.chapterNumber", { number: entry.position })}
           </span>{" "}
           <em>{entry.chapterName}</em>
         </Text>

@@ -1169,7 +1169,7 @@
   "history.bucket.thisWeek": "This week",
   "history.bucket.older": "Older",
   "history.row.aria": "{novel}, {progress}% progress, last read chapter {position}",
-  "history.chapterPrefix": "Ch.",
+  "history.chapterNumber": "Ch. {number}",
   "history.removing": "removing",
   "history.continue": "Continue",
   "history.resume": "Resume",
