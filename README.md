@@ -55,6 +55,13 @@ webtoons or read manga and comics page by page.
 - Read text, webtoon, and manga chapters in paged or scrolling mode.
 - Change themes, font size, text color, tap zones, and keyboard navigation.
 - Track reading progress, history, unread chapters, and downloaded chapters.
+- Check library sources for new chapters from Updates, with progress and
+  Cancel while checking. New chapters are grouped by day, and more than three
+  from one work on one day collapse into one row. Failed sources show Verify or
+  Retry in place, or a "sources failed" chip with each source's reason.
+- Continue a recent work from History with one tap: an unfinished chapter
+  resumes and a finished one opens the next chapter. Filter by progress, search,
+  and remove one work or clear all history after confirmation.
 - Download chapters for later reading. On the work page, Download offers all,
   unread, next 10, or next 30 missing chapters, and each chapter row shows its
   download state with Retry after a failure, Repair for missing media, and
