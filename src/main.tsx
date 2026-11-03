@@ -37,7 +37,15 @@ import { useAppearanceStore } from "./store/appearance";
 import { useLoggingStore } from "./store/logging";
 import "./theme/tokens.css";
 import "./styles/app.css";
-import { makeMantineColorScale, resolveMd3Palette } from "./theme/md3";
+import {
+  makeMantineColorScale,
+  normalizeCustomAccentColor,
+  resolveMd3Palette,
+} from "./theme/md3";
+import {
+  paletteRoleCssVariables,
+  resolvePaletteRoles,
+} from "./theme/palette-roles";
 
 installRuntimeLogLevelFilter(useLoggingStore.getState().logLevel);
 
@@ -131,30 +139,6 @@ function useResolvedColorScheme(): "light" | "dark" {
   return prefersDark ? "dark" : "light";
 }
 
-function withAlpha(color: string, alpha: number): string {
-  const rgbMatch = color.match(
-    /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i,
-  );
-  if (rgbMatch) {
-    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${alpha})`;
-  }
-
-  const hexMatch = color.match(/^#([\da-f]{3}|[\da-f]{6})$/i);
-  if (!hexMatch) return color;
-
-  const hex = hexMatch[1];
-  const channels =
-    hex.length === 3
-      ? hex.split("").map((part) => parseInt(part + part, 16))
-      : [
-          parseInt(hex.slice(0, 2), 16),
-          parseInt(hex.slice(2, 4), 16),
-          parseInt(hex.slice(4, 6), 16),
-        ];
-
-  return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
-}
-
 function AppProviders() {
   useEffect(() => startContentServerSync(), []);
   useEffect(() => {
@@ -187,6 +171,13 @@ function AppProviders() {
         customAccentColor,
       }),
     [amoledBlack, appThemeId, colorScheme, customAccentColor],
+  );
+  const roles = useMemo(
+    () =>
+      resolvePaletteRoles(palette, colorScheme, {
+        customAccent: normalizeCustomAccentColor(customAccentColor) !== undefined,
+      }),
+    [colorScheme, customAccentColor, palette],
   );
   const theme = useMemo(
     () =>
@@ -227,46 +218,11 @@ function AppProviders() {
   useEffect(() => {
     const root = document.documentElement;
     root.lang = appLocale;
-    root.style.setProperty("--norea-background", palette.background);
-    root.style.setProperty("--norea-on-background", palette.onBackground);
-    root.style.setProperty("--norea-surface", palette.surface);
-    root.style.setProperty("--norea-on-surface", palette.onSurface);
-    root.style.setProperty("--norea-surface-variant", palette.surfaceVariant);
-    root.style.setProperty(
-      "--norea-on-surface-variant",
-      palette.onSurfaceVariant,
-    );
-    root.style.setProperty("--norea-outline", palette.outlineVariant);
-    root.style.setProperty("--norea-primary", palette.primary);
-    root.style.setProperty("--norea-on-primary", palette.onPrimary);
-    root.style.setProperty("--norea-design-bg", palette.background);
-    root.style.setProperty("--norea-design-surface", palette.surface);
-    root.style.setProperty("--norea-design-panel", palette.surfaceVariant);
-    root.style.setProperty("--norea-design-ink", palette.onBackground);
-    root.style.setProperty(
-      "--norea-design-ink-muted",
-      palette.onSurfaceVariant,
-    );
-    root.style.setProperty("--norea-design-ink-subtle", palette.outline);
-    root.style.setProperty("--norea-design-rule", palette.outlineVariant);
-    root.style.setProperty("--norea-design-rule-strong", palette.outline);
-    root.style.setProperty("--norea-design-accent", palette.primary);
-    root.style.setProperty("--norea-design-on-accent", palette.onPrimary);
-    root.style.setProperty(
-      "--norea-design-accent-soft",
-      withAlpha(palette.primary, colorScheme === "dark" ? 0.18 : 0.1),
-    );
-    const warn = colorScheme === "dark" ? "#f0c36a" : "#9a6a1a";
-    root.style.setProperty("--norea-design-warn", warn);
-    root.style.setProperty(
-      "--norea-design-warn-soft",
-      withAlpha(warn, colorScheme === "dark" ? 0.16 : 0.08),
-    );
-    root.style.setProperty("--norea-design-error", palette.error);
-    root.style.setProperty(
-      "--norea-design-ok",
-      colorScheme === "dark" ? "#7ecf91" : "#3a7a4a",
-    );
+    for (const [name, value] of Object.entries(
+      paletteRoleCssVariables(roles),
+    )) {
+      root.style.setProperty(name, value);
+    }
     root.style.setProperty(
       "--norea-design-hover-overlay",
       colorScheme === "dark"
@@ -279,15 +235,9 @@ function AppProviders() {
         ? "rgba(255, 255, 255, 0.14)"
         : "rgba(255, 255, 255, 0.55)",
     );
-    root.style.setProperty(
-      "--norea-design-shadow-floating",
-      colorScheme === "dark"
-        ? "0 0.5rem 1.5rem rgba(0, 0, 0, 0.42)"
-        : "0 0.5rem 1.25rem rgba(15, 23, 42, 0.14)",
-    );
-    document.body.style.background = palette.background;
-    document.body.style.color = palette.onBackground;
-  }, [appLocale, colorScheme, palette]);
+    document.body.style.background = roles.bg;
+    document.body.style.color = roles.ink;
+  }, [appLocale, colorScheme, roles]);
 
   useEffect(() => {
     setRuntimeLogLevel(logLevel);

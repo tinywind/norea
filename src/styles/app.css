@@ -41,7 +41,6 @@
   --norea-design-ink: #1a1a18;
   --norea-design-ink-muted: #4a4a47;
   --norea-design-ink-subtle: #8a8a85;
-  --norea-on-surface-variant: var(--norea-design-ink-subtle);
   --norea-design-rule: #e8e8e4;
   --norea-design-rule-strong: #d4d4ce;
   --norea-design-accent: #3d6e58;
@@ -462,7 +461,7 @@ a {
 }
 
 .norea-page-kicker {
-  color: var(--norea-on-surface-variant);
+  color: var(--norea-color-ink-muted);
   font-size: 0.8125rem;
   font-weight: 700;
   letter-spacing: 0;

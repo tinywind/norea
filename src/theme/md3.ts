@@ -1,3 +1,5 @@
+import { parseColor } from "./color";
+
 export type AppThemeId =
   | "default"
   | "midnight-dusk"
@@ -445,13 +447,19 @@ export function getAppTheme(id: AppThemeId): AppThemeDefinition {
   return APP_THEMES.find((theme) => theme.id === id) ?? APP_THEMES[0]!;
 }
 
+/** Returns the trimmed accent when it is a complete supported color, so partial input is ignored. */
+export function normalizeCustomAccentColor(value?: string): string | undefined {
+  const color = value?.trim();
+  return color && parseColor(color) ? color : undefined;
+}
+
 export function resolveMd3Palette(
   id: AppThemeId,
   colorScheme: "light" | "dark",
   options: { amoledBlack?: boolean; customAccentColor?: string } = {},
 ): Md3Palette {
   const base = getAppTheme(id)[colorScheme];
-  const customAccentColor = options.customAccentColor?.trim();
+  const customAccentColor = normalizeCustomAccentColor(options.customAccentColor);
   return {
     ...base,
     primary: customAccentColor || base.primary,
