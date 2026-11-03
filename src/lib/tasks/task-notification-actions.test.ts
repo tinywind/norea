@@ -182,6 +182,12 @@ describe("notification targets", () => {
     expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "attention" });
   });
 
+  it("opens Settings > Backup & sync for a failed automatic backup", async () => {
+    const open = vi.fn();
+    await applyTaskNotificationAction({ type: "openBackupSettings" }, open, t);
+    expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "backupSettings" });
+  });
+
   it("opens the resolved target once and only for the latest tap", async () => {
     const open = vi.fn();
     let release!: () => void;

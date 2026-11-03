@@ -272,6 +272,15 @@ requirements must be decided explicitly before implementation.
   replaces any row (format 4 added the per-chapter `foundByCheck` flag, format 3
   `downloadGoals`). Format 4 and earlier archives are rejected without conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
   snapshots stored on the content server.
+- Automatic backup (RD15) writes the same portable archive to `backups/` in the
+  storage folder as `norea-auto-backup-<yyyyMMddHHmmss>.zip`. Each archive is
+  written under a temporary name and renamed into place, and only after that
+  succeeds are the oldest files with that exact name pattern beyond the kept
+  count deleted; other files in the folder are never touched. The schedule
+  (`off`, `daily` or `weekly`), the kept count (default 5) and the last
+  outcome live in the `auto-backup` localStorage entry. The folder belongs to
+  this device, so device snapshots carry the entry with the other settings and
+  portable backups leave it out; a missing or unknown value reads as off.
 - Portable file backup restore preserves every existing storage file, including
   `novel.json`, covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies
   to works omitted from the backup as well. Restore inspects current files

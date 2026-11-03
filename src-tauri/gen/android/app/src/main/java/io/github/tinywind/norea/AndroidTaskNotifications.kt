@@ -39,7 +39,7 @@ internal data class AndroidTaskNotificationCompletion(
 /** A result opens its typed target; anything missing, invalid or not an activity target opens the queue. */
 internal fun taskCompletionNotificationAction(action: TaskNotificationAction?): TaskNotificationAction =
   action?.takeIf {
-    it.type in setOf("openTasks", "openAttention", "openUpdates", "openNovel", "openChapter") &&
+    it.type in setOf("openTasks", "openAttention", "openUpdates", "openBackupSettings", "openNovel", "openChapter") &&
       it.accepts(TaskNotificationActionTarget.ACTIVITY)
   } ?: TaskNotificationAction.openTasks()
 

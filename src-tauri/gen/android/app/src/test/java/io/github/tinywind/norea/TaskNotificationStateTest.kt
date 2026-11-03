@@ -150,6 +150,7 @@ class TaskNotificationStateTest {
     for (fields in listOf(
       mapOf<String, Any>("type" to "openAttention"),
       mapOf<String, Any>("type" to "openUpdates"),
+      mapOf<String, Any>("type" to "openBackupSettings"),
       mapOf<String, Any>("type" to "openNovel", "novelId" to 3L),
       mapOf<String, Any>("type" to "openChapter", "novelId" to 3L, "chapterId" to 9L),
     )) {
@@ -170,6 +171,10 @@ class TaskNotificationStateTest {
     assertEquals(chapter, taskCompletionNotificationAction(chapter))
     assertEquals(TaskNotificationAction.openUpdates(), taskCompletionNotificationAction(TaskNotificationAction.openUpdates()))
     assertEquals(TaskNotificationAction.openAttention(), taskCompletionNotificationAction(TaskNotificationAction.openAttention()))
+    assertEquals(
+      TaskNotificationAction.openBackupSettings(),
+      taskCompletionNotificationAction(TaskNotificationAction.openBackupSettings()),
+    )
     assertEquals(TaskNotificationAction.openTasks(), taskCompletionNotificationAction(null))
     assertEquals(TaskNotificationAction.openTasks(), taskCompletionNotificationAction(TaskNotificationAction.pause("downloads")))
     assertEquals(

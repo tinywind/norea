@@ -90,7 +90,8 @@ internal data class TaskNotificationAction(
   val chapterId: Long? = null,
 ) {
   fun accepts(target: TaskNotificationActionTarget): Boolean = when (type) {
-    "openTasks", "openAttention", "openUpdates" -> target == TaskNotificationActionTarget.ACTIVITY
+    "openTasks", "openAttention", "openUpdates", "openBackupSettings" ->
+      target == TaskNotificationActionTarget.ACTIVITY
     "openNovel" -> target == TaskNotificationActionTarget.ACTIVITY &&
       novelId != null && novelId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
     "openChapter" -> target == TaskNotificationActionTarget.ACTIVITY &&
@@ -113,6 +114,7 @@ internal data class TaskNotificationAction(
     fun openTasks() = TaskNotificationAction(type = "openTasks")
     fun openAttention() = TaskNotificationAction(type = "openAttention")
     fun openUpdates() = TaskNotificationAction(type = "openUpdates")
+    fun openBackupSettings() = TaskNotificationAction(type = "openBackupSettings")
     fun openNovel(novelId: Long) = TaskNotificationAction("openNovel", novelId = novelId)
     fun openChapter(novelId: Long, chapterId: Long) =
       TaskNotificationAction("openChapter", novelId = novelId, chapterId = chapterId)
@@ -131,6 +133,7 @@ internal fun taskNotificationActionFromFields(field: (String) -> Any?): TaskNoti
     "openTasks" -> TaskNotificationAction.openTasks()
     "openAttention" -> TaskNotificationAction.openAttention()
     "openUpdates" -> TaskNotificationAction.openUpdates()
+    "openBackupSettings" -> TaskNotificationAction.openBackupSettings()
     "openNovel" -> TaskNotificationAction.openNovel(taskNotificationInteger(field("novelId"), 1) ?: return null)
     "openChapter" -> TaskNotificationAction.openChapter(
       taskNotificationInteger(field("novelId"), 1) ?: return null,

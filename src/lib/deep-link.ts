@@ -15,6 +15,7 @@ const NOVEL_CHAPTER_PATH = new RegExp(`^/${ROW_ID}/chapter/${ROW_ID}$`);
 
 /**
  * Notification targets as fixed paths: `norea://updates`, `norea://attention`,
+ * `norea://settings/backup`,
  * `norea://novel/<novelId>` and `norea://novel/<novelId>/chapter/<chapterId>`.
  */
 function parseNotificationTargetLink(url: URL): TaskNotificationAction | null {
@@ -25,6 +26,7 @@ function parseNotificationTargetLink(url: URL): TaskNotificationAction | null {
   if (url.host === "attention" && (url.pathname === "" || url.pathname === "/")) {
     return { type: "openAttention" };
   }
+  if (url.host === "settings" && url.pathname === "/backup") return { type: "openBackupSettings" };
   if (url.host !== "novel") return null;
   const chapter = NOVEL_CHAPTER_PATH.exec(url.pathname);
   if (chapter) {

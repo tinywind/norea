@@ -18,6 +18,7 @@ import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
 import { useWindowFileDropImport } from "../components/library/use-window-file-drop-import";
 import { useFirstRunSetupRedirect } from "../components/runtime/use-first-run-setup-redirect";
+import { useAutomaticBackup } from "../lib/backup/use-automatic-backup";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import {
   BrowseIcon,
@@ -511,6 +512,7 @@ export function RootLayout() {
   useBodyFlag("reader-active", readerActive);
   useWindowFileDropImport(!isAndroidRuntime());
   useFirstRunSetupRedirect(pathname);
+  useAutomaticBackup();
   const setupActive = pathname === "/setup";
 
   return (

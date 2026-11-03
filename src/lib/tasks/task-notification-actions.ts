@@ -17,6 +17,7 @@ export type TaskNotificationDestination =
   | { kind: "queue" }
   | { kind: "attention" }
   | { kind: "updates" }
+  | { kind: "backupSettings" }
   | { kind: "novel"; novelId: number }
   | { kind: "chapter"; chapterId: number };
 
@@ -61,6 +62,7 @@ export function navigateToTaskNotificationDestination(
     case "queue": return navigate({ to: "/downloads", search: { view: "queue" } });
     case "attention": return navigate({ to: "/downloads", search: { view: "queue", focus: "attention" } });
     case "updates": return navigate({ to: "/updates" });
+    case "backupSettings": return navigate({ to: "/settings", search: { section: "backup" } });
     case "novel": return navigate({ to: "/novel", search: { id: destination.novelId } });
     case "chapter": return navigate({ to: "/reader", search: { chapterId: destination.chapterId } });
   }
@@ -86,6 +88,10 @@ export async function applyTaskNotificationAction(
   const generation = ++taskNotificationNavigationGeneration;
   if (action.type === "openAttention") {
     await open({ kind: "attention" });
+    return;
+  }
+  if (action.type === "openBackupSettings") {
+    await open({ kind: "backupSettings" });
     return;
   }
   if (action.type === "openUpdates" || action.type === "openNovel" || action.type === "openChapter") {

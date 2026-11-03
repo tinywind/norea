@@ -4,6 +4,7 @@ export type TaskNotificationAction =
   | { type: "openTasks" }
   | { type: "openAttention" }
   | { type: "openUpdates" }
+  | { type: "openBackupSettings" }
   | { type: "openNovel"; novelId: number }
   | { type: "openChapter"; novelId: number; chapterId: number }
   | { type: "pause" | "resume"; groupKey: TaskNotificationGroupKey }
@@ -27,6 +28,7 @@ export function parseTaskNotificationAction(value: unknown): TaskNotificationAct
   if (action.type === "openTasks") return { type: "openTasks" };
   if (action.type === "openAttention") return { type: "openAttention" };
   if (action.type === "openUpdates") return { type: "openUpdates" };
+  if (action.type === "openBackupSettings") return { type: "openBackupSettings" };
   if (action.type === "openNovel" && isRowId(action.novelId)) {
     return { type: "openNovel", novelId: action.novelId };
   }

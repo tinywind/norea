@@ -76,6 +76,8 @@ export const SETTINGS_SEARCH_ROWS: readonly SettingsSearchRow[] = [
   { section: "downloads", label: "browseSettings.chapterDownloadCooldown", advanced: true },
 
   { section: "backup", label: "settings.data.backupFile.label", synonyms: "settingsSearch.synonyms.backup" },
+  { section: "backup", label: "settings.backup.auto.schedule.label", synonyms: "settingsSearch.synonyms.autoBackup" },
+  { section: "backup", label: "settings.backup.auto.keep.label", condition: "settingsSearch.condition.autoBackup" },
 
   { section: "browse", label: "settings.browse.autoUpdateExtensions.label", synonyms: "settingsSearch.synonyms.extensionUpdates" },
 

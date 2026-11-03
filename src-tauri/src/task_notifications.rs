@@ -4,6 +4,7 @@ use tauri::{AppHandle, State};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum TaskNotificationGroupKey {
+    Backup,
     Downloads,
     LibraryMetadata,
     LibraryUpdates,
@@ -13,6 +14,7 @@ enum TaskNotificationGroupKey {
 impl TaskNotificationGroupKey {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Backup => "backup",
             Self::Downloads => "downloads",
             Self::LibraryMetadata => "libraryMetadata",
             Self::LibraryUpdates => "libraryUpdates",
@@ -63,6 +65,7 @@ enum TaskNotificationCompletionAction {
     OpenTasks,
     OpenAttention,
     OpenUpdates,
+    OpenBackupSettings,
     OpenNovel {
         novel_id: u64,
     },
@@ -120,6 +123,7 @@ mod model {
         OpenTasks,
         OpenAttention,
         OpenUpdates,
+        OpenBackupSettings,
         OpenNovel {
             novel_id: u64,
         },
@@ -253,6 +257,9 @@ mod model {
             TaskNotificationCompletionAction::OpenUpdates => {
                 Ok(TaskNotificationAction::OpenUpdates)
             }
+            TaskNotificationCompletionAction::OpenBackupSettings => {
+                Ok(TaskNotificationAction::OpenBackupSettings)
+            }
             TaskNotificationCompletionAction::OpenNovel { novel_id } if valid(novel_id) => {
                 Ok(TaskNotificationAction::OpenNovel { novel_id })
             }
@@ -333,6 +340,7 @@ mod model {
             TaskNotificationAction::OpenTasks => Some("norea://tasks".into()),
             TaskNotificationAction::OpenAttention => Some("norea://attention".into()),
             TaskNotificationAction::OpenUpdates => Some("norea://updates".into()),
+            TaskNotificationAction::OpenBackupSettings => Some("norea://settings/backup".into()),
             TaskNotificationAction::OpenNovel { novel_id } => {
                 Some(format!("norea://novel/{novel_id}"))
             }
@@ -856,6 +864,7 @@ mod tests {
             (serde_json::json!({"type":"openTasks"}), "norea://tasks"),
             (serde_json::json!({"type":"openAttention"}), "norea://attention"),
             (serde_json::json!({"type":"openUpdates"}), "norea://updates"),
+            (serde_json::json!({"type":"openBackupSettings"}), "norea://settings/backup"),
             (
                 serde_json::json!({"type":"openNovel", "novelId": 3, "url": "https://untrusted.example/"}),
                 "norea://novel/3",
@@ -868,6 +877,19 @@ mod tests {
             let xml = toast_xml(&completion_card(action).unwrap());
             assert!(xml.contains(&format!("activationType=\"protocol\" launch=\"{launch}\"")));
         }
+    }
+
+    #[test]
+    fn backup_failure_result_opens_backup_settings() {
+        let payload: TaskNotificationPayload = serde_json::from_value(serde_json::json!({
+            "groups": [], "challenges": [],
+            "completions": [{"key":"backup", "title":"Backup failed", "body":"Folder unavailable",
+                "action": {"type":"openBackupSettings"}}]
+        }))
+        .unwrap();
+        let card = desired_cards(payload).unwrap().pop().unwrap();
+        assert_eq!(card.identity.tag, "backup");
+        assert!(toast_xml(&card).contains("activationType=\"protocol\" launch=\"norea://settings/backup\""));
     }
 
     #[test]

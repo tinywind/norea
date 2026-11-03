@@ -5,6 +5,7 @@ import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 export type TaskLane = "main" | "source";
 
 export type TaskNotificationGroupKey =
+  | "backup"
   | "downloads"
   | "libraryMetadata"
   | "libraryUpdates"
@@ -14,6 +15,8 @@ export function taskNotificationGroupForKind(
   kind: TaskKind,
 ): TaskNotificationGroupKey | null {
   switch (kind) {
+    case "backup.auto":
+      return "backup";
     case "chapter.download":
     case "chapter.repairMedia":
       return "downloads";
@@ -47,6 +50,7 @@ export type TaskStatus =
 
 export type MainTaskKind =
   | "backup.export"
+  | "backup.auto"
   | "backup.restore"
   | "library.checkUpdates"
   | "library.refreshMetadata"

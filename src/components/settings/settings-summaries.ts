@@ -7,6 +7,7 @@ import {
 import type { SettingsSectionId } from "../../lib/use-settings-section";
 import { useTranslation, type AppLocale, type TranslationKey } from "../../i18n";
 import { useAppearanceStore, type AppThemeMode } from "../../store/appearance";
+import { useAutoBackupStore, type AutoBackupSchedule } from "../../store/auto-backup";
 import { useBrowseStore } from "../../store/browse";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useLibraryStore } from "../../store/library";
@@ -34,6 +35,7 @@ export interface SettingsSummaryState {
   /** Undefined while the storage folder is still loading. */
   storageRoot: string | null | undefined;
   contentServerUrl: string;
+  autoBackupSchedule: AutoBackupSchedule;
   autoUpdateExtensions: boolean;
   pluginVpnEnabled: boolean;
   logLevel: LogLevel;
@@ -88,9 +90,16 @@ export function buildSettingsSummaries(
         : state.storageRoot
           ? lastPathSegment(state.storageRoot)
           : t("settings.data.mediaStorage.folder.empty"),
-    backup: state.contentServerUrl
-      ? serverHost(state.contentServerUrl)
-      : t("settings.summary.backup.noServer"),
+    backup: [
+      ...(state.autoBackupSchedule === "off"
+        ? []
+        : [t(state.autoBackupSchedule === "daily"
+          ? "settings.summary.backup.daily"
+          : "settings.summary.backup.weekly")]),
+      state.contentServerUrl
+        ? serverHost(state.contentServerUrl)
+        : t("settings.summary.backup.noServer"),
+    ].join(" · "),
     browse: t(
       state.autoUpdateExtensions
         ? "settings.summary.browse.autoUpdateOn"
@@ -121,6 +130,7 @@ export function useSettingsSummaries(): Record<SettingsSectionId, string> {
   );
   const librarySortOrder = useLibraryStore((state) => state.sortOrder);
   const contentServerUrl = useContentSyncStore((state) => state.serverUrl);
+  const autoBackupSchedule = useAutoBackupStore((state) => state.schedule);
   const autoUpdateExtensions = useBrowseStore((state) => state.autoUpdateExtensions);
   const pluginVpnEnabled = usePluginVpnStore((state) => state.enabled);
   const logLevel = useLoggingStore((state) => state.logLevel);
@@ -142,6 +152,7 @@ export function useSettingsSummaries(): Record<SettingsSectionId, string> {
       librarySortOrder,
       storageRoot: storageRoot.isError ? null : storageRoot.data,
       contentServerUrl,
+      autoBackupSchedule,
       autoUpdateExtensions,
       pluginVpnEnabled,
       logLevel,

@@ -12,6 +12,7 @@ const base: SettingsSummaryState = {
   librarySortOrder: "nameAsc",
   storageRoot: "C:\\Users\\reader\\Norea",
   contentServerUrl: "http://192.168.0.10:8080",
+  autoBackupSchedule: "off",
   autoUpdateExtensions: false,
   pluginVpnEnabled: false,
   logLevel: "info",
@@ -52,5 +53,7 @@ describe("settings section summaries", () => {
     expect(result.network).toBe("Plugin VPN on");
     expect(summaries({ storageRoot: undefined }).downloads).toBe("Loading...");
     expect(summaries({ autoUpdateExtensions: true }).browse).toBe("Extensions update automatically");
+    expect(summaries({ autoBackupSchedule: "weekly" }).backup).toBe("Weekly backup · 192.168.0.10:8080");
+    expect(summaries({ autoBackupSchedule: "daily", contentServerUrl: "" }).backup).toBe("Daily backup · No content server");
   });
 });

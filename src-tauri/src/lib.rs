@@ -180,6 +180,7 @@ pub fn run() {
             backup::backup_delete_temp_file,
             backup::backup_pack,
             backup::backup_pack_bytes,
+            backup::backup_publish_auto,
             backup::backup_pack_temp_file,
             backup::backup_restore_snapshot,
             backup::backup_unpack,

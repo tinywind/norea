@@ -37,6 +37,15 @@ describe("parseDeepLink", () => {
     });
   });
 
+  it("parses norea://settings/backup as the backup settings target", () => {
+    expect(parseDeepLink("norea://settings/backup")).toEqual({
+      kind: "task-notification", action: { type: "openBackupSettings" },
+    });
+    for (const raw of ["norea://settings/backup?x=1", "norea://settings/network", "norea://settings"]) {
+      expect(parseDeepLink(raw)).toEqual({ kind: "unknown", raw });
+    }
+  });
+
   it("returns unknown when the url query param is missing", () => {
     const raw = "norea://repo/add";
     expect(parseDeepLink(raw)).toEqual({ kind: "unknown", raw });

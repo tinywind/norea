@@ -34,6 +34,10 @@ const MAX_BACKUP_MANIFEST_BYTES: u64 = 256 * BYTES_PER_MIB;
 const MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * BYTES_PER_MIB;
 const MAX_BACKUP_COMPRESSION_RATIO: u64 = 200;
 const MIN_BACKUP_RATIO_CHECK_BYTES: u64 = BYTES_PER_MIB;
+/// Folder in the storage root that automatic backups are written to.
+const AUTO_BACKUP_DIR: &str = "backups";
+const AUTO_BACKUP_PREFIX: &str = "norea-auto-backup-";
+const MAX_AUTO_BACKUP_KEEP: u32 = 50;
 
 #[derive(Debug, Clone, Copy)]
 struct BackupArchiveLimits {
@@ -822,6 +826,77 @@ pub fn backup_delete_temp_file(app: AppHandle, path: String) -> Result<(), Strin
     fs::remove_file(&file_path).map_err(|err| format!("backup_delete_temp_file: remove: {err}"))
 }
 
+/// `norea-auto-backup-<yyyyMMddHHmmss>.zip`, the only names automatic backups
+/// create and the only files their pruning may delete.
+fn is_auto_backup_name(name: &str) -> bool {
+    name.strip_prefix(AUTO_BACKUP_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".zip"))
+        .is_some_and(|stamp| stamp.len() == 14 && stamp.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Writes the archive under a temporary name, renames it into place, then
+/// deletes the oldest automatic backups beyond `keep`. Other files in the
+/// folder are never touched, and nothing is pruned when the write fails.
+fn publish_auto_backup(
+    dir: &Path,
+    manifest_json: &str,
+    file_name: &str,
+    keep: u32,
+) -> Result<Vec<String>, String> {
+    if !is_auto_backup_name(file_name) {
+        return Err(format!("backup_publish_auto: invalid file name {file_name}"));
+    }
+    if !(1..=MAX_AUTO_BACKUP_KEEP).contains(&keep) {
+        return Err(format!("backup_publish_auto: invalid keep count {keep}"));
+    }
+    fs::create_dir_all(dir)
+        .map_err(|err| format!("backup_publish_auto: create {}: {err}", dir.display()))?;
+    let partial = dir.join(format!(".{file_name}.partial"));
+    let file = File::create(&partial)
+        .map_err(|err| format!("backup_publish_auto: create {}: {err}", partial.display()))?;
+    let written = write_backup_zip_file(&file, manifest_json, "backup_publish_auto")
+        .and_then(|()| file.sync_all().map_err(|err| format!("backup_publish_auto: sync: {err}")));
+    drop(file);
+    if let Err(err) = written.and_then(|()| {
+        fs::rename(&partial, dir.join(file_name))
+            .map_err(|err| format!("backup_publish_auto: publish {file_name}: {err}"))
+    }) {
+        let _ = fs::remove_file(&partial);
+        return Err(err);
+    }
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .map_err(|err| format!("backup_publish_auto: list {}: {err}", dir.display()))?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| is_auto_backup_name(name))
+        .collect();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    let pruned: Vec<String> = names.into_iter().skip(keep as usize).collect();
+    for name in &pruned {
+        fs::remove_file(dir.join(name))
+            .map_err(|err| format!("backup_publish_auto: remove old backup {name}: {err}"))?;
+    }
+    Ok(pruned)
+}
+
+/// Desktop automatic backup into `backups/` of the storage folder. Android
+/// storage folders are SAF trees, written by the storage bridge instead.
+#[tauri::command]
+pub async fn backup_publish_auto(
+    app: AppHandle,
+    manifest_json: String,
+    file_name: String,
+    keep: u32,
+) -> Result<(), String> {
+    backup_blocking("backup_publish_auto", move || {
+        let root = crate::chapter_media::media_root(&app)?;
+        if root.to_string_lossy().starts_with("content://") {
+            return Err("backup_publish_auto: content URI storage needs the Android bridge".to_string());
+        }
+        publish_auto_backup(&root.join(AUTO_BACKUP_DIR), &manifest_json, &file_name, keep).map(|_| ())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String> {
     backup_blocking("backup_pack_bytes", move || {
@@ -1444,6 +1519,44 @@ mod tests {
             assert_eq!(retained, 1);
             tx.rollback().await.expect("rollback");
         }
+    }
+
+    #[test]
+    fn auto_backup_publishes_atomically_and_prunes_only_its_own_oldest_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backups = dir.path().join("backups");
+        fs::create_dir_all(&backups).expect("create backups");
+        for name in ["norea-auto-backup-20261101000000.zip", "norea-auto-backup-20261102000000.zip",
+            "norea-backup-20261001000000.zip", "notes.txt", "norea-auto-backup-2026.zip"] {
+            fs::write(backups.join(name), b"keep?").expect("seed");
+        }
+        let pruned = publish_auto_backup(&backups, r#"{"version":5}"#, "norea-auto-backup-20261103000000.zip", 2)
+            .expect("publish");
+        assert_eq!(pruned, ["norea-auto-backup-20261101000000.zip"]);
+        let mut names: Vec<String> = fs::read_dir(&backups).unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["norea-auto-backup-2026.zip", "norea-auto-backup-20261102000000.zip",
+            "norea-auto-backup-20261103000000.zip", "norea-backup-20261001000000.zip", "notes.txt"]);
+        let published = unpack_backup_path(backups.join("norea-auto-backup-20261103000000.zip").to_string_lossy().into_owned())
+            .expect("unpack published backup");
+        assert_eq!(published.manifest_json, r#"{"version":5}"#);
+    }
+
+    #[test]
+    fn auto_backup_rejects_foreign_names_and_keeps_old_backups_when_the_write_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backups = dir.path().join("backups");
+        for name in ["../escape.zip", "norea-auto-backup-1.zip", "other.zip"] {
+            assert!(publish_auto_backup(&backups, "{}", name, 5).is_err(), "{name}");
+        }
+        assert!(publish_auto_backup(&backups, "{}", "norea-auto-backup-20261103000000.zip", 0).is_err());
+        fs::create_dir_all(&backups).expect("create backups");
+        fs::write(backups.join("norea-auto-backup-20261101000000.zip"), b"old").expect("seed");
+        fs::create_dir_all(backups.join("norea-auto-backup-20261103000000.zip")).expect("block target");
+        assert!(publish_auto_backup(&backups, "{}", "norea-auto-backup-20261103000000.zip", 1).is_err());
+        assert!(backups.join("norea-auto-backup-20261101000000.zip").is_file());
+        assert!(!backups.join(".norea-auto-backup-20261103000000.zip.partial").exists());
     }
 
     fn test_limits() -> BackupArchiveLimits {

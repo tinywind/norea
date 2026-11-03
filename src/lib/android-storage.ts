@@ -125,6 +125,13 @@ interface AndroidStorageBridge {
     newName: string,
     allowMissing: boolean,
   ) => void;
+  publishAutoBackup: (
+    requestId: string,
+    rootUri: string,
+    inputPath: string,
+    fileName: string,
+    keep: number,
+  ) => void;
   removeChapterStorageDirectory: (
     requestId: string,
     rootUri: string,
@@ -1023,6 +1030,23 @@ export async function rollbackAndroidStorageRestore(
 ): Promise<void> {
   const root = await androidStorageRoot();
   parseStorageResponse(androidStorageBridge().rollbackRestore(root, token));
+}
+
+/**
+ * Copies a packed backup from the app cache into `backups/` of the storage
+ * folder under a temporary name, renames it to `fileName`, then deletes the
+ * oldest automatic backups beyond `keep`.
+ */
+export async function publishAndroidAutoBackup(
+  inputPath: string,
+  fileName: string,
+  keep: number,
+): Promise<void> {
+  const root = await androidStorageRoot();
+  const bridge = androidStorageBridge();
+  await runAndroidStorageOperation((requestId) =>
+    bridge.publishAutoBackup(requestId, root, inputPath, fileName, keep),
+  );
 }
 
 export async function renameAndroidStoragePath(

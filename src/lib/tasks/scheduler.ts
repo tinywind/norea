@@ -2343,7 +2343,7 @@ export class TaskScheduler {
     context: TaskRunContext,
   ): Promise<unknown> {
     if (entry.record.lane !== "source" || !entry.record.source) {
-      if (entry.record.kind === "backup.export" || entry.record.kind === "backup.restore") {
+      if (entry.record.kind === "backup.export" || entry.record.kind === "backup.auto" || entry.record.kind === "backup.restore") {
         return runExclusiveChapterStorageOperation(
           { kind: "all" }, context.signal, () => entry.spec.run(context),
         );

@@ -36,6 +36,11 @@ export function defaultBackupFilename(now: Date = new Date()): string {
   return `norea-backup-${localTimestamp(now)}.zip`;
 }
 
+/** `norea-auto-backup-yyyyMMddHHmmss.zip`, the only names automatic backup prunes. */
+export function automaticBackupFilename(now: Date = new Date()): string {
+  return `norea-auto-backup-${localTimestamp(now)}.zip`;
+}
+
 /**
  * Run the full export flow: file picker, DB snapshot, then zip pack.
  *

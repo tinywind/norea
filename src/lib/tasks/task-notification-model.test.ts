@@ -100,6 +100,27 @@ describe("incremental task notifications", () => {
     expect(tracker.tray(t, metadata).items).toHaveLength(1);
   });
 
+  it("raises only a failed automatic backup, with its reason, opening backup settings", () => {
+    const backup = (id: string) => task(id, { lane: "main", kind: "backup.auto", status: "running", source: undefined });
+    const ok = backup("ok");
+    const tracker = new TaskNotificationTracker(snapshot([ok]));
+    expect(tracker.groups(t, snapshot())).toEqual([]);
+    tracker.update({ task: { ...ok, status: "succeeded" }, previousStatus: "running" });
+    expect(tracker.takeCompletions(t)).toEqual([]);
+
+    const failed = backup("failed");
+    tracker.update({ task: failed, previousStatus: "queued" });
+    tracker.update({ task: { ...failed, status: "failed", error: "Storage folder is not writable." }, previousStatus: "running" });
+    expect(tracker.takeCompletions(t)).toEqual([expect.objectContaining({
+      key: "backup", failed: 1,
+      action: { type: "openBackupSettings" },
+      title: "tasks.notification.backupFailed:{}",
+      body: "Storage folder is not writable.",
+      route: "/settings?section=backup",
+    })]);
+    expect(taskNotificationRouteForTask(failed)).toBe("/settings?section=backup");
+  });
+
   it("keeps paused groups visible without producing a completion", () => {
     const tracker = new TaskNotificationTracker(snapshot([task("waiting")]));
     expect(tracker.groups(t, snapshot([], { pausedTaskGroups: ["downloads"] }))[0]).toMatchObject({
@@ -108,17 +129,17 @@ describe("incremental task notifications", () => {
     expect(tracker.takeCompletions(t)).toEqual([]);
   });
 
-  it("counts metadata child outcomes instead of a successful aggregate wrapper", () => {
-    const aggregate = task("aggregate", { lane: "main", kind: "library.refreshMetadata", status: "running", progress: { current: 0, total: 2 } });
-    const good = task("good", { kind: "source.refreshNovel" });
-    const bad = task("bad", { kind: "source.refreshNovel" });
+  it("counts check child outcomes instead of a successful aggregate wrapper", () => {
+    const aggregate = task("aggregate", { lane: "main", kind: "library.checkUpdates", status: "running", progress: { current: 0, total: 2 } });
+    const good = task("good", { kind: "source.checkLibraryUpdates" });
+    const bad = task("bad", { kind: "source.checkLibraryUpdates" });
     const tracker = new TaskNotificationTracker(snapshot([aggregate, good, bad]));
     tracker.update({ task: { ...good, status: "succeeded" }, previousStatus: "queued" });
     tracker.update({ task: { ...bad, status: "failed" }, previousStatus: "queued" });
     expect(tracker.takeCompletions(t)).toEqual([]);
     tracker.update({ task: { ...aggregate, status: "succeeded", progress: { current: 2, total: 2 } }, previousStatus: "running" });
     expect(tracker.takeCompletions(t)).toMatchObject([
-      { key: "libraryMetadata", succeeded: 1, failed: 1, cancelled: 0, total: 2 },
+      { key: "libraryUpdates", succeeded: 1, failed: 1, cancelled: 0, total: 2 },
     ]);
   });
 
@@ -156,7 +177,6 @@ describe("task notification routes", () => {
     ["source.search", "/downloads?view=queue"],
     ["source.globalSearch", "/downloads?view=queue"],
     ["library.checkUpdates", "/updates"],
-    ["library.refreshMetadata", "/updates"],
     ["plugin.install", "/downloads?view=queue"],
   ] as const)("routes %s notifications to %s", (kind, route) => {
     expect(taskNotificationRouteForTask(task(kind, { kind }))).toBe(route);

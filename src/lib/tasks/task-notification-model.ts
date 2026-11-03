@@ -18,6 +18,7 @@ import type {
 
 export type { TaskNotificationGroupKey } from "./task-types";
 export type TaskNotificationRoute =
+  | "/settings?section=backup"
   | "/downloads?view=queue"
   | "/downloads?view=storage"
   | "/updates";
@@ -57,7 +58,7 @@ export interface TrayTaskProgressPayload {
 }
 
 const TASK_GROUP_ORDER: TaskNotificationGroupKey[] = [
-  "downloads", "search", "libraryUpdates", "libraryMetadata",
+  "downloads", "search", "libraryUpdates", "libraryMetadata", "backup",
 ];
 
 interface ProgressTotals {
@@ -81,6 +82,8 @@ interface NotificationGroupState {
   batches: Map<string, ChapterDownloadBatchProgressEvent>;
   batchProgress: ChapterDownloadBatchProgress;
   succeededSubjects: Map<string, TaskNotificationSucceededSubject>;
+  /** The reason the latest failed task in the group gave. */
+  lastError?: string;
 }
 
 function emptyResults(): ChapterDownloadBatchResult {
@@ -161,7 +164,7 @@ export class TaskNotificationTracker {
     this.pausedGroups = new Set(snapshot.pausedTaskGroups ?? []);
     return TASK_GROUP_ORDER.flatMap(key => {
       const state = this.states.get(key);
-      if (!state || !hasActiveWork(state)) return [];
+      if (!state || !hasActiveWork(state) || key === "backup") return [];
       const progress = groupProgress(key, state);
       const results = groupResults(state);
       const detail = groupDetail(state);
@@ -189,7 +192,9 @@ export class TaskNotificationTracker {
       const state = this.states.get(key);
       if (!state || hasActiveWork(state) || this.pausedGroups.has(key)) continue;
       const results = groupResults(state);
-      if (results.total > 0) {
+      if (key === "backup") {
+        if (results.failed > 0) completions.push(backupFailureCompletion(t, results, state));
+      } else if (results.total > 0) {
         completions.push({
           key, ...results,
           action: taskNotificationCompletionAction(key, results, state.succeededSubjects.values()),
@@ -232,6 +237,7 @@ function updateTaskContribution(state: NotificationGroupState, task: TaskRecord,
     if (direction > 0) details.set(task.id, task);
     else details.delete(task.id);
   }
+  if (task.status === "failed" && direction > 0 && task.error) state.lastError = task.error;
   if (task.status === "succeeded") {
     if (direction > 0) {
       state.succeededSubjects.set(task.id, { chapterId: task.subject?.chapterId, novelId: task.subject?.novelId });
@@ -327,6 +333,7 @@ export function taskNotificationCompletionAction(
 ): TaskNotificationAction {
   const queue: TaskNotificationAction = { type: "openTasks" };
   if (key === "libraryUpdates") return { type: "openUpdates" };
+  if (key === "backup") return { type: "openBackupSettings" };
   if (key === "downloads" && results.failed > 0) return { type: "openAttention" };
   if (key !== "downloads" || results.succeeded === 0) return queue;
   let novelId: number | undefined;
@@ -449,7 +456,23 @@ function trayPayload(groups: readonly ActiveTaskNotificationGroup[], t: TaskNoti
   };
 }
 
+/** Automatic backups notify only a failure, with its reason, opening Settings > Backup. */
+function backupFailureCompletion(
+  t: TaskNotificationTranslate,
+  results: ChapterDownloadBatchResult,
+  state: NotificationGroupState,
+): TaskNotificationCompletion {
+  return {
+    key: "backup", ...results,
+    action: { type: "openBackupSettings" },
+    title: t("tasks.notification.backupFailed"),
+    body: state.lastError ?? t("common.actionFailed"),
+    route: "/settings?section=backup",
+  };
+}
+
 function taskNotificationGroupRoute(key: TaskNotificationGroupKey): TaskNotificationRoute {
+  if (key === "backup") return "/settings?section=backup";
   return key === "downloads"
     ? "/downloads?view=storage"
     : key === "search"
@@ -459,6 +482,7 @@ function taskNotificationGroupRoute(key: TaskNotificationGroupKey): TaskNotifica
 
 function taskNotificationGroupTitle(t: TaskNotificationTranslate, key: TaskNotificationGroupKey): string {
   switch (key) {
+    case "backup": return t("tasks.notification.backup");
     case "downloads": return t("tasks.notification.downloads");
     case "libraryMetadata": return t("tasks.notification.libraryMetadata");
     case "libraryUpdates": return t("tasks.notification.libraryUpdates");

@@ -196,7 +196,7 @@ internal class AndroidContentUriFiles(
     return file
   }
 
-  private fun containedAppCacheFile(path: String): File {
+  fun containedAppCacheFile(path: String): File {
     val root = context.cacheDir.canonicalFile
     val file = File(path).canonicalFile
     require(file.path == root.path || file.path.startsWith(root.path + File.separator)) {

@@ -20,6 +20,7 @@ internal class AndroidStorageBridge(
   private val readerMediaCache: AndroidReaderMediaCache,
 ) {
   private val contentFiles = AndroidContentUriFiles(context, storage)
+  private val autoBackups = AndroidAutoBackups(context, storage, contentFiles)
   private val contentResolver = context.contentResolver
   private val zipFiles = AndroidStorageZipFiles(contentResolver, storage)
   private val mediaStore = AndroidChapterMediaStore(contentResolver, storage)
@@ -146,6 +147,11 @@ internal class AndroidStorageBridge(
     maxBytes: String,
   ): String = storageResponse {
     contentFiles.writeContentUriFileCapped(uri, inputPath, mimeType, maxBytes)
+  }
+
+  @JavascriptInterface
+  fun publishAutoBackup(requestId: String, rootUri: String, inputPath: String, fileName: String, keep: Int) {
+    submitStorageOperation(requestId) { autoBackups.publish(rootUri, inputPath, fileName, keep) }
   }
 
   @JavascriptInterface

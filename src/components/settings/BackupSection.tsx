@@ -1,4 +1,4 @@
-import { Stack } from "@mantine/core";
+import { Select, Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ContentServerSettings } from "../ContentServerSettings";
@@ -13,8 +13,15 @@ import { exportBackupToFile, importBackupFromFile } from "../../lib/backup/io";
 import { describeError } from "../../lib/errors";
 import { pluginManager } from "../../lib/plugins/manager";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
-import { useTranslation } from "../../i18n";
+import { formatDateTimeForLocale, useTranslation } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
+import {
+  AUTO_BACKUP_KEEP_OPTIONS,
+  DEFAULT_AUTO_BACKUP_KEEP,
+  normalizeAutoBackupSchedule,
+  useAutoBackupStore,
+  type AutoBackupSchedule,
+} from "../../store/auto-backup";
 import { useBrowseStore } from "../../store/browse";
 import { useLibraryStore } from "../../store/library";
 import { useNotificationStore } from "../../store/notifications";
@@ -40,6 +47,75 @@ async function refreshImportedDataQueries(
 ): Promise<void> {
   queryClient.removeQueries({ type: "inactive" });
   await queryClient.invalidateQueries({ refetchType: "active" });
+}
+
+const SCHEDULE_LABEL_KEYS = {
+  off: "settings.backup.auto.off",
+  daily: "settings.backup.auto.daily",
+  weekly: "settings.backup.auto.weekly",
+} as const satisfies Record<AutoBackupSchedule, string>;
+
+function AutomaticBackupSettings() {
+  const { locale, t } = useTranslation();
+  const confirm = useConfirm();
+  const autoBackup = useAutoBackupStore();
+
+  const changeSchedule = async (value: string | null) => {
+    const schedule = normalizeAutoBackupSchedule(value);
+    if (autoBackup.schedule === "off" && schedule !== "off") {
+      const confirmed = await confirm({
+        title: t("settings.backup.auto.enableTitle"),
+        message: t("settings.backup.auto.coverage"),
+        confirmLabel: t("settings.backup.auto.enable"),
+      });
+      if (!confirmed) return;
+    }
+    autoBackup.setSchedule(schedule);
+  };
+
+  const status = autoBackup.lastSuccessAt === null
+    ? t("settings.backup.auto.never")
+    : t("settings.backup.auto.last", {
+        time: formatDateTimeForLocale(locale, new Date(autoBackup.lastSuccessAt)),
+      });
+
+  return (
+    <SettingsSection title={t("settings.backup.auto.title")}>
+      <SettingsFieldRow
+        label={t("settings.backup.auto.schedule.label")}
+        description={t("settings.backup.auto.schedule.description")}
+        status={autoBackup.schedule === "off" ? null : status}
+        error={autoBackup.lastError === null
+          ? null
+          : t("settings.backup.auto.failed", { error: autoBackup.lastError })}
+      >
+        <Select
+          allowDeselect={false}
+          data={(["off", "daily", "weekly"] as const).map((value) => ({
+            value,
+            label: t(SCHEDULE_LABEL_KEYS[value]),
+          }))}
+          value={autoBackup.schedule}
+          onChange={(value) => void changeSchedule(value)}
+        />
+      </SettingsFieldRow>
+      {autoBackup.schedule === "off" ? null : (
+        <SettingsFieldRow
+          label={t("settings.backup.auto.keep.label")}
+          description={t("settings.backup.auto.keep.description")}
+        >
+          <Select
+            allowDeselect={false}
+            data={[...new Set([...AUTO_BACKUP_KEEP_OPTIONS, autoBackup.keep])]
+              .sort((a, b) => a - b)
+              .map((count) => ({ value: String(count), label: String(count) }))}
+            value={String(autoBackup.keep)}
+            onChange={(value) => autoBackup.setKeep(Number(value ?? DEFAULT_AUTO_BACKUP_KEEP))}
+          />
+        </SettingsFieldRow>
+      )}
+    </SettingsSection>
+  );
 }
 
 export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
@@ -170,6 +246,8 @@ export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           </SettingsInlineControls>
         </SettingsFieldRow>
       </SettingsSection>
+
+      <AutomaticBackupSettings />
 
       <ContentServerSettings />
     </Stack>
