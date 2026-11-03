@@ -198,9 +198,7 @@ export function LibraryCommandSearch({
         >
           x
         </button>
-      ) : (
-        <kbd>Ctrl K</kbd>
-      )}
+      ) : null}
     </label>
   );
 }

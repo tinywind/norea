@@ -123,7 +123,6 @@ export function CategorySubpanel({
         </div>
       </ScrollArea>
       <div className="norea-library-subpanel-footer">
-        <span>{t("library.footer.shortcuts")}</span>
         <UnstyledButton onClick={onOpenDrawer}>
           {t("library.manageCategories")}
         </UnstyledButton>

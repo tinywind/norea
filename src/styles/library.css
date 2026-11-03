@@ -437,21 +437,17 @@
   opacity: 1;
 }
 
-.norea-library-command-search kbd,
 .norea-library-command-search button {
+  background: transparent;
   border: 1px solid var(--norea-design-rule-strong);
   border-radius: 0.1875rem;
   color: var(--norea-design-ink-muted);
+  cursor: pointer;
   flex: 0 0 auto;
   font-family: var(--norea-font-meta);
   font-size: 0.625rem;
   line-height: 1.2;
   padding: 0.0625rem 0.3125rem;
-}
-
-.norea-library-command-search button {
-  background: transparent;
-  cursor: pointer;
 }
 
 .norea-library-view-toggle {
@@ -1333,10 +1329,6 @@
     flex: none;
     min-width: 0;
     width: 100%;
-  }
-
-  .norea-library-mobile-search-row .norea-library-command-search kbd {
-    display: none;
   }
 
   .norea-library-body {

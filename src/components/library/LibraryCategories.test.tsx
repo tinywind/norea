@@ -5,7 +5,8 @@ import { expect, it, vi } from "vitest";
 import en from "../../../strings/languages/en/app.json";
 import ko from "../../../strings/languages/ko/app.json";
 import type { LibraryNovelSummary } from "../../db/queries/novel";
-import { getLibraryTags, LibraryTagFilters } from "./LibraryCategories";
+import { CategorySubpanel, getLibraryTags, LibraryTagFilters } from "./LibraryCategories";
+import { LibraryCommandSearch } from "./LibraryFilters";
 
 const summary: LibraryNovelSummary = {
   completeNovels: 0,
@@ -36,4 +37,22 @@ it.each([en, ko])("renders the localized repair tag with its work count and sele
   expect(repair.attr("aria-pressed")).toBe("true");
   expect(repair.find("span").last().text()).toBe("2");
   expect($("button[aria-pressed=true]")).toHaveLength(1);
+});
+
+it("renders no keyboard shortcut hints without matching handlers", () => {
+  const t = (key: string) => key;
+  const html = renderToStaticMarkup(
+    <MantineProvider>
+      <LibraryCommandSearch onChange={vi.fn()} value="" />
+      <CategorySubpanel
+        activeId={null} activeTags={[]} allCount={0} categories={[]} error={null} loading={false}
+        onCreate={vi.fn()} onDelete={vi.fn()} onOpenDrawer={vi.fn()} onRename={vi.fn()} onSelect={vi.fn()}
+        onToggleTag={vi.fn()} t={t} tags={[]} uncategorizedCount={0}
+      />
+    </MantineProvider>,
+  );
+  const $ = load(html);
+  expect($("kbd")).toHaveLength(0);
+  expect($(".norea-library-subpanel-footer").text()).toBe("library.manageCategories");
+  expect(en["library.search.placeholder"]).not.toMatch(/jump/i);
 });
