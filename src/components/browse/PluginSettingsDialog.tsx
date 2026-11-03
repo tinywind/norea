@@ -1,8 +1,10 @@
 import { Modal } from "@mantine/core";
+import { useCallback, useRef } from "react";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import type { Plugin } from "../../lib/plugins/types";
 import { PluginSettingsEditor } from "../PluginSettingsEditor";
+import { useConfirm } from "../ui/ConfirmDialog";
 
 interface PluginSettingsDialogProps {
   onClose: () => void;
@@ -10,15 +12,38 @@ interface PluginSettingsDialogProps {
   plugin: Plugin | null;
 }
 
-/** The plugin settings form in a dialog; Android back closes it while open. */
+/**
+ * The plugin settings form in a dialog; Android back closes it while open.
+ * Closing with unsaved changes asks before discarding them.
+ */
 export function PluginSettingsDialog({ onClose, onSaved, plugin }: PluginSettingsDialogProps) {
   const { t } = useTranslation();
-  useOverlayBackNavigation(plugin !== null, onClose);
+  const confirm = useConfirm();
+  const dirtyRef = useRef(false);
+  const handleDirtyChange = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty;
+  }, []);
+
+  const requestClose = async () => {
+    if (dirtyRef.current) {
+      const discard = await confirm({
+        cancelLabel: t("pluginSettings.discard.keep"),
+        confirmLabel: t("pluginSettings.discard.confirm"),
+        danger: true,
+        message: t("pluginSettings.discard.message"),
+        title: t("pluginSettings.discard.title"),
+      });
+      if (!discard) return;
+    }
+    dirtyRef.current = false;
+    onClose();
+  };
+  useOverlayBackNavigation(plugin !== null, () => void requestClose());
 
   return (
     <Modal
       opened={plugin !== null}
-      onClose={onClose}
+      onClose={() => void requestClose()}
       size="lg"
       title={t("pluginSettings.title", { name: plugin?.name ?? "" })}
     >
@@ -26,7 +51,10 @@ export function PluginSettingsDialog({ onClose, onSaved, plugin }: PluginSetting
         <PluginSettingsEditor
           key={plugin.id}
           plugin={plugin}
+          onCancel={() => void requestClose()}
+          onDirtyChange={handleDirtyChange}
           onSaved={() => {
+            dirtyRef.current = false;
             onClose();
             onSaved?.();
           }}

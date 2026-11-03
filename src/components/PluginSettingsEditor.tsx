@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import {
   PasswordInput,
   Select,
@@ -26,6 +26,8 @@ type PluginSettingValue = string | boolean;
 
 interface PluginSettingsEditorProps {
   plugin: Plugin;
+  onCancel?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
 }
 
@@ -94,6 +96,8 @@ function initialValue(
 
 export function PluginSettingsEditor({
   plugin,
+  onCancel,
+  onDirtyChange,
   onSaved,
 }: PluginSettingsEditorProps) {
   const { t } = useTranslation();
@@ -110,7 +114,7 @@ export function PluginSettingsEditor({
         } => entry !== null),
     [plugin],
   );
-  const [values, setValues] = useState<Record<string, PluginSettingValue>>(
+  const [savedValues, setSavedValues] = useState<Record<string, PluginSettingValue>>(
     () =>
       Object.fromEntries(
         settings.map(({ key, definition }) => [
@@ -119,6 +123,12 @@ export function PluginSettingsEditor({
         ]),
       ),
   );
+  const [values, setValues] = useState(savedValues);
+  const dirty = settings.some(({ key }) => values[key] !== savedValues[key]);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   if (settings.length === 0) {
     return <Text c="dimmed">{t("pluginSettings.empty")}</Text>;
@@ -194,7 +204,13 @@ export function PluginSettingsEditor({
       })}
       <SettingsFieldRow>
         <SettingsInlineControls>
+          {onCancel ? (
+            <TextButton onClick={onCancel} variant="subtle">
+              {t("common.cancel")}
+            </TextButton>
+          ) : null}
           <TextButton
+            disabled={!dirty}
             onClick={() => {
               for (const [key, value] of Object.entries(values)) {
                 if (value === "") {
@@ -203,6 +219,7 @@ export function PluginSettingsEditor({
                   setPluginInputValue(plugin.id, key, String(value));
                 }
               }
+              setSavedValues(values);
               showSettingsToast("ok", t("settings.toast.saved"));
               onSaved?.();
             }}
