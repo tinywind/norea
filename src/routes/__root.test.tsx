@@ -70,6 +70,7 @@ vi.mock("../components/SiteBrowserOverlay", () => ({ SiteBrowserOverlay: () => n
 vi.mock("../components/TaskNotifications", () => ({ TaskNotifications: () => null }));
 vi.mock("../components/ui/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("../components/library/use-window-file-drop-import", () => ({ useWindowFileDropImport: () => undefined }));
+vi.mock("../components/runtime/use-first-run-setup-redirect", () => ({ useFirstRunSetupRedirect: () => undefined }));
 vi.mock("./browse", () => ({ BrowsePage: () => null }));
 vi.mock("./downloads", () => ({
   DownloadsPage: ({ view }: { view: string }) => (

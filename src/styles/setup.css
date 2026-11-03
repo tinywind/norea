@@ -1,0 +1,47 @@
+.norea-setup-page {
+  --norea-page-block: var(--norea-space-4);
+}
+
+.norea-setup-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  min-height: var(--norea-control-md);
+}
+
+.norea-setup-step {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+}
+
+.norea-setup-body {
+  display: grid;
+  gap: var(--norea-space-4);
+}
+
+.norea-setup-title {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+  margin: 0;
+}
+
+.norea-setup-copy {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-md);
+  line-height: var(--norea-leading-normal);
+}
+
+.norea-setup-error {
+  color: var(--norea-color-danger);
+  font-size: var(--norea-text-sm);
+}
+
+.norea-setup-footer {
+  background: var(--norea-color-bg);
+  bottom: 0;
+  padding-block: var(--norea-space-3);
+  position: sticky;
+}

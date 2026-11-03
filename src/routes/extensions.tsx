@@ -574,6 +574,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
           onLanguagesChange={setPluginLanguageFilter}
           onRetry={() => refreshAvailablePlugins(queryClient)}
           onSetRepository={openRepositoryDialog}
+          onSetUpSources={() => void navigate({ to: "/setup" })}
           selectedLanguages={pluginLanguageFilter}
         />
       </PageFrame>
@@ -904,6 +905,7 @@ interface AvailableSectionProps {
   onLanguagesChange: (languages: string[]) => void;
   onRetry: () => void;
   onSetRepository: () => void;
+  onSetUpSources: () => void;
   selectedLanguages: readonly string[];
 }
 
@@ -924,6 +926,7 @@ export function AvailableSection({
   onLanguagesChange,
   onRetry,
   onSetRepository,
+  onSetUpSources,
   selectedLanguages,
 }: AvailableSectionProps) {
   const { t } = useTranslation();
@@ -996,6 +999,7 @@ export function AvailableSection({
         <StateView
           action={{ label: t("browse.setRepository"), onClick: onSetRepository }}
           message={t("browse.noAvailablePlugins.noRepository")}
+          secondaryAction={{ label: t("setup.entry"), onClick: onSetUpSources }}
           title={t("browse.noAvailablePlugins.title")}
         />
       ) : loading ? (

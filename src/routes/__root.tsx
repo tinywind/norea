@@ -12,6 +12,7 @@ import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
 import { useWindowFileDropImport } from "../components/library/use-window-file-drop-import";
+import { useFirstRunSetupRedirect } from "../components/runtime/use-first-run-setup-redirect";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import {
   BrowseIcon,
@@ -294,6 +295,8 @@ export function RootLayout() {
     }),
   });
   const pathname = location.pathname;
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
   const search = asSearchRecord(location.search);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -364,6 +367,8 @@ export function RootLayout() {
       onRepoAdd: (repoUrl) => {
         if (disposed) return;
         useBrowseStore.getState().setPendingRepoUrl(repoUrl);
+        // The first-run setup prefills its repository step from the pending URL.
+        if (pathnameRef.current === "/setup") return;
         void navigate({ to: "/browse/extensions", search: {} });
       },
       onTaskNotificationAction: action => {
@@ -483,6 +488,8 @@ export function RootLayout() {
   const readerActive = pathname === "/reader";
   useBodyFlag("reader-active", readerActive);
   useWindowFileDropImport(!isAndroidRuntime());
+  useFirstRunSetupRedirect(pathname);
+  const setupActive = pathname === "/setup";
 
   return (
     <AppShell
@@ -491,7 +498,7 @@ export function RootLayout() {
           ? { sm: "3.5rem", "1200px": "11.5rem" }
           : "3.5rem",
         breakpoint: "sm",
-        collapsed: { mobile: true, desktop: readerActive },
+        collapsed: { mobile: true, desktop: readerActive || setupActive },
       }}
       padding={0}
     >
@@ -589,6 +596,7 @@ export function RootLayout() {
       </AppShell.Main>
       <nav
         className="norea-mobile-nav"
+        data-hidden={setupActive}
         data-reader-active={readerActive}
         data-show-labels={showLabelsInNav}
         aria-label={t("nav.primary")}

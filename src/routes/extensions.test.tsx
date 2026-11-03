@@ -47,6 +47,7 @@ const availableProps = {
   onLanguagesChange: vi.fn(),
   onRetry: vi.fn(),
   onSetRepository: vi.fn(),
+  onSetUpSources: vi.fn(),
   selectedLanguages: [],
 };
 
@@ -93,6 +94,15 @@ describe("Extensions available plugins", () => {
 
     expect($("body").text()).toContain("No plugin matches the name filter and the selected languages.");
     expect($("button").filter((_, button) => $(button).text() === "Clear filters")).toHaveLength(1);
+  });
+
+  it("offers the guided source setup when no repository is set", () => {
+    const $ = render(
+      <AvailableSection {...availableProps} entries={[]} hasRepository={false} installableCount={0} />,
+    );
+
+    expect($("button").filter((_, button) => $(button).text() === "Set up sources")).toHaveLength(1);
+    expect($("button").filter((_, button) => $(button).text() === "Set repository")).toHaveLength(1);
   });
 
   it("does not show the repository URL or versions on multi-source rows", () => {

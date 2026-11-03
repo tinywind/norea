@@ -18,6 +18,7 @@ import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
 import { MorePage } from "./routes/more";
 import { SettingsPage } from "./routes/settings";
+import { SetupPage } from "./routes/setup";
 import { UpdatesPage } from "./routes/updates";
 
 const rootRoute = createRootRoute({
@@ -104,6 +105,12 @@ const moreRoute = createRoute({
   component: MorePage,
 });
 
+const setupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/setup",
+  component: SetupPage,
+});
+
 const sourceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/source",
@@ -123,6 +130,7 @@ const routeTree = rootRoute.addChildren([
   downloadsRoute,
   moreRoute,
   sourceRoute,
+  setupRoute,
 ]);
 
 export const router = createRouter({ routeTree });

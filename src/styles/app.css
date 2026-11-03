@@ -392,7 +392,8 @@ a {
   z-index: var(--norea-z-nav);
 }
 
-.norea-mobile-nav[data-reader-active="true"] {
+.norea-mobile-nav[data-reader-active="true"],
+.norea-mobile-nav[data-hidden="true"] {
   display: none;
 }
 
