@@ -363,6 +363,64 @@ describe("useReaderStore", () => {
     expect(effectiveAppearance.lineHeight).toBe(1.6);
   });
 
+  it("starts a scope from what it inherits and keeps a scope that is already on", () => {
+    const state = useReaderStore.getState();
+    useReaderStore.setState({
+      readerSettingsByNovel: { 7: { appearance: { textSize: 40 }, enabled: false } },
+    });
+
+    state.startNovelReaderSettings(7);
+    state.startSourceReaderSettings("source-a");
+    expect(useReaderStore.getState().readerSettingsByNovel[7]).toEqual({ enabled: true });
+    expect(useReaderStore.getState().readerSettingsBySource["source-a"]).toEqual({ enabled: true });
+
+    state.setNovelAppearance(7, { textSize: 30 }, READER_APPEARANCE_DEFAULTS);
+    state.startNovelReaderSettings(7);
+    expect(useReaderStore.getState().readerSettingsByNovel[7]?.appearance?.textSize).toBe(30);
+  });
+
+  it("copies a novel's effective settings, source values included, to all novels", () => {
+    const state = useReaderStore.getState();
+    state.setSourceAppearance("source-a", { lineHeight: 2 });
+    state.setSourceGeneral("source-a", { pageReader: true });
+    state.startNovelReaderSettings(7);
+    state.setNovelAppearance(7, { textSize: 30 }, {
+      ...READER_APPEARANCE_DEFAULTS,
+      lineHeight: 2,
+    });
+
+    state.copyReaderSettingsToGlobal({ kind: "novel", novelId: 7, sourceId: "source-a" });
+
+    const next = useReaderStore.getState();
+    expect(next.appearance.textSize).toBe(30);
+    expect(next.appearance.lineHeight).toBe(2);
+    expect(next.general.pageReader).toBe(true);
+    expect(next.readerSettingsByNovel[7]?.enabled).toBe(false);
+    expect(next.readerSettingsBySource["source-a"]?.enabled).toBe(true);
+  });
+
+  it("copies a source's settings to all novels and turns the source override off", () => {
+    const state = useReaderStore.getState();
+    state.setSourceAppearance("source-a", { textSize: 20 });
+
+    state.copyReaderSettingsToGlobal({ kind: "source", sourceId: "source-a" });
+
+    expect(useReaderStore.getState().appearance.textSize).toBe(20);
+    expect(useReaderStore.getState().readerSettingsBySource["source-a"]?.enabled).toBe(false);
+  });
+
+  it("does not copy a scope whose override is off", () => {
+    const state = useReaderStore.getState();
+    useReaderStore.setState({
+      readerSettingsByNovel: { 7: { appearance: { textSize: 40 }, enabled: false } },
+    });
+    const before = useReaderStore.getState();
+
+    state.copyReaderSettingsToGlobal({ kind: "novel", novelId: 7 });
+
+    expect(useReaderStore.getState()).toBe(before);
+  });
+
   it("setNovelPageIndex floors negatives to 1 and rounds fractional input", () => {
     useReaderStore.getState().setNovelPageIndex(7, 0);
     expect(useReaderStore.getState().novelPageIndexByNovel[7]).toBe(1);

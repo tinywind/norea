@@ -119,6 +119,33 @@ type ReaderNovelSettingsPanelTarget = Extract<
   { kind: "novel" }
 >;
 
+export type ReaderSettingsScopeKind = ReaderSettingsPanelTarget["kind"];
+
+function getScopeTarget(
+  target: ReaderNovelSettingsPanelTarget,
+  scope: ReaderSettingsScopeKind,
+): ReaderSettingsPanelTarget {
+  if (scope === "novel") return target;
+  if (scope === "source" && target.sourceId) {
+    return {
+      kind: "source",
+      sourceId: target.sourceId,
+      label: target.sourceLabel ?? undefined,
+    };
+  }
+  return { kind: "global" };
+}
+
+function isScopeOn(
+  scope: ReaderSettingsScopeKind,
+  novelOverride: ReaderSettingsOverride | undefined,
+  sourceOverride: ReaderSettingsOverride | undefined,
+): boolean {
+  if (scope === "novel") return Boolean(novelOverride?.enabled);
+  if (scope === "source") return Boolean(sourceOverride?.enabled);
+  return true;
+}
+
 function getEffectiveReaderSettingsTarget(
   target: ReaderNovelSettingsPanelTarget,
   novelOverride: ReaderSettingsOverride | undefined,
@@ -213,12 +240,17 @@ export function useReaderSettingsEditor({
       ? state.readerSettingsBySource[effectiveScopeTarget.sourceId]
       : undefined,
   );
+  const [chosenScope, setChosenScope] =
+    useState<ReaderSettingsScopeKind | null>(null);
   const resolvedTarget = effectiveScopeTarget
-    ? getEffectiveReaderSettingsTarget(
-        effectiveScopeTarget,
-        readerNovelOverride,
-        readerSourceOverride,
-      )
+    ? chosenScope &&
+      isScopeOn(chosenScope, readerNovelOverride, readerSourceOverride)
+      ? getScopeTarget(effectiveScopeTarget, chosenScope)
+      : getEffectiveReaderSettingsTarget(
+          effectiveScopeTarget,
+          readerNovelOverride,
+          readerSourceOverride,
+        )
     : requestedTarget;
   const targetKind = resolvedTarget.kind;
   const scopedSourceId =
@@ -250,6 +282,15 @@ export function useReaderSettingsEditor({
   );
   const setNovelReaderSettingsEnabled = useReaderStore(
     (state) => state.setNovelReaderSettingsEnabled,
+  );
+  const startSourceReaderSettings = useReaderStore(
+    (state) => state.startSourceReaderSettings,
+  );
+  const startNovelReaderSettings = useReaderStore(
+    (state) => state.startNovelReaderSettings,
+  );
+  const copyReaderSettingsToGlobal = useReaderStore(
+    (state) => state.copyReaderSettingsToGlobal,
   );
   const setNovelGeneral = useReaderStore((state) => state.setNovelGeneral);
   const setNovelAppearance = useReaderStore(
@@ -498,15 +539,46 @@ export function useReaderSettingsEditor({
     }
   }
 
-  function handleEffectiveScopeChange(scope: string): void {
+  /** Edits another scope; a source or novel scope is turned on first. */
+  function selectEditScope(scope: ReaderSettingsScopeKind): void {
     if (!effectiveScopeTarget) return;
-    const { novelId: readerNovelId, sourceId: readerSourceId } =
-      effectiveScopeTarget;
-    setNovelReaderSettingsEnabled(readerNovelId, scope === "novel");
-    if (scope !== "novel" && readerSourceId && readerSourceOverride) {
-      setSourceReaderSettingsEnabled(readerSourceId, scope === "source");
+    if (scope === "novel") {
+      startNovelReaderSettings(effectiveScopeTarget.novelId);
+    } else if (scope === "source") {
+      if (!effectiveScopeTarget.sourceId) return;
+      startSourceReaderSettings(effectiveScopeTarget.sourceId);
     }
+    setChosenScope(scope);
   }
+
+  /** Turns the edited override off, so the reader uses what it inherits. */
+  function inheritScopeSettings(): void {
+    handleTargetSettingsEnabledChange(false);
+    setChosenScope(null);
+  }
+
+  function copyScopeSettingsToGlobal(): void {
+    if (targetKind === "source" && scopedSourceId) {
+      copyReaderSettingsToGlobal({ kind: "source", sourceId: scopedSourceId });
+    } else if (targetKind === "novel" && scopedNovelId !== null) {
+      copyReaderSettingsToGlobal({
+        kind: "novel",
+        novelId: scopedNovelId,
+        sourceId: scopedSourceId,
+      });
+    } else {
+      return;
+    }
+    setChosenScope(null);
+  }
+
+  const overridingScope: "source" | "novel" | null = !effectiveScopeTarget
+    ? null
+    : targetKind !== "novel" && readerNovelOverride?.enabled
+      ? "novel"
+      : targetKind === "global" && readerSourceOverride?.enabled
+        ? "source"
+        : null;
 
   function handleApplyTapZonePreset(presetId: ReaderTapPresetId): void {
     const preset = READER_TAP_PRESETS.find((entry) => entry.id === presetId);
@@ -572,8 +644,8 @@ export function useReaderSettingsEditor({
     effectiveScopeTarget,
     general,
     keepScopedSettings,
+    overridingScope,
     readerMode,
-    readerSourceOverride,
     readerThemes,
     resetConfirmOpen,
     scopeBadge,
@@ -584,13 +656,15 @@ export function useReaderSettingsEditor({
     targetKind,
     targetSettingsEnabled,
     applyActiveTheme,
+    copyScopeSettingsToGlobal,
     handleApplyTapZonePreset,
     handleCustomCssPresetChange,
-    handleEffectiveScopeChange,
     handleSaveCustomTheme,
     handleTargetSettingsEnabledChange,
+    inheritScopeSettings,
     openResetConfirmation,
     resetActiveReaderSettings,
+    selectEditScope,
     setActiveAppearance,
     setActiveGeneral,
     setKeepScopedSettings,
@@ -611,48 +685,13 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
     appearance,
     effectiveScopeTarget,
     general,
-    readerSourceOverride,
     setActiveAppearance,
     setActiveGeneral,
     targetKind,
   } = editor;
 
-  const scopeControl = effectiveScopeTarget ? (
-    <SegmentedToggle
-      aria-label={t("readerSettings.scope.applyTo")}
-      data={[
-        {
-          value: "novel",
-          label: t("readerSettings.scope.applyToNovel"),
-        },
-        ...(effectiveScopeTarget.sourceId && readerSourceOverride
-          ? [
-              {
-                value: "source",
-                label: t("readerSettings.scope.applyToSource"),
-              },
-            ]
-          : []),
-        {
-          value: "global",
-          label: t("readerSettings.scope.applyToAll"),
-        },
-      ]}
-      value={targetKind}
-      onChange={editor.handleEffectiveScopeChange}
-    />
-  ) : null;
-
   return {
-    scopeControl,
-    scope: scopeControl ? (
-      <SettingsFieldRow
-        label={t("readerSettings.scope.applyTo")}
-        description={editor.scopeDescription}
-      >
-        {scopeControl}
-      </SettingsFieldRow>
-    ) : (
+    scope: (
       <div
         className="norea-reader-settings-scope-card"
         data-enabled={editor.targetSettingsEnabled}

@@ -181,6 +181,11 @@ export interface ReaderSettingsOverride {
 export type ReaderNovelSettingsOverride = ReaderSettingsOverride;
 export type ReaderSourceSettingsOverride = ReaderSettingsOverride;
 
+/** A scope narrower than all novels whose settings can be copied to them. */
+export type ReaderSettingsNarrowScope =
+  | { kind: "source"; sourceId: string }
+  | { kind: "novel"; novelId: number; sourceId?: string | null };
+
 export interface MergeNovelReaderStateInput {
   sourceNovelId: number;
   targetNovelId: number;
@@ -207,6 +212,21 @@ interface ReaderState {
     settings: Partial<ReaderAppearanceSettings>,
   ) => void;
   setNovelReaderSettingsEnabled: (novelId: number, enabled: boolean) => void;
+  /**
+   * Turns the source override on starting from the values it inherits, so
+   * nothing the reader shows changes. An override that is on is kept.
+   */
+  startSourceReaderSettings: (sourceId: string) => void;
+  /**
+   * Turns the novel override on starting from the values it inherits, so
+   * nothing the reader shows changes. An override that is on is kept.
+   */
+  startNovelReaderSettings: (novelId: number) => void;
+  /**
+   * Makes a scope's effective settings the settings for all novels and turns
+   * that scope's override off, so the scope now follows all novels.
+   */
+  copyReaderSettingsToGlobal: (scope: ReaderSettingsNarrowScope) => void;
   setNovelGeneral: (
     novelId: number,
     settings: Partial<ReaderGeneralSettings>,
@@ -1041,6 +1061,73 @@ export const useReaderStore = create<ReaderState>()(
               },
             ),
           };
+        }),
+      startSourceReaderSettings: (sourceId) =>
+        set((state) =>
+          state.readerSettingsBySource[sourceId]?.enabled
+            ? state
+            : {
+                readerSettingsBySource: setSourceOverride(
+                  state.readerSettingsBySource,
+                  sourceId,
+                  { enabled: true },
+                ),
+              },
+        ),
+      startNovelReaderSettings: (novelId) =>
+        set((state) =>
+          state.readerSettingsByNovel[novelId]?.enabled
+            ? state
+            : {
+                readerSettingsByNovel: setNovelOverride(
+                  state.readerSettingsByNovel,
+                  novelId,
+                  { enabled: true },
+                ),
+              },
+        ),
+      copyReaderSettingsToGlobal: (scope) =>
+        set((state) => {
+          const sourceOverride = scope.sourceId
+            ? state.readerSettingsBySource[scope.sourceId]
+            : undefined;
+          const novelOverride =
+            scope.kind === "novel"
+              ? state.readerSettingsByNovel[scope.novelId]
+              : undefined;
+          const scopeOverride =
+            scope.kind === "novel" ? novelOverride : sourceOverride;
+          if (!scopeOverride?.enabled) return state;
+          const general = getEffectiveReaderGeneralSettings(
+            state.general,
+            sourceOverride,
+            novelOverride,
+          );
+          const appearance = getEffectiveReaderAppearanceSettings(
+            state.appearance,
+            sourceOverride,
+            novelOverride,
+          );
+          const disabled = { ...scopeOverride, enabled: false };
+          return scope.kind === "novel"
+            ? {
+                appearance,
+                general,
+                readerSettingsByNovel: setNovelOverride(
+                  state.readerSettingsByNovel,
+                  scope.novelId,
+                  disabled,
+                ),
+              }
+            : {
+                appearance,
+                general,
+                readerSettingsBySource: setSourceOverride(
+                  state.readerSettingsBySource,
+                  scope.sourceId,
+                  disabled,
+                ),
+              };
         }),
       setNovelGeneral: (novelId, settings, baseGeneral) =>
         set((state) => {

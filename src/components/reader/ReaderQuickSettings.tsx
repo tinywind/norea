@@ -1,4 +1,4 @@
-import { Tabs } from "@mantine/core";
+import { Button, Menu, Tabs } from "@mantine/core";
 import { useState } from "react";
 import type { TranslationKey } from "../../i18n";
 import { BackIconButton } from "../BackIconButton";
@@ -10,9 +10,16 @@ import {
   type ReaderSettingsContentContext,
   type ReaderSettingsEditor,
   type ReaderSettingsPanelTarget,
+  type ReaderSettingsScopeKind,
 } from "../ReaderSettingsPanel";
 import { SettingsSection } from "../SettingsPrimitives";
-import { ChevronRightIcon, MinusIcon, PlusIcon } from "../ui/icons";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  MinusIcon,
+  PlusIcon,
+} from "../ui/icons";
 
 type ReaderQuickSettingsLevel = "quick" | "more";
 type ReaderMoreSettingsSection =
@@ -21,6 +28,12 @@ type ReaderMoreSettingsSection =
   | "indicators"
   | "colors"
   | "advanced";
+
+const SCOPE_LABEL_KEYS: Record<ReaderSettingsScopeKind, TranslationKey> = {
+  global: "readerSettings.scope.applyToAll",
+  source: "readerSettings.scope.applyToSource",
+  novel: "readerSettings.scope.applyToNovel",
+};
 
 const MORE_SETTINGS_SECTIONS: Array<{
   value: ReaderMoreSettingsSection;
@@ -129,7 +142,7 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
   return (
     <div className="norea-reader-quick">
       <div className="norea-reader-quick-top">
-        {fields.scopeControl}
+        <ReaderScopeMenu editor={editor} />
         <SettingStepper
           editor={editor}
           label={t("readerSettings.quickTextSize")}
@@ -206,6 +219,89 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
         </button>
       </div>
       {fields.resetConfirmation}
+    </div>
+  );
+}
+
+/**
+ * RD23: "Applying to: <scope>" picks the scope "Aa" edits, turns a narrower
+ * scope off again, or copies it to all novels. A notice points at a narrower
+ * scope that overrides the edited one.
+ */
+function ReaderScopeMenu({ editor }: { editor: ReaderSettingsEditor }) {
+  const { t, effectiveScopeTarget, overridingScope, targetKind } = editor;
+  if (!effectiveScopeTarget) return null;
+  const scopes: ReaderSettingsScopeKind[] = effectiveScopeTarget.sourceId
+    ? ["global", "source", "novel"]
+    : ["global", "novel"];
+
+  return (
+    <div className="norea-reader-scope">
+      <Menu position="bottom-start" returnFocus shadow="md" withinPortal>
+        <Menu.Target>
+          <Button
+            className="norea-reader-scope-trigger"
+            rightSection={<ChevronDownIcon aria-hidden="true" size="1rem" />}
+            size="compact-sm"
+            variant="subtle"
+          >
+            {t("readerSettings.scope.applyingTo", {
+              scope: t(SCOPE_LABEL_KEYS[targetKind]),
+            })}
+          </Button>
+        </Menu.Target>
+        <Menu.Dropdown aria-label={t("readerSettings.scope.applyTo")}>
+          {scopes.map((scope) => (
+            <Menu.Item
+              aria-current={scope === targetKind ? "true" : undefined}
+              key={scope}
+              leftSection={
+                scope === targetKind ? (
+                  <CheckIcon aria-hidden="true" size="1.125rem" />
+                ) : (
+                  <span aria-hidden="true" className="norea-reader-scope-check-space" />
+                )
+              }
+              onClick={() => editor.selectEditScope(scope)}
+            >
+              {t(SCOPE_LABEL_KEYS[scope])}
+            </Menu.Item>
+          ))}
+          {targetKind === "global" ? null : (
+            <>
+              <Menu.Divider />
+              <Menu.Item onClick={editor.inheritScopeSettings}>
+                {t("readerSettings.scope.useInherited")}
+              </Menu.Item>
+              <Menu.Item onClick={editor.copyScopeSettingsToGlobal}>
+                {t("readerSettings.scope.useForAll")}
+              </Menu.Item>
+            </>
+          )}
+        </Menu.Dropdown>
+      </Menu>
+      {overridingScope ? (
+        <p className="norea-reader-scope-notice" role="status">
+          <span>
+            {t(
+              overridingScope === "novel"
+                ? "readerSettings.scope.novelOverrides"
+                : "readerSettings.scope.sourceOverrides",
+            )}
+          </span>
+          <Button
+            onClick={() => editor.selectEditScope(overridingScope)}
+            size="compact-sm"
+            variant="light"
+          >
+            {t(
+              overridingScope === "novel"
+                ? "readerSettings.scope.editNovel"
+                : "readerSettings.scope.editSource",
+            )}
+          </Button>
+        </p>
+      ) : null}
     </div>
   );
 }

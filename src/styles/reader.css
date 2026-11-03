@@ -831,6 +831,36 @@
   padding: var(--norea-space-2) var(--norea-space-4) var(--norea-space-3);
 }
 
+.norea-reader-scope {
+  display: grid;
+  gap: var(--norea-space-2);
+  justify-items: start;
+}
+
+.norea-reader-scope-trigger {
+  margin-inline-start: calc(-1 * var(--norea-space-2));
+}
+
+.norea-reader-scope-check-space {
+  display: inline-block;
+  width: var(--norea-icon-sm);
+}
+
+.norea-reader-scope-notice {
+  align-items: center;
+  background: var(--norea-color-surface-raised);
+  border-radius: var(--norea-radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--norea-text-sm);
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+  margin: 0;
+  padding: var(--norea-space-2) var(--norea-space-3);
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .norea-reader-quick-body {
   display: flex;
   flex: 1 1 auto;

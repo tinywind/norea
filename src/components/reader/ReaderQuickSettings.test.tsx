@@ -80,9 +80,25 @@ function openMoreSettings(content?: { kind: "html" | "pdf"; hasImages: boolean }
   return renderQuick(content);
 }
 
-function scopeSwitch(tree: ReactElement<ElementProps>[]) {
-  return tree.find((element) => element.props["aria-label"] === "readerSettings.scope.applyTo")!;
+/** The scope menu's own elements, rendered from the quick settings tree. */
+function scopeMenu(tree: ReactElement<ElementProps>[]) {
+  const menu = tree.find((element) => typeof element.type === "function" && element.type.name === "ReaderScopeMenu")!;
+  return elements((menu.type as (props: unknown) => ReactNode)(menu.props));
 }
+
+function currentScope(tree: ReactElement<ElementProps>[]) {
+  return scopeMenu(tree).find((element) => element.props["aria-current" as "title"] === "true")!.props.children;
+}
+
+function scopeItem(tree: ReactElement<ElementProps>[], label: string) {
+  return scopeMenu(tree).find((element) => element.props.children === label && element.props.onClick)!;
+}
+
+const SCOPE_LABELS = {
+  global: "readerSettings.scope.applyToAll",
+  novel: "readerSettings.scope.applyToNovel",
+  source: "readerSettings.scope.applyToSource",
+} as const;
 
 function textSizeStepper(tree: ReactElement<ElementProps>[]) {
   return tree.find((element) => element.props.label === "readerSettings.quickTextSize")!;
@@ -108,8 +124,14 @@ beforeEach(() => {
 
 it("edits global settings from the reader when no override exists", () => {
   const tree = renderQuick();
-  expect(scopeSwitch(tree).props.value).toBe("global");
-  expect(scopeSwitch(tree).props.data!.map((option) => option.value)).toEqual(["novel", "global"]);
+  expect(currentScope(tree)).toBe(SCOPE_LABELS.global);
+  const scopeLabels: readonly unknown[] = Object.values(SCOPE_LABELS);
+  expect(
+    scopeMenu(tree)
+      .filter((element) => element.props.onClick && scopeLabels.includes(element.props.children))
+      .map((element) => element.props.children),
+  ).toEqual([SCOPE_LABELS.global, SCOPE_LABELS.source, SCOPE_LABELS.novel]);
+  expect(scopeMenu(tree).some((element) => element.props.children === "readerSettings.scope.useInherited")).toBe(false);
 
   (textSizeStepper(tree).props.onChange as (value: number) => void)(24);
 
@@ -118,13 +140,16 @@ it("edits global settings from the reader when no override exists", () => {
   expect(effectiveTextSize()).toBe(24);
 });
 
-it("creates a novel override from the effective values when choosing this novel", () => {
+it("turns a novel override on from the effective values when choosing This novel", () => {
   useReaderStore.getState().setAppearance({ textSize: 24 });
-  (scopeSwitch(renderQuick()).props.onChange as (value: string) => void)("novel");
+  useReaderStore.setState({
+    readerSettingsByNovel: { [readerTarget.novelId]: { appearance: { textSize: 40 }, enabled: false } },
+  });
+  scopeItem(renderQuick(), SCOPE_LABELS.novel).props.onClick!();
 
   expect(useReaderStore.getState().readerSettingsByNovel[readerTarget.novelId]).toEqual({ enabled: true });
   const tree = renderQuick();
-  expect(scopeSwitch(tree).props.value).toBe("novel");
+  expect(currentScope(tree)).toBe(SCOPE_LABELS.novel);
   expect(textSizeStepper(tree).props.value).toBe(24);
 
   (textSizeStepper(tree).props.onChange as (value: number) => void)(30);
@@ -134,18 +159,59 @@ it("creates a novel override from the effective values when choosing this novel"
   expect(effectiveTextSize()).toBe(30);
 });
 
-it("edits an enabled source override and can switch the reader back to all novels", () => {
+it("turns a source override on when choosing This source", () => {
+  scopeItem(renderQuick(), SCOPE_LABELS.source).props.onClick!();
+
+  expect(useReaderStore.getState().readerSettingsBySource[readerTarget.sourceId]).toEqual({ enabled: true });
+  expect(currentScope(renderQuick())).toBe(SCOPE_LABELS.source);
+});
+
+it("turns the edited source override off with Use inherited settings", () => {
   useReaderStore.getState().setSourceAppearance(readerTarget.sourceId, { textSize: 20 });
   const tree = renderQuick();
-  expect(scopeSwitch(tree).props.value).toBe("source");
-  expect(scopeSwitch(tree).props.data!.map((option) => option.value)).toEqual(["novel", "source", "global"]);
+  expect(currentScope(tree)).toBe(SCOPE_LABELS.source);
   expect(textSizeStepper(tree).props.value).toBe(20);
 
-  (scopeSwitch(tree).props.onChange as (value: string) => void)("global");
+  scopeItem(tree, "readerSettings.scope.useInherited").props.onClick!();
 
   expect(useReaderStore.getState().readerSettingsBySource[readerTarget.sourceId]?.enabled).toBe(false);
-  expect(scopeSwitch(renderQuick()).props.value).toBe("global");
+  expect(currentScope(renderQuick())).toBe(SCOPE_LABELS.global);
   expect(effectiveTextSize()).toBe(useReaderStore.getState().appearance.textSize);
+});
+
+it("copies this novel's settings to all novels and lets the novel follow them", () => {
+  useReaderStore.getState().setSourceAppearance(readerTarget.sourceId, { lineHeight: 2 });
+  useReaderStore.getState().startNovelReaderSettings(readerTarget.novelId);
+  useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 }, {
+    ...useReaderStore.getState().appearance,
+    lineHeight: 2,
+  });
+
+  scopeItem(renderQuick(), "readerSettings.scope.useForAll").props.onClick!();
+
+  const state = useReaderStore.getState();
+  expect(state.appearance.textSize).toBe(30);
+  expect(state.appearance.lineHeight).toBe(2);
+  expect(state.readerSettingsByNovel[readerTarget.novelId]?.enabled).toBe(false);
+  expect(currentScope(renderQuick())).toBe(SCOPE_LABELS.source);
+  expect(effectiveTextSize()).toBe(30);
+});
+
+it("says when a narrower scope overrides the edited one and offers to edit it", () => {
+  useReaderStore.getState().startNovelReaderSettings(readerTarget.novelId);
+  useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 }, useReaderStore.getState().appearance);
+  expect(scopeMenu(renderQuick()).some((element) => element.props.children === "readerSettings.scope.novelOverrides")).toBe(false);
+
+  scopeItem(renderQuick(), SCOPE_LABELS.global).props.onClick!();
+  let tree = renderQuick();
+  expect(currentScope(tree)).toBe(SCOPE_LABELS.global);
+  expect(useReaderStore.getState().readerSettingsByNovel[readerTarget.novelId]?.enabled).toBe(true);
+  expect(scopeMenu(tree).some((element) => element.props.children === "readerSettings.scope.novelOverrides")).toBe(true);
+
+  scopeMenu(tree).find((element) => element.props.children === "readerSettings.scope.editNovel")!.props.onClick!();
+  tree = renderQuick();
+  expect(currentScope(tree)).toBe(SCOPE_LABELS.novel);
+  expect(scopeMenu(tree).some((element) => element.props.children === "readerSettings.scope.novelOverrides")).toBe(false);
 });
 
 it("keeps size, theme and mode in the first level and auto-scroll only in scroll mode", () => {
