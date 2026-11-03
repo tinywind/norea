@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { planVpnDownloadRanges } from "./vpn-download-ranges";
+import {
+  planVpnDownloadRanges,
+  VPN_DOWNLOAD_CHUNK_CHAPTERS,
+  vpnDownloadChunkCount,
+} from "./vpn-download-ranges";
 
 const catalog = (count: number) => Array.from({ length: count }, (_, index) => ({ id: index + 1 }));
+
+describe("VPN download chunks", () => {
+  it("splits a selection into chunks of at most 50 chapters, whatever the worker count", () => {
+    expect(VPN_DOWNLOAD_CHUNK_CHAPTERS).toBe(50);
+    expect([1, 50, 51, 120, 1450].map(vpnDownloadChunkCount)).toEqual([1, 1, 2, 3, 29]);
+    expect(vpnDownloadChunkCount(0)).toBe(1);
+  });
+
+  it("plans contiguous chunks that never exceed the chunk size", () => {
+    const selected = catalog(120).map(({ id }) => id);
+    const ranges = planVpnDownloadRanges(catalog(120), selected, vpnDownloadChunkCount(selected.length));
+
+    expect(ranges.map(({ startChapterId, endChapterId }) => [startChapterId, endChapterId]))
+      .toEqual([[1, 40], [41, 80], [81, 120]]);
+    expect(ranges.every(range => range.selectedChapterIds.length <= VPN_DOWNLOAD_CHUNK_CHAPTERS)).toBe(true);
+  });
+});
 
 describe("VPN download range planning", () => {
   it("assigns fixed contiguous thirds rather than alternating chapters", () => {

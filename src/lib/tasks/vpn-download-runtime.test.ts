@@ -37,6 +37,11 @@ vi.mock("../content-sync/storage-operation", () => ({
   runContentStorageOperation: async (run: () => Promise<unknown>) => { boundary.restoreEffects.push("storage-lock"); return run(); },
 }));
 vi.mock("./main-tasks", () => ({ enqueueMainTask: ({ run }: { run: () => Promise<unknown> }) => ({ promise: run() }) }));
+// Real chunks hold 50 chapters; two-chapter chunks keep multi-range behavior observable in these few-chapter works.
+vi.mock("./vpn-download-ranges", async importOriginal => ({
+  ...await importOriginal<typeof import("./vpn-download-ranges")>(),
+  vpnDownloadChunkCount: (count: number) => Math.max(1, Math.ceil(count / 2)),
+}));
 vi.mock("../../db/queries/chapter", () => ({ listChaptersByNovel: boundary.catalog }));
 vi.mock("../../db/queries/chapter-download-queue", () => ({
   listPendingVpnDownloadJobs: async () => [...boundary.pendingJobs.values()].map(job => ({ job: structuredClone(job), jobJson: JSON.stringify(job), updatedAtMs: 1 })),
@@ -428,6 +433,26 @@ describe("automatic VPN run admission", () => {
     await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
     expect(boundary.createPlan).toHaveBeenCalledTimes(1);
     await runtime.cancelVpnDownloadRun();
+  });
+
+  it("enrolls more chunks than workers and lets the one worker take them in order", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun({ ...options, workerCount: 1 });
+    const batch = interceptChapterDownloadBatch({ jobs, title: "Chunked work" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    try {
+      const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
+      expect(plan.ranges.map(range => range.chapterIds)).toEqual([[8, 2], [9, 3]]);
+      expect(boundary.enqueue.mock.calls[0]![0].id).toBe(8);
+      boundary.complete.get(8)!(); await tick();
+      boundary.complete.get(2)!();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      expect(boundary.enqueue.mock.calls[2]![0].id).toBe(9);
+      boundary.complete.get(9)!(); await tick();
+      boundary.complete.get(3)!();
+      await expect(batch.promise).resolves.toMatchObject({ succeeded: 4, cancelled: 0 });
+    } finally { await runtime.cancelVpnDownloadRun(); }
   });
 
   async function restartProcess(maxWorkers = 2) {

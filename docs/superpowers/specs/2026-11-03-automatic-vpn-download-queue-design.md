@@ -2,6 +2,8 @@
 
 Status: conversational design and written specification approved on 2026-11-03.
 
+> Where this document differs, `docs/superpowers/specs/2026-11-03-ui-ux-page-structure-design.md` §2.2.5 (System B: VPN as a per-source route) governs. New plans split work into 50-chapter chunks (V3) and may lease tested servers (V4).
+
 ## Goal and confirmed requirements
 
 The user wants downloads to carry out the requested work with little setup and

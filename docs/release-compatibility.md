@@ -63,6 +63,9 @@ requirements must be decided explicitly before implementation.
   recorded profile and an existing plan's assignment is only a preference.
   Existing plans keep their checkpoints, attempts and queue rows unchanged.
   These fields do not change the SQL schema, backup tables or source plugin format.
+  New plans split their selection into contiguous chunks of at most 50 selected
+  chapters instead of one range per worker; a chunk is an ordinary range row, so
+  plan JSON keeps its shape and existing plans keep their ranges unchanged.
 - Database migration 4 adds `chapter_download_failure`, one row per chapter with
   the last terminal download failure: its class, a redacted message summary, the
   challenged URL for challenges, the attempt count, the next automatic attempt
@@ -97,6 +100,18 @@ requirements must be decided explicitly before implementation.
   The default keep-ahead count for active library novels and the mobile-data
   choice live in the `download-goal-settings` localStorage entry, which both
   backup kinds carry with the other settings.
+- Database migration 6 rebuilds `novel_download_goal` to allow the kind `none`,
+  the user's explicit opt-out, which also stops the default keep-ahead for that
+  novel. Every existing goal row is copied unchanged inside the migration
+  transaction before the old table is dropped and the new one renamed. Removing
+  the row ("Use default") returns the novel to the default. Portable manifest
+  format 3 accepts `none` with a null `count`; archives without it read as before,
+  and an earlier build rejects an archive that holds it instead of misreading it.
+  The same migration adds `chapter_download_goal_exclusion`, one row per chapter
+  the user deleted or cancelled while a goal covered it, removed with its chapter
+  through the foreign key. Full device snapshots include it under the exact-schema
+  policy; portable backups exclude it, and their restore drops it with the
+  replaced chapter rows.
 - Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
   beside the approved `saved-profiles/` vault, with their own index and private
   files. They never write or change an O/X verdict; an entry leaves the pool when

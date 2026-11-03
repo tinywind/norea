@@ -5,6 +5,22 @@ export interface VpnDownloadRangeAssignment {
   endChapterId: number;
 }
 
+/**
+ * Selected chapters per VPN download chunk. Spec V3 starts at 50; it is a
+ * fixed app value, not a user setting, until device measurement revises it.
+ */
+export const VPN_DOWNLOAD_CHUNK_CHAPTERS = 50;
+
+/**
+ * How many contiguous chunks a work's selection splits into. Each chunk is a
+ * frozen range that leases a server only when a free worker takes it, so
+ * parallelism grows with the servers available instead of being fixed by
+ * the worker count at enrollment.
+ */
+export function vpnDownloadChunkCount(selectedChapterCount: number): number {
+  return Math.max(1, Math.ceil(selectedChapterCount / VPN_DOWNLOAD_CHUNK_CHAPTERS));
+}
+
 export interface VpnDownloadRangePlan extends VpnDownloadRangeAssignment {
   chapterIds: number[];
   selectedChapterIds: number[];

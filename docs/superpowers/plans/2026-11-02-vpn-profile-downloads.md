@@ -1,5 +1,7 @@
 # Saved VPN Profiles and Contiguous Download Ranges
 
+> Where this document differs, `docs/superpowers/specs/2026-11-03-ui-ux-page-structure-design.md` §2.2.5 (System B: VPN as a per-source route) governs. New plans split work into 50-chapter chunks (V3) and may lease tested servers (V4).
+
 > This document began as a planning-only request. The user subsequently authorized implementation, Waydroid verification, commits and push. Implementation and acceptance results are recorded in `docs/test-support/waydroid-vpn-profile-downloads.md`; the proposed defaults and original-code descriptions below preserve the planning context rather than describe the final checkout.
 
 **Goal:** Retain user-approved VPN Gate profile files and support challenge recovery, with a proposed parallel mode that assigns contiguous chapter ranges to isolated VPN/browser workers.

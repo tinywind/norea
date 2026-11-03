@@ -29,7 +29,7 @@ import { taskScheduler } from "./scheduler";
 import type { TaskHandle } from "./task-types";
 import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "./vpn-download-drafts";
-import { planVpnDownloadRanges, type VpnDownloadRangeAssignment } from "./vpn-download-ranges";
+import { planVpnDownloadRanges, vpnDownloadChunkCount, type VpnDownloadRangeAssignment } from "./vpn-download-ranges";
 import type {
   VpnDownloadLaunchOptions, VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileCandidate, VpnDownloadRangeState,
   VpnDownloadRunSnapshot, VpnDownloadWorkerRef,
@@ -900,11 +900,12 @@ function retryPendingDrafts(): void {
   }
 }
 
-function requireDraftStartSettings(rangeCount: number) {
+/** Explicit assignments are bounded by the worker limit; automatic chunks are not. */
+function requireDraftStartSettings(assignmentCount?: number) {
   const settings = useVpnDownloadStore.getState();
   if (settings.mode === "off" || !snapshot.capabilities.supported || (settings.mode === "parallel" && !snapshot.capabilities.parallelSupported)) throw new Error("Automatic VPN downloads are disabled or unsupported.");
   const cap = settings.mode === "single" ? 1 : Math.min(settings.workerCount, snapshot.capabilities.maxWorkers);
-  if (!rangeCount || rangeCount > cap) throw new Error("VPN range count exceeds the configured worker limit.");
+  if (assignmentCount !== undefined && (!assignmentCount || assignmentCount > cap)) throw new Error("VPN range count exceeds the configured worker limit.");
   return { mode: settings.mode, captchaPolicy: settings.captchaPolicy, cloudflarePolicy: settings.cloudflarePolicy };
 }
 
@@ -921,10 +922,9 @@ export async function startVpnDownloadDraft(draftId: string, assignments?: reado
     await prepareDraft(draft);
     if (drafts.get(draftId) !== draft || draft.cancelling || draft.work.userPaused || stopEpoch !== automaticStopEpoch) return;
     if (useVpnDownloadStore.getState().mode === "off") return;
-    const configured = useVpnDownloadStore.getState();
-    // Ranges lease a server only when a worker takes them, so the range count no longer depends on the saved pool.
-    const count = Math.min(configured.mode === "single" ? 1 : configured.workerCount, snapshot.capabilities.maxWorkers, draft.jobs.length);
-    const settings = requireDraftStartSettings(assignments?.length ?? count);
+    // Chunks lease a server only when a worker takes them, so their count follows the selection, not the workers or the saved pool.
+    const count = assignments?.length ?? vpnDownloadChunkCount(draft.work.selectedChapterIds.length);
+    const settings = requireDraftStartSettings(assignments?.length);
     draft.starting = "publishing";
     const ranges = planVpnDownloadRanges(draft.work.chapters, draft.work.selectedChapterIds, count, assignments);
     const id = `vpn-plan-${crypto.randomUUID()}`;
