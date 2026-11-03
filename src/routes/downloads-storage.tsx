@@ -9,6 +9,8 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   Badge,
   Box,
+  Button,
+  Checkbox,
   Collapse,
   Group,
   Loader,
@@ -17,14 +19,25 @@ import {
   Stack,
   Text,
 } from "@mantine/core";
-import {
-  DetailsGlyph,
-  RetryGlyph,
-  TrashGlyph,
-} from "../components/ActionGlyphs";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
+import { ChapterCleanupPanel } from "../components/ChapterCleanupPanel";
 import { ConsoleCover } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  DeleteDownloadIcon,
+  FilterIcon,
+  OpenWorkIcon,
+  PlayIcon,
+  RefreshIcon,
+  RepairIcon,
+  RetryIcon,
+  SelectIcon,
+  TrashIcon,
+} from "../components/ui/icons";
+import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
+import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import {
   type DownloadCacheChapter,
   type DownloadCacheNovel,
@@ -39,6 +52,7 @@ import { confirmContentDeletion } from "../store/content-deletion";
 import { showErrorToast } from "../lib/runtime/error-toast";
 import { pluginManager } from "../lib/plugins/manager";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
+import { useReaderStore } from "../store/reader";
 import {
   formatRelativeTimeForLocale,
   useTranslation,
@@ -86,12 +100,18 @@ function getCacheTotals(novels: readonly DownloadCacheNovel[]) {
   );
 }
 
-function ChevronIcon({ expanded }: { expanded: boolean }) {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
-    </svg>
-  );
+/**
+ * The downloaded chapter Read opens: where the reader left off when that chapter is
+ * stored, else the first unread one, else the first stored chapter.
+ */
+export function downloadedChapterToRead(
+  chapters: readonly DownloadCacheChapter[],
+  rememberedChapterId: number | undefined,
+): DownloadCacheChapter | undefined {
+  const ordered = [...chapters].sort((left, right) => left.position - right.position);
+  return ordered.find((chapter) => chapter.id === rememberedChapterId)
+    ?? ordered.find((chapter) => chapter.unread)
+    ?? ordered[0];
 }
 
 function DownloadCacheLoadingState() {
@@ -127,7 +147,7 @@ function DownloadCacheErrorState({
       title={t("downloads.loadFailed")}
       message={error instanceof Error ? error.message : String(error)}
       action={{
-        icon: <RetryGlyph />,
+        icon: <RetryIcon />,
         iconOnly: true,
         label: t("common.retry"),
         onClick: onRetry,
@@ -140,14 +160,16 @@ function DownloadCacheErrorState({
 function DownloadCacheChapterRow({
   chapter,
   deleting,
-  onRepair,
   onDelete,
+  onRead,
+  onRepair,
   repairing,
 }: {
   chapter: DownloadCacheChapter;
   deleting: boolean;
-  onRepair: () => void;
   onDelete: () => void;
+  onRead: () => void;
+  onRepair: () => void;
   repairing: boolean;
 }) {
   const { locale, t } = useTranslation();
@@ -184,6 +206,16 @@ function DownloadCacheChapterRow({
             {t("downloads.mediaFallback")}
           </Badge>
         ) : null}
+        <IconButton
+          className="norea-downloads-icon-button"
+          disabled={deleting}
+          label={t("downloads.readChapter", { name: chapter.name })}
+          onClick={onRead}
+          size="lg"
+          title={t("downloads.readChapter", { name: chapter.name })}
+        >
+          <PlayIcon />
+        </IconButton>
         {chapter.mediaRepairNeeded ? (
           <IconButton
             className="norea-downloads-icon-button"
@@ -193,7 +225,7 @@ function DownloadCacheChapterRow({
             size="lg"
             title={t("downloads.repairChapterMedia", { name: chapter.name })}
           >
-            {repairing ? <Loader size={14} /> : <RetryGlyph />}
+            {repairing ? <Loader size={14} /> : <RepairIcon />}
           </IconButton>
         ) : null}
         <IconButton
@@ -205,7 +237,7 @@ function DownloadCacheChapterRow({
           title={t("downloads.deleteChapter", { name: chapter.name })}
           tone="danger"
         >
-          {deleting ? <Loader size={14} /> : <TrashGlyph />}
+          {deleting ? <Loader size={14} /> : <DeleteDownloadIcon />}
         </IconButton>
       </Group>
     </div>
@@ -215,9 +247,11 @@ function DownloadCacheChapterRow({
 function DownloadCacheChapters({
   novel,
   novelDeleting,
+  onReadChapter,
 }: {
   novel: DownloadCacheNovel;
   novelDeleting: boolean;
+  onReadChapter: (chapterId: number) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -297,6 +331,7 @@ function DownloadCacheChapters({
           onDelete={() => {
             deleteChapter.mutate(chapter);
           }}
+          onRead={() => onReadChapter(chapter.id)}
           onRepair={() => repairChapter.mutate(chapter)}
         />
       ))}
@@ -308,14 +343,23 @@ function DownloadCacheNovelCard({
   allDeleting,
   novel,
   onOpenNovel,
+  onReadChapter,
+  onToggleSelected,
+  selected,
+  selectionMode,
 }: {
   allDeleting: boolean;
   novel: DownloadCacheNovel;
   onOpenNovel: () => void;
+  onReadChapter: (chapterId: number) => void;
+  onToggleSelected: () => void;
+  selected: boolean;
+  selectionMode: boolean;
 }) {
   const { locale, t } = useTranslation();
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
   const plugin = novel.inLibrary
     ? null
     : pluginManager.getPlugin(novel.pluginId);
@@ -346,6 +390,22 @@ function DownloadCacheNovelCard({
     onError: (error) =>
       showDownloadCacheDeleteError(error, t("tasks.task.deleteDownloadCache")),
   });
+  const readNovel = useMutation({
+    mutationFn: async () => {
+      const chapters = await queryClient.fetchQuery({
+        queryKey: [...DOWNLOAD_CACHE_QUERY_KEY, "chapters", novel.novelId] as const,
+        queryFn: () => loadDownloadCacheChapters(novel.novelId),
+      });
+      const remembered = useReaderStore.getState().lastReadChapterByNovel[novel.novelId];
+      return downloadedChapterToRead(chapters, remembered);
+    },
+    onMutate: () => setReadError(null),
+    onSuccess: (chapter) => {
+      if (chapter) onReadChapter(chapter.id);
+      else setReadError(t("downloads.chaptersEmpty"));
+    },
+    onError: (error) => setReadError(error instanceof Error ? error.message : String(error)),
+  });
   const size = formatBytes(novel.totalBytes, locale);
   const libraryLabel = novel.inLibrary
     ? t("downloads.inLibrary")
@@ -358,25 +418,55 @@ function DownloadCacheNovelCard({
     ),
   });
   const sourceName = novel.pluginName ?? novel.pluginId;
-  const statusText = [
+  const countText = [
     t("downloads.chapterCount", {
       cached: novel.chaptersDownloaded,
       total: novel.totalChapters,
     }),
+    size,
+  ].join(" · ");
+  const detailText = [
     t("downloads.unreadRead", {
       read: novel.readDownloaded,
       unread: novel.unreadDownloaded,
     }),
-    size,
     updatedLabel,
     sourceName,
   ].join(" / ");
   const novelDeleting = allDeleting || deleteNovel.isPending;
   const toggleLabel = expanded ? t("downloads.collapse") : t("downloads.expand");
+  const menuItems: OverflowMenuItem[] = [
+    { icon: OpenWorkIcon, label: t("downloads.openNovel"), disabled: novelDeleting, onClick: onOpenNovel },
+    {
+      icon: DeleteDownloadIcon,
+      label: t("downloads.deleteNovel", { name: novel.novelName }),
+      danger: true,
+      disabled: novelDeleting,
+      onClick: () => deleteNovel.mutate(novel.novelId),
+    },
+  ];
 
   return (
-    <Paper className="norea-downloads-novel" component="article" withBorder>
-      <div className="norea-downloads-novel-row">
+    <Paper
+      className="norea-downloads-novel"
+      component="article"
+      data-selected={selected ? "true" : undefined}
+      withBorder
+    >
+      <div
+        className="norea-downloads-novel-row"
+        data-selecting={selectionMode ? "true" : undefined}
+        onClick={selectionMode ? onToggleSelected : undefined}
+      >
+        {selectionMode ? (
+          <Checkbox
+            aria-label={t("downloads.selectNovel", { name: novel.novelName })}
+            checked={selected}
+            className="norea-downloads-select"
+            onChange={onToggleSelected}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : null}
         <ConsoleCover
           alt={novel.novelName}
           height={84}
@@ -391,12 +481,15 @@ function DownloadCacheNovelCard({
           >
             {novel.novelName}
           </Text>
+          <Text className="norea-downloads-novel-count" component="div" title={countText}>
+            {countText}
+          </Text>
           <Text
             className="norea-downloads-novel-status"
             component="div"
-            title={statusText}
+            title={detailText}
           >
-            {statusText}
+            {detailText}
           </Text>
           <div className="norea-downloads-novel-badge-line">
             <Badge
@@ -418,55 +511,47 @@ function DownloadCacheNovelCard({
               </Badge>
             ) : null}
           </div>
+          {readError ? <Text c="danger" size="sm">{readError}</Text> : null}
         </Box>
-        <Group
-          className="norea-downloads-row-actions"
-          gap={6}
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-          wrap="nowrap"
-        >
-          <IconButton
-            active={expanded}
-            aria-expanded={expanded}
-            className="norea-downloads-icon-button"
-            disabled={novelDeleting}
-            label={toggleLabel}
-            onClick={() => setExpanded((current) => !current)}
-            size="lg"
-            title={toggleLabel}
+        {selectionMode ? null : (
+          <Group
+            className="norea-downloads-row-actions"
+            gap={6}
+            wrap="nowrap"
           >
-            <ChevronIcon expanded={expanded} />
-          </IconButton>
-          <IconButton
-            className="norea-downloads-icon-button"
-            disabled={novelDeleting}
-            label={t("downloads.openNovel")}
-            onClick={onOpenNovel}
-            size="lg"
-            title={t("downloads.openNovel")}
-          >
-            <DetailsGlyph />
-          </IconButton>
-          <IconButton
-            className="norea-downloads-icon-button"
-            disabled={novelDeleting}
-            label={t("downloads.deleteNovel", { name: novel.novelName })}
-            onClick={() => {
-              deleteNovel.mutate(novel.novelId);
-            }}
-            size="lg"
-            title={t("downloads.deleteNovel", { name: novel.novelName })}
-            tone="danger"
-          >
-            {novelDeleting ? <Loader size={14} /> : <TrashGlyph />}
-          </IconButton>
-        </Group>
+            <IconButton
+              className="norea-downloads-icon-button"
+              disabled={novelDeleting || readNovel.isPending}
+              label={t("downloads.readNovel", { name: novel.novelName })}
+              onClick={() => readNovel.mutate()}
+              size="lg"
+              title={t("downloads.readNovel", { name: novel.novelName })}
+            >
+              {readNovel.isPending ? <Loader size={14} /> : <PlayIcon />}
+            </IconButton>
+            <IconButton
+              active={expanded}
+              aria-expanded={expanded}
+              className="norea-downloads-icon-button"
+              disabled={novelDeleting}
+              label={toggleLabel}
+              onClick={() => setExpanded((current) => !current)}
+              size="lg"
+              title={toggleLabel}
+            >
+              {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            </IconButton>
+            {novelDeleting ? <Loader size={14} /> : (
+              <OverflowMenu items={menuItems} label={t("vpnDownload.workOptions", { title: novel.novelName })} />
+            )}
+          </Group>
+        )}
       </div>
-      <Collapse expanded={expanded} keepMounted={false}>
+      <Collapse expanded={expanded && !selectionMode} keepMounted={false}>
         <DownloadCacheChapters
           novel={novel}
           novelDeleting={novelDeleting}
+          onReadChapter={onReadChapter}
         />
       </Collapse>
     </Paper>
@@ -508,6 +593,9 @@ export function DownloadsStorageView({
     });
   }, [active, query.data, queryClient]);
   const [mediaFallbackOnly, setMediaFallbackOnly] = useState(false);
+  const [cleanupOpened, setCleanupOpened] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(() => new Set());
   const deleteAll = useMutation({
     mutationFn: () =>
       confirmContentDeletion({
@@ -524,78 +612,119 @@ export function DownloadsStorageView({
     : rows;
   const totals = useMemo(() => getCacheTotals(rows), [rows]);
   const totalSize = formatBytes(totals.bytes, locale);
+  const selectedRows = visibleRows.filter((novel) => selectedIds.has(novel.novelId));
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  };
+  const deleteSelected = useMutation({
+    mutationFn: (novels: readonly DownloadCacheNovel[]) => {
+      const selectedTotals = getCacheTotals(novels);
+      return confirmContentDeletion({
+        kind: "downloads", scope: "novel",
+        ids: novels.map((novel) => novel.novelId),
+        title: t("downloads.deleteSelectedTitle", {
+          chapters: selectedTotals.chapters,
+          count: selectedTotals.novels,
+          size: formatBytes(selectedTotals.bytes, locale),
+        }),
+      });
+    },
+    onSuccess: (changed) => { if (changed) exitSelection(); },
+    onSettled: () => invalidateDownloadCache(queryClient),
+    onError: (error) =>
+      showDownloadCacheDeleteError(error, t("tasks.task.deleteDownloadCache")),
+  });
+
+  useEffect(() => {
+    if (!active && selectionMode) exitSelection();
+  }, [active, selectionMode]);
+
+  const toggleSelected = (novelId: number) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(novelId)) next.delete(novelId);
+      else next.add(novelId);
+      return next;
+    });
+  };
+  const readChapter = (chapterId: number) => {
+    void navigate({ to: "/reader", search: { chapterId } });
+  };
+  const headerItems: OverflowMenuItem[] = [
+    { icon: SelectIcon, label: t("library.selection.start"), disabled: visibleRows.length === 0,
+      onClick: () => setSelectionMode(true) },
+    {
+      icon: FilterIcon,
+      label: mediaFallbackOnly ? t("downloads.showAllNovels") : t("downloads.filterMediaFallback"),
+      disabled: !mediaFallbackOnly && totals.repairNeeded === 0,
+      onClick: () => setMediaFallbackOnly((current) => !current),
+    },
+    { icon: RefreshIcon, label: t("downloads.refresh"), disabled: query.isFetching,
+      onClick: () => { void query.refetch(); } },
+    { icon: TrashIcon, label: t("downloads.deleteAll"), danger: true,
+      disabled: rows.length === 0 || deleteAll.isPending, onClick: () => deleteAll.mutate() },
+  ];
 
   return (
     <PageFrame className="norea-downloads-page norea-downloads-hub" size="wide">
-      <PageHeader
-        title={t("downloads.title")}
-        description={t("downloads.description")}
-        meta={
-          <>
-            <Badge variant="light">
-              {t("downloads.summary.novels", { count: totals.novels })}
-            </Badge>
-            <Badge variant="light">
-              {t("downloads.summary.chapters", { count: totals.chapters })}
-            </Badge>
-            <Badge variant="light">
-              {t("downloads.summary.size", { size: totalSize })}
-            </Badge>
-            {totals.repairNeeded > 0 ? (
-              <Badge color="warn" variant="light">
-                {t("downloads.mediaFallback")}
+      {active && selectionMode ? (
+        <SelectionBar
+          actions={
+            <SelectionAction
+              disabled={selectedRows.length === 0 || deleteSelected.isPending}
+              icon={DeleteDownloadIcon}
+              label={t("downloads.deleteSelected")}
+              onClick={() => deleteSelected.mutate(selectedRows)}
+            />
+          }
+          clearDisabled={selectedRows.length === 0}
+          label={t("library.selectedCount", { count: selectedRows.length })}
+          onClear={() => setSelectedIds(new Set())}
+          onExit={exitSelection}
+          onSelectAll={() => setSelectedIds(new Set(visibleRows.map((novel) => novel.novelId)))}
+          selectAllDisabled={selectedRows.length === visibleRows.length}
+          selectAllPending={false}
+        />
+      ) : (
+        <PageHeader
+          title={t("downloads.title")}
+          description={t("downloads.description")}
+          meta={
+            <>
+              <Badge variant="light">
+                {t("downloads.summary.novels", { count: totals.novels })}
               </Badge>
-            ) : null}
-          </>
-        }
-        actions={
-          <>
-            <IconButton
-              active={mediaFallbackOnly}
-              className="norea-downloads-header-button"
-              disabled={totals.repairNeeded === 0}
-              label={t("downloads.filterMediaFallback")}
-              onClick={() =>
-                setMediaFallbackOnly((current) => !current)
-              }
-              size="lg"
-              title={t("downloads.filterMediaFallback")}
-            >
-              <RetryGlyph />
-            </IconButton>
-            <IconButton
-              className="norea-downloads-header-button"
-              disabled={query.isFetching}
-              label={t("downloads.refresh")}
-              onClick={() => {
-                void query.refetch();
-              }}
-              size="lg"
-              title={t("downloads.refresh")}
-            >
-              <RetryGlyph
-                className={
-                  query.isFetching ? "norea-downloads-spin-icon" : undefined
-                }
-              />
-            </IconButton>
-            <IconButton
-              className="norea-downloads-header-button"
-              disabled={rows.length === 0 || deleteAll.isPending}
-              label={t("downloads.deleteAll")}
-              onClick={() => {
-                deleteAll.mutate();
-              }}
-              size="lg"
-              title={t("downloads.deleteAll")}
-              tone="danger"
-            >
-              {deleteAll.isPending ? <Loader size={14} /> : <TrashGlyph />}
-            </IconButton>
-          </>
-        }
-      />
+              <Badge variant="light">
+                {t("downloads.summary.chapters", { count: totals.chapters })}
+              </Badge>
+              <Badge variant="light">
+                {t("downloads.summary.size", { size: totalSize })}
+              </Badge>
+              {totals.repairNeeded > 0 ? (
+                <Badge color="warn" variant="light">
+                  {t("downloads.mediaFallback")}
+                </Badge>
+              ) : null}
+            </>
+          }
+          actions={
+            <>
+              <Button
+                disabled={rows.length === 0}
+                leftSection={<DeleteDownloadIcon size="1.125rem" />}
+                onClick={() => setCleanupOpened(true)}
+                variant="default"
+              >
+                {t("downloads.cleanUp")}
+              </Button>
+              <OverflowMenu items={headerItems} label={t("common.more")} />
+            </>
+          }
+        />
+      )}
       {viewSwitcher}
+      <ChapterCleanupPanel opened={cleanupOpened} onClose={() => setCleanupOpened(false)} />
 
       <div className="norea-downloads-body">
         {query.isLoading ? (
@@ -632,6 +761,10 @@ export function DownloadsStorageView({
                     search: { id: novel.novelId },
                   });
                 }}
+                onReadChapter={readChapter}
+                onToggleSelected={() => toggleSelected(novel.novelId)}
+                selected={selectedIds.has(novel.novelId)}
+                selectionMode={selectionMode}
               />
             ))}
           </Stack>

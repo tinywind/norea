@@ -1,16 +1,5 @@
 .norea-downloads-page {
   --norea-page-max-width: 80rem;
-  height: var(--norea-app-content-height);
-  overflow: hidden;
-}
-
-.norea-downloads-page > .norea-page-frame-stack {
-  height: 100%;
-  min-height: 0;
-}
-
-.norea-downloads-page .norea-page-header {
-  flex: 0 0 auto;
 }
 
 .norea-downloads-view-switch {
@@ -19,12 +8,9 @@
 }
 
 .norea-downloads-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
+  min-width: 0;
 }
 
-.norea-downloads-header-button svg,
 .norea-downloads-icon-button svg {
   fill: none;
   height: 1.125rem;
@@ -33,16 +19,6 @@
   stroke-linejoin: round;
   stroke-width: 2;
   width: 1.125rem;
-}
-
-.norea-downloads-spin-icon {
-  animation: norea-downloads-spin var(--norea-duration-spin) linear infinite;
-}
-
-@keyframes norea-downloads-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .norea-downloads-loading,
@@ -63,6 +39,19 @@
   gap: var(--norea-space-3);
   grid-template-columns: 3.5rem minmax(0, 1fr) max-content;
   padding: var(--norea-space-3);
+}
+
+.norea-downloads-novel-row[data-selecting] {
+  cursor: pointer;
+  grid-template-columns: auto 3.5rem minmax(0, 1fr);
+}
+
+.norea-downloads-novel[data-selected] {
+  background: var(--norea-color-selected);
+}
+
+.norea-downloads-select {
+  align-self: center;
 }
 
 .norea-downloads-novel-main {
@@ -90,12 +79,22 @@
   white-space: nowrap;
 }
 
+.norea-downloads-novel-count,
 .norea-downloads-novel-status,
 .norea-downloads-novel-badge-line {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.norea-downloads-novel-count {
+  color: var(--norea-color-ink);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .norea-downloads-novel-status {
@@ -198,6 +197,10 @@
     gap: var(--norea-space-2);
     grid-template-columns: 2.625rem minmax(0, 1fr) max-content;
     padding: var(--norea-space-2);
+  }
+
+  .norea-downloads-novel-row[data-selecting] {
+    grid-template-columns: auto 2.625rem minmax(0, 1fr);
   }
 
   .norea-downloads-novel-row .norea-console-cover {

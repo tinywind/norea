@@ -100,3 +100,31 @@ export async function previewChapterCleanup(filters: ChapterCleanupFilters, sign
     workCount: new Set(targets.map(target=>target.candidate.identity.novel.id)).size,
     payloadBytes: targets.reduce((sum,target)=>sum+target.snapshot.payloadBytes,0), skipped: Object.freeze(skipped) });
 }
+
+/** What the user agreed to delete beyond finished chapters no download goal keeps. */
+export interface ChapterCleanupApproval {
+  includeUnread: boolean;
+  includeGoalKept: boolean;
+}
+
+/** How many previewed chapters need the user's explicit inclusion before they are deleted. */
+export function chapterCleanupProtectedCounts(preview: ChapterCleanupPreview, goalKeptIds: ReadonlySet<number>): { unread: number; goalKept: number } {
+  return {
+    unread: preview.targets.filter(target => target.candidate.unread).length,
+    goalKept: preview.targets.filter(target => goalKeptIds.has(target.candidate.identity.chapter.id)).length,
+  };
+}
+
+/** The preview narrowed to what the user approved: unread and goal-kept chapters only when included. */
+export function approveChapterCleanupTargets(
+  preview: ChapterCleanupPreview,
+  goalKeptIds: ReadonlySet<number>,
+  approval: ChapterCleanupApproval,
+): ChapterCleanupPreview {
+  const targets = preview.targets.filter(target => (approval.includeUnread || !target.candidate.unread)
+    && (approval.includeGoalKept || !goalKeptIds.has(target.candidate.identity.chapter.id)));
+  if (targets.length === preview.targets.length) return preview;
+  return Object.freeze({ ...preview, targets: Object.freeze(targets),
+    workCount: new Set(targets.map(target => target.candidate.identity.novel.id)).size,
+    payloadBytes: targets.reduce((sum, target) => sum + target.snapshot.payloadBytes, 0) });
+}

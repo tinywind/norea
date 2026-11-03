@@ -38,6 +38,10 @@ it("includes partial and server-origin downloads but excludes imported originals
   const rows = await listChapterCleanupCandidates({ reading: "all", categories: { mode: "all" } });
   expect(rows.map(row=>row.identity.chapter.id)).toEqual([1,2,3,4,6]);
 });
+it("reports whether each candidate is still unread", async () => {
+  const rows = await listChapterCleanupCandidates({ reading: "all", categories: { mode: "all" } });
+  expect(rows.filter(row => row.unread).map(row => row.identity.chapter.id)).toEqual([2]);
+});
 it("keeps non-library works outside uncategorized and selected empty matches none", async () => {
   expect((await listChapterCleanupCandidates({ reading: "read", categories: { mode: "selected", ids: [-1] } })).map(row=>row.identity.chapter.id)).toEqual([3,6]);
   expect(await listChapterCleanupCandidates({ reading: "all", categories: { mode: "selected", ids: [] } })).toEqual([]);

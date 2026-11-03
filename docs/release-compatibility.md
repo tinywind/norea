@@ -327,6 +327,14 @@ does not restart automatically; run a new preview to evaluate remaining files.
 The proof uses the existing content sync cache and requires no schema migration,
 format conversion, or database reset.
 
+Unread chapters and chapters a download goal in effect keeps (its keep-ahead
+window, every remaining chapter, or the whole novel) stay out of the confirmed
+set unless the user includes each kind after the preview. A chapter marked
+unread after the preview is skipped as changed. Deleted chapters become goal
+exclusions, so goals do not download them again until the novel's goal is set
+again, and the app offers to stop the goals of the affected novels. Downloads >
+Storage > Clean up opens the same workflow.
+
 ## Full Device Backups on the Content Server
 
 The version 1 device-backup transport stores one current snapshot per device name. The app's

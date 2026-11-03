@@ -35,7 +35,8 @@ function sameCandidate(left: ChapterCleanupCandidate, right: ChapterCleanupCandi
     && left.identity.novel.sourceNovelId === right.identity.novel.sourceNovelId && left.novelPath === right.novelPath
     && left.chapterPath === right.chapterPath && left.identity.chapter.chapterNumber === right.identity.chapter.chapterNumber
     && left.identity.chapter.position === right.identity.chapter.position && left.identity.chapter.contentType === right.identity.chapter.contentType
-    && left.serverSource === right.serverSource && left.localServerFingerprint === right.localServerFingerprint;
+    && left.serverSource === right.serverSource && left.localServerFingerprint === right.localServerFingerprint
+    && left.unread === right.unread;
 }
 
 async function eligibilityFailure(preview: ChapterCleanupPreview, target: ChapterCleanupTarget): Promise<"changed" | "ambiguous-storage" | null> {

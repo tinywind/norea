@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChapterCleanupCandidate } from "../../db/queries/chapter-cleanup";
 import type { ChapterCleanupFilters } from "../chapter-cleanup";
-import { previewChapterCleanup } from "../chapter-cleanup";
+import { approveChapterCleanupTargets, chapterCleanupProtectedCounts, previewChapterCleanup } from "../chapter-cleanup";
 import { ContentServerError } from "../content-sync/client";
 import { runChapterCleanup } from "./chapter-cleanup";
 
@@ -21,7 +21,7 @@ vi.mock("../tauri-runtime", () => ({ isTauriRuntime: () => false }));
 vi.mock("./scheduler", () => ({ taskScheduler: {} }));
 const candidate = {
   identity: { novel: { id: 1, pluginId: "source", sourceNovelId: "work", path: "/work", name: "Work" }, chapter: { id: 3, name: "Chapter", position: 2, chapterNumber: "2", contentType: "html" } },
-  novelPath: "/work", chapterPath: "/chapter", novelName: "Work", chapterName: "Chapter", serverSource: null, storageAmbiguous: false,
+  novelPath: "/work", chapterPath: "/chapter", novelName: "Work", chapterName: "Chapter", serverSource: null, storageAmbiguous: false, unread: false,
 } as ChapterCleanupCandidate;
 const body = { sha256: "a".repeat(64), bytes: 3 };
 const expectedAssetKeys = Array.from({ length: 10 }, (_, i) => `media/${i}`);
@@ -98,6 +98,24 @@ describe("cleanup ambiguous storage", () => {
   });
 });
 
+describe("cleanup approval", () => {
+  it("leaves unread and goal-kept chapters out until the user includes each kind", async () => {
+    const other = { ...candidate, identity: { ...candidate.identity, chapter: { ...candidate.identity.chapter, id: 4 } }, unread: true };
+    const kept = { ...candidate, identity: { ...candidate.identity, novel: { ...candidate.identity.novel, id: 2 }, chapter: { ...candidate.identity.chapter, id: 5 } } };
+    mocks.candidates.mockImplementation(async (_filter, options) => options.afterId ? [] : [candidate, other, kept]);
+    const preview = await previewChapterCleanup({ ...filters("any"), reading: "all" });
+    const goalKept = new Set([5]);
+    expect(chapterCleanupProtectedCounts(preview, goalKept)).toEqual({ unread: 1, goalKept: 1 });
+    const ids = (approval: Parameters<typeof approveChapterCleanupTargets>[2]) =>
+      approveChapterCleanupTargets(preview, goalKept, approval).targets.map(target => target.candidate.identity.chapter.id);
+    expect(ids({ includeUnread: false, includeGoalKept: false })).toEqual([3]);
+    expect(ids({ includeUnread: true, includeGoalKept: false })).toEqual([3, 4]);
+    expect(ids({ includeUnread: true, includeGoalKept: true })).toEqual([3, 4, 5]);
+    expect(approveChapterCleanupTargets(preview, goalKept, { includeUnread: false, includeGoalKept: false }))
+      .toMatchObject({ workCount: 1, payloadBytes: 35 });
+  });
+});
+
 describe("cleanup execution", () => {
   it("rechecks reading and category eligibility and never deletes an excluded target", async () => {
     const preview = await previewChapterCleanup(filters("any"));
@@ -114,6 +132,12 @@ describe("cleanup execution", () => {
       return ++calls === 3 ? [] : [candidate];
     });
     expect(await runChapterCleanup(preview)).toMatchObject({ total: 1, skipped: 1, deleted: 0 });
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+  it("skips a chapter marked unread after the preview approved it as read", async () => {
+    const preview = await previewChapterCleanup(filters("any"));
+    mocks.candidates.mockResolvedValue([{ ...candidate, unread: true }]);
+    expect(await runChapterCleanup(preview)).toMatchObject({ skipped: 1, deleted: 0, results: [{ chapterId: 3, reason: "changed" }] });
     expect(mocks.remove).not.toHaveBeenCalled();
   });
   it("rejects a changed saved server association", async () => {

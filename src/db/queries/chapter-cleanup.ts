@@ -17,6 +17,8 @@ export interface ChapterCleanupCandidate {
   serverSource: string | null;
   storageAmbiguous: boolean;
   localServerFingerprint: string | null;
+  /** The chapter is not finished; a cleanup removes it only when the user includes unread chapters. */
+  unread: boolean;
 }
 
 export async function reconcileCleanedChapter(candidate: ChapterCleanupCandidate, snapshot: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }): Promise<number> {
@@ -48,6 +50,7 @@ interface CandidateRow {
   serverSource: string | null;
   storageAmbiguous: number;
   localServerFingerprint: string | null;
+  unread: number;
 }
 
 export async function listChapterCleanupCandidates(
@@ -81,7 +84,7 @@ export async function listChapterCleanupCandidates(
   const rows = await db.select<CandidateRow[]>(`SELECT c.id,c.novel_id AS novelId,
     n.plugin_id AS pluginId,n.source_novel_id AS sourceNovelId,n.path AS novelPath,
     c.path AS chapterPath,n.name AS novelName,c.name AS chapterName,
-    c.chapter_number AS chapterNumber,c.position,COALESCE(c.stored_content_type,c.content_type) AS contentType,
+    c.chapter_number AS chapterNumber,c.position,c.unread,COALESCE(c.stored_content_type,c.content_type) AS contentType,
     source.payload AS serverSource,
     CASE WHEN n.is_local=1 THEN json_extract(proof.payload,'$.fingerprint') ELSE NULL END AS localServerFingerprint,
     EXISTS (SELECT 1 FROM chapter other INDEXED BY chapter_novel_position_idx
@@ -99,5 +102,6 @@ export async function listChapterCleanupCandidates(
     },
     novelPath: row.novelPath, chapterPath: row.chapterPath, novelName: row.novelName,
     chapterName: row.chapterName, serverSource: row.serverSource, storageAmbiguous: !!row.storageAmbiguous, localServerFingerprint: row.localServerFingerprint,
+    unread: !!row.unread,
   }));
 }

@@ -1,13 +1,18 @@
-import { Alert, Group, Modal, MultiSelect, Select, Stack, Text } from "@mantine/core";
+import { Alert, Checkbox, Group, Modal, MultiSelect, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
 import { useTranslation, type TranslationKey } from "../i18n";
-import { previewChapterCleanup, type ChapterCleanupFilters, type ChapterCleanupPreview, type ChapterCleanupServerMode, type ChapterCleanupSkipReason } from "../lib/chapter-cleanup";
+import {
+  approveChapterCleanupTargets, chapterCleanupProtectedCounts, previewChapterCleanup,
+  type ChapterCleanupFilters, type ChapterCleanupPreview, type ChapterCleanupServerMode, type ChapterCleanupSkipReason,
+} from "../lib/chapter-cleanup";
+import { listGoalProtectedChapterIds } from "../lib/download-goals/goal-protection";
 import { enqueueChapterCleanup, type ChapterCleanupResult } from "../lib/tasks/chapter-cleanup";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { useContentSyncStore } from "../store/content-sync";
 import { TextButton } from "./TextButton";
+import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
 const SERVER_OPTIONS: Record<ChapterCleanupServerMode, TranslationKey> = {
   "server-present": "chapterCleanup.server.present",
@@ -53,6 +58,9 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
   const categories = useQuery({ queryKey: ["category", "list"], queryFn: () => listCategories(), staleTime: Infinity, enabled: opened, meta: { errorPresentation: "inline" } });
   const [filters, setFilters] = useState<ChapterCleanupFilters>({ server: "server-contains-local", reading: "read", categories: { mode: "all" } });
   const [preview, setPreview] = useState<ChapterCleanupPreview | null>(null);
+  const [goalKeptIds, setGoalKeptIds] = useState<ReadonlySet<number>>(() => new Set());
+  const [approval, setApproval] = useState({ includeUnread: false, includeGoalKept: false });
+  const offerToStopDownloadGoals = useStopDownloadGoalsOffer();
   const [confirming, setConfirming] = useState(false);
   const [inspecting, setInspecting] = useState(false);
   const [checked, setChecked] = useState(0);
@@ -63,7 +71,10 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
   const inspection = useRef<AbortController | null>(null);
   const taskId = useRef<string | null>(null);
   const serverRef = useRef(serverSetting);
-  const clearPreview = () => { inspection.current?.abort(); inspection.current = null; setInspecting(false); setPreview(null); setConfirming(false); setPage(0); };
+  const clearPreview = () => {
+    inspection.current?.abort(); inspection.current = null; setInspecting(false); setPreview(null); setConfirming(false); setPage(0);
+    setGoalKeptIds(new Set()); setApproval({ includeUnread: false, includeGoalKept: false });
+  };
   useEffect(() => {
     if (serverRef.current !== serverSetting) { serverRef.current = serverSetting; clearPreview(); }
   }, [serverSetting]);
@@ -74,31 +85,37 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
     const controller = new AbortController(); inspection.current = controller; setInspecting(true);
     try {
       const next = await previewChapterCleanup(filters, controller.signal, setChecked);
-      if (!controller.signal.aborted) setPreview(next);
+      const kept = await listGoalProtectedChapterIds([...new Set(next.targets.map(target => target.candidate.identity.novel.id))]);
+      if (!controller.signal.aborted) { setGoalKeptIds(kept); setPreview(next); }
     } catch { if (!controller.signal.aborted) setError(t("chapterCleanup.failed")); }
     finally { if (inspection.current === controller) { inspection.current = null; setInspecting(false); } }
   };
+  const approved = preview ? approveChapterCleanupTargets(preview, goalKeptIds, approval) : null;
+  const protectedCounts = preview ? chapterCleanupProtectedCounts(preview, goalKeptIds) : { unread: 0, goalKept: 0 };
   const execute = async () => {
-    if (!preview || !preview.targets.length || running || preview.serverSetting !== useContentSyncStore.getState().serverUrl) return;
-    const accepted = preview;
+    if (!approved || !approved.targets.length || running || approved.serverSetting !== useContentSyncStore.getState().serverUrl) return;
+    const accepted = approved;
     setConfirming(false); setRunning(true); setResult(null); setError(null);
     try {
       const handle = enqueueChapterCleanup(accepted, t("chapterCleanup.title"), setResult);
       taskId.current = handle.id;
-      setResult(await handle.promise);
+      const finished = await handle.promise;
+      setResult(finished);
       for (const key of ["novel", "chapter", "category", "download-cache", "content-server"]) void queryClient.invalidateQueries({ queryKey: [key] });
+      const deleted = finished.results.filter(item => item.status === "deleted").map(item => item.chapterId);
+      if (deleted.length) await offerToStopDownloadGoals("chapter", deleted);
     } catch { setError(t("chapterCleanup.failed")); }
     finally { taskId.current = null; setRunning(false); setPreview(null); }
   };
   const groups = useMemo(() => {
     const works = new Map<number, { name: string; count: number }>();
-    for (const target of preview?.targets ?? []) {
+    for (const target of approved?.targets ?? []) {
       const { novel } = target.candidate.identity;
       const current = works.get(novel.id);
       if (current) current.count++; else works.set(novel.id, { name: target.candidate.novelName, count: 1 });
     }
     return [...works.entries()];
-  }, [preview]);
+  }, [approved]);
   const categoryOptions = [
     { value: String(UNCATEGORIZED_CATEGORY_ID), label: t("categories.uncategorized") },
     ...(categories.data ?? []).map(category => ({ value: String(category.id), label: category.name })),
@@ -136,22 +153,28 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
       {!running && !confirming ? <Group><TextButton onClick={() => { void createPreview(); }} disabled={inspecting} loading={inspecting}>{t("chapterCleanup.preview")}</TextButton>
         {inspecting ? <TextButton onClick={clearPreview}>{t("common.cancel")}</TextButton> : null}</Group> : null}
       {inspecting ? <Text size="sm" role="status">{t("chapterCleanup.checking", { count: checked })}</Text> : null}
-      {preview ? <Stack gap="xs">
-        <Text fw={600}>{t("chapterCleanup.summary", { works: preview.workCount, chapters: preview.targets.length, size: formatBytes(preview.payloadBytes, locale) })}</Text>
+      {preview && approved ? <Stack gap="xs">
+        <Text fw={600}>{t("chapterCleanup.summary", { works: approved.workCount, chapters: approved.targets.length, size: formatBytes(approved.payloadBytes, locale) })}</Text>
+        {protectedCounts.unread > 0 ? <Checkbox checked={approval.includeUnread} disabled={running || confirming}
+          label={t("chapterCleanup.includeUnread", { count: protectedCounts.unread })}
+          onChange={event => { const checked = event.currentTarget.checked; setApproval(current => ({ ...current, includeUnread: checked })); }} /> : null}
+        {protectedCounts.goalKept > 0 ? <Checkbox checked={approval.includeGoalKept} disabled={running || confirming}
+          label={t("chapterCleanup.includeGoalKept", { count: protectedCounts.goalKept })}
+          onChange={event => { const checked = event.currentTarget.checked; setApproval(current => ({ ...current, includeGoalKept: checked })); }} /> : null}
         <Text size="xs" c="dimmed">{t("chapterCleanup.estimate")}</Text>
         {filters.server !== "any" ? <Text size="sm">{t("chapterCleanup.servers", { servers: servers.slice(0, 50).join(", ") || t("chapterCleanup.none") })}{servers.length > 50 ? " (+" + (servers.length - 50) + ")" : ""}</Text> : null}
         {skipEntries.map(([reason, count]) => <Text size="sm" key={reason}>{t(SKIP_LABELS[reason])}: {count}</Text>)}
-        {groups.length ? <details><summary>{t("chapterCleanup.works")}</summary>
+        {groups.length ? <details open><summary>{t("chapterCleanup.works")}</summary>
           <Stack gap={2}>{groups.slice(page * 50, (page + 1) * 50).map(([id, work]) => <Text key={id} size="sm">{work.name}: {work.count}</Text>)}</Stack>
           {groups.length > 50 ? <Group><TextButton size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>{t("chapterCleanup.previous")}</TextButton>
             <Text size="sm">{page + 1} / {Math.ceil(groups.length / 50)}</Text><TextButton size="sm" disabled={(page + 1) * 50 >= groups.length} onClick={() => setPage(page + 1)}>{t("chapterCleanup.next")}</TextButton></Group> : null}
         </details> : null}
-        {!running && !confirming ? <TextButton tone="danger" disabled={!preview.targets.length} onClick={() => setConfirming(true)}>{t("chapterCleanup.review")}</TextButton> : null}
-        {confirming ? <Alert color="warn" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: preview.targets.length })}</Text><Group>
+        {!running && !confirming ? <TextButton tone="danger" disabled={!approved.targets.length} onClick={() => setConfirming(true)}>{t("chapterCleanup.review")}</TextButton> : null}
+        {confirming ? <Alert color="warn" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: approved.targets.length })}</Text><Group>
           <TextButton onClick={() => setConfirming(false)}>{t("common.cancel")}</TextButton><TextButton tone="danger" onClick={() => { void execute(); }}>{t("chapterCleanup.delete")}</TextButton>
         </Group></Stack></Alert> : null}
       </Stack> : null}
-      {running ? <Stack gap="xs"><Text role="status" size="sm">{t("chapterCleanup.progress", { done: result ? result.deleted + result.skipped + result.failed : 0, total: preview?.targets.length ?? result?.total ?? 0 })}</Text>
+      {running ? <Stack gap="xs"><Text role="status" size="sm">{t("chapterCleanup.progress", { done: result ? result.deleted + result.skipped + result.failed : 0, total: approved?.targets.length ?? result?.total ?? 0 })}</Text>
         <TextButton onClick={() => { if (taskId.current) taskScheduler.cancel(taskId.current); }}>{t("chapterCleanup.cancelTask")}</TextButton></Stack> : null}
       {result && !running ? <Stack gap="xs"><Text fw={600}>{t("chapterCleanup.result", { deleted: result.deleted, skipped: result.skipped, failed: result.failed, cancelled: result.cancelled, size: formatBytes(result.bytesFreed, locale) })}</Text>
         {[...resultReasons.entries()].slice(0, 10).map(([reason, count]) => <Text size="sm" key={reason}>
