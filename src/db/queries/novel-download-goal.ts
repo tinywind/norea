@@ -178,3 +178,11 @@ export async function clearDownloadGoalExclusions(novelId: number): Promise<void
     "DELETE FROM chapter_download_goal_exclusion WHERE chapter_id IN (SELECT id FROM chapter WHERE novel_id=$1)",
     [novelId]);
 }
+
+/** Library source novels without their own goal, which follow the default keep-ahead. */
+export async function listLibraryNovelsWithoutDownloadGoal(): Promise<{ id: number; pluginId: string }[]> {
+  const db = await getDb();
+  return db.select<{ id: number; pluginId: string }[]>(
+    `SELECT n.id,n.plugin_id AS pluginId FROM novel n LEFT JOIN novel_download_goal g ON g.novel_id=n.id
+     WHERE n.in_library=1 AND n.is_local=0 AND g.novel_id IS NULL ORDER BY n.id`);
+}

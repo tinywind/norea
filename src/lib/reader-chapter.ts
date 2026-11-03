@@ -12,25 +12,18 @@ export type ReaderChapterRow = ChapterRow & { content: string | null };
 
 export interface NextChapterPreparationPlan {
   chapterId: number;
-  download: boolean;
 }
 
+/** The stored next chapter to prepare once the current one is ready; download goals fetch missing ones. */
 export function getNextChapterPreparationPlan({
-  autoDownloadNextChapter,
   currentChapterReady,
   nextChapter,
 }: {
-  autoDownloadNextChapter: boolean;
   currentChapterReady: boolean;
   nextChapter: Pick<ChapterListRow, "id" | "isDownloaded" | "contentBytes"> | undefined;
 }): NextChapterPreparationPlan | null {
-  if (!currentChapterReady || !nextChapter) return null;
-  if (hasStoredChapterContent(nextChapter)) {
-    return { chapterId: nextChapter.id, download: false };
-  }
-  return autoDownloadNextChapter
-    ? { chapterId: nextChapter.id, download: true }
-    : null;
+  if (!currentChapterReady || !nextChapter || !hasStoredChapterContent(nextChapter)) return null;
+  return { chapterId: nextChapter.id };
 }
 
 export function readerChapterQueryOptions(chapterId: number) {

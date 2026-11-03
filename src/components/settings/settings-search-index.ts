@@ -48,7 +48,6 @@ export const SETTINGS_SEARCH_ROWS: readonly SettingsSearchRow[] = [
   { section: "reader", label: "readerSettings.swipeGestures" },
   { section: "reader", label: "readerSettings.tapControls" },
   { section: "reader", label: "readerSettings.tapPreset", condition: "settingsSearch.condition.tapControls" },
-  { section: "reader", label: "readerSettings.autoDownloadNextChapter" },
   { section: "reader", label: "readerSettings.autoScroll" },
   { section: "reader", label: "readerSettings.autoScrollInterval", condition: "settingsSearch.condition.autoScroll" },
   { section: "reader", label: "readerSettings.autoScrollOffset", condition: "settingsSearch.condition.autoScroll" },

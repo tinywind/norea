@@ -37,7 +37,6 @@ export function ReaderSection() {
         {fields.controls}
       </SettingsSection>
       <SettingsSection title={t("readerSettings.automation.title")}>
-        {fields.autoDownloadNextChapter}
         {fields.autoScroll}
       </SettingsSection>
       <SettingsSection title={t("readerSettings.indicators.title")}>

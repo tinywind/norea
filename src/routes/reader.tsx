@@ -216,10 +216,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   });
   useNextReaderChapter({
     nextChapter,
-    currentNovel,
     currentNovelId,
-    currentSourceName,
-    autoDownloadNextChapter: effectiveReaderGeneral.autoDownloadNextChapter,
     bionicReading: effectiveReaderGeneral.bionicReading,
     currentChapterReady:
       Boolean(chapter && hasStoredChapterContent(chapter)) &&

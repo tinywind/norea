@@ -96,42 +96,22 @@ describe("reader chapter preloading", () => {
 });
 
 describe("next chapter preparation planning", () => {
-  it("prepares a stored next chapter without downloading it", () => {
-    expect(
-      getNextChapterPreparationPlan({
-        currentChapterReady: true,
-        nextChapter: { id: 3, isDownloaded: true, contentBytes: 20 },
-        autoDownloadNextChapter: false,
-      }),
-    ).toEqual({ chapterId: 3, download: false });
-  });
-
-  it.each([false, true])("prepares an incomplete stored body without downloading it (auto-download: %s)", autoDownloadNextChapter => {
+  it("prepares a stored next chapter, including an incomplete stored body", () => {
+    expect(getNextChapterPreparationPlan({
+      currentChapterReady: true,
+      nextChapter: { id: 3, isDownloaded: true, contentBytes: 20 },
+    })).toEqual({ chapterId: 3 });
     expect(getNextChapterPreparationPlan({
       currentChapterReady: true,
       nextChapter: { id: 3, isDownloaded: false, contentBytes: 20 },
-      autoDownloadNextChapter,
-    })).toEqual({ chapterId: 3, download: false });
+    })).toEqual({ chapterId: 3 });
   });
 
-  it("downloads and then prepares an unstored next chapter when enabled", () => {
-    expect(
-      getNextChapterPreparationPlan({
-        currentChapterReady: true,
-        nextChapter: { id: 3, isDownloaded: false, contentBytes: 0 },
-        autoDownloadNextChapter: true,
-      }),
-    ).toEqual({ chapterId: 3, download: true });
-  });
-
-  it("does not download an unstored next chapter when disabled", () => {
-    expect(
-      getNextChapterPreparationPlan({
-        currentChapterReady: true,
-        nextChapter: { id: 3, isDownloaded: false, contentBytes: 0 },
-        autoDownloadNextChapter: false,
-      }),
-    ).toBeNull();
+  it("leaves an unstored next chapter to the download goals", () => {
+    expect(getNextChapterPreparationPlan({
+      currentChapterReady: true,
+      nextChapter: { id: 3, isDownloaded: false, contentBytes: 0 },
+    })).toBeNull();
   });
 
   it("waits until the current chapter is ready", () => {
@@ -139,7 +119,6 @@ describe("next chapter preparation planning", () => {
       getNextChapterPreparationPlan({
         currentChapterReady: false,
         nextChapter: { id: 3, isDownloaded: true, contentBytes: 20 },
-        autoDownloadNextChapter: true,
       }),
     ).toBeNull();
   });

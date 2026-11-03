@@ -104,10 +104,7 @@ it("prepares a stored incomplete next chapter document without requesting source
   queryClient.setQueryData(["chapter", "detail", 12], nextChapter);
   function NextProbe() {
     useNextReaderChapter({
-      nextChapter,
-      currentNovel: { id: 7, pluginId: "source", name: "Work", path: "/work" },
-      currentNovelId: 7, currentSourceName: null, autoDownloadNextChapter: true,
-      bionicReading: false, currentChapterReady: true,
+      nextChapter, currentNovelId: 7, bionicReading: false, currentChapterReady: true,
     });
     return null;
   }

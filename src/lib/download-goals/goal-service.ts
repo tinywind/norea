@@ -42,6 +42,7 @@ import {
 } from "./budget";
 import { ACTIVE_NOVEL_WINDOW_SECONDS, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
 import { recordChapterDownloadDuration } from "./download-eta";
+import { migrateLegacyReadAhead } from "./legacy-read-ahead";
 
 const RECONCILE_DELAY_MS = 500;
 const PAUSED_RECHECK_MS = 60_000;
@@ -359,6 +360,8 @@ export function startDownloadGoals(): void {
   void waitForChapterDownloadQueueRestoration()
     .then(() => refreshChapterDownloadFailures())
     .catch((error: unknown) => console.warn("[download-goals] could not read download failures:", error))
+    .then(() => migrateLegacyReadAhead())
+    .catch((error: unknown) => console.warn("[download-goals] could not carry over the read-ahead setting:", error))
     .then(() => reconcileDownloadGoals());
 }
 

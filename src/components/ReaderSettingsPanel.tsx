@@ -852,21 +852,6 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
         />
       </SettingsFieldRow>
     ),
-    autoDownloadNextChapter: (
-      <SettingsFieldRow
-        label={t("readerSettings.autoDownloadNextChapter")}
-        description={t("readerSettings.autoDownloadNextChapter.description")}
-      >
-        <Switch
-          checked={general.autoDownloadNextChapter}
-          onChange={(event) =>
-            setActiveGeneral({
-              autoDownloadNextChapter: event.currentTarget.checked,
-            })
-          }
-        />
-      </SettingsFieldRow>
-    ),
     autoScroll: (
       <>
         <SettingsFieldRow
@@ -1384,7 +1369,6 @@ export function ReaderSettingsPanel({
               value="automation"
             >
               <SettingsSection>
-                {fields.autoDownloadNextChapter}
                 {fields.autoScroll}
               </SettingsSection>
             </Tabs.Panel>

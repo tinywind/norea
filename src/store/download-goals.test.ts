@@ -6,9 +6,10 @@ beforeEach(() => {
 });
 
 it("keeps 3 chapters ahead and waits for unmetered networks by default", () => {
-  expect(normalizeDownloadGoalSettings(null)).toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false });
-  expect(normalizeDownloadGoalSettings({ defaultKeepAhead: 7, automaticOnMobileData: "yes" }))
-    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false });
+  expect(normalizeDownloadGoalSettings(null))
+    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false, legacyReadAheadMigrated: false });
+  expect(normalizeDownloadGoalSettings({ defaultKeepAhead: 7, automaticOnMobileData: "yes", legacyReadAheadMigrated: 1 }))
+    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false, legacyReadAheadMigrated: false });
 });
 
 it("accepts only the offered keep-ahead choices, including off", () => {
@@ -20,5 +21,5 @@ it("accepts only the offered keep-ahead choices, including off", () => {
   expect(useDownloadGoalSettingsStore.getState().defaultKeepAhead).toBe(3);
   useDownloadGoalSettingsStore.getState().setAutomaticOnMobileData(true);
   expect(normalizeDownloadGoalSettings(useDownloadGoalSettingsStore.getState()))
-    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: true });
+    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: true, legacyReadAheadMigrated: false });
 });

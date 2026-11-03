@@ -69,6 +69,7 @@ vi.mock("../tasks/scheduler", () => ({
   },
 }));
 vi.mock("../updates/update-index-events", () => ({ subscribeUpdatesIndexChanges: () => () => undefined }));
+vi.mock("./legacy-read-ahead", () => ({ migrateLegacyReadAhead: vi.fn(async () => undefined) }));
 vi.mock("./budget", async (importOriginal) => ({
   ...await importOriginal<typeof import("./budget")>(),
   readDownloadBudgetStatus: async () => mocks.budget,

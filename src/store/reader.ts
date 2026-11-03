@@ -145,6 +145,7 @@ export interface ReaderGeneralSettings {
   autoScroll: boolean;
   autoScrollInterval: number;
   autoScrollOffset: number;
+  /** Retired "Download next chapter in advance"; kept so download goals can read it once (RD4). */
   autoDownloadNextChapter: boolean;
   bionicReading: boolean;
   removeExtraParagraphSpacing: boolean;

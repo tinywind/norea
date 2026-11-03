@@ -6,7 +6,8 @@ vi.mock("../client", () => ({ getDb: vi.fn() }));
 import { getDb } from "../client";
 import {
   clearDownloadGoalExclusions, excludeChaptersFromDownloadGoals, getNovelDownloadGoal, listDownloadGoalExcludedChapterIds,
-  listDownloadGoalNovels, listGoalNovelIdsForDownloadScope, listNovelDownloadGoals, setNovelDownloadGoal,
+  listDownloadGoalNovels, listGoalNovelIdsForDownloadScope, listLibraryNovelsWithoutDownloadGoal, listNovelDownloadGoals,
+  setNovelDownloadGoal,
 } from "./novel-download-goal";
 
 let sqlite: DatabaseSync;
@@ -119,4 +120,11 @@ it("persists goal exclusions per chapter until the novel's goal is set again", a
   expect(await listDownloadGoalExcludedChapterIds(2)).toEqual([20]);
   sqlite.exec("DELETE FROM chapter WHERE id=20");
   expect(await listDownloadGoalExcludedChapterIds(2)).toEqual([]);
+});
+
+it("lists library source novels that follow the default", async () => {
+  sqlite.exec(`UPDATE novel SET in_library=1 WHERE id IN (1,2);
+    INSERT INTO novel(id,plugin_id,path,name,is_local,in_library) VALUES(3,'local','/local','Local',1,1),(4,'source','/out','Out',0,0)`);
+  await setNovelDownloadGoal(2, { kind: "none" });
+  expect(await listLibraryNovelsWithoutDownloadGoal()).toEqual([{ id: 1, pluginId: "source" }]);
 });

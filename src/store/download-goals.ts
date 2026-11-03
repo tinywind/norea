@@ -11,11 +11,14 @@ interface DownloadGoalSettings {
   defaultKeepAhead: DefaultKeepAheadChoice;
   /** Lets automatic goal downloads run on a metered (mobile data) network. */
   automaticOnMobileData: boolean;
+  /** The retired reader option "Download next chapter in advance" has been turned into goals. */
+  legacyReadAheadMigrated: boolean;
 }
 
 interface DownloadGoalSettingsStore extends DownloadGoalSettings {
   setDefaultKeepAhead: (count: number) => void;
   setAutomaticOnMobileData: (allowed: boolean) => void;
+  completeLegacyReadAheadMigration: (defaultKeepAhead: number) => void;
 }
 
 function normalizeDefaultKeepAhead(value: unknown): DefaultKeepAheadChoice {
@@ -27,20 +30,37 @@ export function normalizeDownloadGoalSettings(value: unknown): DownloadGoalSetti
   return {
     defaultKeepAhead: normalizeDefaultKeepAhead(stored.defaultKeepAhead),
     automaticOnMobileData: stored.automaticOnMobileData === true,
+    legacyReadAheadMigrated: stored.legacyReadAheadMigrated === true,
   };
 }
 
 export const DOWNLOAD_GOAL_SETTINGS_KEY = "download-goal-settings";
+
+/** Whether the default keep-ahead was ever saved, so an earlier setting must not replace it. */
+export function isDefaultKeepAheadStored(): boolean {
+  try {
+    const raw = globalThis.localStorage?.getItem(DOWNLOAD_GOAL_SETTINGS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    const state = parsed !== null && typeof parsed === "object" ? (parsed as { state?: unknown }).state : null;
+    return state !== null && typeof state === "object" &&
+      DEFAULT_KEEP_AHEAD_CHOICES.some((choice) => choice === (state as Record<string, unknown>).defaultKeepAhead);
+  } catch {
+    return false;
+  }
+}
 
 export const useDownloadGoalSettingsStore = create<DownloadGoalSettingsStore>()(persist(
   (set) => ({
     ...normalizeDownloadGoalSettings(null),
     setDefaultKeepAhead: (count) => set({ defaultKeepAhead: normalizeDefaultKeepAhead(count) }),
     setAutomaticOnMobileData: (automaticOnMobileData) => set({ automaticOnMobileData }),
+    completeLegacyReadAheadMigration: (count) =>
+      set({ defaultKeepAhead: normalizeDefaultKeepAhead(count), legacyReadAheadMigrated: true }),
   }),
   {
     name: DOWNLOAD_GOAL_SETTINGS_KEY,
-    partialize: ({ defaultKeepAhead, automaticOnMobileData }) => ({ defaultKeepAhead, automaticOnMobileData }),
+    partialize: ({ defaultKeepAhead, automaticOnMobileData, legacyReadAheadMigrated }) =>
+      ({ defaultKeepAhead, automaticOnMobileData, legacyReadAheadMigrated }),
     merge: (persisted, current) => ({ ...current, ...normalizeDownloadGoalSettings(persisted) }),
   },
 ));

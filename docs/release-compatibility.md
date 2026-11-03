@@ -112,6 +112,15 @@ requirements must be decided explicitly before implementation.
   through the foreign key. Full device snapshots include it under the exact-schema
   policy; portable backups exclude it, and their restore drops it with the
   replaced chapter rows.
+- The reader option "Download next chapter in advance" is retired; download
+  goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
+  `reader-settings` entry and are read once at startup. Off for all novels, it
+  turns the default keep-ahead off unless `download-goal-settings` already saved
+  one; a source or novel override that differs from the default becomes that
+  library novel's own goal (`none`, or keep one ahead). The additive
+  `legacyReadAheadMigrated` flag in `download-goal-settings` records that this
+  ran, so later changes to either setting are never overwritten. A restored
+  backup without the flag repeats the step at the next start.
 - Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
   beside the approved `saved-profiles/` vault, with their own index and private
   files. They never write or change an O/X verdict; an entry leaves the pool when

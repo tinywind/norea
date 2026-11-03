@@ -105,7 +105,6 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
           <div className="norea-reader-quick-body">
             <Tabs.Panel value="reading">
               <SettingsSection>
-                {fields.autoDownloadNextChapter}
                 {fields.fullPageReader}
                 {fields.keepScreenOn}
                 {paged ? fields.pageTransition : null}
