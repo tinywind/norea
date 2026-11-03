@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../../i18n";
+import { holdDownloadGoalsAfterRestore } from "../download-goals/budget";
 import { useAppearanceStore } from "../../store/appearance";
 import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
 import { useContentSyncStore } from "../../store/content-sync";
@@ -180,6 +181,8 @@ export async function restoreDeviceBackup(
         }
         replaceDeviceSettings(receipt.settings);
         await invoke("device_backup_restore_complete", { restoreId: receipt.id });
+        // Restored goals wait for the user, because the restore resets every download flag.
+        holdDownloadGoalsAfterRestore();
       } catch (error) {
         let rolledBack = false;
         if (!nativeCommitted) {

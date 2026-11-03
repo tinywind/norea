@@ -235,6 +235,7 @@ export class TaskScheduler {
   private readonly pausedSourceIds = new Set<string>();
   private readonly pausedTaskGroups = new Set<TaskNotificationGroupKey>();
   private ordinaryChapterDownloadHolds = 0;
+  private automaticWorkPaused = false;
   private readonly snapshotListeners = new Set<() => void>();
   private readonly sourceTaskSettlementWaiters = new Map<
     string,
@@ -382,6 +383,13 @@ export class TaskScheduler {
           throw new Error("Active task VPN worker ownership does not match the requested route.");
         }
         const requestedPriority = spec.priority ?? "normal";
+        if (activeEntry.spec.automatic && !spec.automatic) {
+          activeEntry.spec = { ...activeEntry.spec, automatic: false };
+          activeEntry.record = { ...activeEntry.record };
+          delete activeEntry.record.automatic;
+          this.publishSnapshot();
+          this.requestDrain();
+        }
         if (
           activeEntry.record.status === "queued" &&
           priorityRank(requestedPriority) <
@@ -432,6 +440,7 @@ export class TaskScheduler {
         source: spec.source,
         ...(spec.vpnWorker ? { vpnWorker: { ...spec.vpnWorker } } : {}),
         subject: spec.subject,
+        ...(spec.automatic ? { automatic: true } : {}),
         status: "queued",
         createdAt: Date.now(),
         canCancel: taskCanCancel(spec.kind, spec.canCancel),
@@ -1584,6 +1593,13 @@ export class TaskScheduler {
   }
 
   /** Hold new ordinary chapters while their persistent queue ownership transfers. */
+  /** Pauses or resumes queued download-goal work; running work settles and explicit work is unaffected. */
+  setAutomaticWorkPaused(paused: boolean): void {
+    if (this.automaticWorkPaused === paused) return;
+    this.automaticWorkPaused = paused;
+    if (!paused) this.requestDrain();
+  }
+
   holdOrdinaryChapterDownloads(): () => void {
     this.ordinaryChapterDownloadHolds += 1;
     let released = false;
@@ -1942,6 +1958,7 @@ export class TaskScheduler {
     options: { allowActiveSource?: boolean } = {},
   ): boolean {
     if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
+    if (this.automaticWorkPaused && entry.spec.automatic) return false;
     if (this.ordinaryChapterDownloadHolds > 0 && entry.record.kind === "chapter.download" &&
       entry.record.subject?.pluginId !== LOCAL_PLUGIN_ID && !entry.spec.vpnWorker && entry.sourceAccessVerificationRevision === undefined) return false;
     if (!this.networkAvailable && this.requiresNetwork(entry)) return false;

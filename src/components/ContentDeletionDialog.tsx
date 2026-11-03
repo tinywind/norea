@@ -12,6 +12,7 @@ import { describeError } from "../lib/errors";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import { finishContentDeletion, useContentDeletionStore } from "../store/content-deletion";
 import { TextButton } from "./TextButton";
+import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
 export function ContentDeletionDialog() {
   const pending = useContentDeletionStore(state => state.pending);
@@ -32,6 +33,7 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const offerToStopDownloadGoals = useStopDownloadGoalsOffer();
   const fromServer = request.kind === "server-work" || request.kind === "server-chapters";
   const serverUrl = "source" in request ? request.source.serverUrl : request.serverUrl;
   const close = () => { if (!running.current) finishContentDeletion(id, results.some(result => result.status === "succeeded")); };
@@ -63,6 +65,7 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
       }
       if (next.every(result => result.status === "succeeded")) {
         notifications.show({ message: t("contentDeletion.done") });
+        if (request.kind === "downloads") await offerToStopDownloadGoals(request.scope, request.ids ?? []);
         finishContentDeletion(id, next.length > 0);
       }
     } catch (cause) { setError(describeError(cause)); }

@@ -6,6 +6,7 @@ export interface MaintenanceResult {
 
 export async function clearLibraryMembership(): Promise<MaintenanceResult> {
   const db = await getDb();
+  await db.execute("DELETE FROM novel_download_goal WHERE novel_id IN (SELECT id FROM novel WHERE in_library = 1)");
   const result = await db.execute(
     `UPDATE novel
      SET

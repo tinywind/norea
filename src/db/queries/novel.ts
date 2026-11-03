@@ -751,7 +751,8 @@ export async function findNovelBySource(
 
 /**
  * Toggle a novel's library membership. Touches `updated_at` so
- * Library reorders the row on the next paint.
+ * Library reorders the row on the next paint. Removal also clears the
+ * novel's download goal.
  */
 export async function setNovelInLibrary(
   id: number,
@@ -775,6 +776,9 @@ export async function setNovelInLibrary(
        WHERE novel_id = $1`,
       [id],
     );
+  } else {
+    // Leaving the library ends the novel's download goal; its downloads stay.
+    await db.execute("DELETE FROM novel_download_goal WHERE novel_id = $1", [id]);
   }
 }
 

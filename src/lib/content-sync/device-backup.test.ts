@@ -130,7 +130,7 @@ it("keeps old settings until native commit and acknowledges the actual installed
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("device_backup_restore", { path: file.path }));
     expect(readDeviceSettings()).toEqual([{ key: "old-setting", value: "retained" }]);
   } finally { commit(); await finished; }
-  expect(readDeviceSettings()).toEqual(receipt.settings);
+  expect(readDeviceSettings()).toEqual([{ key: "download-goals-held-after-restore", value: "1" }, ...receipt.settings]);
   expect(mocks.invoke).toHaveBeenCalledWith("device_backup_restore_complete", { restoreId: receipt.id });
 });
 it.each(["settings", "acknowledgement", "uncertain-commit"] as const)("reloads behind the startup fence and preserves recovery files after %s failure", async phase => {

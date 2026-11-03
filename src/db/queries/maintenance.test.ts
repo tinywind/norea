@@ -5,7 +5,7 @@ vi.mock("../client", () => ({
 }));
 
 import { getDb } from "../client";
-import { clearDownloadedChapterContent } from "./maintenance";
+import { clearDownloadedChapterContent, clearLibraryMembership } from "./maintenance";
 
 const mockedGetDb = vi.mocked(getDb);
 let mockExecute: ReturnType<typeof vi.fn>;
@@ -34,5 +34,18 @@ describe("clearDownloadedChapterContent", () => {
     expect(sql).toContain("EXISTS");
     expect(sql).toContain("n.is_local = 0");
     expect(result.rowsAffected).toBe(3);
+  });
+});
+
+describe("clearLibraryMembership", () => {
+  it("ends the download goals of library novels before clearing membership", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 2 }).mockResolvedValueOnce({ rowsAffected: 4 });
+
+    const result = await clearLibraryMembership();
+
+    expect(mockExecute.mock.calls[0]![0]).toBe(
+      "DELETE FROM novel_download_goal WHERE novel_id IN (SELECT id FROM novel WHERE in_library = 1)");
+    expect(mockExecute.mock.calls[1]![0]).toContain("in_library = 0");
+    expect(result.rowsAffected).toBe(4);
   });
 });

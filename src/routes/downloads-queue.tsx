@@ -24,6 +24,7 @@ import {
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { ChapterDownloadFailureAttention } from "../components/ChapterDownloadFailureAttention";
+import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
 import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
@@ -1417,6 +1418,7 @@ export function DownloadsQueueView({
 
       {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
       {active ? <ChapterDownloadFailureAttention /> : null}
+      {active ? <DownloadGoalAttention /> : null}
       {vpnLaunchOpened ? <VpnDownloadLaunchDialog snapshot={vpn} onClose={() => setVpnLaunchOpened(false)} /> : null}
 
       {requests.length ? <section className="norea-download-requests" aria-label={t("tasks.downloadRequests")}>

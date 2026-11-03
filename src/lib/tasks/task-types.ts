@@ -136,6 +136,8 @@ export interface TaskRecord {
   waitingForNetwork?: boolean;
   /** When an automatic retry waits for its backoff, the time it becomes eligible to start. */
   retryAt?: number;
+  /** Download-goal work that waits while automatic downloads are paused by a budget. */
+  automatic?: boolean;
   error?: string;
   canCancel: boolean;
   canRetry: boolean;
@@ -210,6 +212,8 @@ export interface TaskSpec<T> {
   retryManually?: () => TaskHandle<T>;
   /** A fresh automatic retry stays queued until this time; a higher-priority request starts it sooner. */
   notBefore?: number;
+  /** Download-goal work; an explicit request for the same task clears it. */
+  automatic?: boolean;
   canCompleteWithoutSourceAccess?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;

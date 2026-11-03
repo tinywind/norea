@@ -4,7 +4,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn() }));
 import { getDb } from "../client";
-import { getNovelDownloadGoal, listNovelDownloadGoals, setNovelDownloadGoal } from "./novel-download-goal";
+import {
+  getNovelDownloadGoal, listDownloadGoalNovels, listGoalNovelIdsForDownloadScope, listNovelDownloadGoals, setNovelDownloadGoal,
+} from "./novel-download-goal";
 
 let sqlite: DatabaseSync;
 
@@ -50,4 +52,30 @@ it("drops the goal with its novel", async () => {
   await setNovelDownloadGoal(2, { kind: "keep_ahead", count: 5 });
   sqlite.exec("DELETE FROM novel WHERE id=2");
   expect(await listNovelDownloadGoals()).toEqual([]);
+});
+
+it("lists novels with their own goal and active library novels for the default", async () => {
+  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library,last_read_at) VALUES
+    (3,'source','/active','Active',1,500),(4,'source','/stale','Stale',1,100),(5,'source','/browsed','Browsed',0,900);
+    INSERT INTO novel(id,plugin_id,path,name,is_local,in_library,last_read_at) VALUES(6,'local','/local','Local',1,1,800);
+    UPDATE novel SET last_read_at=200 WHERE id=2`);
+  await setNovelDownloadGoal(2, { kind: "entire" });
+  await setNovelDownloadGoal(6, { kind: "entire" });
+
+  expect((await listDownloadGoalNovels(400)).map((novel) => [novel.id, novel.goal?.kind ?? null]))
+    .toEqual([[3, null], [2, "entire"]]);
+  expect((await listDownloadGoalNovels(null)).map((novel) => novel.id)).toEqual([2]);
+  expect((await listDownloadGoalNovels(400, [3, 4]))).toEqual([
+    { id: 3, pluginId: "source", path: "/active", name: "Active", lastReadAt: 500, goal: null },
+  ]);
+  expect(await listDownloadGoalNovels(400, [])).toEqual([]);
+});
+
+it("finds the goal novels a download deletion touches", async () => {
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(10,1,'/a','A',1),(20,2,'/b','B',1)");
+  await setNovelDownloadGoal(2, { kind: "keep_ahead", count: 3 });
+  expect(await listGoalNovelIdsForDownloadScope("chapter", [10, 20, 20])).toEqual([2]);
+  expect(await listGoalNovelIdsForDownloadScope("novel", [1])).toEqual([]);
+  expect(await listGoalNovelIdsForDownloadScope("novel", [1, 2])).toEqual([2]);
+  expect(await listGoalNovelIdsForDownloadScope("all", [])).toEqual([2]);
 });

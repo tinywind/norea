@@ -16,6 +16,7 @@ import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-r
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { useContentSyncStore } from "../../store/content-sync";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
+import { useStopDownloadGoalsOffer } from "../use-stop-download-goals-offer";
 import { chaptersKey } from "./novel-detail-model";
 
 type NovelDownloadSource = Pick<
@@ -30,6 +31,7 @@ export function useNovelChapterActions(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const offerToStopDownloadGoals = useStopDownloadGoalsOffer();
   const invalidateDeletedChapters = () => {
     void queryClient.invalidateQueries({ queryKey: chaptersKey(id) });
     void queryClient.invalidateQueries({ queryKey: ["chapter"] });
@@ -60,6 +62,7 @@ export function useNovelChapterActions(
       if (failure) throw new Error(failure.error);
       markUpdatesIndexDirty("library-membership");
     },
+    onSuccess: (_result, chapterId) => { void offerToStopDownloadGoals("chapter", [chapterId]); },
     onSettled: invalidateDeletedChapters,
     onError: showDeleteError,
   });

@@ -1569,6 +1569,21 @@ describe("startChapterDownloadQueueExecutor", () => {
 });
 
 describe("enqueueChapterDownload", () => {
+  it("marks goal work automatic, keeps the flag in its queue row and retries it manually as explicit work", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    enqueueChapterDownload({ id: 900030, pluginId: "source-a", chapterPath: "/chapter/30", title: "Goal job", goal: true });
+    await waitForChapterDownloadQueueMutations();
+    try {
+      expect(capturedSpec?.automatic).toBe(true);
+      expect(backendQueueValues.get(900030)).toMatchObject({ goal: true });
+      capturedSpec!.retryManually!();
+      expect(capturedSpec?.automatic).toBeUndefined();
+    } finally {
+      discardQueuedChapterDownloads([900030]);
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
   it("keeps a replacement queued job when an older cancellation settles late", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const previous = createDeferred<void>();

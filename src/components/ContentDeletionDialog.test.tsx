@@ -24,6 +24,7 @@ vi.mock("../lib/content-deletion", () => ({ prepareContentDeletion: vi.fn(), run
 vi.mock("../lib/content-sync/management-query-cache", () => ({ removeDeletedServerWorkFromQueries: vi.fn() }));
 vi.mock("../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 vi.mock("../db/queries/novel", () => ({ getNovelById: vi.fn() }));
+vi.mock("./use-stop-download-goals-offer", () => ({ useStopDownloadGoalsOffer: () => vi.fn() }));
 vi.mock("../store/content-deletion", () => ({
   finishContentDeletion: vi.fn(),
   useContentDeletionStore: (select: (state: unknown) => unknown) =>

@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 interface ChapterActionMutation {
   mutationFn: (input: number | readonly number[]) => Promise<unknown>;
+  onSuccess?: (result: unknown, input: number) => void;
   onSettled?: () => void;
   onError?: (error: Error) => void;
 }
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   runDeletion: vi.fn(),
   invalidateQueries: vi.fn(),
   showNotification: vi.fn(),
+  offerToStopGoals: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -45,6 +47,7 @@ vi.mock("../../store/content-sync", () => ({
   useContentSyncStore: { getState: () => ({ serverUrl: "http://server" }) },
 }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
+vi.mock("../use-stop-download-goals-offer", () => ({ useStopDownloadGoalsOffer: () => mocks.offerToStopGoals }));
 
 import { useNovelChapterActions } from "./use-novel-chapter-actions";
 import { enqueueChapterDownload, enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
@@ -111,6 +114,8 @@ it("deletes one confirmed chapter's files on this device only, without the delet
   await pending;
   expect(settled).toHaveBeenCalled();
   expect(mocks.deleteCache).not.toHaveBeenCalled();
+  mutation.onSuccess?.(undefined, 7);
+  expect(mocks.offerToStopGoals).toHaveBeenCalledWith("chapter", [7]);
 });
 
 it("reports a failed deletion and refreshes the affected chapter state", async () => {

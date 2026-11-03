@@ -112,6 +112,8 @@ export interface ChapterDownloadJob {
   priority?: TaskPriority;
   /** The earliest start of an automatic retry after a transient failure. */
   retryAt?: number;
+  /** Submitted by a download goal; waits while automatic downloads are paused. */
+  goal?: true;
   title: string;
 }
 
@@ -633,6 +635,7 @@ function normalizeQueuedChapterDownloadJob(
     novelPath: readStringField(record, "novelPath"),
     priority: "background",
     ...(readPositiveIntegerField(record, "retryAt") ? { retryAt: readPositiveIntegerField(record, "retryAt") } : {}),
+    ...(record.goal === true ? { goal: true as const } : {}),
     title,
   };
 }
@@ -1135,11 +1138,12 @@ function enqueueChapterDownloadForExecutor(
     ...(!options.vpnWorker ? {
       retryManually: () => {
         if (isTauriRuntime()) forgetFailures([job.id]);
-        return enqueueChapterDownload(withoutRetryTime(job));
+        return enqueueChapterDownload(explicitChapterDownloadJob(withoutRetryTime(job)));
       },
       ...(job.retryAt ? { notBefore: job.retryAt } : {}),
     } : {}),
     priority: job.priority ?? "background",
+    ...(job.goal && !options.vpnWorker ? { automatic: true } : {}),
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
     ...(options.vpnWorker ? { vpnWorker: options.vpnWorker } : {}),
@@ -1573,6 +1577,14 @@ function withoutRetryTime(job: ChapterDownloadJob): ChapterDownloadJob {
   return next;
 }
 
+/** A retry the user asked for is explicit work, so automatic-download budgets no longer hold it. */
+function explicitChapterDownloadJob(job: ChapterDownloadJob): ChapterDownloadJob {
+  if (!job.goal) return job;
+  const next = { ...job };
+  delete next.goal;
+  return next;
+}
+
 function isChapterDownloadActive(chapterId: number): boolean {
   const status = getChapterDownloadStatus(chapterId);
   return status?.kind === "queued" || status?.kind === "running" || pendingBackendChapterDownloadJobsById.has(chapterId);
@@ -1648,7 +1660,7 @@ export async function retryFailedChapterDownloads(chapterIds: readonly number[])
     .filter((job): job is ChapterDownloadJob => job !== null);
   await forgetChapterDownloadFailures(jobs.map((job) => job.id));
   for (const job of jobs) {
-    void enqueueChapterDownload({ ...job, priority: "user" }).promise.catch(() => undefined);
+    void enqueueChapterDownload({ ...explicitChapterDownloadJob(job), priority: "user" }).promise.catch(() => undefined);
   }
   return jobs.length;
 }

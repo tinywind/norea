@@ -82,7 +82,13 @@ requirements must be decided explicitly before implementation.
   persistent download goal: keep N chapters ahead (with `count`), all remaining
   chapters, or the entire novel. It changes no existing table; queue rows,
   failures, chapters and reading state upgrade unchanged. A row is removed with
-  its novel through the foreign key. Full device snapshots include the table
+  its novel through the foreign key and when the novel leaves the library; the
+  novel's downloads stay. Ordinary queue rows submitted by a goal carry an
+  optional `goal: true` in their job JSON so restored goal work still waits for
+  the automatic-download budgets; rows without it are explicit work, as before.
+  A device restore sets the `download-goals-held-after-restore`
+  localStorage entry, so restored goals queue nothing until the user resumes them
+  from Needs attention. Full device snapshots include the table
   under the exact-schema policy. Goals are user intent, so portable file backups
   carry them in manifest format 3.
   The default keep-ahead count for active library novels and the mobile-data
