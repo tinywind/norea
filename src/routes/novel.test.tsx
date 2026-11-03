@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   sync: { serverError: null as unknown, sourceError: null as unknown, retry: vi.fn() },
   metadataError: null as unknown,
   toggleMutate: vi.fn(),
+  clearDownloadMutate: vi.fn(),
+  confirm: vi.fn(),
   toast: vi.fn(),
   novelQuery: { isLoading: false, error: null as unknown },
   installed: false,
@@ -42,7 +44,8 @@ vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) 
 vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: {} }) }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.toast, hide: vi.fn() } }));
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
-vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: {}, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
+vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
+vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
 vi.mock("../components/novel/use-novel-download-statuses", () => ({ useNovelDownloadStatuses: () => new Map() }));
 vi.mock("../components/novel/use-local-novel-editor", () => ({ useLocalNovelEditor: () => ({ addLocalChapters: {}, reorderLocalChapters: {} }) }));
 vi.mock("../components/ReaderSettingsPanel", () => ({ ReaderSettingsPanel: () => null }));
@@ -144,6 +147,8 @@ beforeEach(() => {
   mocks.metadataError = null;
   mocks.installed = false;
   mocks.toggleMutate.mockReset();
+  mocks.clearDownloadMutate.mockReset();
+  mocks.confirm.mockReset();
   mocks.toast.mockReset();
 });
 
@@ -467,4 +472,94 @@ it("shows no category toast when the library toggle removes the novel", async ()
   } finally {
     await harness.unmount();
   }
+});
+
+async function withPageTree(check: (find: (predicate: (props: Record<string, unknown>) => boolean) => ReturnType<typeof collectElements>[number] | undefined, run: (callback: () => void) => Promise<void>) => Promise<void>) {
+  const harness = mountBackNavigationHarness();
+  // Selection mode records a history entry so back leaves it first.
+  Object.assign(window, { history: { state: null, pushState: vi.fn(), back: vi.fn() } });
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  try {
+    await harness.render(<PageProbe />);
+    await check(
+      (predicate) => collectElements(tree).find((element) => predicate(element.props)),
+      (callback) => harness.run(callback),
+    );
+  } finally {
+    await harness.unmount();
+  }
+}
+
+it("replaces the app bar with a labeled selection bar from the visible Select entry", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = [{ ...chapter, unread: true }, { ...chapter, id: 2, position: 2, isDownloaded: true, unread: false }];
+  await withPageTree(async (find, run) => {
+    expect(find((props) => typeof props.onSelectAll === "function")).toBeUndefined();
+    const select = find((props) => props.children === "novel.select")!;
+    await run(() => (select.props.onClick as () => void)());
+    const bar = find((props) => typeof props.onSelectAll === "function")!;
+    const labels = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
+      .map((element) => element.props.label)
+      .filter((label) => typeof label === "string");
+    expect(labels).toEqual(expect.arrayContaining([
+      "novel.selection.downloadSelected",
+      "novel.selection.markRead",
+      "novel.selection.markUnread",
+      "novel.selection.deleteDownloads",
+      "common.more",
+    ]));
+    expect(find((props) => props.className === "norea-novel-app-bar")).toBeUndefined();
+  });
+});
+
+it("offers anchor-relative read actions only for a single selected chapter", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = [chapter, { ...chapter, id: 2, position: 2 }, { ...chapter, id: 3, position: 3 }];
+  await withPageTree(async (find, run) => {
+    const list = () => find((props) => typeof props.onToggleSelected === "function")!;
+    await run(() => (list().props.onToggleSelected as (id: number) => void)(2));
+    const moreLabels = () => {
+      const bar = find((props) => typeof props.onSelectAll === "function")!;
+      const menu = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
+        .find((element) => Array.isArray(element.props.items))!;
+      return (menu.props.items as MenuItem[]).map((item) => item.label);
+    };
+    expect(moreLabels()).toEqual([
+      "novel.selection.downloadPrevious",
+      "novel.selection.markPreviousRead",
+      "novel.selection.markFollowingUnread",
+    ]);
+    await run(() => (list().props.onToggleSelected as (id: number) => void)(3));
+    expect(moreLabels()).toEqual(["novel.selection.downloadPrevious"]);
+  });
+});
+
+it("asks a single-line confirmation before deleting one chapter's download", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = [{ ...chapter, isDownloaded: true }];
+  let answer!: (confirmed: boolean) => void;
+  mocks.confirm.mockImplementation(() => new Promise<boolean>((resolve) => { answer = resolve; }));
+  await withPageTree(async (find, run) => {
+    const list = find((props) => typeof props.onDeleteDownload === "function")!;
+    await run(() => (list.props.onDeleteDownload as (id: number) => void)(1));
+    expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ danger: true, title: "novel.deleteDownload" }));
+    expect(mocks.clearDownloadMutate).not.toHaveBeenCalled();
+    await run(() => answer(true));
+    expect(mocks.clearDownloadMutate).toHaveBeenCalledWith(1);
+  });
+});
+
+it("keeps the download when the confirmation is cancelled", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = [{ ...chapter, isDownloaded: true }];
+  mocks.confirm.mockResolvedValue(false);
+  await withPageTree(async (find, run) => {
+    const list = find((props) => typeof props.onDeleteDownload === "function")!;
+    await run(() => (list.props.onDeleteDownload as (id: number) => void)(1));
+    expect(mocks.clearDownloadMutate).not.toHaveBeenCalled();
+  });
 });

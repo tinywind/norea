@@ -119,16 +119,6 @@ export function ExternalLinkGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function MoreGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="5" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="19" cy="12" r="1.5" />
-    </svg>
-  );
-}
-
 export function PlayGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">

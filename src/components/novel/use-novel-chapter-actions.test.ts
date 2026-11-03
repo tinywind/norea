@@ -9,6 +9,8 @@ interface ChapterActionMutation {
 const mocks = vi.hoisted(() => ({
   mutations: [] as ChapterActionMutation[],
   deleteCache: vi.fn(),
+  prepareDeletion: vi.fn(),
+  runDeletion: vi.fn(),
   invalidateQueries: vi.fn(),
   showNotification: vi.fn(),
 }));
@@ -34,6 +36,13 @@ vi.mock("../../lib/tasks/chapter-download", () => ({
 }));
 vi.mock("../../store/content-deletion", () => ({
   confirmContentDeletion: mocks.deleteCache,
+}));
+vi.mock("../../lib/content-deletion", () => ({
+  prepareContentDeletion: mocks.prepareDeletion,
+  runContentDeletion: mocks.runDeletion,
+}));
+vi.mock("../../store/content-sync", () => ({
+  useContentSyncStore: { getState: () => ({ serverUrl: "http://server" }) },
 }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 
@@ -65,35 +74,53 @@ it.each([false, true])("admits the chapter request before its queue is materiali
   expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([expect.objectContaining({ id: 7, novelId: 3 })]);
 });
 
-it.each([
-  { action: 0, input: 7, expectedIds: [7] },
-  { action: 1, input: [7, 8, 7, -1], expectedIds: [7, 8] },
-])("keeps deletion action $action pending until the files and records are deleted", async ({ action, input, expectedIds }) => {
+it("keeps the batch deletion pending until the files and records are deleted", async () => {
   let complete!: (result: unknown) => void;
   mocks.deleteCache.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
   useNovelChapterActions(3, null, [{ id: 7, name: "Opening" }]);
-  const mutation = mocks.mutations[action]!;
+  const mutation = mocks.mutations[1]!;
   const settled = vi.fn();
-  const pending = mutation.mutationFn(input).then(settled);
+  const pending = mutation.mutationFn([7, 8, 7, -1]).then(settled);
   await Promise.resolve();
   expect(settled).not.toHaveBeenCalled();
-  expect(mocks.deleteCache).toHaveBeenCalledWith(expect.objectContaining({ kind: "downloads", scope: "chapter", ids: expectedIds }));
-  const result = true;
-  complete(result);
+  expect(mocks.deleteCache).toHaveBeenCalledWith(expect.objectContaining({ kind: "downloads", scope: "chapter", ids: [7, 8] }));
+  complete(true);
   await pending;
-  expect(settled).toHaveBeenCalledWith(result);
+  expect(settled).toHaveBeenCalledWith(true);
   mutation.onSettled?.();
   expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["novel", "detail", 3, "chapters"] });
   expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["download-cache"] });
 });
 
-it("reports a failed deletion and refreshes the affected chapter state", async () => {
-  const failure = new Error("Storage permission was revoked");
-  mocks.deleteCache.mockRejectedValue(failure);
+it("deletes one confirmed chapter's files on this device only, without the deletion dialog", async () => {
+  let complete!: (results: unknown) => void;
+  const actions = [{ id: "device:7" }];
+  mocks.prepareDeletion.mockResolvedValue(actions);
+  mocks.runDeletion.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
   useNovelChapterActions(3, null, [{ id: 7, name: "Opening" }]);
   const mutation = mocks.mutations[0]!;
-  await expect(mutation.mutationFn(7)).rejects.toBe(failure);
-  mutation.onError?.(failure);
+  const settled = vi.fn();
+  const pending = mutation.mutationFn(7).then(settled);
+  await vi.waitFor(() => expect(mocks.runDeletion).toHaveBeenCalledWith(actions));
+  expect(mocks.prepareDeletion).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "downloads", scope: "chapter", ids: [7], serverUrl: "http://server" }),
+    { local: false, server: false },
+  );
+  expect(settled).not.toHaveBeenCalled();
+  complete([{ id: "device:7", status: "succeeded" }]);
+  await pending;
+  expect(settled).toHaveBeenCalled();
+  expect(mocks.deleteCache).not.toHaveBeenCalled();
+});
+
+it("reports a failed deletion and refreshes the affected chapter state", async () => {
+  mocks.prepareDeletion.mockResolvedValue([{ id: "device:7" }]);
+  mocks.runDeletion.mockResolvedValue([{ id: "device:7", status: "failed", error: "Storage permission was revoked" }]);
+  useNovelChapterActions(3, null, [{ id: 7, name: "Opening" }]);
+  const mutation = mocks.mutations[0]!;
+  const failure = await mutation.mutationFn(7).catch((error: Error) => error);
+  expect(failure).toBeInstanceOf(Error);
+  mutation.onError?.(failure as Error);
   mutation.onSettled?.();
   expect(mocks.showNotification).toHaveBeenCalledWith(expect.objectContaining({
     color: "danger", message: "Storage permission was revoked",

@@ -6,6 +6,7 @@ import {
 } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { prepareContentDeletion, runContentDeletion } from "../../lib/content-deletion";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../../lib/tasks/chapter-download";
 import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
 import { confirmContentDeletion } from "../../store/content-deletion";
+import { useContentSyncStore } from "../../store/content-sync";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { chaptersKey } from "./novel-detail-model";
 
@@ -41,16 +43,22 @@ export function useNovelChapterActions(
       `downloads:novel:${id}`,
     );
   };
+  /** Deletes one chapter's stored files; the caller confirms first. */
   const clearDownload = useMutation({
     mutationFn: async (chapterId: number) => {
       const chapter = chapters.find((row) => row.id === chapterId);
-      return confirmContentDeletion({
+      const actions = await prepareContentDeletion({
         kind: "downloads", scope: "chapter",
         ids: [chapterId],
+        serverUrl: useContentSyncStore.getState().serverUrl,
         title: t("tasks.task.deleteDownloadCacheChapter", {
           name: chapter?.name ?? String(chapterId),
         }),
-      });
+      }, { local: false, server: false });
+      const failure = (await runContentDeletion(actions))
+        .find((result) => result.status === "failed");
+      if (failure) throw new Error(failure.error);
+      markUpdatesIndexDirty("library-membership");
     },
     onSettled: invalidateDeletedChapters,
     onError: showDeleteError,

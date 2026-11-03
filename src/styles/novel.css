@@ -86,6 +86,12 @@
   z-index: 3;
 }
 
+.norea-novel-page > .norea-selection-bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
 .norea-novel-app-bar-title {
   color: var(--norea-color-ink);
   flex: 1 1 auto;
@@ -355,50 +361,6 @@
   }
 }
 
-.norea-novel-selection-strip {
-  align-items: center;
-  background: var(--norea-color-accent-soft);
-  border-bottom: 1px solid var(--norea-color-rule);
-  color: var(--norea-color-accent);
-  display: flex;
-  flex: 0 0 1.875rem;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  gap: var(--norea-space-3);
-  justify-content: space-between;
-  margin-top: var(--norea-space-3);
-  padding: 0 var(--norea-space-4);
-}
-
-.norea-novel-selection-actions {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-2);
-}
-
-.norea-novel-selection-icon {
-  align-items: center;
-  border: 1px solid currentColor;
-  border-radius: var(--norea-radius-sm);
-  display: inline-flex;
-  justify-content: center;
-  opacity: 0.85;
-}
-
-.norea-novel-selection-icon:hover {
-  opacity: 1;
-}
-
-.norea-novel-selection-icon:disabled {
-  cursor: not-allowed;
-  opacity: 0.35;
-}
-
-.norea-novel-selection-strip ~ .norea-novel-chapter-list {
-  margin-top: 0;
-}
-
 .norea-novel-local-error {
   display: block;
   margin-top: var(--norea-space-2);
@@ -556,52 +518,6 @@
 
 .norea-novel-chapter-sort-button[data-sort-direction="asc"] svg {
   transform: rotate(180deg);
-}
-
-.norea-novel-batch-download-menu {
-  background: var(--norea-color-surface);
-  border-color: var(--norea-color-rule-strong);
-  padding: var(--norea-space-2);
-}
-
-.norea-novel-batch-download-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-1);
-}
-
-.norea-novel-batch-download-option {
-  background: transparent;
-  border: 0;
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink);
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-1);
-  padding: var(--norea-space-2);
-  text-align: left;
-  width: 100%;
-}
-
-.norea-novel-batch-download-option:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.norea-novel-batch-download-label {
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-weight: 650;
-  line-height: 1.2;
-}
-
-.norea-novel-batch-download-description {
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.25;
 }
 
 @media (any-pointer: coarse) {

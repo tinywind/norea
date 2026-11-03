@@ -52,15 +52,13 @@
    * a transparent ::before grows the hit area instead.
    */
   html:root .mantine-Input-section .mantine-ActionIcon-root,
-  html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-novel-selection-icon.mantine-ActionIcon-root {
+  html:root .mantine-Input-section .mantine-CloseButton-root {
     min-height: 0;
     min-width: 0;
   }
 
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-novel-selection-icon,
   html:root .norea-mobile-nav-link {
     overflow: visible;
     position: relative;
@@ -68,7 +66,6 @@
 
   html:root .mantine-Input-section .mantine-ActionIcon-root::before,
   html:root .mantine-Input-section .mantine-CloseButton-root::before,
-  html:root .norea-novel-selection-icon::before,
   html:root .norea-mobile-nav-link::before {
     content: "";
     height: max(100%, var(--norea-control-md));

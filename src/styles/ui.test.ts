@@ -116,7 +116,6 @@ describe("coarse pointer touch floor", () => {
   it("grows the hit area with a transparent pseudo-element where the bar height is fixed", () => {
     for (const control of [
       ".mantine-Input-section .mantine-ActionIcon-root",
-      ".norea-novel-selection-icon",
       ".norea-mobile-nav-link",
     ]) {
       const { body } = ruleFor(coarse, `html:root ${control}::before`);
