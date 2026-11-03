@@ -74,3 +74,20 @@ describe("updates store check results", () => {
     expect(useUpdatesStore.getState().lastCheckResult?.failures).toEqual([]);
   });
 });
+
+describe("updates store views", () => {
+  const row = (chapterId: number) => ({ chapterId, isDownloaded: false } as LibraryUpdateEntry);
+
+  it("drops the loaded rows when switching lists and keeps the backlog when a check finishes", () => {
+    useUpdatesStore.getState().replaceWindow({ hasMore: false, nextCursor: null, updates: [row(1)] });
+    useUpdatesStore.getState().setView("backlog");
+    expect(useUpdatesStore.getState()).toMatchObject({ view: "backlog", hasLoaded: false, updates: [] });
+
+    useUpdatesStore.getState().replaceWindow({ hasMore: false, nextCursor: null, updates: [row(5), row(6)] });
+    useUpdatesStore.getState().applyCheckResult({
+      checkedNovels: 1, newChapters: 1, skippedNovels: 0, failures: [], hasMoreUpdates: false, nextUpdateCursor: null, updates: [row(9)],
+    });
+    expect(useUpdatesStore.getState().updates.map((entry) => entry.chapterId)).toEqual([5, 6]);
+    expect(useUpdatesStore.getState().lastCheckResult?.newChapters).toBe(1);
+  });
+});

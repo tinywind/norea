@@ -29,6 +29,7 @@ import { startAndroidFileOpenListener } from "../lib/android-file-open";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
 import { useTaskAttentionCount } from "../lib/tasks/hooks";
+import { useNewChapterBadgeCount } from "../components/updates/use-new-chapter-badge";
 import {
   applyTaskNotificationAction,
   navigateToTaskNotificationDestination,
@@ -231,8 +232,9 @@ function AppNavLink({
   label: string;
 }) {
   const { t } = useTranslation();
-  const accessibleLabel =
-    badgeCount > 0 ? t("nav.taskAttention", { label, count: badgeCount }) : label;
+  const accessibleLabel = badgeCount <= 0
+    ? label
+    : t(item.to === "/updates" ? "nav.newChapters" : "nav.taskAttention", { label, count: badgeCount });
 
   return (
     <Anchor
@@ -270,12 +272,13 @@ function NavLinks({
 }) {
   const { t } = useTranslation();
   const taskAttentionCount = useTaskAttentionCount();
+  const newChapterCount = useNewChapterBadgeCount();
 
   return NAV_ITEMS.map((item) => (
     <AppNavLink
       active={isNavItemActive(item, pathname)}
       activeClassName={activeClassName}
-      badgeCount={item.to === "/more" ? taskAttentionCount : 0}
+      badgeCount={item.to === "/more" ? taskAttentionCount : item.to === "/updates" ? newChapterCount : 0}
       className={className}
       item={item}
       key={item.to}

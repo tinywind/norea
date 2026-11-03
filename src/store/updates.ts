@@ -3,10 +3,13 @@ import type {
   LibraryUpdateEntry,
   LibraryUpdatesCursor,
   LibraryUpdatesPage,
+  LibraryUpdatesScope,
 } from "../db/queries/chapter";
 import type { UpdateCheckResult } from "../lib/updates/check-library-updates";
 
 interface UpdatesState {
+  /** "new": chapters found by checks; "backlog": every unread chapter. */
+  view: LibraryUpdatesScope;
   hasLoaded: boolean;
   hasMoreUpdates: boolean;
   lastCheckResult: UpdateCheckResult | null;
@@ -19,6 +22,8 @@ interface UpdatesState {
   markChaptersDownloaded: (chapterIds: Iterable<number>) => void;
   mergeFirstPage: (page: LibraryUpdatesPage) => void;
   replaceWindow: (page: LibraryUpdatesPage) => void;
+  /** Switches the list and drops the loaded rows so the other list loads. */
+  setView: (view: LibraryUpdatesScope) => void;
 }
 
 function mergeRows(
@@ -98,6 +103,7 @@ function getNextCursor(
 }
 
 export const useUpdatesStore = create<UpdatesState>((set) => ({
+  view: "new",
   hasLoaded: false,
   hasMoreUpdates: false,
   lastCheckResult: null,
@@ -115,8 +121,6 @@ export const useUpdatesStore = create<UpdatesState>((set) => ({
     }),
   applyCheckResult: (result, retriedNovelIds) =>
     set((state) => ({
-      hasLoaded: true,
-      hasMoreUpdates: result.hasMoreUpdates,
       lastCheckResult: retriedNovelIds && state.lastCheckResult
         ? {
             ...result,
@@ -126,8 +130,13 @@ export const useUpdatesStore = create<UpdatesState>((set) => ({
             ],
           }
         : result,
-      nextUpdateCursor: result.nextUpdateCursor,
-      updates: result.updates,
+      // A check returns the new-chapter list; the backlog reloads through the index change instead.
+      ...(state.view === "new" ? {
+        hasLoaded: true,
+        hasMoreUpdates: result.hasMoreUpdates,
+        nextUpdateCursor: result.nextUpdateCursor,
+        updates: result.updates,
+      } : {}),
     })),
   markChapterDownloaded: (chapterId) =>
     set((state) => markChaptersDownloadedState(state, new Set([chapterId]))),
@@ -153,4 +162,8 @@ export const useUpdatesStore = create<UpdatesState>((set) => ({
       nextUpdateCursor: page.nextCursor,
       updates: page.updates,
     }),
+  setView: (view) =>
+    set((state) => (state.view === view ? state : {
+      view, hasLoaded: false, hasMoreUpdates: false, nextUpdateCursor: null, updates: [],
+    })),
 }));

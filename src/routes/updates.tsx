@@ -4,7 +4,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { Button, Loader, Progress, Stack } from "@mantine/core";
 import { PageFrame, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
-import { RefreshIcon } from "../components/ui/icons";
+import { TextButton } from "../components/TextButton";
+import { BackIcon, RefreshIcon } from "../components/ui/icons";
 import {
   groupFailuresBySource,
   UpdateFailures,
@@ -41,7 +42,9 @@ import {
 import { isAbortError } from "../lib/abort";
 import { describeError } from "../lib/errors";
 import { useTranslation, type AppLocale } from "../i18n";
+import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 import { useUpdatesStore } from "../store/updates";
+import { useUpdatesSeenStore } from "../store/updates-seen";
 import "../styles/updates.css";
 
 const UPDATES_PAGE_SIZE = 100;
@@ -118,7 +121,10 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   );
   const mergeFirstPage = useUpdatesStore((state) => state.mergeFirstPage);
   const replaceWindow = useUpdatesStore((state) => state.replaceWindow);
-  const initialLocalLoadRequested = useRef(false);
+  const view = useUpdatesStore((state) => state.view);
+  const setView = useUpdatesStore((state) => state.setView);
+  const markUpdatesSeen = useUpdatesSeenStore((state) => state.markUpdatesSeen);
+  const initialLoadView = useRef<typeof view | null>(null);
   const observedUpdatesIndexRevision = useRef(getUpdatesIndexRevision());
   const [checkProgress, setCheckProgress] = useState<{
     current: number;
@@ -130,8 +136,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
 
   const refresh = useMutation({
     meta: { errorPresentation: hasLoaded ? "toast" : "inline" },
-    mutationFn: () => listLibraryUpdatesPage(UPDATES_PAGE_SIZE),
-    onSuccess: mergeFirstPage,
+    mutationFn: async () => {
+      const requested = useUpdatesStore.getState().view;
+      return { page: await listLibraryUpdatesPage(UPDATES_PAGE_SIZE, null, requested), requested };
+    },
+    onSuccess: ({ page, requested }) => {
+      if (requested === useUpdatesStore.getState().view) mergeFirstPage(page);
+    },
   });
 
   const check = useMutation({
@@ -159,9 +170,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   });
 
   const loadMore = useMutation({
-    mutationFn: (cursor: LibraryUpdatesCursor) =>
-      listLibraryUpdatesPage(UPDATES_PAGE_SIZE, cursor),
-    onSuccess: appendPage,
+    mutationFn: async (cursor: LibraryUpdatesCursor) => {
+      const requested = useUpdatesStore.getState().view;
+      return { page: await listLibraryUpdatesPage(UPDATES_PAGE_SIZE, cursor, requested), requested };
+    },
+    onSuccess: ({ page, requested }) => {
+      if (requested === useUpdatesStore.getState().view) appendPage(page);
+    },
   });
   const isInitialLoading = refresh.isPending && !hasLoaded;
   const isLoadingMore = loadMore.isPending;
@@ -202,10 +217,18 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   ]);
 
   useEffect(() => {
-    if (!active || hasLoaded || initialLocalLoadRequested.current) return;
-    initialLocalLoadRequested.current = true;
+    if (!active || hasLoaded || initialLoadView.current === view) return;
+    initialLoadView.current = view;
     refreshFirstPage();
-  }, [active, hasLoaded, refreshFirstPage]);
+  }, [active, hasLoaded, refreshFirstPage, view]);
+
+  // Chapters on screen while Updates is open count as seen, so they do not raise the badge.
+  useEffect(() => {
+    if (!active || view !== "new") return;
+    markUpdatesSeen();
+    return subscribeUpdatesIndexChanges(() => markUpdatesSeen());
+  }, [active, markUpdatesSeen, view]);
+  useOverlayBackNavigation(active && view === "backlog", () => setView("new"));
 
   useEffect(() => {
     if (!active) return;
@@ -239,10 +262,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
 
       refreshRunning = true;
       const startedAtRevision = getUpdatesIndexRevision();
+      const requested = useUpdatesStore.getState().view;
       try {
-        const page = await listLibraryUpdatesPage(UPDATES_INDEX_REFRESH_LIMIT);
+        const page = await listLibraryUpdatesPage(UPDATES_INDEX_REFRESH_LIMIT, null, requested);
         if (disposed) return;
-        if (getUpdatesIndexRevision() === startedAtRevision) {
+        if (getUpdatesIndexRevision() === startedAtRevision && requested === useUpdatesStore.getState().view) {
           replaceWindow(page);
           observedUpdatesIndexRevision.current = startedAtRevision;
         } else {
@@ -458,6 +482,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   );
   const checkError =
     check.error && !isAbortError(check.error) ? check.error : null;
+  const earlierUnreadLink = (
+    <div className="norea-updates-load-more">
+      <TextButton onClick={() => setView("backlog")} size="sm">
+        {t("updates.backlog.open")}
+      </TextButton>
+    </div>
+  );
   const progressValue =
     checkProgress && checkProgress.total > 0
       ? (checkProgress.current / checkProgress.total) * 100
@@ -467,7 +498,14 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
     <div className="norea-updates-page">
       <header className="norea-updates-app-bar">
         <div className="norea-updates-app-bar-row">
-          <h1 className="norea-updates-app-bar-title">{t("updates.title")}</h1>
+          {view === "backlog" ? (
+            <IconButton label={t("common.back")} onClick={() => setView("new")} size="lg">
+              <BackIcon />
+            </IconButton>
+          ) : null}
+          <h1 className="norea-updates-app-bar-title">
+            {view === "backlog" ? t("updates.backlog.title") : t("updates.title")}
+          </h1>
           <IconButton
             disabled={check.isPending}
             label={t("updates.check")}
@@ -565,6 +603,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                     {section.items.map(renderItem)}
                   </section>
                 ))}
+                {view === "new" && !hasMoreUpdates ? earlierUnreadLink : null}
                 {hasMoreUpdates ? (
                   <div className="norea-updates-load-more">
                     <Button
@@ -581,14 +620,17 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                 ) : null}
               </div>
             ) : (
-              <StateView
-                action={{
-                  label: t("updates.check"),
-                  onClick: () => check.mutate(undefined),
-                }}
-                message={t("updates.caughtUpCurrentMessage")}
-                title={t("updates.caughtUp")}
-              />
+              <Stack gap="xs">
+                <StateView
+                  action={{
+                    label: t("updates.check"),
+                    onClick: () => check.mutate(undefined),
+                  }}
+                  message={t(view === "new" ? "updates.newChapters.emptyMessage" : "updates.caughtUpCurrentMessage")}
+                  title={t(view === "new" ? "updates.newChapters.empty" : "updates.caughtUp")}
+                />
+                {view === "new" ? earlierUnreadLink : null}
+              </Stack>
             )}
           </Stack>
         )}

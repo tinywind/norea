@@ -1087,13 +1087,15 @@ function getUpdatesCursor(
 }
 
 /**
- * Unread chapters currently indexed for novels in the library.
- * The Updates tab calls a user-triggered source refresh; this query
- * only reads the resulting local index.
+ * "new": unread library chapters that checks for new chapters found; "backlog": every unread
+ * library chapter. Reads only the local index that checks keep current.
  */
+export type LibraryUpdatesScope = "new" | "backlog";
+
 export async function listLibraryUpdates(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
+  scope: LibraryUpdatesScope = "new",
 ): Promise<LibraryUpdateEntry[]> {
   const db = await getDb();
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
@@ -1130,6 +1132,7 @@ export async function listLibraryUpdates(
      WHERE
        n.in_library = 1
        AND c.unread = 1
+       ${scope === "new" ? "AND c.found_by_check = 1" : ""}
        ${cursorClause}
       ORDER BY foundAt DESC, c.position DESC, c.id DESC
       LIMIT ${limitParam}`,
@@ -1143,14 +1146,25 @@ export async function listLibraryUpdates(
   }));
 }
 
+/** Unread chapters found by checks since `seenAt` (Unix seconds), for the Updates badge. */
+export async function countNewLibraryChaptersSince(seenAt: number): Promise<number> {
+  const db = await getDb();
+  const [row] = await db.select<{ count: number }[]>(
+    `SELECT COUNT(*) AS count FROM chapter c JOIN novel n ON n.id = c.novel_id
+     WHERE n.in_library = 1 AND c.unread = 1 AND c.found_by_check = 1 AND c.found_at > $1`, [seenAt]);
+  return row?.count ?? 0;
+}
+
 export async function listLibraryUpdatesPage(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
+  scope: LibraryUpdatesScope = "new",
 ): Promise<LibraryUpdatesPage> {
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
   const rows = await listLibraryUpdates(
     normalizedLimit + 1,
     cursor,
+    scope,
   );
   const updates = rows.slice(0, normalizedLimit);
   const hasMore = rows.length > normalizedLimit;

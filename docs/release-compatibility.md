@@ -124,6 +124,10 @@ requirements must be decided explicitly before implementation.
   exact-schema policy. The flag follows chapter rows in portable backups
   (manifest format 4); freshness is device state, so portable backups exclude it
   and their restore drops it with the replaced novel rows.
+  Updates lists only flagged unread chapters, with every unread chapter under
+  "Earlier unread chapters". Its nav badge counts flagged chapters found after
+  the `updates-seen` localStorage time, which is device state: device snapshots
+  carry it with the other settings and portable backups leave it out.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it
