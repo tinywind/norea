@@ -5,6 +5,7 @@ import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-draft
 const mocks = vi.hoisted(() => ({
   states: [] as unknown[], refs: [] as { current: unknown }[], index: 0, refIndex: 0,
   vpn: undefined as VpnDownloadRuntimeSnapshot | undefined,
+  snapshot: undefined as import("../lib/tasks/task-types").TaskSnapshot | undefined,
   pause: vi.fn(), resume: vi.fn(), cancel: vi.fn(), cancelRequest: vi.fn(),
 }));
 vi.mock("react", async original => ({
@@ -23,7 +24,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("../lib/tasks/hooks", async () => {
   const { taskScheduler } = await import("../lib/tasks/scheduler");
-  return { useTaskSnapshot: () => taskScheduler.getSnapshot(), useVpnDownloadRuntimeSnapshot: () => mocks.vpn,
+  return { useTaskSnapshot: () => mocks.snapshot ?? taskScheduler.getSnapshot(), useVpnDownloadRuntimeSnapshot: () => mocks.vpn,
     useChapterDownloadRequestSnapshot: () => [{ id: "preparing", title: "Preparing work", phase: "preparing", total: null, novelIds: [42], error: null }],
     useChapterDownloadFailureSnapshot: () => [] };
 });
@@ -42,7 +43,7 @@ vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => confirm }))
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { DownloadsQueueView } from "./downloads-queue";
 
-interface Props { children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: { label: string; onClick: () => void; disabled?: boolean }[]; work?: { title: string } }
+interface Props { work?: { title?: string; group?: { title: string }; sourceTasks?: { id: string }[] }; children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: { label: string; onClick: () => void; disabled?: boolean }[] }
 function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -54,7 +55,7 @@ const pageMenu = () => render().find(element => element.props.label === "common.
 const menuItem = (label: string) => pageMenu().find(item => item.label === label)!;
 const pauseButton = (label: string) => render().find(element => element.props.children === label)!;
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
+  vi.clearAllMocks(); mocks.states = []; mocks.refs = []; mocks.snapshot = undefined;
   confirm.mockResolvedValue(true);
   mocks.pause.mockReset().mockResolvedValue(undefined); mocks.resume.mockReset().mockResolvedValue(undefined); mocks.cancel.mockReset().mockResolvedValue(undefined);
   mocks.vpn = { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {},
@@ -114,4 +115,16 @@ it("keeps the VPN launch dialog behind the page overflow when no VPN run exists"
   expect(render().some(element => typeof element.type === "function" && element.type.name === "VpnDownloadLaunchDialog")).toBe(true);
   mocks.vpn!.capabilities = { supported: false, parallelSupported: false, maxWorkers: 0 };
   expect(pageMenu().some(item => item.label === "vpnDownload.launchMenu")).toBe(false);
+});
+
+it("offers source-wide actions over the source's listed tasks, not its hidden VPN worker tasks", () => {
+  const base = { lane: "source" as const, kind: "chapter.download" as const, priority: "background" as const, title: "Chapter",
+    source: { id: "source", name: "Source" }, status: "queued" as const, createdAt: 1, canCancel: true, canRetry: false };
+  mocks.snapshot = { ...taskScheduler.getSnapshot(), sourceQueueOrder: ["source"], records: [
+    { ...base, id: "ordinary", subject: { chapterId: 1, novelId: 1, novelName: "Novel" } },
+    { ...base, id: "worker", subject: { chapterId: 2, novelId: 2, novelName: "VPN novel" }, vpnWorker: { rangeId: "range", slot: 9 as const, generation: 1 } },
+  ] };
+  const row = render().find(element => typeof element.type === "function" && element.type.name === "NovelWorkGroup")!;
+  expect(row.props.work?.group?.title).toBe("Novel");
+  expect(row.props.work?.sourceTasks?.map(task => task.id)).toEqual(["ordinary"]);
 });

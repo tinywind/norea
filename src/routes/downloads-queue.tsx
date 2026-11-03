@@ -120,6 +120,8 @@ type NovelWork = {
   key: string;
   sourceId: string;
   sourceName: string;
+  /** Every listed task of the novel's source, for the source-wide actions in its overflow. */
+  sourceTasks: TaskRecord[];
 };
 
 type ChapterDownloadTaskHeading = {
@@ -797,10 +799,9 @@ function NovelWorkGroup({
 }) {
   const { t } = useTranslation();
   const confirm = useConfirm();
-  const { group, sourceId, sourceName } = work;
+  const { group, sourceId, sourceName, sourceTasks } = work;
   const canMove = hasQueuedTask(group.tasks);
   const canCancel = hasCancellableActiveTask(group.tasks);
-  const sourceTasks = snapshot.records.filter((task) => task.lane === "source" && task.source?.id === sourceId);
   const sourcePaused = snapshot.pausedSourceIds.includes(sourceId);
   const retryWaits = group.tasks.filter(isRetryWaiting).map((task) => task.retryAt!);
   const nextRetryAt = retryWaits.length > 0 ? Math.min(...retryWaits) : null;
@@ -1261,6 +1262,7 @@ export function DownloadsQueueView({
             key: sourceWorkOpenKey(sourceGroup.sourceId, item.group.workKey),
             sourceId: sourceGroup.sourceId,
             sourceName: sourceGroup.sourceName,
+            sourceTasks: sourceGroup.tasks,
           });
         } else {
           other.push(item.task);
