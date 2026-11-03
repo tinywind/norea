@@ -24,6 +24,7 @@ import {
   type NoreaMantineTheme,
 } from "./mantine-theme";
 import { APP_THEMES, resolveMd3Palette } from "./md3";
+import { MOTION_DURATION_BASE_MS } from "./motion";
 import {
   TEXT_CONTRAST,
   resolvePaletteRoles,
@@ -246,5 +247,26 @@ describe("createNoreaMantineTheme state layers", () => {
         .find((list) => list.includes(`mantine-${name}`));
       expect(classes, name).toContain("norea-state-layer");
     }
+  });
+});
+
+describe("createNoreaMantineTheme motion", () => {
+  it("honors reduced motion and moves overlays, collapses and toasts at the base motion token", () => {
+    const [first] = CASES;
+    const { components, respectReducedMotion } = first!.merged;
+    expect(respectReducedMotion).toBe(true);
+    for (const name of ["Modal", "Drawer"]) {
+      expect(components[name]?.defaultProps?.transitionProps, name).toMatchObject({
+        duration: MOTION_DURATION_BASE_MS,
+        timingFunction: "var(--norea-ease-standard)",
+      });
+    }
+    // The drawer keeps Mantine's slide from its own edge.
+    expect(components.Drawer?.defaultProps?.transitionProps).not.toHaveProperty("transition");
+    expect(components.Collapse?.defaultProps).toMatchObject({
+      transitionDuration: MOTION_DURATION_BASE_MS,
+      transitionTimingFunction: "var(--norea-ease-standard)",
+    });
+    expect(components.Notifications?.defaultProps?.transitionDuration).toBe(MOTION_DURATION_BASE_MS);
   });
 });

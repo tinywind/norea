@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Loader, Skeleton, TextInput } from "@mantine/core";
+import { Button, Collapse, Loader, Skeleton, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import {
   formatPluginLanguageForLocale,
@@ -341,9 +341,9 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
                 {collapsed ? <ChevronRightIcon size="1.125rem" /> : <ChevronDownIcon size="1.125rem" />}
               </button>
             </h2>
-            <div hidden={collapsed} id={panelId}>
+            <Collapse expanded={!collapsed} id={panelId} keepMountedMode="display-none">
               {renderRows(groupPlugins)}
-            </div>
+            </Collapse>
           </section>
         );
       })}

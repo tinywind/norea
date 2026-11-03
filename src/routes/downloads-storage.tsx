@@ -9,6 +9,7 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   Badge,
   Box,
+  Collapse,
   Group,
   Loader,
   Paper,
@@ -462,12 +463,12 @@ function DownloadCacheNovelCard({
           </IconButton>
         </Group>
       </div>
-      {expanded ? (
+      <Collapse expanded={expanded} keepMounted={false}>
         <DownloadCacheChapters
           novel={novel}
           novelDeleting={novelDeleting}
         />
-      ) : null}
+      </Collapse>
     </Paper>
   );
 }

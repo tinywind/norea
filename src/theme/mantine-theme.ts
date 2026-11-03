@@ -19,6 +19,7 @@ import {
   requireColor,
   type Rgb,
 } from "./color";
+import { MOTION_DURATION_BASE_MS } from "./motion";
 import {
   STATUS_ROLE_NAMES,
   TEXT_CONTRAST,
@@ -166,6 +167,10 @@ export function createNoreaMantineTheme(
   const defaultBorder = `${BORDER_WIDTH} solid ${roles.ruleStrong}`;
   const transparentBorder = `${BORDER_WIDTH} solid transparent`;
   // Mantine paints light-scheme dropdowns white; Combobox-based inputs render through Popover, while Menu, ColorInput and HoverCard resolve their own theme entry.
+  const overlayTransition = {
+    duration: MOTION_DURATION_BASE_MS,
+    timingFunction: "var(--norea-ease-standard)",
+  };
   const overlayDropdownStyles = {
     backgroundColor: roles.surface,
     "--popover-border-color": roles.rule,
@@ -258,6 +263,7 @@ export function createNoreaMantineTheme(
     fontFamily: UI_FONT_FAMILY,
     headings: { fontFamily: UI_FONT_FAMILY },
     primaryColor: "norea",
+    respectReducedMotion: true,
     primaryShade: { light: RAMP_BASE_SHADE, dark: RAMP_BASE_SHADE },
     colors: {
       ...colors,
@@ -301,8 +307,25 @@ export function createNoreaMantineTheme(
       CloseButton: { classNames: { root: STATE_LAYER_CLASS } },
       Paper: { defaultProps: { radius: "sm" } },
       TextInput: { defaultProps: { radius: "sm" } },
-      Modal: { defaultProps: { zIndex: "var(--norea-z-overlay)" } },
-      Drawer: { defaultProps: { zIndex: "var(--norea-z-overlay)" } },
+      // Sheets, dialogs and their scrim enter and exit at the base motion token.
+      Modal: {
+        defaultProps: {
+          transitionProps: { ...overlayTransition, transition: "fade-down" },
+          zIndex: "var(--norea-z-overlay)",
+        },
+      },
+      Drawer: {
+        defaultProps: {
+          transitionProps: overlayTransition,
+          zIndex: "var(--norea-z-overlay)",
+        },
+      },
+      Collapse: {
+        defaultProps: {
+          transitionDuration: MOTION_DURATION_BASE_MS,
+          transitionTimingFunction: "var(--norea-ease-standard)",
+        },
+      },
       // Portaled dropdowns and tooltips open from inside modals and drawers, so they sit one layer above them.
       Popover: {
         defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
@@ -325,7 +348,12 @@ export function createNoreaMantineTheme(
         },
       },
       Notification: { styles: { root: { backgroundColor: roles.surface } } },
-      Notifications: { defaultProps: { zIndex: "var(--norea-z-toast)" } },
+      Notifications: {
+        defaultProps: {
+          transitionDuration: MOTION_DURATION_BASE_MS,
+          zIndex: "var(--norea-z-toast)",
+        },
+      },
     },
   });
 

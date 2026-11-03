@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Checkbox,
+  Collapse,
   Group,
   Loader,
   Stack,
@@ -391,11 +392,13 @@ function EmptySources({ plugins }: { plugins: readonly Plugin[] }) {
       >
         {t("globalSearch.emptySources", { count: plugins.length })}
       </Button>
-      <ul hidden={!open} id="norea-search-empty-source-list">
-        {plugins.map((plugin) => (
-          <li key={plugin.id}>{plugin.name}</li>
-        ))}
-      </ul>
+      <Collapse expanded={open} id="norea-search-empty-source-list" keepMountedMode="display-none">
+        <ul>
+          {plugins.map((plugin) => (
+            <li key={plugin.id}>{plugin.name}</li>
+          ))}
+        </ul>
+      </Collapse>
     </div>
   );
 }

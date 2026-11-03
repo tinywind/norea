@@ -102,6 +102,35 @@ describe("long-press cue", () => {
   });
 });
 
+describe("transitions", () => {
+  it("fades the selection bar in and slides the phone action bar up with motion tokens", () => {
+    expect(ruleFor(css, ".norea-selection-bar").body).toMatch(
+      /animation: norea-selection-bar-enter var\(--norea-duration-base\) var\(--norea-ease-standard\);/,
+    );
+    const phone = mediaBlock(css, "(max-width: 767px)");
+    expect(ruleFor(phone, ".norea-selection-bar-actions").body).toMatch(
+      /animation: norea-selection-actions-enter var\(--norea-duration-base\) var\(--norea-ease-standard\);/,
+    );
+    expect(css).toMatch(/@keyframes norea-selection-actions-enter \{\s*from \{\s*transform: translateY\(100%\);/);
+  });
+
+  it("animates progress bar widths with the base motion token", () => {
+    expect(ruleFor(css, ".mantine-Progress-root").body).toMatch(
+      /--progress-transition-duration: var\(--norea-duration-base\);/,
+    );
+    const library = readFileSync(new URL("./library.css", stylesDir), "utf8");
+    const history = readFileSync(new URL("./history.css", stylesDir), "utf8");
+    for (const [source, selector] of [
+      [library, ".norea-library-card-progress"],
+      [history, ".norea-history-progress-bar"],
+    ] as const) {
+      expect(ruleFor(source, selector).body, selector).toMatch(
+        /transition: width var\(--norea-duration-base\) var\(--norea-ease-standard\);/,
+      );
+    }
+  });
+});
+
 describe("hover styles", () => {
   it("apply only on hover-capable pointers, so a touch never leaves a sticky hover", () => {
     const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css"));

@@ -93,6 +93,7 @@
   background: var(--norea-color-accent);
   display: block;
   height: 100%;
+  transition: width var(--norea-duration-base) var(--norea-ease-standard);
   width: var(--norea-history-progress);
 }
 

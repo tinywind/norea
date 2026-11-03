@@ -655,8 +655,8 @@ All of it keeps the existing per-source serial execution and cooldown (plugin fe
      - A tunnel test alone does not prove source access, cookies or background stability. A tested server is ranked by its test, then by its real download results.
      - Tests use an idle worker slot and never preempt download work (10 native slots, `src-tauri/src/plugin_vpn/download_workers.rs:217`).
    - **Step 2, usage policy** (the reversal, V4):
-     - **"Approved only"** (today's rule): the user approves tested servers with one action, "Approve all working".
-     - **"Use tested servers automatically"** (opt-in): unmarked tested servers may be leased. The user's verdicts still win. X is never used. O verdicts and files are never retired or changed automatically.
+     - **"Use tested servers automatically"** (default, updated by the user on 2026-11-04 after VPN downloads stalled on dead saved relays): unmarked tested servers may be leased.
+     - **"Approved only"**: the previous rule; the user approves tested servers with one action, "Approve all working". The user's verdicts still win. X is never used. O verdicts and files are never retired or changed automatically.
    - The Finder and manual O/X stay available under Network > Advanced.
 3. **Durable route state (V2; reverses explicit restart resume, `docs/superpowers/specs/2026-11-03-automatic-vpn-download-queue-design.md:188`).**
    - Each source's route (Direct / VPN active / VPN paused by user) is persisted.
@@ -789,7 +789,7 @@ The earlier VPN design documents stay as history. This section governs where the
 | V1 | VPN route trigger: Automatic (default, user update 2026-11-03) / Ask / Off, using a diagnosed limit only, per-source "Always" preference | Automatic | **Yes**, "ordinary until launched" (`2026-11-03-automatic-vpn-download-queue-design.md:57`) | It removes the hunt for the feature without surprise connections |
 | V2 | Resume VPN routes after an ordinary restart when the user opted in; never after a device restore or a user pause | Opt-in, default on | **Yes**, explicit restart resume (`same:188`) | Today every restart needs Resume, plus a notification for each range |
 | V3 | Fixed-size contiguous chunks with deferred profile lease, size validated on device | Yes, after measurement | Partly (partition rule) | Parallelism grows with available servers, and no worker idles while a range waits for its own profile |
-| V4 | Automatic discovery and testing (no reversal) plus a usage policy: "Approved only" (default) or "Use tested servers automatically" (opt-in) | Approved only, with "Approve all working" | **Yes**, for the opt-in policy (`same:116`, `vpn-profile-downloads.md:51`) | It removes the manual hunt for servers. Using unmarked relays stays the user's explicit choice. |
+| V4 | Automatic discovery and testing (no reversal) plus a usage policy: "Use tested servers automatically" (default, user update 2026-11-04) or "Approved only" | Use tested servers automatically; X never used, O/X never changed automatically | **Yes**, for the opt-in policy (`same:116`, `vpn-profile-downloads.md:51`) | It removes the manual hunt for servers. Using unmarked relays stays the user's explicit choice. |
 | V5 | Browse-through-VPN and VPN downloads controlled separately | Yes | Partly (explicit-off coupling) | Disconnecting browsing should not silently stop downloads |
 | F1 | Updates lists chapters found by checks, with no backfill, plus an "Earlier unread" link | Yes | No | Today's list is every unread chapter, so new ones are invisible |
 | F2 | Check cadence by reading state, with per-source budgets and bounded catch-up | 12h for active novels | No | It checks what the user reads often and finished novels rarely, without flooding a source |

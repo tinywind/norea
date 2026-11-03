@@ -192,6 +192,7 @@
 
 .norea-selection-bar {
   align-items: center;
+  animation: norea-selection-bar-enter var(--norea-duration-base) var(--norea-ease-standard);
   background: var(--norea-color-surface-raised);
   border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
@@ -216,6 +217,24 @@
   gap: var(--norea-space-1);
 }
 
+/* Opacity only: a transform would re-anchor the fixed phone action bar inside it. */
+@keyframes norea-selection-bar-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes norea-selection-actions-enter {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+/* Mantine progress bars ease between values at the base motion token. */
+.mantine-Progress-root {
+  --progress-transition-duration: var(--norea-duration-base);
+}
+
 @media (max-width: 767px) {
   /* The action bar takes the bottom navigation's place while selecting. */
   body:has(.norea-selection-bar) .norea-mobile-nav {
@@ -223,6 +242,7 @@
   }
 
   .norea-selection-bar-actions {
+    animation: norea-selection-actions-enter var(--norea-duration-base) var(--norea-ease-standard);
     background: var(--norea-color-surface-raised);
     border-top: 1px solid var(--norea-color-rule);
     bottom: 0;
