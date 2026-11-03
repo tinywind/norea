@@ -29,6 +29,9 @@ importers:
       '@mantine/notifications':
         specifier: ^9.7.4
         version: 9.7.4(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@tabler/icons-react':
+        specifier: 3.49.0
+        version: 3.49.0(react@19.3.1)
       '@tanstack/react-query':
         specifier: ^5.105.0
         version: 5.105.0(@types/react@19.3.0)(react@19.3.1)
@@ -696,6 +699,14 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+
+  '@tabler/icons-react@3.49.0':
+    resolution: {integrity: sha512-Um59pm5RVNUaQjFUtG0r4oYJbZuBS3tGugAA2tgBg0WufMk34Eio3nsO30RUkLuL2giYPQUNdY9HvqltLLYyNA==}
+    peerDependencies:
+      react: '>= 16'
+
+  '@tabler/icons@3.49.0':
+    resolution: {integrity: sha512-l+GnSkFETx0U26icxv1VUFnxxiTqXfCcVRiRAnyMwibupM2S2L/hSaZ9gmSgz01rkrsH/93NvLsxykqdanc6lw==}
 
   '@tanstack/history@1.162.5':
     resolution: {integrity: sha512-w1+YvwmTkwt5n8yUqEH3IWZ9DsmorCZW/EQ3KYHnqEgIkOZpH54NvW6/Epq3Dzb8H0ifIeYX8PExvrNLIH5FIA==}
@@ -2065,6 +2076,13 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
+
+  '@tabler/icons-react@3.49.0(react@19.3.1)':
+    dependencies:
+      '@tabler/icons': 3.49.0
+      react: 19.3.1
+
+  '@tabler/icons@3.49.0': {}
 
   '@tanstack/history@1.162.5': {}
 

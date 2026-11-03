@@ -1,0 +1,122 @@
+import { createElement, type ReactElement } from "react";
+import {
+  IconAlertTriangle,
+  IconArrowLeft,
+  IconArrowsSort,
+  IconBell,
+  IconBookmark,
+  IconBooks,
+  IconCategory,
+  IconCheck,
+  IconChecks,
+  IconChevronDown,
+  IconChevronRight,
+  IconChevronUp,
+  IconCloudCheck,
+  IconCloudDownload,
+  IconCompass,
+  IconCookie,
+  IconCookieOff,
+  IconDots,
+  IconDotsVertical,
+  IconDownload,
+  IconDownloadOff,
+  IconExternalLink,
+  IconEyeOff,
+  IconFileImport,
+  IconFilter,
+  IconFolder,
+  IconGripVertical,
+  IconHistory,
+  IconInfoCircle,
+  IconInfoSquareRounded,
+  IconPencil,
+  IconPin,
+  IconPinnedOff,
+  IconPlayerPause,
+  IconPlayerPlay,
+  IconPlus,
+  IconRefresh,
+  IconReload,
+  IconRotateClockwise,
+  IconSearch,
+  IconSelectAll,
+  IconServer,
+  IconSettings,
+  IconShieldLock,
+  IconTool,
+  IconTrash,
+  IconTypography,
+  IconWorldWww,
+  IconX,
+  type IconProps,
+  type TablerIcon,
+} from "@tabler/icons-react";
+
+const ICON_SIZE = "1.5rem";
+const ICON_STROKE = 1.75;
+
+export type AppIcon = (props: IconProps) => ReactElement;
+
+// Lets the bundler drop every alias that no module imports.
+/* @__NO_SIDE_EFFECTS__ */
+function withAppDefaults(Icon: TablerIcon): AppIcon {
+  return (props) =>
+    createElement(Icon, {
+      "aria-hidden": true,
+      size: ICON_SIZE,
+      stroke: ICON_STROKE,
+      ...props,
+    });
+}
+
+export const LibraryIcon = withAppDefaults(IconBooks);
+export const UpdatesIcon = withAppDefaults(IconBell);
+export const HistoryIcon = withAppDefaults(IconHistory);
+export const BrowseIcon = withAppDefaults(IconCompass);
+export const MoreIcon = withAppDefaults(IconDots);
+export const DownloadsIcon = withAppDefaults(IconCloudDownload);
+export const SettingsIcon = withAppDefaults(IconSettings);
+export const AboutIcon = withAppDefaults(IconInfoSquareRounded);
+
+export const SearchIcon = withAppDefaults(IconSearch);
+export const FilterIcon = withAppDefaults(IconFilter);
+export const SortIcon = withAppDefaults(IconArrowsSort);
+export const RefreshIcon = withAppDefaults(IconRefresh);
+export const CloseIcon = withAppDefaults(IconX);
+export const BackIcon = withAppDefaults(IconArrowLeft);
+export const CheckIcon = withAppDefaults(IconCheck);
+export const SelectAllIcon = withAppDefaults(IconSelectAll);
+export const MarkReadIcon = withAppDefaults(IconChecks);
+export const MarkUnreadIcon = withAppDefaults(IconEyeOff);
+export const DownloadIcon = withAppDefaults(IconDownload);
+export const DownloadedIcon = withAppDefaults(IconCloudCheck);
+export const DeleteDownloadIcon = withAppDefaults(IconDownloadOff);
+export const TrashIcon = withAppDefaults(IconTrash);
+export const BookmarkIcon = withAppDefaults(IconBookmark);
+export const ExternalLinkIcon = withAppDefaults(IconExternalLink);
+export const OverflowIcon = withAppDefaults(IconDotsVertical);
+export const PlusIcon = withAppDefaults(IconPlus);
+export const PlayIcon = withAppDefaults(IconPlayerPlay);
+export const PauseIcon = withAppDefaults(IconPlayerPause);
+export const RestartIcon = withAppDefaults(IconRotateClockwise);
+export const RetryIcon = withAppDefaults(IconReload);
+export const RepairIcon = withAppDefaults(IconTool);
+export const ReaderSettingsIcon = withAppDefaults(IconTypography);
+export const PinIcon = withAppDefaults(IconPin);
+export const UnpinIcon = withAppDefaults(IconPinnedOff);
+export const SourceIcon = withAppDefaults(IconWorldWww);
+export const EditIcon = withAppDefaults(IconPencil);
+export const InfoIcon = withAppDefaults(IconInfoCircle);
+export const WarningIcon = withAppDefaults(IconAlertTriangle);
+export const CookieIcon = withAppDefaults(IconCookie);
+export const ClearCookiesIcon = withAppDefaults(IconCookieOff);
+export const ChevronDownIcon = withAppDefaults(IconChevronDown);
+export const ChevronUpIcon = withAppDefaults(IconChevronUp);
+export const ChevronRightIcon = withAppDefaults(IconChevronRight);
+export const DragIcon = withAppDefaults(IconGripVertical);
+export const ImportIcon = withAppDefaults(IconFileImport);
+export const FolderIcon = withAppDefaults(IconFolder);
+export const CategoryIcon = withAppDefaults(IconCategory);
+export const VpnIcon = withAppDefaults(IconShieldLock);
+export const ServerIcon = withAppDefaults(IconServer);

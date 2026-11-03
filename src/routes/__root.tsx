@@ -11,6 +11,16 @@ import { PageSlot } from "../components/PageSlot";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
+import {
+  BrowseIcon,
+  DownloadedIcon,
+  DownloadsIcon,
+  HistoryIcon,
+  LibraryIcon,
+  SettingsIcon,
+  UpdatesIcon,
+  type AppIcon,
+} from "../components/ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { startAndroidBackNavigationBridge } from "../lib/android-back-navigation";
 import { startAndroidFileOpenListener } from "../lib/android-file-open";
@@ -73,14 +83,7 @@ const PAGE_STACK_OPTIONS: PageStackOptions = {
 
 type NavItem = {
   compactKey: TranslationKey;
-  icon:
-    | "library"
-    | "browse"
-    | "updates"
-    | "history"
-    | "downloads"
-    | "tasks"
-    | "settings";
+  icon: AppIcon;
   labelKey: TranslationKey;
   to:
     | "/"
@@ -94,46 +97,46 @@ type NavItem = {
 };
 
 const NAV_ITEMS: readonly NavItem[] = [
-  { to: "/", labelKey: "nav.library", compactKey: "nav.library", icon: "library" },
+  { to: "/", labelKey: "nav.library", compactKey: "nav.library", icon: LibraryIcon },
   {
     to: "/browse",
     labelKey: "nav.browse",
     compactKey: "nav.browse",
-    icon: "browse",
+    icon: BrowseIcon,
   },
   {
     to: "/updates",
     labelKey: "nav.updates",
     compactKey: "nav.updates",
-    icon: "updates",
+    icon: UpdatesIcon,
     visibleWhen: "updates",
   },
   {
     to: "/history",
     labelKey: "nav.history",
     compactKey: "nav.history",
-    icon: "history",
+    icon: HistoryIcon,
     visibleWhen: "history",
   },
   {
     to: "/downloads",
     labelKey: "nav.downloads",
     compactKey: "nav.downloads",
-    icon: "downloads",
+    icon: DownloadedIcon,
     visibleWhen: "downloads",
   },
   {
     to: "/tasks",
     labelKey: "nav.tasks",
     compactKey: "nav.tasks",
-    icon: "tasks",
+    icon: DownloadsIcon,
     visibleWhen: "tasks",
   },
   {
     to: "/settings",
     labelKey: "nav.settings",
     compactKey: "nav.settings",
-    icon: "settings",
+    icon: SettingsIcon,
   },
 ] as const;
 
@@ -227,81 +230,6 @@ function isNavItemVisible(
   return true;
 }
 
-function NavIcon({ icon }: { icon: NavItem["icon"] }) {
-  const common = {
-    "aria-hidden": true,
-    fill: "none",
-    height: 24,
-    stroke: "currentColor",
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    strokeWidth: 2,
-    viewBox: "0 0 24 24",
-    width: 24,
-  };
-
-  switch (icon) {
-    case "library":
-      return (
-        <svg {...common}>
-          <path d="M4 4h4v16H4z" />
-          <path d="M10 4h4v16h-4z" />
-          <path d="m16 6 4-1 3 15-4 1z" />
-        </svg>
-      );
-    case "browse":
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M3 12h18" />
-          <path d="M12 3a14 14 0 0 1 0 18" />
-          <path d="M12 3a14 14 0 0 0 0 18" />
-        </svg>
-      );
-    case "updates":
-      return (
-        <svg {...common}>
-          <path d="M21 12a9 9 0 1 1-3-6.7" />
-          <path d="M21 4v5h-5" />
-        </svg>
-      );
-    case "history":
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 7v5l3 2" />
-        </svg>
-      );
-    case "downloads":
-      return (
-        <svg {...common}>
-          <path d="M4 5h16v4H4z" />
-          <path d="M6 9v10h12V9" />
-          <path d="M9 14h6" />
-          <path d="m12 11 3 3-3 3" />
-        </svg>
-      );
-    case "tasks":
-      return (
-        <svg {...common}>
-          <path d="M4 6h16" />
-          <path d="M4 12h16" />
-          <path d="M4 18h10" />
-          <path d="M8 6v0" />
-          <path d="M8 12v0" />
-          <path d="M8 18v0" />
-        </svg>
-      );
-    case "settings":
-      return (
-        <svg {...common}>
-          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.72l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-      );
-  }
-}
-
 function AppNavLink({
   activeClassName,
   className,
@@ -325,7 +253,7 @@ function AppNavLink({
       underline="never"
     >
       <span className="norea-rail-icon">
-        <NavIcon icon={item.icon} />
+        <item.icon />
       </span>
       <span className="norea-rail-label">{label}</span>
     </Anchor>
