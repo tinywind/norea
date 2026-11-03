@@ -46,7 +46,7 @@ it("groups exhaustion, restart and authentication pauses into one Downloads noti
     range("exhausted", { pauseReason: "profiles-exhausted" }),
     range("restored", { pauseReason: "interrupted", generation: 0 }),
     range("auth", { pauseReason: "authentication-required" }),
-  ])], t);
+  ])], t, "interrupted");
   expect(items).toHaveLength(1);
   expect(items[0]).toMatchObject({
     id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID,
@@ -57,13 +57,22 @@ it("groups exhaustion, restart and authentication pauses into one Downloads noti
 });
 
 it("keeps a single paused range's own title and reason", () => {
-  const items = vpnDownloadNotifications([plan([range("restored", { pauseReason: "interrupted", generation: 0 })])], t);
+  const items = vpnDownloadNotifications([plan([range("exhausted", { pauseReason: "profiles-exhausted" })])], t);
   expect(items).toHaveLength(1);
-  expect(items[0]).toMatchObject({ id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, body: "vpnDownload.reason.interrupted" });
+  expect(items[0]).toMatchObject({ id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, body: "vpnDownload.reason.exhausted" });
+});
+
+it("shows one restart notice for a run that waits for Resume and none while the run resumes by itself", () => {
+  const restarted = [plan([range("a", { pauseReason: "interrupted", generation: 0 }), range("b", { pauseReason: "interrupted", generation: 0 })])];
+  expect(vpnDownloadNotifications(restarted, t, "interrupted")).toEqual([expect.objectContaining({
+    id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, title: "vpnDownload.notice.restartTitle", body: "vpnDownload.notice.restartBody", action: { type: "openTasks" },
+  })]);
+  expect(vpnDownloadNotifications(restarted, t, "starting")).toEqual([]);
+  expect(vpnDownloadNotifications(restarted, t, "running")).toEqual([]);
 });
 
 it("keeps manual verifications separate from the grouped notice", () => {
-  const items = vpnDownloadNotifications([plan([range("a"), range("restored", { pauseReason: "interrupted", generation: 0 })])], t);
+  const items = vpnDownloadNotifications([plan([range("a"), range("restored", { pauseReason: "interrupted", generation: 0 })])], t, "interrupted");
   expect(items.map(item => item.action.type)).toEqual(["verifyVpnDownload", "openTasks"]);
 });
 

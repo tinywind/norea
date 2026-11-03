@@ -224,11 +224,13 @@ export function TaskNotifications() {
     const shown = new Map<string, string>();
     const dismissed = new Map<string, string>();
     let previousPlans: ReturnType<typeof getVpnDownloadRuntimeSnapshot>["plans"] | undefined;
+    let previousStatus: string | undefined;
     const syncRanges = () => {
-      const { plans } = getVpnDownloadRuntimeSnapshot();
-      if (plans === previousPlans) return;
+      const { plans, run } = getVpnDownloadRuntimeSnapshot();
+      if (plans === previousPlans && run?.status === previousStatus) return;
       previousPlans = plans;
-      const items = vpnDownloadNotifications(plans, t);
+      previousStatus = run?.status;
+      const items = vpnDownloadNotifications(plans, t, run?.status);
       const current = new Set(items.map(item => item.id));
       for (const id of shown.keys()) {
         if (current.has(id)) continue;

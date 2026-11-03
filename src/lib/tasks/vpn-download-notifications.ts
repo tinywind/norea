@@ -74,16 +74,21 @@ export function vpnDownloadAttention(
 
 export const VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID = "vpn-download-required:summary";
 
-export function vpnDownloadNotifications(plans: readonly VpnDownloadPlan[], t: TaskNotificationTranslate): VpnDownloadNotification[] {
+export function vpnDownloadNotifications(
+  plans: readonly VpnDownloadPlan[], t: TaskNotificationTranslate, runStatus?: VpnDownloadRunSnapshot["status"],
+): VpnDownloadNotification[] {
   const items: VpnDownloadNotification[] = [];
   const pausedWorks = new Set<string>();
   let pausedRanges = 0;
+  let restartOnly = true;
   let firstPaused: { plan: VpnDownloadPlan; range: VpnDownloadRangeState } | null = null;
   for (const plan of plans) {
     for (const [index, range] of plan.ranges.entries()) {
       const reasonKey = range.pauseReason ? MANUAL_PAUSE_KEYS[range.pauseReason] : undefined;
       if (range.phase !== "paused" || !reasonKey) continue;
       if (range.pauseReason?.startsWith("challenge-") && !isManualChallenge(plan, range)) continue;
+      // A restarted range only needs the user when the run did not resume by itself.
+      if (range.pauseReason === "interrupted" && runStatus !== "interrupted") continue;
       const verification = isManualChallenge(plan, range) ? parseTaskNotificationAction({
         type: "verifyVpnDownload", planId: plan.id, sourceId: plan.pluginId, rangeId: range.id,
         profileId: range.profileId, generation: range.generation, checkpoint: range.checkpoint,
@@ -102,6 +107,7 @@ export function vpnDownloadNotifications(plans: readonly VpnDownloadPlan[], t: T
         continue;
       }
       pausedRanges += 1;
+      restartOnly &&= range.pauseReason === "interrupted";
       pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
       firstPaused ??= { plan, range };
     }
@@ -111,13 +117,13 @@ export function vpnDownloadNotifications(plans: readonly VpnDownloadPlan[], t: T
     items.push({
       id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID,
       planId: firstPaused.plan.id, rangeId: firstPaused.range.id,
-      title: pausedRanges === 1
+      title: restartOnly ? t("vpnDownload.notice.restartTitle") : pausedRanges === 1
         ? t("vpnDownload.rangeAction", {
           action: t("vpnDownload.phase.paused"), title: firstPaused.plan.title,
           interval: t("vpnDownload.interval", { number: firstPaused.plan.ranges.indexOf(firstPaused.range) + 1 }),
         })
         : t("vpnDownload.attentionSummary", { ranges: pausedRanges, works: pausedWorks.size }),
-      body: pausedRanges === 1 ? t(reasonKey) : t("vpnDownload.attentionSummaryBody"),
+      body: restartOnly ? t("vpnDownload.notice.restartBody") : pausedRanges === 1 ? t(reasonKey) : t("vpnDownload.attentionSummaryBody"),
       actionLabel: t("downloads.title"),
       action: { type: "openTasks" },
     });

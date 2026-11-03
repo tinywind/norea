@@ -105,6 +105,8 @@
   "vpnDownload.userPaused": "직접 일시 정지함",
   "vpnDownload.attentionSummary": "VPN 다운로드: 작품 {works}개의 구간 {ranges}개가 일시 정지됨",
   "vpnDownload.attentionSummaryBody": "다운로드에서 다시 시작하거나 멈춘 이유를 확인하세요.",
+  "vpnDownload.notice.restartTitle": "재시작 후 VPN 다운로드 일시 정지됨",
+  "vpnDownload.notice.restartBody": "다운로드를 열고 재개를 눌러 계속하세요.",
   "vpnDownload.rangeAction": "{action}: {title}, {interval}",
   "vpnDownload.resume": "재개",
   "vpnDownload.openVerification": "인증 화면 열기",

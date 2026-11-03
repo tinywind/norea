@@ -105,6 +105,8 @@
   "vpnDownload.userPaused": "Paused by you",
   "vpnDownload.attentionSummary": "VPN downloads: {ranges} parts in {works} works are paused",
   "vpnDownload.attentionSummaryBody": "Open Downloads to resume them or see why they stopped.",
+  "vpnDownload.notice.restartTitle": "VPN downloads paused after restart",
+  "vpnDownload.notice.restartBody": "Open Downloads and tap Resume to continue.",
   "vpnDownload.rangeAction": "{action}: {title}, {interval}",
   "vpnDownload.resume": "Resume",
   "vpnDownload.openVerification": "Open verification",

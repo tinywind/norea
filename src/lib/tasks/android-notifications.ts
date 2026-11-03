@@ -65,8 +65,8 @@ export function startAndroidTaskNotifications(
       challenges = sourceTracker.notifications(snapshot.sourceAccessBlocks, t);
     }
     const online = isNetworkOnline();
-    const plans = getVpnDownloadRuntimeSnapshot().plans;
-    const ranges = vpnDownloadNotifications(plans, t);
+    const { plans, run } = getVpnDownloadRuntimeSnapshot();
+    const ranges = vpnDownloadNotifications(plans, t, run?.status);
     const vpnActive = hasActiveVpnDownloads(plans);
     const quiet = mode !== "progress";
     const completions = mode === "off" ? [] : completed.map(({ key, title, body }) => ({ key, title, body }));
