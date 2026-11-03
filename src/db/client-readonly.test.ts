@@ -155,3 +155,41 @@ it.each([false, true])("opens saved work details and chapters during queued meta
   expect(await getChapterById(1, "committed")).toMatchObject({ name: rollback ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true });
   expect(await listChaptersByNovel(1, "committed")).toMatchObject([{ name: rollback ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true }]);
 });
+
+it("lists Updates, its badge and History while a check holds the database queue", async () => {
+  writer.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
+  writer.exec(`UPDATE chapter SET read_at=100 WHERE id=1;
+    INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,unread,found_at,found_by_check) VALUES(2,1,'/new','New chapter',2,'2',1,200,1)`);
+  const { runDatabaseTransaction } = await import("./client");
+  const { countNewLibraryChaptersSince, listLibraryUpdatesPage } = await import("./queries/chapter");
+  const { listReadingHistoryPage } = await import("./queries/history-search");
+  let started!: () => void;
+  const active = new Promise<void>(resolve => { started = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  writes = runDatabaseTransaction(async db => {
+    await db.execute("INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,unread,found_at,found_by_check) VALUES(3,1,'/newer','Newer chapter',3,'3',1,300,1)");
+    started();
+    await gate;
+  });
+  await active;
+  let queuedReadFinished = false;
+  const queuedRead = listLibraryUpdatesPage(10).then(page => { queuedReadFinished = true; return page; });
+  let timeout!: ReturnType<typeof setTimeout>;
+  try {
+    const [updates, badge, history] = await Promise.race([
+      Promise.all([
+        listLibraryUpdatesPage(10, null, "new", "committed"),
+        countNewLibraryChaptersSince(0, "committed"),
+        listReadingHistoryPage({ readMode: "committed" }),
+      ]),
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Updates or History waited for the check")), 1000); }),
+    ]);
+    expect(queuedReadFinished).toBe(false);
+    expect(updates.updates.map(row => row.chapterId)).toEqual([2]);
+    expect(badge).toBe(1);
+    expect(history.entries.map(entry => entry.chapterId)).toEqual([1]);
+  } finally { clearTimeout(timeout); release(); }
+  await writes;
+  expect((await queuedRead).updates.map(row => row.chapterId)).toEqual([3, 2]);
+  expect((await listLibraryUpdatesPage(10, null, "new", "committed")).updates.map(row => row.chapterId)).toEqual([3, 2]);
+});

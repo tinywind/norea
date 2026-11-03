@@ -138,7 +138,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
     meta: { errorPresentation: hasLoaded ? "toast" : "inline" },
     mutationFn: async () => {
       const requested = useUpdatesStore.getState().view;
-      return { page: await listLibraryUpdatesPage(UPDATES_PAGE_SIZE, null, requested), requested };
+      return { page: await listLibraryUpdatesPage(UPDATES_PAGE_SIZE, null, requested, "committed"), requested };
     },
     onSuccess: ({ page, requested }) => {
       if (requested === useUpdatesStore.getState().view) mergeFirstPage(page);
@@ -172,7 +172,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   const loadMore = useMutation({
     mutationFn: async (cursor: LibraryUpdatesCursor) => {
       const requested = useUpdatesStore.getState().view;
-      return { page: await listLibraryUpdatesPage(UPDATES_PAGE_SIZE, cursor, requested), requested };
+      return { page: await listLibraryUpdatesPage(UPDATES_PAGE_SIZE, cursor, requested, "committed"), requested };
     },
     onSuccess: ({ page, requested }) => {
       if (requested === useUpdatesStore.getState().view) appendPage(page);
@@ -264,7 +264,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       const startedAtRevision = getUpdatesIndexRevision();
       const requested = useUpdatesStore.getState().view;
       try {
-        const page = await listLibraryUpdatesPage(UPDATES_INDEX_REFRESH_LIMIT, null, requested);
+        const page = await listLibraryUpdatesPage(UPDATES_INDEX_REFRESH_LIMIT, null, requested, "committed");
         if (disposed) return;
         // A page read after a change is never older than the rows on screen, so it is shown even when
         // more changes arrived meanwhile; a running check changes the index for every novel it finds.

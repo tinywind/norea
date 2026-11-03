@@ -455,6 +455,9 @@ async function executeSourceChapterChunk(
   return result.rowsAffected;
 }
 
+// The novel_id term limits the scan to the incoming novels' rows instead of the whole chapter table,
+// and the cheap incoming match runs before the per-row MIN lookup. Every check runs this inside its
+// transaction, so a full-table scan here held the shared database queue for seconds per novel.
 async function migrateSourceChapterPathsWithDb(
   db: DbHandle,
   chunk: readonly InsertChapterInput[],
@@ -472,13 +475,7 @@ async function migrateSourceChapterPathsWithDb(
              AND incoming.page IS target.page
         ),
             updated_at = unixepoch()
-      WHERE target.id = (
-              SELECT MIN(existing.id)
-                FROM chapter AS existing
-               WHERE existing.novel_id IS target.novel_id
-                 AND existing.chapter_number IS target.chapter_number
-                 AND existing.page IS target.page
-            )
+      WHERE target.novel_id IN (SELECT novel_id FROM incoming)
         AND EXISTS (
           SELECT 1
             FROM incoming
@@ -487,6 +484,13 @@ async function migrateSourceChapterPathsWithDb(
              AND incoming.page IS target.page
              AND incoming.path IS NOT target.path
         )
+        AND target.id = (
+              SELECT MIN(existing.id)
+                FROM chapter AS existing
+               WHERE existing.novel_id IS target.novel_id
+                 AND existing.chapter_number IS target.chapter_number
+                 AND existing.page IS target.page
+            )
         AND NOT EXISTS (
           SELECT 1
             FROM chapter AS existing
@@ -1096,8 +1100,9 @@ export async function listLibraryUpdates(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
   scope: LibraryUpdatesScope = "new",
+  readMode: DatabaseReadMode = "queued",
 ): Promise<LibraryUpdateEntry[]> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
   const cursorClause = cursor
     ? `AND (
@@ -1147,8 +1152,11 @@ export async function listLibraryUpdates(
 }
 
 /** Unread chapters found by checks since `seenAt` (Unix seconds), for the Updates badge. */
-export async function countNewLibraryChaptersSince(seenAt: number): Promise<number> {
-  const db = await getDb();
+export async function countNewLibraryChaptersSince(
+  seenAt: number,
+  readMode: DatabaseReadMode = "queued",
+): Promise<number> {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const [row] = await db.select<{ count: number }[]>(
     `SELECT COUNT(*) AS count FROM chapter c JOIN novel n ON n.id = c.novel_id
      WHERE n.in_library = 1 AND c.unread = 1 AND c.found_by_check = 1 AND c.found_at > $1`, [seenAt]);
@@ -1159,12 +1167,14 @@ export async function listLibraryUpdatesPage(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
   scope: LibraryUpdatesScope = "new",
+  readMode: DatabaseReadMode = "queued",
 ): Promise<LibraryUpdatesPage> {
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
   const rows = await listLibraryUpdates(
     normalizedLimit + 1,
     cursor,
     scope,
+    readMode,
   );
   const updates = rows.slice(0, normalizedLimit);
   const hasMore = rows.length > normalizedLimit;

@@ -129,6 +129,7 @@ export function HistoryPage() {
       listReadingHistoryPage({
         cursor: pageParam,
         progress: progressFilter,
+        readMode: "committed",
         search: appliedSearch,
       }),
     initialPageParam: null as HistoryCursor | null,

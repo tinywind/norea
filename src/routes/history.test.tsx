@@ -173,6 +173,7 @@ it("searches the full history in SQLite only once Enter applies the query, and c
   expect(mocks.listReadingHistoryPage).toHaveBeenLastCalledWith({
     cursor,
     progress: "all",
+    readMode: "committed",
     search: "dragon",
   });
 

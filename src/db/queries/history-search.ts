@@ -1,5 +1,5 @@
 import { clampRouteQueryLimit } from "../../lib/performance-budgets";
-import { getDb } from "../client";
+import { getDb, getReadOnlyDb, type DatabaseReadMode } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import type { RecentlyReadEntry } from "./chapter";
 
@@ -40,14 +40,16 @@ export async function listReadingHistoryPage({
   cursor = null,
   limit = HISTORY_PAGE_SIZE,
   progress = "all",
+  readMode = "queued",
   search = "",
 }: {
   cursor?: HistoryCursor | null;
   limit?: number;
   progress?: HistoryProgressFilter;
+  readMode?: DatabaseReadMode;
   search?: string;
 } = {}): Promise<HistoryPage> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const pageSize = clampRouteQueryLimit(limit, HISTORY_PAGE_SIZE);
   const term = search.trim();
   const params: unknown[] = [pageSize + 1];

@@ -12,7 +12,7 @@ export function useNewChapterBadgeCount(): number {
   const seenAt = useUpdatesSeenStore((state) => state.updatesSeenAt);
   const count = useQuery({
     queryKey: [...NEW_CHAPTER_COUNT_KEY, seenAt],
-    queryFn: () => countNewLibraryChaptersSince(seenAt),
+    queryFn: () => countNewLibraryChaptersSince(seenAt, "committed"),
   });
   useEffect(() => subscribeUpdatesIndexChanges(() => {
     void queryClient.invalidateQueries({ queryKey: NEW_CHAPTER_COUNT_KEY });
