@@ -40,13 +40,17 @@ export function planVpnDownloadRanges(
   if (!profiles.size || profiles.size !== profileIds.length || profileIds.some((id) => !id.trim())) {
     throw new Error("VPN profiles must be nonempty and distinct.");
   }
-  const count = Math.min(last - first + 1, profileIds.length);
+  const orderedSelected = orderedChapters.filter(chapter => selected.has(chapter.id));
+  const count = Math.min(orderedSelected.length, profileIds.length);
   let next = first;
+  let nextSelected = 0;
   const defaults = (): VpnDownloadRangeAssignment[] => Array.from({ length: count }, (_, index) => {
-    const size = Math.floor((last - first + 1) / count) + (index < (last - first + 1) % count ? 1 : 0);
+    const size = Math.floor(orderedSelected.length / count) + (index < orderedSelected.length % count ? 1 : 0);
     const startChapterId = orderedChapters[next]!.id;
-    next += size;
-    return { profileId: profileIds[index]!, startChapterId, endChapterId: orderedChapters[next - 1]!.id };
+    nextSelected += size;
+    const end = index === count - 1 ? last : positions.get(orderedSelected[nextSelected]!.id)! - 1;
+    next = end + 1;
+    return { profileId: profileIds[index]!, startChapterId, endChapterId: orderedChapters[end]!.id };
   });
   const assignedProfiles = new Set<string>();
   const covered = new Set<number>();

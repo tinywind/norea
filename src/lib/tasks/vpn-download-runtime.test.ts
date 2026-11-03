@@ -13,6 +13,8 @@ const boundary = vi.hoisted(() => ({
   profiles: vi.fn(), status: vi.fn(), connect: vi.fn(), disconnect: vi.fn(),
   stop: vi.fn(), restart: vi.fn(), createPlan: vi.fn(), cancelPlan: vi.fn(), cancelTask: vi.fn(),
   settleTask: vi.fn(), restoreEffects: [] as string[],
+  pendingJobs: new Map<number, ChapterDownloadJob>(), handover: vi.fn(), persistPending: vi.fn(), cancelOrdinary: vi.fn(), discardOrdinary: vi.fn(),
+  requestEnqueue: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: boundary.invoke }));
 vi.mock("../../db/client", () => ({
@@ -36,6 +38,30 @@ vi.mock("../content-sync/storage-operation", () => ({
 }));
 vi.mock("./main-tasks", () => ({ enqueueMainTask: ({ run }: { run: () => Promise<unknown> }) => ({ promise: run() }) }));
 vi.mock("../../db/queries/chapter", () => ({ listChaptersByNovel: boundary.catalog }));
+vi.mock("../../db/queries/chapter-download-queue", () => ({
+  listPendingVpnDownloadJobs: async () => [...boundary.pendingJobs.values()].map(job => ({ job: structuredClone(job), jobJson: JSON.stringify(job), updatedAtMs: 1 })),
+  enqueuePendingVpnDownloadJobs: boundary.persistPending,
+  cancelPendingVpnDownloadBatch: async (batchId: string) => {
+    let count = 0;
+    for (const [id, job] of boundary.pendingJobs) if (job.vpnBatchId === batchId) { boundary.pendingJobs.delete(id); count++; }
+    return count;
+  },
+  cancelPendingVpnDownloadJobs: async (batchId: string, ids: readonly number[]) => {
+    let count = 0;
+    for (const id of ids) if (boundary.pendingJobs.get(id)?.vpnBatchId === batchId) { boundary.pendingJobs.delete(id); count++; }
+    return count;
+  },
+  setPendingVpnDownloadJobsPaused: async (batchId: string, ids: readonly number[], paused: boolean) => {
+    let count = 0;
+    for (const id of ids) {
+      const stored = boundary.pendingJobs.get(id);
+      if (!stored || stored.vpnBatchId !== batchId) continue;
+      const next = { ...stored, vpnWorkPaused: paused || undefined };
+      boundary.pendingJobs.set(id, next); count++;
+    }
+    return count;
+  },
+}));
 vi.mock("../../db/queries/vpn-download-plans", () => ({
   listVpnDownloadPlans: async () => [...boundary.plans.values()],
   createVpnDownloadPlan: boundary.createPlan,
@@ -74,7 +100,7 @@ vi.mock("../../db/queries/vpn-download-profile-issues", () => ({
   },
 }));
 vi.mock("../plugin-vpn-profiles", () => ({ SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT: "norea-vpn-profiles-changed", listSavedPluginVpnProfiles: boundary.profiles }));
-vi.mock("../plugin-vpn", () => ({ getPluginVpnStatus: boundary.status }));
+vi.mock("../plugin-vpn", () => ({ getPluginVpnStatus: boundary.status, PLUGIN_VPN_PROFILE_RELEASED_EVENT: "norea-plugin-vpn-profile-released" }));
 vi.mock("../plugin-vpn-download-workers", () => ({
   getPluginVpnDownloadGenerationFloor: async () => 0,
   connectPluginVpnDownloadWorker: boundary.connect, disconnectPluginVpnDownloadWorker: boundary.disconnect,
@@ -86,8 +112,13 @@ vi.mock("../android-scraper", () => ({
 }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: () => true, isTauriRuntime: () => true }));
 vi.mock("./chapter-download", () => ({
+  enqueueChapterDownloadBatch: boundary.requestEnqueue,
+  cancelChapterDownloadBatches: vi.fn(),
   enqueueVpnDownloadChapter: boundary.enqueue,
   publishVpnDownloadBatchProgress: vi.fn(),
+  beginChapterDownloadVpnHandover: boundary.handover,
+  cancelChapterDownloadTasks: boundary.cancelOrdinary,
+  discardQueuedChapterDownloads: boundary.discardOrdinary,
 }));
 vi.mock("./scheduler", () => ({
   taskScheduler: {
@@ -137,8 +168,21 @@ function installBackupFixture(): void {
 }
 
 beforeEach(async () => {
+  vi.restoreAllMocks();
   vi.resetModules(); vi.clearAllMocks(); boundary.plans.clear(); boundary.jobs = []; boundary.effects = []; boundary.complete.clear(); boundary.reject.clear();
   boundary.restoreEffects = []; boundary.issues = []; boundary.blocks = []; boundary.listeners.clear();
+  boundary.pendingJobs.clear();
+  boundary.handover.mockReset().mockResolvedValue({ jobs: [], pending: [], commitReady: async () => [], release: vi.fn() });
+  boundary.cancelOrdinary.mockReset().mockResolvedValue(undefined);
+  boundary.discardOrdinary.mockReset();
+  boundary.persistPending.mockReset().mockImplementation(async (batchId: string, jobs: readonly ChapterDownloadJob[]) => {
+    for (const job of jobs) {
+      const existing = boundary.pendingJobs.get(job.id);
+      if (existing && existing.vpnBatchId !== batchId) throw new Error("Another pending owner");
+      boundary.pendingJobs.set(job.id, { ...job, vpnBatchId: batchId });
+    }
+    boundary.effects.push("persist-pending");
+  });
   const settings = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     get length() { return settings.size; }, key: (index: number) => [...settings.keys()][index] ?? null,
@@ -149,10 +193,12 @@ beforeEach(async () => {
   Object.assign(window, { localStorage });
   ({ useVpnDownloadStore } = await import("../../store/vpn-download"));
   ({ interceptChapterDownloadBatch } = await import("./chapter-download-batch-interceptor"));
+  boundary.requestEnqueue.mockReset().mockImplementation((request: Parameters<typeof interceptChapterDownloadBatch>[0]) => interceptChapterDownloadBatch(request));
   Object.assign(window, { __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
   boundary.catalog.mockResolvedValue(catalog);
   boundary.createPlan.mockImplementation(async (plan: VpnDownloadPlan, jobs: readonly ChapterDownloadJob[]) => {
     boundary.effects.push("publish"); boundary.plans.set(plan.id, structuredClone(plan)); boundary.jobs.push(...jobs);
+    for (const job of jobs) boundary.pendingJobs.delete(job.id);
   });
   boundary.cancelPlan.mockImplementation(async (id: string) => {
     boundary.plans.delete(id); boundary.jobs = boundary.jobs.filter(job => job.vpnPlanId !== id);
@@ -179,9 +225,759 @@ beforeEach(async () => {
   useVpnDownloadStore.setState({ mode: "parallel", workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "pause" });
 });
 
+describe("automatic VPN run admission", () => {
+  const options = { workerCount: 2, captchaPolicy: "nextProfile" as const, cloudflarePolicy: "nextProfile" as const };
+
+  it("fences new ordinary chapter starts synchronously before runtime initialization can yield", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    const started = runtime.startVpnDownloadRun(options);
+    try { expect(boundary.handover).toHaveBeenCalledOnce(); }
+    finally { await started; await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps requests ordinary until the user launches a run even when old VPN settings are enabled", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.initializeVpnDownloadRuntime();
+    expect(interceptChapterDownloadBatch({ jobs, title: "Ordinary request" })).toBeNull();
+    expect(boundary.catalog).not.toHaveBeenCalled();
+    expect(boundary.pendingJobs.size).toBe(0);
+  });
+
+  it("admits a new direct chapter during a run and preserves its interactive priority", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const interceptor = await import("./chapter-download-batch-interceptor");
+    const handle = interceptor.interceptChapterDownload({ ...jobs[0]!, priority: "interactive" })!;
+    try {
+      expect(handle).not.toBeNull();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+      expect(boundary.enqueue.mock.calls[0]![0]).toMatchObject({ id: 8, priority: "interactive", vpnBatchId: runtime.getVpnDownloadRuntimeSnapshot().run!.id });
+      boundary.complete.get(8)!(); await handle.promise;
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("settles a direct observer at its chapter checkpoint and cancels another observer without cancelling shared work", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun({ ...options, workerCount: 1 });
+    const batch = interceptChapterDownloadBatch({ jobs: jobs.slice(0, 2), title: "Shared work" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    const interceptor = await import("./chapter-download-batch-interceptor");
+    const first = interceptor.interceptChapterDownload({ ...jobs[0]!, priority: "interactive" })!;
+    const second = interceptor.interceptChapterDownload(jobs[1]!)!;
+    try {
+      const cancelled = expect(second.promise).rejects.toMatchObject({ name: "AbortError" });
+      expect(interceptor.cancelInterceptedChapterDownloadBatch(second.id)).toBe(true);
+      await cancelled;
+      boundary.complete.get(8)!(); await first.promise;
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]!.phase).toBe("running");
+      boundary.complete.get(2)!();
+      await expect(batch.promise).resolves.toMatchObject({ succeeded: 2, cancelled: 0 });
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("adopts the ready ordinary queue and starts automatically without profile or range inputs", async () => {
+    let committed = false;
+    boundary.handover.mockResolvedValue({ jobs: [{ job: jobs[0], jobJson: JSON.stringify(jobs[0]), updatedAtMs: 1 }], pending: [],
+      commitReady: async (batchId: string) => {
+        if (committed) return [];
+        committed = true;
+        const adopted = { ...jobs[0]!, vpnBatchId: batchId }; boundary.pendingJobs.set(adopted.id, adopted); return [adopted];
+      }, release: vi.fn() });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    expect(boundary.enqueue.mock.calls[0]![0]).toMatchObject({ id: 8, vpnBatchId: expect.any(String), vpnPlanId: expect.any(String), vpnRangeId: expect.any(String) });
+    expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("persists a new request before a held catalog and lets another work proceed independently", async () => {
+    let release!: (value: typeof catalog) => void;
+    const held = new Promise<typeof catalog>(resolve => { release = resolve; });
+    boundary.catalog.mockImplementation(async (novelId: number) => novelId === 10 ? held : [{ id: 20, name: "Other chapter", chapterNumber: "1" }]);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const first = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Held work" })!;
+    const second = interceptChapterDownloadBatch({ jobs: [{ ...jobs[0]!, id: 20, novelId: 20, chapterPath: "/chapter/20" }], title: "Ready work" })!;
+    try {
+      await vi.waitFor(() => expect(boundary.pendingJobs.has(8)).toBe(true));
+      expect(runtime.getVpnDownloadRuntimeSnapshot().drafts.some(work => work.novelId === 10)).toBe(true);
+      await vi.waitFor(() => expect(boundary.enqueue.mock.calls.some(([job]) => job.id === 20)).toBe(true));
+      expect(boundary.effects.indexOf("persist-pending")).toBeLessThan(boundary.effects.indexOf("publish"));
+      release(catalog);
+      await Promise.all([first.materialized, second.materialized]);
+      await vi.waitFor(() => expect(boundary.enqueue.mock.calls.some(([job]) => job.id === 8)).toBe(true));
+      expect(new Set(runtime.getVpnDownloadRuntimeSnapshot().plans.map(plan => plan.batchId)).size).toBe(1);
+    } finally { release(catalog); await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("waits for approved profiles without losing pending intent or requiring another per-work start", async () => {
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Wait for a profile" })!;
+    await batch.materialized;
+    expect(boundary.pendingJobs.has(8)).toBe(true);
+    expect(boundary.connect).not.toHaveBeenCalled();
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles, cleanupError: null });
+    window.dispatchEvent(new Event("norea-vpn-profiles-changed"));
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("wakes a waiting draft when the foreground VPN releases its only approved profile without changing the vault", async () => {
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [profiles[0]!], cleanupError: null });
+    boundary.status.mockResolvedValue({ phase: "connected", profile: { hash: profiles[0]!.hash, remoteHost: profiles[0]!.ip }, supported: true, proxyPort: 123, error: null });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun({ ...options, workerCount: 1 });
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Occupied foreground profile" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]?.phase).toBe("waiting-profile"));
+    expect(boundary.connect).not.toHaveBeenCalled();
+    boundary.status.mockResolvedValue({ phase: "connected", profile: { hash: "different-profile", remoteHost: "192.0.2.99" }, supported: true, proxyPort: 123, error: null });
+    window.dispatchEvent(new Event("norea-plugin-vpn-profile-released"));
+    try { await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce()); }
+    finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("cancels a held preparation without enrolling its late catalog or cancelling another work", async () => {
+    let release!: (value: typeof catalog) => void;
+    const held = new Promise<typeof catalog>(resolve => { release = resolve; });
+    boundary.catalog.mockImplementation(async (id: number) => id === 10 ? held : [{ id: 20, name: "Other", chapterNumber: "1" }]);
+    const runtime = await import("./vpn-download-runtime");
+    const { cancelInterceptedChapterDownloadBatch } = await import("./chapter-download-batch-interceptor");
+    await runtime.startVpnDownloadRun(options);
+    const first = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Cancelled preparation" })!;
+    const second = interceptChapterDownloadBatch({ jobs: [{ ...jobs[0]!, id: 20, novelId: 20, chapterPath: "/chapter/20" }], title: "Retained work" })!;
+    try {
+      await vi.waitFor(() => expect(boundary.pendingJobs.has(8)).toBe(true));
+      expect(cancelInterceptedChapterDownloadBatch(first.id)).toBe(true);
+      release(catalog);
+      await first.materialized;
+      await expect(first.promise).resolves.toMatchObject({ cancelled: 1, succeeded: 0 });
+      await second.materialized;
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+      expect(boundary.enqueue.mock.calls[0]![0].id).toBe(20);
+      expect(boundary.pendingJobs.has(8)).toBe(false);
+    } finally { release(catalog); await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("does not launch duplicate chapter owners when the same intent is submitted twice", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const first = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Same work" })!;
+    const second = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Same work" })!;
+    await Promise.all([first.materialized, second.materialized]);
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    expect(boundary.createPlan).toHaveBeenCalledTimes(1);
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("restores pending ownership as interrupted and requires explicit resume before connecting", async () => {
+    boundary.pendingJobs.set(8, { ...jobs[0]!, vpnBatchId: "retained-run" });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.initializeVpnDownloadRuntime(); await tick();
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run).toMatchObject({ id: "retained-run", status: "interrupted" });
+    expect(boundary.connect).not.toHaveBeenCalled();
+    expect(boundary.pendingJobs.has(8)).toBe(true);
+    await runtime.resumeVpnDownloadRun();
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.batchId).toBe("retained-run");
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("keeps the enrolled-only run identity so new work after restart observes its existing profile exclusion", async () => {
+    boundary.connect.mockImplementationOnce(async () => { throw Object.assign(new Error("Tunnel refused"), { code: "plugin-vpn-unavailable" }); });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun({ ...options, workerCount: 1 });
+    const batch = interceptChapterDownloadBatch({ jobs: jobs.slice(0, 2), title: "Existing execution" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    const batchId = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.batchId;
+    expect(boundary.issues).toMatchObject([{ batchId, profileId: "profile-a", excluded: true }]);
+    boundary.complete.get(8)!();
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    await runtime.pauseVpnDownloadRun();
+    expect(boundary.pendingJobs.size).toBe(0);
+    vi.resetModules(); boundary.listeners.clear();
+    vi.stubGlobal("window", new EventTarget());
+    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
+    ({ interceptChapterDownloadBatch } = await import("./chapter-download-batch-interceptor"));
+    const restored = await import("./vpn-download-runtime");
+    await restored.initializeVpnDownloadRuntime();
+    try {
+      expect(restored.getVpnDownloadRuntimeSnapshot().run).toMatchObject({ id: batchId, status: "interrupted" });
+      await restored.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      boundary.catalog.mockResolvedValueOnce([{ id: 20, name: "New work chapter", chapterNumber: "1" }]);
+      const request = interceptChapterDownloadBatch({ jobs: [{ ...jobs[0]!, id: 20, novelId: 20, novelName: "New work" }], title: "New work" })!;
+      await request.materialized;
+      await vi.waitFor(() => expect(boundary.pendingJobs.has(20) || restored.getVpnDownloadRuntimeSnapshot().plans.length === 2).toBe(true));
+      boundary.complete.get(2)!();
+      await vi.waitFor(() => expect(boundary.enqueue.mock.calls.some(([job]) => job.id === 20)).toBe(true));
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans.map(plan => plan.batchId)).toEqual([batchId, batchId]);
+      expect(boundary.connect.mock.calls.slice(2).every(([, profile]) => profile.id === "profile-b")).toBe(true);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps paused preparation durable across profile events and resumes only on user intent", async () => {
+    let release!: (value: typeof catalog) => void;
+    const held = new Promise<typeof catalog>(resolve => { release = resolve; });
+    boundary.catalog.mockReturnValueOnce(held);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Paused work" })!;
+    await batch.materialized;
+    await runtime.pauseVpnDownloadRun(); release(catalog);
+    window.dispatchEvent(new Event("norea-vpn-profiles-changed")); await tick();
+    expect(boundary.connect).not.toHaveBeenCalled();
+    expect(boundary.pendingJobs.has(8)).toBe(true);
+    await runtime.resumeVpnDownloadRun();
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("pauses an entire work including its automatic capacity waiter before releasing the active sibling", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    const pool = [...profiles, { ...profiles[0]!, id: "profile-c", hash: "hash-c", ip: "192.0.2.3" }];
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: pool, cleanupError: null });
+    boundary.connect.mockImplementation(async (worker, profile) => ({ supported: true, worker, phase: "connected", profile: pool.find(candidate => candidate.id === profile.id), proxyPort: 12000 + worker.slot, error: null }));
+    boundary.catalog.mockImplementation(async (id: number) => id === 20 ? [{ id: 20, name: "Other", chapterNumber: "1" }] : catalog);
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs: [{ ...jobs[0]!, id: 20, novelId: 20 }], title: "Other work" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    await interceptChapterDownloadBatch({ jobs, title: "Work with a waiter" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    try {
+      await runtime.pauseVpnDownloadWork("source-test", 10);
+      window.dispatchEvent(new Event("norea-vpn-profiles-changed")); await tick();
+      expect(boundary.enqueue).toHaveBeenCalledTimes(2);
+      const work = runtime.getVpnDownloadRuntimeSnapshot().plans.find(plan => plan.novelId === 10)!;
+      expect(work.ranges).toHaveLength(2);
+      expect(work.ranges.every(range => range.userPaused && range.pauseReason === "work-paused")).toBe(true);
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps a paused preparation held after reload and run Resume until that work is resumed", async () => {
+    let finish!: (value: typeof catalog) => void;
+    const held = new Promise<typeof catalog>(resolve => { finish = resolve; });
+    boundary.catalog.mockReturnValueOnce(held);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Paused pending work" })!.materialized;
+    await runtime.pauseVpnDownloadWork("source-test", 10);
+    finish(catalog); await tick();
+    expect(boundary.pendingJobs.get(8)).toMatchObject({ vpnWorkPaused: true });
+    expect(boundary.enqueue).not.toHaveBeenCalled();
+    await runtime.pauseVpnDownloadRun();
+    vi.resetModules(); boundary.listeners.clear();
+    vi.stubGlobal("window", new EventTarget());
+    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
+    const restored = await import("./vpn-download-runtime");
+    await restored.initializeVpnDownloadRuntime();
+    try {
+      await restored.resumeVpnDownloadRun(); await tick();
+      expect(boundary.enqueue).not.toHaveBeenCalled();
+      await restored.resumeVpnDownloadWork("source-test", 10);
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    } finally { finish(catalog); await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps a work paused when its plan publication finishes after the work pause", async () => {
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const create = boundary.createPlan.getMockImplementation()!;
+    boundary.createPlan.mockImplementationOnce(async (...args) => { await held; return create(...args); });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Publishing work" })!.materialized;
+    await vi.waitFor(() => expect(boundary.createPlan).toHaveBeenCalledOnce());
+    await runtime.pauseVpnDownloadWork("source-test", 10);
+    finish();
+    try {
+      await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().plans).toHaveLength(1));
+      expect(boundary.enqueue).not.toHaveBeenCalled();
+      await runtime.resumeVpnDownloadWork("source-test", 10);
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    } finally { finish(); await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("resumes a plan published after run Pause without treating that run hold as an individual pause", async () => {
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const create = boundary.createPlan.getMockImplementation()!;
+    boundary.createPlan.mockImplementationOnce(async (...args) => { await held; return create(...args); });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Late run publication" })!.materialized;
+    await vi.waitFor(() => expect(boundary.createPlan).toHaveBeenCalledOnce());
+    await runtime.pauseVpnDownloadRun();
+    finish();
+    try {
+      await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().plans).toHaveLength(1));
+      expect(boundary.enqueue).not.toHaveBeenCalled();
+      await runtime.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    } finally { finish(); await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("resumes work-held ranges without overriding a separately paused range", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs, title: "Independently held sibling" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
+    await runtime.pauseVpnDownloadRange(plan.id, plan.ranges[1]!.id);
+    await runtime.pauseVpnDownloadWork("source-test", 10);
+    try {
+      await runtime.resumeVpnDownloadWork("source-test", 10);
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[1]).toMatchObject({ userPaused: true, pauseReason: "user-paused" });
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("forgets a cancelled work hold before accepting a new request for that work", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    boundary.catalog.mockImplementation(async (id: number) => id === 20 ? [{ id: 20, name: "Other", chapterNumber: "1" }] : catalog);
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs: [{ ...jobs[0]!, id: 20, novelId: 20 }], title: "Other work" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    await interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "First request" })!.materialized;
+    await runtime.pauseVpnDownloadWork("source-test", 10);
+    const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
+    await runtime.cancelVpnDownloadDraft(draft.id);
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles, cleanupError: null });
+    await interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "New explicit request" })!.materialized;
+    try { await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2)); }
+    finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("coalesces overlapping chapters while accepting only the new portion of a later request", async () => {
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const first = interceptChapterDownloadBatch({ jobs: jobs.slice(0, 2), title: "First selection" })!;
+    await first.materialized;
+    const second = interceptChapterDownloadBatch({ jobs: jobs.slice(1, 3), title: "Overlapping selection" })!;
+    await second.materialized;
+    const ids = runtime.getVpnDownloadRuntimeSnapshot().drafts.flatMap(work => [...work.selectedChapterIds]);
+    expect(ids.sort((a, b) => a - b)).toEqual([2, 8, 9]);
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("does not resume pending work after explicit VPN off is followed by a profile notification", async () => {
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Explicitly stopped" })!;
+    await batch.materialized;
+    window.dispatchEvent(new Event("norea-plugin-vpn-explicit-off"));
+    useVpnDownloadStore.getState().setMode("parallel");
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles, cleanupError: null });
+    window.dispatchEvent(new Event("norea-vpn-profiles-changed")); await tick();
+    expect(boundary.connect).not.toHaveBeenCalled();
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused");
+    await runtime.resumeVpnDownloadRun();
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("waits for accepted queue publication before granting a device-restore hold and leaves the run paused", async () => {
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const persist = boundary.persistPending.getMockImplementation()!;
+    boundary.persistPending.mockImplementationOnce(async (...args) => { await held; await persist(...args); });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Publishing intent" })!;
+    let suspended = false;
+    const suspending = runtime.suspendVpnDownloadsForRestore().then(release => { suspended = true; return release; });
+    await tick();
+    try { expect(suspended).toBe(false); }
+    finally { finish(); }
+    const release = await suspending;
+    await batch.materialized;
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused");
+    release();
+    window.dispatchEvent(new Event("norea-vpn-profiles-changed")); await tick();
+    expect(boundary.connect).not.toHaveBeenCalled();
+    await runtime.cancelVpnDownloadRun();
+  });
+
+  it("counts a held browser cleanup in the run snapshot instead of reporting a free worker", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Closing worker" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    boundary.close.mockImplementationOnce(async () => { await held; });
+    const pausing = runtime.pauseVpnDownloadRun();
+    await vi.waitFor(() => expect(boundary.close).toHaveBeenCalledOnce());
+    try { expect(runtime.getVpnDownloadRuntimeSnapshot().run).toMatchObject({ closingWorkers: 1, activeWorkers: 0 }); }
+    finally { finish(); await pausing; await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("finishes an in-progress ownership commit before cancelling its run and cannot enroll the late result", async () => {
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const release = vi.fn();
+    const commit = vi.fn(async (batchId: string) => {
+      await held;
+      const adopted = { ...jobs[0]!, vpnBatchId: batchId }; boundary.pendingJobs.set(adopted.id, adopted); return [adopted];
+    });
+    boundary.handover.mockResolvedValue({ jobs: [{ job: jobs[0], jobJson: JSON.stringify(jobs[0]), updatedAtMs: 1 }], pending: [], commitReady: commit, release });
+    const runtime = await import("./vpn-download-runtime");
+    const started = runtime.startVpnDownloadRun(options);
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledOnce());
+    let settled = false;
+    const cancelled = runtime.cancelVpnDownloadRun().then(() => { settled = true; });
+    await tick();
+    try { expect(settled).toBe(false); }
+    finally { finish(); await Promise.all([started, cancelled]); }
+    expect(boundary.cancelOrdinary).toHaveBeenCalledWith([8]);
+    expect(boundary.createPlan).not.toHaveBeenCalled();
+    expect(boundary.pendingJobs.size).toBe(0);
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("cancelled");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("coalesces repeated run cancellation while the same browser cleanup is still pending", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Cancel once" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    boundary.close.mockImplementationOnce(async () => { await held; });
+    const first = runtime.cancelVpnDownloadRun();
+    let settled = false;
+    const second = runtime.cancelVpnDownloadRun().then(() => { settled = true; });
+    await vi.waitFor(() => expect(boundary.close).toHaveBeenCalledOnce());
+    try { expect(settled).toBe(false); }
+    finally { finish(); await Promise.all([first, second]); }
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("cancelled");
+  });
+
+  it("does not confirm run cancellation until ordinary deletion settles and permits retry after deletion fails", async () => {
+    let reject!: (error: Error) => void;
+    const deleting = new Promise<void>((_, fail) => { reject = fail; });
+    void deleting.catch(() => undefined);
+    const failure = new Error("Ordinary queue deletion failed");
+    boundary.handover.mockResolvedValue({ jobs: [{ job: jobs[0]!, jobJson: JSON.stringify(jobs[0]), updatedAtMs: 1 }], pending: [], commitReady: async () => [], release: vi.fn() });
+    boundary.discardOrdinary.mockReturnValueOnce(deleting);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    let settled = false;
+    const cancelling = runtime.cancelVpnDownloadRun().finally(() => { settled = true; });
+    const outcome = cancelling.then(() => null, error => error);
+    await vi.waitFor(() => expect(boundary.discardOrdinary).toHaveBeenCalledOnce());
+    try { expect(settled).toBe(false); }
+    finally { reject(failure); expect(await outcome).toBe(failure); }
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused");
+    await runtime.cancelVpnDownloadRun();
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("cancelled");
+  });
+
+  it("lets an explicit cancel retry finish after a failed browser cleanup instead of reporting a false terminal run", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Retry cleanup" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+    const failure = new Error("Browser close failed");
+    boundary.close.mockRejectedValue(failure);
+    await expect(runtime.cancelVpnDownloadRun()).rejects.toBe(failure);
+    boundary.close.mockResolvedValue(undefined);
+    await runtime.cancelVpnDownloadRun();
+    expect(boundary.close).toHaveBeenCalledTimes(2);
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run).toMatchObject({ status: "cancelled", activeWorkers: 0, closingWorkers: 0 });
+  });
+
+  it("resumes run-paused active ranges while preserving a separately paused range", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs, title: "Resume active work" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
+    const [automatic, manual] = plan.ranges;
+    try {
+      await runtime.pauseVpnDownloadRange(plan.id, manual!.id);
+      await runtime.pauseVpnDownloadRun();
+      await runtime.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      const ranges = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges;
+      expect(ranges.find(range => range.id === automatic!.id)).toMatchObject({ phase: "running", userPaused: false });
+      expect(ranges.find(range => range.id === manual!.id)).toMatchObject({ phase: "paused", userPaused: true });
+      expect(boundary.enqueue.mock.calls[2]![0].id).toBe(8);
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("resumes run-paused ranges after a process restart without resuming an individually paused range", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs, title: "Restart paused work" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
+    const [automatic, manual] = plan.ranges;
+    await runtime.pauseVpnDownloadRange(plan.id, manual!.id);
+    await runtime.pauseVpnDownloadRun();
+    vi.resetModules(); boundary.listeners.clear();
+    vi.stubGlobal("window", new EventTarget());
+    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
+    const restored = await import("./vpn-download-runtime");
+    await restored.initializeVpnDownloadRuntime();
+    expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("interrupted");
+    try {
+      await restored.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      const ranges = restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges;
+      expect(ranges.find(range => range.id === automatic!.id)).toMatchObject({ phase: "running", userPaused: false });
+      expect(ranges.find(range => range.id === manual!.id)).toMatchObject({ phase: "paused", userPaused: true });
+      expect(boundary.enqueue.mock.calls[2]![0].id).toBe(8);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it.each(["pause", "restore"] as const)("does not resume a later restored range after %s interrupts an earlier launch write", async action => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs, title: "Existing plans" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+    await runtime.pauseVpnDownloadRun();
+    vi.resetModules(); boundary.listeners.clear();
+    vi.stubGlobal("window", new EventTarget());
+    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
+    const queries = await import("../../db/queries/vpn-download-plans");
+    const update = queries.updateVpnDownloadPlan;
+    let finish!: () => void, enter!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    let blocked = false;
+    vi.spyOn(queries, "updateVpnDownloadPlan").mockImplementation(async (...args) => {
+      if (!blocked && args[0].ranges.some(range => range.phase === "paused" && range.pauseReason === null)) {
+        blocked = true; enter(); await held;
+      }
+      return update(...args);
+    });
+    const restored = await import("./vpn-download-runtime");
+    await restored.initializeVpnDownloadRuntime();
+    const starting = restored.resumeVpnDownloadRun();
+    await entered;
+    const stopping = action === "pause" ? restored.pauseVpnDownloadRun() : restored.suspendVpnDownloadsForRestore();
+    finish();
+    try {
+      const release = await stopping;
+      await starting; await tick();
+      if (release) release();
+      expect(boundary.connect).toHaveBeenCalledTimes(2);
+      expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused");
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.phase === "paused")).toBe(true);
+    } finally { finish(); await starting; await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("waits for a resumed ownership commit during cancellation and rejects its late admission", async () => {
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const commit = vi.fn().mockResolvedValueOnce([]).mockImplementationOnce(async (batchId: string) => {
+      await held;
+      const adopted = { ...jobs[0]!, vpnBatchId: batchId };
+      boundary.pendingJobs.set(adopted.id, adopted);
+      return [adopted];
+    });
+    boundary.handover.mockResolvedValue({ jobs: [{ job: jobs[0], jobJson: JSON.stringify(jobs[0]), updatedAtMs: 1 }], pending: [], commitReady: commit, release: vi.fn() });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await runtime.pauseVpnDownloadRun();
+    const resuming = runtime.resumeVpnDownloadRun();
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    let settled = false;
+    const cancelling = runtime.cancelVpnDownloadRun().then(() => { settled = true; });
+    await tick();
+    try { expect(settled).toBe(false); }
+    finally { finish(); await Promise.all([resuming, cancelling]); }
+    expect(boundary.createPlan).not.toHaveBeenCalled();
+    expect(boundary.pendingJobs.size).toBe(0);
+    expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
+    expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("cancelled");
+  });
+
+  it("requires Resume for a paused run instead of replacing its retained ordinary dispatch hold", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await runtime.pauseVpnDownloadRun();
+    try {
+      await expect(runtime.startVpnDownloadRun(options)).rejects.toThrow(/active|resume/i);
+      expect(boundary.handover).toHaveBeenCalledOnce();
+      expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused");
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("reacquires ordinary ownership on Resume after failed launch adoption released its hold", async () => {
+    const failure = new Error("Adoption transaction failed");
+    let released = false;
+    const oldCommit = vi.fn(async () => { if (released) return []; throw failure; });
+    boundary.handover.mockResolvedValueOnce({ jobs: [], pending: [], commitReady: oldCommit, release: () => { released = true; } });
+    const runtime = await import("./vpn-download-runtime");
+    await expect(runtime.startVpnDownloadRun(options)).rejects.toBe(failure);
+    try {
+      await runtime.resumeVpnDownloadRun();
+      expect(boundary.handover).toHaveBeenCalledTimes(2);
+      expect(oldCommit).toHaveBeenCalledOnce();
+      expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("running");
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("releases unpersisted draft ownership after admission fails so the exact request can be retried", async () => {
+    const failure = new Error("Pending intent write failed");
+    boundary.persistPending.mockRejectedValueOnce(failure);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const failed = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Failed admission" })!;
+    await expect(failed.materialized).rejects.toBe(failure);
+    try {
+      expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
+      expect(runtime.getVpnDownloadRuntimeSnapshot().ownedChapterIds).not.toContain(8);
+      const retry = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Retry admission" })!;
+      await retry.materialized;
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    } finally { await runtime.cancelVpnDownloadRun(); }
+    expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
+  });
+
+  it("retries a failed catalog on explicit run Resume without looping on ordinary profile notifications", async () => {
+    const failure = new Error("Catalog temporarily unavailable");
+    boundary.catalog.mockRejectedValueOnce(failure);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Retry catalog" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]?.phase).toBe("failed"));
+    window.dispatchEvent(new Event("norea-vpn-profiles-changed")); await tick();
+    expect(boundary.catalog).toHaveBeenCalledOnce();
+    try {
+      await runtime.pauseVpnDownloadRun();
+      await runtime.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+      expect(boundary.catalog).toHaveBeenCalledTimes(2);
+      expect(boundary.pendingJobs.size).toBe(0);
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps failed Resume paused and retryable instead of publishing a running status", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await runtime.pauseVpnDownloadRun();
+    const queue = await import("../../db/queries/chapter-download-queue");
+    const failure = new Error("Queue read failed");
+    vi.spyOn(queue, "listPendingVpnDownloadJobs").mockRejectedValueOnce(failure);
+    try {
+      await expect(runtime.resumeVpnDownloadRun()).rejects.toBe(failure);
+      expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused");
+      await runtime.resumeVpnDownloadRun();
+      expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("running");
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("keeps repeated draft cancellation pending until its durable deletion finishes", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Cancel draft durably" })!;
+    await batch.materialized;
+    const queue = await import("../../db/queries/chapter-download-queue");
+    const remove = queue.cancelPendingVpnDownloadJobs;
+    let finish!: () => void;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    vi.spyOn(queue, "cancelPendingVpnDownloadJobs").mockImplementationOnce(async (...args) => { await held; return remove(...args); });
+    const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
+    let settled = 0;
+    const first = Promise.resolve(runtime.cancelVpnDownloadDraft(draft.id)).then(() => { settled++; });
+    const second = Promise.resolve(runtime.cancelVpnDownloadDraft(draft.id)).then(() => { settled++; });
+    await tick();
+    try { expect(settled).toBe(0); expect(boundary.pendingJobs.has(8)).toBe(true); }
+    finally { finish(); await Promise.all([first, second]); await runtime.cancelVpnDownloadRun(); }
+    expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
+  });
+
+  it("keeps a run active while a newly accepted request is still preparing its source catalog", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    const requests = await import("./chapter-download-requests");
+    await runtime.startVpnDownloadRun(options);
+    const first = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Finishing work" })!;
+    await first.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    let finish!: (batch: Parameters<typeof interceptChapterDownloadBatch>[0]) => void;
+    const preparing = requests.submitChapterDownloadRequest({ key: "new-work", title: "New work", novelIds: [10],
+      prepare: () => new Promise(resolve => { finish = resolve; }) });
+    try {
+      boundary.complete.get(8)!();
+      await first.promise;
+      expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("running");
+      finish({ jobs: [jobs[1]!], title: "New work" });
+      await preparing.materialized;
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+      expect(boundary.enqueue.mock.calls[1]![0].id).toBe(2);
+    } finally { requests.cancelChapterDownloadRequest(preparing.id); await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("cancels accepted preparation with its VPN run instead of later releasing it onto ordinary routing", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    const requests = await import("./chapter-download-requests");
+    await runtime.startVpnDownloadRun(options);
+    let finish!: (batch: Parameters<typeof interceptChapterDownloadBatch>[0]) => void;
+    let signal!: AbortSignal;
+    const preparing = requests.submitChapterDownloadRequest({ key: "held-work", title: "Held work", novelIds: [10],
+      prepare: value => { signal = value; return new Promise(resolve => { finish = resolve; }); } });
+    await runtime.cancelVpnDownloadRun();
+    finish({ jobs: [jobs[0]!], title: "Held work" });
+    await tick();
+    expect(signal.aborted).toBe(true);
+    expect(requests.getChapterDownloadRequestSnapshot()).toEqual([]);
+    expect(boundary.requestEnqueue).not.toHaveBeenCalled();
+    await expect(preparing.materialized).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("shows each ordinary in-flight handover work and cancels only its requested work identity", async () => {
+    let settle!: () => void;
+    const held = new Promise<void>(resolve => { settle = resolve; });
+    const stored = { job: jobs[0]!, jobJson: JSON.stringify(jobs[0]), updatedAtMs: 1 };
+    boundary.handover.mockResolvedValue({ jobs: [stored], pending: [{ job: stored, settled: held }], commitReady: async () => [], release: vi.fn() });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    try {
+      const snapshot = runtime.getVpnDownloadRuntimeSnapshot();
+      expect(snapshot.handover).toMatchObject([{ title: "Work", novelId: 10, chapterIds: [8] }]);
+      expect(snapshot.ownedChapterIds).toContain(8);
+      await runtime.cancelVpnDownloadHandoverWork(snapshot.handover![0]!.id);
+      expect(boundary.cancelOrdinary).toHaveBeenCalledWith([8]);
+    } finally { settle(); await runtime.cancelVpnDownloadRun(); }
+  });
+});
+
+it("recognizes the native ten-worker capability without inventing a lower hardware limit", async () => {
+  Object.assign(window, { __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 10 }) } });
+  const runtime = await import("./vpn-download-runtime");
+  await runtime.initializeVpnDownloadRuntime();
+  expect(runtime.getVpnDownloadRuntimeSnapshot().capabilities).toEqual({ supported: true, parallelSupported: true, maxWorkers: 10 });
+});
+
 describe("VPN download production integration", () => {
+  async function initializePausedRun(runtime: typeof import("./vpn-download-runtime")) {
+    const settings = useVpnDownloadStore.getState();
+    await runtime.startVpnDownloadRun({ workerCount: settings.mode === "single" ? 1 : settings.workerCount,
+      captchaPolicy: settings.captchaPolicy, cloudflarePolicy: settings.cloudflarePolicy });
+    useVpnDownloadStore.setState({ mode: settings.mode, workerCount: settings.workerCount });
+    await runtime.pauseVpnDownloadRun();
+  }
   it("resumes an exhausted batch when the shared profile mutation boundary publishes a new healthy O file", async () => {
-    const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
+    const runtime = await import("./vpn-download-runtime"); await initializePausedRun(runtime);
     boundary.profiles.mockResolvedValue({ limit: 20, profiles: [profiles[0]!], cleanupError: null });
     boundary.connect.mockImplementation(async (worker, profile) => {
       if (profile.id === "profile-a") throw Object.assign(new Error("Tunnel refused"), { code: "plugin-vpn-unavailable" });
@@ -197,7 +993,7 @@ describe("VPN download production integration", () => {
     boundary.complete.get(8)!(); await tick(); await expect(batch.promise).resolves.toMatchObject({ succeeded: 1 });
   });
   it("rejects a foreground-occupied IP variant before publication without excluding it", async () => {
-    const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
+    const runtime = await import("./vpn-download-runtime"); await initializePausedRun(runtime);
     boundary.status.mockResolvedValue({ phase: "connected", profile: { hash: "udp-variant", remoteHost: profiles[0]!.ip, isVpnGateFinder: true }, supported: true, proxyPort: 123, error: null });
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!; await batch.materialized;
     const draftId = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id;
@@ -213,7 +1009,7 @@ describe("VPN download production integration", () => {
   });
 
   it("can retry a failed browser close and finish cancellation without adopting a cached rejection", async () => {
-    const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
+    const runtime = await import("./vpn-download-runtime"); await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!; await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id, [{ profileId: "profile-a", startChapterId: 8, endChapterId: 8 }]);
     await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
@@ -226,7 +1022,7 @@ describe("VPN download production integration", () => {
     expect(boundary.close).toHaveBeenCalledTimes(2);
   });
   it("force-clears only its exact authentication wait and settles the old task and browser before retrying the chapter on a replacement", async () => {
-    const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
+    const runtime = await import("./vpn-download-runtime"); await initializePausedRun(runtime);
     const pool = [...profiles, { ...profiles[0]!, id: "profile-c", hash: "hash-c", ip: "192.0.2.3" }];
     boundary.profiles.mockResolvedValue({ limit: 20, profiles: pool, cleanupError: null });
     boundary.connect.mockImplementation(async (worker, profile) => {
@@ -267,15 +1063,15 @@ describe("VPN download production integration", () => {
     await expect(batch.promise).resolves.toMatchObject({ succeeded: 4, cancelled: 0 });
   });
 
-  it("previews a batch without persisting jobs or starting a source, then freezes canonical intervals", async () => {
+  it("retains a paused request durably without starting a source, then freezes canonical intervals", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const handle = interceptChapterDownloadBatch({ jobs: [jobs[3]!, jobs[0]!, jobs[2]!, jobs[1]!], title: "Batch" })!;
     await handle.materialized;
     const snapshot = runtime.getVpnDownloadRuntimeSnapshot();
     expect(snapshot.drafts).toHaveLength(1);
     expect(snapshot.drafts[0]?.selectedChapterIds).toEqual([8, 2, 9, 3]);
-    expect(boundary.effects).toEqual([]);
+    expect(boundary.effects).toEqual(["persist-pending"]);
     await runtime.startVpnDownloadDraft(snapshot.drafts[0]!.id, [
       { profileId: "profile-a", startChapterId: 8, endChapterId: 2 },
       { profileId: "profile-b", startChapterId: 9, endChapterId: 3 },
@@ -295,7 +1091,7 @@ describe("VPN download production integration", () => {
   });
 
   it("refuses unavailable profiles and overlapping assignments before durable publication", async () => {
-    const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
+    const runtime = await import("./vpn-download-runtime"); await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!; await batch.materialized;
     const id = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id;
     await expect(runtime.startVpnDownloadDraft(id, [{ profileId: "missing", startChapterId: 8, endChapterId: 3 }])).rejects.toThrow(/profile/i);
@@ -311,7 +1107,7 @@ describe("VPN download production integration", () => {
     "does not publish a plan or start a worker after %s during a delayed profile lookup",
     async action => {
       const runtime = await import("./vpn-download-runtime");
-      await runtime.initializeVpnDownloadRuntime();
+      await initializePausedRun(runtime);
       const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
       await batch.materialized;
       const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
@@ -338,7 +1134,7 @@ describe("VPN download production integration", () => {
       release();
       await starting;
       await tick();
-      expect(boundary.effects).toEqual([]);
+      expect(boundary.effects).toEqual(["persist-pending"]);
       expect(boundary.plans.size).toBe(0);
       expect(boundary.jobs).toEqual([]);
       expect(runtime.getVpnDownloadRuntimeSnapshot().plans).toEqual([]);
@@ -356,7 +1152,7 @@ describe("VPN download production integration", () => {
     "revalidates a reduced %s limit after the profile lookup before publishing two ranges",
     async changedSetting => {
       const runtime = await import("./vpn-download-runtime");
-      await runtime.initializeVpnDownloadRuntime();
+      await initializePausedRun(runtime);
       const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
       await batch.materialized;
       const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
@@ -377,7 +1173,7 @@ describe("VPN download production integration", () => {
       release();
       await rejected;
       await tick();
-      expect(boundary.effects).toEqual([]);
+      expect(boundary.effects).toEqual(["persist-pending"]);
       expect(boundary.plans.size).toBe(0);
       expect(boundary.jobs).toEqual([]);
       expect(runtime.getVpnDownloadRuntimeSnapshot().plans).toEqual([]);
@@ -388,10 +1184,10 @@ describe("VPN download production integration", () => {
   );
 
   it.each([["parallel", "single"], ["single", "parallel"]] as const)(
-    "uses the latest mode and policies for a valid one-range start after %s changes to %s",
+    "retains accepted run policies when live capacity changes from %s to %s",
     async (initialMode, nextMode) => {
       const runtime = await import("./vpn-download-runtime");
-      await runtime.initializeVpnDownloadRuntime();
+      await initializePausedRun(runtime);
       useVpnDownloadStore.getState().setMode(initialMode);
       const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!;
       await batch.materialized;
@@ -413,7 +1209,7 @@ describe("VPN download production integration", () => {
       await starting;
       await tick();
       expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]).toMatchObject({
-        mode: nextMode, policies: { captcha: "pause", cloudflare: "nextProfile" },
+        mode: nextMode, policies: { captcha: "nextProfile", cloudflare: "pause" },
       });
       expect(boundary.connect).toHaveBeenCalledOnce();
       expect(boundary.enqueue.mock.calls.map(([job]) => job.id)).toEqual([8]);
@@ -427,7 +1223,7 @@ describe("VPN download production integration", () => {
     "preserves %s cancellation across delayed plan publication without starting a worker",
     async target => {
       const runtime = await import("./vpn-download-runtime");
-      await runtime.initializeVpnDownloadRuntime();
+      await initializePausedRun(runtime);
       const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
       await batch.materialized;
       const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
@@ -476,7 +1272,7 @@ describe("VPN download production integration", () => {
 
   it("retries failed cleanup after cancelling a publishing draft without starting its worker", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
     await batch.materialized;
     const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
@@ -524,7 +1320,7 @@ describe("VPN download production integration", () => {
     "does not materialize a cancelled batch when its delayed catalog query later %ss",
     async outcome => {
       const runtime = await import("./vpn-download-runtime");
-      await runtime.initializeVpnDownloadRuntime();
+      await initializePausedRun(runtime);
       let resolveCatalog!: (value: typeof catalog) => void, rejectCatalog!: (error: Error) => void;
       const query = new Promise<typeof catalog>((resolve, reject) => { resolveCatalog = resolve; rejectCatalog = reject; });
       boundary.catalog.mockReturnValueOnce(query);
@@ -547,7 +1343,7 @@ describe("VPN download production integration", () => {
       await expect(batch.promise).resolves.toEqual({ total: 4, succeeded: 0, failed: 0, cancelled: 4 });
       expect(runtime.getVpnDownloadRuntimeSnapshot().error).toBeNull();
       expect(runtime.getVpnDownloadRuntimeSnapshot().plans).toEqual([]);
-      expect(boundary.effects).toEqual([]);
+      expect(boundary.effects).toEqual(["persist-pending"]);
       expect(boundary.jobs).toEqual([]);
       expect(cancelInterceptedChapterDownloadBatch(batch.id)).toBe(false);
     },
@@ -555,7 +1351,7 @@ describe("VPN download production integration", () => {
 
   it("cancels a single-pass batch before initialization resumes without querying a catalog", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const { cancelInterceptedChapterDownloadBatch } = await import("./chapter-download-batch-interceptor");
     const batch = interceptChapterDownloadBatch({ jobs: jobs.values(), total: jobs.length, title: "Batch" })!;
     expect(cancelInterceptedChapterDownloadBatch(batch.id)).toBe(true);
@@ -563,20 +1359,21 @@ describe("VPN download production integration", () => {
     await expect(batch.promise).resolves.toEqual({ total: 4, succeeded: 0, failed: 0, cancelled: 4 });
     expect(boundary.catalog).not.toHaveBeenCalled();
     expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
-    expect(boundary.effects).toEqual([]);
+    expect(boundary.effects).toEqual(["persist-pending"]);
   });
 
   it("keeps a materializing batch pending when another batch publishes and cancels its preview", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     let resolveCatalog!: (value: typeof catalog) => void;
     const query = new Promise<typeof catalog>(resolve => { resolveCatalog = resolve; });
     boundary.catalog.mockReturnValueOnce(query);
+    boundary.catalog.mockResolvedValueOnce(catalog.map(chapter => ({ ...chapter, id: chapter.id + 100 })));
     const waiting = interceptChapterDownloadBatch({ jobs, title: "Waiting" })!;
     let waitingResult: ChapterDownloadBatchResult | undefined;
     void waiting.promise.then(value => { waitingResult = value; });
     await vi.waitFor(() => expect(boundary.catalog).toHaveBeenCalledOnce());
-    const ready = interceptChapterDownloadBatch({ jobs, title: "Ready" })!;
+    const ready = interceptChapterDownloadBatch({ jobs: jobs.map(job => ({ ...job, id: job.id + 100, novelId: 20, chapterPath: `${job.chapterPath}-other` })), title: "Ready" })!;
     await ready.materialized;
     const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts.find(draft => draft.batchId === ready.id)!;
     const { cancelInterceptedChapterDownloadBatch } = await import("./chapter-download-batch-interceptor");
@@ -595,7 +1392,7 @@ describe("VPN download production integration", () => {
       await waiting.materialized;
     }
     expect(runtime.getVpnDownloadRuntimeSnapshot().drafts).toEqual([]);
-    expect(boundary.effects).toEqual([]);
+    expect(boundary.effects).toEqual(["persist-pending", "persist-pending"]);
   });
 
   it.each([
@@ -603,7 +1400,7 @@ describe("VPN download production integration", () => {
     { completed: [8, 2, 9], waiting: [3], succeeded: 3, cancelled: 1, heldSlot: 1 },
   ])("preserves $succeeded completed chapters on batch cancellation and waits for worker cleanup", async value => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
     await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id, [
@@ -642,7 +1439,7 @@ describe("VPN download production integration", () => {
 
   it("keeps a completed batch active until its final worker has closed and released its executor", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!;
     await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id,
@@ -670,7 +1467,7 @@ describe("VPN download production integration", () => {
 
   it("retains completed results from one work while cancelling another plan in the same batch", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: jobs.map(job => ({ ...job, novelId: job.id === 9 || job.id === 3 ? 20 : 10 })), title: "Batch" })!;
     await batch.materialized;
     const drafts = runtime.getVpnDownloadRuntimeSnapshot().drafts;
@@ -705,7 +1502,7 @@ describe("VPN download production integration", () => {
   ])("shares one connection across separate plans in $mode mode with count $workerCount", async settings => {
     useVpnDownloadStore.setState(settings);
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const first = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "First" })!;
     const second = interceptChapterDownloadBatch({ jobs: [{ ...jobs[2]!, novelId: 20 }], title: "Second" })!;
     await Promise.all([first.materialized, second.materialized]);
@@ -748,7 +1545,7 @@ describe("VPN download production integration", () => {
   it("counts a connecting worker against the global limit and wakes a waiting plan when the limit increases", async () => {
     useVpnDownloadStore.setState({ workerCount: 1 });
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const first = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "First" })!;
     const second = interceptChapterDownloadBatch({ jobs: [{ ...jobs[2]!, novelId: 20 }], title: "Second" })!;
     await Promise.all([first.materialized, second.materialized]);
@@ -788,7 +1585,7 @@ describe("VPN download production integration", () => {
 
   it.each(["worker-count", "mode"] as const)("honors a reduced %s while an accepted two-range plan is being published", async setting => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
     await batch.materialized;
     const create = boundary.createPlan.getMockImplementation()!;
@@ -826,7 +1623,7 @@ describe("VPN download production integration", () => {
 
   it.each(["worker-count", "mode"] as const)("applies a reduced %s across live plans at chapter boundaries", async setting => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: jobs.map(job => ({ ...job, novelId: job.id === 9 || job.id === 3 ? 20 : 10 })), title: "Batch" })!;
     await batch.materialized;
     const drafts = runtime.getVpnDownloadRuntimeSnapshot().drafts;
@@ -865,7 +1662,7 @@ describe("VPN download production integration", () => {
 
   it("settles running tasks, both worker browsers and native tunnels before restore locks or settings changes", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
     await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id, [
@@ -911,7 +1708,7 @@ describe("VPN download production integration", () => {
       stopNative();
       await finished;
       expect(boundary.restoreEffects).toEqual(["sync-lock", "storage-lock", "database-open", "database-lock", "metadata-stop", "native-restore"]);
-      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.userPaused)).toBe(true);
+      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.phase === "paused" && !range.userPaused)).toBe(true);
       expect(boundary.enqueue.mock.calls.map(([job]) => job.id)).toEqual([8, 9]);
     } finally {
       settleTask(); closeBrowser(); disconnectTunnel(); stopNative();
@@ -923,7 +1720,7 @@ describe("VPN download production integration", () => {
 
   it("waits for an already completed worker's pending close before restore acquires barriers", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!;
     await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id,
@@ -949,7 +1746,7 @@ describe("VPN download production integration", () => {
 
   it("waits for a pending plan write to become paused before restore can replace its database", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!;
     await batch.materialized;
     const create = boundary.createPlan.getMockImplementation()!;
@@ -970,7 +1767,7 @@ describe("VPN download production integration", () => {
       await tick();
       expect(boundary.restoreEffects).toEqual([]);
       publish(); await starting; await finished;
-      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]).toMatchObject({ phase: "paused", userPaused: true });
+      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]).toMatchObject({ phase: "paused", userPaused: false });
       expect(boundary.connect).not.toHaveBeenCalled();
       expect(boundary.restoreEffects).toContain("native-restore");
     } finally { publish(); await starting; await finished; cancelInterceptedChapterDownloadBatch(batch.id); await tick(); }
@@ -978,7 +1775,7 @@ describe("VPN download production integration", () => {
 
   it("refuses restore without taking barriers when native worker settlement fails and allows explicit resume afterward", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!;
     await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id,
@@ -997,7 +1794,7 @@ describe("VPN download production integration", () => {
       expect(backup.readDeviceSettings()).toEqual(previous);
       expect(boundary.invoke).toHaveBeenCalledWith("device_backup_cleanup", { path: backupFile.path });
       const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
-      expect(plan.ranges[0]).toMatchObject({ phase: "paused", userPaused: true });
+      expect(plan.ranges[0]).toMatchObject({ phase: "paused", userPaused: false });
       expect(boundary.connect).toHaveBeenCalledOnce();
       await runtime.resumeVpnDownloadRange(plan.id, plan.ranges[0]!.id);
       await vi.waitFor(() => expect(boundary.connect).toHaveBeenCalledTimes(2));
@@ -1006,7 +1803,7 @@ describe("VPN download production integration", () => {
 
   it("invalidates a delayed profile lookup so it cannot publish a new worker behind the restore hold", async () => {
     const runtime = await import("./vpn-download-runtime");
-    await runtime.initializeVpnDownloadRuntime();
+    await initializePausedRun(runtime);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!;
     await batch.materialized;
     const draft = runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!;
@@ -1040,9 +1837,7 @@ describe("VPN download production integration", () => {
     window.__NoreaAndroidVpnWorkers!.capabilities = () => "{}";
     const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
     expect(runtime.getVpnDownloadRuntimeSnapshot().capabilities.supported).toBe(false);
-    const handle = interceptChapterDownloadBatch({ jobs, title: "Batch" })!;
-    await expect(handle.materialized).rejects.toThrow(/support/i);
-    await expect(handle.promise).rejects.toThrow(/support/i);
+    await expect(runtime.startVpnDownloadRun({ workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile" })).rejects.toThrow(/support/i);
     expect(boundary.connect).not.toHaveBeenCalled();
   });
 
@@ -1054,7 +1849,7 @@ describe("VPN download production integration", () => {
   });
 
   it("keeps snapshots stable without changes and releases only the completed worker context", async () => {
-    const runtime = await import("./vpn-download-runtime"); await runtime.initializeVpnDownloadRuntime();
+    const runtime = await import("./vpn-download-runtime"); await initializePausedRun(runtime);
     expect(runtime.getVpnDownloadRuntimeSnapshot()).toBe(runtime.getVpnDownloadRuntimeSnapshot());
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Batch" })!; await batch.materialized;
     await runtime.startVpnDownloadDraft(runtime.getVpnDownloadRuntimeSnapshot().drafts[0]!.id,

@@ -1,5 +1,5 @@
 import type { ChapterRow } from "../../db/queries/chapter";
-import type { VpnDownloadPlan } from "./vpn-download-types";
+import type { VpnDownloadPlan, VpnDownloadRunSnapshot } from "./vpn-download-types";
 
 export interface VpnDownloadDraftWork {
   id: string;
@@ -10,6 +10,17 @@ export interface VpnDownloadDraftWork {
   chapters: readonly Pick<ChapterRow, "id" | "name" | "chapterNumber">[];
   selectedChapterIds: readonly number[];
   error: string | null;
+  phase?: "preparing" | "waiting-profile" | "paused" | "failed";
+  userPaused?: boolean;
+}
+
+export interface VpnDownloadHandoverWork {
+  id: string;
+  title: string;
+  pluginId: string;
+  novelId: number;
+  chapterIds: readonly number[];
+  userPaused?: boolean;
 }
 
 export interface VpnDownloadRuntimeSnapshot {
@@ -19,4 +30,7 @@ export interface VpnDownloadRuntimeSnapshot {
   error: string | null;
   capabilities: { supported: boolean; parallelSupported: boolean; maxWorkers: number };
   chapterLabels: Readonly<Record<string, Readonly<Record<number, string>>>>;
+  run?: VpnDownloadRunSnapshot | null;
+  ownedChapterIds?: readonly number[];
+  handover?: readonly VpnDownloadHandoverWork[];
 }

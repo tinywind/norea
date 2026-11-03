@@ -5,14 +5,35 @@ import type { vpnDownloadProfileIssueTable } from "../../db/schema";
 export type VpnDownloadMode = "off" | "single" | "parallel";
 export type VpnDownloadChallengePolicy = "pause" | "nextProfile";
 
+export const MAX_VPN_DOWNLOAD_WORKERS = 10;
+export type VpnDownloadWorkerSlot = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+
+export function isVpnDownloadWorkerSlot(value: unknown): value is VpnDownloadWorkerSlot {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < MAX_VPN_DOWNLOAD_WORKERS;
+}
+
 export interface VpnDownloadPolicies {
   captcha: VpnDownloadChallengePolicy;
   cloudflare: VpnDownloadChallengePolicy;
 }
 
+export interface VpnDownloadLaunchOptions {
+  workerCount: number;
+  captchaPolicy: VpnDownloadChallengePolicy;
+  cloudflarePolicy: VpnDownloadChallengePolicy;
+}
+
+export interface VpnDownloadRunSnapshot extends VpnDownloadLaunchOptions {
+  id: string;
+  status: "starting" | "running" | "paused" | "completed" | "cancelling" | "cancelled" | "interrupted";
+  activeWorkers: number;
+  connectingWorkers: number;
+  closingWorkers: number;
+}
+
 export interface VpnDownloadWorkerRef {
   rangeId: string;
-  slot: 0 | 1;
+  slot: VpnDownloadWorkerSlot;
   generation: number;
 }
 

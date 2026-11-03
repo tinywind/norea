@@ -89,12 +89,60 @@
             android:exported="false" android:process=":vpn_download_0" />
         <service android:name=".AndroidVpnDownloadWorker1Service"
             android:exported="false" android:process=":vpn_download_1" />
+        <service android:name=".AndroidVpnDownloadWorker2Service"
+            android:exported="false" android:process=":vpn_download_2" />
+        <service android:name=".AndroidVpnDownloadWorker3Service"
+            android:exported="false" android:process=":vpn_download_3" />
+        <service android:name=".AndroidVpnDownloadWorker4Service"
+            android:exported="false" android:process=":vpn_download_4" />
+        <service android:name=".AndroidVpnDownloadWorker5Service"
+            android:exported="false" android:process=":vpn_download_5" />
+        <service android:name=".AndroidVpnDownloadWorker6Service"
+            android:exported="false" android:process=":vpn_download_6" />
+        <service android:name=".AndroidVpnDownloadWorker7Service"
+            android:exported="false" android:process=":vpn_download_7" />
+        <service android:name=".AndroidVpnDownloadWorker8Service"
+            android:exported="false" android:process=":vpn_download_8" />
+        <service android:name=".AndroidVpnDownloadWorker9Service"
+            android:exported="false" android:process=":vpn_download_9" />
         <activity android:name=".AndroidVpnDownloadWorker0Activity"
             android:exported="false" android:process=":vpn_download_0"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:excludeFromRecents="true" />
         <activity android:name=".AndroidVpnDownloadWorker1Activity"
             android:exported="false" android:process=":vpn_download_1"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker2Activity"
+            android:exported="false" android:process=":vpn_download_2"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker3Activity"
+            android:exported="false" android:process=":vpn_download_3"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker4Activity"
+            android:exported="false" android:process=":vpn_download_4"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker5Activity"
+            android:exported="false" android:process=":vpn_download_5"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker6Activity"
+            android:exported="false" android:process=":vpn_download_6"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker7Activity"
+            android:exported="false" android:process=":vpn_download_7"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker8Activity"
+            android:exported="false" android:process=":vpn_download_8"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true" />
+        <activity android:name=".AndroidVpnDownloadWorker9Activity"
+            android:exported="false" android:process=":vpn_download_9"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:excludeFromRecents="true" />
 

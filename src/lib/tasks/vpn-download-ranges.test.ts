@@ -11,10 +11,16 @@ describe("VPN download range planning", () => {
     expect(ranges[0]?.chapterIds).toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
   });
 
-  it("keeps holes in their original intervals without rebalancing remaining chapters", () => {
+  it("balances requested chapters into fixed intervals while retaining unselected gaps", () => {
     const ranges = planVpnDownloadRanges(catalog(6), [1, 2, 4, 6], ["a", "b", "c"]);
     expect(ranges.map(({ startChapterId, endChapterId, selectedChapterIds }) => [startChapterId, endChapterId, selectedChapterIds]))
-      .toEqual([[1, 2, [1, 2]], [3, 4, [4]], [5, 6, [6]]]);
+      .toEqual([[1, 3, [1, 2]], [4, 5, [4]], [6, 6, [6]]]);
+  });
+
+  it("never allocates an empty worker range when requested chapters are far apart", () => {
+    const ranges = planVpnDownloadRanges(catalog(100), [100, 3, 1, 2], ["a", "b", "c", "d", "e", "f"]);
+    expect(ranges.map(range => range.selectedChapterIds)).toEqual([[1], [2], [3], [100]]);
+    expect(ranges.map(range => [range.startChapterId, range.endChapterId])).toEqual([[1, 1], [2, 2], [3, 99], [100, 100]]);
   });
 
   it("uses catalog identities and order instead of display labels or numeric ID order", () => {

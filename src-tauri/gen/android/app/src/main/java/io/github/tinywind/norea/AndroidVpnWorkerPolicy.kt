@@ -6,10 +6,11 @@ import java.net.URI
 import java.security.MessageDigest
 
 private const val MAX_SAFE_WORKER_GENERATION = 9_007_199_254_740_991L
+internal const val MAX_VPN_DOWNLOAD_WORKERS = 10
 
 internal fun androidVpnWorkerCapabilities(apiLevel: Int, multiProfile: Boolean, proxyOverride: Boolean): Map<String, Any> {
   val supported = apiLevel >= 28 && multiProfile && proxyOverride
-  return mapOf("supported" to supported, "parallelSupported" to supported, "maxWorkers" to if (supported) 2 else 0)
+  return mapOf("supported" to supported, "parallelSupported" to supported, "maxWorkers" to if (supported) MAX_VPN_DOWNLOAD_WORKERS else 0)
 }
 
 internal data class AndroidVpnWorkerQueue(val slot: Int, val generation: Long)
@@ -37,7 +38,7 @@ private fun workerInteger(value: Any?): Long = when (value) {
 }
 
 internal fun parseAndroidVpnWorkerQueue(value: String): AndroidVpnWorkerQueue {
-  val match = Regex("vpn:([01]):([1-9][0-9]{0,15})").matchEntire(value)
+  val match = Regex("vpn:([0-9]):([1-9][0-9]{0,15})").matchEntire(value)
     ?: throw IllegalArgumentException("VPN worker queue is invalid.")
   val generation = match.groupValues[2].toLong()
   require(generation <= MAX_SAFE_WORKER_GENERATION) { "VPN worker generation is invalid." }
@@ -54,7 +55,7 @@ internal fun androidVpnWorkerConfiguration(
   val slotNumber = workerInteger(slot)
   val generationNumber = workerInteger(generation)
   val portNumber = workerInteger(proxyPort)
-  require(slotNumber in 0L..1L) { "VPN worker slot is invalid." }
+  require(slotNumber >= 0L && slotNumber < MAX_VPN_DOWNLOAD_WORKERS) { "VPN worker slot is invalid." }
   require(generationNumber in 1L..MAX_SAFE_WORKER_GENERATION) { "VPN worker generation is invalid." }
   require(portNumber in 1L..65_535L) { "VPN worker proxy port is invalid." }
   for (identity in listOf(sourceId, profileId)) {

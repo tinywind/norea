@@ -341,7 +341,7 @@ async fn restore_database(source: &Path, pool: &SqlitePool) -> Result<(), String
                 sqlx::query("DELETE FROM work_metadata_dirty").execute(&mut *connection).await.map_err(failure)?;
             }
             if has_table("chapter_download_queue") {
-                sqlx::query("DELETE FROM chapter_download_queue WHERE CASE WHEN json_valid(job_json) THEN json_extract(job_json,'$.vpnRangeId') IS NULL ELSE 1 END")
+                sqlx::query("DELETE FROM chapter_download_queue WHERE CASE WHEN json_valid(job_json) THEN json_extract(job_json,'$.vpnRangeId') IS NULL AND json_extract(job_json,'$.vpnBatchId') IS NULL ELSE 1 END")
                     .execute(&mut *connection).await.map_err(failure)?;
                 sqlx::query("UPDATE chapter_download_queue SET leased_at_ms=NULL")
                     .execute(&mut *connection).await.map_err(failure)?;
@@ -1240,6 +1240,23 @@ mod tests {
         restore_database(&source, &pool).await.unwrap();
         assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>, i64)>("SELECT chapter_id,job_json,leased_at_ms,attempt_count FROM chapter_download_queue").fetch_all(&pool).await.unwrap(), [(1, "{\"vpnPlanId\":\"plan\",\"vpnRangeId\":\"range\",\"chapterPath\":\"frozen-payload\"}".into(), None, 4)]);
         assert_eq!(sqlx::query_scalar::<_, String>("SELECT payload FROM vpn_download_plan").fetch_one(&pool).await.unwrap(), "{\"status\":\"paused\",\"attemptedProfileIds\":[\"retained-id\"],\"checkpoint\":7}");
+    }
+
+    #[tokio::test]
+    async fn restore_retains_pending_vpn_intent_without_releasing_it_to_ordinary_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = database(&dir.path().join("live.db")).await;
+        pool.execute("CREATE TABLE chapter_download_queue(chapter_id INTEGER PRIMARY KEY,job_json TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,leased_at_ms INTEGER,attempt_count INTEGER NOT NULL);
+            INSERT INTO chapter_download_queue VALUES(1,'{\"vpnBatchId\":\"pending-run\",\"chapterPath\":\"/pending\"}',10,20,30,4),(2,'{\"chapterPath\":\"/ordinary\"}',10,20,NULL,2);
+            INSERT INTO items(name) VALUES('retained personal state');").await.unwrap();
+        let source = dir.path().join("snapshot.db");
+        sqlx::query("VACUUM INTO ?").bind(source.to_str().unwrap()).execute(&pool).await.unwrap();
+        pool.execute("DELETE FROM chapter_download_queue; DELETE FROM items;").await.unwrap();
+        restore_database(&source, &pool).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (i64, String, i64, i64, Option<i64>, i64)>(
+            "SELECT chapter_id,job_json,created_at_ms,updated_at_ms,leased_at_ms,attempt_count FROM chapter_download_queue ORDER BY chapter_id")
+            .fetch_all(&pool).await.unwrap(), [(1, "{\"vpnBatchId\":\"pending-run\",\"chapterPath\":\"/pending\"}".into(), 10, 20, None, 4)]);
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM items").fetch_all(&pool).await.unwrap(), ["retained personal state"]);
     }
 
     #[tokio::test]

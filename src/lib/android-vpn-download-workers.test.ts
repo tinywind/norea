@@ -45,6 +45,17 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Android VPN worker bridge routing", () => {
+  it.each([2, 9] as const)("keeps slot %s configuration, bodies, assets and cleanup on the same isolated route", async slot => {
+    const owner = { ...worker, slot };
+    const queue = `vpn:${slot}:11` as const;
+    await androidConfigureVpnDownloadWorker(owner, { sourceId: "source", profileId: `profile-${slot}`, proxyPort: 18080 + slot });
+    await expect(androidWebviewExtract("https://source.test/chapter", "script", 1000, null, "source", queue)).resolves.toBe(`worker ${queue}`);
+    await expect(androidWebviewFetch("https://source.test/image", {}, null, null, "source", queue, 1000)).resolves.toMatchObject({ body: `worker ${queue}` });
+    await androidShowVpnDownloadWorker(owner, "source");
+    await androidCloseVpnDownloadWorker(owner, "source");
+    expect(requests.map(value => value.queue)).toEqual([queue, queue, queue, queue, queue]);
+  });
+
   it("configures a worker and routes both extraction and source assets away from the default bridge", async () => {
     await androidConfigureVpnDownloadWorker(worker, { sourceId: "source", profileId: "profile-a", proxyPort: 12345 });
     expect(requests[0]).toMatchObject({ method: "configureWorker", slot: 0, generation: 11, sourceId: "source", profileId: "profile-a", proxyPort: 12345 });
@@ -73,6 +84,9 @@ describe("Android VPN worker bridge routing", () => {
   });
 
   it("rejects malformed physical slots, generations and proxy ports before sending native configuration", async () => {
+    for (const slot of [-1, 10, 0.5]) {
+      await expect(androidConfigureVpnDownloadWorker({ ...worker, slot } as never, { sourceId: "source", profileId: "profile", proxyPort: 12345 })).rejects.toThrow(/worker/i);
+    }
     await expect(androidConfigureVpnDownloadWorker({ ...worker, generation: 0 }, { sourceId: "source", profileId: "profile", proxyPort: 12345 })).rejects.toThrow(/worker/i);
     await expect(androidConfigureVpnDownloadWorker(worker, { sourceId: "source", profileId: "profile", proxyPort: 0 })).rejects.toThrow(/port/i);
     expect(requests).toEqual([]);

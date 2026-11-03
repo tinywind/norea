@@ -2,6 +2,8 @@ package io.github.tinywind.norea
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -14,10 +16,36 @@ class AndroidVpnWorkerPolicyTest {
     AndroidVpnWorkerConfiguration(0, generation, source, profile, 18080)
 
   @Test
-  fun acceptsOnlyTwoCanonicalWorkerSlotsAndSafePositiveGenerations() {
+  fun everyWorkerSlotRegistersItsOwnPrivateServiceAndManualActivityProcess() {
+    val root = generateSequence(File(".").canonicalFile) { it.parentFile }
+      .first { File(it, "src-tauri/gen/android/app/src/main/AndroidManifest.xml").isFile }
+    val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder()
+      .parse(File(root, "src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+    val android = "http://schemas.android.com/apk/res/android"
+    val processes = mutableSetOf<String>()
+    for (slot in 0..9) {
+      for (kind in listOf("service", "activity")) {
+        val name = ".AndroidVpnDownloadWorker$slot" + if (kind == "service") "Service" else "Activity"
+        val nodes = document.getElementsByTagName(kind)
+        val element = (0 until nodes.length).map { nodes.item(it) as org.w3c.dom.Element }
+          .single { it.getAttributeNS(android, "name") == name }
+        assertEquals("false", element.getAttributeNS(android, "exported"))
+        assertEquals(":vpn_download_$slot", element.getAttributeNS(android, "process"))
+        val component = if (kind == "service") androidVpnDownloadWorkerServiceClass(slot) else androidVpnDownloadWorkerActivityClass(slot)
+        assertEquals("io.github.tinywind.norea$name", component.name)
+        processes.add(element.getAttributeNS(android, "process"))
+      }
+    }
+    assertEquals(10, processes.size)
+  }
+
+  @Test
+  fun acceptsTenCanonicalWorkerSlotsAndSafePositiveGenerations() {
     assertEquals(AndroidVpnWorkerQueue(0, 1), parseAndroidVpnWorkerQueue("vpn:0:1"))
     assertEquals(AndroidVpnWorkerQueue(1, 9_007_199_254_740_991), parseAndroidVpnWorkerQueue("vpn:1:9007199254740991"))
-    for (queue in listOf("pool:0", "vpn:2:1", "vpn:-1:1", "vpn:0:0", "vpn:0:01", "vpn:0:1.0", "vpn:0:9007199254740992", " vpn:0:1", "vpn:0:1\n")) {
+    assertEquals(AndroidVpnWorkerQueue(2, 1), parseAndroidVpnWorkerQueue("vpn:2:1"))
+    assertEquals(AndroidVpnWorkerQueue(9, 5), parseAndroidVpnWorkerQueue("vpn:9:5"))
+    for (queue in listOf("pool:0", "vpn:10:1", "vpn:-1:1", "vpn:0:0", "vpn:0:01", "vpn:0:1.0", "vpn:0:9007199254740992", " vpn:0:1", "vpn:0:1\n")) {
       assertThrows(queue, IllegalArgumentException::class.java) { parseAndroidVpnWorkerQueue(queue) }
     }
   }
@@ -26,7 +54,8 @@ class AndroidVpnWorkerPolicyTest {
   fun validatesConfigurationWithoutCoercingStringsFloatsOrIdentityWhitespace() {
     assertEquals(configuration(), androidVpnWorkerConfiguration(0, 1L, "source", "profile", 18080))
     assertEquals(" profile ", androidVpnWorkerConfiguration(0, 1L, " source ", " profile ", 1).profileId)
-    for (slot in listOf<Any?>(2, -1, "0", 0.0, null)) {
+    assertEquals(9, androidVpnWorkerConfiguration(9, 1L, "source", "profile", 1).slot)
+    for (slot in listOf<Any?>(10, -1, "0", 0.0, null)) {
       assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(slot, 1L, "source", "profile", 1) }
     }
     for (generation in listOf<Any?>(0, -1, "1", 1.0, 9_007_199_254_740_992L)) {
@@ -226,7 +255,7 @@ class AndroidVpnWorkerPolicyTest {
   @Test
   fun capabilityResultRequiresApi28AndBothWebViewFeatures() {
     val unsupported = mapOf("supported" to false, "parallelSupported" to false, "maxWorkers" to 0)
-    val supported = mapOf("supported" to true, "parallelSupported" to true, "maxWorkers" to 2)
+    val supported = mapOf("supported" to true, "parallelSupported" to true, "maxWorkers" to 10)
     assertEquals(unsupported, androidVpnWorkerCapabilities(27, true, true))
     assertEquals(unsupported, androidVpnWorkerCapabilities(28, false, true))
     assertEquals(unsupported, androidVpnWorkerCapabilities(28, true, false))

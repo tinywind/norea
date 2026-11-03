@@ -4,6 +4,12 @@ import { taskScheduler, type SourceTaskSpec } from "./scheduler";
 const schedulerMocks = vi.hoisted(() => ({
   batch: vi.fn((run: () => void) => run()),
   enqueueSource: vi.fn(),
+  holdOrdinary: vi.fn<() => (() => void)>(() => () => undefined),
+}));
+const queueMocks = vi.hoisted(() => ({ list: vi.fn(), adopt: vi.fn() }));
+vi.mock("../../db/queries/chapter-download-queue", () => ({
+  listOrdinaryChapterDownloadJobs: queueMocks.list,
+  adoptOrdinaryChapterDownloadJobs: queueMocks.adopt,
 }));
 
 const tauriMocks = vi.hoisted(() => ({
@@ -97,6 +103,7 @@ vi.mock("./scheduler", () => ({
   TASK_PAUSE_ABORT_MESSAGE: "Task was paused.",
   taskScheduler: {
     batch: schedulerMocks.batch,
+    holdOrdinaryChapterDownloads: schedulerMocks.holdOrdinary,
     enqueueSource: schedulerMocks.enqueueSource,
     getSnapshot: vi.fn(() => ({ records: [] })),
     getTaskByDedupeKey: vi.fn(),
@@ -154,6 +161,7 @@ import {
   waitForChapterDownloadQueueRestoration,
   type ChapterDownloadJob,
 } from "./chapter-download";
+import type { StoredQueuedChapterDownload } from "../../db/queries/chapter-download-queue";
 
 let capturedSpec: SourceTaskSpec<void> | null = null;
 const backendQueueValues = new Map<number, unknown>();
@@ -207,7 +215,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false });
   vi.mocked(taskScheduler.getTaskByDedupeKey).mockReset();
+  vi.mocked(taskScheduler.getSnapshot).mockReset().mockReturnValue({ records: [] } as never);
+  vi.mocked(taskScheduler.cancel).mockReset();
+  vi.mocked(taskScheduler.waitForSourceTaskSettlement).mockReset().mockResolvedValue(undefined);
   backendQueueValues.clear();
+  schedulerMocks.holdOrdinary.mockReset().mockReturnValue(() => undefined);
+  queueMocks.list.mockReset().mockImplementation(async () => [...backendQueueValues.values()].map(job => ({
+    job: job as ChapterDownloadJob, jobJson: JSON.stringify(job), updatedAtMs: 0,
+  })).filter(row => row.job.vpnBatchId == null && row.job.vpnPlanId == null));
+  queueMocks.adopt.mockReset().mockImplementation(async (batchId: string, expected: StoredQueuedChapterDownload[]) => {
+    const jobs = expected.map(row => {
+      if (JSON.stringify(backendQueueValues.get(row.job.id)) !== row.jobJson) throw new Error("Stale queue owner");
+      return { ...row.job, vpnBatchId: batchId };
+    });
+    for (const job of jobs) backendQueueValues.set(job.id, job);
+    return jobs;
+  });
   installBrowserHarness();
   capturedSpec = null;
   vi.mocked(isTauriRuntime).mockReturnValue(false);
@@ -320,6 +343,122 @@ beforeEach(() => {
     html: `<article class="reader-epub-content" data-epub-rendered="true"></article>`,
     mediaBytes: 0,
     storedMediaCount: 0,
+  });
+});
+
+describe("ordinary to VPN handover", () => {
+  it("recognizes pending VPN intent before an ordinary task or queue row is materialized", () => {
+    installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false, isQueued: id => id === 900070 });
+    expect(isChapterDownloadQueued(900070)).toBe(true);
+    expect(isChapterDownloadQueued(900071)).toBe(false);
+  });
+
+  async function setup(paused = false) {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceForegroundConcurrency: 1, sourceQueuesPaused: paused });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => scheduler.enqueueSource(spec));
+    schedulerMocks.holdOrdinary.mockImplementation(() => scheduler.holdOrdinaryChapterDownloads());
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(taskScheduler.getSnapshot).mockImplementation(() => scheduler.getSnapshot());
+    vi.mocked(taskScheduler.cancel).mockImplementation(id => scheduler.cancel(id));
+    vi.mocked(taskScheduler.waitForSourceTaskSettlement).mockImplementation(id => scheduler.waitForSourceTaskSettlement(id));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    return scheduler;
+  }
+  const job = (id: number) => ({ id, novelId: 11, pluginId: `source-${id}`, chapterPath: `/chapter/${id}`, title: `Chapter ${id}` });
+
+  it("transfers ready jobs while another chapter finishes and never recreates its successful download", async () => {
+    const scheduler = await setup();
+    const finish = createDeferred<boolean>();
+    vi.mocked(tryDownloadServerChapter).mockImplementation(async value => value.id === 900061 ? finish.promise : true);
+    const active = enqueueChapterDownload(job(900061));
+    const queued = enqueueChapterDownload(job(900062));
+    void active.promise.catch(() => undefined); void queued.promise.catch(() => undefined);
+    await vi.waitFor(() => expect(tryDownloadServerChapter).toHaveBeenCalled());
+    const { beginChapterDownloadVpnHandover } = await import("./chapter-download");
+    const handover = await beginChapterDownloadVpnHandover();
+    try {
+      expect(handover.pending.map(row => row.job.job.id)).toEqual([900061]);
+      expect((await handover.commitReady("run-a")).map(row => row.id)).toEqual([900062]);
+      expect(scheduler.getTask(active.id)?.status).toBe("running");
+      expect(scheduler.getTask(queued.id)?.status).toBe("cancelled");
+      await waitForChapterDownloadQueueMutations();
+      expect(backendQueueValues.get(900062)).toMatchObject({ vpnBatchId: "run-a" });
+      finish.resolve(true);
+      await handover.pending[0]!.settled;
+      expect(await handover.commitReady("run-a")).toEqual([]);
+      expect(backendQueueValues.has(900061)).toBe(false);
+      expect(backendQueueValues.get(900062)).toMatchObject({ vpnBatchId: "run-a" });
+    } finally { finish.resolve(true); handover.release(); scheduler.cancelActiveTasks({ discardQueued: true }); await active.promise.catch(() => undefined); }
+  });
+
+  it("retains a failed in-flight chapter for the VPN owner instead of deleting its requested intent", async () => {
+    const scheduler = await setup();
+    const finish = createDeferred<boolean>();
+    vi.mocked(tryDownloadServerChapter).mockReturnValue(finish.promise);
+    const active = enqueueChapterDownload(job(900063));
+    void active.promise.catch(() => undefined);
+    await vi.waitFor(() => expect(tryDownloadServerChapter).toHaveBeenCalled());
+    const { beginChapterDownloadVpnHandover } = await import("./chapter-download");
+    const handover = await beginChapterDownloadVpnHandover();
+    try {
+      expect(await handover.commitReady("run-a")).toEqual([]);
+      finish.reject(new Error("Connection lost"));
+      await handover.pending[0]!.settled;
+      expect((await handover.commitReady("run-a")).map(row => row.id)).toEqual([900063]);
+      expect(backendQueueValues.get(900063)).toMatchObject({ vpnBatchId: "run-a" });
+    } finally { finish.resolve(true); handover.release(); scheduler.cancelActiveTasks({ discardQueued: true }); }
+  });
+
+  it("releases only its own dispatch hold when adoption fails and leaves the ordinary request usable", async () => {
+    const scheduler = await setup(true);
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    const queued = enqueueChapterDownload(job(900064));
+    const { beginChapterDownloadVpnHandover } = await import("./chapter-download");
+    const handover = await beginChapterDownloadVpnHandover();
+    scheduler.resumeSourceQueue();
+    queueMocks.adopt.mockRejectedValueOnce(new Error("Queue transaction failed"));
+    try {
+      await expect(handover.commitReady("run-a")).rejects.toThrow("Queue transaction failed");
+      expect(scheduler.getTask(queued.id)?.status).toBe("queued");
+      handover.release(); handover.release();
+      await queued.promise;
+      expect(scheduler.getTask(queued.id)?.status).toBe("succeeded");
+      expect(backendQueueValues.has(900064)).toBe(false);
+    } finally { handover.release(); scheduler.cancelActiveTasks({ discardQueued: true }); }
+  });
+
+  it("honors user cancellation of an in-flight handover chapter instead of adopting it later", async () => {
+    const scheduler = await setup();
+    const finish = createDeferred<boolean>();
+    vi.mocked(tryDownloadServerChapter).mockReturnValue(finish.promise);
+    const active = enqueueChapterDownload(job(900065));
+    void active.promise.catch(() => undefined);
+    await vi.waitFor(() => expect(tryDownloadServerChapter).toHaveBeenCalled());
+    const { beginChapterDownloadVpnHandover } = await import("./chapter-download");
+    const handover = await beginChapterDownloadVpnHandover();
+    try {
+      const cancelling = cancelChapterDownloadTasks([900065]);
+      finish.resolve(true);
+      await cancelling;
+      await handover.pending[0]!.settled;
+      expect(await handover.commitReady("run-a")).toEqual([]);
+      expect(backendQueueValues.has(900065)).toBe(false);
+    } finally { finish.resolve(true); handover.release(); scheduler.cancelActiveTasks({ discardQueued: true }); }
+  });
+
+  it("does not materialize old ordinary tasks for jobs already transferred outside the batch window", async () => {
+    const scheduler = await setup(true);
+    const batch = enqueueChapterDownloadBatch({ jobs: [job(900066), job(900067), job(900068)], title: "Original request", materializeAllTasks: true, windowSize: 1 });
+    void batch.promise.catch(() => undefined);
+    const { beginChapterDownloadVpnHandover } = await import("./chapter-download");
+    const handover = await beginChapterDownloadVpnHandover();
+    try {
+      expect((await handover.commitReady("run-a")).map(row => row.id)).toEqual([900066, 900067, 900068]);
+      await batch.materialized;
+      expect(scheduler.getSnapshot().records.some(task => task.status === "queued" || task.status === "running")).toBe(false);
+      expect([...backendQueueValues.values()].every(value => (value as ChapterDownloadJob).vpnBatchId === "run-a")).toBe(true);
+    } finally { handover.release(); scheduler.cancelActiveTasks({ discardQueued: true }); }
   });
 });
 
@@ -497,6 +636,53 @@ describe("targeted cleanup cancellation", () => {
 });
 
 describe("chapter download queue membership", () => {
+  it("routes a direct interactive chapter through the installed VPN admission boundary without creating ordinary work", async () => {
+    const done = createDeferred<void>();
+    const requested: ChapterDownloadJob[] = [];
+    installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false,
+      enqueueChapter: job => { requested.push(job); return { id: "vpn-chapter", promise: done.promise }; } });
+    const job: ChapterDownloadJob = { id: 900081, novelId: 42, pluginId: "source-a", chapterPath: "/81", title: "Interactive chapter", priority: "interactive" };
+    const handle = enqueueChapterDownload(job);
+    expect(handle.id).toBe("vpn-chapter");
+    expect(requested).toEqual([job]);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+    done.resolve(); await handle.promise;
+  });
+
+  it("keeps a direct server-backed local chapter on its independent ordinary route", () => {
+    installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false,
+      enqueueChapter: () => { throw new Error("Local work must not enter source VPN admission"); } });
+    const handle = enqueueChapterDownload({ id: 900082, novelId: 42, pluginId: "local", chapterPath: "/82", title: "Server-backed local chapter", priority: "interactive" });
+    expect(handle.id).toBe("task-1");
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledOnce();
+  });
+
+  it("keeps discard pending until durable ordinary deletion succeeds and exposes a failed deletion", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const deleting = createDeferred<void>();
+    const failure = new Error("Queue deletion failed");
+    backendQueueValues.set(900080, { id: 900080 });
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "chapter_download_queue_remove") await deleting.promise;
+      return original(command, args);
+    });
+    let settled = false;
+    const result = Promise.resolve(discardQueuedChapterDownloads([900080])).finally(() => { settled = true; });
+    const outcome = result.then(() => null, error => error);
+    await flushMicrotasks();
+    try { expect(settled).toBe(false); }
+    finally {
+      deleting.reject(failure);
+      expect(await outcome).toBe(failure);
+      await expect(waitForChapterDownloadQueueMutations()).rejects.toBe(failure);
+    }
+    expect(backendQueueValues.has(900080)).toBe(true);
+    tauriMocks.invoke.mockImplementation(original);
+    await discardQueuedChapterDownloads([900080]);
+    expect(backendQueueValues.has(900080)).toBe(false);
+  });
+
   it.each(["queued", "running", "succeeded", "failed", "cancelled"] as const)(
     "uses active task state instead of retained %s history",
     (status) => {
@@ -539,6 +725,61 @@ describe("chapter download queue membership", () => {
 });
 
 describe("enqueueChapterDownloadBatch", () => {
+  it("does not materialize a persistent batch before its queue write settles", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const inserting = createDeferred<void>();
+    const completed = createDeferred<void>();
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "chapter_download_queue_enqueue") await inserting.promise;
+      return original(command, args);
+    });
+    schedulerMocks.enqueueSource.mockReturnValue({ id: "held-publication", promise: completed.promise });
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [{ id: 900050, pluginId: "source-a", chapterPath: "/chapter/50", title: "Chapter 50" }],
+      title: "Persist the request", materializeAllTasks: true,
+    });
+    let materialized = false;
+    const publication = handle.materialized.then(() => { materialized = true; });
+    await flushMicrotasks();
+    try {
+      expect(materialized).toBe(false);
+      expect(backendQueueValues.has(900050)).toBe(false);
+    } finally {
+      inserting.resolve();
+      await publication;
+      completed.resolve();
+      await handle.promise;
+      discardQueuedChapterDownloads([900050]);
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
+  it("rejects materialization when the persistent queue cannot accept the batch", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const completed = createDeferred<void>();
+    const failure = new Error("Queue publication unavailable");
+    const original = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
+      command === "chapter_download_queue_enqueue" ? Promise.reject(failure) : original(command, args),
+    );
+    schedulerMocks.enqueueSource.mockReturnValue({ id: "failed-publication", promise: completed.promise });
+    const handle = enqueueChapterDownloadBatch({
+      jobs: [{ id: 900051, pluginId: "source-a", chapterPath: "/chapter/51", title: "Chapter 51" }],
+      title: "Reject an unpersisted request", materializeAllTasks: true,
+    });
+    try {
+      await expect(handle.materialized).rejects.toBe(failure);
+      expect(backendQueueValues.has(900051)).toBe(false);
+    } finally {
+      const settled = expect(handle.promise).rejects.toThrow("1 chapter downloads failed.");
+      completed.reject(failure);
+      await settled;
+      discardQueuedChapterDownloads([900051]);
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
   it("sends new automatic batches to range confirmation before ordinary queue publication", async () => {
     const result = { total: 1, succeeded: 0, failed: 0, cancelled: 1 };
     const intercepted = { id: "vpn-batch", materialized: Promise.resolve(), promise: Promise.resolve(result) };

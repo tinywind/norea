@@ -36,6 +36,10 @@ pub struct ChapterDownloadQueueJob {
     batch_id: Option<String>,
     batch_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    vpn_batch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vpn_work_paused: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     vpn_plan_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vpn_range_id: Option<String>,
@@ -108,8 +112,10 @@ async fn insert_queue_job(
           attempt_count = 0
         WHERE json_extract(chapter_download_queue.job_json, '$.vpnPlanId') IS NULL
           AND json_extract(chapter_download_queue.job_json, '$.vpnRangeId') IS NULL
+          AND json_extract(chapter_download_queue.job_json, '$.vpnBatchId') IS NULL
           AND json_extract(excluded.job_json, '$.vpnPlanId') IS NULL
           AND json_extract(excluded.job_json, '$.vpnRangeId') IS NULL
+          AND json_extract(excluded.job_json, '$.vpnBatchId') IS NULL
         "#,
     )
     .bind(job.id)
@@ -122,7 +128,7 @@ async fn insert_queue_job(
         if result.rows_affected() == 1 {
             Ok(())
         } else {
-            Err(sqlx::Error::Protocol("chapter already belongs to an enrolled VPN download range".into()))
+            Err(sqlx::Error::Protocol("ordinary enqueue cannot overwrite VPN download ownership".into()))
         }
     })
     .map_err(|err| format!("download queue: insert job: {err}"))
@@ -200,7 +206,7 @@ async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(),
         separated.push_bind(chapter_id);
     }
     separated.push_unseparated(")");
-    query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL");
+    query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL AND json_extract(job_json, '$.vpnBatchId') IS NULL");
     query
         .build()
         .execute(pool)
@@ -235,6 +241,7 @@ async fn lease_queue_jobs(
                 FROM chapter_download_queue
                 WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
                   AND json_extract(job_json, '$.vpnRangeId') IS NULL
+                  AND json_extract(job_json, '$.vpnBatchId') IS NULL
                 ORDER BY created_at_ms, chapter_id
                 LIMIT ?1
                 "#,
@@ -250,6 +257,7 @@ async fn lease_queue_jobs(
                 FROM chapter_download_queue
                 WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
                   AND json_extract(job_json, '$.vpnRangeId') IS NULL
+                  AND json_extract(job_json, '$.vpnBatchId') IS NULL
                 ORDER BY created_at_ms, chapter_id
                 "#,
             )
@@ -320,6 +328,62 @@ mod tests {
         let ordinary = serde_json::to_value(job(2, None, None)).unwrap();
         assert!(ordinary.get("vpnPlanId").is_none());
         assert!(ordinary.get("vpnRangeId").is_none());
+    }
+
+    fn pending_job(id: i64, batch: &str) -> ChapterDownloadQueueJob {
+        let mut value = serde_json::to_value(job(id, None, None)).unwrap();
+        value["vpnBatchId"] = batch.into();
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn pending_vpn_ownership_survives_json_roundtrip() {
+        let stored = serde_json::to_value(pending_job(5, "pending-batch")).unwrap();
+        assert_eq!(stored["vpnBatchId"], "pending-batch");
+        let restored: ChapterDownloadQueueJob = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), stored);
+        assert!(serde_json::to_value(job(6, None, None)).unwrap().get("vpnBatchId").is_none());
+    }
+
+    #[test]
+    fn pending_work_pause_survives_json_roundtrip() {
+        let mut value = serde_json::to_value(pending_job(5, "pending-batch")).unwrap();
+        value["vpnWorkPaused"] = true.into();
+        let restored: ChapterDownloadQueueJob = serde_json::from_value(value).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap()["vpnWorkPaused"], true);
+        assert!(serde_json::to_value(job(6, None, None)).unwrap().get("vpnWorkPaused").is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_vpn_jobs_are_not_leased_or_removed_as_ordinary_work() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter_download_queue VALUES(5,?1,1,2,NULL,0)")
+            .bind(r#"{"id":5,"pluginId":"source","chapterPath":"/5","title":"Pending","vpnBatchId":"pending-batch"}"#)
+            .execute(&pool).await.unwrap();
+        insert_queue_job(&pool, &job(6, None, None), 3, 4).await.unwrap();
+        assert_eq!(lease_queue_jobs(&pool, Some(1)).await.unwrap().iter().map(|job| job.id).collect::<Vec<_>>(), vec![6]);
+        assert_eq!(lease_queue_jobs(&pool, None).await.unwrap().iter().map(|job| job.id).collect::<Vec<_>>(), vec![6]);
+        remove_queue_jobs(&pool, &[5, 6]).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (i64, i64, i64, Option<i64>, i64)>(
+            "SELECT chapter_id,created_at_ms,updated_at_ms,leased_at_ms,attempt_count FROM chapter_download_queue")
+            .fetch_all(&pool).await.unwrap(), vec![(5,1,2,None,0)]);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn ordinary_enqueue_cannot_overwrite_pending_vpn_ownership() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        let payload = r#"{"id":5,"pluginId":"source","chapterPath":"/5","title":"Pending","vpnBatchId":"pending-batch"}"#;
+        sqlx::query("INSERT INTO chapter_download_queue VALUES(5,?1,1,2,NULL,0)")
+            .bind(payload).execute(&pool).await.unwrap();
+        assert!(insert_queue_job(&pool, &job(5, None, None), 3, 4).await.is_err());
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT job_json FROM chapter_download_queue WHERE chapter_id=5")
+            .fetch_one(&pool).await.unwrap(), payload);
+        insert_queue_job(&pool, &job(6, None, None), 3, 4).await.unwrap();
+        assert!(insert_queue_job(&pool, &pending_job(6, "another-batch"), 5, 6).await.is_err());
+        pool.close().await;
     }
 
     #[tokio::test]

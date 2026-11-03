@@ -16,6 +16,11 @@ const PLUGIN_VPN_STATUS_EVENT = "plugin-vpn-status";
 const VPN_PROXY_CONFIGURE_CAPABILITY = "vpn.proxy.configure";
 
 export const PLUGIN_VPN_QUERY_KEY = ["plugin-vpn"] as const;
+export const PLUGIN_VPN_PROFILE_RELEASED_EVENT = "norea-plugin-vpn-profile-released";
+
+function notifyProfileRelease(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new Event(PLUGIN_VPN_PROFILE_RELEASED_EVENT));
+}
 
 export type PluginVpnPhase =
   | "disabled"
@@ -159,6 +164,7 @@ function trackPluginVpnConnection(
 export async function preparePluginVpnProfileChange(): Promise<void> {
   clearPluginVpnIntent();
   await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
+  notifyProfileRelease();
 }
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
@@ -274,6 +280,7 @@ export async function switchPluginVpnFinderServer(
     return lifecycle.isCurrent() ? status : null;
   } finally {
     activeProfileSwitches -= 1;
+    notifyProfileRelease();
   }
 }
 
@@ -454,7 +461,10 @@ export function disconnectPluginVpn(
       window.dispatchEvent(new Event("norea-plugin-vpn-explicit-off"));
     }
   }
-  return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock });
+  return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock }).then(status => {
+    if (!profileReplacementPending) notifyProfileRelease();
+    return status;
+  });
 }
 
 export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {

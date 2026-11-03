@@ -3412,13 +3412,14 @@ describe("TaskScheduler", () => {
     ]);
   });
 
-  it("reserves a pool executor for foreground when background follows concurrency", async () => {
+  it.each([false, true])("uses the configured background capacity with an independent interactive executor (resized: %s)", async resized => {
     const scheduler = new TaskScheduler({
-      sourceForegroundConcurrency: 1,
+      sourceForegroundConcurrency: resized ? 1 : 3,
       sourceQueuesPaused: true,
     });
     const order: string[] = [];
-    const finishers: Array<() => void> = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
 
     const tasks = ["a", "b", "c"].map((sourceId) =>
       scheduler.enqueueSource({
@@ -3426,32 +3427,32 @@ describe("TaskScheduler", () => {
         title: `Background ${sourceId}`,
         priority: "background",
         source: { id: sourceId, name: sourceId.toUpperCase() },
-        run: (context) =>
-          new Promise<void>((resolve) => {
-            order.push(`${sourceId}:${context.executor}:start`);
-            finishers.push(resolve);
-          }),
+        run: async context => {
+          order.push(`${sourceId}:${context.executor}:start`);
+          await gate;
+        },
       }),
     );
 
-    scheduler.setSourceForegroundConcurrency(3);
+    if (resized) scheduler.setSourceForegroundConcurrency(3);
     expect(scheduler.resumeSourceQueue()).toBe(true);
-    await settle();
-
-    // Background follows foreground (3) but reserves one executor for
-    // foreground work, so only two background tasks run concurrently.
-    expect(order).toEqual(["a:pool:0:start", "b:pool:1:start"]);
-
-    finishers[0]?.();
-    await tasks[0].promise;
-    await settle();
-
-    // The freed executor lets the third background task start.
-    expect(order).toHaveLength(3);
-    expect(order[2]).toMatch(/^c:pool:\d:start$/);
-
-    finishers.slice(1).forEach((finish) => finish());
-    await Promise.all(tasks.map((task) => task.promise));
+    const interactive = scheduler.enqueueSource({
+      kind: "source.openNovel",
+      priority: "interactive",
+      title: "Open another work",
+      source: { id: "interactive", name: "Interactive" },
+      run: async context => { order.push(`interactive:${context.executor}:start`); },
+    });
+    try {
+      await interactive.promise;
+      expect(order).toEqual([
+        "a:pool:0:start", "b:pool:1:start", "c:pool:2:start", "interactive:immediate:start",
+      ]);
+      expect(tasks.map(task => scheduler.getTask(task.id)?.status)).toEqual(["running", "running", "running"]);
+    } finally {
+      release();
+      await Promise.all(tasks.map(task => task.promise));
+    }
   });
 
   it("delays queued downloads with a matching source cooldown", async () => {

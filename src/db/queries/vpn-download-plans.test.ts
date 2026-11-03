@@ -220,6 +220,37 @@ it.each(["ordinary", "range"])("rolls back publication on a late %s queue collis
   expect(queueRows()).toEqual(original);
 });
 
+it.each(["cancelled", "another-batch", "enrolled"])("cannot enroll pending work after its owner was %s", async change => {
+  const enrolled = jobs().map(job => ({ ...job, vpnBatchId: "batch-1" }));
+  for (const job of enrolled) {
+    const { vpnPlanId: _plan, vpnRangeId: _range, ...pending } = job;
+    sqlite.prepare("INSERT INTO chapter_download_queue VALUES(?,?,10,20,NULL,4)").run(job.id, JSON.stringify(pending));
+  }
+  if (change === "cancelled") sqlite.exec("DELETE FROM chapter_download_queue WHERE chapter_id=12");
+  else {
+    const pending = { ...enrolled.at(-1)!, vpnPlanId: change === "enrolled" ? "other-plan" : undefined,
+      vpnRangeId: change === "enrolled" ? "other-range" : undefined, vpnBatchId: change === "another-batch" ? "other-run" : "batch-1" };
+    sqlite.prepare("UPDATE chapter_download_queue SET job_json=? WHERE chapter_id=12").run(JSON.stringify(pending));
+  }
+  const before = queueRows();
+  await expect(createVpnDownloadPlan(plan(), enrolled)).rejects.toThrow(/missing|cancel|owner/i);
+  expect(queueRows()).toEqual(before);
+  expect(await listVpnDownloadPlans()).toEqual([]);
+});
+
+it("does not replace the pending chapter's content contract while assigning its VPN range", async () => {
+  const enrolled = jobs().map(job => ({ ...job, vpnBatchId: "batch-1" }));
+  for (const job of enrolled) {
+    const { vpnPlanId: _plan, vpnRangeId: _range, ...pending } = job;
+    sqlite.prepare("INSERT INTO chapter_download_queue VALUES(?,?,10,20,NULL,4)")
+      .run(job.id, JSON.stringify({ ...pending, contentType: "pdf" }));
+  }
+  const before = queueRows();
+  await expect(createVpnDownloadPlan(plan(), enrolled)).rejects.toThrow(/payload|content|contract/i);
+  expect(queueRows()).toEqual(before);
+  expect(await listVpnDownloadPlans()).toEqual([]);
+});
+
 it("rolls back earlier jobs and the plan when a later queue write fails", async () => {
   sqlite.exec("CREATE TRIGGER reject_job BEFORE INSERT ON chapter_download_queue WHEN new.chapter_id=12 BEGIN SELECT RAISE(ABORT,'injected disk write failure'); END");
   await expect(createVpnDownloadPlan(plan(), jobs())).rejects.toThrow("injected disk write failure");

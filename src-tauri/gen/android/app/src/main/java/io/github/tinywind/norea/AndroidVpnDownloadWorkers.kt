@@ -34,8 +34,8 @@ internal class AndroidVpnDownloadWorkers(
   private val pending = mutableMapOf<Long, Pending>()
   private val deferredSources = mutableMapOf<Long, JSONObject>()
   private val bootstrapTick = Runnable { drainDeferredSources() }
-  private val workers = arrayOfNulls<Worker>(2)
-  private val lastGenerations = LongArray(2)
+  private val workers = arrayOfNulls<Worker>(MAX_VPN_DOWNLOAD_WORKERS)
+  private val lastGenerations = LongArray(MAX_VPN_DOWNLOAD_WORKERS)
   private var executionActive = false
   @Volatile private var closed = false
 
@@ -87,7 +87,7 @@ internal class AndroidVpnDownloadWorkers(
       require(id != null) { "VPN worker request id is invalid." }
       bridgeSession.validateAuthenticated(BridgeCapabilities.VPN_WORKER, bridgeAuthorityFields(json))
       check(!closed) { "VPN worker bridge is closed." }
-      require(submitted.size < VPN_WORKER_MAX_PENDING * 2) { "VPN worker request limit reached." }
+      require(submitted.size < VPN_WORKER_MAX_PENDING * MAX_VPN_DOWNLOAD_WORKERS) { "VPN worker request limit reached." }
       // The remote process mints its own authority; the UI session never crosses this boundary.
       for (field in listOf("_bridge", "bridge", "bridgeToken", "capability", "nonce")) json.remove(field)
       submitted[ticket] = id!!
@@ -193,7 +193,7 @@ internal class AndroidVpnDownloadWorkers(
     }
     worker.deferredConfiguration = ticket to json.toString()
     if (worker.bound) return
-    val service = if (configuration.slot == 0) AndroidVpnDownloadWorker0Service::class.java else AndroidVpnDownloadWorker1Service::class.java
+    val service = androidVpnDownloadWorkerServiceClass(configuration.slot)
     try {
       val manualActivityFlag = if (Build.VERSION.SDK_INT >= 34) Context.BIND_ALLOW_ACTIVITY_STARTS else 0
       worker.bound = activity.bindService(

@@ -43,6 +43,7 @@ import {
   type ScraperExecutorId,
 } from "./scraper-queue";
 import { isAbortError } from "../abort";
+import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { isNetworkUnavailableError } from "../network";
 import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
@@ -53,7 +54,7 @@ import {
   type SourceAccessChallenge,
   type SourceAccessRequiredErrorShape,
 } from "../plugins/source-access";
-import type { VpnDownloadWorkerRef } from "./vpn-download-types";
+import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS, type VpnDownloadWorkerRef, type VpnDownloadWorkerSlot } from "./vpn-download-types";
 import { redactUrlsForLog } from "../url-log";
 import { SourceExecutorLeases } from "./source-executor-leases";
 import { TaskHistory } from "./task-history";
@@ -125,14 +126,6 @@ interface TaskEntry {
 
 const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
 
-/**
- * When background concurrency follows the foreground setting, reserve one pool
- * executor for queued foreground work. With a single executor this collapses to
- * 1 because reservation is impossible. UI interactions use separate executors.
- */
-function reservedBackgroundConcurrency(foregroundConcurrency: number): number {
-  return Math.max(1, foregroundConcurrency - 1);
-}
 export const TASK_PAUSE_ABORT_MESSAGE = "Task was paused.";
 
 function priorityRank(priority: TaskPriority): number {
@@ -241,6 +234,7 @@ export class TaskScheduler {
   private readonly mainQueue: string[] = [];
   private readonly pausedSourceIds = new Set<string>();
   private readonly pausedTaskGroups = new Set<TaskNotificationGroupKey>();
+  private ordinaryChapterDownloadHolds = 0;
   private readonly snapshotListeners = new Set<() => void>();
   private readonly sourceTaskSettlementWaiters = new Map<
     string,
@@ -317,7 +311,7 @@ export class TaskScheduler {
       options.sourceBackgroundConcurrency === undefined;
     this.sourceBackgroundConcurrency =
       this.sourceBackgroundConcurrencyFollowsForeground
-        ? reservedBackgroundConcurrency(this.sourceForegroundConcurrency)
+        ? this.sourceForegroundConcurrency
         : Math.max(1, options.sourceBackgroundConcurrency ?? 1);
     this.sourceExecutors = new SourceExecutorLeases(
       this.sourceForegroundConcurrency,
@@ -372,7 +366,7 @@ export class TaskScheduler {
       throw new Error("Source tasks require a source id.");
     }
     if (spec.vpnWorker && (spec.lane !== "source" ||
-        ![0, 1].includes(spec.vpnWorker.slot) || !spec.vpnWorker.rangeId.trim() ||
+        !isVpnDownloadWorkerSlot(spec.vpnWorker.slot) || !spec.vpnWorker.rangeId.trim() ||
         spec.vpnWorker.rangeId.length > 128 || !Number.isSafeInteger(spec.vpnWorker.generation) ||
         spec.vpnWorker.generation <= 0)) {
       throw new Error("VPN worker identity is invalid.");
@@ -1522,8 +1516,7 @@ export class TaskScheduler {
     if (nextConcurrency === this.sourceForegroundConcurrency) return;
     this.sourceForegroundConcurrency = nextConcurrency;
     if (this.sourceBackgroundConcurrencyFollowsForeground) {
-      this.sourceBackgroundConcurrency =
-        reservedBackgroundConcurrency(nextConcurrency);
+      this.sourceBackgroundConcurrency = nextConcurrency;
     }
     this.sourceExecutors.resize(nextConcurrency);
     this.debug("source foreground concurrency changed", undefined, {
@@ -1565,6 +1558,18 @@ export class TaskScheduler {
       waiters.add(resolve);
       this.sourceTaskSettlementWaiters.set(id, waiters);
     });
+  }
+
+  /** Hold new ordinary chapters while their persistent queue ownership transfers. */
+  holdOrdinaryChapterDownloads(): () => void {
+    this.ordinaryChapterDownloadHolds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.ordinaryChapterDownloadHolds -= 1;
+      this.requestDrain();
+    };
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -1676,7 +1681,7 @@ export class TaskScheduler {
       if (!verification.spec.vpnWorker) return;
     }
     const browse = this.pickSourceTask(
-      entry => isUiInteraction(entry) && !usesSearchExecutor(entry),
+      entry => !entry.spec.vpnWorker && isUiInteraction(entry) && !usesSearchExecutor(entry),
       { allowActiveSource: true },
     );
     if (browse) {
@@ -1702,7 +1707,7 @@ export class TaskScheduler {
     return worker ? `vpn:${worker.slot}:${worker.generation}` : null;
   }
 
-  private vpnWorkerSlotBusy(slot: 0 | 1): boolean {
+  private vpnWorkerSlotBusy(slot: VpnDownloadWorkerSlot): boolean {
     for (const executor of this.sourceExecutors.activePoolTasks.keys()) {
       if (executor.startsWith(`vpn:${slot}:`)) return true;
     }
@@ -1710,7 +1715,8 @@ export class TaskScheduler {
   }
 
   private drainVpnWorkers(): void {
-    for (const slot of [0, 1] as const) {
+    for (let slot = 0; slot < MAX_VPN_DOWNLOAD_WORKERS; slot++) {
+      if (!isVpnDownloadWorkerSlot(slot)) continue;
       if (this.vpnWorkerSlotBusy(slot)) continue;
       const next = this.pickSourceTask((entry) => entry.spec.vpnWorker?.slot === slot);
       if (next) this.startSource(next, this.vpnWorkerExecutor(next)!);
@@ -1913,6 +1919,8 @@ export class TaskScheduler {
     options: { allowActiveSource?: boolean } = {},
   ): boolean {
     if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
+    if (this.ordinaryChapterDownloadHolds > 0 && entry.record.kind === "chapter.download" &&
+      entry.record.subject?.pluginId !== LOCAL_PLUGIN_ID && !entry.spec.vpnWorker && entry.sourceAccessVerificationRevision === undefined) return false;
     if (!this.networkAvailable && this.requiresNetwork(entry)) return false;
     if (options.allowActiveSource) return true;
     const sourceId = entry.spec.vpnWorker?.rangeId ?? entry.record.source?.id;

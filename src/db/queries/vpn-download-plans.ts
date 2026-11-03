@@ -131,10 +131,14 @@ function assertJob(value: unknown): asserts value is ChapterDownloadJob {
     (value.novelId !== undefined && value.novelId !== null && !isChapterId(value.novelId))) {
     throw new Error("Invalid VPN download queue payload.");
   }
-  for (const key of ["batchId", "batchTitle", "pluginName", "chapterName", "chapterNumber", "novelName", "novelPath", "vpnPlanId", "vpnRangeId"]) {
+  if (value.vpnWorkPaused !== undefined && typeof value.vpnWorkPaused !== "boolean") throw new Error("Invalid pending VPN work pause.");
+  for (const key of ["batchId", "batchTitle", "pluginName", "chapterName", "chapterNumber", "novelName", "novelPath", "vpnBatchId", "vpnPlanId", "vpnRangeId"]) {
     if (value[key] !== undefined && value[key] !== null && typeof value[key] !== "string") {
       throw new Error(`Invalid download queue payload field ${key}.`);
     }
+  }
+  if (value.vpnBatchId != null && !isIdentity(value.vpnBatchId)) {
+    throw new Error("Invalid pending VPN batch ownership.");
   }
   if (value.priority !== undefined && value.priority !== null &&
     (typeof value.priority !== "string" || !["interactive", "user", "normal", "deferred", "background"].includes(value.priority))) {
@@ -148,7 +152,7 @@ function assertJob(value: unknown): asserts value is ChapterDownloadJob {
   assertByteBudget(new TextEncoder().encode(value.title).byteLength, MAX_CHAPTER_TITLE_BYTES, "Chapter title");
 }
 
-function parseJob(row: QueueRow): ChapterDownloadJob {
+export function parseStoredChapterDownloadJob(row: QueueRow): ChapterDownloadJob {
   try {
     const value: unknown = JSON.parse(row.jobJson);
     assertJob(value);
@@ -161,6 +165,7 @@ function parseJob(row: QueueRow): ChapterDownloadJob {
 
 function assertJobOwner(job: ChapterDownloadJob, plan: VpnDownloadPlan, range: VpnDownloadRangeState): void {
   if (job.vpnPlanId !== plan.id || job.vpnRangeId !== range.id ||
+    (job.vpnBatchId != null && job.vpnBatchId !== plan.batchId) ||
     job.pluginId !== plan.pluginId || job.novelId !== plan.novelId) {
     throw new Error(`Download queue chapter ${job.id} ownership differs from its enrolled VPN range.`);
   }
@@ -274,9 +279,35 @@ export async function createVpnDownloadPlan(input: VpnDownloadPlan, jobs: readon
     await db.execute("INSERT INTO vpn_download_plan(id,payload,revision) VALUES($1,$2,$3)",
       [plan.id, serialize(plan, "VPN download plan"), plan.revision]);
     const now = Date.now();
+    const existing = new Map((await readQueue(db, publishedJobs.map(job => job.id))).map(row => [row.chapterId, row]));
+    const freshJobs: ChapterDownloadJob[] = [];
+    for (const job of publishedJobs) {
+      const row = existing.get(job.id);
+      if (job.vpnBatchId == null) {
+        if (row) throw new Error(`Queued chapter ${job.id} already has a download owner.`);
+        freshJobs.push(job);
+        continue;
+      }
+      if (!row) throw new Error(`Pending VPN chapter ${job.id} is missing or was cancelled.`);
+      const pending = parseStoredChapterDownloadJob(row);
+      if (pending.vpnBatchId !== plan.batchId || pending.vpnPlanId != null || pending.vpnRangeId != null ||
+        pending.pluginId !== job.pluginId || pending.novelId !== job.novelId || pending.chapterPath !== job.chapterPath) {
+        throw new Error(`Chapter ${job.id} has a different pending download owner.`);
+      }
+      const payloadFields = ["pluginName", "chapterName", "chapterNumber", "contentType", "novelName", "novelPath", "priority", "title"] as const;
+      if (payloadFields.some(key => (pending[key] ?? null) !== (job[key] ?? null))) {
+        throw new Error(`Pending chapter ${job.id} content payload changed during VPN enrollment.`);
+      }
+      const result = await db.execute(
+        `UPDATE chapter_download_queue SET job_json=$1,updated_at_ms=$2,leased_at_ms=NULL
+         WHERE chapter_id=$3 AND job_json=$4`,
+        [serialize(job, "VPN download queue job"), now, job.id, row.jobJson],
+      );
+      if (result.rowsAffected !== 1) throw new Error(`Pending VPN chapter ${job.id} changed owners.`);
+    }
     const chunkSize = Math.floor(MAX_ROUTE_QUERY_ROWS / 4);
-    for (let offset = 0; offset < publishedJobs.length; offset += chunkSize) {
-      const chunk = publishedJobs.slice(offset, offset + chunkSize);
+    for (let offset = 0; offset < freshJobs.length; offset += chunkSize) {
+      const chunk = freshJobs.slice(offset, offset + chunkSize);
       const params = chunk.flatMap(job => [job.id, serialize(job, "VPN download queue job"), now, now]);
       const values = chunk.map((_, index) => `(${placeholders(4, index * 4 + 1)},NULL,0)`).join(",");
       await db.execute(`INSERT INTO chapter_download_queue(chapter_id,job_json,created_at_ms,updated_at_ms,leased_at_ms,attempt_count) VALUES ${values}`, params);
@@ -300,7 +331,7 @@ export async function getVpnDownloadRangeJobs(planId: string, rangeId: string): 
     return ids.map(id => {
       const row = rows.get(id);
       if (!row) throw new Error(`VPN download range ${rangeId} is missing queued chapter ${id}.`);
-      const job = parseJob(row);
+      const job = parseStoredChapterDownloadJob(row);
       assertJobOwner(job, plan, range);
       return job;
     });
@@ -379,7 +410,7 @@ export async function settleVpnDownloadChapter(
     }
     const [row] = await readQueue(db, [chapterId]);
     if (!row) throw new Error(`VPN range is missing queued chapter ${chapterId}.`);
-    assertJobOwner(parseJob(row), plan, range);
+    assertJobOwner(parseStoredChapterDownloadJob(row), plan, range);
     range.checkpoint += 1;
     range.attemptedProfileIds = [];
     range.attemptProfileId = null;
@@ -395,7 +426,7 @@ async function removeOwnedJobs(db: Database, plan: VpnDownloadPlan, ranges: read
   const rows = await readQueue(db, [...owners.keys()]);
   const ownedIds: number[] = [];
   for (const row of rows) {
-    const job = parseJob(row);
+    const job = parseStoredChapterDownloadJob(row);
     const range = owners.get(row.chapterId)!;
     if (job.vpnPlanId !== plan.id || job.vpnRangeId !== range.id) continue;
     assertJobOwner(job, plan, range);

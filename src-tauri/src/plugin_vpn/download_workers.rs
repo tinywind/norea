@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager, State};
 use super::{proxy::{LocalProxy, ProxyConnector}, saved_profiles::{SavedVpnProfile, SavedVpnProfileLease}, state::{PluginVpnPhase, PluginVpnState}};
 
 const MAX_SAFE_GENERATION: u64 = 9_007_199_254_740_991;
+const MAX_DOWNLOAD_WORKERS: usize = 10;
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 type WorkerStopFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
@@ -28,7 +29,7 @@ pub(crate) struct DownloadVpnWorkerRef {
 
 impl DownloadVpnWorkerRef {
     fn validate(&self) -> Result<(), String> {
-        if self.slot > 1 || self.generation == 0 || self.generation > MAX_SAFE_GENERATION ||
+        if self.slot as usize >= MAX_DOWNLOAD_WORKERS || self.generation == 0 || self.generation > MAX_SAFE_GENERATION ||
             self.range_id.is_empty() || self.range_id.len() > 80 ||
             !self.range_id.bytes().all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_')) {
             return Err("VPN download worker identity is invalid".into());
@@ -213,12 +214,19 @@ impl DownloadWorkerSlot {
 }
 
 #[derive(Clone)]
-pub(crate) struct DownloadVpnWorkers { slots: [Arc<DownloadWorkerSlot>; 2] }
+pub(crate) struct DownloadVpnWorkers { slots: Arc<Mutex<[Option<Arc<DownloadWorkerSlot>>; MAX_DOWNLOAD_WORKERS]>> }
 
 impl DownloadVpnWorkers {
-    pub(crate) fn bind() -> Result<Self, String> { Ok(Self { slots: [DownloadWorkerSlot::bind()?, DownloadWorkerSlot::bind()?] }) }
+    pub(crate) fn bind() -> Result<Self, String> {
+        let mut slots = std::array::from_fn(|_| None);
+        slots[0] = Some(DownloadWorkerSlot::bind()?);
+        Ok(Self { slots: Arc::new(Mutex::new(slots)) })
+    }
+    fn initialized_slots(&self) -> Vec<Arc<DownloadWorkerSlot>> {
+        self.slots.lock().expect("VPN worker slots lock").iter().flatten().cloned().collect()
+    }
     fn generation_floor(&self) -> u64 {
-        self.slots.iter().map(|slot| slot.runtime.lock().expect("VPN worker lock").high_water).max().unwrap_or(0)
+        self.initialized_slots().iter().map(|slot| slot.runtime.lock().expect("VPN worker lock").high_water).max().unwrap_or(0)
     }
     pub(crate) async fn stop_all(&self, state: &PluginVpnState) -> Result<(), String> {
         let invalidated = self.invalidate_all();
@@ -229,9 +237,15 @@ impl DownloadVpnWorkers {
         }
         failure.map_or(Ok(()), Err)
     }
-    fn worker_slot(&self, worker: &DownloadVpnWorkerRef) -> Result<Arc<DownloadWorkerSlot>, String> { worker.validate()?; Ok(self.slots[worker.slot as usize].clone()) }
+    fn worker_slot(&self, worker: &DownloadVpnWorkerRef) -> Result<Arc<DownloadWorkerSlot>, String> {
+        worker.validate()?;
+        let mut slots = self.slots.lock().expect("VPN worker slots lock");
+        let slot = &mut slots[worker.slot as usize];
+        if slot.is_none() { *slot = Some(DownloadWorkerSlot::bind()?); }
+        Ok(slot.as_ref().expect("initialized VPN worker slot").clone())
+    }
     fn invalidate_all(&self) -> Vec<(Arc<DownloadWorkerSlot>, DownloadVpnWorkerRef)> {
-        self.slots.iter().filter_map(|slot| {
+        self.initialized_slots().iter().filter_map(|slot| {
             let worker = slot.runtime.lock().expect("VPN worker lock").current.clone()?;
             slot.request_stop(&worker, PluginVpnPhase::Disabled, None).ok()?;
             Some((slot.clone(), worker))
@@ -242,7 +256,7 @@ impl DownloadVpnWorkers {
         tauri::async_runtime::spawn(async move {
             loop {
                 let status = network.borrow_and_update().clone();
-                for slot in &workers.slots {
+                for slot in workers.initialized_slots() {
                     if let Some(worker) = slot.network_stop(status.revision, status.connectivity == crate::network::Connectivity::Online) {
                         let slot = slot.clone(); let state = app.state::<PluginVpnState>().inner().clone();
                         tauri::async_runtime::spawn(async move { if let Err(error) = cleanup_slot(&slot, &state, &worker).await { log::warn!("VPN worker network cleanup failed: {error}"); } slot.complete_stop(&worker); });
@@ -565,7 +579,7 @@ mod tests {
         assert!(!restoring.is_finished());
         fixture.completions[0].send_replace(Some(Ok(())));
         tokio::time::timeout(Duration::from_secs(2), restoring).await.unwrap().unwrap().unwrap();
-        for slot in &fixture.workers.slots { assert!(slot.resources().is_none()); }
+        for slot in fixture.workers.initialized_slots() { assert!(slot.resources().is_none()); }
         assert_eq!(std::fs::read(&fixture.profile_path).unwrap(), fixture.original);
         fixture.state.lock_device_backup_restore(&fixture.workers).await.unwrap();
     }
@@ -578,8 +592,8 @@ mod tests {
         let result = fixture.state.lock_device_backup_restore(&fixture.workers).await;
         let error = match result { Ok(_) => panic!("restore accepted an unsettled worker"), Err(error) => error };
         assert!(error.contains("lease retained"), "{error}");
-        assert!(fixture.workers.slots[0].resources().is_some());
-        assert!(fixture.workers.slots[1].resources().is_none());
+        assert!(fixture.workers.worker_slot(&worker("range-0", 0, 1)).unwrap().resources().is_some());
+        assert!(fixture.workers.worker_slot(&worker("range-1", 1, 2)).unwrap().resources().is_none());
         assert_eq!(std::fs::read(&fixture.profile_path).unwrap(), fixture.original);
     }
 
@@ -625,12 +639,32 @@ mod tests {
     #[tokio::test]
     async fn invalid_worker_identity_cannot_claim_a_slot_or_advance_its_generation() {
         let workers = DownloadVpnWorkers::bind().unwrap();
-        for invalid in [worker("", 0, 1), worker("bad/id", 0, 1), worker(&"a".repeat(81), 0, 1), worker("range", 2, 1), worker("range", 0, 0), worker("range", 0, MAX_SAFE_GENERATION + 1)] {
+        for invalid in [worker("", 0, 1), worker("bad/id", 0, 1), worker(&"a".repeat(81), 0, 1), worker("range", 10, 1), worker("range", 0, 0), worker("range", 0, MAX_SAFE_GENERATION + 1)] {
             assert!(workers.worker_slot(&invalid).is_err());
         }
         let valid = worker("range-a", 0, 1);
         let slot = workers.worker_slot(&valid).unwrap();
         assert!(slot.request_connect(&valid, 1).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ten_slots_keep_distinct_blocked_proxy_routes_and_generation_owners() {
+        let workers = DownloadVpnWorkers::bind().unwrap();
+        let mut ports = std::collections::HashSet::new();
+        let mut owners = std::collections::HashSet::new();
+        let (address, server) = origin().await;
+        for index in 0..10 {
+            let identity = worker(&format!("range-{index}"), index, index as u64 + 1);
+            let slot = workers.worker_slot(&identity).unwrap();
+            assert!(ports.insert(slot.proxy.address().port()));
+            assert!(owners.insert(identity.lease_owner()));
+            let _cancellation = slot.request_connect(&identity, 1).unwrap();
+            assert!(request(&slot.proxy, address).await.starts_with("HTTP/1.1 502"));
+            assert!(slot.request_connect(&identity, 1).is_err());
+        }
+        assert_eq!(workers.generation_floor(), 10);
+        assert_eq!(workers.invalidate_all().len(), 10);
+        server.abort();
     }
 
     #[tokio::test]

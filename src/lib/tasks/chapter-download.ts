@@ -2,6 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { getChapterById, listExistingChapterIds, markChapterMediaRepairPending } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
+import {
+  adoptOrdinaryChapterDownloadJobs,
+  listOrdinaryChapterDownloadJobs,
+  type StoredQueuedChapterDownload,
+} from "../../db/queries/chapter-download-queue";
 import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
@@ -57,6 +62,7 @@ import type {
   Plugin,
   TextChapterContentType,
 } from "../plugins/types";
+import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { isAbortError } from "../abort";
 import { bytesToBase64 } from "../base64";
 import { isTauriRuntime } from "../tauri-runtime";
@@ -77,10 +83,12 @@ import {
   runExclusiveChapterStorageOperation,
   waitForChapterStorageOperation,
 } from "./chapter-storage-operation";
-import { cancelInterceptedChapterDownloadBatch, interceptChapterDownloadBatch } from "./chapter-download-batch-interceptor";
+import { cancelInterceptedChapterDownloadBatch, interceptChapterDownload, interceptChapterDownloadBatch, isInterceptedChapterDownloadQueued } from "./chapter-download-batch-interceptor";
 
 export interface ChapterDownloadJob {
   id: number;
+  vpnBatchId?: string;
+  vpnWorkPaused?: boolean;
   vpnPlanId?: string;
   vpnRangeId?: string;
   batchId?: string;
@@ -213,6 +221,92 @@ interface BackendChapterDownloadRegistration {
 }
 const backendChapterDownloadRegistrations = new Map<number, BackendChapterDownloadRegistration>();
 const backendChapterDownloadRestorations = new Set<Set<number>>();
+const ordinaryChapterDownloadHandles = new Map<number, TaskHandle<void>>();
+const chapterDownloadHandoverCohorts = new Set<Set<number>>();
+
+export interface ChapterDownloadVpnHandover {
+  jobs: readonly StoredQueuedChapterDownload[];
+  pending: readonly { job: StoredQueuedChapterDownload; settled: Promise<void> }[];
+  commitReady: (batchId: string) => Promise<readonly ChapterDownloadJob[]>;
+  release: () => void;
+}
+
+export async function beginChapterDownloadVpnHandover(): Promise<ChapterDownloadVpnHandover> {
+  const releaseDispatch = taskScheduler.holdOrdinaryChapterDownloads();
+  const cohort = new Set(ordinaryChapterDownloadHandles.keys());
+  chapterDownloadHandoverCohorts.add(cohort);
+  let released = false;
+  let commits: Promise<unknown> = Promise.resolve();
+  const release = () => {
+    if (released) return;
+    released = true;
+    const finish = () => { chapterDownloadHandoverCohorts.delete(cohort); releaseDispatch(); };
+    void commits.then(finish, finish);
+  };
+  try {
+    await waitForChapterDownloadQueueMutations();
+    const jobs = await listOrdinaryChapterDownloadJobs();
+    const remaining = new Set(jobs.map(row => row.job.id));
+    for (const id of remaining) cohort.add(id);
+    const registrations = new Map([...remaining].map(id => [id, backendChapterDownloadRegistrations.get(id)]));
+    const ready = new Set<number>();
+    const blocks = taskScheduler.getSnapshot().sourceAccessBlocks ?? [];
+    const pending = jobs.flatMap(row => {
+      const handle = ordinaryChapterDownloadHandles.get(row.job.id);
+      const task = taskScheduler.getTaskByDedupeKey(chapterDownloadDedupeKey(row.job.id));
+      const verifying = task && blocks.some(block => block.originTaskId === task.id || block.verificationTaskId === task.id);
+      if (!handle || (task?.status !== "running" && !verifying)) { ready.add(row.job.id); return []; }
+      const settled = handle.promise.catch(() => undefined)
+        .then(() => taskScheduler.waitForSourceTaskSettlement(handle.id))
+        .then(() => waitForChapterDownloadQueueMutations())
+        .then(() => { ready.add(row.job.id); });
+      return [{ job: row, settled }];
+    });
+    return {
+      jobs, pending, release,
+      commitReady(batchId) {
+        const operation = commits.catch(() => undefined).then(async () => {
+          if (released) return [];
+          await waitForChapterDownloadQueueMutations();
+          const current = new Map((await listOrdinaryChapterDownloadJobs()).map(row => [row.job.id, row]));
+          const expected = jobs.filter(row => remaining.has(row.job.id) && ready.has(row.job.id));
+          const claim: StoredQueuedChapterDownload[] = [];
+          for (const row of expected) {
+            const latest = current.get(row.job.id);
+            if (!latest) { remaining.delete(row.job.id); continue; }
+            if (row.jobJson !== latest.jobJson || row.updatedAtMs !== latest.updatedAtMs) {
+              throw new Error(`Queued chapter ${row.job.id} changed owners before VPN handover.`);
+            }
+            claim.push(latest);
+          }
+          const adopted = claim.length ? await adoptOrdinaryChapterDownloadJobs(batchId, claim) : [];
+          taskScheduler.batch(() => {
+            for (const job of adopted) {
+              remaining.delete(job.id);
+              if (backendChapterDownloadRegistrations.get(job.id) === registrations.get(job.id)) {
+                backendChapterDownloadRegistrations.delete(job.id);
+                pendingBackendChapterDownloadJobsById.delete(job.id);
+              }
+              for (const [id, state] of chapterDownloadBatchStates) {
+                if (!state.queuedChapterIds.delete(job.id)) continue;
+                state.cancelledChapterIds.add(job.id);
+                settleChapterDownloadBatchJob(id, job.id, "cancelled");
+              }
+              const task = taskScheduler.getTaskByDedupeKey(chapterDownloadDedupeKey(job.id));
+              if (task?.status === "queued" && !task.vpnWorker) taskScheduler.cancel(task.id);
+            }
+          });
+          return adopted;
+        });
+        commits = operation;
+        return operation;
+      },
+    };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
 
 function createChapterDownloadProgressReporter(
   setProgress: (progress: TaskProgress) => void,
@@ -595,15 +689,15 @@ function queueChapterDownloadJob(job: ChapterDownloadJob, ownerId: string): Prom
   return queueChapterDownloadJobs([job], ownerId);
 }
 
-function removeQueuedChapterDownloadJobs(chapterIds: Iterable<number>): void {
-  if (!isTauriRuntime()) return;
+function removeQueuedChapterDownloadJobs(chapterIds: Iterable<number>): Promise<void> {
+  if (!isTauriRuntime()) return Promise.resolve();
   const uniqueChapterIds = [...new Set(chapterIds)];
-  if (uniqueChapterIds.length === 0) return;
+  if (uniqueChapterIds.length === 0) return Promise.resolve();
   for (const id of uniqueChapterIds) {
     pendingBackendChapterDownloadJobsById.delete(id);
     backendChapterDownloadRegistrations.delete(id);
   }
-  queueBackendChapterDownloadMutation("remove queued chapter download", () =>
+  return queueBackendChapterDownloadMutation("remove queued chapter download", () =>
     removeBackendChapterDownloadJobs(uniqueChapterIds),
   );
 }
@@ -684,14 +778,14 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>, ownerId: s
   return write;
 }
 
-export function discardQueuedChapterDownloads(chapterIds: readonly number[]): void {
+export function discardQueuedChapterDownloads(chapterIds: readonly number[]): Promise<void> {
   for (const cancelledChapterIds of backendChapterDownloadRestorations) {
     for (const id of chapterIds) cancelledChapterIds.add(id);
   }
   for (const state of chapterDownloadBatchStates.values()) {
     for (const id of chapterIds) state.cancelledChapterIds.add(id);
   }
-  removeQueuedChapterDownloadJobs(chapterIds);
+  return removeQueuedChapterDownloadJobs(chapterIds);
 }
 
 function installChapterDownloadLifecycleListeners(): void {
@@ -959,6 +1053,9 @@ function enqueueChapterDownloadForExecutor(
     localWorkScans?: Map<number, Promise<void>>;
   } = {},
 ): TaskHandle<void> {
+  if (!options.vpnWorker && (job.vpnBatchId || job.vpnPlanId || job.vpnRangeId)) {
+    throw new Error("A VPN-owned download requires its owning worker.");
+  }
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
   const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
   const completeJob = async (): Promise<void> => {
@@ -1370,10 +1467,18 @@ function enqueueChapterDownloadForExecutor(
   void handle.promise.then(
     () => removeQueuedChapterDownloadJob(job, queueOwnerId),
     (error) => {
+      if (!isTaskUserCancelledError(error) && [...chapterDownloadHandoverCohorts].some(cohort => cohort.has(job.id))) return;
       if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
       removeQueuedChapterDownloadJob(job, queueOwnerId);
     },
   );
+  if (!options.vpnWorker) {
+    ordinaryChapterDownloadHandles.set(job.id, handle);
+    const clear = () => {
+      if (ordinaryChapterDownloadHandles.get(job.id) === handle) ordinaryChapterDownloadHandles.delete(job.id);
+    };
+    void handle.promise.then(clear, clear);
+  }
   return handle;
 }
 
@@ -1382,6 +1487,10 @@ export function enqueueChapterDownload(
 ): TaskHandle<void> {
   if (job.vpnPlanId || job.vpnRangeId) {
     throw new Error("An enrolled VPN download requires its owning worker.");
+  }
+  if (job.pluginId !== LOCAL_PLUGIN_ID && job.novelId) {
+    const intercepted = interceptChapterDownload(job);
+    if (intercepted) return intercepted;
   }
   return enqueueChapterDownloadForExecutor(job);
 }
@@ -1645,7 +1754,7 @@ export function enqueueChapterDownloadBatch({
   const materializedTaskCompletions: Promise<void>[] = [];
   const localWorkScans = new Map<number, Promise<void>>();
 
-  const materialized = runBoundedTaskBatch({
+  const tasksMaterialized = runBoundedTaskBatch({
     items: jobs,
     windowSize,
     materializeBatch: taskScheduler.batch.bind(taskScheduler),
@@ -1703,7 +1812,11 @@ export function enqueueChapterDownloadBatch({
       }
     },
   });
-  const promise = materialized
+  const materialized = backendQueueWrite
+    ? Promise.all([tasksMaterialized, backendQueueWrite]).then(() => undefined)
+    : tasksMaterialized;
+  void materialized.catch(() => undefined);
+  const promise = tasksMaterialized
     .then(() => Promise.all(materializedTaskCompletions))
     .then(() => {
       const state = chapterDownloadBatchStates.get(batchId);
@@ -1758,6 +1871,7 @@ export function getChapterDownloadStatus(
 
 /** Includes reserved batch jobs before their tasks or database rows exist. */
 export function isChapterDownloadQueued(chapterId: number): boolean {
+  if (isInterceptedChapterDownloadQueued(chapterId)) return true;
   if (pendingBackendChapterDownloadJobsById.has(chapterId)) return true;
   for (const state of chapterDownloadBatchStates.values()) {
     if (

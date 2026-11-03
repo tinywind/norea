@@ -247,6 +247,75 @@ function current(coordinator: VpnDownloadCoordinator, rangeId: string): VpnDownl
 }
 
 describe("VPN download coordinator", () => {
+  it("keeps a healthy connection through its frozen range and automatically assigns its released profile to a waiting work", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    const coordinator = new VpnDownloadCoordinator(runtime); coordinator.setWorkerLimit(1);
+    const first = plan([range("first-range", "a", [1, 2, 3])], "first-work");
+    const second = plan([range("second-range", "a", [10])], "second-work");
+    try {
+      await coordinator.start(first, jobsFor(first));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      await coordinator.start(second, jobsFor(second));
+      runtime.succeed("first-range");
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      expect([...runtime.tasks.values()].map(task => task.job.id)).toEqual([1, 2]);
+      expect(coordinator.getPlans().find(plan => plan.id === first.id)?.ranges[0]?.checkpoint).toBe(1);
+      runtime.succeed("first-range", 1);
+      await until(() => expect(runtime.tasks.size).toBe(3));
+      runtime.succeed("first-range", 2);
+      await until(() => expect(runtime.tasks.size).toBe(4));
+      expect([...runtime.tasks.values()].map(task => task.job.id)).toEqual([1, 2, 3, 10]);
+      expect(runtime.events.filter(event => event.startsWith("connect:first-range:"))).toHaveLength(1);
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it.each([3, 10])("dispatches %s globally bounded isolated workers for one automatically partitioned work", async limit => {
+    const runtime = new Runtime();
+    runtime.profiles = Array.from({ length: 10 }, (_, index) => profile(String.fromCharCode(97 + index)));
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    coordinator.setWorkerLimit(limit);
+    const value = plan(runtime.profiles.map((item, index) => range(item.id, item.id, [index + 1])));
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(limit));
+      expect([...runtime.native.keys()]).toEqual(Array.from({ length: limit }, (_, index) => index));
+      expect(new Set([...runtime.tasks.values()].map(task => task.worker.slot)).size).toBe(limit);
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it.each([0, 11, 1.5, NaN])("rejects invalid global worker count %s instead of altering dispatch capacity", limit => {
+    const coordinator = new VpnDownloadCoordinator(new Runtime());
+    expect(() => coordinator.setWorkerLimit(limit)).toThrow(/worker|limit|count/i);
+  });
+
+  it.each([3, 10])("counts a closing worker at global limit %s until cleanup actually releases its slot", async limit => {
+    const runtime = new Runtime();
+    runtime.profiles = Array.from({ length: limit + 1 }, (_, index) => profile(String.fromCharCode(97 + index)));
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    coordinator.setWorkerLimit(limit);
+    const value = plan(runtime.profiles.map((item, index) => range(item.id, item.id, [index + 1])));
+    const closing = deferred();
+    const release = deferred();
+    const disconnect = runtime.disconnectWorker.bind(runtime);
+    runtime.disconnectWorker = async owner => {
+      if (owner.rangeId === "a") { closing.resolve(); await release.promise; }
+      await disconnect(owner);
+    };
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(limit));
+      runtime.succeed("a"); await closing.promise;
+      expect(runtime.tasks.size).toBe(limit);
+      coordinator.setWorkerLimit(limit - 1);
+      release.resolve();
+      await until(() => expect(runtime.native.size).toBe(limit - 1));
+      expect(runtime.tasks.size).toBe(limit);
+      coordinator.setWorkerLimit(limit);
+      await until(() => expect(runtime.tasks.size).toBe(limit + 1));
+      expect(runtime.task(runtime.profiles.at(-1)!.id)[1].worker.slot).toBe(0);
+    } finally { release.resolve(); await coordinator.stopAutomatic(); }
+  });
+
   it("stops waiting for a busy profile when its owning sibling excludes the last healthy candidate", async () => {
     const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
     const coordinator = new VpnDownloadCoordinator(runtime);
@@ -327,7 +396,7 @@ describe("VPN download coordinator", () => {
     receipt.resolve(); await new Promise(resolve => setTimeout(resolve, 10)); runtime.writeBarrier.resolve(undefined);
     await Promise.all([pausing, allowing]);
     await new Promise(resolve => setTimeout(resolve, 10));
-    expect(current(coordinator, "a")).toMatchObject({ userPaused: true, pauseReason: action === "off" ? "automatic-off" : "user-paused" });
+    expect(current(coordinator, "a")).toMatchObject({ userPaused: action === "pause", pauseReason: action === "off" ? "automatic-off" : "user-paused" });
     expect(runtime.tasks.size).toBe(1);
     expect(runtime.issues[0]?.excluded).toBe(false);
     await coordinator.cancelPlan(value.id);
@@ -857,7 +926,7 @@ describe("VPN download coordinator", () => {
     connection.resolve("connected");
     await until(() => expect(runtime.events.filter(event => event.startsWith("disconnect:a:"))).toHaveLength(2));
     expect(runtime.native.get(replacement.slot)?.worker).toEqual(replacement);
-    expect(current(coordinator, "a")).toMatchObject({ phase: "paused", userPaused: true });
+    expect(current(coordinator, "a")).toMatchObject({ phase: "paused", userPaused: action === "pause" });
     expect(runtime.tasks.size).toBe(1);
   });
 
@@ -1236,7 +1305,7 @@ describe("VPN download coordinator", () => {
     const stopping = action === "pause" ? coordinator.pauseRange("plan", "a") : coordinator.stopAutomatic();
     await Promise.all([recovery, stopping]);
     expect(current(coordinator, "a")).toMatchObject({
-      userPaused: true, attemptedProfileIds: ["a"], challenge: { kind: "captcha" },
+      userPaused: action === "pause", attemptedProfileIds: ["a"], challenge: { kind: "captcha" },
     });
     await coordinator.resumeRange("plan", "a");
     await until(() => expect(runtime.tasks.size).toBe(2));
@@ -1397,7 +1466,7 @@ describe("VPN download coordinator", () => {
     await coordinator.stopAutomatic(); publication.resolve(); await start;
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(runtime.events.filter(event => event.startsWith("connect:"))).toEqual([]);
-    expect(current(coordinator, "a")).toMatchObject({ phase: "paused", pauseReason: "automatic-off", userPaused: true });
+    expect(current(coordinator, "a")).toMatchObject({ phase: "paused", pauseReason: "automatic-off", userPaused: false });
     expect(runtime.stored.get("plan")!.ranges[0]).toMatchObject({ pauseReason: "automatic-off" });
   });
 

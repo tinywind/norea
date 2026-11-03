@@ -25,6 +25,17 @@ beforeEach(() => {
 afterEach(() => { release(); vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("VPN worker traffic readiness", () => {
+  it("validates slot nine against its exact native owner and rejects traffic after cleanup", async () => {
+    const last = { ...worker, slot: 9 } as const;
+    const unregister = registerVpnDownloadWorkerContext(last);
+    try {
+      mocks.invoke.mockResolvedValue({ supported: true, worker: last, phase: "connected", proxyPort: 12354, error: null });
+      await expect(waitForPluginVpnReady(undefined, Date.now() + 1000, "vpn:9:11")).resolves.toBe(false);
+      expect(mocks.invoke).toHaveBeenCalledWith("plugin_vpn_download_worker_status", { worker: last });
+      unregister();
+      await expect(waitForPluginVpnReady(undefined, Date.now() + 1000, "vpn:9:11")).rejects.toMatchObject({ code: "plugin-vpn-unavailable" });
+    } finally { unregister(); }
+  });
   it("uses the enrolled worker even when the default VPN is disabled", async () => {
     await expect(waitForPluginVpnReady(undefined, Date.now() + 1000, "vpn:0:11")).resolves.toBe(false);
     expect(mocks.invoke).toHaveBeenCalledWith("plugin_vpn_download_worker_status", { worker });

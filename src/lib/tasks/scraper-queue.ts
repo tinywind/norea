@@ -1,4 +1,6 @@
-export type ScraperExecutorId = "immediate" | `pool:${number}` | `search:${number}` | `vpn:${0 | 1}:${number}`;
+import type { VpnDownloadWorkerSlot } from "./vpn-download-types";
+
+export type ScraperExecutorId = "immediate" | `pool:${number}` | `search:${number}` | `vpn:${VpnDownloadWorkerSlot}:${number}`;
 
 const DEFAULT_SCRAPER_EXECUTOR: ScraperExecutorId = "immediate";
 

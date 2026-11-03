@@ -3,6 +3,7 @@ import { isAndroidRuntime } from "./tauri-runtime";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { androidBridgeAuthority } from "./android-bridge";
 import type { VpnDownloadWorkerRef } from "./tasks/vpn-download-types";
+import { isVpnDownloadWorkerSlot } from "./tasks/vpn-download-types";
 
 interface AndroidVpnDownloadWorkerBridge {
   capabilities: () => string;
@@ -58,14 +59,14 @@ type AndroidScraperMethod = "clearCache" | "clearCookies" | "currentOrigin" | "c
 type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "closeWorker" | "showWorker" | "cancel" | "cancelBackground";
 
 function vpnWorkerQueue(worker: VpnDownloadWorkerRef): ScraperExecutorId {
-  if ((worker.slot !== 0 && worker.slot !== 1) || !Number.isSafeInteger(worker.generation) || worker.generation <= 0) {
+  if (!isVpnDownloadWorkerSlot(worker.slot) || !Number.isSafeInteger(worker.generation) || worker.generation <= 0) {
     throw new Error("Android VPN worker identity is invalid.");
   }
   return `vpn:${worker.slot}:${worker.generation}`;
 }
 
 function sendWorkerCommand(method: AndroidWorkerMethod, payload: Record<string, unknown>): void {
-  const match = typeof payload.queue === "string" ? /^vpn:([01]):([1-9]\d*)$/.exec(payload.queue) : null;
+  const match = typeof payload.queue === "string" ? /^vpn:([0-9]):([1-9]\d*)$/.exec(payload.queue) : null;
   if (!match || !Number.isSafeInteger(Number(match[2])) || typeof payload.sourceId !== "string" || !payload.sourceId.trim()) {
     throw new Error("Android VPN worker request identity is invalid.");
   }

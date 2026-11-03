@@ -35,6 +35,55 @@ afterEach(async () => {
 });
 
 describe("dedicated VPN worker scheduling", () => {
+  it("keeps an interactive reader download on its enrolled VPN slot instead of the immediate executor", async () => {
+    let executor: string | undefined;
+    const handle = scheduler.enqueueSource({ kind: "chapter.download", title: "Interactive VPN chapter", source, priority: "interactive",
+      vpnWorker: { rangeId: "interactive-range", slot: 9, generation: 1 }, run: async context => { executor = context.executor; } });
+    await settle(); await handle.promise;
+    expect(executor).toBe("vpn:9:1");
+  });
+
+  it("keeps server-backed local downloads outside an ordinary source handover hold", async () => {
+    const release = scheduler.holdOrdinaryChapterDownloads();
+    const local = scheduler.enqueueSource({ kind: "chapter.download", title: "Server-backed local work", source: { id: "local", name: "Local" },
+      subject: { pluginId: "local", novelId: 42, chapterId: 8 }, priority: "interactive", run: async () => {} });
+    try {
+      await settle();
+      expect(scheduler.getTask(local.id)?.status).toBe("succeeded");
+      await local.promise;
+    } finally { release(); }
+  });
+
+  it("holds new ordinary chapters for handover without interrupting a running chapter or unrelated routes", async () => {
+    let finish!: () => void;
+    let activeSignal!: AbortSignal;
+    const active = scheduler.enqueueSource({ kind: "chapter.download", title: "Current chapter", source,
+      run: async context => { activeSignal = context.signal; await new Promise<void>(resolve => { finish = resolve; }); } });
+    void active.promise.catch(() => undefined);
+    await settle();
+    const release = scheduler.holdOrdinaryChapterDownloads();
+    const secondRelease = scheduler.holdOrdinaryChapterDownloads();
+    const started: string[] = [];
+    const ordinary = scheduler.enqueueSource({ kind: "chapter.download", title: "Ready chapter", source: { id: "other-source", name: "Other source" },
+      run: async () => { started.push("ordinary"); } });
+    const browsing = scheduler.enqueueSource({ kind: "source.openNovel", title: "Browse", priority: "interactive", source,
+      run: async () => { started.push("browse"); } });
+    const vpn = queue("vpn-range", 0, async () => { started.push("vpn"); });
+    await settle();
+    expect(activeSignal.aborted).toBe(false);
+    expect(started).toEqual(["browse", "vpn"]);
+    finish();
+    await settle();
+    await active.promise;
+    release(); release();
+    await settle();
+    expect(scheduler.getTask(ordinary.id)?.status).toBe("queued");
+    secondRelease();
+    await settle();
+    await Promise.all([ordinary.promise, browsing.promise, vpn.promise]);
+    expect(started).toEqual(["browse", "vpn", "ordinary"]);
+  });
+
   describe.each(["queued", "running"] as const)("%s task deduplication", status => {
     const worker: VpnDownloadWorkerRef = { rangeId: "range-a", slot: 0, generation: 1 };
     it.each([
@@ -95,6 +144,22 @@ describe("dedicated VPN worker scheduling", () => {
     await settle();
     expect(executors).toEqual(["vpn:0:1", "vpn:1:1"]);
     expect(scheduler.getSnapshot().running).toBe(2);
+  });
+
+  it("runs ten independent same-source ranges without borrowing the ordinary executor", async () => {
+    const started: string[] = [];
+    Array.from({ length: 10 }, (_, slot) => {
+      const task = scheduler.enqueueSource({
+        kind: "chapter.download", title: `Range ${slot}`, source,
+        vpnWorker: { rangeId: `range-${slot}`, slot: slot as VpnDownloadWorkerRef["slot"], generation: slot + 1 },
+        run: context => { started.push(context.executor!); return hold(context); },
+      });
+      void task.promise.catch(() => undefined);
+      return task;
+    });
+    await settle();
+    expect(started).toEqual(["vpn:0:1", "vpn:1:2", "vpn:2:3", "vpn:3:4", "vpn:4:5", "vpn:5:6", "vpn:6:7", "vpn:7:8", "vpn:8:9", "vpn:9:10"]);
+    expect(scheduler.getSnapshot().running).toBe(10);
   });
 
   it("does not reuse a physical worker slot while an older generation is still settling", async () => {
@@ -172,6 +237,10 @@ describe("dedicated VPN worker scheduling", () => {
   });
 
   it("rejects unsupported worker slots and invalid generations before enqueueing", () => {
+    for (const slot of [-1, 10, 0.5]) {
+      expect(() => scheduler.enqueueSource({ kind: "chapter.download", title: "Invalid", source,
+        vpnWorker: { rangeId: "range", slot: slot as never, generation: 1 }, run: async () => undefined })).toThrow(/worker/i);
+    }
     expect(() => queue("range", 0, async () => undefined, 0)).toThrow(/worker/i);
     expect(scheduler.getSnapshot().total).toBe(0);
   });

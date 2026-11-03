@@ -35,6 +35,28 @@ internal object AndroidVpnWorkerProcess {
 
 class AndroidVpnDownloadWorker0Service : AndroidVpnDownloadWorkerService(0)
 class AndroidVpnDownloadWorker1Service : AndroidVpnDownloadWorkerService(1)
+class AndroidVpnDownloadWorker2Service : AndroidVpnDownloadWorkerService(2)
+class AndroidVpnDownloadWorker3Service : AndroidVpnDownloadWorkerService(3)
+class AndroidVpnDownloadWorker4Service : AndroidVpnDownloadWorkerService(4)
+class AndroidVpnDownloadWorker5Service : AndroidVpnDownloadWorkerService(5)
+class AndroidVpnDownloadWorker6Service : AndroidVpnDownloadWorkerService(6)
+class AndroidVpnDownloadWorker7Service : AndroidVpnDownloadWorkerService(7)
+class AndroidVpnDownloadWorker8Service : AndroidVpnDownloadWorkerService(8)
+class AndroidVpnDownloadWorker9Service : AndroidVpnDownloadWorkerService(9)
+
+internal fun androidVpnDownloadWorkerServiceClass(slot: Int): Class<out AndroidVpnDownloadWorkerService> = when (slot) {
+  0 -> AndroidVpnDownloadWorker0Service::class.java
+  1 -> AndroidVpnDownloadWorker1Service::class.java
+  2 -> AndroidVpnDownloadWorker2Service::class.java
+  3 -> AndroidVpnDownloadWorker3Service::class.java
+  4 -> AndroidVpnDownloadWorker4Service::class.java
+  5 -> AndroidVpnDownloadWorker5Service::class.java
+  6 -> AndroidVpnDownloadWorker6Service::class.java
+  7 -> AndroidVpnDownloadWorker7Service::class.java
+  8 -> AndroidVpnDownloadWorker8Service::class.java
+  9 -> AndroidVpnDownloadWorker9Service::class.java
+  else -> throw IllegalArgumentException("VPN worker slot is invalid.")
+}
 
 abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service() {
   private data class Call(val id: String, val method: String)
@@ -270,7 +292,7 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
     val token = session.newNonce()
     lease.reserveManual(AndroidVpnWorkerQueue(slot, configuration.generation), configuration.sourceId, token)
     manualRevision += 1
-    val activity = if (slot == 0) AndroidVpnDownloadWorker0Activity::class.java else AndroidVpnDownloadWorker1Activity::class.java
+    val activity = androidVpnDownloadWorkerActivityClass(slot)
     try {
       startActivity(Intent(this, activity).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

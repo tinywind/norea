@@ -41,6 +41,7 @@ import {
   importPluginVpnProfile,
   loadPluginVpnFinderServers,
   pluginVpnFinderProfileIp,
+  preparePluginVpnProfileChange,
   removePluginVpnProfile,
   restorePluginVpnConnection,
   PluginVpnConnectionNotEstablishedError,
@@ -116,6 +117,18 @@ describe("plugin VPN", () => {
     isAndroidRuntimeMock.mockReturnValue(false);
     invokeMock.mockResolvedValue(STATUS);
     vi.unstubAllGlobals();
+  });
+
+  it("notifies profile release only after the native foreground disconnect has completed", async () => {
+    const events: string[] = [];
+    vi.stubGlobal("window", new EventTarget());
+    window.addEventListener("norea-plugin-vpn-profile-released", () => { events.push("released"); });
+    let finish!: (value: PluginVpnStatus) => void;
+    invokeMock.mockReturnValueOnce(new Promise<PluginVpnStatus>(resolve => { finish = resolve; }));
+    const releasing = preparePluginVpnProfileChange();
+    expect(events).toEqual([]);
+    finish(STATUS); await releasing;
+    expect(events).toEqual(["released"]);
   });
 
   it("restores a saved On setting using the stored profile", async () => {

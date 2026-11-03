@@ -1,10 +1,11 @@
 import type { ScraperExecutorId } from "./scraper-queue";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
+import { isVpnDownloadWorkerSlot } from "./vpn-download-types";
 
 const workers = new Map<string, Readonly<VpnDownloadWorkerRef>>();
 
 export function vpnDownloadExecutor(worker: VpnDownloadWorkerRef): ScraperExecutorId {
-  if ((worker.slot !== 0 && worker.slot !== 1) || !Number.isSafeInteger(worker.generation) || worker.generation <= 0 ||
+  if (!isVpnDownloadWorkerSlot(worker.slot) || !Number.isSafeInteger(worker.generation) || worker.generation <= 0 ||
       !worker.rangeId.trim() || worker.rangeId.length > 96 || /[\u0000-\u001f\u007f]/.test(worker.rangeId)) {
     throw new Error("VPN download worker identity is invalid.");
   }

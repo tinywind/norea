@@ -6,6 +6,7 @@ import type { SourceAccessBlock } from "./source-access-gate";
 import { isTaskUserCancelledError } from "./task-errors";
 import type { TaskHandle } from "./task-types";
 import type { VpnDownloadPlan, VpnDownloadProfileIssue, VpnDownloadProfileIssueCause, VpnDownloadProfileIssueInput, VpnDownloadRangeState, VpnDownloadWorkerRef } from "./vpn-download-types";
+import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
 
 export interface VpnDownloadNotice {
   planId: string;
@@ -104,11 +105,12 @@ export class VpnDownloadCoordinator {
   private readonly enrolled = new Map<string, RangeRuntime>();
   private readonly writes = new Map<string, Promise<void>>();
   private readonly cancellingPlans = new Set<string>();
+  private readonly pausedWorks = new Set<string>();
   private readonly profileIssues = new Map<string, Map<string, VpnDownloadProfileIssue>>();
   private readonly issueLoads = new Map<string, Promise<void>>();
   private readonly pendingExclusions = new Map<string, VpnDownloadProfileIssueInput>();
   private readonly issueWrites = new Map<string, Promise<void>>();
-  private readonly slots: [WorkerLease | undefined, WorkerLease | undefined] = [undefined, undefined];
+  private readonly slots: (WorkerLease | undefined)[] = Array.from({ length: MAX_VPN_DOWNLOAD_WORKERS });
   private readonly listeners = new Set<() => void>();
   private snapshot: readonly VpnDownloadPlan[] = Object.freeze([]);
   private generation = 0;
@@ -117,7 +119,7 @@ export class VpnDownloadCoordinator {
   private scheduled = false;
   private restoring = false;
   private automaticStopEpoch = 0;
-  private workerLimit: 1 | 2 = 2;
+  private workerLimit = 2;
 
   constructor(private readonly runtime: VpnDownloadRuntime) {
     this.online = runtime.isOnline();
@@ -125,7 +127,10 @@ export class VpnDownloadCoordinator {
 
   getPlans = (): readonly VpnDownloadPlan[] => this.snapshot;
 
-  setWorkerLimit(limit: 1 | 2): void {
+  setWorkerLimit(limit: number): void {
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_VPN_DOWNLOAD_WORKERS) {
+      throw new Error("VPN worker count must be an integer from 1 through 10.");
+    }
     if (this.workerLimit === limit) return;
     this.workerLimit = limit;
     this.schedule();
@@ -151,6 +156,10 @@ export class VpnDownloadCoordinator {
         let changed = false;
         for (const range of next.ranges) {
           if (terminal(range)) continue;
+          if (range.userPaused && range.pauseReason === "work-paused") {
+            this.pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
+            continue;
+          }
           changed ||= range.phase !== "paused" || range.pauseReason !== "interrupted";
           range.phase = "paused";
           range.pauseReason = "interrupted";
@@ -177,13 +186,14 @@ export class VpnDownloadCoordinator {
       await this.seedGeneration();
       await this.loadProfileIssues(plan.batchId);
       await this.runtime.createPlan(plan, jobs);
-      const automatic = this.automaticStopEpoch === stopEpoch;
+      const workPaused = this.pausedWorks.has(JSON.stringify([plan.pluginId, plan.novelId]));
+      const automatic = this.automaticStopEpoch === stopEpoch && !workPaused;
       if (!automatic) {
         for (const range of plan.ranges) {
           if (terminal(range)) continue;
           range.phase = "paused";
-          range.pauseReason = "automatic-off";
-          range.userPaused = true;
+          range.pauseReason = workPaused ? "work-paused" : "automatic-off";
+          if (workPaused) range.userPaused = true;
         }
       }
       this.register(automatic ? plan : await this.runtime.updatePlan(plan, plan.revision), automatic, jobs);
@@ -194,6 +204,8 @@ export class VpnDownloadCoordinator {
   async resumeRange(planId: string, rangeId: string, options: { restartPass?: boolean } = {}): Promise<void> {
     if (this.cancellingPlans.has(planId)) throw new Error("VPN download plan is being cancelled.");
     const range = this.requireRange(planId, rangeId);
+    const plan = this.plans.get(planId)!;
+    if (this.pausedWorks.has(JSON.stringify([plan.pluginId, plan.novelId]))) throw new Error("Resume the paused work before resuming its ranges.");
     const state = this.state(range);
     if (terminal(state)) return;
     if (range.manual) throw new Error("Finish manual VPN verification before resuming.");
@@ -234,6 +246,37 @@ export class VpnDownloadCoordinator {
     return this.halt(range, "user-paused", true, true, false);
   }
 
+  pauseWork(pluginId: string, novelId: number): Promise<void> {
+    this.pausedWorks.add(JSON.stringify([pluginId, novelId]));
+    const pending: Promise<void>[] = [];
+    for (const plan of this.plans.values()) {
+      if (plan.pluginId !== pluginId || plan.novelId !== novelId) continue;
+      for (const state of plan.ranges) {
+        if (terminal(state) || state.userPaused && state.pauseReason !== "work-paused") continue;
+        const range = this.requireRange(plan.id, state.id);
+        range.manual = false;
+        pending.push(this.halt(range, "work-paused", true, true, false));
+      }
+    }
+    return Promise.all(pending).then(() => undefined);
+  }
+
+  async resumeWork(pluginId: string, novelId: number, canContinue: () => boolean): Promise<void> {
+    this.pausedWorks.delete(JSON.stringify([pluginId, novelId]));
+    for (const plan of this.getPlans()) {
+      if (plan.pluginId !== pluginId || plan.novelId !== novelId) continue;
+      for (const range of plan.ranges) {
+        if (!canContinue()) return;
+        if (range.phase === "paused" && (range.pauseReason === "work-paused" || !range.userPaused && range.pauseReason !== "profiles-exhausted")) {
+          await this.resumeRange(plan.id, range.id);
+        }
+      }
+    }
+  }
+
+  clearWorkHolds(): void { this.pausedWorks.clear(); }
+  clearWorkHold(pluginId: string, novelId: number): void { this.pausedWorks.delete(JSON.stringify([pluginId, novelId])); }
+
   async reallowProfile(batchId: string, ip: string, expectedRevision: number): Promise<void> {
     const epochs = new Map([...this.ranges.values()].map(range => [range, range.epoch]));
     await this.loadProfileIssues(batchId);
@@ -273,7 +316,8 @@ export class VpnDownloadCoordinator {
     for (const range of this.ranges.values()) {
       if (terminal(this.state(range))) continue;
       range.manual = false;
-      pending.push(this.halt(range, "automatic-off", true, true, false));
+      const state = this.state(range);
+      pending.push(this.halt(range, state.userPaused ? state.pauseReason ?? "user-paused" : "automatic-off", state.userPaused, true, false));
     }
     await Promise.all(pending);
   }
@@ -443,7 +487,9 @@ export class VpnDownloadCoordinator {
   }
 
   private canWork(range: RangeRuntime, epoch: number): boolean {
+    const plan = this.plans.get(range.planId)!;
     return this.isEpoch(range, epoch) && range.intent && !range.manual && !range.networkHeld && this.online &&
+      !this.pausedWorks.has(JSON.stringify([plan.pluginId, plan.novelId])) &&
       !this.cancellingPlans.has(range.planId) && !this.state(range).userPaused && !terminal(this.state(range));
   }
 
@@ -490,7 +536,7 @@ export class VpnDownloadCoordinator {
   }
 
   private availableSlot(range: RangeRuntime): boolean {
-    const cap = this.plans.get(range.planId)!.mode === "single" ? 1 : 2;
+    const cap = this.plans.get(range.planId)!.mode === "single" ? 1 : MAX_VPN_DOWNLOAD_WORKERS;
     return this.slots.filter(Boolean).length < this.workerLimit &&
       this.slots.filter(lease => lease?.owner.planId === range.planId).length < cap && this.slots.some(lease => !lease);
   }
@@ -681,7 +727,8 @@ export class VpnDownloadCoordinator {
       }
       if (!this.availableSlot(range)) return;
       range.waitingProfiles = undefined;
-      const slot: 0 | 1 = this.slots[0] ? 1 : 0;
+      const slot = this.slots.findIndex(lease => !lease);
+      if (!isVpnDownloadWorkerSlot(slot)) return;
       const ref = Object.freeze({ rangeId: range.rangeId, slot, generation: ++this.generation });
       const lease: WorkerLease = { owner: range, ref, profile: clone(candidate), abort: new AbortController(), connected: false };
       range.worker = lease;

@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { VpnDownloadChallengePolicy, VpnDownloadMode } from "../lib/tasks/vpn-download-types";
+import { MAX_VPN_DOWNLOAD_WORKERS } from "../lib/tasks/vpn-download-types";
+import { useBrowseStore } from "./browse";
 
 interface VpnDownloadSettings {
   mode: VpnDownloadMode;
@@ -21,9 +23,10 @@ export function normalizeVpnDownloadSettings(value: unknown): VpnDownloadSetting
   return {
     mode: stored.mode === "single" || stored.mode === "parallel" ? stored.mode : "off",
     workerCount: typeof stored.workerCount === "number" && Number.isFinite(stored.workerCount)
-      ? Math.max(1, Math.min(2, Math.floor(stored.workerCount))) : 2,
-    captchaPolicy: stored.captchaPolicy === "nextProfile" ? "nextProfile" : "pause",
-    cloudflarePolicy: stored.cloudflarePolicy === "nextProfile" ? "nextProfile" : "pause",
+      ? Math.max(1, Math.min(MAX_VPN_DOWNLOAD_WORKERS, Math.floor(stored.workerCount)))
+      : Math.max(1, Math.min(3, useBrowseStore.getState().sourceWorkConcurrency)),
+    captchaPolicy: stored.captchaPolicy === "pause" ? "pause" : "nextProfile",
+    cloudflarePolicy: stored.cloudflarePolicy === "pause" ? "pause" : "nextProfile",
   };
 }
 
