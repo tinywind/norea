@@ -31,8 +31,8 @@ vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknow
 } }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate, useRouterState: () => "/novel?id=3" }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({
-  t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterCount"
-    ? `${values?.cached}/${values?.total} stored`
+  t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterSummary"
+    ? `${values?.downloaded}/${values?.total} stored`
     : key === "novel.serverChapterStatus" ? `Server: ${values?.status}` : key,
 }) }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
@@ -91,6 +91,31 @@ it("excludes stored partial bodies from missing-chapter batch scopes", () => {
   expect(partial.mediaRepairNeeded).toBe(true);
 });
 
+interface MenuItem { disabled?: boolean; label: string; onClick: () => void }
+
+/** Mounts the page and returns its overflow menu items. */
+async function withOverflowItems(check: (items: MenuItem[]) => Promise<void> | void) {
+  const harness = mountBackNavigationHarness();
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  try {
+    await harness.render(<PageProbe />);
+    const menu = collectElements(tree).find((element) => Array.isArray(element.props.items))!;
+    await check(menu.props.items as MenuItem[]);
+  } finally {
+    await harness.unmount();
+  }
+}
+
+const overflowLabels = async () => {
+  let labels: string[] = [];
+  await withOverflowItems((items) => { labels = items.map((item) => item.label); });
+  return labels;
+};
+
 function renderPage(active = true) {
   return load(renderToStaticMarkup(<MantineProvider><PageActivityContext.Provider value={active}><NovelDetailPage id={3} /></PageActivityContext.Provider></MantineProvider>));
 }
@@ -128,28 +153,29 @@ it("pauses detail, chapter, and server queries while its page slot is hidden", (
   expect(pageQueries().every(query => query.enabled === true)).toBe(true);
 });
 
-it("presents server-published local works as downloadable without changing stored metadata", () => {
+it("presents server-published local works as downloadable without changing stored metadata", async () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   const $ = renderPage();
-  expect($("button[aria-label='novel.batchDownload.open']")).toHaveLength(1);
-  expect($("button[aria-label='novel.local.addChapters']")).toHaveLength(0);
-  expect($("button[aria-label='novel.openSource']")).toHaveLength(0);
-  expect($("button").filter((_, button) => $(button).text() === "contentSync.manageChapters")).toHaveLength(1);
+  expect($("button").filter((_, button) => $(button).text() === "novel.download")).toHaveLength(1);
   expect($.text()).not.toContain("contentSync.deleteServer");
+  const labels = await overflowLabels();
+  expect(labels).toContain("contentSync.manageChapters");
+  expect(labels).not.toContain("novel.local.addChapters");
+  expect(labels).not.toContain("novel.openInWebView");
   expect(mocks.novel.isLocal).toBe(true);
 });
 
-it.each([true, false])("shows saved work details and chapters while server binding is pending (local: %s)", (isLocal) => {
+it.each([true, false])("shows saved work details and chapters while server binding is pending (local: %s)", async (isLocal) => {
   mocks.novel.isLocal = isLocal;
   mocks.source.isPending = true;
   mocks.chapters = [{ ...chapter, isDownloaded: true }];
   const $ = renderPage();
   expect($("h1").text()).toBe("Saved novel");
-  expect($(".norea-novel-summary-content").text()).toContain("Saved summary");
+  expect($("p").filter((_, paragraph) => $(paragraph).text() === "Saved summary")).toHaveLength(1);
   expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
-  expect($("button[aria-label='novel.startReading']").prop("disabled")).toBe(false);
+  expect($("button").filter((_, button) => $(button).text() === "novel.startReading").prop("disabled")).toBe(false);
   expect($.text()).not.toContain("novel.loading");
-  expect($("button[aria-label='novel.openSource']")).toHaveLength(0);
+  expect(await overflowLabels()).not.toContain("novel.openInWebView");
 });
 
 it("keeps saved work details visible while an empty server binding is being rechecked", () => {
@@ -238,29 +264,48 @@ it("still reports a local work loading failure", () => {
   expect($.text()).toContain("Local work unavailable");
 });
 
-it("keeps installed source actions available while server binding is pending", () => {
+it("keeps installed source actions available while server binding is pending", async () => {
   mocks.novel.isLocal = false;
   mocks.source.isPending = true;
   mocks.installed = true;
-  const $ = renderPage();
-  expect($("button[aria-label='novel.openSource']").prop("disabled")).toBe(false);
+  await withOverflowItems((items) => {
+    expect(items.find((item) => item.label === "novel.openInWebView")?.disabled).toBe(false);
+  });
 });
 
-it("does not expose source actions for a server folder path before binding lookup finishes", () => {
+it("does not expose source actions for a server folder path before binding lookup finishes", async () => {
   mocks.novel.isLocal = false;
   mocks.novel.path = "norea-folder:work";
   mocks.source.isPending = true;
   mocks.installed = true;
   const $ = renderPage();
   expect($("h1").text()).toBe("Saved novel");
-  expect($("button[aria-label='novel.openSource']")).toHaveLength(0);
+  expect(await overflowLabels()).not.toContain("novel.openInWebView");
 });
 
-it("retains local editing presentation for unbound local works", () => {
-  const $ = renderPage();
-  expect($("button[aria-label='novel.local.editMetadata']")).toHaveLength(1);
-  expect($.text()).not.toContain("contentSync.manageChapters");
-  expect($.text()).not.toContain("contentSync.deleteServer");
+it("retains local editing presentation for unbound local works", async () => {
+  const labels = await overflowLabels();
+  expect(labels).toEqual(expect.arrayContaining(["novel.local.editMetadata", "novel.local.addChapters", "novel.local.reorderChapters"]));
+  expect(labels).not.toContain("contentSync.manageChapters");
+  expect(labels).not.toContain("novel.checkNewChapters");
+  expect(renderPage().text()).not.toContain("contentSync.deleteServer");
+});
+
+it("offers the source refresh, migration and reader actions in the overflow for library source works", async () => {
+  mocks.novel.isLocal = false;
+  mocks.novel.inLibrary = true;
+  mocks.installed = true;
+  try {
+    expect(await overflowLabels()).toEqual([
+      "novel.checkNewChapters",
+      "novel.refreshAllDetails",
+      "novel.mergeSource",
+      "novel.openInWebView",
+      "novel.readerSettingsForNovel",
+    ]);
+  } finally {
+    mocks.novel.inLibrary = false;
+  }
 });
 
 it("shows available packages and downloaded chapters without deleting canonical metadata chapters", () => {
@@ -329,14 +374,14 @@ it("shows a server folder chapter matching the cached source chapter number with
   expect(renderPage()(".norea-novel-chapter-open").text()).toContain("Server chapter");
 });
 
-it("shows source-only chapters and source controls for a bound work with its original path and installed plugin", () => {
+it("shows source-only chapters and source controls for a bound work with its original path and installed plugin", async () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.novel.isLocal = false;
   mocks.installed = true;
   mocks.chapters = [{ ...chapter, name: "New source chapter" }];
   const $ = renderPage();
   expect($(".norea-novel-chapter-open").text()).toContain("New source chapter");
-  expect($("button[aria-label='novel.openSource']")).toHaveLength(1);
+  expect(await overflowLabels()).toContain("novel.openInWebView");
   expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });
 
@@ -354,10 +399,11 @@ it("closes the novel reader settings drawer on back before leaving the page", as
     return null;
   }
   const drawer = () => collectElements(tree).find((element) => element.props.title === "readerSettings.novel.title")!;
-  const workspace = () => collectElements(tree).find((element) => typeof element.props.onOpenReaderSettings === "function")!;
+  const readerSettingsItem = () => (collectElements(tree).find((element) => Array.isArray(element.props.items))!
+    .props.items as MenuItem[]).find((item) => item.label === "novel.readerSettingsForNovel")!;
   try {
     await harness.render(<PageProbe />);
-    await harness.run(() => (workspace().props.onOpenReaderSettings as () => void)());
+    await harness.run(() => readerSettingsItem().onClick());
     expect(drawer().props.opened).toBe(true);
 
     expect(harness.pressBack()).toBe(true);

@@ -50,6 +50,7 @@ describe("chapter row controls", () => {
             repairBusyChapterId={undefined}
             repairPending={false}
             reorderPending={false}
+            scrollElement={null}
             selectedChapterIds={new Set([1])}
             selectionMode
             statuses={new Map()}
@@ -94,6 +95,7 @@ function renderChapterStatus(status: ChapterDownloadStatus, overrides: Partial<C
         repairBusyChapterId={undefined}
         repairPending={false}
         reorderPending={false}
+        scrollElement={null}
         selectedChapterIds={new Set()}
         selectionMode={false}
         statuses={new Map([[chapter.id, status]])}

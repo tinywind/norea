@@ -3,9 +3,11 @@ import {
   IconAdjustmentsHorizontal,
   IconAlertTriangle,
   IconArrowLeft,
+  IconArrowsExchange,
   IconArrowsSort,
   IconBell,
   IconBookmark,
+  IconBookmarkFilled,
   IconBooks,
   IconCategory,
   IconCheck,
@@ -30,6 +32,8 @@ import {
   IconFilter,
   IconFolder,
   IconGripVertical,
+  IconHeartFilled,
+  IconHeartPlus,
   IconHistory,
   IconInfoCircle,
   IconInfoSquareRounded,
@@ -40,8 +44,10 @@ import {
   IconPinnedOff,
   IconPlayerPause,
   IconPlayerPlay,
+  IconPlayerSkipBack,
   IconPlus,
   IconRefresh,
+  IconRefreshDot,
   IconReload,
   IconRotateClockwise,
   IconSearch,
@@ -76,6 +82,8 @@ function withAppDefaults(Icon: TablerIcon): AppIcon {
 }
 
 export const LibraryIcon = withAppDefaults(IconBooks);
+export const AddToLibraryIcon = withAppDefaults(IconHeartPlus);
+export const InLibraryIcon = withAppDefaults(IconHeartFilled);
 export const UpdatesIcon = withAppDefaults(IconBell);
 export const HistoryIcon = withAppDefaults(IconHistory);
 export const BrowseIcon = withAppDefaults(IconCompass);
@@ -90,6 +98,7 @@ export const SortIcon = withAppDefaults(IconArrowsSort);
 export const ViewOptionsIcon = withAppDefaults(IconAdjustmentsHorizontal);
 export const SelectIcon = withAppDefaults(IconCheckbox);
 export const RefreshIcon = withAppDefaults(IconRefresh);
+export const RefreshAllIcon = withAppDefaults(IconRefreshDot);
 export const CloseIcon = withAppDefaults(IconX);
 export const BackIcon = withAppDefaults(IconArrowLeft);
 export const CheckIcon = withAppDefaults(IconCheck);
@@ -101,11 +110,13 @@ export const DownloadedIcon = withAppDefaults(IconCloudCheck);
 export const DeleteDownloadIcon = withAppDefaults(IconDownloadOff);
 export const TrashIcon = withAppDefaults(IconTrash);
 export const BookmarkIcon = withAppDefaults(IconBookmark);
+export const BookmarkedIcon = withAppDefaults(IconBookmarkFilled);
 export const ExternalLinkIcon = withAppDefaults(IconExternalLink);
 export const OverflowIcon = withAppDefaults(IconDotsVertical);
 export const PlusIcon = withAppDefaults(IconPlus);
 export const MinusIcon = withAppDefaults(IconMinus);
 export const PlayIcon = withAppDefaults(IconPlayerPlay);
+export const FromStartIcon = withAppDefaults(IconPlayerSkipBack);
 export const PauseIcon = withAppDefaults(IconPlayerPause);
 export const RestartIcon = withAppDefaults(IconRotateClockwise);
 export const RetryIcon = withAppDefaults(IconReload);
@@ -114,6 +125,7 @@ export const ReaderSettingsIcon = withAppDefaults(IconTypography);
 export const PinIcon = withAppDefaults(IconPin);
 export const UnpinIcon = withAppDefaults(IconPinnedOff);
 export const SourceIcon = withAppDefaults(IconWorldWww);
+export const MigrateIcon = withAppDefaults(IconArrowsExchange);
 export const EditIcon = withAppDefaults(IconPencil);
 export const InfoIcon = withAppDefaults(IconInfoCircle);
 export const WarningIcon = withAppDefaults(IconAlertTriangle);

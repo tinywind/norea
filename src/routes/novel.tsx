@@ -1,7 +1,7 @@
-import { Drawer, Loader, Text } from "@mantine/core";
+import { Button, Drawer, Loader, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CheckGlyph,
   CloseGlyph,
@@ -11,11 +11,21 @@ import {
   UnreadGlyph,
 } from "../components/ActionGlyphs";
 import { PageFrame, StateView } from "../components/AppFrame";
-import {
-  ConsolePanel,
-  ConsoleSectionHeader,
-} from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
+import {
+  BackIcon,
+  DragIcon,
+  EditIcon,
+  ImportIcon,
+  MigrateIcon,
+  ReaderSettingsIcon,
+  RefreshAllIcon,
+  RefreshIcon,
+  SelectIcon,
+  ServerIcon,
+  SourceIcon,
+} from "../components/ui/icons";
+import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import {
   buildBatchDownloadTargets,
   buildPreviousChapterDownloadTargets,
@@ -37,7 +47,11 @@ import {
 } from "../components/novel/NovelChapterList";
 import { NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
-import { ServerChapterManager } from "../components/novel/ServerChapterManager";
+import {
+  ServerChapterManager,
+  useManagedServerWork,
+} from "../components/novel/ServerChapterManager";
+import type { ServerNovelSource } from "../lib/content-sync/novel-source";
 import { useLocalNovelEditor } from "../components/novel/use-local-novel-editor";
 import { useNovelChapterActions } from "../components/novel/use-novel-chapter-actions";
 import { useNovelDownloadStatuses } from "../components/novel/use-novel-download-statuses";
@@ -82,6 +96,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     (state) => state.lastReadChapterByNovel[id],
   );
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
+  const [serverManagerSource, setServerManagerSource] =
+    useState<ServerNovelSource | null>(null);
+  const [reorderMode, setReorderMode] = useState(false);
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const chaptersHeadingId = useId();
+  const [titleScrolledAway, setTitleScrolledAway] = useState(false);
   const [chapterSelectionMode, setChapterSelectionMode] = useState(false);
   const [selectedChapterIds, setSelectedChapterIds] = useState<
     ReadonlySet<number>
@@ -126,6 +147,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     staleTime: 30_000,
   });
   const serverSync = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
+  const managedServerWork = useManagedServerWork(
+    novelQuery.data ?? undefined,
+    serverSourceQuery.data,
+    active,
+  );
 
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
@@ -234,8 +260,22 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   useEffect(() => {
     setChapterSelectionMode(false);
     setSelectedChapterIds(new Set());
+    setReorderMode(false);
     chapterSelectionGuardRef.current = false;
   }, [id]);
+
+  useEffect(() => {
+    const title = titleRef.current;
+    if (!title || !scrollElement || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setTitleScrolledAway(entry ? !entry.isIntersecting : false),
+      { root: scrollElement },
+    );
+    observer.observe(title);
+    return () => observer.disconnect();
+  }, [scrollElement, novelQuery.data?.id]);
 
   useEffect(() => {
     if (rows.length === 0) {
@@ -417,7 +457,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     ? null
     : pluginManager.getPlugin(novel.pluginId);
   const sourceName = novel.isLocal
-    ? t("common.local")
+    ? t("novel.localSource")
     : (novel.pluginName ?? sourcePlugin?.name ?? novel.pluginId);
   const metadataRefreshError =
     refreshMetadata.error ?? fullRefreshMetadata.error;
@@ -430,298 +470,398 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     ? serverSync.sourceError
     : null;
 
+  const overflowItems: OverflowMenuItem[] = [];
+  if (!novel.isLocal) {
+    overflowItems.push(
+      {
+        disabled: refreshMetadata.isPending || fullRefreshMetadata.isPending,
+        icon: RefreshIcon,
+        label: t("novel.checkNewChapters"),
+        onClick: () => refreshMetadata.mutate(),
+      },
+      {
+        disabled: refreshMetadata.isPending || fullRefreshMetadata.isPending,
+        icon: RefreshAllIcon,
+        label: t("novel.refreshAllDetails"),
+        onClick: () => fullRefreshMetadata.mutate(),
+      },
+    );
+  }
+  if (novel.inLibrary && allowSourceAccess && !novel.isLocal) {
+    overflowItems.push({
+      icon: MigrateIcon,
+      label: t("novel.mergeSource"),
+      onClick: () =>
+        void navigate({
+          replace: true,
+          search: { sourceNovelId: novel.id },
+          to: "/novel-merge",
+        }),
+    });
+  }
+  if (allowSourceAccess && !novel.isLocal) {
+    overflowItems.push({
+      disabled: !sourceUrl,
+      icon: SourceIcon,
+      label: t("novel.openInWebView"),
+      onClick: () => openSourceNovel(novel.pluginId, sourceUrl),
+    });
+  }
+  overflowItems.push({
+    icon: ReaderSettingsIcon,
+    label: t("novel.readerSettingsForNovel"),
+    onClick: () => setReaderSettingsOpen(true),
+  });
+  if (managedServerWork) {
+    overflowItems.push({
+      icon: ServerIcon,
+      label: t("contentSync.manageChapters"),
+      onClick: () => setServerManagerSource({ ...managedServerWork }),
+    });
+  }
+  if (novel.isLocal) {
+    overflowItems.push(
+      {
+        icon: EditIcon,
+        label: t("novel.local.editMetadata"),
+        onClick: openLocalMetadataEditor,
+      },
+      {
+        disabled: addLocalChapters.isPending,
+        icon: ImportIcon,
+        label: t("novel.local.addChapters"),
+        onClick: openLocalChapterInput,
+      },
+      {
+        disabled: chapters.length < 2,
+        icon: DragIcon,
+        label: t("novel.local.reorderChapters"),
+        onClick: () => {
+          clearChapterSelectionState();
+          setReorderMode(true);
+        },
+      },
+    );
+  }
+
   return (
     <>
-      <PageFrame className="norea-novel-page" size="wide">
-        <div className="norea-novel-layout">
-          <NovelWorkspace
-            key={novel.id}
-            novel={novel}
-            allowSourceAccess={allowSourceAccess}
-            chapters={chapters}
-            downloadStatuses={statuses}
-            lastReadChapterId={lastReadChapterId}
-            localChapterAdding={addLocalChapters.isPending}
-            fullMetadataRefreshing={fullRefreshMetadata.isPending}
-            metadataRefreshing={refreshMetadata.isPending}
-            onBack={goBack}
-            onAddLocalChapters={openLocalChapterInput}
-            onBatchDownload={downloadChapters}
-            onEditLocalMetadata={openLocalMetadataEditor}
-            onOpenReaderSettings={() => setReaderSettingsOpen(true)}
-            onRead={openChapter}
-            onOpenSource={() => openSourceNovel(novel.pluginId, sourceUrl)}
-            onRefreshFullMetadata={() => fullRefreshMetadata.mutate()}
-            onRefreshMetadata={() => refreshMetadata.mutate()}
-            onToggleLibrary={() => toggle.mutate()}
-            sourceName={sourceName}
-            sourceUrl={sourceUrl}
-            toggleBusy={toggle.isPending}
-          />
+      <div className="norea-novel-page" ref={setScrollElement}>
+        <header
+          className="norea-novel-app-bar"
+          data-title-visible={titleScrolledAway ? "true" : undefined}
+        >
+          <IconButton label={t("common.back")} onClick={goBack} size="lg">
+            <BackIcon />
+          </IconButton>
+          <span aria-hidden="true" className="norea-novel-app-bar-title">
+            {novel.name}
+          </span>
+          <OverflowMenu items={overflowItems} label={t("novel.moreOptions")} />
+        </header>
+        <PageFrame className="norea-novel-frame" size="wide">
+          <div className="norea-novel-layout">
+            <aside className="norea-novel-info-pane">
+              <NovelWorkspace
+                key={novel.id}
+                allowSourceAccess={allowSourceAccess}
+                categoryChips={novel.inLibrary ? <NovelCategoryEditor key={novel.id}
+                  active={active} novelId={novel.id} novelName={novel.name} /> : null}
+                chapters={chapters}
+                downloadStatuses={statuses}
+                lastReadChapterId={lastReadChapterId}
+                libraryBusy={toggle.isPending}
+                novel={novel}
+                onBatchDownload={downloadChapters}
+                onRead={openChapter}
+                onToggleLibrary={() => toggle.mutate()}
+                sourceName={sourceName}
+                titleRef={titleRef}
+              />
+            </aside>
 
-          {novel.inLibrary ? <NovelCategoryEditor key={novel.id}
-            active={active} novelId={novel.id} novelName={novel.name} /> : null}
-
-          <ConsolePanel className="norea-novel-chapters-panel">
-            <ConsoleSectionHeader
-              actions={
-                <>
-                  <ServerChapterManager novel={novel} source={serverSourceQuery.data} active={active} />
-                  <ChapterSortPicker
-                    onChange={setDefaultChapterSort}
-                    value={defaultChapterSort}
-                  />
-                </>
-              }
-              eyebrow={t("novel.chapterIndex")}
-              title={t("novel.chapters")}
-              count={t("novel.chapterCount", {
-                total: chapters.length,
-                cached: chapterStats.downloaded,
-                unread: chapterStats.unread,
-              })}
-            />
-
-            {chapterSelectionMode ? (
-              <div className="norea-novel-selection-strip">
-                <span>
-                  {t("novel.selection.selectedCount", {
-                    count: selectedChapterCount,
+            <section aria-labelledby={chaptersHeadingId} className="norea-novel-chapters">
+              <div className="norea-novel-chapters-header">
+                <h2 className="norea-novel-chapters-title" id={chaptersHeadingId}>
+                  {t("novel.chapterSummary", {
+                    total: chapters.length,
+                    downloaded: chapterStats.downloaded,
+                    unread: chapterStats.unread,
                   })}
-                </span>
-                <div className="norea-novel-selection-actions">
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    disabled={allChaptersSelected}
-                    label={t("novel.selection.selectAll")}
-                    onClick={selectAllChapters}
-                    size="sm"
-                    title={t("novel.selection.selectAll")}
-                  >
-                    <CheckGlyph />
-                  </IconButton>
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    disabled={selectedChapterCount === 0}
-                    label={t("novel.selection.clearSelected")}
-                    onClick={clearSelectedChapters}
-                    size="sm"
-                    title={t("novel.selection.clearSelected")}
-                  >
-                    <SelectionClearIcon />
-                  </IconButton>
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    disabled={
-                      selectedDownloadTargets.length === 0 ||
-                      chapterSelectionBusy
-                    }
-                    label={
-                      selectedDownloadTargets.length > 0
-                        ? t("novel.selection.downloadSelected")
-                        : t("novel.selection.downloadSelectedUnavailable")
-                    }
-                    onClick={() => downloadChapters(selectedDownloadTargets)}
-                    size="sm"
-                    title={
-                      selectedDownloadTargets.length > 0
-                        ? t("novel.selection.downloadSelected")
-                        : t("novel.selection.downloadSelectedUnavailable")
-                    }
-                  >
-                    <DownloadGlyph />
-                  </IconButton>
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    disabled={
-                      novel.isLocal ||
-                      selectedDownloadedChapterIds.length === 0 ||
-                      chapterSelectionBusy
-                    }
-                    label={
-                      selectedDownloadedChapterIds.length > 0
-                        ? t("novel.selection.deleteDownloads")
-                        : t("novel.selection.deleteDownloadsUnavailable")
-                    }
-                    onClick={() => {
-                      clearSelectedDownloads.mutate(
-                        selectedDownloadedChapterIds,
-                      );
-                    }}
-                    size="sm"
-                    title={
-                      selectedDownloadedChapterIds.length > 0
-                        ? t("novel.selection.deleteDownloads")
-                        : t("novel.selection.deleteDownloadsUnavailable")
-                    }
-                    tone="danger"
-                  >
-                    {clearSelectedDownloads.isPending ? (
-                      <Loader size={14} />
-                    ) : (
-                      <DownloadedGlyph />
-                    )}
-                  </IconButton>
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    disabled={selectedUnreadCount === 0 || chapterSelectionBusy}
-                    label={t("novel.selection.markRead")}
-                    onClick={() =>
-                      setSelectedChapterReadState.mutate({
-                        chapterIds: selectedChapterIdList,
-                        unread: false,
-                      })
-                    }
-                    size="sm"
-                    title={t("novel.selection.markRead")}
-                  >
-                    {setSelectedChapterReadState.isPending &&
-                    setSelectedChapterReadState.variables?.unread === false ? (
-                      <Loader size={14} />
-                    ) : (
-                      <ReadIcon />
-                    )}
-                  </IconButton>
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    disabled={selectedReadCount === 0 || chapterSelectionBusy}
-                    label={t("novel.selection.markUnread")}
-                    onClick={() =>
-                      setSelectedChapterReadState.mutate({
-                        chapterIds: selectedChapterIdList,
-                        unread: true,
-                      })
-                    }
-                    size="sm"
-                    title={t("novel.selection.markUnread")}
-                  >
-                    {setSelectedChapterReadState.isPending &&
-                    setSelectedChapterReadState.variables?.unread === true ? (
-                      <Loader size={14} />
-                    ) : (
-                      <UnreadGlyph />
-                    )}
-                  </IconButton>
-                  {selectedChapterCount > 0 ? (
-                    <ChapterRelativeReadMenu
-                      afterCount={selectedAnchorAfterCount}
-                      beforeCount={selectedAnchorBeforeCount}
-                      busy={chapterSelectionBusy}
-                      previousDownloadCount={novel.isLocal ? 0 : previousDownloadTargets.length}
-                      onDownloadPrevious={() => downloadChapters(previousDownloadTargets)}
-                      showReadActions={selectedAnchorChapter !== undefined}
-                      onMarkFollowingUnread={() =>
-                        selectedAnchorChapter && setRelativeChapterReadState.mutate({
-                          anchorChapterId: selectedAnchorChapter.id,
-                          direction: "after",
-                          unread: true,
-                        })
+                </h2>
+                {reorderMode ? (
+                  <Button onClick={() => setReorderMode(false)} variant="light">
+                    {t("common.done")}
+                  </Button>
+                ) : (
+                  <>
+                    <ChapterSortPicker
+                      onChange={setDefaultChapterSort}
+                      value={defaultChapterSort}
+                    />
+                    {chapters.length > 0 && !chapterSelectionMode ? (
+                      <Button
+                        leftSection={<SelectIcon size="1.125rem" />}
+                        onClick={() => setChapterSelectionMode(true)}
+                        variant="subtle"
+                      >
+                        {t("novel.select")}
+                      </Button>
+                    ) : null}
+                  </>
+                )}
+              </div>
+
+              {chapterSelectionMode ? (
+                <div className="norea-novel-selection-strip">
+                  <span>
+                    {t("novel.selection.selectedCount", {
+                      count: selectedChapterCount,
+                    })}
+                  </span>
+                  <div className="norea-novel-selection-actions">
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      disabled={allChaptersSelected}
+                      label={t("novel.selection.selectAll")}
+                      onClick={selectAllChapters}
+                      size="sm"
+                      title={t("novel.selection.selectAll")}
+                    >
+                      <CheckGlyph />
+                    </IconButton>
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      disabled={selectedChapterCount === 0}
+                      label={t("novel.selection.clearSelected")}
+                      onClick={clearSelectedChapters}
+                      size="sm"
+                      title={t("novel.selection.clearSelected")}
+                    >
+                      <SelectionClearIcon />
+                    </IconButton>
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      disabled={
+                        selectedDownloadTargets.length === 0 ||
+                        chapterSelectionBusy
                       }
-                      onMarkPreviousRead={() =>
-                        selectedAnchorChapter && setRelativeChapterReadState.mutate({
-                          anchorChapterId: selectedAnchorChapter.id,
-                          direction: "before",
+                      label={
+                        selectedDownloadTargets.length > 0
+                          ? t("novel.selection.downloadSelected")
+                          : t("novel.selection.downloadSelectedUnavailable")
+                      }
+                      onClick={() => downloadChapters(selectedDownloadTargets)}
+                      size="sm"
+                      title={
+                        selectedDownloadTargets.length > 0
+                          ? t("novel.selection.downloadSelected")
+                          : t("novel.selection.downloadSelectedUnavailable")
+                      }
+                    >
+                      <DownloadGlyph />
+                    </IconButton>
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      disabled={
+                        novel.isLocal ||
+                        selectedDownloadedChapterIds.length === 0 ||
+                        chapterSelectionBusy
+                      }
+                      label={
+                        selectedDownloadedChapterIds.length > 0
+                          ? t("novel.selection.deleteDownloads")
+                          : t("novel.selection.deleteDownloadsUnavailable")
+                      }
+                      onClick={() => {
+                        clearSelectedDownloads.mutate(
+                          selectedDownloadedChapterIds,
+                        );
+                      }}
+                      size="sm"
+                      title={
+                        selectedDownloadedChapterIds.length > 0
+                          ? t("novel.selection.deleteDownloads")
+                          : t("novel.selection.deleteDownloadsUnavailable")
+                      }
+                      tone="danger"
+                    >
+                      {clearSelectedDownloads.isPending ? (
+                        <Loader size={14} />
+                      ) : (
+                        <DownloadedGlyph />
+                      )}
+                    </IconButton>
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      disabled={selectedUnreadCount === 0 || chapterSelectionBusy}
+                      label={t("novel.selection.markRead")}
+                      onClick={() =>
+                        setSelectedChapterReadState.mutate({
+                          chapterIds: selectedChapterIdList,
                           unread: false,
                         })
                       }
-                    />
-                  ) : null}
-                  <IconButton
-                    className="norea-novel-selection-icon norea-state-layer"
-                    label={t("novel.selection.close")}
-                    onClick={closeChapterSelectionMode}
-                    size="sm"
-                    title={t("novel.selection.close")}
-                  >
-                    <CloseGlyph />
-                  </IconButton>
-                </div>
-              </div>
-            ) : null}
-
-            {localChapterError ? (
-              <Text c="danger" className="norea-novel-local-error" size="sm">
-                {localChapterError}
-              </Text>
-            ) : null}
-
-            {metadataRefreshError ? (
-              <Text c="danger" className="norea-novel-local-error" size="sm">
-                {metadataRefreshError instanceof Error
-                  ? metadataRefreshError.message
-                  : String(metadataRefreshError)}
-              </Text>
-            ) : null}
-
-            {sourceRefreshFailure ? (
-              <StateView
-                action={{ label: t("common.retry"), onClick: serverSync.retry }}
-                color="warn"
-                title={t("novel.syncFailed")}
-                message={
-                  <span title={describeError(sourceRefreshFailure)}>
-                    {t("contentSync.sourceRefreshFailed")}
-                  </span>
-                }
-              />
-            ) : null}
-
-            {chaptersQuery.isLoading ? (
-              <StateView
-                color="info"
-                title={t("novel.loadingChapters")}
-                message={t("novel.loadingChaptersMessage")}
-              />
-            ) : chapters.length === 0 ? (
-              <StateView
-                color="info"
-                title={t("novel.noChapters")}
-                message={t("novel.noChaptersMessage")}
-                action={
-                  novel.isLocal
-                    ? {
-                        icon: addLocalChapters.isPending ? (
-                          <Loader size={14} />
-                        ) : (
-                          <PlusGlyph />
-                        ),
-                        label: t("novel.local.addChapters"),
-                        onClick: openLocalChapterInput,
+                      size="sm"
+                      title={t("novel.selection.markRead")}
+                    >
+                      {setSelectedChapterReadState.isPending &&
+                      setSelectedChapterReadState.variables?.unread === false ? (
+                        <Loader size={14} />
+                      ) : (
+                        <ReadIcon />
+                      )}
+                    </IconButton>
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      disabled={selectedReadCount === 0 || chapterSelectionBusy}
+                      label={t("novel.selection.markUnread")}
+                      onClick={() =>
+                        setSelectedChapterReadState.mutate({
+                          chapterIds: selectedChapterIdList,
+                          unread: true,
+                        })
                       }
-                    : undefined
-                }
-              />
-            ) : (
-              <VirtualChapterList
-                chapters={chapters}
-                canDeleteDownloads={!novel.isLocal}
-                canReorderChapters={novel.isLocal}
-                deleteBusyChapterId={clearDownload.variables}
-                duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
-                deletePending={clearDownload.isPending}
-                lastReadChapterId={lastReadChapterId}
-                repairBusyChapterId={repairMedia.variables?.id}
-                repairPending={repairMedia.isPending}
-                reorderPending={reorderLocalChapters.isPending}
-                selectedChapterIds={selectedChapterIds}
-                selectionMode={chapterSelectionMode}
-                statuses={statuses}
-                onOpen={(chapter) => {
-                  void openChapter(chapter);
-                }}
-                onDownload={downloadChapter}
-                onRepairMedia={(chapter) => repairMedia.mutate(chapter)}
-                onReorderChapter={reorderLocalChapter}
-                onToggleSelected={toggleChapterSelected}
-                onDeleteDownload={(chapterId) => {
-                  if (novel.isLocal) return;
-                  clearDownload.mutate(chapterId);
-                }}
-              />
-            )}
-          </ConsolePanel>
-        </div>
-      </PageFrame>
+                      size="sm"
+                      title={t("novel.selection.markUnread")}
+                    >
+                      {setSelectedChapterReadState.isPending &&
+                      setSelectedChapterReadState.variables?.unread === true ? (
+                        <Loader size={14} />
+                      ) : (
+                        <UnreadGlyph />
+                      )}
+                    </IconButton>
+                    {selectedChapterCount > 0 ? (
+                      <ChapterRelativeReadMenu
+                        afterCount={selectedAnchorAfterCount}
+                        beforeCount={selectedAnchorBeforeCount}
+                        busy={chapterSelectionBusy}
+                        previousDownloadCount={novel.isLocal ? 0 : previousDownloadTargets.length}
+                        onDownloadPrevious={() => downloadChapters(previousDownloadTargets)}
+                        showReadActions={selectedAnchorChapter !== undefined}
+                        onMarkFollowingUnread={() =>
+                          selectedAnchorChapter && setRelativeChapterReadState.mutate({
+                            anchorChapterId: selectedAnchorChapter.id,
+                            direction: "after",
+                            unread: true,
+                          })
+                        }
+                        onMarkPreviousRead={() =>
+                          selectedAnchorChapter && setRelativeChapterReadState.mutate({
+                            anchorChapterId: selectedAnchorChapter.id,
+                            direction: "before",
+                            unread: false,
+                          })
+                        }
+                      />
+                    ) : null}
+                    <IconButton
+                      className="norea-novel-selection-icon norea-state-layer"
+                      label={t("novel.selection.close")}
+                      onClick={closeChapterSelectionMode}
+                      size="sm"
+                      title={t("novel.selection.close")}
+                    >
+                      <CloseGlyph />
+                    </IconButton>
+                  </div>
+                </div>
+              ) : null}
+
+              {localChapterError ? (
+                <Text c="danger" className="norea-novel-local-error" size="sm">
+                  {localChapterError}
+                </Text>
+              ) : null}
+
+              {metadataRefreshError ? (
+                <Text c="danger" className="norea-novel-local-error" size="sm">
+                  {metadataRefreshError instanceof Error
+                    ? metadataRefreshError.message
+                    : String(metadataRefreshError)}
+                </Text>
+              ) : null}
+
+              {sourceRefreshFailure ? (
+                <StateView
+                  action={{ label: t("common.retry"), onClick: serverSync.retry }}
+                  color="warn"
+                  title={t("novel.syncFailed")}
+                  message={
+                    <span title={describeError(sourceRefreshFailure)}>
+                      {t("contentSync.sourceRefreshFailed")}
+                    </span>
+                  }
+                />
+              ) : null}
+
+              {chaptersQuery.isLoading ? (
+                <StateView
+                  color="info"
+                  title={t("novel.loadingChapters")}
+                  message={t("novel.loadingChaptersMessage")}
+                />
+              ) : chapters.length === 0 ? (
+                <StateView
+                  color="info"
+                  title={t("novel.noChapters")}
+                  message={t("novel.noChaptersMessage")}
+                  action={
+                    novel.isLocal
+                      ? {
+                          icon: addLocalChapters.isPending ? (
+                            <Loader size={14} />
+                          ) : (
+                            <PlusGlyph />
+                          ),
+                          label: t("novel.local.addChapters"),
+                          onClick: openLocalChapterInput,
+                        }
+                      : undefined
+                  }
+                />
+              ) : (
+                <VirtualChapterList
+                  chapters={chapters}
+                  canDeleteDownloads={!novel.isLocal}
+                  canReorderChapters={novel.isLocal && reorderMode}
+                  deleteBusyChapterId={clearDownload.variables}
+                  duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
+                  deletePending={clearDownload.isPending}
+                  lastReadChapterId={lastReadChapterId}
+                  repairBusyChapterId={repairMedia.variables?.id}
+                  repairPending={repairMedia.isPending}
+                  reorderPending={reorderLocalChapters.isPending}
+                  scrollElement={scrollElement}
+                  selectedChapterIds={selectedChapterIds}
+                  selectionMode={chapterSelectionMode}
+                  statuses={statuses}
+                  onOpen={(chapter) => {
+                    void openChapter(chapter);
+                  }}
+                  onDownload={downloadChapter}
+                  onRepairMedia={(chapter) => repairMedia.mutate(chapter)}
+                  onReorderChapter={reorderLocalChapter}
+                  onToggleSelected={toggleChapterSelected}
+                  onDeleteDownload={(chapterId) => {
+                    if (novel.isLocal) return;
+                    clearDownload.mutate(chapterId);
+                  }}
+                />
+              )}
+            </section>
+          </div>
+        </PageFrame>
+      </div>
+
+      {serverManagerSource ? (
+        <ServerChapterManager
+          name={novel.name}
+          onClose={() => setServerManagerSource(null)}
+          source={serverManagerSource}
+        />
+      ) : null}
 
       <Drawer
         classNames={{

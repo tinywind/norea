@@ -81,16 +81,6 @@ export function DownloadedGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function LibraryAddGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 4h10a4 4 0 0 1 4 4v12H9a4 4 0 0 0-4 4z" />
-      <path d="M12 9v6" />
-      <path d="M9 12h6" />
-    </svg>
-  );
-}
-
 export function LibraryAddedGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
@@ -165,15 +155,6 @@ export function PauseGlyph({ className }: ActionGlyphProps) {
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
       <path d="M8 5v14" />
       <path d="M16 5v14" />
-    </svg>
-  );
-}
-
-export function PlayFromStartGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 5v14" />
-      <path d="M10 5v14l9-7z" />
     </svg>
   );
 }
@@ -273,16 +254,6 @@ export function ReaderSettingsGlyph({ className }: ActionGlyphProps) {
       <path d="M4 17h16" />
       <path d="M8 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
       <path d="M16 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
-    </svg>
-  );
-}
-
-export function SourceGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 5h9a4 4 0 0 1 4 4v10H9a4 4 0 0 0-4 4z" />
-      <path d="M9 10h5" />
-      <path d="M9 14h4" />
     </svg>
   );
 }

@@ -15,37 +15,33 @@ import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
 import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
 import { TextButton } from "../TextButton";
 
-interface ServerChapterManagerProps {
-  novel: Pick<NovelDetailRecord, "name" | "pluginId" | "path">;
-  source: ServerNovelSource | null | undefined;
-  active: boolean;
-}
-
-export function ServerChapterManager({ novel, source, active }: ServerChapterManagerProps) {
-  const { t } = useTranslation();
+/**
+ * The content-server work that "Manage server data" opens for this novel, or
+ * null when the server holds none. Discovery stays silent on failure.
+ */
+export function useManagedServerWork(
+  novel: Pick<NovelDetailRecord, "pluginId" | "path"> | undefined,
+  source: ServerNovelSource | null | undefined,
+  active: boolean,
+): ServerNovelSource | null {
   const server = useContentSyncStore(state => state.serverUrl);
   const sourceServer = source?.serverUrl ?? server;
-  const [managedSource, setManagedSource] = useState<ServerNovelSource | null>(null);
   const presence = useQuery({
-    queryKey: ["content-server", "manage-work", sourceServer, novel.pluginId, novel.path],
+    queryKey: ["content-server", "manage-work", sourceServer, novel?.pluginId, novel?.path],
     queryFn: async ({ signal }) => {
+      if (!novel) return null;
       try { return await findServerWork(sourceServer, { pluginId: novel.pluginId, novelPath: novel.path }, signal); }
       catch { return source ?? null; } // Background discovery must not surface server errors on the work page.
     },
-    enabled: active && !!sourceServer,
+    enabled: active && !!novel && !!sourceServer,
     staleTime: 30_000,
     retry: false,
   });
-  const available = presence.data === undefined ? source : presence.data;
-  return <>
-    {available ? <TextButton size="sm" onClick={() => setManagedSource({ ...available })}>
-      {t("contentSync.manageChapters")}
-    </TextButton> : null}
-    {managedSource ? <ServerChapterManagerContent source={managedSource} name={novel.name} onClose={() => setManagedSource(null)} /> : null}
-  </>;
+  return (presence.data === undefined ? source : presence.data) ?? null;
 }
 
-function ServerChapterManagerContent({ source, name, onClose }: { source: ServerNovelSource; name: string; onClose: () => void }) {
+/** Full-screen management of one work's chapters on the content server. */
+export function ServerChapterManager({ source, name, onClose }: { source: ServerNovelSource; name: string; onClose: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);

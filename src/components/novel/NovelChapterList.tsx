@@ -446,6 +446,8 @@ interface VirtualChapterListProps {
   repairBusyChapterId: number | undefined;
   repairPending: boolean;
   reorderPending: boolean;
+  /** The page's scroll container; the list renders only the rows inside its viewport. */
+  scrollElement: HTMLElement | null;
   selectedChapterIds: ReadonlySet<number>;
   selectionMode: boolean;
   statuses: ReadonlyMap<number, ChapterDownloadStatus>;
@@ -468,6 +470,7 @@ export function VirtualChapterList({
   repairBusyChapterId,
   repairPending,
   reorderPending,
+  scrollElement,
   selectedChapterIds,
   selectionMode,
   statuses,
@@ -478,7 +481,7 @@ export function VirtualChapterList({
   onReorderChapter,
   onToggleSelected,
 }: VirtualChapterListProps) {
-  const viewportRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
@@ -516,33 +519,38 @@ export function VirtualChapterList({
     [canReorderChapters, chapters],
   );
   useEffect(() => {
-    const element = viewportRef.current;
-    if (!element) return;
+    const list = listRef.current;
+    if (!list || !scrollElement) return;
 
-    const updateViewportHeight = () => {
-      setViewportHeight(element.clientHeight || chapterRowHeight);
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      // How far the list's top has scrolled above the page viewport's top.
+      const offset =
+        scrollElement.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      setScrollTop(Math.max(0, offset));
+      setViewportHeight(scrollElement.clientHeight || chapterRowHeight);
+    };
+    const schedule = () => {
+      if (frame === 0) frame = window.requestAnimationFrame(measure);
     };
 
-    updateViewportHeight();
-
+    measure();
+    scrollElement.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
     const resizeObserver =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(updateViewportHeight);
-
-    resizeObserver?.observe(element);
-    window.addEventListener("resize", updateViewportHeight);
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    resizeObserver?.observe(scrollElement);
+    // Content above the list, such as an expanded summary, moves it without a scroll.
+    for (const child of Array.from(scrollElement.children)) resizeObserver?.observe(child);
 
     return () => {
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+      scrollElement.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
       resizeObserver?.disconnect();
-      window.removeEventListener("resize", updateViewportHeight);
     };
-  }, [chapterRowHeight]);
-
-  useEffect(() => {
-    const maxScrollTop = Math.max(0, totalHeight - viewportHeight);
-    setScrollTop((current) => Math.min(current, maxScrollTop));
-  }, [totalHeight, viewportHeight]);
+  }, [chapterRowHeight, scrollElement]);
 
   const handleDragEnd = (event: DragEndEvent) => {
     if (!canReorderChapters || reorderPending) return;
@@ -564,11 +572,7 @@ export function VirtualChapterList({
   };
 
   const chapterList = (
-    <div
-      className="norea-novel-chapter-list"
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      ref={viewportRef}
-    >
+    <div className="norea-novel-chapter-list" ref={listRef}>
       <div
         className="norea-novel-chapter-list-spacer"
         style={{ height: totalHeight }}

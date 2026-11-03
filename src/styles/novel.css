@@ -1,8 +1,9 @@
 .norea-novel-page {
-  --norea-page-max-width: 80rem;
-  --norea-page-block: 0.875rem;
   box-sizing: border-box;
-  min-height: var(--norea-app-content-height);
+  height: var(--norea-app-content-height);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .norea-novel-file-input {
@@ -72,302 +73,238 @@
   font-variant-numeric: tabular-nums;
 }
 
+.norea-novel-app-bar {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  gap: var(--norea-space-1);
+  min-height: 3.5rem;
+  padding: 0 var(--norea-space-2);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.norea-novel-app-bar-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-lg);
+  font-weight: var(--norea-weight-bold);
+  min-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity var(--norea-duration-fast) var(--norea-ease-standard);
+  white-space: nowrap;
+}
+
+.norea-novel-app-bar[data-title-visible="true"] .norea-novel-app-bar-title {
+  opacity: 1;
+}
+
+.norea-novel-frame {
+  --norea-page-block: var(--norea-space-4);
+}
+
 .norea-novel-layout {
   display: flex;
   flex-direction: column;
-  gap: var(--norea-space-4);
-  min-height: calc(var(--norea-app-content-height) - (var(--norea-page-block) * 2));
-}
-
-.norea-novel-workspace {
-  --norea-novel-hero-height: 16.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-3);
-}
-
-.norea-novel-hero-desktop {
-  align-items: stretch;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: 10.5rem minmax(0, 1fr) minmax(16.25rem, 0.72fr);
-}
-
-.norea-novel-cover-panel,
-.norea-novel-info-panel,
-.norea-novel-summary-panel {
-  height: var(--norea-novel-hero-height);
-  min-height: 0;
-}
-
-.norea-novel-hero-mobile {
-  display: none;
-}
-
-.norea-novel-cover-summary-card {
-  display: none;
-}
-
-.norea-novel-cover-panel {
-  align-items: center;
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-3);
-  grid-column: 1;
-  justify-content: flex-start;
-  padding: var(--norea-space-3);
-}
-
-.norea-novel-info-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-3);
-  grid-column: 2;
-  min-height: 0;
-  overflow: hidden;
-  padding: var(--norea-space-4);
-}
-
-.norea-novel-title-row {
-  align-items: stretch;
-  display: grid;
-  flex: 1 1 auto;
-  gap: var(--norea-space-3);
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  min-height: 0;
-}
-
-.norea-novel-title-copy {
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  max-height: 7.25rem;
+  gap: var(--norea-space-5);
   min-width: 0;
+}
+
+.norea-novel-hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--norea-space-4);
+  min-width: 0;
+}
+
+.norea-novel-identity {
+  align-items: start;
+  display: grid;
+  gap: var(--norea-space-4);
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+}
+
+.norea-novel-cover {
+  border-radius: var(--norea-radius-sm);
   overflow: hidden;
 }
 
-.norea-novel-title-actions {
-  align-items: center;
-  align-self: start;
-  display: inline-flex;
-  gap: var(--norea-space-2);
-  justify-content: flex-end;
+.norea-novel-cover .norea-console-cover {
+  aspect-ratio: 2 / 3;
+  display: flex;
+  height: auto;
+  max-width: 100%;
+  width: 100%;
 }
 
-@media (min-width: 992px) {
-  .norea-novel-title-actions {
-    display: grid;
-    grid-auto-rows: 2.5rem;
-    grid-template-columns: repeat(2, 2.5rem);
-    justify-items: end;
-  }
-}
-
-@media (min-width: 1200px) {
-  .norea-novel-title-actions {
-    grid-template-columns: repeat(3, 2.5rem);
-  }
+.norea-novel-identity-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--norea-space-1);
+  min-width: 0;
 }
 
 .norea-novel-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   color: var(--norea-color-ink);
-  flex: 0 1 auto;
+  display: -webkit-box;
   font-family: var(--norea-font-ui);
-  font-size: var(--norea-novel-title-font-size, var(--norea-text-2xl));
-  font-weight: 650;
-  letter-spacing: 0;
-  line-height: 1.12;
-  margin: 0;
-  min-height: 0;
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  line-height: 1.3;
+  margin: 0 0 var(--norea-space-1);
   overflow: hidden;
+  overflow-wrap: anywhere;
+  padding-bottom: 0.0625rem;
+}
+
+.norea-novel-byline,
+.norea-novel-meta {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--norea-leading-tight);
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
-.norea-novel-meta-row {
-  flex: 0 0 auto;
+.norea-novel-byline {
+  color: var(--norea-color-ink);
 }
 
-.norea-novel-meta,
-.norea-novel-chapter-meta {
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.35;
-}
-
-.norea-novel-identity-strip {
-  border-block: 1px solid var(--norea-color-rule);
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: nowrap !important;
-  gap: var(--norea-space-2);
-  grid-area: identity;
-  min-width: 0;
-  overflow: hidden;
-  padding-block: var(--norea-space-2);
-}
-
-.norea-novel-status-block {
-  align-items: center;
-  display: grid;
-  flex: 0 0 auto;
-  gap: var(--norea-space-3);
-  grid-template-areas: "identity progress";
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-  margin-top: auto;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.norea-novel-progress-block {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  display: grid;
-  flex: 0 0 auto;
-  gap: var(--norea-space-3);
-  grid-template-columns: minmax(0, 1fr) auto;
-  margin-top: 0;
-  padding: 0;
-}
-
-.norea-novel-progress-row {
-  grid-area: progress;
-  min-width: 0;
-}
-
-.norea-novel-tags-row {
-  align-content: flex-start;
+.norea-novel-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--norea-space-2);
-  margin-top: var(--norea-space-3);
-  min-height: 0;
 }
 
-.norea-novel-genre-chip {
-  display: inline-flex;
-  max-width: 100%;
-}
-
-.norea-novel-tags-row .norea-console-chip {
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.norea-novel-progress-line {
-  align-items: center;
-  color: var(--norea-color-ink-muted);
-  display: grid;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  gap: var(--norea-space-3);
-  grid-template-columns: minmax(10rem, 1fr) auto;
-}
-
-.norea-novel-progress-line .norea-console-progress {
-  height: 0.4375rem;
-}
-
-.norea-novel-read-actions {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-1);
-  justify-content: flex-end;
-}
-
-.norea-novel-read-icon-button {
-  align-items: center;
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  display: inline-flex;
-  flex: 0 0 auto;
-  height: 2.5rem;
-  justify-content: center;
-  width: 2.5rem;
-}
-
-.norea-novel-read-icon-button:hover:not(:disabled) {
-  background: var(--norea-color-surface-raised);
-  color: var(--norea-color-ink);
-}
-
-.norea-novel-read-icon-button:focus-visible {
-  outline: var(--norea-focus-width) solid var(--norea-color-focus);
-  outline-offset: 0.125rem;
-}
-
-.norea-novel-read-icon-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.46;
-}
-
-.norea-novel-read-icon-button[data-tone="accent"] {
-  background: var(--norea-color-accent-soft);
-  border-color: var(--norea-color-accent);
-  color: var(--norea-color-accent);
-}
-
-.norea-novel-read-icon-button svg {
-  fill: none;
-  height: 1.125rem;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 1.125rem;
-}
-
-.norea-novel-summary-panel {
+.norea-novel-summary {
   display: flex;
   flex-direction: column;
-  grid-column: 3;
-  overflow: hidden;
+  gap: var(--norea-space-2);
 }
 
-.norea-novel-summary-content {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: var(--norea-space-3);
-}
-
-.norea-novel-summary-text,
-.norea-novel-empty-copy {
+.norea-novel-summary-text {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   color: var(--norea-color-ink-muted);
-  font-size: var(--norea-text-sm);
-  line-height: 1.55;
+  display: -webkit-box;
+  font-size: var(--norea-text-md);
+  line-height: var(--norea-leading-normal);
   margin: 0;
+  overflow: hidden;
   white-space: pre-wrap;
 }
 
-.norea-novel-empty-copy {
-  color: var(--norea-color-ink-muted);
+.norea-novel-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  list-style: none;
+  margin: var(--norea-space-2) 0 0;
+  max-height: 1.75rem;
+  overflow: hidden;
+  padding: 0;
 }
 
-.norea-novel-chapters-panel {
+.norea-novel-summary[data-expanded="true"] .norea-novel-summary-text {
+  -webkit-line-clamp: unset;
+  display: block;
+}
+
+.norea-novel-summary[data-expanded="true"] .norea-novel-genres {
+  max-height: none;
+}
+
+.norea-novel-genre {
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-xs);
+  line-height: 1.5rem;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 var(--norea-space-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-novel-summary-toggle {
+  align-self: flex-start;
+}
+
+.norea-novel-chapters {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
-  min-height: 0;
-  padding: var(--norea-space-3);
+  min-width: 0;
+}
+
+.norea-novel-chapters-header {
+  align-items: center;
+  background: var(--norea-color-bg);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  gap: var(--norea-space-2);
+  min-height: 3.5rem;
+  position: sticky;
+  top: 3.5rem;
+  z-index: 2;
+}
+
+.norea-novel-chapters-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-medium);
+  margin: 0;
+  min-width: 0;
 }
 
 .norea-novel-chapter-list {
-  flex: 1 1 auto;
-  height: auto;
-  margin-top: var(--norea-space-3);
-  max-height: none;
-  min-height: 0;
-  overflow-y: auto;
   position: relative;
+}
+
+@media (min-width: 768px) {
+  .norea-novel-identity {
+    grid-template-columns: 8.5rem minmax(0, 1fr);
+  }
+
+  .norea-novel-title {
+    font-size: var(--norea-text-2xl);
+  }
+}
+
+@media (min-width: 992px) {
+  .norea-novel-layout {
+    align-items: start;
+    display: grid;
+    gap: var(--norea-space-6);
+    grid-template-columns: 22rem minmax(0, 1fr);
+  }
+
+  /* The info pane stays in view and scrolls on its own once the summary expands. */
+  .norea-novel-info-pane {
+    max-height: calc(var(--norea-app-content-height) - 3.5rem - var(--norea-space-5));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    position: sticky;
+    top: calc(3.5rem + var(--norea-space-4));
+  }
+
+  .norea-novel-identity {
+    grid-template-columns: 1fr;
+  }
+
+  .norea-novel-cover {
+    width: 11rem;
+  }
 }
 
 .norea-novel-selection-strip {
@@ -588,6 +525,14 @@
 .norea-novel-chapter-title[data-read="true"] {
   color: var(--norea-color-ink-muted);
   font-weight: 500;
+}
+
+.norea-novel-chapter-meta {
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
 }
 
 .norea-novel-chapter-meta-row {
@@ -823,209 +768,6 @@
 }
 
 @media (max-width: 991px) {
-  .norea-novel-page {
-    height: var(--norea-app-content-height);
-    min-height: 0;
-    overflow-y: auto;
-  }
-
-  .norea-novel-page > .norea-page-frame-stack,
-  .norea-novel-layout {
-    height: 100%;
-    min-height: 0;
-  }
-
-  .norea-novel-workspace {
-    --norea-novel-hero-height: auto;
-    --norea-novel-mobile-cover-height: 12.75rem;
-    --norea-novel-mobile-cover-width: 8.5rem;
-    flex: 0 0 auto;
-  }
-
-  .norea-novel-chapters-panel {
-    flex: 1 0 20rem;
-  }
-
-  .norea-novel-chapters-panel > .norea-console-section-header {
-    flex-shrink: 0;
-  }
-
-  .norea-novel-hero-desktop {
-    display: none;
-  }
-
-  .norea-novel-hero-mobile {
-    display: flex;
-    flex-direction: column;
-    gap: var(--norea-space-3);
-  }
-
-  .norea-novel-cover-summary-card {
-    background: var(--norea-color-surface);
-    border: 1px solid var(--norea-color-rule);
-    border-radius: var(--norea-radius-sm);
-    display: grid;
-    gap: var(--norea-space-3);
-    grid-template-columns: var(--norea-novel-mobile-cover-width) minmax(0, 1fr);
-    min-height: 0;
-    overflow: hidden;
-    padding: var(--norea-space-3);
-  }
-
-  .norea-novel-cover-summary-card > .norea-console-panel {
-    background: transparent;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-  }
-
-  .norea-novel-cover-summary-card .norea-console-panel-title {
-    padding: 0 0 var(--norea-space-2);
-  }
-
-  .norea-novel-info-panel {
-    gap: var(--norea-space-3);
-    grid-column: auto;
-    height: auto;
-    justify-content: flex-start;
-    overflow: visible;
-    padding: var(--norea-space-3) var(--norea-space-4);
-  }
-
-  .norea-novel-title-row {
-    align-items: start;
-    flex: 0 0 auto;
-    grid-template-columns: auto minmax(0, 1fr);
-    min-height: auto;
-  }
-
-  .norea-novel-title-copy {
-    align-self: auto;
-    display: block;
-    height: auto;
-    max-height: none;
-    overflow: visible;
-  }
-
-  .norea-novel-title {
-    flex: initial;
-    font-size: var(--norea-text-2xl);
-    overflow: visible;
-  }
-
-  .norea-novel-cover-panel {
-    align-items: flex-start;
-    flex-direction: column;
-    grid-column: auto;
-    height: var(--norea-novel-mobile-cover-height);
-    padding: 0;
-  }
-
-  .norea-novel-cover-panel .norea-console-cover {
-    height: var(--norea-novel-mobile-cover-height) !important;
-    width: var(--norea-novel-mobile-cover-width) !important;
-  }
-
-  .norea-novel-summary-panel {
-    grid-column: auto;
-    height: var(--norea-novel-mobile-cover-height);
-    min-height: 0;
-  }
-
-  .norea-novel-summary-content {
-    padding: 0;
-  }
-
-  .norea-novel-identity-strip {
-    border-block: 0;
-    display: flex;
-    flex-wrap: nowrap !important;
-    gap: var(--norea-space-2);
-    grid-area: identity;
-    min-width: 0;
-    overflow: hidden;
-    padding-block: 0;
-  }
-
-  .norea-novel-status-block {
-    --norea-novel-progress-line-width: 60%;
-    align-items: center;
-    background: var(--norea-color-surface);
-    border: 1px solid var(--norea-color-rule-strong);
-    border-radius: var(--norea-radius-sm);
-    display: grid;
-    flex: 0 0 auto;
-    gap: var(--norea-space-2);
-    grid-template-areas: "identity progress read actions";
-    grid-template-columns:
-      minmax(0, auto)
-      minmax(0, var(--norea-novel-progress-line-width))
-      auto
-      auto;
-    margin-top: 0;
-    min-height: auto;
-    overflow: visible;
-    padding: var(--norea-space-2) var(--norea-space-3);
-  }
-
-  .norea-novel-status-block .norea-console-chip {
-    flex: 0 1 auto;
-    font-size: var(--norea-text-xs);
-    min-width: 0;
-    overflow: hidden;
-    padding: var(--norea-space-1) var(--norea-space-2);
-    text-overflow: ellipsis;
-  }
-
-  .norea-novel-status-block button.norea-console-chip {
-    padding-inline: 0.5625rem;
-  }
-
-  .norea-novel-genre-chip {
-    display: inline-flex;
-  }
-
-  .norea-novel-progress-block {
-    display: contents;
-  }
-
-  .norea-novel-progress-row {
-    display: contents;
-  }
-
-  .norea-novel-progress-row > .norea-novel-title-actions {
-    align-self: center;
-    grid-area: actions;
-    justify-self: end;
-  }
-
-  .norea-novel-progress-line {
-    display: grid;
-    grid-area: progress;
-    grid-template-columns: minmax(0, 1fr) auto;
-    min-width: 0;
-    overflow: hidden;
-    width: 100%;
-  }
-
-  .norea-novel-progress-line .norea-console-progress {
-    display: block;
-    min-width: 0;
-  }
-
-  .norea-novel-progress-line span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: clip;
-    white-space: nowrap;
-  }
-
-  .norea-novel-read-actions {
-    grid-area: read;
-    justify-content: flex-start;
-    min-width: 0;
-  }
-
   .norea-novel-chapter-row {
     gap: var(--norea-space-2);
     grid-template-areas: "content actions";
@@ -1079,63 +821,14 @@
   .norea-novel-chapter-flags--inline {
     display: none;
   }
-
-  .norea-novel-chapters-panel .norea-console-kicker,
-  .norea-novel-chapters-panel .norea-console-section-title {
-    display: none;
-  }
 }
 
 @media (max-width: 767px) {
-  .norea-novel-workspace {
-    --norea-novel-mobile-cover-height: 9.375rem;
-    --norea-novel-mobile-cover-width: 6.25rem;
-  }
-
-  .norea-novel-title-row {
-    gap: var(--norea-space-2);
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .norea-novel-title-actions {
-    gap: var(--norea-space-1);
-    justify-content: flex-end;
-  }
-
-  .norea-novel-selection-strip {
-    padding-inline: var(--norea-space-2);
-  }
-
-  .norea-novel-selection-actions {
-    gap: var(--norea-space-1);
-    overflow-x: auto;
-  }
-
-  .norea-novel-title {
-    font-size: var(--norea-text-xl);
-  }
-
-  .norea-novel-status-block {
-    --norea-novel-progress-line-width: 50%;
-  }
-
   .norea-novel-chapter-flags--desktop {
     justify-content: flex-end;
   }
 
   .norea-novel-chapter-actions {
     justify-content: flex-end;
-  }
-}
-
-@media (max-width: 575px) {
-  .norea-novel-status-block {
-    --norea-novel-progress-line-width: 50%;
-    grid-template-areas:
-      "identity progress"
-      "read actions";
-    grid-template-columns:
-      minmax(0, 1fr)
-      minmax(0, var(--norea-novel-progress-line-width));
   }
 }

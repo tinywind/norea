@@ -1,7 +1,9 @@
 import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
+import { type TranslationKey } from "../../i18n";
 import { getPluginBaseUrl } from "../../lib/plugins/base-url";
 import { pluginManager } from "../../lib/plugins/manager";
+import { NovelStatus } from "../../lib/plugins/types";
 import { type SourceDuplicateChapterInfo } from "../../lib/plugins/sync-novel";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 export const FINISHED_PROGRESS = 100;
@@ -65,6 +67,36 @@ export function normalizeDateText(value: string): string {
 
 export function formatChapterPosition(position: number): string {
   return `#${String(position).padStart(2, "0")}`;
+}
+
+/** The number a reader knows the chapter by: its source number, else its position. */
+export function formatChapterNumber(
+  chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
+): string {
+  return chapter.chapterNumber?.trim() || String(chapter.position);
+}
+
+const NOVEL_STATUS_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
+  [NovelStatus.Ongoing]: "novel.status.ongoing",
+  [NovelStatus.Completed]: "novel.status.completed",
+  [NovelStatus.Licensed]: "novel.status.licensed",
+  [NovelStatus.PublishingFinished]: "novel.status.publishingFinished",
+  [NovelStatus.Cancelled]: "novel.status.cancelled",
+  [NovelStatus.OnHiatus]: "novel.status.onHiatus",
+};
+
+/**
+ * The status to show for a novel: a known plugin value in the app language,
+ * free text as written, and nothing for an empty or "Unknown" status.
+ */
+export function novelStatusLabel(
+  status: string | null,
+  translate: (key: TranslationKey) => string,
+): string | null {
+  const value = status?.trim();
+  if (!value || value === NovelStatus.Unknown) return null;
+  const key = NOVEL_STATUS_LABEL_KEYS[value];
+  return key ? translate(key) : value;
 }
 
 export function chapterDndId(chapterId: number): string {
@@ -213,6 +245,17 @@ export function findContinueReadingChapter(
     return readingOrder[lastReadIndex + 1] ?? lastRead;
   }
   return readingOrder.find((chapter) => chapter.unread) ?? readingOrder[0] ?? null;
+}
+
+/** Whether the user has opened one of these chapters before. */
+export function hasReadingHistory(
+  chapters: readonly ChapterListRow[],
+  lastReadChapterId: number | undefined,
+): boolean {
+  return (
+    lastReadChapterId !== undefined &&
+    chapters.some((chapter) => chapter.id === lastReadChapterId)
+  );
 }
 
 export function resolveNovelSourceUrl(novel: NovelDetailRecord): string | null {

@@ -1,40 +1,59 @@
-import { Loader, Popover } from "@mantine/core";
-import { useState, type ReactNode } from "react";
+import { Loader, Popover, Stack, Text } from "@mantine/core";
+import { useState } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
 import { DEFAULT_CHAPTER_SORT_LABEL_KEYS } from "../../lib/library-settings-options";
 import { type DefaultChapterSort } from "../../store/library";
-import {
-  DownloadGlyph,
-  MoreGlyph,
-  RefreshGlyph,
-  SortGlyph,
-} from "../ActionGlyphs";
+import { MoreGlyph } from "../ActionGlyphs";
 import { IconButton } from "../IconButton";
+import { SortIcon } from "../ui/icons";
+import { ListRow } from "../ui/ListRow";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { type BatchDownloadOption } from "./novel-detail-model";
-interface NovelActionButtonProps {
-  active?: boolean;
-  children: ReactNode;
-  disabled?: boolean;
-  label: string;
-  onClick: () => void;
-  pressed?: boolean;
-  tone?: "default" | "accent" | "success";
-}
 
-interface NovelBatchDownloadMenuProps {
-  disabled: boolean;
+interface NovelDownloadSheetProps {
+  onClose: () => void;
   onDownload: (chapters: ChapterListRow[]) => void;
-  options: BatchDownloadOption[];
+  opened: boolean;
+  options: readonly BatchDownloadOption[];
 }
 
-interface NovelMetadataRefreshMenuProps {
-  fullRefreshing: boolean;
-  onFullRefresh: () => void;
-  onRefresh: () => void;
-  refreshing: boolean;
-}
+/** The novel's download choices, each with the chapters it would queue. */
+export function NovelDownloadSheet({
+  onClose,
+  onDownload,
+  opened,
+  options,
+}: NovelDownloadSheetProps) {
+  const { t } = useTranslation();
 
+  return (
+    <ResponsiveSheet
+      onClose={onClose}
+      opened={opened}
+      title={t("novel.batchDownload.open")}
+    >
+      <Stack gap={0}>
+        {options.map((option) => (
+          <ListRow
+            disabled={option.chapters.length === 0}
+            key={option.key}
+            onClick={() => {
+              onDownload(option.chapters);
+              onClose();
+            }}
+            title={option.label}
+            trailing={
+              <Text c="dimmed" size="sm">
+                {option.description}
+              </Text>
+            }
+          />
+        ))}
+      </Stack>
+    </ResponsiveSheet>
+  );
+}
 interface ChapterRelativeReadMenuProps {
   afterCount: number;
   beforeCount: number;
@@ -44,85 +63,6 @@ interface ChapterRelativeReadMenuProps {
   showReadActions: boolean;
   onMarkFollowingUnread: () => void;
   onMarkPreviousRead: () => void;
-}
-
-export function NovelActionButton({
-  active = false,
-  children,
-  disabled = false,
-  label,
-  onClick,
-  pressed,
-  tone = "default",
-}: NovelActionButtonProps) {
-  return (
-    <IconButton
-      active={active}
-      aria-pressed={pressed}
-      className="norea-novel-icon-button"
-      disabled={disabled}
-      label={label}
-      onClick={onClick}
-      size="lg"
-      tone={tone}
-    >
-      {children}
-    </IconButton>
-  );
-}
-
-export function NovelBatchDownloadMenu({
-  disabled,
-  onDownload,
-  options,
-}: NovelBatchDownloadMenuProps) {
-  const { t } = useTranslation();
-  const [opened, setOpened] = useState(false);
-
-  return (
-    <Popover
-      opened={opened}
-      onChange={setOpened}
-      position="bottom-end"
-      shadow="md"
-      width={260}
-    >
-      <Popover.Target>
-        <IconButton
-          className="norea-novel-icon-button"
-          disabled={disabled}
-          label={t("novel.batchDownload.open")}
-          onClick={() => setOpened((current) => !current)}
-          size="lg"
-        >
-          <DownloadGlyph />
-        </IconButton>
-      </Popover.Target>
-      <Popover.Dropdown className="norea-novel-batch-download-menu">
-        <div className="norea-novel-batch-download-list">
-          {options.map((option) => (
-            <button
-              className="norea-novel-batch-download-option norea-state-layer"
-              disabled={option.chapters.length === 0}
-              key={option.key}
-              onClick={() => {
-                onDownload(option.chapters);
-                setOpened(false);
-              }}
-              type="button"
-            >
-              <span className="norea-novel-batch-download-label">
-                {option.label}
-              </span>
-              <span className="norea-novel-batch-download-description">
-                {option.description}
-              </span>
-            </button>
-          ))}
-        </div>
-      </Popover.Dropdown>
-    </Popover>
-  );
 }
 
 export function ChapterRelativeReadMenu({
@@ -220,75 +160,6 @@ export function ChapterRelativeReadMenu({
   );
 }
 
-export function NovelMetadataRefreshMenu({
-  fullRefreshing,
-  onFullRefresh,
-  onRefresh,
-  refreshing,
-}: NovelMetadataRefreshMenuProps) {
-  const { t } = useTranslation();
-  const [opened, setOpened] = useState(false);
-  const busy = refreshing || fullRefreshing;
-
-  return (
-    <Popover
-      opened={opened}
-      onChange={setOpened}
-      position="bottom-end"
-      shadow="md"
-      width={280}
-    >
-      <Popover.Target>
-        <IconButton
-          className="norea-novel-icon-button"
-          disabled={busy}
-          label={t("novel.refreshMetadataMenu")}
-          onClick={() => setOpened((current) => !current)}
-          size="lg"
-        >
-          {busy ? <Loader size={14} /> : <RefreshGlyph />}
-        </IconButton>
-      </Popover.Target>
-      <Popover.Dropdown className="norea-novel-batch-download-menu">
-        <div className="norea-novel-batch-download-list">
-          <button
-            className="norea-novel-batch-download-option norea-state-layer"
-            disabled={busy}
-            onClick={() => {
-              onRefresh();
-              setOpened(false);
-            }}
-            type="button"
-          >
-            <span className="norea-novel-batch-download-label">
-              {t("novel.refreshMetadata")}
-            </span>
-            <span className="norea-novel-batch-download-description">
-              {t("novel.refreshMetadataDescription")}
-            </span>
-          </button>
-          <button
-            className="norea-novel-batch-download-option norea-state-layer"
-            disabled={busy}
-            onClick={() => {
-              onFullRefresh();
-              setOpened(false);
-            }}
-            type="button"
-          >
-            <span className="norea-novel-batch-download-label">
-              {t("novel.refreshMetadataFull")}
-            </span>
-            <span className="norea-novel-batch-download-description">
-              {t("novel.refreshMetadataFullDescription")}
-            </span>
-          </button>
-        </div>
-      </Popover.Dropdown>
-    </Popover>
-  );
-}
-
 interface ChapterSortPickerProps {
   onChange: (value: DefaultChapterSort) => void;
   value: DefaultChapterSort;
@@ -302,43 +173,13 @@ export function ChapterSortPicker({ onChange, value }: ChapterSortPickerProps) {
   return (
     <IconButton
       active={value === "desc"}
-      className="norea-novel-icon-button norea-novel-chapter-sort-button"
+      className="norea-novel-chapter-sort-button"
       data-sort-direction={value}
-      label={activeLabel}
+      label={`${t("librarySettings.defaultChapterSort")}: ${activeLabel}`}
       onClick={() => onChange(nextValue)}
       size="lg"
-      title={`${t("librarySettings.defaultChapterSort")}: ${activeLabel}`}
     >
-      <SortGlyph />
-    </IconButton>
-  );
-}
-
-interface NovelReadButtonProps {
-  children: ReactNode;
-  disabled: boolean;
-  label: string;
-  onClick: () => void;
-  tone?: "default" | "accent";
-}
-
-export function NovelReadButton({
-  children,
-  disabled,
-  label,
-  onClick,
-  tone = "default",
-}: NovelReadButtonProps) {
-  return (
-    <IconButton
-      className="norea-novel-read-icon-button"
-      disabled={disabled}
-      label={label}
-      onClick={onClick}
-      size="lg"
-      tone={tone}
-    >
-      {children}
+      <SortIcon />
     </IconButton>
   );
 }
