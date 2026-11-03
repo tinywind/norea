@@ -1,22 +1,23 @@
-import { NumberInput, Select, Stack, Switch } from "@mantine/core";
+import { Group, SegmentedControl, Select, Stack } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
-import { SegmentedToggle } from "./SegmentedToggle";
 import { SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
 import { useTranslation } from "../i18n";
 import {
   DEFAULT_CHAPTER_SORT_LABEL_KEYS,
   DEFAULT_CHAPTER_SORT_ORDERS,
-  LIBRARY_DISPLAY_MODE_LABEL_KEYS,
-  LIBRARY_DISPLAY_MODES,
-  LIBRARY_SORT_ORDER_LABEL_KEYS,
-  LIBRARY_SORT_ORDERS,
+  getLibrarySortDirection,
+  getLibrarySortField,
+  LIBRARY_SORT_DIRECTION_LABEL_KEYS,
+  LIBRARY_SORT_FIELD_LABEL_KEYS,
+  LIBRARY_SORT_FIELDS,
+  toLibrarySortOrder,
+  type LibrarySortDirection,
+  type LibrarySortField,
 } from "../lib/library-settings-options";
 import {
   useLibraryStore,
   type DefaultChapterSort,
-  type LibraryDisplayMode,
-  type LibrarySortOrder,
 } from "../store/library";
 
 export function LibrarySettingsPanel() {
@@ -29,20 +30,8 @@ export function LibrarySettingsPanel() {
     queryFn: () => listCategories(),
     staleTime: Infinity,
   });
-  const displayMode = useLibraryStore((s) => s.displayMode);
-  const setDisplayMode = useLibraryStore((s) => s.setDisplayMode);
-  const novelsPerRow = useLibraryStore((s) => s.novelsPerRow);
-  const setNovelsPerRow = useLibraryStore((s) => s.setNovelsPerRow);
   const sortOrder = useLibraryStore((s) => s.sortOrder);
   const setSortOrder = useLibraryStore((s) => s.setSortOrder);
-  const showDownloadBadges = useLibraryStore((s) => s.showDownloadBadges);
-  const setShowDownloadBadges = useLibraryStore(
-    (s) => s.setShowDownloadBadges,
-  );
-  const showUnreadBadges = useLibraryStore((s) => s.showUnreadBadges);
-  const setShowUnreadBadges = useLibraryStore((s) => s.setShowUnreadBadges);
-  const showNumberBadges = useLibraryStore((s) => s.showNumberBadges);
-  const setShowNumberBadges = useLibraryStore((s) => s.setShowNumberBadges);
   const defaultChapterSort = useLibraryStore((s) => s.defaultChapterSort);
   const setDefaultChapterSort = useLibraryStore(
     (s) => s.setDefaultChapterSort,
@@ -50,7 +39,7 @@ export function LibrarySettingsPanel() {
 
   return (
     <Stack gap="md">
-      <SettingsSection title={t("librarySettings.group.sorting")}>
+      <SettingsSection title={t("librarySettings.group.defaults")}>
         <SettingsFieldRow
           label={t("librarySettings.defaultCategory")}
           description={t("librarySettings.defaultCategory.description")}
@@ -77,16 +66,42 @@ export function LibrarySettingsPanel() {
           label={t("librarySettings.sort")}
           description={t("librarySettings.sort.description")}
         >
-          <Select
-            data={LIBRARY_SORT_ORDERS.map((value) => ({
-              value,
-              label: t(LIBRARY_SORT_ORDER_LABEL_KEYS[value]),
-            }))}
-            value={sortOrder}
-            onChange={(value) => {
-              if (value) setSortOrder(value as LibrarySortOrder);
-            }}
-          />
+          <Group gap="xs" wrap="wrap">
+            <Select
+              aria-label={t("library.viewOptions.sortBy")}
+              data={LIBRARY_SORT_FIELDS.map((value) => ({
+                value,
+                label: t(LIBRARY_SORT_FIELD_LABEL_KEYS[value]),
+              }))}
+              value={getLibrarySortField(sortOrder)}
+              onChange={(value) => {
+                if (value) {
+                  setSortOrder(
+                    toLibrarySortOrder(
+                      value as LibrarySortField,
+                      getLibrarySortDirection(sortOrder),
+                    ),
+                  );
+                }
+              }}
+            />
+            <SegmentedControl
+              aria-label={t("library.viewOptions.direction")}
+              data={(["asc", "desc"] as const).map((value) => ({
+                value,
+                label: t(LIBRARY_SORT_DIRECTION_LABEL_KEYS[value]),
+              }))}
+              value={getLibrarySortDirection(sortOrder)}
+              onChange={(value) =>
+                setSortOrder(
+                  toLibrarySortOrder(
+                    getLibrarySortField(sortOrder),
+                    value as LibrarySortDirection,
+                  ),
+                )
+              }
+            />
+          </Group>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("librarySettings.defaultChapterSort")}
@@ -105,71 +120,6 @@ export function LibrarySettingsPanel() {
         </SettingsFieldRow>
       </SettingsSection>
 
-      <SettingsSection title={t("librarySettings.group.layout")}>
-        <SettingsFieldRow
-          label={t("librarySettings.displayMode")}
-          description={t("librarySettings.displayMode.description")}
-        >
-          <SegmentedToggle
-            data={LIBRARY_DISPLAY_MODES.map((value) => ({
-              value,
-              label: t(LIBRARY_DISPLAY_MODE_LABEL_KEYS[value]),
-            }))}
-            value={displayMode}
-            onChange={(value) => setDisplayMode(value as LibraryDisplayMode)}
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("librarySettings.novelsPerRow")}
-          description={t("librarySettings.novelsPerRow.description")}
-        >
-          <NumberInput
-            min={1}
-            max={5}
-            value={novelsPerRow}
-            onChange={(value) => {
-              if (typeof value === "number") setNovelsPerRow(value);
-            }}
-            disabled={displayMode === "list"}
-          />
-        </SettingsFieldRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("librarySettings.group.badges")}>
-        <SettingsFieldRow
-          label={t("librarySettings.downloadedBadges")}
-          description={t("librarySettings.downloadedBadges.description")}
-        >
-          <Switch
-            checked={showDownloadBadges}
-            onChange={(event) =>
-              setShowDownloadBadges(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("librarySettings.unreadBadges")}
-          description={t("librarySettings.unreadBadges.description")}
-        >
-          <Switch
-            checked={showUnreadBadges}
-            onChange={(event) =>
-              setShowUnreadBadges(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("librarySettings.numberBadges")}
-          description={t("librarySettings.numberBadges.description")}
-        >
-          <Switch
-            checked={showNumberBadges}
-            onChange={(event) =>
-              setShowNumberBadges(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-      </SettingsSection>
     </Stack>
   );
 }

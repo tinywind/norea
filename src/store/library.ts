@@ -63,6 +63,7 @@ interface LibraryState {
   setLocalOnlyMode: (localOnlyMode: boolean) => void;
   setCompletedOnlyMode: (completedOnlyMode: boolean) => void;
   setRepairNeededOnlyMode: (repairNeededOnlyMode: boolean) => void;
+  clearFilters: () => void;
   setIncognitoMode: (incognitoMode: boolean) => void;
   setDefaultChapterSort: (defaultChapterSort: DefaultChapterSort) => void;
 }
@@ -133,6 +134,14 @@ export const useLibraryStore = create<LibraryState>()(
           unreadOnlyMode: completedOnlyMode ? false : state.unreadOnlyMode,
         })),
       setRepairNeededOnlyMode: (repairNeededOnlyMode) => set({ repairNeededOnlyMode }),
+      clearFilters: () =>
+        set({
+          downloadedOnlyMode: false,
+          unreadOnlyMode: false,
+          localOnlyMode: false,
+          completedOnlyMode: false,
+          repairNeededOnlyMode: false,
+        }),
       setIncognitoMode: (incognitoMode) => set({ incognitoMode }),
       setDefaultChapterSort: (defaultChapterSort) =>
         set({ defaultChapterSort }),

@@ -5,7 +5,6 @@ import {
 } from "../db/queries/category";
 import { PlusGlyph, TrashGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
-import { LibraryTagFilters, type LibraryTag, type LibraryTagId } from "./library/LibraryCategories";
 import { useTranslation } from "../i18n";
 import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 
@@ -22,9 +21,6 @@ interface CategoriesDrawerProps {
   selectedCategoryId: number | null;
   onSelect: (id: number | null) => void;
   uncategorizedCount: number;
-  tags: readonly LibraryTag[];
-  activeTags: readonly LibraryTagId[];
-  onToggleTag: (id: LibraryTagId) => void;
 }
 
 export function CategoriesDrawer({
@@ -40,9 +36,6 @@ export function CategoriesDrawer({
   selectedCategoryId,
   onSelect,
   uncategorizedCount,
-  tags,
-  activeTags,
-  onToggleTag,
 }: CategoriesDrawerProps) {
   const { t } = useTranslation();
   useOverlayBackNavigation(opened, onClose);
@@ -122,7 +115,6 @@ export function CategoriesDrawer({
               </Text>
             )}
           </Stack>
-          <LibraryTagFilters tags={tags} activeTags={activeTags} onToggle={onToggleTag} t={t} />
         </ScrollArea.Autosize>
       </Stack>
     </Drawer>

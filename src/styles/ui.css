@@ -38,9 +38,7 @@
   html:root .mantine-Button-root,
   html:root .mantine-CloseButton-root,
   html:root .norea-rail-link,
-  html:root button.norea-console-chip,
-  html:root .norea-library-source-chip,
-  html:root .norea-library-tag-row {
+  html:root button.norea-console-chip {
     min-height: var(--norea-control-md);
     min-width: var(--norea-control-md);
   }

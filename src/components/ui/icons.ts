@@ -1,5 +1,6 @@
 import { createElement, type ReactElement } from "react";
 import {
+  IconAdjustmentsHorizontal,
   IconAlertTriangle,
   IconArrowLeft,
   IconArrowsSort,
@@ -8,6 +9,7 @@ import {
   IconBooks,
   IconCategory,
   IconCheck,
+  IconCheckbox,
   IconChecks,
   IconChevronDown,
   IconChevronLeft,
@@ -85,6 +87,8 @@ export const AboutIcon = withAppDefaults(IconInfoSquareRounded);
 export const SearchIcon = withAppDefaults(IconSearch);
 export const FilterIcon = withAppDefaults(IconFilter);
 export const SortIcon = withAppDefaults(IconArrowsSort);
+export const ViewOptionsIcon = withAppDefaults(IconAdjustmentsHorizontal);
+export const SelectIcon = withAppDefaults(IconCheckbox);
 export const RefreshIcon = withAppDefaults(IconRefresh);
 export const CloseIcon = withAppDefaults(IconX);
 export const BackIcon = withAppDefaults(IconArrowLeft);

@@ -106,7 +106,6 @@ describe("coarse pointer touch floor", () => {
       "html:root .mantine-CloseButton-root",
       "html:root .norea-rail-link",
       "html:root button.norea-console-chip",
-      "html:root .norea-library-source-chip",
     ]) {
       const { body } = ruleFor(coarse, selector);
       expect(body, selector).toMatch(/min-height: var\(--norea-control-md\);/);

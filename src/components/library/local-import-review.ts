@@ -7,7 +7,7 @@ import {
   type LocalImportAnalysis,
   type LocalImportFormat,
 } from "../../lib/local-import";
-import { type TranslateFn } from "./LibraryFilters";
+import { type TranslateFn } from "./LibraryViewOptions";
 type LocalImportReviewStatus =
   | "ready"
   | "duplicate"

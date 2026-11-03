@@ -11,11 +11,9 @@ import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../../db/queries/category";
-import { type LibraryNovelSummary } from "../../db/queries/novel";
-import { formatRelativeTimeForLocale, useTranslation } from "../../i18n";
 import { PlusGlyph, TrashGlyph } from "../ActionGlyphs";
 import { IconButton } from "../IconButton";
-import { type TranslateFn } from "./LibraryFilters";
+import { type TranslateFn } from "./LibraryViewOptions";
 interface CategorySubpanelProps {
   activeId: number | null;
   allCount: number;
@@ -27,9 +25,6 @@ interface CategorySubpanelProps {
   onOpenDrawer: () => void;
   onRename: (category: LibraryCategory) => void;
   onSelect: (id: number | null) => void;
-  tags: readonly LibraryTag[];
-  activeTags: readonly LibraryTagId[];
-  onToggleTag: (id: LibraryTagId) => void;
   t: TranslateFn;
   uncategorizedCount: number;
 }
@@ -45,9 +40,6 @@ export function CategorySubpanel({
   onOpenDrawer,
   onRename,
   onSelect,
-  tags,
-  activeTags,
-  onToggleTag,
   t,
   uncategorizedCount,
 }: CategorySubpanelProps) {
@@ -113,13 +105,6 @@ export function CategorySubpanel({
               {t("categories.noManual")}
             </Text>
           )}
-
-          <LibraryTagFilters
-            activeTags={activeTags}
-            onToggle={onToggleTag}
-            tags={tags}
-            t={t}
-          />
         </div>
       </ScrollArea>
       <div className="norea-library-subpanel-footer">
@@ -276,72 +261,4 @@ function FolderPlusIcon() {
       <path d="M15 10v6" />
     </svg>
   );
-}
-
-export type LibraryTagId = "unread" | "downloaded" | "local" | "complete" | "repairNeeded";
-
-export interface LibraryTag {
-  id: LibraryTagId;
-  count: number;
-  label: string;
-}
-
-export function LibraryTagFilters({
-  activeTags,
-  onToggle,
-  tags,
-  t,
-  className = "",
-}: {
-  activeTags: readonly LibraryTagId[];
-  onToggle: (id: LibraryTagId) => void;
-  tags: readonly LibraryTag[];
-  t: TranslateFn;
-  className?: string;
-}) {
-  return (
-    <div className={"norea-library-tags " + className} role="group" aria-label={t("library.tags.title")}>
-      <div className="norea-library-tags-title">{t("library.tags.title")}</div>
-      {tags.map((tag) => (
-        <UnstyledButton
-          className="norea-library-tag-row norea-state-layer"
-          key={tag.id}
-          data-active={activeTags.includes(tag.id)}
-          aria-pressed={activeTags.includes(tag.id)}
-          onClick={() => onToggle(tag.id)}
-        >
-          <span>{"#" + tag.label}</span>
-          <span>{tag.count}</span>
-        </UnstyledButton>
-      ))}
-    </div>
-  );
-}
-
-export function getLibraryTags(
-  summary: LibraryNovelSummary,
-  t: TranslateFn,
-): LibraryTag[] {
-  return [
-    { id: "unread", count: summary.unreadNovels, label: t("library.tags.unread") },
-    { id: "downloaded", count: summary.downloadedNovels, label: t("library.tags.downloaded") },
-    { id: "local", count: summary.localNovels, label: t("library.tags.local") },
-    { id: "complete", count: summary.completeNovels, label: t("library.tags.complete") },
-    { id: "repairNeeded", count: summary.repairNeededNovels, label: t("library.tags.repairNeeded") },
-  ];
-}
-
-export function getLibraryStats(
-  summary: LibraryNovelSummary,
-  locale: ReturnType<typeof useTranslation>["locale"],
-) {
-  return {
-    downloadedChapters: summary.downloadedChapters,
-    lastUpdatedLabel: formatRelativeTimeForLocale(
-      locale,
-      summary.lastUpdatedAt,
-    ),
-    totalChapters: summary.totalChapters,
-    unreadChapters: summary.unreadChapters,
-  };
 }

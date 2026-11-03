@@ -1,5 +1,6 @@
-import { Loader, Popover, Text, UnstyledButton } from "@mantine/core";
-import { useDebouncedValue } from "@mantine/hooks";
+import { Loader, Text, UnstyledButton } from "@mantine/core";
+import { useDebouncedValue, useMediaQuery } from "@mantine/hooks";
+import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -7,56 +8,51 @@ import {
   CheckGlyph,
   DownloadedGlyph,
   PlusGlyph,
-  RefreshGlyph,
   TrashGlyph,
 } from "../components/ActionGlyphs";
 import { PageFrame, StateView } from "../components/AppFrame";
 import { CategoriesDrawer } from "../components/CategoriesDrawer";
-import { ConsoleStatusStrip } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { LibraryBatchDownloadPicker } from "../components/library/LibraryBatchDownloadPicker";
 import {
   CategorySubpanel,
-  getLibraryStats,
-  getLibraryTags,
-  LibraryTagFilters,
-  type LibraryTagId,
   SelectionCategoryPicker,
 } from "../components/library/LibraryCategories";
+import { LibraryAppBar } from "../components/library/LibraryAppBar";
 import {
   LibraryCategoryDialogs,
   type LibraryCategoryDialogsHandle,
 } from "../components/library/LibraryCategoryDialogs";
 import {
-  getLibrarySourceLabel,
-  LibraryCommandSearch,
-  LibraryScopeFilters,
-  LibrarySortPicker,
-  LibrarySourceFilterBar,
-  MobileViewModePicker,
-  SearchIcon,
-  SlidersIcon,
-  SORT_LABEL_KEYS,
-  ViewModeToggle,
-} from "../components/library/LibraryFilters";
+  LibraryViewOptions,
+  type LibraryViewOptionsTab,
+} from "../components/library/LibraryViewOptions";
+import { LibraryQuickFilters } from "../components/library/LibraryQuickFilters";
 import {
   LibraryLocalImport,
   type LibraryLocalImportHandle,
 } from "../components/library/LibraryLocalImport";
-import { ImportFileIcon } from "../components/library/LocalImportReviewRow";
 import { useLibraryQuery } from "../components/library/use-library-query";
 import { useLibraryEntry } from "../components/library/use-library-entry";
 import { StorageRecoveryStatus } from "../components/runtime/StorageRecovery";
 import { useLibrarySelection } from "../components/library/use-library-selection";
 import { LibraryGrid } from "../components/LibraryGrid";
-import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
 import { TextButton } from "../components/TextButton";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../db/queries/category";
 import { type LibraryNovelRefreshFilter } from "../db/queries/novel";
+import {
+  CategoryIcon,
+  FolderIcon,
+  ImportIcon,
+  RefreshIcon,
+  SettingsIcon,
+} from "../components/ui/icons";
+import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { useTranslation } from "../i18n";
+import { showErrorToast } from "../lib/runtime/error-toast";
 import { refreshLibraryMetadata } from "../lib/updates/refresh-library-metadata";
 import { useLibraryStore } from "../store/library";
 import "../styles/library.css";
@@ -67,7 +63,7 @@ interface LibraryPageProps {
 }
 
 export function LibraryPage({ active = true }: LibraryPageProps) {
-  const { locale, t } = useTranslation();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const localImportRef = useRef<LibraryLocalImportHandle>(null);
@@ -102,23 +98,20 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const defaultCategoryId = useLibraryStore((s) => s.defaultCategoryId);
   const setDefaultCategoryId = useLibraryStore((s) => s.setDefaultCategoryId);
   const sortOrder = useLibraryStore((s) => s.sortOrder);
-  const setSortOrder = useLibraryStore((s) => s.setSortOrder);
   const displayMode = useLibraryStore((s) => s.displayMode);
-  const setDisplayMode = useLibraryStore((s) => s.setDisplayMode);
   const novelsPerRow = useLibraryStore((s) => s.novelsPerRow);
   const showDownloadBadges = useLibraryStore((s) => s.showDownloadBadges);
   const showUnreadBadges = useLibraryStore((s) => s.showUnreadBadges);
   const showNumberBadges = useLibraryStore((s) => s.showNumberBadges);
   const downloadedOnlyMode = useLibraryStore((s) => s.downloadedOnlyMode);
-  const setDownloadedOnlyMode = useLibraryStore((s) => s.setDownloadedOnlyMode);
   const unreadOnlyMode = useLibraryStore((s) => s.unreadOnlyMode);
-  const setUnreadOnlyMode = useLibraryStore((s) => s.setUnreadOnlyMode);
   const localOnlyMode = useLibraryStore((s) => s.localOnlyMode);
-  const setLocalOnlyMode = useLibraryStore((s) => s.setLocalOnlyMode);
   const completedOnlyMode = useLibraryStore((s) => s.completedOnlyMode);
-  const setCompletedOnlyMode = useLibraryStore((s) => s.setCompletedOnlyMode);
   const repairNeededOnlyMode = useLibraryStore((s) => s.repairNeededOnlyMode);
-  const setRepairNeededOnlyMode = useLibraryStore((s) => s.setRepairNeededOnlyMode);
+  const clearFilters = useLibraryStore((s) => s.clearFilters);
+  const wide = useMediaQuery("(min-width: 768px)", undefined, {
+    getInitialValueInEffect: false,
+  });
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const libraryFilter = useMemo<LibraryNovelRefreshFilter>(
@@ -165,7 +158,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     removeSelectedFromLibraryMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
-  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
+  const [viewOptionsTab, setViewOptionsTab] =
+    useState<LibraryViewOptionsTab>("filter");
+  const openViewOptions = useCallback((tab?: LibraryViewOptionsTab) => {
+    if (tab) setViewOptionsTab(tab);
+    setViewOptionsOpen(true);
+  }, []);
 
   useLibraryEntry(active);
 
@@ -203,7 +202,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   }, [selectedSourceId, sourceFilters.data, sourceFilters.isLoading]);
 
   const metadataRefreshMutation = useMutation({
-    meta: { errorPresentation: "inline" },
     mutationFn: () =>
       refreshLibraryMetadata({
         aggregateTaskTitle: t("tasks.task.refreshLibraryMetadata"),
@@ -211,9 +209,21 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         taskTitle: (novel) =>
           t("tasks.task.refreshNovelMetadata", { name: novel.name }),
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["category"] });
       void queryClient.invalidateQueries({ queryKey: ["novel"] });
+      notifications.show({
+        color: result.failures.length > 0 ? "warn" : "ok",
+        message: t("library.refreshMetadataResult", {
+          checked: result.checkedNovels,
+          failed: result.failures.length,
+          skipped: result.skippedNovels,
+          total: result.targetNovels,
+        }),
+      });
+    },
+    onError: (error) => {
+      showErrorToast(t("library.refreshMetadataFailed"), error);
     },
   });
 
@@ -256,67 +266,46 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       );
   const manualCategories = categories.data ?? [];
   const sourceRows = sourceFilters.data ?? [];
-  const sourceTotalCount = sourceRows.reduce(
-    (total, source) => total + source.totalNovels,
-    0,
-  );
   const allCategoryCount = categoryCounts.data?.total ?? 0;
   const uncategorizedCategoryCount = categoryCounts.data?.uncategorized ?? 0;
   const assignableCategories = manualCategories.filter(
     (category) => category.id !== UNCATEGORIZED_CATEGORY_ID,
   );
-  const stats = getLibraryStats(summary, locale);
-  const activeCategory =
-    selectedCategoryId == null
-      ? t("categories.all")
-      : selectedCategoryId === UNCATEGORIZED_CATEGORY_ID
-        ? t("categories.uncategorized")
-        : (manualCategories.find(
-            (category) => category.id === selectedCategoryId,
-          )?.name ?? t("library.selectedCategory"));
-  const status = t("library.status", {
-    novels: summary.totalNovels,
-    unread: stats.unreadChapters,
-    downloaded: stats.downloadedChapters,
-    total: stats.totalChapters,
-  });
-  const showMobileSearch = mobileSearchOpen || search.trim() !== "";
-  const tags = getLibraryTags(tagSummary, t);
-  const activeTags: LibraryTagId[] = [];
-  if (unreadOnlyMode) activeTags.push("unread");
-  if (downloadedOnlyMode) activeTags.push("downloaded");
-  if (localOnlyMode) activeTags.push("local");
-  if (completedOnlyMode) activeTags.push("complete");
-  if (repairNeededOnlyMode) activeTags.push("repairNeeded");
-  const toggleTag = (id: LibraryTagId) => {
-    switch (id) {
-      case "unread": setUnreadOnlyMode(!unreadOnlyMode); break;
-      case "downloaded": setDownloadedOnlyMode(!downloadedOnlyMode); break;
-      case "local": setLocalOnlyMode(!localOnlyMode); break;
-      case "complete": setCompletedOnlyMode(!completedOnlyMode); break;
-      case "repairNeeded": setRepairNeededOnlyMode(!repairNeededOnlyMode); break;
-    }
-  };
-  const sortLabel = t(SORT_LABEL_KEYS[sortOrder]);
-  const activeSource =
-    selectedSourceId == null
-      ? null
-      : sourceRows.find((source) => source.pluginId === selectedSourceId);
-  const activeSourceLabel = activeSource
-    ? getLibrarySourceLabel(activeSource, t)
-    : t("library.sources.all");
-  const metadataRefreshStatus = metadataRefreshMutation.isPending
-    ? t("library.refreshMetadataRunning")
-    : metadataRefreshMutation.error
-      ? t("library.refreshMetadataFailed")
-      : metadataRefreshMutation.data
-        ? t("library.refreshMetadataResult", {
-            checked: metadataRefreshMutation.data.checkedNovels,
-            failed: metadataRefreshMutation.data.failures.length,
-            skipped: metadataRefreshMutation.data.skippedNovels,
-            total: metadataRefreshMutation.data.targetNovels,
-          })
-        : null;
+  const overflowItems: OverflowMenuItem[] = [
+    ...(wide
+      ? []
+      : [
+          {
+            disabled:
+              summary.totalNovels === 0 || metadataRefreshMutation.isPending,
+            icon: RefreshIcon,
+            label: t("library.refresh"),
+            onClick: () => metadataRefreshMutation.mutate(),
+          },
+        ]),
+    {
+      icon: ImportIcon,
+      label: t("library.localImport.open"),
+      onClick: openLocalImportInput,
+    },
+    {
+      icon: FolderIcon,
+      label: t("library.localNovel.create"),
+      onClick: openLocalHome,
+    },
+    {
+      icon: CategoryIcon,
+      label: t("library.manageCategories"),
+      onClick: () => setCategoriesOpen(true),
+    },
+    {
+      icon: SettingsIcon,
+      label: t("library.settings.title"),
+      onClick: () => {
+        void navigate({ to: "/settings", search: { section: "library" } });
+      },
+    },
+  ];
 
   return (
     <>
@@ -333,9 +322,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             onOpenDrawer={() => setCategoriesOpen(true)}
             onRename={openRenameCategory}
             onSelect={setSelectedCategoryId}
-            tags={tags}
-            activeTags={activeTags}
-            onToggleTag={toggleTag}
             t={t}
             uncategorizedCount={uncategorizedCategoryCount}
           />
@@ -344,156 +330,28 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             className="norea-library-main"
             aria-label={t("library.mainLabel")}
           >
-            <StorageRecoveryStatus />
-            <header className="norea-library-main-header">
-              <div className="norea-library-header-copy">
-                <h1 className="norea-library-title-heading">
-                  <span className="norea-library-title-static">
-                    {activeCategory}
-                  </span>
-                  <UnstyledButton
-                    aria-label={t("library.openCategories", {
-                      name: activeCategory,
-                    })}
-                    className="norea-library-title-button"
-                    onClick={() => setCategoriesOpen(true)}
-                    title={activeCategory}
-                  >
-                    <span>{activeCategory}</span>
-                  </UnstyledButton>
-                </h1>
-                <span className="norea-library-header-meta">
-                  {t("library.sortedMeta", {
-                    count: summary.totalNovels,
-                    sort: sortLabel.toLowerCase(),
-                  })}
-                </span>
-              </div>
-              <div className="norea-library-header-actions">
-                <IconButton
-                  active={showMobileSearch}
-                  aria-controls="library-mobile-search"
-                  aria-expanded={showMobileSearch}
-                  className="norea-library-mobile-search-button"
-                  label={t("library.search.aria")}
-                  onClick={() => setMobileSearchOpen((open) => !open)}
-                  size="sm"
-                  title={t("library.search.placeholder")}
-                >
-                  <SearchIcon />
-                </IconButton>
-                <UnstyledButton
-                  className="norea-library-mobile-category-button"
-                  onClick={() => setCategoriesOpen(true)}
-                >
-                  {t("categories.title")}
-                </UnstyledButton>
-                <LibraryCommandSearch value={search} onChange={setSearch} />
-                <LibraryScopeFilters
-                  downloadedOnly={downloadedOnlyMode}
-                  onDownloadedOnlyChange={setDownloadedOnlyMode}
-                  onUnreadOnlyChange={setUnreadOnlyMode}
-                  t={t}
-                  unreadOnly={unreadOnlyMode}
-                />
-                <LibrarySortPicker
-                  onChange={setSortOrder}
-                  sortOrder={sortOrder}
-                  t={t}
-                />
-                <ViewModeToggle
-                  displayMode={displayMode}
-                  onChange={setDisplayMode}
-                  t={t}
-                />
-                <MobileViewModePicker
-                  displayMode={displayMode}
-                  onChange={setDisplayMode}
-                  t={t}
-                />
-                <IconButton
-                  className="norea-library-icon-button"
-                  label={t("library.localImport.open")}
-                  onClick={openLocalImportInput}
-                  size="sm"
-                  title={t("library.localImport.open")}
-                >
-                  <ImportFileIcon />
-                </IconButton>
-                <IconButton
-                  className="norea-library-icon-button"
-                  label={t("library.localNovel.create")}
-                  onClick={openLocalHome}
-                  size="sm"
-                  title={t("library.localNovel.create")}
-                >
-                  <PlusGlyph />
-                </IconButton>
-                <IconButton
-                  className="norea-library-icon-button norea-library-refresh-button"
-                  disabled={
-                    summary.totalNovels === 0 ||
-                    metadataRefreshMutation.isPending
-                  }
-                  label={t("library.refreshMetadata")}
-                  onClick={() => metadataRefreshMutation.mutate()}
-                  size="sm"
-                  title={t("library.refreshMetadata")}
-                >
-                  {metadataRefreshMutation.isPending ? (
-                    <Loader size={14} />
-                  ) : (
-                    <RefreshGlyph />
-                  )}
-                </IconButton>
-                <Popover position="bottom-end" shadow="md" width={390}>
-                  <Popover.Target>
-                    <IconButton
-                      className="norea-library-icon-button"
-                      label={t("library.settings.open")}
-                      size="sm"
-                      title={t("library.settings.title")}
-                    >
-                      <SlidersIcon />
-                    </IconButton>
-                  </Popover.Target>
-                  <Popover.Dropdown className="norea-library-settings-popover">
-                    <LibrarySettingsPanel />
-                  </Popover.Dropdown>
-                </Popover>
-              </div>
-            </header>
-            {showMobileSearch ? (
-              <div
-                className="norea-library-mobile-search-row"
-                id="library-mobile-search"
-              >
-                <LibraryCommandSearch value={search} onChange={setSearch} />
-              </div>
-            ) : null}
-
-            <LibraryTagFilters
-              className="norea-library-tablet-tags"
-              activeTags={activeTags}
-              onToggle={toggleTag}
-              tags={tags}
-              t={t}
+            <LibraryAppBar
+              onOpenViewOptions={() => openViewOptions()}
+              onRefresh={() => metadataRefreshMutation.mutate()}
+              onSearchChange={setSearch}
+              overflowItems={overflowItems}
+              refreshDisabled={summary.totalNovels === 0}
+              refreshing={metadataRefreshMutation.isPending}
+              search={search}
+              wide={wide}
             />
+            <LibraryQuickFilters
+              counts={tagSummary}
+              onClear={() => {
+                clearFilters();
+                setSelectedSourceId(null);
+              }}
+              onOpenFilters={() => openViewOptions("filter")}
+              sourceActive={selectedSourceId !== null}
+            />
+            <StorageRecoveryStatus />
 
-            {sourceFilters.isLoading ||
-            sourceRows.length > 0 ||
-            selectedSourceId !== null ? (
-              <LibrarySourceFilterBar
-                activeSourceId={selectedSourceId}
-                loading={sourceFilters.isLoading}
-                onChange={setSelectedSourceId}
-                sources={sourceRows}
-                t={t}
-                totalCount={sourceTotalCount}
-              />
-            ) : null}
-
-            {rows.length > 0 || selectedIds.size > 0 ? (
+            {selectedIds.size > 0 ? (
               <div className="norea-library-selection-strip">
                 <span>
                   {t("library.selectedCount", { count: selectedIds.size })}
@@ -657,7 +515,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   title={t("library.empty.title")}
                   message={t("library.empty.message")}
                   action={{
-                    icon: <ImportFileIcon />,
+                    icon: <ImportIcon size="1.125rem" />,
                     label: t("library.localImport.open"),
                     onClick: openLocalImportInput,
                   }}
@@ -665,26 +523,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               )}
             </div>
 
-            <ConsoleStatusStrip className="norea-library-status-strip">
-              <span>{status}</span>
-              <span>
-                {t("library.statusUpdated", { time: stats.lastUpdatedLabel })}
-              </span>
-              <span>{activeCategory}</span>
-              <span>{activeSourceLabel}</span>
-              <span>{t("library.statusSort", { sort: sortLabel })}</span>
-              {metadataRefreshStatus ? (
-                <span>{metadataRefreshStatus}</span>
-              ) : null}
-            </ConsoleStatusStrip>
           </section>
         </div>
       </PageFrame>
 
       <CategoriesDrawer
-        tags={tags}
-        activeTags={activeTags}
-        onToggleTag={toggleTag}
         allCount={allCategoryCount}
         categories={manualCategories}
         error={categories.error}
@@ -699,6 +542,17 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         uncategorizedCount={uncategorizedCategoryCount}
       />
 
+      <LibraryViewOptions
+        activeSourceId={selectedSourceId}
+        counts={tagSummary}
+        onClose={() => setViewOptionsOpen(false)}
+        onSourceChange={setSelectedSourceId}
+        onTabChange={setViewOptionsTab}
+        opened={active && viewOptionsOpen}
+        sources={sourceRows}
+        sourcesLoading={sourceFilters.isLoading}
+        tab={viewOptionsTab}
+      />
       <LibraryLocalImport active={active} ref={localImportRef} />
       <LibraryCategoryDialogs active={active} ref={categoryDialogsRef} />
     </>

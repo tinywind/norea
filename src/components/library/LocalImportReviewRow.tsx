@@ -1,5 +1,5 @@
 import { useTranslation } from "../../i18n";
-import { type TranslateFn } from "./LibraryFilters";
+import { type TranslateFn } from "./LibraryViewOptions";
 import {
   formatLocalImportFileSize,
   getLocalImportStatusDetail,

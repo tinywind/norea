@@ -4,7 +4,7 @@ import { type TranslationKey } from "../../i18n";
 import { DownloadGlyph } from "../ActionGlyphs";
 import { IconButton } from "../IconButton";
 import { type LibraryBatchDownloadMode } from "./library-batch-download";
-import { type TranslateFn } from "./LibraryFilters";
+import { type TranslateFn } from "./LibraryViewOptions";
 interface LibraryBatchDownloadOptionConfig {
   descriptionKey: TranslationKey;
   labelKey: TranslationKey;

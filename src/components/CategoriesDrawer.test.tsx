@@ -22,9 +22,9 @@ function DrawerProbe() {
   const [opened, setOpened] = useState(true);
   tree = CategoriesDrawer({
     allCount: 0, categories: [], error: null, loading: false,
-    onCreate: vi.fn(), onDelete: vi.fn(), onRename: vi.fn(), onSelect: vi.fn(), onToggleTag: vi.fn(),
+    onCreate: vi.fn(), onDelete: vi.fn(), onRename: vi.fn(), onSelect: vi.fn(),
     opened, onClose: () => setOpened(false),
-    selectedCategoryId: null, uncategorizedCount: 0, tags: [], activeTags: [],
+    selectedCategoryId: null, uncategorizedCount: 0,
   });
   return null;
 }
