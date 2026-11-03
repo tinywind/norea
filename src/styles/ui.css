@@ -342,3 +342,33 @@ body[data-norea-reader-bars] {
     max-width: 40rem;
   }
 }
+
+/* Verify in place for a source held by an access check. */
+.norea-source-access-notice {
+  align-items: flex-start;
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+  display: grid;
+  gap: var(--norea-space-2) var(--norea-space-3);
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: var(--norea-space-3);
+  text-align: start;
+}
+
+.norea-source-access-notice-icon {
+  color: var(--norea-color-warn);
+}
+
+.norea-source-access-notice-copy {
+  display: grid;
+  gap: var(--norea-space-1);
+  min-width: 0;
+}
+
+.norea-source-access-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  grid-column: 2;
+}

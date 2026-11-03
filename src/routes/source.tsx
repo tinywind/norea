@@ -29,6 +29,7 @@ import {
   type ResolvedFilterValues,
 } from "../components/PluginFilters";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
+import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
 import { SourceNovelCover } from "../components/SourceNovelCover";
 import {
   BackIcon,
@@ -551,7 +552,9 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           cancelLabel={t("common.cancel")}
           label={t("globalSearch.openingNovel")}
           onCancel={cancelOpenNovel}
-        />
+        >
+          <SourceAccessNotice active sourceId={plugin.id} sourceName={plugin.name} />
+        </BlockingLoadingOverlay>
       ) : null}
       <header className="norea-browse-app-bar">
         <IconButton label={t("common.back")} onClick={goBack} size="lg">
@@ -647,6 +650,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       ) : null}
 
       <PageFrame className="norea-source-frame" size="wide">
+        <SourceAccessNotice active sourceId={plugin.id} sourceName={plugin.name} />
         {firstPageLoading ? (
           <CoverGridSkeleton
             label={

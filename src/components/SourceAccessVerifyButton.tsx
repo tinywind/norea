@@ -1,10 +1,11 @@
-import { Button } from "@mantine/core";
+import { Button, Text } from "@mantine/core";
 import { useTranslation } from "../i18n";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { openSourceAccessBrowser } from "../lib/tasks/source-access-coordinator";
 import type { SourceAccessBlock } from "../lib/tasks/source-access-gate";
 import { useSiteBrowserStore } from "../store/site-browser";
+import { WarningIcon } from "./ui/icons";
 
 /** Looks up the open source-access challenge of a source, if any. */
 export function useSourceAccessBlocks(
@@ -52,5 +53,51 @@ export function SourceAccessVerifyButton({
     >
       {label}
     </Button>
+  );
+}
+
+interface SourceAccessNoticeProps {
+  active: boolean;
+  /** Present the notice only while this is true, such as while work waits. */
+  enabled?: boolean;
+  sourceId: string;
+  sourceName: string;
+}
+
+/**
+ * Verify in place for a source whose work is held by an access check. The
+ * scheduler keeps the blocked operation queued, so once the source-access
+ * coordinator confirms access that same operation runs again by itself;
+ * closing the site browser keeps it paused.
+ */
+export function SourceAccessNotice({
+  active,
+  enabled = true,
+  sourceId,
+  sourceName,
+}: SourceAccessNoticeProps) {
+  const { t } = useTranslation();
+  const block = useSourceAccessBlocks(active)(sourceId);
+  if (!enabled || !block) return null;
+
+  return (
+    <section className="norea-source-access-notice" role="status">
+      <WarningIcon className="norea-source-access-notice-icon" size="1.25rem" />
+      <div className="norea-source-access-notice-copy">
+        <Text fw={700} size="sm">
+          {t("sourceAccess.notice.title", { source: sourceName })}
+        </Text>
+        <Text c="dimmed" size="sm">
+          {t("sourceAccess.notice.message")}
+        </Text>
+      </div>
+      <div className="norea-source-access-notice-actions">
+        <SourceAccessVerifyButton
+          block={block}
+          label={t("updates.failure.verify")}
+          sourceName={sourceName}
+        />
+      </div>
+    </section>
   );
 }

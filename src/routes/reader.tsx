@@ -5,6 +5,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StateView } from "../components/AppFrame";
 import { PdfReaderContent } from "../components/PdfReaderContent";
+import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
 import {
   ReaderBottomBar,
   ReaderChapterPanel,
@@ -484,6 +485,14 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
             : t("reader.notDownloadedMessage")
         }
       />
+      {currentSourceId ? (
+        <SourceAccessNotice
+          active={active}
+          enabled={autoDownloadingChapterId === chapter.id}
+          sourceId={currentSourceId}
+          sourceName={currentSourceName ?? currentSourceId}
+        />
+      ) : null}
     </Box>
   ) : isPdfChapter ? (
     <PdfReaderContent

@@ -14,6 +14,7 @@ import { BlockingLoadingOverlay, StateView } from "../AppFrame";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
 import {
+  SourceAccessNotice,
   SourceAccessVerifyButton,
   useSourceAccessBlocks,
 } from "../SourceAccessVerifyButton";
@@ -610,6 +611,7 @@ export function BrowseSearchTab({
       : query;
   const [search, setSearch] = useState(restoredQuery);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [openingSource, setOpeningSource] = useState<Pick<Plugin, "id" | "name"> | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const openTaskRef = useRef<TaskHandle<number> | null>(null);
   const [scopeMode, setScopeMode] = useState<ScopeMode>("all");
@@ -665,11 +667,12 @@ export function BrowseSearchTab({
     [results, retryPluginIdSet],
   );
   const hasSearchTerm = trimmedQuery !== "";
-  const pendingCount = hasSearchTerm
+  const pendingPlugins = hasSearchTerm
     ? scopedPlugins.filter(
         (plugin) => activePluginIdSet.has(plugin.id) || retryPluginIdSet.has(plugin.id),
-      ).length
-    : 0;
+      )
+    : [];
+  const pendingCount = pendingPlugins.length;
   const settledResults = useMemo<SourceResult[]>(
     () =>
       hasSearchTerm
@@ -901,6 +904,7 @@ export function BrowseSearchTab({
       const key = resultKey(row.pluginId, novel.path);
       setLastUsedPluginId(row.pluginId);
       setOpeningKey(key);
+      setOpeningSource({ id: plugin.id, name: plugin.name });
       setOpenError(null);
       const task = enqueueOpenNovelFromSourceTask({
         plugin,
@@ -992,7 +996,15 @@ export function BrowseSearchTab({
           cancelLabel={t("common.cancel")}
           label={t("globalSearch.openingNovel")}
           onCancel={cancelOpenNovel}
-        />
+        >
+          {openingSource ? (
+            <SourceAccessNotice
+              active
+              sourceId={openingSource.id}
+              sourceName={openingSource.name}
+            />
+          ) : null}
+        </BlockingLoadingOverlay>
       ) : null}
 
       <SearchBar
@@ -1044,6 +1056,15 @@ export function BrowseSearchTab({
           {t("globalSearch.searchingCount", { count: pendingCount })}
         </div>
       ) : null}
+
+      {pendingPlugins.map((plugin) => (
+        <SourceAccessNotice
+          active
+          key={plugin.id}
+          sourceId={plugin.id}
+          sourceName={plugin.name}
+        />
+      ))}
 
       {hasSearchTerm ? (
         <SearchFailures

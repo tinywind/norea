@@ -1610,6 +1610,8 @@
   "sourceAccess.notificationMessage": "{source} is paused until its access check is completed.",
   "sourceAccess.dismissNotification": "Dismiss authentication notice",
   "sourceAccess.closeKeepPaused": "Close and keep paused",
+  "sourceAccess.notice.title": "{source} needs verification",
+  "sourceAccess.notice.message": "Verify the site and this continues by itself.",
   "updates.title": "Updates",
   "updates.check": "Check for updates",
   "updates.novelId": "Novel #{id}",

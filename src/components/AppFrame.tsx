@@ -17,12 +17,15 @@ import { useSiteBrowserStore } from "../store/site-browser";
 
 interface BlockingLoadingOverlayProps {
   cancelLabel?: string;
+  /** Recovery shown under the label, such as Verify for a held source. */
+  children?: ReactNode;
   label: ReactNode;
   onCancel?: () => void;
 }
 
 export function BlockingLoadingOverlay({
   cancelLabel,
+  children,
   label,
   onCancel,
 }: BlockingLoadingOverlayProps) {
@@ -50,6 +53,7 @@ export function BlockingLoadingOverlay({
           <Text id={labelId} ta="center">
             {label}
           </Text>
+          {children}
           {onCancel && cancelLabel ? (
             <TextButton autoFocus onClick={onCancel}>
               {cancelLabel}

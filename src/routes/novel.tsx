@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { PageFrame, StateView } from "../components/AppFrame";
+import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
 import { IconButton } from "../components/IconButton";
 import {
   BackIcon,
@@ -787,6 +788,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     ? metadataRefreshError.message
                     : String(metadataRefreshError)}
                 </Text>
+              ) : null}
+
+              {sourcePlugin ? (
+                <SourceAccessNotice
+                  active={active}
+                  sourceId={sourcePlugin.id}
+                  sourceName={sourceName}
+                />
               ) : null}
 
               {sourceRefreshFailure ? (

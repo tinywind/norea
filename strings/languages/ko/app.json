@@ -1610,6 +1610,8 @@
   "sourceAccess.notificationMessage": "접근 인증을 완료할 때까지 {source} 대기열을 일시 중지합니다.",
   "sourceAccess.dismissNotification": "인증 알림 닫기",
   "sourceAccess.closeKeepPaused": "닫고 일시 중지 유지",
+  "sourceAccess.notice.title": "{source} 확인 필요",
+  "sourceAccess.notice.message": "사이트를 확인하면 자동으로 이어서 진행합니다.",
   "updates.title": "업데이트",
   "updates.check": "업데이트 확인",
   "updates.novelId": "소설 #{id}",
