@@ -4,6 +4,7 @@ import {
   forwardRef,
   useCallback,
   useImperativeHandle,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -17,6 +18,10 @@ import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { useLibraryStore } from "../../store/library";
 import { TextButton } from "../TextButton";
+import { getFocusReturnTarget } from "../ui/OverflowMenu";
+
+// Category dialogs open from the Manage categories dialog too, so they sit above it.
+const CATEGORY_DIALOG_Z_INDEX = "calc(var(--norea-z-overlay) + 1)";
 type CategoryEditorState =
   | { mode: "create" }
   | { category: LibraryCategory; mode: "rename" };
@@ -48,6 +53,15 @@ export const LibraryCategoryDialogs = forwardRef<
   const [categoryName, setCategoryName] = useState("");
   const [categoryDeleteTarget, setCategoryDeleteTarget] =
     useState<LibraryCategory | null>(null);
+  const focusReturnRef = useRef<HTMLElement | null>(null);
+  const rememberFocusReturn = useCallback(() => {
+    focusReturnRef.current = getFocusReturnTarget(document.activeElement);
+  }, []);
+  const restoreFocus = useCallback(() => {
+    const target = focusReturnRef.current;
+    focusReturnRef.current = null;
+    if (target?.isConnected) target.focus();
+  }, []);
   const createCategoryMutation = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: (name: string) => insertCategory({ name }),
@@ -85,30 +99,44 @@ export const LibraryCategoryDialogs = forwardRef<
   });
 
   const openCreateCategory = useCallback(() => {
+    rememberFocusReturn();
     createCategoryMutation.reset();
     renameCategoryMutation.reset();
     setCategoryName("");
     setCategoryEditor({ mode: "create" });
-  }, [createCategoryMutation, renameCategoryMutation]);
+  }, [createCategoryMutation, rememberFocusReturn, renameCategoryMutation]);
 
   const openRenameCategory = useCallback(
     (category: LibraryCategory) => {
+      rememberFocusReturn();
       createCategoryMutation.reset();
       renameCategoryMutation.reset();
       setCategoryName(category.name);
       setCategoryEditor({ category, mode: "rename" });
     },
-    [createCategoryMutation, renameCategoryMutation],
+    [createCategoryMutation, rememberFocusReturn, renameCategoryMutation],
   );
 
+  const categorySaving =
+    createCategoryMutation.isPending || renameCategoryMutation.isPending;
   const closeCategoryEditor = useCallback(() => {
+    if (categorySaving) return;
     createCategoryMutation.reset();
     renameCategoryMutation.reset();
     setCategoryEditor(null);
     setCategoryName("");
-  }, [createCategoryMutation, renameCategoryMutation]);
+  }, [categorySaving, createCategoryMutation, renameCategoryMutation]);
 
+  const openDeleteCategory = useCallback(
+    (category: LibraryCategory) => {
+      rememberFocusReturn();
+      deleteCategoryMutation.reset();
+      setCategoryDeleteTarget(category);
+    },
+    [deleteCategoryMutation, rememberFocusReturn],
+  );
   const closeCategoryDelete = useCallback(() => {
+    if (deleteCategoryMutation.isPending) return;
     deleteCategoryMutation.reset();
     setCategoryDeleteTarget(null);
   }, [deleteCategoryMutation]);
@@ -143,25 +171,30 @@ export const LibraryCategoryDialogs = forwardRef<
       : t("categories.add");
   const categoryMutationError =
     createCategoryMutation.error ?? renameCategoryMutation.error;
-  const categorySaving =
-    createCategoryMutation.isPending || renameCategoryMutation.isPending;
+  const deleting = deleteCategoryMutation.isPending;
 
   useImperativeHandle(
     ref,
     () => ({
       createCategory: openCreateCategory,
       renameCategory: openRenameCategory,
-      deleteCategory: setCategoryDeleteTarget,
+      deleteCategory: openDeleteCategory,
     }),
-    [openCreateCategory, openRenameCategory],
+    [openCreateCategory, openDeleteCategory, openRenameCategory],
   );
   return (
     <>
       {" "}
       <Modal
-        opened={active && categoryEditor !== null}
+        closeOnClickOutside={!categorySaving}
+        closeOnEscape={!categorySaving}
         onClose={closeCategoryEditor}
+        onExitTransitionEnd={restoreFocus}
+        opened={active && categoryEditor !== null}
+        returnFocus={false}
         title={categoryEditorTitle}
+        withCloseButton={!categorySaving}
+        zIndex={CATEGORY_DIALOG_Z_INDEX}
       >
         <form onSubmit={handleCategorySubmit}>
           <Stack gap="sm">
@@ -172,7 +205,7 @@ export const LibraryCategoryDialogs = forwardRef<
               value={categoryName}
             />
             {categoryMutationError ? (
-              <Text c="danger" size="sm">
+              <Text c="danger" role="alert" size="sm">
                 {categoryMutationError instanceof Error
                   ? categoryMutationError.message
                   : String(categoryMutationError)}
@@ -180,6 +213,7 @@ export const LibraryCategoryDialogs = forwardRef<
             ) : null}
             <Group justify="flex-end">
               <TextButton
+                disabled={categorySaving}
                 type="button"
                 variant="subtle"
                 onClick={closeCategoryEditor}
@@ -198,9 +232,15 @@ export const LibraryCategoryDialogs = forwardRef<
         </form>
       </Modal>
       <Modal
-        opened={active && categoryDeleteTarget !== null}
+        closeOnClickOutside={!deleting}
+        closeOnEscape={!deleting}
         onClose={closeCategoryDelete}
+        onExitTransitionEnd={restoreFocus}
+        opened={active && categoryDeleteTarget !== null}
+        returnFocus={false}
         title={t("categories.delete")}
+        withCloseButton={!deleting}
+        zIndex={CATEGORY_DIALOG_Z_INDEX}
       >
         <Stack gap="sm">
           <Text size="sm">
@@ -211,7 +251,7 @@ export const LibraryCategoryDialogs = forwardRef<
               : ""}
           </Text>
           {deleteCategoryMutation.error ? (
-            <Text c="danger" size="sm">
+            <Text c="danger" role="alert" size="sm">
               {deleteCategoryMutation.error instanceof Error
                 ? deleteCategoryMutation.error.message
                 : String(deleteCategoryMutation.error)}
@@ -219,6 +259,7 @@ export const LibraryCategoryDialogs = forwardRef<
           ) : null}
           <Group justify="flex-end">
             <TextButton
+              disabled={deleting}
               type="button"
               variant="subtle"
               onClick={closeCategoryDelete}
@@ -226,7 +267,7 @@ export const LibraryCategoryDialogs = forwardRef<
               {t("common.cancel")}
             </TextButton>
             <TextButton
-              loading={deleteCategoryMutation.isPending}
+              loading={deleting}
               tone="danger"
               onClick={() => {
                 if (categoryDeleteTarget) {

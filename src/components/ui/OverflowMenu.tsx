@@ -50,3 +50,13 @@ export function OverflowMenu({ items, label, trigger }: OverflowMenuProps) {
   );
 }
 
+/**
+ * The element that should take focus back once a dialog opened from `element`
+ * closes. A menu item unmounts with its menu, so its menu trigger stands in.
+ */
+export function getFocusReturnTarget(element: Element | null): HTMLElement | null {
+  if (!element || !(element instanceof HTMLElement)) return null;
+  const menu = element.closest<HTMLElement>("[role='menu']");
+  if (!menu?.id) return element;
+  return document.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(menu.id)}"]`);
+}

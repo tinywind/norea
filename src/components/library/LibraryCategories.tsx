@@ -1,180 +1,217 @@
-import { useState } from "react";
-import {
-  Popover,
-  SegmentedControl,
-  ScrollArea,
-  Text,
-  Tooltip,
-  UnstyledButton,
-} from "@mantine/core";
+import { Button, Modal, Popover, SegmentedControl, Text, UnstyledButton } from "@mantine/core";
+import { useEffect, useRef, useState } from "react";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../../db/queries/category";
-import { PlusGlyph, TrashGlyph } from "../ActionGlyphs";
+import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { IconButton } from "../IconButton";
+import { EditIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { OverflowMenu } from "../ui/OverflowMenu";
 import { type TranslateFn } from "./LibraryViewOptions";
-interface CategorySubpanelProps {
+
+export interface LibraryCategoryEntry {
+  /** Set for a category the user can rename or delete. */
+  category?: LibraryCategory;
+  count: number;
+  id: number | null;
+  label: string;
+}
+
+/** All, then the user's categories, then Uncategorized, with novel counts. */
+export function getLibraryCategoryEntries(
+  categories: readonly LibraryCategory[],
+  counts: { all: number; uncategorized: number },
+  t: TranslateFn,
+): LibraryCategoryEntry[] {
+  return [
+    { count: counts.all, id: null, label: t("categories.all") },
+    ...categories
+      .filter((category) => category.id !== UNCATEGORIZED_CATEGORY_ID)
+      .map((category) => ({
+        category: category.isSystem ? undefined : category,
+        count: category.novelCount,
+        id: category.id,
+        label: category.name,
+      })),
+    {
+      count: counts.uncategorized,
+      id: UNCATEGORIZED_CATEGORY_ID,
+      label: t("categories.uncategorized"),
+    },
+  ];
+}
+
+interface CategoryTabsProps {
   activeId: number | null;
-  allCount: number;
-  categories: readonly LibraryCategory[];
+  entries: readonly LibraryCategoryEntry[];
+  onSelect: (id: number | null) => void;
+}
+
+/** Horizontally scrolling category switcher for phones and tablets. */
+export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps) {
+  const { t } = useTranslation();
+  const activeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    activeRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activeId]);
+
+  return (
+    <div
+      aria-label={t("categories.title")}
+      className="norea-library-category-tabs"
+      role="group"
+    >
+      {entries.map((entry) => {
+        const active = entry.id === activeId;
+        return (
+          <UnstyledButton
+            aria-pressed={active}
+            className="norea-library-category-tab norea-state-layer"
+            data-active={active}
+            key={entry.id ?? "all"}
+            onClick={() => onSelect(entry.id)}
+            ref={active ? activeRef : undefined}
+          >
+            <span className="norea-library-category-tab-label">{entry.label}</span>
+            <span className="norea-library-category-count">
+              {entry.count.toLocaleString()}
+            </span>
+          </UnstyledButton>
+        );
+      })}
+    </div>
+  );
+}
+
+interface CategoryListProps {
+  activeId: number | null;
+  entries: readonly LibraryCategoryEntry[];
   error: unknown;
   loading: boolean;
   onCreate: () => void;
   onDelete: (category: LibraryCategory) => void;
-  onOpenDrawer: () => void;
   onRename: (category: LibraryCategory) => void;
   onSelect: (id: number | null) => void;
-  t: TranslateFn;
-  uncategorizedCount: number;
 }
 
-export function CategorySubpanel({
+/**
+ * Category rows with counts, a per-row overflow for rename and delete, and
+ * "+ Category". Shared by the desktop panel and Manage categories.
+ */
+export function CategoryList({
   activeId,
-  allCount,
-  categories,
+  entries,
   error,
   loading,
   onCreate,
   onDelete,
-  onOpenDrawer,
   onRename,
   onSelect,
-  t,
-  uncategorizedCount,
-}: CategorySubpanelProps) {
+}: CategoryListProps) {
+  const { t } = useTranslation();
+
   return (
-    <aside
-      className="norea-library-subpanel"
-      aria-label={t("categories.title")}
-    >
-      <div className="norea-library-subpanel-header">
-        <Text className="norea-console-kicker">{t("categories.title")}</Text>
-        <Tooltip label={t("categories.add")} openDelay={350} withArrow>
-          <IconButton
-            className="norea-library-subpanel-icon"
-            label={t("categories.add")}
-            onClick={onCreate}
-            size="sm"
-            title={t("categories.add")}
-          >
-            <PlusGlyph />
-          </IconButton>
-        </Tooltip>
-      </div>
-      <ScrollArea className="norea-library-category-scroll">
-        <div className="norea-library-category-list">
-          <CategoryButton
-            active={activeId === null}
-            count={allCount}
-            label={t("categories.all")}
-            onClick={() => onSelect(null)}
-            t={t}
-          />
-          <CategoryButton
-            active={activeId === UNCATEGORIZED_CATEGORY_ID}
-            count={uncategorizedCount}
-            label={t("categories.uncategorized")}
-            onClick={() => onSelect(UNCATEGORIZED_CATEGORY_ID)}
-            t={t}
-          />
-          {loading ? (
-            <Text className="norea-library-subpanel-note">
-              {t("common.loading")}
-            </Text>
-          ) : error ? (
-            <Text className="norea-library-subpanel-note" c="danger">
-              {error instanceof Error ? error.message : String(error)}
-            </Text>
-          ) : categories.length > 0 ? (
-            categories.map((category) => (
-              <CategoryButton
-                key={category.id}
-                active={activeId === category.id}
-                canEdit={!category.isSystem}
-                count={category.novelCount}
-                label={category.name}
-                onDelete={() => onDelete(category)}
-                onRename={() => onRename(category)}
-                onClick={() => onSelect(category.id)}
-                t={t}
-              />
-            ))
-          ) : (
-            <Text className="norea-library-subpanel-note">
-              {t("categories.noManual")}
-            </Text>
-          )}
-        </div>
-      </ScrollArea>
-      <div className="norea-library-subpanel-footer">
-        <UnstyledButton onClick={onOpenDrawer}>
-          {t("library.manageCategories")}
-        </UnstyledButton>
-      </div>
-    </aside>
+    <div className="norea-library-category-list">
+      <ul aria-label={t("categories.title")}>
+        {entries.map((entry) => {
+          const active = entry.id === activeId;
+          const { category } = entry;
+          return (
+            <li
+              className="norea-library-category-row"
+              data-active={active}
+              key={entry.id ?? "all"}
+            >
+              <UnstyledButton
+                aria-current={active ? "true" : undefined}
+                className="norea-library-category norea-state-layer"
+                onClick={() => onSelect(entry.id)}
+              >
+                <span className="norea-library-category-label">{entry.label}</span>
+                <span className="norea-library-category-count">
+                  {entry.count.toLocaleString()}
+                </span>
+              </UnstyledButton>
+              {category ? (
+                <OverflowMenu
+                  items={[
+                    {
+                      icon: EditIcon,
+                      label: t("categories.rename"),
+                      onClick: () => onRename(category),
+                    },
+                    {
+                      danger: true,
+                      icon: TrashIcon,
+                      label: t("categories.delete"),
+                      onClick: () => onDelete(category),
+                    },
+                  ]}
+                  label={t("categories.actionsFor", { name: category.name })}
+                />
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {loading ? (
+        <Text c="dimmed" className="norea-library-category-note" size="sm">
+          {t("common.loading")}
+        </Text>
+      ) : error ? (
+        <Text c="danger" className="norea-library-category-note" role="alert" size="sm">
+          {t("categories.loadFailed")}
+        </Text>
+      ) : null}
+      <Button
+        className="norea-library-category-add"
+        justify="flex-start"
+        leftSection={<PlusIcon size="1.125rem" />}
+        onClick={onCreate}
+        variant="subtle"
+      >
+        {t("categories.addShort")}
+      </Button>
+    </div>
   );
 }
 
-interface CategoryButtonProps {
-  active: boolean;
-  canEdit?: boolean;
-  count?: number;
-  label: string;
-  onDelete?: () => void;
-  onRename?: () => void;
-  onClick: () => void;
-  t: TranslateFn;
+interface CategoryManagerProps extends Omit<CategoryListProps, "onSelect"> {
+  fullScreen: boolean;
+  onClose: () => void;
+  onSelect: (id: number | null) => void;
+  opened: boolean;
 }
 
-function CategoryButton({
-  active,
-  canEdit = false,
-  count,
-  label,
-  onDelete,
-  onRename,
-  onClick,
-  t,
-}: CategoryButtonProps) {
+/** Manage categories: a full-screen dialog on phones, a modal on wider screens. */
+export function CategoryManager({
+  fullScreen,
+  onClose,
+  onSelect,
+  opened,
+  ...listProps
+}: CategoryManagerProps) {
+  const { t } = useTranslation();
+  useOverlayBackNavigation(opened, onClose);
+
   return (
-    <div className="norea-library-category-row" data-active={active}>
-      <UnstyledButton
-        className="norea-library-category norea-state-layer"
-        data-active={active}
-        aria-pressed={active}
-        onClick={onClick}
-      >
-        <span className="norea-library-category-label">{label}</span>
-      </UnstyledButton>
-      {canEdit ? (
-        <span className="norea-library-category-actions">
-          <Tooltip label={t("categories.rename")} openDelay={350} withArrow>
-            <IconButton
-              className="norea-library-category-action"
-              label={t("categories.renameNamed", { name: label })}
-              onClick={onRename}
-              size="sm"
-              title={t("categories.rename")}
-            >
-              <EditIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip label={t("categories.delete")} openDelay={350} withArrow>
-            <IconButton
-              className="norea-library-category-action"
-              label={t("categories.deleteNamed", { name: label })}
-              onClick={onDelete}
-              size="sm"
-              title={t("categories.delete")}
-            >
-              <TrashGlyph />
-            </IconButton>
-          </Tooltip>
-        </span>
-      ) : null}
-      <span className="norea-library-category-count">{count ?? 0}</span>
-    </div>
+    <Modal
+      fullScreen={fullScreen}
+      onClose={onClose}
+      opened={opened}
+      title={t("library.manageCategories")}
+    >
+      <CategoryList
+        {...listProps}
+        onSelect={(id) => {
+          onSelect(id);
+          onClose();
+        }}
+      />
+    </Modal>
   );
 }
 
@@ -240,16 +277,6 @@ export function SelectionCategoryPicker({
         </div>
       </Popover.Dropdown>
     </Popover>
-  );
-}
-
-function EditIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 20h4" />
-      <path d="M14 5l5 5" />
-      <path d="M17 3l4 4L9 19H5v-4z" />
-    </svg>
   );
 }
 

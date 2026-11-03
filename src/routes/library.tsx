@@ -11,11 +11,13 @@ import {
   TrashGlyph,
 } from "../components/ActionGlyphs";
 import { PageFrame, StateView } from "../components/AppFrame";
-import { CategoriesDrawer } from "../components/CategoriesDrawer";
 import { IconButton } from "../components/IconButton";
 import { LibraryBatchDownloadPicker } from "../components/library/LibraryBatchDownloadPicker";
 import {
-  CategorySubpanel,
+  CategoryList,
+  CategoryManager,
+  CategoryTabs,
+  getLibraryCategoryEntries,
   SelectionCategoryPicker,
 } from "../components/library/LibraryCategories";
 import { LibraryAppBar } from "../components/library/LibraryAppBar";
@@ -112,6 +114,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const wide = useMediaQuery("(min-width: 768px)", undefined, {
     getInitialValueInEffect: false,
   });
+  const desktop = useMediaQuery("(min-width: 992px)", undefined, {
+    getInitialValueInEffect: false,
+  });
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const libraryFilter = useMemo<LibraryNovelRefreshFilter>(
@@ -157,7 +162,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
-  const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsTab, setViewOptionsTab] =
     useState<LibraryViewOptionsTab>("filter");
@@ -266,8 +271,24 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       );
   const manualCategories = categories.data ?? [];
   const sourceRows = sourceFilters.data ?? [];
-  const allCategoryCount = categoryCounts.data?.total ?? 0;
-  const uncategorizedCategoryCount = categoryCounts.data?.uncategorized ?? 0;
+  const categoryEntries = getLibraryCategoryEntries(
+    manualCategories,
+    {
+      all: categoryCounts.data?.total ?? 0,
+      uncategorized: categoryCounts.data?.uncategorized ?? 0,
+    },
+    t,
+  );
+  const categoryListProps = {
+    activeId: selectedCategoryId,
+    entries: categoryEntries,
+    error: categories.error,
+    loading: categories.isLoading,
+    onCreate: openCreateCategory,
+    onDelete: setCategoryDeleteTarget,
+    onRename: openRenameCategory,
+    onSelect: setSelectedCategoryId,
+  };
   const assignableCategories = manualCategories.filter(
     (category) => category.id !== UNCATEGORIZED_CATEGORY_ID,
   );
@@ -296,7 +317,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     {
       icon: CategoryIcon,
       label: t("library.manageCategories"),
-      onClick: () => setCategoriesOpen(true),
+      onClick: () => setCategoryManagerOpen(true),
     },
     {
       icon: SettingsIcon,
@@ -311,35 +332,36 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     <>
       <PageFrame className="norea-library-page" size="full">
         <div className="norea-library-shell">
-          <CategorySubpanel
-            activeId={selectedCategoryId}
-            allCount={allCategoryCount}
-            categories={manualCategories}
-            error={categories.error}
-            loading={categories.isLoading}
-            onCreate={openCreateCategory}
-            onDelete={setCategoryDeleteTarget}
-            onOpenDrawer={() => setCategoriesOpen(true)}
-            onRename={openRenameCategory}
-            onSelect={setSelectedCategoryId}
-            t={t}
-            uncategorizedCount={uncategorizedCategoryCount}
+          <LibraryAppBar
+            onOpenViewOptions={() => openViewOptions()}
+            onRefresh={() => metadataRefreshMutation.mutate()}
+            onSearchChange={setSearch}
+            overflowItems={overflowItems}
+            refreshDisabled={summary.totalNovels === 0}
+            refreshing={metadataRefreshMutation.isPending}
+            search={search}
+            wide={wide}
           />
-
+          <div className="norea-library-columns">
+          {desktop ? (
+            <aside
+              aria-label={t("categories.title")}
+              className="norea-library-categories"
+            >
+              <CategoryList {...categoryListProps} />
+            </aside>
+          ) : null}
           <section
             className="norea-library-main"
             aria-label={t("library.mainLabel")}
           >
-            <LibraryAppBar
-              onOpenViewOptions={() => openViewOptions()}
-              onRefresh={() => metadataRefreshMutation.mutate()}
-              onSearchChange={setSearch}
-              overflowItems={overflowItems}
-              refreshDisabled={summary.totalNovels === 0}
-              refreshing={metadataRefreshMutation.isPending}
-              search={search}
-              wide={wide}
-            />
+            {desktop ? null : (
+              <CategoryTabs
+                activeId={selectedCategoryId}
+                entries={categoryEntries}
+                onSelect={setSelectedCategoryId}
+              />
+            )}
             <LibraryQuickFilters
               counts={tagSummary}
               onClear={() => {
@@ -524,22 +546,15 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             </div>
 
           </section>
+          </div>
         </div>
       </PageFrame>
 
-      <CategoriesDrawer
-        allCount={allCategoryCount}
-        categories={manualCategories}
-        error={categories.error}
-        loading={categories.isLoading}
-        opened={active && categoriesOpen}
-        onClose={() => setCategoriesOpen(false)}
-        onCreate={openCreateCategory}
-        onDelete={setCategoryDeleteTarget}
-        onRename={openRenameCategory}
-        selectedCategoryId={selectedCategoryId}
-        onSelect={setSelectedCategoryId}
-        uncategorizedCount={uncategorizedCategoryCount}
+      <CategoryManager
+        {...categoryListProps}
+        fullScreen={!wide}
+        onClose={() => setCategoryManagerOpen(false)}
+        opened={active && categoryManagerOpen}
       />
 
       <LibraryViewOptions
