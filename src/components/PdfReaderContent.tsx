@@ -32,6 +32,7 @@ import {
   type ReaderTapZone,
   type ReaderTapZoneMap,
 } from "../store/reader";
+import { StateView } from "./AppFrame";
 import type { ReaderContentHandle } from "./ReaderContent";
 import { ReaderSeekbars } from "./ReaderSeekbars";
 import {
@@ -63,6 +64,7 @@ interface PdfReaderContentProps {
 interface PdfPageCanvasProps {
   active: boolean;
   estimatedHeight: number;
+  label: string;
   pageNumber: number;
   pdfDocument: PDFDocumentProxy;
   renderBounds: PdfRenderBounds;
@@ -366,6 +368,7 @@ function getTapZoneAction(
 function PdfPageCanvas({
   active,
   estimatedHeight,
+  label,
   pageNumber,
   pdfDocument,
   renderBounds,
@@ -470,8 +473,9 @@ function PdfPageCanvas({
       {active ? (
         <canvas
           ref={canvasRef}
-          aria-label={`${pageNumber}`}
+          aria-label={label}
           className="norea-pdf-reader-canvas"
+          role="img"
           data-rendering={rendering}
         />
       ) : null}
@@ -547,6 +551,7 @@ function PdfReaderContentInner(
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const viewportHeight =
     requestedViewportHeight ?? "calc(var(--norea-app-content-height) - 3.75rem)";
   const isPagedReader = general.pageReader;
@@ -1076,7 +1081,12 @@ function PdfReaderContentInner(
       disposed = true;
       void loadingTask?.destroy();
     };
-  }, [dataUrl, handleRenderError, localMediaContext]);
+  }, [dataUrl, handleRenderError, loadAttempt, localMediaContext]);
+
+  const retryPdfDocument = useCallback(() => {
+    initialProgressRef.current = clampProgress(lastSavedProgressRef.current);
+    setLoadAttempt((current) => current + 1);
+  }, []);
 
   useEffect(() => {
     if (pageCount <= 0) return;
@@ -1558,9 +1568,13 @@ function PdfReaderContentInner(
               {t("reader.loadingContent")}
             </div>
           ) : error ? (
-            <div className="norea-pdf-reader-state" role="alert">
-              <span>{t("reader.loadFailed")}</span>
-              <span>{error}</span>
+            <div className="norea-pdf-reader-state">
+              <StateView
+                action={{ label: t("common.retry"), onClick: retryPdfDocument }}
+                color="danger"
+                message={error}
+                title={t("reader.loadFailed")}
+              />
             </div>
           ) : null}
           {pdfDocument && renderBounds.width > 0
@@ -1578,6 +1592,10 @@ function PdfReaderContentInner(
                       effectiveScrollPageHeights[pageIndex] ??
                       estimatedScrollPageFrameHeight
                     }
+                    label={t("reader.pdfPageLabel", {
+                      page: item,
+                      total: pageCount,
+                    })}
                     pageNumber={item}
                     pdfDocument={pdfDocument}
                     renderBounds={renderBounds}

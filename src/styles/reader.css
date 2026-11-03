@@ -549,6 +549,7 @@
   justify-content: center;
   line-height: 1.4;
   padding: var(--norea-space-4);
+  pointer-events: auto;
   position: absolute;
   text-align: center;
   z-index: 2;
@@ -558,6 +559,8 @@
   align-items: center;
   background: var(--norea-color-bg);
   display: flex;
+  flex-direction: column;
+  gap: var(--norea-space-3);
   height: 100%;
   justify-content: center;
   padding: var(--norea-space-5);

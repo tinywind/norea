@@ -84,7 +84,9 @@ vi.mock("../store/reader", async (importOriginal) => {
 });
 
 interface ReaderNodeProps {
+  action?: { label: string; onClick: () => void };
   children?: ReactNode;
+  label?: string;
   className?: string;
   pageNumber?: number;
   progress?: number;
@@ -206,6 +208,7 @@ describe("PDF progress readiness", () => {
       render,
       settle,
       page: (number = 1) => findNode(tree, (node) => node.pageNumber === number)!.props,
+      retry: () => findNode(tree, (node) => node.action?.label === "common.retry")?.props.action,
       seekbar: () => findNode(tree, (node) => typeof node.onSeek === "function")!.props,
       scroll: () => findNode(tree, (node) => typeof node.onScroll === "function")!.props.onScroll!(),
     };
@@ -234,6 +237,31 @@ describe("PDF progress readiness", () => {
     vi.advanceTimersByTime(400);
     dispose?.();
     expect(reader.onProgressChange).not.toHaveBeenCalled();
+  });
+
+  it("offers Retry after a load failure and reopens at the saved progress", async () => {
+    const reader = mountReader({ initialProgress: 37 });
+    reader.rejectDocument(new Error("Invalid PDF structure"));
+    await reader.settle();
+    const retry = reader.retry();
+    expect(retry).toBeDefined();
+    vi.mocked(getDocument).mockReturnValue({
+      promise: Promise.resolve({ numPages: 4 }),
+      destroy: vi.fn(),
+    } as unknown as ReturnType<typeof getDocument>);
+    retry!.onClick();
+    reader.render();
+    await reader.settle();
+    expect(getDocument).toHaveBeenCalledTimes(2);
+    expect(reader.retry()).toBeUndefined();
+    expect(reader.seekbar().progress).toBe(37);
+  });
+
+  it("labels each PDF page with its position", async () => {
+    const reader = mountReader();
+    reader.resolveDocument({ numPages: 1 });
+    await reader.settle();
+    expect(reader.page().label).toBe("reader.pdfPageLabel");
   });
 
   it("does not save 100% when a loaded document fails to render its page", async () => {

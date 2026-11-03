@@ -1,8 +1,8 @@
-import { Box } from "@mantine/core";
+import { Box, Loader, Text } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BlockingLoadingOverlay, StateView } from "../components/AppFrame";
+import { StateView } from "../components/AppFrame";
 import { PdfReaderContent } from "../components/PdfReaderContent";
 import {
   ReaderBottomBar,
@@ -345,9 +345,13 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     [openAdjacent],
   );
 
+  const retryChapterQuery = () => {
+    void chapterQuery.refetch();
+  };
   const readerContent = readerPreparation.error ? (
     <Box className="norea-reader-state-frame">
       <StateView
+        action={{ label: t("common.retry"), onClick: readerPreparation.retry }}
         color="danger"
         title={t("reader.loadFailed")}
         message={readerPreparation.error.message}
@@ -355,16 +359,18 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     </Box>
   ) : readerPreparation.isPending ||
     (chapterId > 0 && !hasChapterContent && chapterQuery.isLoading) ? (
-    <Box className="norea-reader-state-frame">
-      <StateView
-        color="info"
-        title={t("reader.loadingChapter")}
-        message={t("reader.loadingContent")}
-      />
+    <Box
+      aria-live="polite"
+      className="norea-reader-state-frame"
+      role="status"
+    >
+      <Loader aria-hidden="true" size="md" />
+      <Text>{t("reader.loadingContent")}</Text>
     </Box>
   ) : chapterId > 0 && !hasChapterContent && chapterQuery.error ? (
     <Box className="norea-reader-state-frame">
       <StateView
+        action={{ label: t("common.retry"), onClick: retryChapterQuery }}
         color="danger"
         title={t("reader.loadFailed")}
         message={
@@ -377,9 +383,10 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   ) : chapterId > 0 && !hasChapterContent && chapterQuery.data === null ? (
     <Box className="norea-reader-state-frame">
       <StateView
+        action={{ label: t("common.retry"), onClick: retryChapterQuery }}
         color="warn"
         title={t("reader.chapterNotFound")}
-        message={t("reader.chapterNotFoundMessage", { id: chapterId })}
+        message={t("reader.chapterNotFoundMessage")}
       />
     </Box>
   ) : chapterId > 0 &&
@@ -547,13 +554,6 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         sourceId={currentSourceId}
         sourceName={currentSourceName}
       />
-      {readerBusy ? (
-        <BlockingLoadingOverlay
-          cancelLabel={t("common.back")}
-          label={t("reader.loadingContent")}
-          onCancel={handleReaderBack}
-        />
-      ) : null}
     </Box>
   );
 }

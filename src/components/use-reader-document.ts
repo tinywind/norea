@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PreparedReaderDocument } from "./reader-document";
 import {
   getPreparedReaderDocument,
@@ -18,6 +18,7 @@ export function useReaderDocument(
   contentKey: number | string,
 ) {
   const [state, setState] = useState<ReaderDocumentState | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const displayed = useRef<{
     contentKey: number | string;
     document: PreparedReaderDocument;
@@ -60,11 +61,17 @@ export function useReaderDocument(
       },
     );
     return () => controller.abort();
-  }, [html, bionicReading]);
+  }, [attempt, html, bionicReading]);
+
+  const retry = useCallback(() => {
+    setState(null);
+    setAttempt((current) => current + 1);
+  }, []);
 
   return {
     document,
     error: current?.error,
     isPending: Boolean(html && !document && !current?.error),
+    retry,
   };
 }
