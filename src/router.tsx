@@ -4,6 +4,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import {
+  parseDownloadsSearch,
   parseNovelMergeSearch,
   parseNovelSearch,
   parseReaderSearch,
@@ -16,7 +17,6 @@ import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
 import { MorePage } from "./routes/more";
 import { SettingsPage } from "./routes/settings";
-import { TasksPage } from "./routes/tasks";
 import { UpdatesPage } from "./routes/updates";
 
 const rootRoute = createRootRoute({
@@ -83,13 +83,8 @@ const updatesRoute = createRoute({
 const downloadsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/downloads",
-  component: DownloadsPage,
-});
-
-const tasksRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/tasks",
-  component: TasksPage,
+  validateSearch: parseDownloadsSearch,
+  component: DownloadsRoutePage,
 });
 
 const moreRoute = createRoute({
@@ -114,7 +109,6 @@ const routeTree = rootRoute.addChildren([
   historyRoute,
   updatesRoute,
   downloadsRoute,
-  tasksRoute,
   moreRoute,
   sourceRoute,
 ]);
@@ -124,6 +118,11 @@ export const router = createRouter({ routeTree });
 function BrowseRoutePage() {
   const { q, tab } = browseRoute.useSearch();
   return <BrowsePage query={q} tab={tab} />;
+}
+
+function DownloadsRoutePage() {
+  const { view } = downloadsRoute.useSearch();
+  return <DownloadsPage view={view} />;
 }
 
 function SettingsRoutePage() {

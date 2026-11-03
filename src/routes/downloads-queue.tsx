@@ -1114,11 +1114,15 @@ function TaskGroup({
   );
 }
 
-interface TasksPageProps {
+interface DownloadsQueueViewProps {
   active?: boolean;
+  viewSwitcher?: ReactNode;
 }
 
-export function TasksPage({ active = true }: TasksPageProps = {}) {
+export function DownloadsQueueView({
+  active = true,
+  viewSwitcher,
+}: DownloadsQueueViewProps = {}) {
   const { t } = useTranslation();
   const confirm = useConfirm();
   const snapshot = useTaskSnapshot(active);
@@ -1263,7 +1267,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
       <PageHeader
         title={
           <span className="norea-task-page-title">
-            {t("tasks.title")}
+            {t("downloads.title")}
             <span className="norea-task-title-count">{tasks.length}</span>
           </span>
         }
@@ -1360,6 +1364,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           </div>
         }
       />
+      {viewSwitcher}
 
       {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
 

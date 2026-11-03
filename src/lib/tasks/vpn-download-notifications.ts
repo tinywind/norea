@@ -59,7 +59,7 @@ export function vpnDownloadNotifications(plans: readonly VpnDownloadPlan[], t: T
         title: t("vpnDownload.rangeAction", {
           action: t("vpnDownload.phase.paused"), title: plan.title, interval: t("vpnDownload.interval", { number: index + 1 }),
         }),
-        body: t(reasonKey), actionLabel: t(verification ? "sourceAccess.notificationAction" : "nav.tasks"),
+        body: t(reasonKey), actionLabel: t(verification ? "sourceAccess.notificationAction" : "downloads.title"),
         action: verification ?? { type: "openTasks" },
       });
     }

@@ -4,7 +4,6 @@ import { PageFrame, PageHeader } from "../components/AppFrame";
 import {
   AboutIcon,
   ChevronRightIcon,
-  DownloadedIcon,
   DownloadsIcon,
   SettingsIcon,
   type AppIcon,
@@ -28,7 +27,7 @@ function MoreLinkRow({
   description?: string;
   icon: AppIcon;
   label: string;
-  to: "/tasks" | "/downloads" | "/settings";
+  to: "/downloads" | "/settings";
   section?: string;
 }) {
   const content = (
@@ -51,7 +50,11 @@ function MoreLinkRow({
           {content}
         </Link>
       ) : (
-        <Link className={ROW_CLASS_NAME} to={to}>
+        <Link
+          className={ROW_CLASS_NAME}
+          search={{ view: "queue" }}
+          to="/downloads"
+        >
           {content}
         </Link>
       )}
@@ -83,11 +86,6 @@ export function MorePage() {
           badge={taskAttentionCount}
           description={t("more.downloads.description")}
           icon={DownloadsIcon}
-          label={t("more.downloads")}
-          to="/tasks"
-        />
-        <MoreLinkRow
-          icon={DownloadedIcon}
           label={t("downloads.title")}
           to="/downloads"
         />

@@ -3,6 +3,7 @@ import {
   TaskNotificationTracker,
   buildTaskEventNotificationBody,
   sumTaskNotificationProgress,
+  taskNotificationRouteForTask,
   type TaskNotificationTranslate,
 } from "./task-notification-model";
 import type { TaskRecord, TaskSnapshot } from "./scheduler";
@@ -144,5 +145,19 @@ describe("unknown task totals", () => {
   it("does not report zero percent for an undiscovered total", () => {
     expect(buildTaskEventNotificationBody(t, task("unknown", { status: "running", progress: { current: 0, total: 0 } })))
       .toBe("notifications.task.running:{}");
+  });
+});
+
+describe("task notification routes", () => {
+  it.each([
+    ["chapter.download", "/downloads?view=storage"],
+    ["chapter.repairMedia", "/downloads?view=storage"],
+    ["source.search", "/downloads?view=queue"],
+    ["source.globalSearch", "/downloads?view=queue"],
+    ["library.checkUpdates", "/updates"],
+    ["library.refreshMetadata", "/updates"],
+    ["plugin.install", "/downloads?view=queue"],
+  ] as const)("routes %s notifications to %s", (kind, route) => {
+    expect(taskNotificationRouteForTask(task(kind, { kind }))).toBe(route);
   });
 });

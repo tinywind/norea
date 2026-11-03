@@ -295,9 +295,9 @@ it("unregisters an action listener that finishes registering after cleanup", asy
   expect(mocks.invoke).toHaveBeenCalledTimes(calls);
 });
 
-it("opens the task page when no parent action handler is provided", async () => {
+it("opens the download queue when no parent action handler is provided", async () => {
   await mount("off");
   receiveAction({ payload: { type: "openTasks" } });
   await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/tasks" });
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/downloads", search: { view: "queue" } });
 });

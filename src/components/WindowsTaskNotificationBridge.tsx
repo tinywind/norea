@@ -180,7 +180,7 @@ export function WindowsTaskNotificationBridge({
         }
         if (disposed) return;
         if (onAction) onAction(action);
-        else if (action.type === "openTasks") void navigate({ to: "/tasks" });
+        else if (action.type === "openTasks") void navigate({ to: "/downloads", search: { view: "queue" } });
       })();
     };
 

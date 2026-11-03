@@ -16,7 +16,10 @@ import type {
 } from "./task-types";
 
 export type { TaskNotificationGroupKey } from "./task-types";
-export type TaskNotificationRoute = "/downloads" | "/tasks" | "/updates";
+export type TaskNotificationRoute =
+  | "/downloads?view=queue"
+  | "/downloads?view=storage"
+  | "/updates";
 export type TaskNotificationTranslate = (
   key: TranslationKey,
   params?: Record<string, number | string>,
@@ -319,7 +322,7 @@ export function taskNotificationGroupKey(task: TaskRecord): TaskNotificationGrou
 
 export function taskNotificationRouteForTask(task: TaskRecord): TaskNotificationRoute {
   const key = taskNotificationGroupKey(task);
-  return key ? taskNotificationGroupRoute(key) : "/tasks";
+  return key ? taskNotificationGroupRoute(key) : "/downloads?view=queue";
 }
 
 export function taskNotificationKey(task: TaskRecord): string {
@@ -395,7 +398,11 @@ function trayPayload(groups: readonly ActiveTaskNotificationGroup[], t: TaskNoti
 }
 
 function taskNotificationGroupRoute(key: TaskNotificationGroupKey): TaskNotificationRoute {
-  return key === "downloads" ? "/downloads" : key === "search" ? "/tasks" : "/updates";
+  return key === "downloads"
+    ? "/downloads?view=storage"
+    : key === "search"
+      ? "/downloads?view=queue"
+      : "/updates";
 }
 
 function taskNotificationGroupTitle(t: TaskNotificationTranslate, key: TaskNotificationGroupKey): string {

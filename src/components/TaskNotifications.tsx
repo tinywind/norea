@@ -39,7 +39,7 @@ export function TaskNotifications() {
   );
 
   const handleNotificationAction = useCallback((action: TaskNotificationAction) => {
-    void applyTaskNotificationAction(action, () => navigate({ to: "/tasks" }), t)
+    void applyTaskNotificationAction(action, () => navigate({ to: "/downloads", search: { view: "queue" } }), t)
       .catch(error => showErrorToast(t("common.actionFailed"), error, "task-notification-action"));
   }, [navigate, t]);
 

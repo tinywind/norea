@@ -15,6 +15,12 @@ export interface SourceSearch {
   query: string;
 }
 
+export type DownloadsView = "queue" | "storage";
+
+export interface DownloadsSearch {
+  view: DownloadsView;
+}
+
 function asPositiveId(raw: unknown): number {
   const value = typeof raw === "number" ? raw : Number(raw);
   return Number.isFinite(value) && value > 0 ? value : 0;
@@ -47,4 +53,10 @@ export function parseSourceSearch(
     pluginId: asString(search.pluginId),
     query: asString(search.query),
   };
+}
+
+export function parseDownloadsSearch(
+  search: Record<string, unknown>,
+): DownloadsSearch {
+  return { view: search.view === "storage" ? "storage" : "queue" };
 }

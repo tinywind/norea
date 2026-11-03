@@ -29,7 +29,7 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) 
 const confirm = vi.hoisted(() => vi.fn());
 vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => confirm }));
 import { taskScheduler } from "../lib/tasks/scheduler";
-import { TasksPage } from "./tasks";
+import { DownloadsQueueView } from "./downloads-queue";
 
 interface Props { children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown }
 function elements(node: ReactNode): ReactElement<Props>[] {
@@ -38,7 +38,7 @@ function elements(node: ReactNode): ReactElement<Props>[] {
   const element = node as ReactElement<Props>;
   return [element, ...elements(element.props.children), ...elements(element.props.actions)];
 }
-function render() { mocks.index = 0; mocks.refIndex = 0; return elements(TasksPage()); }
+function render() { mocks.index = 0; mocks.refIndex = 0; return elements(DownloadsQueueView()); }
 const button = (label: string) => render().find(element => element.props.label === label)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];

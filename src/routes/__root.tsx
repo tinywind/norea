@@ -39,10 +39,12 @@ import {
   type PageStackOptions,
 } from "../lib/page-stack";
 import {
+  parseDownloadsSearch,
   parseNovelMergeSearch,
   parseNovelSearch,
   parseReaderSearch,
   parseSourceSearch,
+  type DownloadsView,
 } from "../lib/route-search";
 import { importSystemOpenedFile } from "../lib/system-file-import";
 import { isAndroidRuntime, isTauriRuntime } from "../lib/tauri-runtime";
@@ -60,7 +62,6 @@ import { NovelMergePage } from "./novel-merge";
 import { ReaderPage } from "./reader";
 import { SettingsPage } from "./settings";
 import { SourcePage } from "./source";
-import { TasksPage } from "./tasks";
 import { UpdatesPage } from "./updates";
 
 const PersistentLibraryPage = memo(LibraryPage);
@@ -68,7 +69,6 @@ const PersistentBrowsePage = memo(BrowsePage);
 const PersistentUpdatesPage = memo(UpdatesPage);
 const PersistentHistoryPage = memo(HistoryPage);
 const PersistentDownloadsPage = memo(DownloadsPage);
-const PersistentTasksPage = memo(TasksPage);
 const PersistentSettingsPage = memo(SettingsPage);
 const PersistentMorePage = memo(MorePage);
 const StackedNovelPage = memo(NovelDetailPage);
@@ -121,7 +121,6 @@ const NAV_ITEMS: readonly NavItem[] = [
 /** Destinations opened from More keep the More item marked as current. */
 const MORE_PATHNAMES: ReadonlySet<string> = new Set([
   "/more",
-  "/tasks",
   "/downloads",
   "/settings",
 ]);
@@ -138,7 +137,6 @@ type PersistentPage =
   | "updates"
   | "history"
   | "downloads"
-  | "tasks"
   | "settings"
   | "more";
 
@@ -154,8 +152,6 @@ function getPersistentPage(pathname: string): PersistentPage | null {
       return "history";
     case "/downloads":
       return "downloads";
-    case "/tasks":
-      return "tasks";
     case "/settings":
       return "settings";
     case "/more":
@@ -335,6 +331,9 @@ export function RootLayout() {
   const [lastBrowseTab, setLastBrowseTab] = useState<BrowseTab>(() =>
     getBrowseTab(search),
   );
+  const [lastDownloadsView, setLastDownloadsView] = useState<DownloadsView>(
+    () => parseDownloadsSearch(search).view,
+  );
   const [lastSettingsSection, setLastSettingsSection] = useState(() =>
     getSearchString(search, "section", "app"),
   );
@@ -344,6 +343,10 @@ export function RootLayout() {
       : lastBrowseQuery;
   const browseTab =
     activePersistentPage === "browse" ? getBrowseTab(search) : lastBrowseTab;
+  const downloadsView =
+    activePersistentPage === "downloads"
+      ? parseDownloadsSearch(search).view
+      : lastDownloadsView;
   const settingsSection =
     activePersistentPage === "settings"
       ? getSearchString(search, "section", "app")
@@ -375,7 +378,7 @@ export function RootLayout() {
         if (disposed) return;
         void applyTaskNotificationAction(
           action,
-          () => navigate({ to: "/tasks" }),
+          () => navigate({ to: "/downloads", search: { view: "queue" } }),
           notificationTranslateRef.current,
         ).catch(error => console.warn("[task-notifications] deep-link action failed", error));
       },
@@ -468,6 +471,13 @@ export function RootLayout() {
       );
     }
 
+    if (activePersistentPage === "downloads") {
+      const nextView = parseDownloadsSearch(search).view;
+      setLastDownloadsView((current) =>
+        current === nextView ? current : nextView,
+      );
+    }
+
     if (activePersistentPage === "settings") {
       const nextSection = getSearchString(search, "section", "app");
       setLastSettingsSection((current) =>
@@ -557,12 +567,8 @@ export function RootLayout() {
             <PageSlot active={activePersistentPage === "downloads"}>
               <PersistentDownloadsPage
                 active={activePersistentPage === "downloads"}
+                view={downloadsView}
               />
-            </PageSlot>
-          ) : null}
-          {pageVisited("tasks") ? (
-            <PageSlot active={activePersistentPage === "tasks"}>
-              <PersistentTasksPage active={activePersistentPage === "tasks"} />
             </PageSlot>
           ) : null}
           {pageVisited("settings") ? (

@@ -13,6 +13,11 @@
   flex: 0 0 auto;
 }
 
+.norea-downloads-view-switch {
+  align-self: flex-start;
+  flex: 0 0 auto;
+}
+
 .norea-downloads-body {
   flex: 1 1 auto;
   min-height: 0;

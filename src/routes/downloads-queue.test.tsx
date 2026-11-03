@@ -26,7 +26,7 @@ vi.mock("../lib/tasks/source-access-coordinator", () => ({
 }));
 
 import { TaskScheduler } from "../lib/tasks/scheduler";
-import { TasksPage } from "./tasks";
+import { DownloadsQueueView } from "./downloads-queue";
 
 function chapter(id: number, novelId: number, status: TaskRecord["status"], queueIndex?: number): TaskRecord {
   return {
@@ -43,7 +43,7 @@ function workTitles(records: TaskRecord[]): string[] {
     ...new TaskScheduler().getSnapshot(), records, total: records.length,
     sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
   };
-  const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+  const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
   return $(".norea-task-work-title").map((_, element) => $(element).text()).get();
 }
 
@@ -61,7 +61,7 @@ describe("task work group order", () => {
       chapter(1, 1, "queued", 0), { ...chapter(2, 2, "running", 1), vpnWorker: { rangeId: "range", slot: 9 as const, generation: 1 } },
       chapter(3, 3, "queued", 2), chapter(4, 4, "failed"), chapter(5, 5, "succeeded"),
     ]);
-    const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     expect($(".norea-task-title-count").text()).toBe("3");
     expect($(".norea-task-summary-pill").map((_, element) => $(element).text()).get())
       .toEqual(["Running 0", "Queued 1", "Blocked 0", "Failed 1", "Done 1"]);
@@ -71,7 +71,7 @@ describe("task work group order", () => {
   it("shows a newly accepted request before chapter tasks or catalogs are ready", () => {
     state.snapshot = new TaskScheduler().getSnapshot();
     state.requests = [{ id: "request", title: "Newly requested work", novelIds: [42], total: null, phase: "preparing", error: null }];
-    const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     expect($.text()).toContain("Newly requested work");
     expect($('[data-download-request="request"]').text()).toContain("Preparing downloads");
     expect($.text()).not.toContain("Nothing in the queue");
@@ -83,7 +83,7 @@ describe("task work group order", () => {
       detectedAt: 1, revision: 1, scopeKey: "plugin:source:site:source.test", sourceId: "source",
       verificationRequested: false,
     }] };
-    const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     const banner = $(".norea-source-access-banner");
     expect(banner.attr("role")).toBe("alert");
     expect(banner.text()).toContain("CAPTCHA");
@@ -112,7 +112,7 @@ describe("virtual task row geometry", () => {
     }));
     state.snapshot = { ...new TaskScheduler().getSnapshot(), records, total: records.length };
     try {
-      const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+      const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
       expect($(".norea-task-virtual-spacer").attr("style")).toBe(`height:${81 * rowHeight}px`);
     } finally {
       state.fontScalePercent = 100;

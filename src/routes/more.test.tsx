@@ -16,13 +16,16 @@ vi.mock("@tanstack/react-router", () => ({
     to,
   }: {
     children?: ReactNode;
-    search?: { section?: string };
+    search?: Record<string, string | undefined>;
     to: string;
-  }) => (
-    <a href={search?.section ? `${to}?section=${search.section}` : to}>
-      {children}
-    </a>
-  ),
+  }) => {
+    const query = new URLSearchParams(
+      Object.entries(search ?? {}).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ).toString();
+    return <a href={query ? `${to}?${query}` : to}>{children}</a>;
+  },
 }));
 vi.mock("../lib/tasks/hooks", () => ({
   useTaskAttentionCount: () => taskAttention.count,
@@ -55,13 +58,12 @@ describe("More page", () => {
     const markup = renderMorePage();
 
     expect(linkHrefs(markup)).toEqual([
-      "/tasks",
-      "/downloads",
+      "/downloads?view=queue",
       "/settings",
       "/settings?section=about",
     ]);
     expect(markup).toContain("Downloads");
-    expect(markup).toContain("Download cache");
+    expect(markup).not.toContain("Download cache");
     expect(markup).toContain("Settings");
     expect(markup).toContain("About");
   });

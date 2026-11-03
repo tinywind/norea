@@ -70,7 +70,11 @@ vi.mock("../components/SiteBrowserOverlay", () => ({ SiteBrowserOverlay: () => n
 vi.mock("../components/TaskNotifications", () => ({ TaskNotifications: () => null }));
 vi.mock("../components/ui/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("./browse", () => ({ BrowsePage: () => null }));
-vi.mock("./downloads", () => ({ DownloadsPage: () => null }));
+vi.mock("./downloads", () => ({
+  DownloadsPage: ({ view }: { view: string }) => (
+    <div data-downloads-view={view} />
+  ),
+}));
 vi.mock("./history", () => ({ HistoryPage: () => null }));
 vi.mock("./library", () => ({ LibraryPage: () => null }));
 vi.mock("./more", () => ({ MorePage: () => null }));
@@ -79,9 +83,9 @@ vi.mock("./novel-merge", () => ({ NovelMergePage: () => null }));
 vi.mock("./reader", () => ({ ReaderPage: () => null }));
 vi.mock("./settings", () => ({ SettingsPage: () => null }));
 vi.mock("./source", () => ({ SourcePage: () => null }));
-vi.mock("./tasks", () => ({ TasksPage: () => null }));
 vi.mock("./updates", () => ({ UpdatesPage: () => null }));
 
+import { startDeepLinkListener } from "../lib/deep-link";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import {
   chapterDetailQueryKey,
@@ -263,7 +267,7 @@ describe("primary navigation", () => {
     expect(renderNavigation("/")).not.toContain("norea-rail-badge");
   });
 
-  it.each(["/more", "/tasks", "/downloads", "/settings"])(
+  it.each(["/more", "/downloads", "/settings"])(
     "marks More as current on %s",
     (pathname) => {
       const active = navLinks(renderNavigation(pathname), "norea-mobile-nav-link")
@@ -280,5 +284,77 @@ describe("primary navigation", () => {
       .map((link) => link.href);
 
     expect(active).toEqual(["/"]);
+  });
+});
+
+describe("Downloads hub routing", () => {
+  const readerLocation = { ...location };
+
+  function render(pathname: string, search: Record<string, unknown>): string {
+    Object.assign(location, { href: pathname, pathname, search });
+    return renderToStaticMarkup(
+      <MantineProvider>
+        <QueryClientProvider client={new QueryClient()}>
+          <RootLayout />
+        </QueryClientProvider>
+      </MantineProvider>,
+    );
+  }
+
+  afterEach(() => {
+    Object.assign(location, readerLocation);
+  });
+
+  it.each([
+    [{ view: "storage" }, "storage"],
+    [{ view: "queue" }, "queue"],
+    [{ view: "tasks" }, "queue"],
+    [{}, "queue"],
+  ])("renders the persistent Downloads page for %j as the %s view", (search, view) => {
+    expect(render("/downloads", search)).toContain(`data-downloads-view="${view}"`);
+  });
+
+  it("no longer serves the removed /tasks route", () => {
+    const markup = render("/tasks", {});
+
+    expect(markup).not.toContain("data-downloads-view");
+    expect(markup).not.toContain("--active");
+  });
+});
+
+describe("task notification deep links", () => {
+  let cleanups: Array<() => void>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    renderToStaticMarkup(
+      <MantineProvider>
+        <QueryClientProvider client={new QueryClient()}>
+          <RootLayout />
+        </QueryClientProvider>
+      </MantineProvider>,
+    );
+    cleanups = vi.mocked(useEffect).mock.calls.flatMap(([effect]) => {
+      const cleanup = effect();
+      return typeof cleanup === "function" ? [cleanup] : [];
+    });
+  });
+
+  afterEach(() => {
+    cleanups.forEach((cleanup) => cleanup());
+  });
+
+  it("opens the download queue as a new history entry for norea://tasks", async () => {
+    const handlers = vi.mocked(startDeepLinkListener).mock.calls.at(-1)![0];
+
+    handlers.onTaskNotificationAction?.({ type: "openTasks" });
+
+    await vi.waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/downloads",
+        search: { view: "queue" },
+      }),
+    );
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 });
