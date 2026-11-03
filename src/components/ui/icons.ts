@@ -6,6 +6,7 @@ import {
   IconArrowsExchange,
   IconArrowsSort,
   IconBell,
+  IconBook,
   IconBookmark,
   IconBookmarkFilled,
   IconBrandGithub,
@@ -88,6 +89,7 @@ function withAppDefaults(Icon: TablerIcon): AppIcon {
 export const LibraryIcon = withAppDefaults(IconBooks);
 export const AddToLibraryIcon = withAppDefaults(IconHeartPlus);
 export const InLibraryIcon = withAppDefaults(IconHeartFilled);
+export const OpenWorkIcon = withAppDefaults(IconBook);
 export const UpdatesIcon = withAppDefaults(IconBell);
 export const HistoryIcon = withAppDefaults(IconHistory);
 export const BrowseIcon = withAppDefaults(IconCompass);

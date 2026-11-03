@@ -18,6 +18,8 @@ import {
   useSourceAccessBlocks,
 } from "../SourceAccessVerifyButton";
 import { SourceNovelCover } from "../SourceNovelCover";
+import { QuickAddCard } from "./QuickAddCard";
+import { useQuickAddToLibrary, type QuickAddTarget } from "./use-quick-add";
 import {
   BrowseIcon,
   CheckIcon,
@@ -289,12 +291,14 @@ function SearchScopeChips({
 
 interface SearchResultSectionProps {
   isInLibrary: (pluginId: string, path: string) => boolean;
+  isQuickAddPending: (target: QuickAddTarget) => boolean;
   openingKey: string | null;
   pinned: boolean;
   plugin: Plugin;
   result: GlobalSearchResult;
   onMore: (row: GlobalSearchResult) => void;
   onOpen: (row: GlobalSearchResult, novel: NovelItem) => void;
+  onQuickAdd: (target: QuickAddTarget) => void;
   onOpenSite: (plugin: Plugin) => void;
   onOpenSource: (plugin: Plugin) => void;
   onTogglePinned: (pluginId: string) => void;
@@ -302,12 +306,14 @@ interface SearchResultSectionProps {
 
 function SearchResultSection({
   isInLibrary,
+  isQuickAddPending,
   openingKey,
   pinned,
   plugin,
   result,
   onMore,
   onOpen,
+  onQuickAdd,
   onOpenSite,
   onOpenSource,
   onTogglePinned,
@@ -348,17 +354,22 @@ function SearchResultSection({
       <div className="norea-search-preview-strip">
         {result.novels.slice(0, PREVIEW_RESULT_COUNT).map((novel, index) => {
           const key = resultKey(result.pluginId, novel.path);
+          const inLibrary = isInLibrary(result.pluginId, novel.path);
+          const target: QuickAddTarget = { kind: "source", item: novel, plugin };
           return (
-            <button
+            <QuickAddCard
               key={`${key}::${index}`}
-              type="button"
               className="norea-search-preview-card norea-state-layer"
-              data-selected={openingKey === key}
-              onClick={() => onOpen(result, novel)}
+              inLibrary={inLibrary}
+              name={novel.name}
+              onAdd={() => onQuickAdd(target)}
+              onOpen={() => onOpen(result, novel)}
+              pending={isQuickAddPending(target)}
+              selected={openingKey === key}
             >
               <SourceNovelCover
                 height={108}
-                inLibrary={isInLibrary(result.pluginId, novel.path)}
+                inLibrary={inLibrary}
                 item={novel}
                 plugin={plugin}
                 width={74}
@@ -366,7 +377,7 @@ function SearchResultSection({
               <span className="norea-search-preview-title" title={novel.name}>
                 {novel.name}
               </span>
-            </button>
+            </QuickAddCard>
           );
         })}
       </div>
@@ -571,6 +582,7 @@ export function BrowseSearchTab({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isInLibrary = useLibraryNovelMembership();
+  const quickAdd = useQuickAddToLibrary();
   const openSite = (plugin: Plugin) =>
     openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name }));
   const setLastUsedPluginId = useBrowseStore((s) => s.setLastUsedPluginId);
@@ -1061,11 +1073,13 @@ export function BrowseSearchTab({
       {sourcesWithResults.map(({ plugin, result }) => (
         <SearchResultSection
           isInLibrary={isInLibrary}
+          isQuickAddPending={quickAdd.isPending}
           key={plugin.id}
           onMore={openPluginResults}
           onOpen={(resultRow, novel) => {
             void handleOpenNovel(resultRow, novel);
           }}
+          onQuickAdd={quickAdd.add}
           onOpenSite={openSite}
           onOpenSource={openSource}
           onTogglePinned={togglePinnedPlugin}
@@ -1077,6 +1091,7 @@ export function BrowseSearchTab({
       ))}
 
       {hasSearchTerm && !hasOnlyEmptyResults ? <EmptySources plugins={emptySources} /> : null}
+      {quickAdd.categorySheet}
     </div>
   );
 }

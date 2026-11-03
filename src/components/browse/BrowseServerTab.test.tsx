@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   effects: [] as Array<() => void>,
   pages: [] as ServerWorkPage[],
   open: vi.fn(),
+  quickAdd: vi.fn(),
   navigate: vi.fn(),
   server: "http://server",
   browseQueryKeys: [] as unknown[][],
@@ -48,8 +49,12 @@ vi.mock("../../store/content-server-browse", async original => {
   ) };
 });
 vi.mock("../../lib/use-library-novel-membership", () => ({ useLibraryNovelMembership: () => () => false }));
+vi.mock("./use-quick-add", () => ({
+  useQuickAddToLibrary: () => ({ add: mocks.quickAdd, categorySheet: null, isPending: () => false }),
+}));
 
 import { BrowseServerTab } from "./BrowseServerTab";
+import { QuickAddCard } from "./QuickAddCard";
 import { SearchBar } from "../SearchBar";
 import { Button } from "@mantine/core";
 import { StateView } from "../AppFrame";
@@ -61,7 +66,9 @@ interface ControlProps {
   children?: ReactNode;
   disabled?: boolean;
   value?: string;
+  onAdd?: () => void;
   onClick?: () => void;
+  onOpen?: () => void;
   onChange?: (value: string) => void;
   onSubmit?: () => void;
 }
@@ -95,11 +102,18 @@ it("names source chips after installed plugins and falls back to the id", () => 
 });
 
 it("opens a work from its card and offers no server deletion on the grid", () => {
-  const cards = render().filter(element => element.type === "button");
+  const cards = render().filter(element => element.type === QuickAddCard);
   expect(cards).toHaveLength(2);
-  cards[0]!.props.onClick!();
+  cards[0]!.props.onOpen!();
   expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ id: "first" }));
   expect(JSON.stringify(cards.map(card => card.props.children))).not.toContain("deleteServer");
+});
+
+it("quick adds a server work through the server install path", () => {
+  const cards = render().filter(element => element.type === QuickAddCard);
+  cards[1]!.props.onAdd!();
+  expect(mocks.quickAdd).toHaveBeenCalledWith({ kind: "server", server: "http://server", work: expect.objectContaining({ id: "second" }) });
+  expect(mocks.open).not.toHaveBeenCalled();
 });
 
 it("links to the content server settings when no server is configured", () => {

@@ -567,3 +567,70 @@
     font-size: var(--norea-text-sm);
   }
 }
+
+/* RD8 quick add on cover-grid cards. */
+.norea-quick-add-card {
+  --norea-quick-add-inset: var(--norea-space-1);
+  display: grid;
+  min-width: 0;
+  position: relative;
+}
+
+.norea-source-card ~ .norea-quick-add-button,
+.norea-source-card ~ .norea-quick-add-pending {
+  --norea-quick-add-inset: calc(var(--norea-space-2) + var(--norea-space-1));
+}
+
+.norea-quick-add-card[data-pending="true"] > button:first-child {
+  opacity: 0.62;
+}
+
+.norea-quick-add-button,
+.norea-quick-add-pending {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink);
+  display: inline-flex;
+  height: var(--norea-control-sm);
+  justify-content: center;
+  left: var(--norea-quick-add-inset);
+  padding: 0;
+  position: absolute;
+  top: var(--norea-quick-add-inset);
+  width: var(--norea-control-sm);
+  z-index: 3;
+}
+
+.norea-quick-add-button {
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--norea-duration-fast) var(--norea-ease-standard);
+}
+
+.norea-quick-add-button:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .norea-quick-add-card:hover .norea-quick-add-button {
+    opacity: 1;
+  }
+}
+
+.norea-quick-add-button:disabled {
+  cursor: wait;
+}
+
+@media (hover: none) {
+  .norea-quick-add-button {
+    display: none;
+  }
+}
+
+.norea-quick-add-anchor {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}

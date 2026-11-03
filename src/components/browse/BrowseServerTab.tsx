@@ -16,6 +16,8 @@ import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
 import { CheckIcon, InLibraryIcon, RefreshIcon } from "../ui/icons";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
+import { QuickAddCard } from "./QuickAddCard";
+import { useQuickAddToLibrary, type QuickAddTarget } from "./use-quick-add";
 import { useInstalledPlugins } from "./use-plugin-catalog";
 
 export function BrowseServerTab({ active }: { active: boolean }) {
@@ -25,6 +27,7 @@ export function BrowseServerTab({ active }: { active: boolean }) {
   const server = useContentSyncStore(state => state.serverUrl);
   const deviceName = useContentSyncStore(state => state.deviceName);
   const isInLibrary = useLibraryNovelMembership();
+  const quickAdd = useQuickAddToLibrary();
   const installed = useInstalledPlugins(active && !!server);
   const { draft, query, source } = useContentServerBrowseStore(state => state.filtersByServer[server] ?? EMPTY_CONTENT_SERVER_BROWSE_FILTERS);
   const setFilters = useContentServerBrowseStore(state => state.setFilters);
@@ -107,18 +110,24 @@ export function BrowseServerTab({ active }: { active: boolean }) {
       {device.isLoading || works.isLoading ? <CoverGridSkeleton label={t("common.loading")} /> : null}
       {!error && enabled && !works.isLoading && items.length === 0 ? <StateView title={t("source.noResults")} /> : null}
       <div className="norea-source-grid">
-        {items.map(work => (
-          <button type="button" className="norea-source-card norea-state-layer" disabled={open.isPending} key={`${server}:${work.id}`} onClick={() => open.mutate(work)}>
-            <span className="norea-source-cover-frame">
-              <ContentServerCover server={server} token={device.data!} work={work} />
-              {isInLibrary(work.identity.pluginId, work.identity.novelPath) ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><InLibraryIcon size="1rem" /></span> : null}
-            </span>
-            <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
-            <span className="norea-source-card-meta">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
-          </button>
-        ))}
+        {items.map(work => {
+          const inLibrary = isInLibrary(work.identity.pluginId, work.identity.novelPath);
+          const target: QuickAddTarget = { kind: "server", server, work };
+          return (
+            <QuickAddCard className="norea-source-card norea-state-layer" disabled={open.isPending} inLibrary={inLibrary} key={`${server}:${work.id}`}
+              name={work.novel.name} onAdd={() => quickAdd.add(target)} onOpen={() => open.mutate(work)} pending={quickAdd.isPending(target)}>
+              <span className="norea-source-cover-frame">
+                <ContentServerCover server={server} token={device.data!} work={work} />
+                {inLibrary ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><InLibraryIcon size="1rem" /></span> : null}
+              </span>
+              <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
+              <span className="norea-source-card-meta">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
+            </QuickAddCard>
+          );
+        })}
       </div>
       {open.isPending ? <div className="norea-search-progress" role="status"><Loader size="xs" />{t("common.loading")}</div> : null}
+      {quickAdd.categorySheet}
       {works.hasNextPage ? (
         <Button className="norea-source-load-more" loading={works.isFetchingNextPage} onClick={() => { void works.fetchNextPage(); }} variant="default">
           {t("common.loadMore")}

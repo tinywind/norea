@@ -20,6 +20,8 @@ interface NovelCategoryEditorProps {
   onCloseSheet: () => void;
   onOpenSheet: () => void;
   sheetOpen: boolean;
+  /** Renders only the sheet, for a caller that opens it from elsewhere (a toast action). */
+  sheetOnly?: boolean;
 }
 
 /**
@@ -33,6 +35,7 @@ export function NovelCategoryEditor({
   onCloseSheet,
   onOpenSheet,
   sheetOpen,
+  sheetOnly = false,
 }: NovelCategoryEditorProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -100,7 +103,7 @@ export function NovelCategoryEditor({
 
   return (
     <>
-      {queryError ? (
+      {sheetOnly ? null : queryError ? (
         <Group className="norea-novel-categories" gap="xs">
           <Text c="danger" role="alert" size="sm">
             {t("categories.loadFailed")}

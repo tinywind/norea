@@ -16,6 +16,8 @@ import {
 } from "../components/AppFrame";
 import { CoverGridSkeleton } from "../components/browse/CoverGridSkeleton";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
+import { QuickAddCard } from "../components/browse/QuickAddCard";
+import { useQuickAddToLibrary } from "../components/browse/use-quick-add";
 import {
   hasPluginInputs,
   useInstalledPlugins,
@@ -177,7 +179,9 @@ interface SourceNovelButtonProps {
   disabled: boolean;
   inLibrary: boolean;
   item: NovelItem;
+  onAdd: (item: NovelItem) => void;
   onOpen: (item: NovelItem) => void;
+  pending: boolean;
   plugin: Plugin;
 }
 
@@ -185,15 +189,20 @@ function SourceNovelButton({
   disabled,
   inLibrary,
   item,
+  onAdd,
   onOpen,
+  pending,
   plugin,
 }: SourceNovelButtonProps) {
   return (
-    <button
-      type="button"
+    <QuickAddCard
       className="norea-source-card norea-state-layer"
       disabled={disabled}
-      onClick={() => onOpen(item)}
+      inLibrary={inLibrary}
+      name={item.name}
+      onAdd={() => onAdd(item)}
+      onOpen={() => onOpen(item)}
+      pending={pending}
     >
       <SourceNovelCover
         height={152}
@@ -205,7 +214,7 @@ function SourceNovelButton({
       <span className="norea-source-card-title" title={item.name}>
         {item.name}
       </span>
-    </button>
+    </QuickAddCard>
   );
 }
 
@@ -222,6 +231,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isInLibrary = useLibraryNovelMembership();
+  const quickAdd = useQuickAddToLibrary();
 
   const installed = useInstalledPlugins(true);
   const plugin = useMemo(
@@ -664,7 +674,9 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                   item={item}
                   disabled={open.isPending}
                   inLibrary={isInLibrary(plugin.id, item.path)}
+                  pending={quickAdd.isPending({ kind: "source", item, plugin })}
                   plugin={plugin}
+                  onAdd={(novel) => quickAdd.add({ kind: "source", item: novel, plugin })}
                   onOpen={(novel) => {
                     if (!open.isPending) open.mutate(novel);
                   }}
@@ -750,6 +762,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
         onSaved={() => void listing.refetch()}
         plugin={settingsOpen ? plugin : null}
       />
+      {quickAdd.categorySheet}
       <Drawer
         classNames={{
           body: "norea-reader-settings-drawer-body",
