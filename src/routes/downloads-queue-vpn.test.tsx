@@ -21,7 +21,12 @@ vi.mock("../lib/tasks/hooks", async () => {
   return { useTaskSnapshot: () => taskScheduler.getSnapshot(), useVpnDownloadRuntimeSnapshot: () => mocks.vpn,
     useChapterDownloadRequestSnapshot: () => [{ id: "preparing", title: "Preparing work", phase: "preparing", total: null, novelIds: [42], error: null }] };
 });
-vi.mock("../components/VpnDownloadPanel", () => ({ VpnDownloadPanel: () => null }));
+vi.mock("../components/VpnDownloadAttention", () => ({ VpnDownloadAttention: function VpnDownloadAttention() { return null; } }));
+vi.mock("../components/VpnDownloadLaunchDialog", () => ({ VpnDownloadLaunchDialog: function VpnDownloadLaunchDialog() { return null; } }));
+vi.mock("../components/VpnDownloadWorks", () => ({
+  VpnDownloadWorkRow: function VpnDownloadWorkRow() { return null; },
+  vpnDownloadWorks: (snapshot: VpnDownloadRuntimeSnapshot) => snapshot.plans.map(plan => ({ key: plan.id, title: plan.title })),
+}));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: mocks.pause, resumeVpnDownloadRun: mocks.resume, cancelVpnDownloadRun: mocks.cancel }));
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: mocks.cancelRequest }));
@@ -31,7 +36,7 @@ vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => confirm }))
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { DownloadsQueueView } from "./downloads-queue";
 
-interface Props { children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown }
+interface Props { children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: { label: string; onClick: () => void }[]; work?: { title: string } }
 function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -79,4 +84,23 @@ it("keeps a failed global cancellation visible and allows an explicit retry", as
   expect(render().some(element => element.props.children === "VPN browser cleanup failed")).toBe(true);
   await button("tasks.cancelAllCurrent").props.onClick!();
   expect(mocks.cancel).toHaveBeenCalledTimes(2);
+});
+
+it("lists VPN works as novel rows in the downloads list instead of a separate VPN section", () => {
+  mocks.vpn!.plans = [{ id: "plan", title: "VPN novel" } as VpnDownloadRuntimeSnapshot["plans"][number]];
+  const view = render();
+  const rows = view.filter(element => typeof element.type === "function" && element.type.name === "VpnDownloadWorkRow");
+  expect(rows.map(element => element.props.work?.title)).toEqual(["VPN novel"]);
+  expect(view.some(element => typeof element.type === "function" && element.type.name === "VpnDownloadAttention")).toBe(true);
+  expect(view.some(element => element.props.items?.some(item => item.label === "vpnDownload.launchMenu"))).toBe(false);
+});
+
+it("keeps the VPN launch dialog behind the page overflow when no VPN run exists", () => {
+  mocks.vpn!.run = null;
+  const launch = render().find(element => element.props.items)!.props.items!.find(item => item.label === "vpnDownload.launchMenu")!;
+  expect(render().some(element => typeof element.type === "function" && element.type.name === "VpnDownloadLaunchDialog")).toBe(false);
+  launch.onClick();
+  expect(render().some(element => typeof element.type === "function" && element.type.name === "VpnDownloadLaunchDialog")).toBe(true);
+  mocks.vpn!.capabilities = { supported: false, parallelSupported: false, maxWorkers: 0 };
+  expect(render().some(element => element.props.items)).toBe(false);
 });

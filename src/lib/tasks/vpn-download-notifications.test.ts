@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "./vpn-download-types";
-import { hasActiveVpnDownloads, isVpnDownloadVerificationCurrent, VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, vpnDownloadNotifications } from "./vpn-download-notifications";
+import { hasActiveVpnDownloads, isVpnDownloadVerificationCurrent, VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, vpnDownloadAttention, vpnDownloadNotifications } from "./vpn-download-notifications";
 import type { TaskNotificationTranslate } from "./task-notification-model";
 
 const t = ((key: string, params?: Record<string, string | number>) =>
@@ -87,4 +87,24 @@ it("counts connecting and running automatic ranges as working without reading ch
   expect(hasActiveVpnDownloads([plan([active])])).toBe(true);
   expect(hasActiveVpnDownloads([plan([range("paused"), range("cancelled", { phase: "cancelled" })])])).toBe(false);
   expect(hasActiveVpnDownloads([plan([range("manual", { phase: "paused", pauseReason: "manual-verification" })])])).toBe(false);
+});
+
+it("asks the Queue page about one VPN problem the app cannot solve by itself", () => {
+  const verification = plan([range("exhausted", { pauseReason: "profiles-exhausted", challenge: null }), range("verify")], { title: "Verify work" });
+  expect(vpnDownloadAttention([verification], "running")).toEqual({ kind: "verification", planId: "plan-a", rangeId: "verify", title: "Verify work" });
+  expect(vpnDownloadAttention([plan([range("a", { pauseReason: "profiles-exhausted", challenge: null }), range("b", { pauseReason: "download-failed", challenge: null })])], "running"))
+    .toEqual({ kind: "exhausted", ranges: 1 });
+  expect(vpnDownloadAttention([plan([range("a", { pauseReason: "download-failed", challenge: null }), range("b", { pauseReason: "authentication-required", challenge: null })])], "running"))
+    .toEqual({ kind: "failed", ranges: [{ planId: "plan-a", rangeId: "a" }, { planId: "plan-a", rangeId: "b" }] });
+});
+
+it("stays quiet for waits the app resolves and for pauses the user chose", () => {
+  const quiet = plan([
+    range("offline", { pauseReason: "offline", challenge: null }), range("lease", { pauseReason: "profile-in-use", challenge: null }),
+    range("restart", { pauseReason: "interrupted", challenge: null }), range("next", { pauseReason: "challenge-cloudflare", challenge: { kind: "cloudflare", url: "https://source.test" } }),
+    range("user", { pauseReason: "challenge-captcha", userPaused: true }), range("running", { phase: "running", pauseReason: null, challenge: null }),
+  ]);
+  expect(vpnDownloadAttention([quiet], "running")).toBeNull();
+  expect(vpnDownloadAttention([plan([range("a")])], "paused")).toBeNull();
+  expect(vpnDownloadAttention([quiet], "interrupted")).toEqual({ kind: "interrupted" });
 });

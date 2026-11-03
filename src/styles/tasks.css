@@ -1,10 +1,3 @@
-.norea-vpn-download-queue {
-  border-bottom: 1px solid var(--norea-color-rule);
-  margin-bottom: var(--norea-space-4);
-  min-width: 0;
-  padding: var(--norea-space-4) 0;
-}
-
 .norea-vpn-download-heading {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -300,6 +293,21 @@
   font-size: var(--norea-text-sm);
   font-weight: 600;
   min-width: 0;
+}
+
+.norea-task-route-label {
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-weight: 600;
+  padding: 0 var(--norea-space-1);
+}
+
+.norea-task-work-progress {
+  margin: 0 var(--norea-space-3) var(--norea-space-2) var(--norea-space-2);
 }
 
 .norea-task-work-rows {

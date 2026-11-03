@@ -15,7 +15,9 @@ vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, us
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn(), resumeVpnDownloadRun: vi.fn(), cancelVpnDownloadRun: vi.fn() }));
-vi.mock("../components/VpnDownloadPanel", () => ({ VpnDownloadPanel: () => null }));
+vi.mock("../components/VpnDownloadAttention", () => ({ VpnDownloadAttention: () => null }));
+vi.mock("../components/VpnDownloadLaunchDialog", () => ({ VpnDownloadLaunchDialog: () => null }));
+vi.mock("../components/VpnDownloadWorks", () => ({ VpnDownloadWorkRow: () => null, vpnDownloadWorks: () => [] }));
 vi.mock("../store/appearance", async (importOriginal) => ({
   ...await importOriginal<typeof import("../store/appearance")>(),
   useAppearanceStore: (selector: (appearance: { fontScalePercent: number }) => unknown) => selector({ fontScalePercent: state.fontScalePercent }),

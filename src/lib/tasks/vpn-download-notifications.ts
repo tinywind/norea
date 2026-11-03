@@ -1,7 +1,7 @@
 import type { TranslationKey } from "../../i18n";
 import { parseTaskNotificationAction, type TaskNotificationAction } from "./native-notification-actions";
 import type { TaskNotificationTranslate } from "./task-notification-model";
-import type { VpnDownloadPlan, VpnDownloadRangeState } from "./vpn-download-types";
+import type { VpnDownloadPlan, VpnDownloadRangeState, VpnDownloadRunSnapshot } from "./vpn-download-types";
 
 export interface VpnDownloadNotification {
   id: string;
@@ -26,6 +26,11 @@ const MANUAL_PAUSE_KEYS: Readonly<Record<string, TranslationKey>> = {
   "runtime-error": "vpnDownload.reason.runtimeError",
 };
 
+/** A paused range that waits for the user to verify its worker's challenge. */
+export function isVpnDownloadVerificationNeeded(plan: VpnDownloadPlan, range: VpnDownloadRangeState): boolean {
+  return !range.userPaused && isManualChallenge(plan, range);
+}
+
 function isManualChallenge(plan: VpnDownloadPlan, range: VpnDownloadRangeState): boolean {
   if (range.phase !== "paused" || !range.challenge) return false;
   return range.pauseReason === "manual-verification" ||
@@ -40,6 +45,31 @@ export function isVpnDownloadVerificationCurrent(
   const range = plan?.ranges.find(range => range.id === action.rangeId);
   return !!plan && !!range && isManualChallenge(plan, range) &&
     range.profileId === action.profileId && range.generation === action.generation && range.checkpoint === action.checkpoint;
+}
+
+export type VpnDownloadAttention =
+  | { kind: "interrupted" }
+  | { kind: "verification"; planId: string; rangeId: string; title: string }
+  | { kind: "exhausted"; ranges: number }
+  | { kind: "failed"; ranges: { planId: string; rangeId: string }[] };
+
+const FAILED_PAUSES: ReadonlySet<string> = new Set([
+  "authentication-required", "download-failed", "runtime-error", "verification-unavailable", "profile-unavailable",
+]);
+
+/** The one VPN problem the Queue page asks the user about; restarts, offline waits and busy profiles resolve by themselves. */
+export function vpnDownloadAttention(
+  plans: readonly VpnDownloadPlan[], runStatus: VpnDownloadRunSnapshot["status"] | undefined,
+): VpnDownloadAttention | null {
+  if (runStatus === "interrupted") return { kind: "interrupted" };
+  if (runStatus !== undefined && runStatus !== "running") return null;
+  const paused = plans.flatMap(plan => plan.ranges.filter(range => range.phase === "paused" && !range.userPaused).map(range => ({ plan, range })));
+  const verification = paused.find(({ plan, range }) => isVpnDownloadVerificationNeeded(plan, range));
+  if (verification) return { kind: "verification", planId: verification.plan.id, rangeId: verification.range.id, title: verification.plan.title };
+  const exhausted = paused.filter(({ range }) => range.pauseReason === "profiles-exhausted").length;
+  if (exhausted) return { kind: "exhausted", ranges: exhausted };
+  const failed = paused.filter(({ range }) => range.pauseReason !== null && FAILED_PAUSES.has(range.pauseReason));
+  return failed.length ? { kind: "failed", ranges: failed.map(({ plan, range }) => ({ planId: plan.id, rangeId: range.id })) } : null;
 }
 
 export const VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID = "vpn-download-required:summary";

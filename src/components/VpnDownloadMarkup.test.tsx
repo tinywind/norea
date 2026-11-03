@@ -40,8 +40,8 @@ vi.mock("../lib/tasks/vpn-download-runtime", () => ({
   reallowVpnDownloadBatchProfile: vi.fn(), notifyVpnDownloadProfilesChanged: vi.fn(),
 }));
 import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
-import { VpnDownloadPanel } from "./VpnDownloadPanel";
 import { SettingsSection } from "./SettingsPrimitives";
+import { VpnDownloadWorkDetails, VpnDownloadWorkRow, vpnDownloadWorks } from "./VpnDownloadWorks";
 
 it.each(["en", "ko"] as const)("renders real Mantine controls and resolved %s copy with bounded large-catalog markup", locale => {
   mocks.locale = locale;
@@ -50,18 +50,21 @@ it.each(["en", "ko"] as const)("renders real Mantine controls and resolved %s co
     drafts: [{ id: "draft", batchId: "batch", title: "Catalog fixture", pluginId: "source", novelId: 42, chapters, selectedChapterIds: [1, 10_000, 20_000], error: null }],
     plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 2 }, chapterLabels: {},
   };
+  const work = vpnDownloadWorks(mocks.snapshot)[0]!;
   const html = renderToStaticMarkup(<MantineProvider>
     <SettingsSection title="Plugin VPN"><SavedVpnProfilesSettings /></SettingsSection>
-    <VpnDownloadPanel snapshot={mocks.snapshot} />
+    <VpnDownloadWorkRow work={work} snapshot={mocks.snapshot} />
+    <VpnDownloadWorkDetails work={work} snapshot={mocks.snapshot} />
   </MantineProvider>);
   const $ = load(html);
   expect($("input").length).toBeLessThan(20);
   expect($("*").length).toBeLessThan(600);
-  const launch = $("button").filter((_, element) => $(element).text() === (locale === "en" ? "Download with VPN" : koMessages["vpnDownload.launch"]));
-  expect(launch.length).toBe(1);
-  expect(launch.attr("disabled")).toBeUndefined();
-  expect($(".norea-vpn-download-queue input").length).toBe(0);
-  expect($(".norea-vpn-download-queue select").length).toBe(0);
+  const row = $("[data-vpn-work]");
+  expect(row.text()).toContain("Catalog fixture");
+  expect(row.find(".norea-task-route-label").text()).toBe(koMessages["vpnDownload.routeLabel"]);
+  expect(row.text()).toContain("0 / 3");
+  expect(row.find("input, select").length).toBe(0);
+  expect($.text()).toContain(locale === "en" ? "Preparing downloads" : koMessages["vpnDownload.phase.preparing"]);
   expect($.text()).toContain(locale === "en" ? "Saved profiles: 2 / 20" : koMessages["settings.data.pluginVpn.saved.count"].replace("{count}", "2").replace("{limit}", "20"));
   expect($.text()).toContain(locale === "en" ? "O-marked servers without a saved file: 1" : koMessages["settings.data.pluginVpn.saved.missingFiles"].replace("{count}", "1"));
   expect($.text()).not.toContain("vpnDownload.");

@@ -23,9 +23,13 @@ import {
 } from "../components/ActionGlyphs";
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
-import { VpnDownloadPanel } from "../components/VpnDownloadPanel";
+import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
+import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
+import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
 import { TextButton } from "../components/TextButton";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { VpnIcon } from "../components/ui/icons";
+import { OverflowMenu } from "../components/ui/OverflowMenu";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
@@ -1138,6 +1142,8 @@ export function DownloadsQueueView({
     null,
   );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [vpnLaunchOpened, setVpnLaunchOpened] = useState(false);
+  const vpnWorks = useMemo(() => vpnDownloadWorks(vpn), [vpn]);
   const tasks = useMemo(
     () => {
       const owned = new Set(vpn.ownedChapterIds ?? []);
@@ -1336,6 +1342,12 @@ export function DownloadsQueueView({
             >
               <TrashGlyph />
             </IconButton>
+            {vpn.capabilities.supported && !hasVpnRun ? (
+              <OverflowMenu
+                items={[{ icon: VpnIcon, label: t("vpnDownload.launchMenu"), onClick: () => setVpnLaunchOpened(true) }]}
+                label={t("common.more")}
+              />
+            ) : null}
           </div>
         }
         meta={
@@ -1368,7 +1380,8 @@ export function DownloadsQueueView({
 
       {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
 
-      {active ? <VpnDownloadPanel snapshot={vpn} /> : null}
+      {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
+      {vpnLaunchOpened ? <VpnDownloadLaunchDialog snapshot={vpn} onClose={() => setVpnLaunchOpened(false)} /> : null}
 
       {requests.length ? <section className="norea-download-requests" aria-label={t("tasks.downloadRequests")}>
         {requests.map(request => <div className="norea-vpn-download-work" key={request.id} data-download-request={request.id}>
@@ -1397,7 +1410,7 @@ export function DownloadsQueueView({
         </div>
       ) : null}
 
-      {tasks.length === 0 && !requests.length && !hasVpnRun && !vpn.drafts.length && !vpn.plans.length ? (
+      {tasks.length === 0 && !requests.length && !vpnWorks.length ? (
         <StateView
           color="info"
           title={t("tasks.empty.title")}
@@ -1415,6 +1428,9 @@ export function DownloadsQueueView({
               title={t("tasks.mainQueue")}
             />
           ) : null}
+          {vpnWorks.map((work) => (
+            <VpnDownloadWorkRow key={work.key} snapshot={vpn} work={work} />
+          ))}
           {sourceGroups.map((group) => (
             <TaskGroup
               collapsed={collapsedSourceIds.has(group.sourceId)}
