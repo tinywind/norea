@@ -123,3 +123,50 @@
 .norea-responsive-sheet--drawer .norea-responsive-sheet-footer {
   padding-bottom: calc(var(--norea-space-3) + var(--norea-safe-area-bottom));
 }
+
+.norea-list-item {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: var(--norea-space-3);
+  min-height: 3.5rem;
+  padding: var(--norea-space-2) var(--norea-space-4);
+  text-align: left;
+  width: 100%;
+}
+
+.norea-list-item[data-selected="true"] {
+  background: var(--norea-color-selected);
+}
+
+.norea-list-item-leading,
+.norea-list-item-trailing {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.norea-list-item-text {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.norea-list-item-title {
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-list-item-subtitle {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  min-width: 0;
+}

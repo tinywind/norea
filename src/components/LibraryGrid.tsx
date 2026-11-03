@@ -1,26 +1,18 @@
+import { VisuallyHidden } from "@mantine/core";
 import {
   memo,
   useRef,
   type CSSProperties,
-  type KeyboardEvent,
   type MouseEvent,
-  type ReactNode,
+  type PointerEvent,
 } from "react";
 import type { LibraryNovel } from "../db/queries/novel";
-import {
-  formatRelativeTimeForLocale,
-  useTranslation,
-  type TranslationKey,
-} from "../i18n";
+import { useTranslation, type TranslationKey } from "../i18n";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
-import {
-  ConsoleChip,
-  ConsoleCover,
-  ConsoleProgress,
-  ConsoleStatusDot,
-} from "./ConsolePrimitives";
-import { DownloadedGlyph } from "./ActionGlyphs";
+import { ConsoleCover } from "./ConsolePrimitives";
+import { DownloadedIcon } from "./ui/icons";
+import { ListRow } from "./ui/ListRow";
 
 const LONG_PRESS_MS = 500;
 
@@ -47,81 +39,66 @@ export function LibraryGrid({
   onActivate,
   onLongPress,
 }: LibraryGridProps) {
-  const { t } = useTranslation();
+  const itemProps = (novel: LibraryNovel, index: number): LibraryItemProps => ({
+    index,
+    novel,
+    onActivate,
+    onLongPress,
+    selected: selectedIds?.has(novel.id) ?? false,
+    showDownloadBadges,
+    showNumberBadges,
+    showUnreadBadges,
+  });
 
-  return displayMode === "list" ? (
-    <div className="norea-library-table" role="table">
-      <div className="norea-library-table-header" role="row">
-        <span />
-        <span />
-        <span>{t("library.grid.titleAuthor")}</span>
-        <span>{t("library.grid.source")}</span>
-        <span>{t("library.grid.progress")}</span>
-        <span>{t("library.grid.unread")}</span>
-        <span>{t("library.grid.updated")}</span>
-        <span />
-      </div>
-      {novels.map((novel, index) => (
-        <LibraryTableRow
-          key={novel.id}
-          index={index}
-          novel={novel}
-          selected={selectedIds?.has(novel.id) ?? false}
-          showNumberBadges={showNumberBadges}
-          onActivate={onActivate}
-          onLongPress={onLongPress}
-        />
-      ))}
-    </div>
-  ) : (
-    <div className="norea-library-grid-panel">
-      <div
-        className="norea-library-grid"
-        data-mode={displayMode}
-        style={
-          {
-            "--norea-library-grid-columns": novelsPerRow,
-          } as CSSProperties
-        }
-      >
+  if (displayMode === "list") {
+    return (
+      <ul className="norea-library-list">
         {novels.map((novel, index) => (
-          <LibraryCard
-            key={novel.id}
-            index={index}
-            novel={novel}
-            selected={selectedIds?.has(novel.id) ?? false}
-            displayMode={displayMode}
-            showDownloadBadges={showDownloadBadges}
-            showNumberBadges={showNumberBadges}
-            showUnreadBadges={showUnreadBadges}
-            onActivate={onActivate}
-            onLongPress={onLongPress}
-          />
+          <li key={novel.id}>
+            <LibraryListRow {...itemProps(novel, index)} />
+          </li>
         ))}
-      </div>
-    </div>
+      </ul>
+    );
+  }
+
+  return (
+    <ul
+      className="norea-library-grid"
+      data-mode={displayMode}
+      style={
+        {
+          "--norea-library-grid-columns": novelsPerRow,
+        } as CSSProperties
+      }
+    >
+      {novels.map((novel, index) => (
+        <li className="norea-library-grid-item" key={novel.id}>
+          <LibraryCard displayMode={displayMode} {...itemProps(novel, index)} />
+        </li>
+      ))}
+    </ul>
   );
 }
 
 interface LibraryItemProps {
-  children: ReactNode;
-  className: string;
-  novelId: number;
+  index: number;
+  novel: LibraryNovel;
   onActivate?: (id: number) => void;
   onLongPress?: (id: number) => void;
   selected: boolean;
+  showDownloadBadges: boolean;
+  showNumberBadges: boolean;
+  showUnreadBadges: boolean;
 }
 
-function LibraryInteractiveItem({
-  children,
-  className,
-  novelId,
-  onActivate,
-  onLongPress,
-  selected,
-}: LibraryItemProps) {
+/** Click and long-press handlers for a library item button. */
+function useLibraryItemPress(
+  novelId: number,
+  onActivate?: (id: number) => void,
+  onLongPress?: (id: number) => void,
+) {
   const longPressTimer = useRef<number | null>(null);
-  const longPressed = useRef(false);
   const suppressNextClick = useRef(false);
 
   const cancelTimer = () => {
@@ -131,135 +108,32 @@ function LibraryInteractiveItem({
     }
   };
 
-  const handlePointerDown = () => {
-    longPressed.current = false;
-    suppressNextClick.current = false;
-    if (!onLongPress) return;
-    longPressTimer.current = window.setTimeout(() => {
-      longPressed.current = true;
-      suppressNextClick.current = true;
-      onLongPress(novelId);
-      longPressTimer.current = null;
-    }, LONG_PRESS_MS);
-  };
-
-  const handlePointerUp = () => {
-    cancelTimer();
-  };
-
-  const handleClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (suppressNextClick.current || longPressed.current) {
-      event.preventDefault();
+  return {
+    onClick: (event: MouseEvent<HTMLButtonElement>) => {
+      if (suppressNextClick.current) {
+        event.preventDefault();
+        suppressNextClick.current = false;
+        return;
+      }
+      onActivate?.(novelId);
+    },
+    onPointerCancel: cancelTimer,
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
       suppressNextClick.current = false;
-      longPressed.current = false;
-      return;
-    }
-    onActivate?.(novelId);
+      if (!onLongPress || event.button !== 0) return;
+      longPressTimer.current = window.setTimeout(() => {
+        suppressNextClick.current = true;
+        longPressTimer.current = null;
+        onLongPress(novelId);
+      }, LONG_PRESS_MS);
+    },
+    onPointerLeave: cancelTimer,
+    onPointerUp: cancelTimer,
   };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    onActivate?.(novelId);
-  };
-
-  return (
-    <div
-      className={className}
-      data-selected={selected}
-      onClick={handleClick}
-      onKeyDown={handleKeyDown}
-      onPointerCancel={cancelTimer}
-      onPointerDown={handlePointerDown}
-      onPointerLeave={cancelTimer}
-      onPointerUp={handlePointerUp}
-      role="button"
-      tabIndex={0}
-    >
-      {children}
-    </div>
-  );
 }
-
-interface LibraryTableRowProps {
-  index: number;
-  novel: LibraryNovel;
-  onActivate?: (id: number) => void;
-  onLongPress?: (id: number) => void;
-  selected: boolean;
-  showNumberBadges: boolean;
-}
-
-interface LibraryNovelItemProps extends LibraryTableRowProps {
-  displayMode?: LibraryDisplayMode;
-  showDownloadBadges: boolean;
-  showUnreadBadges: boolean;
-}
-
-const LibraryTableRow = memo(function LibraryTableRow({
-  index,
-  novel,
-  onActivate,
-  onLongPress,
-  selected,
-  showNumberBadges,
-}: LibraryTableRowProps) {
-  const { locale, t } = useTranslation();
-  const progress = getReadingPercent(novel);
-  const downloadProgress = getDownloadPercent(novel);
-  const status = getNovelStatus(novel, t);
-  const hasUnread = novel.chaptersUnread > 0;
-  const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
-
-  return (
-    <LibraryInteractiveItem
-      className="norea-library-table-row"
-      novelId={novel.id}
-      onActivate={onActivate}
-      onLongPress={onLongPress}
-      selected={selected}
-    >
-      <span className="norea-library-row-marker">
-        {showNumberBadges ? (
-          index + 1
-        ) : (
-          <span data-active={hasUnread} />
-        )}
-      </span>
-      <ConsoleCover alt={novel.name} height={42} src={coverSource} width={28} />
-      <span className="norea-library-title-cell">
-        <span className="norea-library-title">{novel.name}</span>
-        <span className="norea-library-subtitle">
-          {getCreatorLabel(novel, t)}
-        </span>
-      </span>
-      <span className="norea-library-source">{getSourceLabel(novel, t)}</span>
-      <span className="norea-library-progress-cell">
-        <ConsoleProgress
-          status={progress >= 100 ? "done" : "active"}
-          value={progress}
-        />
-        <span className="norea-library-percent">{progress}%</span>
-      </span>
-      <span className="norea-library-unread" data-active={hasUnread}>
-        {hasUnread ? `+${novel.chaptersUnread}` : "-"}
-      </span>
-      <span className="norea-library-updated">
-        {formatRelativeTimeForLocale(locale, novel.lastUpdatedAt, "compact")}
-      </span>
-      <span
-        className="norea-library-actions"
-        data-downloaded={downloadProgress > 0}
-        title={status.label}
-      >
-        <DownloadedGlyph />
-      </span>
-    </LibraryInteractiveItem>
-  );
-});
 
 const LibraryCard = memo(function LibraryCard({
-  displayMode = "comfortable",
+  displayMode,
   index,
   novel,
   onActivate,
@@ -268,105 +142,158 @@ const LibraryCard = memo(function LibraryCard({
   showDownloadBadges,
   showNumberBadges,
   showUnreadBadges,
-}: LibraryNovelItemProps) {
+}: LibraryItemProps & { displayMode: LibraryDisplayMode }) {
   const { t } = useTranslation();
-  const downloadProgress = getDownloadPercent(novel);
-  const readingProgress = getReadingPercent(novel);
-  const status = getNovelStatus(novel, t);
-  const coverOnly = displayMode === "cover-only";
-  const coverWidth = displayMode === "compact" ? 100 : coverOnly ? "100%" : 128;
+  const press = useLibraryItemPress(novel.id, onActivate, onLongPress);
   const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
+  const progress = getReadingPercent(novel);
+  const coverOnly = displayMode === "cover-only";
+  const author = getCreatorLabel(novel, t);
 
   return (
-    <LibraryInteractiveItem
-      className="norea-library-card"
-      novelId={novel.id}
-      onActivate={onActivate}
-      onLongPress={onLongPress}
-      selected={selected}
+    <button
+      className="norea-library-card norea-state-layer"
+      data-selected={selected ? "true" : undefined}
+      type="button"
+      {...press}
     >
-      <div className="norea-library-card-cover">
-        {showNumberBadges ? (
-          <span className="norea-library-card-number">{index + 1}</span>
-        ) : null}
-        <ConsoleCover
-          alt={novel.name}
-          height={displayMode === "compact" ? 150 : 190}
-          src={coverSource}
-          width={coverWidth}
+      <span className="norea-library-card-cover">
+        <span aria-hidden={coverOnly ? undefined : true}>
+          <ConsoleCover alt={novel.name} height="auto" src={coverSource} width="100%" />
+        </span>
+        <LibraryBadges
+          index={index}
+          novel={novel}
+          showDownloadBadges={showDownloadBadges}
+          showNumberBadges={showNumberBadges}
+          showUnreadBadges={showUnreadBadges}
         />
-      </div>
-      {coverOnly ? null : (
-        <div className="norea-library-card-body">
-          <span className="norea-library-title">{novel.name}</span>
-          <span className="norea-library-subtitle">
-            {getCreatorLabel(novel, t)}
+        {progress > 0 ? (
+          <span
+            aria-hidden="true"
+            className="norea-library-card-progress"
+            style={{ "--norea-library-progress": `${progress}%` } as CSSProperties}
+          />
+        ) : null}
+        {displayMode === "compact" ? (
+          <span className="norea-library-card-overlay">
+            <span className="norea-library-card-title">{novel.name}</span>
           </span>
-          <div className="norea-library-card-progress">
-            <ConsoleProgress
-              status={readingProgress >= 100 ? "done" : "active"}
-              value={readingProgress}
-            />
-            <span className="norea-library-percent">{readingProgress}%</span>
-          </div>
-          <div className="norea-library-card-meta">
-            <ConsoleStatusDot label={status.label} status={status.tone} />
-            {showUnreadBadges && novel.chaptersUnread > 0 ? (
-              <ConsoleChip tone="accent">
-                {t("library.grid.unreadBadge", {
-                  count: novel.chaptersUnread,
-                })}
-              </ConsoleChip>
-            ) : null}
-            {showDownloadBadges && novel.chaptersDownloaded > 0 ? (
-              <ConsoleChip tone="success">
-                {t("library.grid.savedBadge", { progress: downloadProgress })}
-              </ConsoleChip>
-            ) : null}
-          </div>
-        </div>
-      )}
-    </LibraryInteractiveItem>
+        ) : null}
+      </span>
+      {displayMode === "comfortable" ? (
+        <span className="norea-library-card-text">
+          <span className="norea-library-card-title">{novel.name}</span>
+          <span className="norea-library-card-author">{author}</span>
+        </span>
+      ) : null}
+      {progress > 0 ? (
+        <VisuallyHidden>{t("library.grid.readPercent", { progress })}</VisuallyHidden>
+      ) : null}
+    </button>
   );
 });
 
-function getDownloadPercent(novel: LibraryNovel) {
-  if (novel.totalChapters <= 0) return 0;
-  return Math.round((novel.chaptersDownloaded / novel.totalChapters) * 100);
+const LibraryListRow = memo(function LibraryListRow({
+  index,
+  novel,
+  onActivate,
+  onLongPress,
+  selected,
+  showDownloadBadges,
+  showNumberBadges,
+  showUnreadBadges,
+}: LibraryItemProps) {
+  const { t } = useTranslation();
+  const press = useLibraryItemPress(novel.id, onActivate, onLongPress);
+  const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
+  const progress = getReadingPercent(novel);
+
+  return (
+    <ListRow
+      className="norea-library-row"
+      leading={
+        <span aria-hidden="true" className="norea-library-row-cover">
+          <ConsoleCover alt={novel.name} height={60} src={coverSource} width={40} />
+        </span>
+      }
+      selected={selected}
+      subtitle={
+        <>
+          <span className="norea-library-row-author">{getCreatorLabel(novel, t)}</span>
+          <span
+            aria-hidden="true"
+            className="norea-library-row-progress"
+            style={{ "--norea-library-progress": `${progress}%` } as CSSProperties}
+          />
+          <VisuallyHidden>{t("library.grid.readPercent", { progress })}</VisuallyHidden>
+        </>
+      }
+      title={novel.name}
+      trailing={
+        <LibraryBadges
+          index={index}
+          novel={novel}
+          showDownloadBadges={showDownloadBadges}
+          showNumberBadges={showNumberBadges}
+          showUnreadBadges={showUnreadBadges}
+        />
+      }
+      {...press}
+    />
+  );
+});
+
+function LibraryBadges({
+  index,
+  novel,
+  showDownloadBadges,
+  showNumberBadges,
+  showUnreadBadges,
+}: Omit<LibraryItemProps, "onActivate" | "onLongPress" | "selected">) {
+  const { t } = useTranslation();
+  const unread = showUnreadBadges && novel.chaptersUnread > 0;
+  const downloaded = showDownloadBadges && novel.chaptersDownloaded > 0;
+  if (!unread && !downloaded && !showNumberBadges) return null;
+
+  return (
+    <span className="norea-library-badges">
+      {showNumberBadges ? (
+        <span aria-hidden="true" className="norea-library-badge" data-kind="number">
+          {index + 1}
+        </span>
+      ) : null}
+      {downloaded ? (
+        <span className="norea-library-badge" data-kind="downloaded">
+          <DownloadedIcon size="0.875rem" />
+          <span aria-hidden="true">{novel.chaptersDownloaded}</span>
+          <VisuallyHidden>
+            {t("library.grid.downloadedBadge", { count: novel.chaptersDownloaded })}
+          </VisuallyHidden>
+        </span>
+      ) : null}
+      {unread ? (
+        <span className="norea-library-badge" data-kind="unread">
+          <span aria-hidden="true">{novel.chaptersUnread}</span>
+          <VisuallyHidden>
+            {t("library.grid.unreadBadge", { count: novel.chaptersUnread })}
+          </VisuallyHidden>
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 function getReadingPercent(novel: LibraryNovel) {
   return Math.max(0, Math.min(100, Math.round(novel.readingProgress)));
 }
 
-function getSourceLabel(
-  novel: LibraryNovel,
-  t: (key: TranslationKey) => string,
-) {
-  return novel.isLocal
-    ? t("library.grid.local")
-    : (novel.pluginName ?? novel.pluginId);
-}
-
 function getCreatorLabel(
   novel: LibraryNovel,
   t: (key: TranslationKey) => string,
 ) {
-  return novel.author?.trim() || getSourceLabel(novel, t);
-}
-
-function getNovelStatus(
-  novel: LibraryNovel,
-  t: (key: TranslationKey) => string,
-): {
-  label: string;
-  tone: "active" | "done" | "idle";
-} {
-  if (novel.chaptersUnread > 0) {
-    return { label: t("library.grid.unread"), tone: "active" };
-  }
-  if (novel.totalChapters > 0 && novel.chaptersDownloaded >= novel.totalChapters) {
-    return { label: t("common.saved"), tone: "done" };
-  }
-  return { label: t("common.synced"), tone: "idle" };
+  return (
+    novel.author?.trim() ||
+    (novel.isLocal ? t("library.grid.local") : (novel.pluginName ?? novel.pluginId))
+  );
 }
