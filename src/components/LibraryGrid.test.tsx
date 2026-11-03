@@ -78,6 +78,16 @@ it("names unread and downloaded badges for screen readers and drops the status d
   expect($.root().text()).not.toMatch(/common\.(synced|saved)/);
 });
 
+it("tells the unread and downloaded badges apart by icon and hover label", () => {
+  const $ = renderGrid("comfortable");
+  const unread = $('[data-kind="unread"]').first();
+  const downloaded = $('[data-kind="downloaded"]').first();
+  expect(unread.attr("title")).toBe("library.grid.unreadBadge");
+  expect(downloaded.attr("title")).toBe("library.grid.downloadedBadge");
+  expect(unread.find("svg").attr("class")).toContain("tabler-icon-point-filled");
+  expect(downloaded.find("svg").attr("class")).toContain("tabler-icon-cloud-check");
+});
+
 it("shows the title only on the cover in covers-only mode", () => {
   const $ = renderGrid("cover-only");
   expect($("li > button").first().find("[aria-hidden=true] .norea-console-cover")).toHaveLength(0);

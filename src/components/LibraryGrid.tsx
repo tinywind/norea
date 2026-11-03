@@ -6,7 +6,7 @@ import { useLongPress } from "../lib/use-long-press";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
 import { ConsoleCover } from "./ConsolePrimitives";
-import { CheckIcon, DownloadedIcon } from "./ui/icons";
+import { CheckIcon, DownloadedIcon, UnreadIcon } from "./ui/icons";
 import { ListRow } from "./ui/ListRow";
 
 const LONG_PRESS_MS = 500;
@@ -329,6 +329,8 @@ function LibraryBadges({
   const unread = showUnreadBadges && novel.chaptersUnread > 0;
   const downloaded = showDownloadBadges && novel.chaptersDownloaded > 0;
   if (!unread && !downloaded && !showNumberBadges) return null;
+  const downloadedLabel = t("library.grid.downloadedBadge", { count: novel.chaptersDownloaded });
+  const unreadLabel = t("library.grid.unreadBadge", { count: novel.chaptersUnread });
 
   return (
     <span className="norea-library-badges">
@@ -338,20 +340,17 @@ function LibraryBadges({
         </span>
       ) : null}
       {downloaded ? (
-        <span className="norea-library-badge" data-kind="downloaded">
+        <span className="norea-library-badge" data-kind="downloaded" title={downloadedLabel}>
           <DownloadedIcon size="0.875rem" />
           <span aria-hidden="true">{novel.chaptersDownloaded}</span>
-          <VisuallyHidden>
-            {t("library.grid.downloadedBadge", { count: novel.chaptersDownloaded })}
-          </VisuallyHidden>
+          <VisuallyHidden>{downloadedLabel}</VisuallyHidden>
         </span>
       ) : null}
       {unread ? (
-        <span className="norea-library-badge" data-kind="unread">
+        <span className="norea-library-badge" data-kind="unread" title={unreadLabel}>
+          <UnreadIcon size="0.875rem" />
           <span aria-hidden="true">{novel.chaptersUnread}</span>
-          <VisuallyHidden>
-            {t("library.grid.unreadBadge", { count: novel.chaptersUnread })}
-          </VisuallyHidden>
+          <VisuallyHidden>{unreadLabel}</VisuallyHidden>
         </span>
       ) : null}
     </span>

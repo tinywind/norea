@@ -48,6 +48,7 @@ import {
   IconPlayerPlay,
   IconPlayerSkipBack,
   IconPlus,
+  IconPointFilled,
   IconPuzzle,
   IconRefresh,
   IconRefreshDot,
@@ -108,6 +109,7 @@ export const CheckIcon = withAppDefaults(IconCheck);
 export const SelectAllIcon = withAppDefaults(IconSelectAll);
 export const MarkReadIcon = withAppDefaults(IconChecks);
 export const MarkUnreadIcon = withAppDefaults(IconEyeOff);
+export const UnreadIcon = withAppDefaults(IconPointFilled);
 export const DownloadIcon = withAppDefaults(IconDownload);
 export const DownloadedIcon = withAppDefaults(IconCloudCheck);
 export const DeleteDownloadIcon = withAppDefaults(IconDownloadOff);

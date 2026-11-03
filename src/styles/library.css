@@ -525,8 +525,9 @@
   color: var(--norea-color-on-accent);
 }
 
+/* Only unread is filled with the accent; downloaded stays neutral so the two never read as the same green. */
 .norea-library-badge[data-kind="downloaded"] {
-  color: var(--norea-color-ok);
+  color: var(--norea-color-ink-muted);
 }
 
 .norea-library-card-cover .norea-library-badge[data-kind="unread"] {
