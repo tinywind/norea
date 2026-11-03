@@ -285,6 +285,44 @@ describe("syncNovelFromSource", () => {
     } finally { sqlite.close(); }
   });
 
+  it("flags only chapters a check inserts into a novel that already had chapters", async () => {
+    const sqlite = new DatabaseSync(":memory:");
+    const registration = readFileSync("src-tauri/src/database.rs", "utf8");
+    for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
+      sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
+    }
+    const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
+    const db = {
+      select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
+      execute: async (sql: string, values: SQLInputValue[] = []) => ({ rowsAffected: Number(sqlite.prepare(sql).run(parameters(values)).changes) }),
+    };
+    mockedGetDb.mockResolvedValue(db as never);
+    mockedRunDatabaseTransaction.mockImplementation(async run => run(db as never));
+    mockedUpsertSourceChaptersInDb.mockImplementation(async (handle, inputs) => {
+      let rowsAffected = 0;
+      for (const input of inputs) {
+        rowsAffected += (await handle.execute(
+          "INSERT INTO chapter(novel_id,path,name,position,chapter_number) VALUES($1,$2,$3,$4,$5) ON CONFLICT(novel_id,path) DO NOTHING",
+          [input.novelId, input.path, input.name, input.position, input.chapterNumber ?? null])).rowsAffected;
+      }
+      return { chunks: 1, rowsAffected };
+    });
+    try {
+      const plugin = makePlugin({ parseNovel: vi.fn(async () => makeDetail([1, 2])) });
+      const first = await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { markFoundByCheck: true });
+      expect(first.newChapters).toBe(0);
+      vi.mocked(plugin.parseNovel).mockResolvedValue(makeDetail([1, 2, 3, 4]));
+      const check = await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { markFoundByCheck: true });
+      expect(check.newChapters).toBe(2);
+      vi.mocked(plugin.parseNovel).mockResolvedValue(makeDetail([1, 2, 3, 4, 5]));
+      expect((await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" })).newChapters).toBe(0);
+      expect(sqlite.prepare("SELECT path,found_by_check AS flagged FROM chapter ORDER BY id").all()).toEqual([
+        { path: "/chapter-1", flagged: 0 }, { path: "/chapter-2", flagged: 0 }, { path: "/chapter-3", flagged: 1 },
+        { path: "/chapter-4", flagged: 1 }, { path: "/chapter-5", flagged: 0 },
+      ]);
+    } finally { sqlite.close(); }
+  });
+
   it("rejects chapters without finite numeric chapterNumber", async () => {
     const plugin = makePlugin({
       parseNovel: vi.fn(() =>

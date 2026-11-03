@@ -196,6 +196,7 @@ beforeEach(() => {
   mockedSyncNovelFromSource.mockResolvedValue({
     changed: false,
     changedChapters: 0,
+    newChapters: 0,
     novelId: 2,
     chapterCount: 1,
     duplicateChapters: [],

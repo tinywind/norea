@@ -96,7 +96,7 @@ requirements must be decided explicitly before implementation.
   localStorage entry, so restored goals queue nothing until the user resumes them
   from Needs attention. Full device snapshots include the table
   under the exact-schema policy. Goals are user intent, so portable file backups
-  carry them in manifest format 3.
+  carry them in the manifest.
   The default keep-ahead count for active library novels and the mobile-data
   choice live in the `download-goal-settings` localStorage entry, which both
   backup kinds carry with the other settings.
@@ -104,14 +104,26 @@ requirements must be decided explicitly before implementation.
   the user's explicit opt-out, which also stops the default keep-ahead for that
   novel. Every existing goal row is copied unchanged inside the migration
   transaction before the old table is dropped and the new one renamed. Removing
-  the row ("Use default") returns the novel to the default. Portable manifest
-  format 3 accepts `none` with a null `count`; archives without it read as before,
-  and an earlier build rejects an archive that holds it instead of misreading it.
+  the row ("Use default") returns the novel to the default. The portable manifest
+  accepts `none` with a null `count`; an earlier build rejects an archive that
+  holds it instead of misreading it.
   The same migration adds `chapter_download_goal_exclusion`, one row per chapter
   the user deleted or cancelled while a goal covered it, removed with its chapter
   through the foreign key. Full device snapshots include it under the exact-schema
   policy; portable backups exclude it, and their restore drops it with the
   replaced chapter rows.
+- Database migration 7 adds `chapter.found_by_check` (0 or 1, default 0) with an
+  index for the Updates list, and `novel_freshness`, one row per novel with the
+  last check time, last success, consecutive failures, the time new chapters
+  were last found and the time its cover was last fetched. Every existing chapter
+  gets 0 with no backfill, because the found time cannot tell a recently
+  imported old chapter from a release; the first check after the upgrade starts
+  the list. A check for new chapters sets the flag only on chapters it inserts
+  into a novel that already had chapters. Freshness rows are removed with their
+  novel through the foreign key. Full device snapshots include both under the
+  exact-schema policy. The flag follows chapter rows in portable backups
+  (manifest format 4); freshness is device state, so portable backups exclude it
+  and their restore drops it with the replaced novel rows.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it
@@ -230,9 +242,9 @@ requirements must be decided explicitly before implementation.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.
-- Portable local file backups use manifest format 3, which adds
-  `downloadGoals` to format 2. Format 2 and earlier archives are rejected without
-  conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
+- Portable local file backups use manifest format 4, which adds the
+  per-chapter `foundByCheck` flag to format 3 (format 3 added `downloadGoals`).
+  Format 3 and earlier archives are rejected without conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
   snapshots stored on the content server.
 - Portable file backup restore preserves every existing storage file, including
   `novel.json`, covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies

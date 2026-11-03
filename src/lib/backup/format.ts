@@ -14,7 +14,7 @@
 import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
 
-export const BACKUP_FORMAT_VERSION = 3 as const;
+export const BACKUP_FORMAT_VERSION = 4 as const;
 
 export interface BackupNovel {
   id: number;
@@ -63,6 +63,8 @@ export interface BackupChapter {
   /** Null when the original creation time is unknown, including recovered chapters. */
   createdAt: number | null;
   foundAt: number;
+  /** Inserted by a check for new chapters into a novel that already had chapters. */
+  foundByCheck: boolean;
   updatedAt: number;
 }
 
@@ -205,7 +207,8 @@ function isChapter(value: unknown): value is BackupChapter {
     typeof value.mediaBytes === "number" &&
     typeof value.updatedAt === "number" &&
     (value.createdAt === null || typeof value.createdAt === "number") &&
-    typeof value.foundAt === "number"
+    typeof value.foundAt === "number" &&
+    typeof value.foundByCheck === "boolean"
   );
 }
 

@@ -4,6 +4,7 @@ import {
   type LibraryUpdateEntry,
   type LibraryUpdatesCursor,
 } from "../../db/queries/chapter";
+import { recordNovelCheck } from "../../db/queries/novel-freshness";
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource } from "../plugins/sync-novel";
 import { describeError } from "../errors";
@@ -138,6 +139,7 @@ async function runLibraryUpdateCheck(
               { name: novel.name, path: novel.path },
               {
                 chapterRefreshMode: "since",
+                markFoundByCheck: true,
                 novelId: novel.id,
                 notifyUpdatesIndex: false,
                 preserveMissingMetadata: true,
@@ -146,10 +148,12 @@ async function runLibraryUpdateCheck(
             ),
         });
         await handle.promise
-          .then(() => {
+          .then(async (result) => {
             checkedNovels += 1;
+            await recordNovelCheck(novel.id, { ok: true, newChapters: result.newChapters });
           })
-          .catch((error) => {
+          .catch(async (error) => {
+            await recordNovelCheck(novel.id, { ok: false }).catch(() => undefined);
             failures.push({
               novelId: novel.id,
               novelName: novel.name,

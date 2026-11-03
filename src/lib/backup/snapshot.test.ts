@@ -147,6 +147,7 @@ const RAW_CHAPTER = {
   readAt: null,
   createdAt: 1_700_000_000,
   foundAt: 1_700_000_000,
+  foundByCheck: 1,
   updatedAt: 1_700_000_000,
 };
 
@@ -203,6 +204,7 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.chapters[0]?.content).toBeNull();
     expect(manifest.chapters[0]?.contentBytes).toBe(0);
     expect(manifest.chapters[0]?.mediaBytes).toBe(99);
+    expect(manifest.chapters[0]?.foundByCheck).toBe(true);
     expect(manifest.categories[0]?.isSystem).toBe(true);
     expect(manifest.vpnGateServerVerdicts).toEqual([
       VPN_GATE_SERVER_VERDICT,

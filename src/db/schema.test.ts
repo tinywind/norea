@@ -53,7 +53,8 @@ it("upgrades populated v1 storage and reopens without losing library, chapters o
     db.close();
     db = new DatabaseSync(path);
     expect(db.prepare("SELECT * FROM novel").all()).toEqual(library);
-    expect(db.prepare("SELECT * FROM chapter").all()).toEqual(chapters);
+    expect(db.prepare("SELECT * FROM chapter").all())
+      .toEqual(chapters.map((row) => ({ ...(row as object), found_by_check: 0 })));
     expect(db.prepare("SELECT * FROM chapter_download_queue").all()).toEqual(queue);
     expect(db.prepare("SELECT * FROM vpn_download_plan").all())
       .toEqual([{ id: "plan", payload: "retained payload", revision: 3 }]);
@@ -79,7 +80,7 @@ it("upgrades v2 plans with shared batch membership without changing queued jobs 
         .run(index, JSON.stringify({ id: index, vpnPlanId: owner, batchId }));
     }
     const queue = db.prepare("SELECT * FROM chapter_download_queue ORDER BY chapter_id").all();
-    applyRegisteredMigrations(db, 2);
+    applyRegisteredMigrations(db, 2, 3);
     const migrated = db.prepare("SELECT id,payload,revision FROM vpn_download_plan ORDER BY id").all();
     expect(migrated.map(row => JSON.parse(String(row.payload)).batchId))
       .toEqual(["legacy-vpn-plan:empty", "shared", "legacy-vpn-plan:mixed", "shared"]);
@@ -107,7 +108,7 @@ it("upgrades populated v3 storage to chapter download failure tracking without c
       INSERT INTO chapter_download_queue VALUES(1,'{"id":1,"pluginId":"source","chapterPath":"/one","title":"One"}',10,20,NULL,0);
       INSERT INTO vpn_download_plan VALUES('plan','{"batchId":"batch"}',2)`);
     const before = ["chapter", "chapter_download_queue", "vpn_download_plan"].map((table) => db.prepare(`SELECT * FROM ${table}`).all());
-    applyRegisteredMigrations(db, 3);
+    applyRegisteredMigrations(db, 3, 4);
     expect(["chapter", "chapter_download_queue", "vpn_download_plan"].map((table) => db.prepare(`SELECT * FROM ${table}`).all()))
       .toEqual(before);
     db.exec(`INSERT INTO chapter_download_failure VALUES(2,'source','media-incomplete','Missing images',NULL,1,NULL,'{}',10)`);
@@ -129,7 +130,7 @@ it("upgrades populated v4 storage to novel download goals without changing exist
       INSERT INTO chapter_download_failure VALUES(1,'source','transient','Timed out',NULL,1,30000,'{}',10)`);
     const tables = ["novel", "chapter", "chapter_download_queue", "chapter_download_failure"];
     const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
-    applyRegisteredMigrations(db, 4);
+    applyRegisteredMigrations(db, 4, 5);
     expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
     db.exec("INSERT INTO novel_download_goal VALUES(1,'keep_ahead',3,10),(2,'all_remaining',NULL,10)");
     expect(() => db.exec("INSERT INTO novel_download_goal VALUES(1,'entire',NULL,10)")).toThrow();
@@ -154,7 +155,7 @@ it("upgrades populated v5 storage to explicit goal opt-outs and persisted exclus
     expect(() => db.exec("INSERT INTO novel_download_goal VALUES(3,'none',NULL,30)")).toThrow();
     const tables = ["novel", "chapter", "chapter_download_failure", "novel_download_goal"];
     const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
-    applyRegisteredMigrations(db, 5);
+    applyRegisteredMigrations(db, 5, 6);
     expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
     db.exec("INSERT INTO novel_download_goal VALUES(3,'none',NULL,30)");
     expect(() => db.exec("UPDATE novel_download_goal SET count=2 WHERE novel_id=3")).toThrow();
@@ -164,5 +165,30 @@ it("upgrades populated v5 storage to explicit goal opt-outs and persisted exclus
     db.exec("DELETE FROM novel WHERE id IN (2,3)");
     expect(db.prepare("SELECT chapter_id AS chapterId FROM chapter_download_goal_exclusion").all()).toEqual([{ chapterId: 1 }]);
     expect(db.prepare("SELECT novel_id AS novelId,kind FROM novel_download_goal").all()).toEqual([{ novelId: 1, kind: "keep_ahead" }]);
+  } finally { db.close(); }
+});
+
+it("upgrades populated v6 storage to freshness records without flagging any existing chapter", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    applyRegisteredMigrations(db, 0, 6);
+    db.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',1);
+      INSERT INTO chapter(id,novel_id,path,name,position,progress,found_at) VALUES(1,1,'/one','One',1,40,500),(2,2,'/two','Two',1,0,600);
+      INSERT INTO novel_download_goal VALUES(1,'none',NULL,10);
+      INSERT INTO chapter_download_goal_exclusion VALUES(2,20)`);
+    const tables = ["novel", "novel_download_goal", "chapter_download_goal_exclusion"];
+    const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+    const chapters = db.prepare("SELECT * FROM chapter ORDER BY id").all();
+    applyRegisteredMigrations(db, 6);
+    expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    expect(db.prepare("SELECT * FROM chapter ORDER BY id").all())
+      .toEqual(chapters.map((row) => ({ ...(row as object), found_by_check: 0 })));
+    expect(() => db.exec("UPDATE chapter SET found_by_check=2 WHERE id=1")).toThrow();
+    db.exec("INSERT INTO novel_freshness(novel_id,last_checked_at,consecutive_failures) VALUES(1,100,2),(2,200,0)");
+    expect(() => db.exec("INSERT INTO novel_freshness(novel_id) VALUES(99)")).toThrow();
+    expect(() => db.exec("UPDATE novel_freshness SET last_checked_at=-1 WHERE novel_id=1")).toThrow();
+    db.exec("DELETE FROM novel WHERE id=2");
+    expect(db.prepare("SELECT novel_id AS novelId,consecutive_failures AS failures FROM novel_freshness").all())
+      .toEqual([{ novelId: 1, failures: 2 }]);
   } finally { db.close(); }
 });

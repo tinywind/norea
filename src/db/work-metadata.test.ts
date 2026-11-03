@@ -323,6 +323,7 @@ it("preserves a plugin novel ID through source sync, work files, upload discover
   expect(written.chapters).toEqual({ "1.5": "Side story" });
   expect((await listContentSyncChapters())[0]).toMatchObject({ sourceNovelId: "literal-42", novelPath: "/source-route?book=42" });
   sqlite.exec(readFileSync("src-tauri/src/migrations/0005_novel_download_goals.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   const backup = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
   expect(backup.novels[0]!.sourceNovelId).toBe("literal-42");
   const restored = await prepareBackupRestore(db, backup);

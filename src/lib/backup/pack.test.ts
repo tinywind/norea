@@ -61,6 +61,7 @@ function makeManifest(): BackupManifest {
         readAt: null,
         createdAt: 1_700_000_000,
         foundAt: 1_700_000_000,
+        foundByCheck: false,
         updatedAt: 1_700_000_000,
       },
       {
@@ -84,6 +85,7 @@ function makeManifest(): BackupManifest {
         readAt: null,
         createdAt: 1_700_000_000,
         foundAt: 1_700_000_000,
+        foundByCheck: false,
         updatedAt: 1_700_000_000,
       },
     ],

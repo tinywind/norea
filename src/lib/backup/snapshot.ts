@@ -73,6 +73,7 @@ interface RawChapterRow {
   readAt: number | null;
   createdAt: number | null;
   foundAt: number;
+  foundByCheck: unknown;
   updatedAt: number;
 }
 
@@ -152,6 +153,7 @@ const SELECT_CHAPTERS = `
     read_at        AS readAt,
     created_at     AS createdAt,
     found_at       AS foundAt,
+    found_by_check AS foundByCheck,
     updated_at     AS updatedAt
   FROM chapter
   ORDER BY id
@@ -302,6 +304,7 @@ function toChapter(row: RawChapterRow): BackupChapter {
     readAt: row.readAt,
     createdAt: row.createdAt,
     foundAt: row.foundAt,
+    foundByCheck: sqliteBoolean(row.foundByCheck),
     updatedAt: row.updatedAt,
   };
 }

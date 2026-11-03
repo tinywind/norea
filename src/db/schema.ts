@@ -133,8 +133,14 @@ export const chapterTable = sqliteTable(
     updatedAt: integer("updated_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),
+    /** Inserted by a check for new chapters into a novel that already had chapters. */
+    foundByCheck: integer("found_by_check", { mode: "boolean" })
+      .notNull()
+      .default(false),
   },
   (t) => ({
+    foundByCheckIdx: index("chapter_found_by_check_idx").on(t.foundByCheck, t.unread, t.foundAt),
+    foundByCheckCheck: check("chapter_found_by_check", sql`${t.foundByCheck} IN (0, 1)`),
     novelPathUniq: uniqueIndex("chapter_novel_path_uniq").on(
       t.novelId,
       t.path,
@@ -221,6 +227,23 @@ export const novelDownloadGoalTable = sqliteTable("novel_download_goal", {
   countCheck: check("novel_download_goal_count",
     sql`(${t.kind} = 'keep_ahead' AND ${t.count} > 0) OR (${t.kind} <> 'keep_ahead' AND ${t.count} IS NULL)`),
   updatedAtCheck: check("novel_download_goal_updated_at", sql`${t.updatedAt} >= 0`),
+}));
+
+/** When each novel was last checked for new chapters, and how its cover was last fetched (Unix seconds). */
+export const novelFreshnessTable = sqliteTable("novel_freshness", {
+  novelId: integer("novel_id").primaryKey().notNull()
+    .references(() => novelTable.id, { onDelete: "cascade" }),
+  lastCheckedAt: integer("last_checked_at"),
+  lastSuccessAt: integer("last_success_at"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  lastNewChapterAt: integer("last_new_chapter_at"),
+  coverFetchedAt: integer("cover_fetched_at"),
+}, (t) => ({
+  lastCheckedCheck: check("novel_freshness_last_checked", sql`${t.lastCheckedAt} IS NULL OR ${t.lastCheckedAt} >= 0`),
+  lastSuccessCheck: check("novel_freshness_last_success", sql`${t.lastSuccessAt} IS NULL OR ${t.lastSuccessAt} >= 0`),
+  failuresCheck: check("novel_freshness_failures", sql`${t.consecutiveFailures} >= 0`),
+  lastNewChapterCheck: check("novel_freshness_last_new_chapter", sql`${t.lastNewChapterAt} IS NULL OR ${t.lastNewChapterAt} >= 0`),
+  coverFetchedCheck: check("novel_freshness_cover_fetched", sql`${t.coverFetchedAt} IS NULL OR ${t.coverFetchedAt} >= 0`),
 }));
 
 /** Chapters the user deleted or cancelled while a goal covered them; goals do not request them again. */

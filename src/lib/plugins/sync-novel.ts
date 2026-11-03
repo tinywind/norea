@@ -27,6 +27,11 @@ export interface SyncNovelFromSourceOptions {
   notifyUpdatesIndex?: boolean;
   preserveMissingMetadata?: boolean;
   refreshCover?: boolean;
+  /**
+   * A check for new chapters: chapters it inserts into a novel that already had chapters
+   * are flagged as found by a check, which the Updates list shows.
+   */
+  markFoundByCheck?: boolean;
 }
 
 export interface SourceDuplicateChapterInfo {
@@ -39,6 +44,8 @@ export interface SourceDuplicateChapterInfo {
 export interface SyncNovelFromSourceResult {
   changed: boolean;
   changedChapters: number;
+  /** Chapters this check flagged as found by a check; zero unless `markFoundByCheck` was set. */
+  newChapters: number;
   novelId: number;
   chapterCount: number;
   duplicateChapters: SourceDuplicateChapterInfo[];
@@ -385,6 +392,11 @@ async function performNovelSourceRefresh(
       throw new Error("sync-novel: failed to resolve local novel id");
     }
     const novelId = novelRow.id;
+    const [before] = options.markFoundByCheck
+      ? await db.select<{ chapters: number; maxId: number }[]>(
+        `SELECT (SELECT COUNT(*) FROM chapter WHERE novel_id = $1) AS chapters,
+                (SELECT COALESCE(MAX(id), 0) FROM chapter) AS maxId`, [novelId])
+      : [];
 
     const chapterMutation = await upsertSourceChaptersInDb(
       db,
@@ -393,12 +405,18 @@ async function performNovelSourceRefresh(
         novelId,
       })),
     );
+    // Chapter ids only grow, so rows above the previous maximum are the ones this check inserted.
+    const newChapters = before && before.chapters > 0
+      ? (await db.execute("UPDATE chapter SET found_by_check = 1 WHERE novel_id = $1 AND id > $2",
+        [novelId, before.maxId])).rowsAffected
+      : 0;
     await flushWorkMetadata(db, {
       novelId, chapters: Object.fromEntries(detail.chapters.map(chapter => [String(chapter.chapterNumber), chapter.name])),
     });
     await markWorkMetadataRefreshed(db, { pluginId: plugin.id, novelPath: item.path });
     return {
       changedChapters: chapterMutation.rowsAffected,
+      newChapters,
       cover: optionalText(novelRow.cover) ?? cover,
       novelChanged: novelResult.rowsAffected > 0 || (reconciled?.changed ?? false),
       inLibrary: sqliteBoolean(novelRow.inLibrary),
@@ -444,6 +462,7 @@ async function performNovelSourceRefresh(
   return {
     changed,
     changedChapters: result.changedChapters,
+    newChapters: result.newChapters,
     novelId: result.novelId,
     chapterCount: detail.chapters.length,
     duplicateChapters,

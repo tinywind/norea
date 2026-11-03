@@ -67,7 +67,7 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
     const addChapter = (path: string, name: string, number: string, position: number, type: "html" | "pdf" = "html") => {
       const chapter: BackupChapter = { id: nextChapterId++, novelId: novel!.id, path, name, chapterNumber: number, position,
         page: "1", bookmark: false, unread: true, progress: 0, isDownloaded: false, sourceContentType: type, contentType: type,
-        content: null, contentBytes: 0, mediaBytes: 0, releaseTime: null, readAt: null, createdAt: null, foundAt: 0, updatedAt: now };
+        content: null, contentBytes: 0, mediaBytes: 0, releaseTime: null, readAt: null, createdAt: null, foundAt: 0, foundByCheck: false, updatedAt: now };
       chapters.push(chapter); plan.manifest.chapters.push(chapter);
       byPath.set(path, chapter);
       return chapter;
