@@ -239,7 +239,7 @@ interface ReaderState {
   resetReadingProgress: () => void;
   resetSourceReaderSettings: (sourceId: string) => void;
   resetNovelReaderSettings: (novelId: number) => void;
-  resetReaderSettings: () => void;
+  resetReaderSettings: (options?: { keepScopedSettings?: boolean }) => void;
 }
 
 export const READER_PRESET_THEMES: ReaderThemeDefinition[] = [
@@ -1296,14 +1296,15 @@ export const useReaderStore = create<ReaderState>()(
             state.readerSettingsByNovel;
           return { readerSettingsByNovel };
         }),
-      resetReaderSettings: () =>
+      resetReaderSettings: (options) =>
         set({
           general: READER_GENERAL_DEFAULTS,
           appearance: READER_APPEARANCE_DEFAULTS,
           fullPageReaderActive: false,
           fullPageReaderChromeVisible: false,
-          readerSettingsByNovel: {},
-          readerSettingsBySource: {},
+          ...(options?.keepScopedSettings
+            ? {}
+            : { readerSettingsByNovel: {}, readerSettingsBySource: {} }),
         }),
     }),
     {

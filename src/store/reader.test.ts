@@ -428,4 +428,24 @@ describe("useReaderStore", () => {
     expect(state.general).toEqual(READER_GENERAL_DEFAULTS);
     expect(state.appearance).toEqual(READER_APPEARANCE_DEFAULTS);
   });
+
+  it("resetReaderSettings clears novel and source overrides unless asked to keep them", () => {
+    const store = useReaderStore.getState();
+    store.setAppearance({ textSize: 30 });
+    store.setNovelAppearance(7, { textSize: 24 });
+    store.setSourceGeneral("source-a", { pageReader: true });
+
+    useReaderStore.getState().resetReaderSettings({ keepScopedSettings: true });
+
+    let state = useReaderStore.getState();
+    expect(state.appearance).toEqual(READER_APPEARANCE_DEFAULTS);
+    expect(state.readerSettingsByNovel[7]?.appearance?.textSize).toBe(24);
+    expect(state.readerSettingsBySource["source-a"]?.general?.pageReader).toBe(true);
+
+    useReaderStore.getState().resetReaderSettings();
+
+    state = useReaderStore.getState();
+    expect(state.readerSettingsByNovel).toEqual({});
+    expect(state.readerSettingsBySource).toEqual({});
+  });
 });

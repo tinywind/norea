@@ -1,6 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
+  Checkbox,
   ColorInput,
+  Modal,
   NumberInput,
   Select,
   SimpleGrid,
@@ -253,6 +255,8 @@ export function ReaderSettingsPanel({
   const resetNovelReaderSettings = useReaderStore(
     (state) => state.resetNovelReaderSettings,
   );
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [keepScopedSettings, setKeepScopedSettings] = useState(true);
   const targetOverride =
     targetKind === "source" ? sourceSettingsOverride : novelSettingsOverride;
   const sourceSettingsEnabled = Boolean(sourceSettingsOverride?.enabled);
@@ -443,7 +447,15 @@ export function ReaderSettingsPanel({
     applyTheme(theme);
   }
 
+  function openResetConfirmation(): void {
+    if (settingsLocked) return;
+
+    setKeepScopedSettings(true);
+    setResetConfirmOpen(true);
+  }
+
   function resetActiveReaderSettings(): void {
+    setResetConfirmOpen(false);
     if (settingsLocked) return;
 
     if (targetKind === "source") {
@@ -456,7 +468,7 @@ export function ReaderSettingsPanel({
       }
       return;
     }
-    resetReaderSettings();
+    resetReaderSettings({ keepScopedSettings });
   }
 
   function handleTargetSettingsEnabledChange(enabled: boolean): void {
@@ -928,7 +940,7 @@ export function ReaderSettingsPanel({
             <TextButton variant="default" onClick={handleSaveCustomTheme}>
               {t("readerSettings.saveCustomTheme")}
             </TextButton>
-            <TextButton variant="default" onClick={resetActiveReaderSettings}>
+            <TextButton variant="default" onClick={openResetConfirmation}>
               {t("common.reset")}
             </TextButton>
           </SettingsInlineControls>
@@ -1142,6 +1154,43 @@ export function ReaderSettingsPanel({
           </Tabs>
         </fieldset>
       )}
+      <Modal
+        centered
+        opened={resetConfirmOpen}
+        onClose={() => setResetConfirmOpen(false)}
+        title={t("readerSettings.reset.title")}
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            {targetKind === "source"
+              ? t("readerSettings.reset.sourceMessage", {
+                  name: scopeDisplayName,
+                })
+              : targetKind === "novel"
+                ? t("readerSettings.reset.novelMessage", {
+                    name: scopeDisplayName,
+                  })
+                : t("readerSettings.reset.globalMessage")}
+          </Text>
+          {targetKind === "global" ? (
+            <Checkbox
+              checked={keepScopedSettings}
+              label={t("readerSettings.reset.keepScopedSettings")}
+              onChange={(event) =>
+                setKeepScopedSettings(event.currentTarget.checked)
+              }
+            />
+          ) : null}
+          <SettingsInlineControls>
+            <TextButton onClick={() => setResetConfirmOpen(false)}>
+              {t("common.cancel")}
+            </TextButton>
+            <TextButton tone="danger" onClick={resetActiveReaderSettings}>
+              {t("common.reset")}
+            </TextButton>
+          </SettingsInlineControls>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

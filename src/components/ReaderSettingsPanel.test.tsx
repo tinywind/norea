@@ -1,6 +1,7 @@
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 
+const hookState = vi.hoisted(() => ({ index: 0, slots: [] as unknown[] }));
 vi.hoisted(() => {
   const values = new Map<string, string>();
   const storage = {
@@ -14,6 +15,11 @@ vi.hoisted(() => {
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useMemo: (factory: () => unknown) => factory(),
+  useState: (initial: unknown) => {
+    const index = hookState.index++;
+    if (!(index in hookState.slots)) hookState.slots[index] = initial;
+    return [hookState.slots[index], (value: unknown) => { hookState.slots[index] = value; }];
+  },
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../store/reader", async (original) => {
@@ -33,9 +39,14 @@ import { getEffectiveReaderAppearanceSettings, useReaderStore } from "../store/r
 
 interface ElementProps {
   children?: ReactNode;
+  title?: string;
   className?: string;
   label?: string;
   "aria-label"?: string;
+  checked?: boolean;
+  opened?: boolean;
+  tone?: string;
+  onClick?: () => void;
   value?: unknown;
   data?: Array<{ value: string; label: string }>;
   onChange?: (value: never) => void;
@@ -51,7 +62,25 @@ function elements(node: ReactNode): ReactElement<ElementProps>[] {
 const readerTarget = { kind: "novel" as const, novelId: 7, sourceId: "source-a", sourceLabel: "Source A", label: "Work" };
 
 function renderReaderPanel() {
+  hookState.index = 0;
   return elements(ReaderSettingsPanel({ editEffectiveScope: true, inlineAutomation: true, target: readerTarget }));
+}
+
+function renderGlobalPanel() {
+  hookState.index = 0;
+  return elements(ReaderSettingsPanel());
+}
+
+function resetModal(tree: ReactElement<ElementProps>[]) {
+  return tree.find((element) => element.props.title === "readerSettings.reset.title")!;
+}
+
+function resetButton(tree: ReactElement<ElementProps>[]) {
+  return tree.find((element) => element.props.children === "common.reset" && element.props.tone !== "danger")!;
+}
+
+function confirmResetButton(tree: ReactElement<ElementProps>[]) {
+  return tree.find((element) => element.props.children === "common.reset" && element.props.tone === "danger")!;
 }
 
 function scopeSwitch(tree: ReactElement<ElementProps>[]) {
@@ -72,6 +101,7 @@ function effectiveTextSize(): number {
 }
 
 beforeEach(() => {
+  hookState.slots = [];
   useReaderStore.getState().resetReaderSettings();
 });
 
@@ -116,4 +146,53 @@ it("edits an enabled source override and can switch the reader back to all novel
   expect(useReaderStore.getState().readerSettingsBySource[readerTarget.sourceId]?.enabled).toBe(false);
   expect(scopeSwitch(renderReaderPanel()).props.value).toBe("global");
   expect(effectiveTextSize()).toBe(useReaderStore.getState().appearance.textSize);
+});
+
+it("asks for confirmation and keeps scoped settings when resetting global settings", () => {
+  useReaderStore.getState().setAppearance({ textSize: 26 });
+  useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 });
+  useReaderStore.getState().setSourceAppearance(readerTarget.sourceId, { textSize: 20 });
+  let tree = renderGlobalPanel();
+  expect(resetModal(tree).props.opened).toBe(false);
+
+  resetButton(tree).props.onClick!();
+
+  expect(useReaderStore.getState().appearance.textSize).toBe(26);
+  tree = renderGlobalPanel();
+  expect(resetModal(tree).props.opened).toBe(true);
+  const keep = tree.find((element) => element.props.label === "readerSettings.reset.keepScopedSettings")!;
+  expect(keep.props.checked).toBe(true);
+
+  confirmResetButton(tree).props.onClick!();
+
+  const state = useReaderStore.getState();
+  expect(state.appearance.textSize).not.toBe(26);
+  expect(state.readerSettingsByNovel[readerTarget.novelId]?.appearance?.textSize).toBe(30);
+  expect(state.readerSettingsBySource[readerTarget.sourceId]?.appearance?.textSize).toBe(20);
+  expect(resetModal(renderGlobalPanel()).props.opened).toBe(false);
+});
+
+it("clears scoped settings on a global reset only when the keep option is unchecked", () => {
+  useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 });
+  resetButton(renderGlobalPanel()).props.onClick!();
+  const keep = renderGlobalPanel().find((element) => element.props.label === "readerSettings.reset.keepScopedSettings")!;
+  (keep.props.onChange as (event: { currentTarget: { checked: boolean } }) => void)({ currentTarget: { checked: false } });
+
+  confirmResetButton(renderGlobalPanel()).props.onClick!();
+
+  expect(useReaderStore.getState().readerSettingsByNovel).toEqual({});
+});
+
+it("states the novel scope and leaves global settings when resetting a novel override", () => {
+  useReaderStore.getState().setAppearance({ textSize: 26 });
+  useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 }, useReaderStore.getState().appearance);
+  resetButton(renderReaderPanel()).props.onClick!();
+  const tree = renderReaderPanel();
+  expect(tree.some((element) => element.props.children === "readerSettings.reset.novelMessage")).toBe(true);
+  expect(tree.some((element) => element.props.label === "readerSettings.reset.keepScopedSettings")).toBe(false);
+
+  confirmResetButton(tree).props.onClick!();
+
+  expect(useReaderStore.getState().readerSettingsByNovel[readerTarget.novelId]).toBeUndefined();
+  expect(useReaderStore.getState().appearance.textSize).toBe(26);
 });
