@@ -1,6 +1,24 @@
 import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 
+/** The default keep-ahead applies to library novels opened within this window. */
+export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * 24 * 60 * 60;
+
+/** A novel's own goal, else the default keep-ahead for an active library source novel, else none. */
+export function effectiveDownloadGoal(
+  own: NovelDownloadGoal | null,
+  novel: { inLibrary: boolean; isLocal: boolean; lastReadAt: number | null },
+  defaultKeepAhead: number,
+  nowSeconds: number,
+): { goal: NovelDownloadGoal | null; isDefault: boolean } {
+  if (own) return { goal: own, isDefault: false };
+  const active = novel.inLibrary && !novel.isLocal && novel.lastReadAt !== null &&
+    novel.lastReadAt >= nowSeconds - ACTIVE_NOVEL_WINDOW_SECONDS;
+  return active && defaultKeepAhead > 0
+    ? { goal: { kind: "keep_ahead", count: defaultKeepAhead }, isDefault: true }
+    : { goal: null, isDefault: false };
+}
+
 export type GoalChapter = Pick<ChapterListRow, "id" | "isDownloaded" | "contentBytes" | "mediaRepairNeeded" | "readAt">;
 
 export interface GoalTargets<C extends GoalChapter> {

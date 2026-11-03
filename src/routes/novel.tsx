@@ -28,7 +28,7 @@ import { useConfirm } from "../components/ui/ConfirmDialog";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import {
-  buildBatchDownloadTargets,
+  buildMissingChapterDownloadTargets,
   buildPreviousChapterDownloadTargets,
   chaptersKey,
   EMPTY_CHAPTERS,
@@ -216,10 +216,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     [selectedChapters],
   );
   const selectedDownloadTargets = useMemo(
-    () =>
-      buildBatchDownloadTargets(selectedChapters, lastReadChapterId, statuses)
-        .all,
-    [lastReadChapterId, selectedChapters, statuses],
+    () => buildMissingChapterDownloadTargets(selectedChapters, statuses),
+    [selectedChapters, statuses],
   );
   const selectedDownloadedChapterIds = useMemo(
     () =>
@@ -728,8 +726,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 lastReadChapterId={lastReadChapterId}
                 libraryBusy={toggle.isPending}
                 novel={novel}
-                onBatchDownload={downloadChapters}
                 onRead={openChapter}
+                onSelectChapters={() => setChapterSelectionMode(true)}
                 onToggleLibrary={() =>
                   toggle.mutate(novel.inLibrary ? {
                     downloadedCount: chapterStats.downloaded,

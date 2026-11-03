@@ -31,7 +31,7 @@ const props: ComponentProps<typeof NovelWorkspace> = {
     createdAt: 1, updatedAt: 1, libraryAddedAt: null, lastReadAt: null,
   },
   chapters: [], downloadStatuses: new Map(), lastReadChapterId: undefined, libraryBusy: false,
-  onBatchDownload: vi.fn(), onRead: vi.fn(), onToggleLibrary: vi.fn(), sourceName: "Source",
+  onRead: vi.fn(), onSelectChapters: vi.fn(), onToggleLibrary: vi.fn(), sourceName: "Source",
 };
 
 function render(overrides: Partial<ComponentProps<typeof NovelWorkspace>> = {}) {

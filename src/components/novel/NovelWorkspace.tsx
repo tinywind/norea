@@ -23,7 +23,6 @@ import {
   PlayIcon,
 } from "../ui/icons";
 import {
-  buildBatchDownloadTargets,
   findContinueReadingChapter,
   findFirstChapter,
   formatChapterNumber,
@@ -31,9 +30,8 @@ import {
   hasReadingHistory,
   novelStatusLabel,
   splitGenres,
-  type BatchDownloadOption,
 } from "./novel-detail-model";
-import { NovelDownloadSheet } from "./NovelActions";
+import { NovelDownloadGoalSheet } from "./NovelActions";
 
 interface NovelWorkspaceProps {
   allowSourceAccess: boolean;
@@ -44,8 +42,9 @@ interface NovelWorkspaceProps {
   lastReadChapterId: number | undefined;
   libraryBusy: boolean;
   novel: NovelDetailRecord;
-  onBatchDownload: (chapters: ChapterListRow[]) => void;
   onRead: (chapter: ChapterListRow) => void;
+  /** Starts chapter selection for a one-time download. */
+  onSelectChapters: () => void;
   onToggleLibrary: () => void;
   sourceName: string;
   titleRef?: Ref<HTMLHeadingElement>;
@@ -63,8 +62,8 @@ export function NovelWorkspace({
   lastReadChapterId,
   libraryBusy,
   novel,
-  onBatchDownload,
   onRead,
+  onSelectChapters,
   onToggleLibrary,
   sourceName,
   titleRef,
@@ -90,48 +89,6 @@ export function NovelWorkspace({
   const readPercent = useMemo(
     () => getNovelReadingPercent(chapters),
     [chapters],
-  );
-  const batchTargets = useMemo(
-    () =>
-      buildBatchDownloadTargets(chapters, lastReadChapterId, downloadStatuses),
-    [chapters, downloadStatuses, lastReadChapterId],
-  );
-  const batchDownloadOptions: BatchDownloadOption[] = useMemo(
-    () => [
-      {
-        chapters: batchTargets.all,
-        description: t("novel.batchDownload.available", {
-          count: batchTargets.all.length,
-        }),
-        key: "all",
-        label: t("novel.batchDownload.all"),
-      },
-      {
-        chapters: batchTargets.unread,
-        description: t("novel.batchDownload.available", {
-          count: batchTargets.unread.length,
-        }),
-        key: "unread",
-        label: t("novel.batchDownload.unread"),
-      },
-      {
-        chapters: batchTargets.next10,
-        description: t("novel.batchDownload.available", {
-          count: batchTargets.next10.length,
-        }),
-        key: "next10",
-        label: t("novel.batchDownload.next10"),
-      },
-      {
-        chapters: batchTargets.next30,
-        description: t("novel.batchDownload.available", {
-          count: batchTargets.next30.length,
-        }),
-        key: "next30",
-        label: t("novel.batchDownload.next30"),
-      },
-    ],
-    [batchTargets, t],
   );
   const statusLabel = novelStatusLabel(novel.status, t);
   const byline = [
@@ -215,11 +172,14 @@ export function NovelWorkspace({
       <NovelSummary genres={genres} summary={novel.summary} />
 
       {novel.isLocal ? null : (
-        <NovelDownloadSheet
+        <NovelDownloadGoalSheet
+          chapters={chapters}
+          downloadStatuses={downloadStatuses}
+          lastReadChapterId={lastReadChapterId}
+          novel={novel}
           onClose={() => setDownloadSheetOpen(false)}
-          onDownload={onBatchDownload}
+          onSelectChapters={onSelectChapters}
           opened={downloadSheetOpen}
-          options={batchDownloadOptions}
         />
       )}
     </section>

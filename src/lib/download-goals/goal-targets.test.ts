@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
-import { goalReadingChapterId, goalTargetChapters, resolveGoalTargets, type GoalChapter } from "./goal-targets";
+import {
+  ACTIVE_NOVEL_WINDOW_SECONDS, effectiveDownloadGoal, goalReadingChapterId, goalTargetChapters, resolveGoalTargets, type GoalChapter,
+} from "./goal-targets";
 
 const chapter = (id: number, extra: Partial<GoalChapter> = {}): GoalChapter =>
   ({ id, isDownloaded: false, contentBytes: 0, mediaRepairNeeded: false, readAt: null, ...extra });
@@ -33,4 +35,17 @@ it("counts stored chapters, reports missing images separately and requests only 
   expect(targets.inFlight).toBe(1);
   expect(targets.excluded).toBe(1);
   expect(ids(targets.pending)).toEqual([6]);
+});
+
+it("applies the default keep-ahead only to active library source novels without their own goal", () => {
+  const now = 10 * ACTIVE_NOVEL_WINDOW_SECONDS;
+  const active = { inLibrary: true, isLocal: false, lastReadAt: now - ACTIVE_NOVEL_WINDOW_SECONDS };
+  expect(effectiveDownloadGoal(null, active, 3, now)).toEqual({ goal: { kind: "keep_ahead", count: 3 }, isDefault: true });
+  expect(effectiveDownloadGoal({ kind: "entire" }, { ...active, inLibrary: false }, 3, now))
+    .toEqual({ goal: { kind: "entire" }, isDefault: false });
+  for (const novel of [{ ...active, lastReadAt: now - ACTIVE_NOVEL_WINDOW_SECONDS - 1 }, { ...active, inLibrary: false },
+    { ...active, isLocal: true }, { ...active, lastReadAt: null }]) {
+    expect(effectiveDownloadGoal(null, novel, 3, now)).toEqual({ goal: null, isDefault: false });
+  }
+  expect(effectiveDownloadGoal(null, active, 0, now)).toEqual({ goal: null, isDefault: false });
 });

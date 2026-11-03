@@ -18,20 +18,6 @@ const EMPTY_SOURCE_DUPLICATE_CHAPTER_COUNTS = new Map<number, number>();
 
 export type NovelMetadataRefreshMode = "since" | "full";
 
-interface BatchDownloadTargets {
-  all: ChapterListRow[];
-  next10: ChapterListRow[];
-  next30: ChapterListRow[];
-  unread: ChapterListRow[];
-}
-
-export interface BatchDownloadOption {
-  chapters: ChapterListRow[];
-  description: string;
-  key: string;
-  label: string;
-}
-
 export function novelKey(id: number) {
   return ["novel", "detail", id] as const;
 }
@@ -159,36 +145,16 @@ function getReadingOrderChapters(
   return [...chapters].sort((left, right) => left.position - right.position);
 }
 
-export function buildBatchDownloadTargets(
+/** Chapters without a stored body and without active download work, in reading order. */
+export function buildMissingChapterDownloadTargets(
   chapters: readonly ChapterListRow[],
-  lastReadChapterId: number | undefined,
   downloadStatuses: ReadonlyMap<number, ChapterDownloadStatus>,
-): BatchDownloadTargets {
-  const readingOrder = getReadingOrderChapters(chapters);
-  const candidates = readingOrder.filter(
+): ChapterListRow[] {
+  return getReadingOrderChapters(chapters).filter(
     (chapter) =>
       !hasStoredChapterContent(chapter) &&
       !isActiveDownloadStatus(downloadStatuses.get(chapter.id)),
   );
-  const currentIndex =
-    lastReadChapterId === undefined
-      ? -1
-      : readingOrder.findIndex((chapter) => chapter.id === lastReadChapterId);
-  const nextStartIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
-  const nextCandidates = readingOrder
-    .slice(nextStartIndex)
-    .filter(
-      (chapter) =>
-        !hasStoredChapterContent(chapter) &&
-        !isActiveDownloadStatus(downloadStatuses.get(chapter.id)),
-    );
-
-  return {
-    all: candidates,
-    next10: nextCandidates.slice(0, 10),
-    next30: nextCandidates.slice(0, 30),
-    unread: candidates.filter((chapter) => chapter.unread),
-  };
 }
 
 export function buildPreviousChapterDownloadTargets(
@@ -198,11 +164,10 @@ export function buildPreviousChapterDownloadTargets(
 ): ChapterListRow[] {
   const anchor = findFirstChapter(chapters.filter(chapter => selectedChapterIds.has(chapter.id)));
   if (!anchor) return [];
-  return buildBatchDownloadTargets(
+  return buildMissingChapterDownloadTargets(
     chapters.filter(chapter => chapter.position < anchor.position),
-    undefined,
     downloadStatuses,
-  ).all;
+  );
 }
 
 export function getChapterReadingProgress(chapter: ChapterListRow): number {

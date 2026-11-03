@@ -56,7 +56,7 @@ vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.f
 
 import { NovelDetailPage } from "./novel";
 import { PageActivityContext } from "../lib/page-activity";
-import { buildBatchDownloadTargets, buildPreviousChapterDownloadTargets } from "../components/novel/novel-detail-model";
+import { buildMissingChapterDownloadTargets, buildPreviousChapterDownloadTargets } from "../components/novel/novel-detail-model";
 import { collectElements, mountBackNavigationHarness } from "../lib/android-back-navigation.test-support";
 
 const chapter: ChapterListRow = {
@@ -88,12 +88,10 @@ it("skips stored and active chapters before a multi-selection download anchor", 
 it("excludes stored partial bodies from missing-chapter batch scopes", () => {
   const partial = { ...chapter, id: 2, position: 2, contentBytes: 100, mediaRepairNeeded: true };
   const missing = { ...chapter, id: 3, position: 3 };
-  const targets = buildBatchDownloadTargets([
+  const targets = buildMissingChapterDownloadTargets([
     { ...chapter, isDownloaded: true }, partial, missing,
-  ], 1, new Map());
-  for (const scope of ["all", "unread", "next10", "next30"] as const) {
-    expect(targets[scope].map((row) => row.id)).toEqual([3]);
-  }
+  ], new Map());
+  expect(targets.map((row) => row.id)).toEqual([3]);
   expect(partial.isDownloaded).toBe(false);
   expect(partial.mediaRepairNeeded).toBe(true);
 });

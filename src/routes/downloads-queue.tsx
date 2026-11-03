@@ -25,6 +25,7 @@ import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { ChapterDownloadFailureAttention } from "../components/ChapterDownloadFailureAttention";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
+import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
 import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
 import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
@@ -653,6 +654,7 @@ function TaskWorkGroup({
             {t("tasks.count", { count: group.tasks.length })}
           </span>
           {nextRetryAt !== null ? <RetryCountdown retryAt={nextRetryAt} /> : null}
+          <DownloadGoalWorkLine records={snapshot.records} tasks={group.tasks} />
         </div>
         <div className="norea-task-group-actions">
           <IconButton

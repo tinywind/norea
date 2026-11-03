@@ -37,10 +37,9 @@ import {
   readDownloadBudgetStatus,
   type DownloadGoalPause,
 } from "./budget";
-import { goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
+import { ACTIVE_NOVEL_WINDOW_SECONDS, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
+import { recordChapterDownloadDuration } from "./download-eta";
 
-/** The default keep-ahead applies to library novels opened within this window. */
-export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * 24 * 60 * 60;
 const RECONCILE_DELAY_MS = 500;
 const PAUSED_RECHECK_MS = 60_000;
 
@@ -296,6 +295,7 @@ export function startDownloadGoals(): void {
   if (started) return;
   started = true;
   unsubscribers.push(
+    taskScheduler.subscribeEvents(recordChapterDownloadDuration),
     useReaderStore.subscribe((state, previous) => {
       if (state.lastReadChapterByNovel === previous.lastReadChapterByNovel) return;
       const changed = lastReadChanges(state.lastReadChapterByNovel, previous.lastReadChapterByNovel);
