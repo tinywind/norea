@@ -636,12 +636,14 @@ function FilterBar({
   searchInput,
   onProgressFilterChange,
   onSearchInputChange,
+  onSearchClear,
   onSearchSubmit,
 }: {
   progressFilter: ProgressFilter;
   searchInput: string;
   onProgressFilterChange: (filter: ProgressFilter) => void;
   onSearchInputChange: (search: string) => void;
+  onSearchClear: () => void;
   onSearchSubmit: () => void;
 }) {
   const { t } = useTranslation();
@@ -662,6 +664,7 @@ function FilterBar({
         <SearchBar
           value={searchInput}
           onChange={onSearchInputChange}
+          onClear={onSearchClear}
           onSubmit={onSearchSubmit}
           placeholder={t("history.filter.placeholder")}
         />
@@ -862,6 +865,7 @@ export function HistoryPage() {
         searchInput={searchInput}
         onProgressFilterChange={setProgressFilter}
         onSearchInputChange={setSearchInput}
+        onSearchClear={() => setSearch("")}
         onSearchSubmit={() => setSearch(searchInput)}
       />
 

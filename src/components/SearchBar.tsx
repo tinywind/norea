@@ -6,6 +6,8 @@ import { useTranslation } from "../i18n";
 interface SearchBarProps {
   value: string;
   onChange: (value: string) => void;
+  /** Optional handler that runs after the clear button empties the input. */
+  onClear?: () => void;
   /**
    * Optional explicit submit handler. When set, the search input
    * stops debouncing and instead a search icon button (and the Enter
@@ -18,6 +20,7 @@ interface SearchBarProps {
 export function SearchBar({
   value,
   onChange,
+  onClear,
   onSubmit,
   placeholder,
 }: SearchBarProps) {
@@ -50,7 +53,10 @@ export function SearchBar({
             className="norea-search-clear-button"
             label={t("searchBar.clear")}
             size="sm"
-            onClick={() => onChange("")}
+            onClick={() => {
+              onChange("");
+              onClear?.();
+            }}
           >
             <CloseGlyph />
           </IconButton>
