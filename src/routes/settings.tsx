@@ -320,7 +320,7 @@ function MediaStorageSettingsSection({ isBusy }: { isBusy: boolean }) {
           }}
         >
           {isAndroidRuntime()
-            ? t("storageSetup.useAppStorage")
+            ? t("storageSetup.selectExternalFolder")
             : t("storageSetup.selectFolder")}
         </TextButton>
       </SettingsFieldRow>

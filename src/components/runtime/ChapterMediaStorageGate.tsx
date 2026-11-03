@@ -9,6 +9,7 @@ import { describeError } from "../../lib/errors";
 import { pluginManager } from "../../lib/plugins/manager";
 import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
 import { useAppearanceStore } from "../../store/appearance";
+import { StartupSplash } from "./StartupSplash";
 import { StorageRecoveryNotifications } from "./StorageRecovery";
 
 export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
@@ -72,15 +73,7 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
     }
   }
 
-  if (checking) {
-    return (
-      <div className="norea-storage-setup">
-        <Paper className="norea-storage-setup-card" withBorder>
-          <Text>{translate(appLocale, "storageSetup.checking")}</Text>
-        </Paper>
-      </div>
-    );
-  }
+  if (checking) return <StartupSplash />;
 
   if (!storageReady) {
     return (
@@ -114,7 +107,7 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
               {translate(
                 appLocale,
                 isAndroidRuntime()
-                  ? "storageSetup.useAppStorage"
+                  ? "storageSetup.selectExternalFolder"
                   : "storageSetup.selectFolder",
               )}
             </Button>

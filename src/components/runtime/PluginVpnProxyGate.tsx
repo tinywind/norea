@@ -15,6 +15,7 @@ import { startPluginVpnLifecycle } from "../../lib/plugin-vpn-lifecycle";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
 import { useAppearanceStore } from "../../store/appearance";
+import { StartupSplash } from "./StartupSplash";
 
 export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
   const appLocale = useAppearanceStore((state) => state.appLocale);
@@ -102,6 +103,7 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   if (!android || ready) return children;
+  if (checking) return <StartupSplash />;
   return (
     <div className="norea-storage-setup">
       <Paper className="norea-storage-setup-card" withBorder>
@@ -120,7 +122,6 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
             </Text>
           ) : null}
           <Button
-            loading={checking}
             onClick={() => {
               setAttempt((value) => value + 1);
             }}
