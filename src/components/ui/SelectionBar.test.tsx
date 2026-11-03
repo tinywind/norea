@@ -34,5 +34,5 @@ it("labels the toolbar with the count and offers exit, select all, clear and the
 it("hides the phone navigation while the selection bar is shown", () => {
   const css = readFileSync(new URL("../../styles/ui.css", import.meta.url), "utf8");
   const phone = css.slice(css.lastIndexOf("@media (max-width: 767px)"));
-  expect(phone).toMatch(/body:has\(\.norea-selection-bar\) \.norea-mobile-nav \{\s*visibility: hidden;/);
+  expect(phone).toMatch(/body\[data-norea-selection-bar\] \.norea-mobile-nav \{\s*visibility: hidden;/);
 });

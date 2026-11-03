@@ -272,10 +272,10 @@ describe("toast placement", () => {
   });
 
   it("clears only the safe area in the reader and the reader bars while they show", () => {
-    expect(ruleFor(css, 'body:has(.norea-app-main[data-reader-active="true"])').body).toMatch(
+    expect(ruleFor(css, "body[data-norea-reader-active]").body).toMatch(
       /--norea-toast-bottom-offset: var\(--norea-safe-area-bottom\);/,
     );
-    const readerBars = /body:has\(\s*\.norea-page-slot\[data-active="true"\]\s*\.norea-reader-shell:is\(:not\(\[data-full-page="true"\]\), \[data-chrome-visible="true"\]\)\s*\) \{\s*--norea-toast-bottom-offset: calc\(\s*var\(--norea-safe-area-bottom\) \+ (2 \* )?var\(--norea-reader-bar-height\)\s*\);/g;
+    const readerBars = /body\[data-norea-reader-bars\] \{\s*--norea-toast-bottom-offset: calc\(\s*var\(--norea-safe-area-bottom\) \+ (2 \* )?var\(--norea-reader-bar-height\)\s*\);/g;
     const phone = css.replace(mediaBlock(css, "(min-width: 768px)"), "");
     expect([...phone.matchAll(readerBars)].map((match) => match[1])).toEqual(["2 * "]);
     expect([...mediaBlock(css, "(min-width: 768px)").matchAll(readerBars)].map((match) => match[1])).toEqual([undefined]);

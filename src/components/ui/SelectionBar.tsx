@@ -1,6 +1,7 @@
 import { Button, Loader } from "@mantine/core";
 import type { ReactNode } from "react";
 import { useTranslation } from "../../i18n";
+import { useBodyFlag } from "../../lib/use-body-flag";
 import { IconButton } from "../IconButton";
 import { CloseIcon, type AppIcon } from "./icons";
 
@@ -31,6 +32,7 @@ export function SelectionBar({
   selectAllPending,
 }: SelectionBarProps) {
   const { t } = useTranslation();
+  useBodyFlag("selection-bar", true);
 
   return (
     <div aria-label={label} className="norea-selection-bar" role="toolbar">

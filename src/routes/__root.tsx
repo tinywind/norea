@@ -48,6 +48,7 @@ import {
 } from "../lib/route-search";
 import { importSystemOpenedFile } from "../lib/system-file-import";
 import { isAndroidRuntime, isTauriRuntime } from "../lib/tauri-runtime";
+import { useBodyFlag } from "../lib/use-body-flag";
 import { useAppearanceStore } from "../store/appearance";
 import { useBrowseStore } from "../store/browse";
 import { useLibraryStore } from "../store/library";
@@ -479,6 +480,7 @@ export function RootLayout() {
   const pageVisited = (page: PersistentPage) =>
     visitedPages.has(page) || activePersistentPage === page;
   const readerActive = pathname === "/reader";
+  useBodyFlag("reader-active", readerActive);
 
   return (
     <AppShell

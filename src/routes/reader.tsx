@@ -33,6 +33,7 @@ import { hasStoredChapterContent, listChaptersByNovel, setChapterBookmark } from
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { usePageActivity } from "../lib/page-activity";
+import { useBodyFlag } from "../lib/use-body-flag";
 import { pluginManager } from "../lib/plugins/manager";
 import { readerChapterQueryOptions, type ReaderChapterRow } from "../lib/reader-chapter";
 import {
@@ -266,6 +267,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     fullPageReader,
     readerStateVisible,
   });
+  useBodyFlag("reader-bars", active && (!fullPageReader || readerChromeVisible));
   const openAdjacentChapter = useCallback(
     (direction: 1 | -1) => {
       void openAdjacent(direction);
