@@ -173,7 +173,7 @@
 .norea-novel-title {
   color: var(--norea-design-ink);
   flex: 0 1 auto;
-  font-family: var(--norea-font-display);
+  font-family: var(--norea-font-ui);
   font-size: var(--norea-novel-title-font-size, 1.55rem);
   font-weight: 650;
   letter-spacing: 0;

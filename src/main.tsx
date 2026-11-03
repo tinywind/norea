@@ -2,6 +2,7 @@ import { createTheme, MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import { Notifications } from "@mantine/notifications";
 import "@mantine/notifications/styles.css";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import {
   MutationCache,
   QueryCache,
@@ -38,6 +39,9 @@ import "./styles/app.css";
 import { makeMantineColorScale, resolveMd3Palette } from "./theme/md3";
 
 installRuntimeLogLevelFilter(useLoggingStore.getState().logLevel);
+
+const UI_FONT_FAMILY =
+  '"Pretendard Variable", Pretendard, system-ui, -apple-system, "Segoe UI", "Malgun Gothic", Roboto, "Noto Sans KR", sans-serif';
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
@@ -186,8 +190,8 @@ function AppProviders() {
   const theme = useMemo(
     () =>
       createTheme({
-        fontFamily:
-          "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        fontFamily: UI_FONT_FAMILY,
+        headings: { fontFamily: UI_FONT_FAMILY },
         primaryColor: "norea",
         colors: {
           norea: makeMantineColorScale(palette),

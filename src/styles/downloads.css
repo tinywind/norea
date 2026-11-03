@@ -74,7 +74,7 @@
 .norea-downloads-novel-title {
   color: var(--norea-design-ink);
   display: block;
-  font-family: var(--norea-font-display);
+  font-family: var(--norea-font-ui);
   font-size: 0.9375rem;
   font-weight: 700;
   line-height: 1.25;

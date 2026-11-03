@@ -105,6 +105,8 @@
 | D7 | Remove the serif display font from UI titles. Serif stays a reader font option only. |
 | D8 | Option B. On coarse pointers, touch targets use `max(var(--norea-control-md), 44px)` and never shrink below 44px. This is a documented exception to `verify-scalable-ui-units`. Text still follows the user's UI scale. |
 
+**D1 record (2026-11-03):** `pretendard@1.3.9` pinned (OFL-1.1, `node_modules/pretendard/dist/LICENSE.txt`), loaded from `dist/web/variable/pretendardvariable-dynamic-subset.css` (92 `unicode-range` woff2 subsets, 8-44 KB each, 2,957,724 bytes total, all served from local `dist/assets/`); `pnpm build` `dist/` grew from 6,090,715 to 9,096,594 bytes.
+
 Options considered:
 
 | ID | Decision | Recommendation | Trade-off / open question |
