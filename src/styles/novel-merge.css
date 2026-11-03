@@ -6,7 +6,7 @@
 .norea-novel-merge-header {
   align-items: flex-start;
   display: grid;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   grid-template-columns: auto minmax(0, 1fr);
 }
 
@@ -18,7 +18,7 @@
 .norea-novel-merge-target-search,
 .norea-novel-merge-decision-section {
   display: grid;
-  gap: 1rem;
+  gap: var(--norea-space-4);
 }
 
 .norea-novel-merge-source-summary {
@@ -28,7 +28,7 @@
 .norea-novel-merge-summary-card {
   align-items: center;
   display: grid;
-  gap: 0.875rem;
+  gap: var(--norea-space-3);
   grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
 }
@@ -38,81 +38,80 @@
 }
 
 .norea-novel-merge-summary-label {
-  color: var(--norea-design-accent);
-  font-family: var(--norea-font-meta);
-  font-size: 0.6875rem;
+  color: var(--norea-color-accent);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .norea-novel-merge-summary-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-heading);
-  font-size: 1.125rem;
+  font-size: var(--norea-text-lg);
   line-height: 1.25;
-  margin-block: 0.25rem;
+  margin-block: var(--norea-space-1);
   overflow-wrap: anywhere;
 }
 
 .norea-novel-merge-overview {
   align-items: center;
   display: grid;
-  gap: 1rem;
+  gap: var(--norea-space-4);
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
 }
 
 .norea-novel-merge-direction {
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
   font-family: var(--norea-font-heading);
-  font-size: 1.5rem;
+  font-size: var(--norea-text-2xl);
   font-weight: 700;
 }
 
 .norea-novel-merge-search-state {
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.375rem;
-  padding: 0.75rem;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+  padding: var(--norea-space-3);
 }
 
 .norea-novel-merge-search-results {
   display: grid;
-  gap: 0.875rem;
+  gap: var(--norea-space-3);
 }
 
 .norea-novel-merge-source-results {
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.375rem;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
   display: grid;
-  gap: 0.75rem;
-  padding: 0.75rem;
+  gap: var(--norea-space-3);
+  padding: var(--norea-space-3);
 }
 
 .norea-novel-merge-result-grid {
   display: grid;
-  gap: 0.625rem;
+  gap: var(--norea-space-3);
   grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
 }
 
 .norea-novel-merge-result-card {
   align-items: center;
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.375rem;
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+  color: var(--norea-color-ink);
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   min-width: 0;
-  padding: 0.625rem;
+  padding: var(--norea-space-3);
   text-align: center;
 }
 
 .norea-novel-merge-result-card:hover:not(:disabled),
 .norea-novel-merge-result-card:focus-visible {
-  background: var(--norea-design-panel);
-  border-color: var(--norea-design-accent);
+  background: var(--norea-color-surface-raised);
+  border-color: var(--norea-color-accent);
 }
 
 .norea-novel-merge-result-card:disabled {
@@ -122,7 +121,7 @@
 
 .norea-novel-merge-result-name {
   display: -webkit-box;
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 700;
   line-height: 1.3;
   min-height: 2.1em;
@@ -134,37 +133,38 @@
 
 .norea-novel-merge-result-action {
   align-items: center;
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
   display: inline-flex;
-  font-size: 0.6875rem;
+  font-size: var(--norea-text-xs);
   font-weight: 700;
   min-height: 1rem;
 }
 
 .norea-novel-merge-progress {
-  background: var(--norea-design-accent-soft);
-  border: 1px solid var(--norea-design-accent);
-  border-radius: 999rem;
-  color: var(--norea-design-accent);
-  font-family: var(--norea-font-meta);
-  font-size: 0.75rem;
+  background: var(--norea-color-accent-soft);
+  border: 1px solid var(--norea-color-accent);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-accent);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
-  padding: 0.375rem 0.75rem;
+  padding: var(--norea-space-2) var(--norea-space-3);
 }
 
 .norea-novel-merge-workbench {
   align-items: stretch;
   display: grid;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   grid-template-columns: minmax(15rem, 1fr) minmax(13rem, 0.7fr) minmax(15rem, 1fr);
   min-width: 0;
 }
 
 .norea-novel-merge-chapter-column,
 .norea-novel-merge-decision-column {
-  background: var(--norea-design-panel);
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.375rem;
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
   display: flex;
   flex-direction: column;
   min-height: 22rem;
@@ -174,13 +174,13 @@
 
 .norea-novel-merge-column-header {
   align-items: center;
-  background: var(--norea-design-surface);
-  border-bottom: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
-  gap: 0.625rem;
+  gap: var(--norea-space-3);
   justify-content: space-between;
   min-height: 3rem;
-  padding: 0.625rem 0.75rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-novel-merge-chapter-list {
@@ -190,38 +190,38 @@
   max-height: min(58vh, 40rem);
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 0.5rem;
+  padding: var(--norea-space-2);
 }
 
 .norea-novel-merge-chapter-button {
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 0.3125rem;
-  color: var(--norea-design-ink);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
   cursor: pointer;
   display: grid;
-  gap: 0.1875rem;
+  gap: var(--norea-space-1);
   min-width: 0;
-  padding: 0.5625rem 0.625rem;
+  padding: 0.5625rem var(--norea-space-3);
   text-align: left;
   width: 100%;
 }
 
 .norea-novel-merge-chapter-button:hover:not(:disabled),
 .norea-novel-merge-chapter-button:focus-visible {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule-strong);
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule-strong);
 }
 
 .norea-novel-merge-chapter-button[data-active="true"],
 .norea-novel-merge-target-row[data-active="true"] > .norea-novel-merge-chapter-button {
-  background: var(--norea-design-accent-soft);
-  border-color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-color: var(--norea-color-accent);
 }
 
 .norea-novel-merge-chapter-button[data-decided="true"]
   .norea-novel-merge-chapter-status {
-  color: var(--norea-design-ok);
+  color: var(--norea-color-ok);
 }
 
 .norea-novel-merge-chapter-button:disabled {
@@ -230,7 +230,7 @@
 }
 
 .norea-novel-merge-chapter-name {
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 650;
   line-height: 1.3;
   overflow: hidden;
@@ -239,9 +239,10 @@
 }
 
 .norea-novel-merge-chapter-status {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
-  font-size: 0.6875rem;
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -250,14 +251,14 @@
 
 .norea-novel-merge-decision-card,
 .norea-novel-merge-empty {
-  padding: 0.875rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-novel-merge-target-row {
-  border-bottom: 1px solid var(--norea-design-rule);
+  border-bottom: 1px solid var(--norea-color-rule);
   display: grid;
-  gap: 0.375rem;
-  padding-block: 0.125rem 0.5rem;
+  gap: var(--norea-space-2);
+  padding-block: var(--norea-space-1) var(--norea-space-2);
 }
 
 .norea-novel-merge-target-row:last-child {
@@ -265,21 +266,21 @@
 }
 
 .norea-novel-merge-artifact-field {
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: grid;
-  font-size: 0.6875rem;
-  gap: 0.25rem;
-  padding-inline: 0.625rem;
+  font-size: var(--norea-text-xs);
+  gap: var(--norea-space-1);
+  padding-inline: var(--norea-space-3);
 }
 
 .norea-novel-merge-artifact-field select {
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 0.3125rem;
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
   font: inherit;
   min-height: 2rem;
-  padding-inline: 0.5rem;
+  padding-inline: var(--norea-space-2);
   width: 100%;
 }
 
