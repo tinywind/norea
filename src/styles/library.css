@@ -342,12 +342,6 @@
   overflow: auto;
 }
 
-.norea-library-loading-title {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-2);
-}
-
 .norea-library-grid {
   --norea-library-grid-gap: var(--norea-space-3);
   --norea-library-grid-reference: 100%;
@@ -596,24 +590,40 @@
   max-width: 10rem;
 }
 
+.norea-library-state {
+  padding: var(--norea-space-4) var(--norea-space-3);
+}
+
+.norea-library-skeleton-card {
+  display: grid;
+  gap: var(--norea-space-2);
+  min-width: 0;
+  padding: var(--norea-space-1);
+}
+
+.norea-library-skeleton-cover {
+  aspect-ratio: 2 / 3;
+  height: auto;
+  width: 100%;
+}
+
+.norea-library-skeleton-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-3);
+  padding: var(--norea-space-2) var(--norea-space-4);
+}
+
+.norea-library-skeleton-lines {
+  display: grid;
+  flex: 1 1 auto;
+  gap: var(--norea-space-2);
+}
+
 .norea-library-load-more {
   display: flex;
   justify-content: center;
   padding: var(--norea-space-2) var(--norea-space-3) var(--norea-space-4);
-}
-
-.norea-library-load-more-action {
-  min-width: 10rem;
-}
-
-.norea-library-load-more-action svg {
-  fill: none;
-  height: 0.9375rem;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 0.9375rem;
 }
 
 .norea-library-title-cell {

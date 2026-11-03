@@ -165,14 +165,19 @@ interface StateViewProps {
     size?: "sm" | "lg";
   };
   color?: AlertProps["color"];
+  /** Diagnostic text, such as a raw error, collapsed under `label`. */
+  details?: { content: ReactNode; label: string };
   message?: ReactNode;
+  secondaryAction?: { label: string; onClick: () => void };
   title: ReactNode;
 }
 
 export function StateView({
   action,
   color,
+  details,
   message,
+  secondaryAction,
   title,
 }: StateViewProps) {
   return (
@@ -195,15 +200,31 @@ export function StateView({
         >
           {action.icon}
         </IconButton>
-      ) : action ? (
-        <TextButton
-          mt="md"
-          size="sm"
-          variant="light"
-          onClick={action.onClick}
-        >
-          {action.label}
-        </TextButton>
+      ) : action || secondaryAction ? (
+        <Group gap="xs" mt="md">
+          {action ? (
+            <TextButton
+              size="sm"
+              variant="light"
+              onClick={action.onClick}
+            >
+              {action.label}
+            </TextButton>
+          ) : null}
+          {secondaryAction ? (
+            <TextButton size="sm" variant="subtle" onClick={secondaryAction.onClick}>
+              {secondaryAction.label}
+            </TextButton>
+          ) : null}
+        </Group>
+      ) : null}
+      {details ? (
+        <details className="norea-state-details">
+          <summary>{details.label}</summary>
+          <Text c="dimmed" component="div" size="xs">
+            {details.content}
+          </Text>
+        </details>
       ) : null}
     </Alert>
   );

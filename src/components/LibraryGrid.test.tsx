@@ -14,7 +14,7 @@ vi.mock("../lib/use-novel-cover-source", () => ({
     options?.allowSourceFallback ? "https://source.test/landscape-cover.png" : null,
 }));
 
-import { LibraryGrid } from "./LibraryGrid";
+import { LibraryGrid, LibraryGridSkeleton } from "./LibraryGrid";
 
 const novel: LibraryNovel = {
   id: 7, pluginId: "demo", path: "/book", name: "Book", cover: "/landscape-cover.png",
@@ -82,4 +82,16 @@ it("shows the title only on the cover in covers-only mode", () => {
   const $ = renderGrid("cover-only");
   expect($("li > button").first().find("[aria-hidden=true] .norea-console-cover")).toHaveLength(0);
   expect($("li > button").first().text()).not.toContain("Author");
+});
+
+it.each<LibraryDisplayMode>(["comfortable", "list"])("announces one busy status for the %s loading skeleton", (displayMode) => {
+  const $ = load(renderToStaticMarkup(
+    <MantineProvider>
+      <LibraryGridSkeleton displayMode={displayMode} label="Loading library" novelsPerRow={3} />
+    </MantineProvider>,
+  ));
+  expect($("[role=status]").attr("aria-busy")).toBe("true");
+  expect($("[role=status]").attr("aria-label")).toBe("Loading library");
+  expect($("[role=status] > ul").attr("aria-hidden")).toBe("true");
+  expect($("button")).toHaveLength(0);
 });

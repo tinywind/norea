@@ -1543,3 +1543,52 @@ button.norea-console-chip:disabled {
     grid-template-columns: minmax(0, 1fr) minmax(16.25rem, 0.7fr);
   }
 }
+
+.norea-state-details {
+  margin-top: var(--norea-space-3);
+}
+
+.norea-state-details summary {
+  color: var(--norea-color-ink-muted);
+  cursor: pointer;
+  font-size: var(--norea-text-sm);
+}
+
+.norea-state-details > div {
+  margin-top: var(--norea-space-1);
+  overflow-wrap: anywhere;
+}
+
+.norea-recovery-banner {
+  align-items: flex-start;
+  background: var(--norea-color-surface-raised);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-3);
+  padding: var(--norea-space-2) var(--norea-space-3);
+}
+
+.norea-recovery-banner[data-status="error"] .norea-recovery-banner-icon {
+  color: var(--norea-color-danger);
+}
+
+.norea-recovery-banner[data-status="complete"] .norea-recovery-banner-icon {
+  color: var(--norea-color-ok);
+}
+
+.norea-recovery-banner-icon {
+  display: flex;
+  flex: 0 0 auto;
+  padding-top: 0.125rem;
+}
+
+.norea-recovery-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.norea-recovery-banner-actions {
+  flex: 0 0 auto;
+}
+

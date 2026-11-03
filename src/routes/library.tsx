@@ -1,10 +1,9 @@
-import { Loader, Text } from "@mantine/core";
+import { Button } from "@mantine/core";
 import { useDebouncedValue, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PlusGlyph } from "../components/ActionGlyphs";
 import { PageFrame, StateView } from "../components/AppFrame";
 import {
   CategoryList,
@@ -32,10 +31,9 @@ import {
 } from "../components/library/LibraryLocalImport";
 import { useLibraryQuery } from "../components/library/use-library-query";
 import { useLibraryEntry } from "../components/library/use-library-entry";
-import { StorageRecoveryStatus } from "../components/runtime/StorageRecovery";
+import { StorageRecoveryBanner } from "../components/runtime/StorageRecovery";
 import { useLibrarySelection } from "../components/library/use-library-selection";
-import { LibraryGrid } from "../components/LibraryGrid";
-import { TextButton } from "../components/TextButton";
+import { LibraryGrid, LibraryGridSkeleton } from "../components/LibraryGrid";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
@@ -59,6 +57,7 @@ import {
 } from "../components/ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import { useTranslation } from "../i18n";
+import { describeError } from "../lib/errors";
 import { showErrorToast } from "../lib/runtime/error-toast";
 import { refreshLibraryMetadata } from "../lib/updates/refresh-library-metadata";
 import { useLibraryStore } from "../store/library";
@@ -262,7 +261,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
   const filterActive =
     debouncedSearch.trim() !== "" ||
-    selectedCategoryId !== null ||
     selectedSourceId !== null ||
     downloadedOnlyMode ||
     unreadOnlyMode ||
@@ -302,6 +300,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const assignableCategories = manualCategories.filter(
     (category) => category.id !== UNCATEGORIZED_CATEGORY_ID,
   );
+  const clearAllFilters = () => {
+    clearFilters();
+    setSelectedSourceId(null);
+    setSearch("");
+  };
   const overflowItems: OverflowMenuItem[] = [
     ...(wide
       ? []
@@ -456,30 +459,33 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               onOpenFilters={() => openViewOptions("filter")}
               sourceActive={selectedSourceId !== null}
             />
-            <StorageRecoveryStatus />
+            <StorageRecoveryBanner />
 
             <div className="norea-library-body" ref={libraryBodyRef}>
               {isInitialLibraryLoading ? (
-                <StateView
-                  title={
-                    <span className="norea-library-loading-title">
-                      <Loader size="sm" />
-                      <Text c="dimmed" component="span">
-                        {t("library.loading")}
-                      </Text>
-                    </span>
-                  }
+                <LibraryGridSkeleton
+                  displayMode={displayMode}
+                  label={t("library.loading")}
+                  novelsPerRow={novelsPerRow}
                 />
               ) : libraryError ? (
-                <StateView
-                  color="danger"
-                  title={t("library.databaseError")}
-                  message={
-                    libraryError instanceof Error
-                      ? libraryError.message
-                      : String(libraryError)
-                  }
-                />
+                <div className="norea-library-state">
+                  <StateView
+                    action={{
+                      label: t("common.retry"),
+                      onClick: () => {
+                        void novels.refetch();
+                      },
+                    }}
+                    color="danger"
+                    details={{
+                      content: describeError(libraryError),
+                      label: t("common.details"),
+                    }}
+                    message={t("library.loadError.message")}
+                    title={t("library.loadError.title")}
+                  />
+                </div>
               ) : rows.length > 0 ? (
                 <>
                   <LibraryGrid
@@ -496,41 +502,50 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   />
                   {novels.hasNextPage ? (
                     <div className="norea-library-load-more">
-                      <TextButton
-                        className="norea-library-load-more-action"
-                        disabled={novels.isFetchingNextPage}
-                        leftSection={
-                          novels.isFetchingNextPage ? undefined : <PlusGlyph />
-                        }
+                      <Button
                         loading={novels.isFetchingNextPage}
                         onClick={() => {
                           void novels.fetchNextPage();
                         }}
-                        size="sm"
-                        tone="accent"
+                        variant="light"
                       >
                         {t("common.loadMore")}
-                      </TextButton>
+                      </Button>
                     </div>
                   ) : null}
                 </>
               ) : filterActive ? (
-                <StateView
-                  color="warn"
-                  title={t("common.noMatches")}
-                  message={t("library.noMatches.message")}
-                />
+                <div className="norea-library-state">
+                  <StateView
+                    action={{
+                      label: t("library.noMatches.clear"),
+                      onClick: clearAllFilters,
+                    }}
+                    message={t("library.noMatches.message")}
+                    title={t("common.noMatches")}
+                  />
+                </div>
+              ) : selectedCategoryId !== null ? (
+                <div className="norea-library-state">
+                  <StateView title={t("library.emptyCategory")} />
+                </div>
               ) : (
-                <StateView
-                  color="info"
-                  title={t("library.empty.title")}
-                  message={t("library.empty.message")}
-                  action={{
-                    icon: <ImportIcon size="1.125rem" />,
-                    label: t("library.localImport.open"),
-                    onClick: openLocalImportInput,
-                  }}
-                />
+                <div className="norea-library-state">
+                  <StateView
+                    action={{
+                      label: t("library.localImport.open"),
+                      onClick: openLocalImportInput,
+                    }}
+                    message={t("library.empty.message")}
+                    secondaryAction={{
+                      label: t("library.empty.browse"),
+                      onClick: () => {
+                        void navigate({ to: "/browse", search: { q: "", tab: "sources" } });
+                      },
+                    }}
+                    title={t("library.empty.title")}
+                  />
+                </div>
               )}
             </div>
 

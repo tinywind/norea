@@ -1,4 +1,4 @@
-import { VisuallyHidden } from "@mantine/core";
+import { Skeleton, VisuallyHidden } from "@mantine/core";
 import {
   memo,
   useRef,
@@ -15,6 +15,7 @@ import { CheckIcon, DownloadedIcon } from "./ui/icons";
 import { ListRow } from "./ui/ListRow";
 
 const LONG_PRESS_MS = 500;
+const SKELETON_ITEMS = 12;
 
 interface LibraryGridProps {
   novels: readonly LibraryNovel[];
@@ -85,6 +86,55 @@ export function LibraryGrid({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Placeholder items in the current display mode while the library loads. */
+export function LibraryGridSkeleton({
+  displayMode,
+  label,
+  novelsPerRow,
+}: {
+  displayMode: LibraryDisplayMode;
+  label: string;
+  novelsPerRow: number;
+}) {
+  const items = Array.from({ length: SKELETON_ITEMS }, (_, index) => index);
+  return (
+    <div aria-busy="true" aria-label={label} role="status">
+      {displayMode === "list" ? (
+        <ul aria-hidden="true" className="norea-library-list">
+          {items.map((index) => (
+            <li className="norea-library-skeleton-row" key={index}>
+              <Skeleton height="3.75rem" radius="sm" width="2.5rem" />
+              <span className="norea-library-skeleton-lines">
+                <Skeleton height="0.75rem" radius="sm" width="60%" />
+                <Skeleton height="0.625rem" radius="sm" width="35%" />
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <ul
+          aria-hidden="true"
+          className="norea-library-grid"
+          data-mode={displayMode}
+          style={{ "--norea-library-grid-columns": novelsPerRow } as CSSProperties}
+        >
+          {items.map((index) => (
+            <li className="norea-library-skeleton-card" key={index}>
+              <Skeleton className="norea-library-skeleton-cover" radius="sm" />
+              {displayMode === "comfortable" ? (
+                <>
+                  <Skeleton height="0.75rem" radius="sm" width="85%" />
+                  <Skeleton height="0.625rem" radius="sm" width="50%" />
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

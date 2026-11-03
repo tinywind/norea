@@ -1,11 +1,11 @@
-import { Group, Progress, Stack, Text } from "@mantine/core";
+import { Button, Group, Loader, Progress, Text } from "@mantine/core";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { startWorkMetadataRecovery } from "../../db/client";
 import type { NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { useStorageRecoveryStore } from "../../store/storage-recovery";
-import { TextButton } from "../TextButton";
+import { CheckIcon, WarningIcon } from "../ui/icons";
 import { subscribeWorkMetadataChanges } from "../../lib/work-metadata";
 
 export function StorageRecoveryNotifications() {
@@ -55,27 +55,57 @@ export function StorageRecoveryNotifications() {
   return null;
 }
 
-export function StorageRecoveryStatus() {
+/**
+ * A compact banner while local content recovery runs, after it fails (Retry)
+ * and once it completes (Dismiss). The raw error stays under Details.
+ */
+export function StorageRecoveryBanner() {
   const { t } = useTranslation();
   const { status, progress, error } = useStorageRecoveryStore();
   if (status === "idle") return null;
+  const title = t(status === "error" ? "storageRecovery.failed" : status === "complete" ? "storageRecovery.complete" : "storageRecovery.title");
   return (
-    <Stack gap="xs" p="sm" role="status" aria-live="polite">
-      <Text fw={600}>{t(status === "error" ? "storageRecovery.failed" : status === "complete" ? "storageRecovery.complete" : "storageRecovery.title")}</Text>
-      {status === "scanning" ? <Text size="sm">{t("storageRecovery.description")}</Text> : null}
-      {progress ? <Text size="sm">{t("storageRecovery.counts", {
-        completed: progress.completedWorks, total: progress.totalWorks,
-        works: progress.recoveredWorks, chapters: progress.recoveredChapters, skipped: progress.skippedWorks,
-      })}</Text> : null}
-      {status === "scanning" ? <>
-        <Text size="sm" truncate>{progress?.currentWork ?? t("storageRecovery.discovering")}</Text>
-        <Progress aria-label={t("storageRecovery.title")} animated value={progress?.totalWorks ? progress.completedWorks / progress.totalWorks * 100 : 0} />
-      </> : null}
-      {error ? <Text c="danger" size="sm">{error}</Text> : null}
-      {status !== "scanning" ? <Group gap="xs">
-        {status === "error" ? <TextButton onClick={() => startWorkMetadataRecovery(true)}>{t("common.retry")}</TextButton> : null}
-        <TextButton onClick={() => useStorageRecoveryStore.setState({ status: "idle" })}>{t("storageRecovery.dismiss")}</TextButton>
-      </Group> : null}
-    </Stack>
+    <div aria-live="polite" className="norea-recovery-banner" data-status={status} role="status">
+      <span aria-hidden="true" className="norea-recovery-banner-icon">
+        {status === "scanning" ? <Loader size="xs" /> : status === "error" ? <WarningIcon size="1.125rem" /> : <CheckIcon size="1.125rem" />}
+      </span>
+      <div className="norea-recovery-banner-text">
+        <Text fw={600} size="sm">{title}</Text>
+        {progress ? (
+          <Text c="dimmed" size="xs">
+            {t("storageRecovery.counts", {
+              completed: progress.completedWorks, total: progress.totalWorks,
+              works: progress.recoveredWorks, chapters: progress.recoveredChapters, skipped: progress.skippedWorks,
+            })}
+          </Text>
+        ) : status === "scanning" ? <Text c="dimmed" size="xs">{t("storageRecovery.description")}</Text> : null}
+        {status === "scanning" ? (
+          <Progress
+            aria-label={title}
+            mt={4}
+            size="xs"
+            value={progress?.totalWorks ? progress.completedWorks / progress.totalWorks * 100 : 0}
+          />
+        ) : null}
+        {error ? (
+          <details className="norea-state-details">
+            <summary>{t("common.details")}</summary>
+            <Text c="dimmed" component="div" size="xs">{error}</Text>
+          </details>
+        ) : null}
+      </div>
+      {status !== "scanning" ? (
+        <Group className="norea-recovery-banner-actions" gap="xs" wrap="nowrap">
+          {status === "error" ? (
+            <Button onClick={() => startWorkMetadataRecovery(true)} size="compact-sm" variant="light">
+              {t("common.retry")}
+            </Button>
+          ) : null}
+          <Button onClick={() => useStorageRecoveryStore.setState({ status: "idle" })} size="compact-sm" variant="subtle">
+            {t("storageRecovery.dismiss")}
+          </Button>
+        </Group>
+      ) : null}
+    </div>
   );
 }
