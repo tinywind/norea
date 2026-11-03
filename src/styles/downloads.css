@@ -226,3 +226,9 @@
     display: none;
   }
 }
+
+.norea-downloads-auto-cleanup {
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+}

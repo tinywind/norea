@@ -101,3 +101,29 @@ it("records chapter-specific proof only when explicitly installed and keeps it t
   await reconcileCleanedChapter(candidate, { contentBytes: 0, mediaBytes: 0, mediaComplete: false });
   expect(sqlite.prepare("SELECT payload FROM content_sync_cache WHERE cache_key='norea-content-chapter-source:6'").get()).toBeDefined();
 });
+
+it("selects finished chapters to remove only behind the reading position and outside the kept window", async () => {
+  for (const file of ["0005_novel_download_goals.sql", "0006_download_goal_opt_out.sql"]) {
+    sqlite.exec(readFileSync(`src-tauri/src/migrations/${file}`, "utf8"));
+  }
+  sqlite.exec(`INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code) VALUES ('reader','Reader','en','1','','','');
+    INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library,is_local) VALUES (6,'reader','six','/six','Six',1,0);
+    INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,unread,bookmark,is_downloaded,media_repair_needed,read_at) VALUES
+    (61,6,'/61','A',1,'1',0,0,1,0,10),(62,6,'/62','B',2,'2',0,1,1,0,20),(63,6,'/63','C',3,'3',0,0,0,1,30),
+    (64,6,'/64','D',4,'4',0,0,1,0,40),(65,6,'/65','E',5,'5',0,0,1,0,50),(66,6,'/66','F',6,'6',1,0,1,0,NULL),
+    (67,6,'/67','G',7,'7',0,0,0,0,5);`);
+  const finished = (keepLast: number) => listChapterCleanupCandidates({ reading: "read", categories: { mode: "all" }, finished: { keepLast } })
+    .then(rows => rows.map(row => row.identity.chapter.id));
+  // The reading position is chapter 5 (opened last); 62 is bookmarked and 67 is not downloaded.
+  expect(await finished(2)).toEqual([61, 63]);
+  expect(await finished(4)).toEqual([61]);
+  expect(await finished(5)).toEqual([]);
+  sqlite.exec("UPDATE chapter SET read_at=60 WHERE id=64");
+  expect(await finished(1)).toEqual([61, 63]);
+  sqlite.exec("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES (6,'entire',NULL,1)");
+  expect(await finished(1)).toEqual([]);
+  sqlite.exec("UPDATE novel_download_goal SET kind='all_remaining' WHERE novel_id=6");
+  expect(await finished(1)).toEqual([61, 63]);
+  sqlite.exec("DELETE FROM installed_plugin WHERE id='reader'");
+  expect(await finished(1)).toEqual([]);
+});

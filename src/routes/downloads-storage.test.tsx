@@ -64,6 +64,13 @@ describe("Downloads storage", () => {
   });
 });
 
+describe("automatic removal row", () => {
+  it("shows the setting's state on top of a non-empty list", () => {
+    expect(render([novel()])(".norea-downloads-auto-cleanup").text()).toBe("Auto-remove read chapters: Off");
+    expect(render([])(".norea-downloads-auto-cleanup")).toHaveLength(0);
+  });
+});
+
 describe("downloadedChapterToRead", () => {
   const chapters = [chapter(30, 3, true), chapter(10, 1, false), chapter(20, 2, true)];
 

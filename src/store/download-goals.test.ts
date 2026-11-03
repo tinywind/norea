@@ -7,9 +7,9 @@ beforeEach(() => {
 
 it("keeps 3 chapters ahead and waits for unmetered networks by default", () => {
   expect(normalizeDownloadGoalSettings(null))
-    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false, legacyReadAheadMigrated: false });
+    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false, legacyReadAheadMigrated: false, finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
   expect(normalizeDownloadGoalSettings({ defaultKeepAhead: 7, automaticOnMobileData: "yes", legacyReadAheadMigrated: 1 }))
-    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false, legacyReadAheadMigrated: false });
+    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: false, legacyReadAheadMigrated: false, finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
 });
 
 it("accepts only the offered keep-ahead choices, including off", () => {
@@ -21,5 +21,16 @@ it("accepts only the offered keep-ahead choices, including off", () => {
   expect(useDownloadGoalSettingsStore.getState().defaultKeepAhead).toBe(3);
   useDownloadGoalSettingsStore.getState().setAutomaticOnMobileData(true);
   expect(normalizeDownloadGoalSettings(useDownloadGoalSettingsStore.getState()))
-    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: true, legacyReadAheadMigrated: false });
+    .toEqual({ defaultKeepAhead: 3, automaticOnMobileData: true, legacyReadAheadMigrated: false, finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
+});
+
+it("keeps finished-chapter removal off unless an offered choice is stored", () => {
+  expect(normalizeDownloadGoalSettings({ finishedChapterKeep: 7, finishedCleanupWithoutServer: "yes" }))
+    .toMatchObject({ finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
+  for (const choice of [5, 10, 20, 0]) {
+    useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(choice, true);
+    expect(useDownloadGoalSettingsStore.getState()).toMatchObject({ finishedChapterKeep: choice, finishedCleanupWithoutServer: true });
+  }
+  useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(3, false);
+  expect(useDownloadGoalSettingsStore.getState()).toMatchObject({ finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
 });

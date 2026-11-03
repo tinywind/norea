@@ -8,7 +8,7 @@ import { cleanupServerUrl, fetchCleanupServerInventory } from "../content-sync/c
 import { runWorkContentStorageOperation } from "../content-sync/storage-operation";
 import { isTauriRuntime } from "../tauri-runtime";
 import { cancelChapterDownloadTasks, discardQueuedChapterDownloads, waitForChapterDownloadQueueMutations } from "./chapter-download";
-import { taskScheduler, type TaskHandle } from "./scheduler";
+import { taskScheduler, type TaskHandle, type TaskPriority } from "./scheduler";
 import { isTaskUserCancelledError } from "./task-errors";
 
 export interface ChapterCleanupTargetResult {
@@ -124,10 +124,21 @@ export async function runChapterCleanup(preview: ChapterCleanupPreview, options:
   return result;
 }
 
-export function enqueueChapterCleanup(preview: ChapterCleanupPreview, title: string, onProgress?: ChapterCleanupRunOptions["onProgress"]): TaskHandle<ChapterCleanupResult> {
+/** True while a cleanup run is queued or running, so another one waits for the next chance. */
+export function isChapterCleanupActive(): boolean {
+  return taskScheduler.getSnapshot().records.some((task) => task.kind === "maintenance.clearDownloadedContent" &&
+    (task.status === "queued" || task.status === "running"));
+}
+
+export function enqueueChapterCleanup(
+  preview: ChapterCleanupPreview,
+  title: string,
+  onProgress?: ChapterCleanupRunOptions["onProgress"],
+  priority: TaskPriority = "user",
+): TaskHandle<ChapterCleanupResult> {
   let execution: Promise<ChapterCleanupResult> | undefined;
   const handle = taskScheduler.enqueueMain({
-    kind: "maintenance.clearDownloadedContent", title, priority: "user", exclusive: false, canRetry: false,
+    kind: "maintenance.clearDownloadedContent", title, priority, exclusive: false, canRetry: false,
     canCancel: true, dedupeKey: "device-chapter-cleanup",
     run: context => execution = runChapterCleanup(preview, { signal: context.signal, onProgress: result => {
       context.setProgress({ current: result.deleted + result.skipped + result.failed, total: result.total });

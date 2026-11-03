@@ -23,8 +23,10 @@ import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { ChapterCleanupPanel } from "../components/ChapterCleanupPanel";
 import { ConsoleCover } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
+import { ListRow } from "../components/ui/ListRow";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   ChevronUpIcon,
   DeleteDownloadIcon,
   FilterIcon,
@@ -52,6 +54,8 @@ import { confirmContentDeletion } from "../store/content-deletion";
 import { showErrorToast } from "../lib/runtime/error-toast";
 import { pluginManager } from "../lib/plugins/manager";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
+import { useFinishedChapterCleanupStore } from "../lib/finished-chapter-cleanup";
+import { useDownloadGoalSettingsStore } from "../store/download-goals";
 import { useReaderStore } from "../store/reader";
 import {
   formatRelativeTimeForLocale,
@@ -558,6 +562,37 @@ function DownloadCacheNovelCard({
   );
 }
 
+/** Where automatic removal of finished chapters stands, and the way to its setting. */
+function FinishedChapterCleanupRow({ onOpenSetting }: { onOpenSetting: () => void }) {
+  const { locale, t } = useTranslation();
+  const queryClient = useQueryClient();
+  const keep = useDownloadGoalSettingsStore((state) => state.finishedChapterKeep);
+  const lastRemoval = useFinishedChapterCleanupStore((state) => state.lastRemoval);
+  const removedAt = lastRemoval?.at;
+
+  useEffect(() => {
+    if (removedAt !== undefined) invalidateDownloadCache(queryClient);
+  }, [queryClient, removedAt]);
+
+  return (
+    <ListRow
+      className="norea-downloads-auto-cleanup"
+      onClick={onOpenSetting}
+      subtitle={lastRemoval ? t("finishedCleanup.lastRemoval", {
+        count: lastRemoval.deleted,
+        size: formatBytes(lastRemoval.bytesFreed, locale),
+        time: formatRelativeTimeForLocale(locale, lastRemoval.at),
+      }) : undefined}
+      title={t("finishedCleanup.storageRow", {
+        state: keep === 0
+          ? t("settings.downloads.finishedCleanup.off")
+          : t("settings.downloads.finishedCleanup.keep", { count: keep }),
+      })}
+      trailing={<ChevronRightIcon size="1.125rem" />}
+    />
+  );
+}
+
 interface DownloadsStorageViewProps {
   active?: boolean;
   viewSwitcher?: ReactNode;
@@ -725,6 +760,11 @@ export function DownloadsStorageView({
       )}
       {viewSwitcher}
       <ChapterCleanupPanel opened={cleanupOpened} onClose={() => setCleanupOpened(false)} />
+      {rows.length > 0 ? (
+        <FinishedChapterCleanupRow
+          onOpenSetting={() => { void navigate({ to: "/settings", search: { section: "downloads" } }); }}
+        />
+      ) : null}
 
       <div className="norea-downloads-body">
         {query.isLoading ? (

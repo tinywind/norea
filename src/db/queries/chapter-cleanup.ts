@@ -6,6 +6,12 @@ import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 export interface ChapterCleanupSelection {
   reading: "read" | "all";
   categories: { mode: "all" } | { mode: "selected"; ids: readonly number[] };
+  /**
+   * Automatic removal of finished chapters: only downloaded, finished, unbookmarked source
+   * chapters of an installed source, behind the most recently opened chapter with at least
+   * `keepLast` finished chapters between them and it, in novels no "entire novel" goal keeps.
+   */
+  finished?: { keepLast: number };
 }
 
 export interface ChapterCleanupCandidate {
@@ -76,6 +82,18 @@ export async function listChapterCleanupCandidates(
     if (categorized.length) categoryConditions.push(`EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id=n.id AND nc.category_id IN (${categorized.map(bind).join(",")}))`);
     if (ids.includes(UNCATEGORIZED_CATEGORY_ID)) categoryConditions.push("NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id=n.id)");
     predicates.push(`n.in_library=1 AND (${categoryConditions.join(" OR ")})`);
+  }
+  if (selection.finished) {
+    const keepLast = bind(Math.max(1, Math.floor(selection.finished.keepLast)));
+    const readingPosition = `(SELECT r.position FROM chapter r WHERE r.novel_id=c.novel_id AND r.read_at IS NOT NULL
+        ORDER BY r.read_at DESC, r.id DESC LIMIT 1)`;
+    predicates.push(`c.unread=0 AND c.bookmark=0 AND n.is_local=0
+      AND (c.is_downloaded=1 OR c.media_repair_needed=1)
+      AND EXISTS (SELECT 1 FROM installed_plugin p WHERE p.id=n.plugin_id)
+      AND NOT EXISTS (SELECT 1 FROM novel_download_goal g WHERE g.novel_id=n.id AND g.kind='entire')
+      AND c.position < ${readingPosition}
+      AND (SELECT COUNT(*) FROM chapter f WHERE f.novel_id=c.novel_id AND f.unread=0
+        AND f.position>c.position AND f.position<=${readingPosition})>=${keepLast}`);
   }
   if (options.chapterId !== undefined) predicates.push(`c.id=${bind(options.chapterId)}`);
   else predicates.push(`c.id>${bind(options.afterId ?? 0)}`);

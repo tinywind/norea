@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NumberInput, Select, Stack, Switch, Text } from "@mantine/core";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
+import { useConfirm } from "../ui/ConfirmDialog";
 import { StorageRecoveryBanner } from "../runtime/StorageRecovery";
 import {
   SettingsAdvancedGroup,
@@ -19,8 +20,10 @@ import { describeError } from "../../lib/errors";
 import { isAndroidRuntime } from "../../lib/tauri-runtime";
 import { useTranslation } from "../../i18n";
 import { useBrowseStore } from "../../store/browse";
+import { useContentSyncStore } from "../../store/content-sync";
 import {
   DEFAULT_KEEP_AHEAD_CHOICES,
+  FINISHED_CHAPTER_KEEP_CHOICES,
   useDownloadGoalSettingsStore,
 } from "../../store/download-goals";
 import { showSettingsToast } from "./settings-toast";
@@ -130,6 +133,53 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
   );
 }
 
+function FinishedChapterCleanupRow() {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
+  const keep = useDownloadGoalSettingsStore((state) => state.finishedChapterKeep);
+  const withoutServer = useDownloadGoalSettingsStore((state) => state.finishedCleanupWithoutServer);
+  const hasServer = useContentSyncStore((state) => Boolean(state.serverUrl));
+
+  async function choose(next: number): Promise<void> {
+    const { setFinishedChapterCleanup } = useDownloadGoalSettingsStore.getState();
+    if (next === 0 || hasServer || withoutServer) {
+      setFinishedChapterCleanup(next, withoutServer);
+      return;
+    }
+    const accepted = await confirm({
+      title: t("settings.downloads.finishedCleanup.noServer.title"),
+      message: t("settings.downloads.finishedCleanup.noServer.message"),
+      confirmLabel: t("settings.downloads.finishedCleanup.noServer.confirm"),
+      cancelLabel: t("common.cancel"),
+      danger: true,
+    });
+    if (accepted) setFinishedChapterCleanup(next, true);
+  }
+
+  return (
+    <SettingsFieldRow
+      label={t("settings.downloads.finishedCleanup.label")}
+      description={t(hasServer
+        ? "settings.downloads.finishedCleanup.serverDescription"
+        : "settings.downloads.finishedCleanup.description")}
+    >
+      <Select
+        allowDeselect={false}
+        data={FINISHED_CHAPTER_KEEP_CHOICES.map((count) => ({
+          value: String(count),
+          label: count === 0
+            ? t("settings.downloads.finishedCleanup.off")
+            : t("settings.downloads.finishedCleanup.keep", { count }),
+        }))}
+        value={String(keep)}
+        onChange={(value) => {
+          if (value !== null) void choose(Number(value));
+        }}
+      />
+    </SettingsFieldRow>
+  );
+}
+
 export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const [cleanupOpened, setCleanupOpened] = useState(false);
@@ -181,6 +231,7 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             />
           </SettingsFieldRow>
         ) : null}
+        <FinishedChapterCleanupRow />
         <SettingsFieldRow
           label={t("settings.data.downloadedContent.label")}
           description={t("settings.data.downloadedContent.description")}

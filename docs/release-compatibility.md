@@ -335,6 +335,24 @@ exclusions, so goals do not download them again until the novel's goal is set
 again, and the app offers to stop the goals of the affected novels. Downloads >
 Storage > Clean up opens the same workflow.
 
+Settings > Downloads & storage > Remove finished chapters automatically (Off by
+default; keep the last 5, 10 or 20) runs the same cleanup unattended after
+reading progress changes and once a day while the app is visible, catching up
+at the next foreground return after 24 hours. It selects only downloaded,
+finished, unbookmarked source chapters of an installed plugin that lie behind
+the most recently opened chapter with at least the chosen number of finished
+chapters between them, never chapters a download goal keeps or novels with an
+entire-novel goal. Every condition is checked again immediately before each
+deletion. With a content server it uses only the server-contains-local
+condition; without one it starts only after the user accepts that removed
+chapters exist nowhere else. A run is skipped while another cleanup is queued or
+running, and removed chapters become goal exclusions. The setting is stored as
+the additive fields `finishedChapterKeep` and `finishedCleanupWithoutServer` of
+the `download-goal-settings` entry, which both backup kinds carry; missing or
+unknown values read as off. The last run time and result are device-only state
+in `finished-chapter-cleanup-state` and are not backed up. No schema change is
+required.
+
 ## Full Device Backups on the Content Server
 
 The version 1 device-backup transport stores one current snapshot per device name. The app's

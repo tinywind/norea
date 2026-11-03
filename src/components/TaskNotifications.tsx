@@ -5,6 +5,7 @@ import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import { startDownloadGoals } from "../lib/download-goals/goal-service";
+import { startFinishedChapterCleanup } from "../lib/finished-chapter-cleanup";
 import { startFreshnessChecks } from "../lib/updates/freshness-scheduler";
 import { describeError } from "../lib/errors";
 import {
@@ -132,6 +133,7 @@ export function TaskNotifications() {
     restoreQueue();
     startDownloadGoals();
     startFreshnessChecks();
+    startFinishedChapterCleanup();
     if (typeof window !== "undefined") {
       window.addEventListener("norea-app-resumed", restoreQueue);
       window.addEventListener("focus", restoreQueue);
