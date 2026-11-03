@@ -42,14 +42,3 @@ export function LocalImportReviewRow({
     </div>
   );
 }
-
-export function ImportFileIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M14 3v5h5" />
-      <path d="M6 3h8l5 5v13H6z" />
-      <path d="M12 11v6" />
-      <path d="M9 14l3 3 3-3" />
-    </svg>
-  );
-}

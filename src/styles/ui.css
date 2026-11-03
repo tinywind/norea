@@ -43,6 +43,10 @@
     min-width: var(--norea-control-md);
   }
 
+  html:root .mantine-Menu-item {
+    min-height: var(--norea-control-md);
+  }
+
   /*
    * Controls in fixed-height bars and input sections keep their visual size;
    * a transparent ::before grows the hit area instead.

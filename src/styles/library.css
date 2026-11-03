@@ -649,3 +649,20 @@
     overflow: auto;
   }
 }
+
+@media (any-pointer: coarse) {
+  /* D8: sheet choices are full-height touch rows, not just their 20px boxes. */
+  :where(.norea-library-view-options, .norea-library-category-sheet)
+    :where(.mantine-Checkbox-label, .mantine-Radio-label, .mantine-Switch-label) {
+    align-items: center;
+    display: flex;
+    min-height: var(--norea-control-md);
+  }
+
+  .norea-library-view-options :where(.mantine-Tabs-tab, .mantine-SegmentedControl-label) {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    min-height: var(--norea-control-md);
+  }
+}

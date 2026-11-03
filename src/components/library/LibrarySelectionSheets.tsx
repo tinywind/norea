@@ -183,6 +183,7 @@ export function LibraryCategorySheet({
 
   return (
     <ResponsiveSheet
+      className="norea-library-category-sheet"
       footer={
         <Group justify="flex-end" gap="xs">
           <Button onClick={onClose} variant="default">
