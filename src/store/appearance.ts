@@ -121,7 +121,8 @@ export const useAppearanceStore = create<AppearanceState>()(
       setShowDownloadsTab: (showDownloadsTab) => set({ showDownloadsTab }),
       setShowTasksTab: (showTasksTab) => set({ showTasksTab }),
       setShowLabelsInNav: (showLabelsInNav) => set({ showLabelsInNav }),
-      resetAppearance: () => set({ ...DEFAULT_APPEARANCE }),
+      resetAppearance: () =>
+        set((state) => ({ ...DEFAULT_APPEARANCE, appLocale: state.appLocale })),
     }),
     {
       name: "app-appearance-settings",

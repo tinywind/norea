@@ -124,6 +124,24 @@ describe("current persisted settings", () => {
 });
 
 
+describe("appearance defaults", () => {
+  it("restores appearance defaults without changing the app language", () => {
+    const appearance = useAppearanceStore.getState();
+    appearance.setAppLocale("ko");
+    appearance.setThemeMode("dark");
+    appearance.setFontScalePercent(150);
+    try {
+      useAppearanceStore.getState().resetAppearance();
+      expect(useAppearanceStore.getState()).toMatchObject({
+        ...DEFAULT_APPEARANCE,
+        appLocale: "ko",
+      });
+    } finally {
+      useAppearanceStore.getState().setAppLocale(DEFAULT_APPEARANCE.appLocale);
+    }
+  });
+});
+
 describe("library entry preferences", () => {
   it("opens all categories when no default is configured", () => {
     useLibraryStore.getState().enterLibrary();
