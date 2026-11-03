@@ -1853,6 +1853,7 @@ export function enqueueChapterMediaRepair(
       if (saveResult.rowsAffected <= 0) {
         throw missingRepairChapterError(job);
       }
+      if (isTauriRuntime()) forgetFailures([job.id]);
       if (media.mediaFailures.length > 0) {
         setDetail(
           `${media.mediaFailures.length} media assets using remote fallback`,

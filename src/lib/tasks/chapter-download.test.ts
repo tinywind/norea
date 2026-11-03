@@ -3374,6 +3374,17 @@ describe("enqueueChapterMediaRepair", () => {
     expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<p>Stored body</p>", "html", { mediaBytes: 25 });
   });
 
+  it("clears the recorded failure once a repair stores every asset", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia).mockResolvedValueOnce({ html: "<p>Stored body</p>", mediaBytes: 25, mediaFailures: [], storedMediaCount: 1 });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" });
+    expect(failureMocks.forget).toHaveBeenCalledWith([7]);
+  });
+
   it("rejects every concurrent missing asset when the source scope is invalid", async () => {
     vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce("<p>Stored body</p>");
     vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
