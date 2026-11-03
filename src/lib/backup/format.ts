@@ -14,7 +14,7 @@
 import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
 
-export const BACKUP_FORMAT_VERSION = 4 as const;
+export const BACKUP_FORMAT_VERSION = 5 as const;
 
 export interface BackupNovel {
   id: number;
@@ -86,6 +86,9 @@ export interface BackupRepository {
   url: string;
   name: string | null;
   addedAt: number;
+  /** 1 is first; a lower priority provides a plugin listed by several. */
+  priority: number;
+  enabled: boolean;
 }
 
 export interface BackupInstalledPlugin {
@@ -97,6 +100,8 @@ export interface BackupInstalledPlugin {
   sourceUrl: string;
   sourceCode: string;
   installedAt: number;
+  /** The publishing repository updates come from; null when unknown. */
+  repositoryUrl: string | null;
 }
 
 export interface BackupSetting {
@@ -128,7 +133,6 @@ export interface BackupManifest {
   chapters: BackupChapter[];
   categories: BackupCategory[];
   novelCategories: BackupNovelCategory[];
-  /** The app stores at most one configured plugin repository. */
   repositories: BackupRepository[];
   installedPlugins: BackupInstalledPlugin[];
   settings: BackupSetting[];
@@ -244,7 +248,10 @@ function isRepository(value: unknown): value is BackupRepository {
   return (
     typeof value.id === "number" &&
     typeof value.url === "string" &&
-    typeof value.addedAt === "number"
+    typeof value.addedAt === "number" &&
+    Number.isSafeInteger(value.priority) &&
+    (value.priority as number) >= 1 &&
+    typeof value.enabled === "boolean"
   );
 }
 
@@ -258,7 +265,8 @@ function isInstalledPlugin(value: unknown): value is BackupInstalledPlugin {
     typeof value.iconUrl === "string" &&
     typeof value.sourceUrl === "string" &&
     typeof value.sourceCode === "string" &&
-    typeof value.installedAt === "number"
+    typeof value.installedAt === "number" &&
+    (value.repositoryUrl === null || typeof value.repositoryUrl === "string")
   );
 }
 
@@ -331,8 +339,8 @@ export function parseBackupManifest(json: string): BackupManifest {
     throw new BackupFormatError("Backup manifest is missing exportedAt.");
   }
   const repositories = asArray(parsed.repositories, "repositories", isRepository);
-  if (repositories.length > 1) {
-    throw new BackupFormatError("Backup manifest must contain at most one repository.");
+  if (new Set(repositories.map(({ url }) => url)).size !== repositories.length) {
+    throw new BackupFormatError("Backup manifest lists a repository URL more than once.");
   }
 
   return {

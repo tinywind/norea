@@ -1,4 +1,5 @@
 import { getDb } from "../client";
+import { sqliteBoolean } from "../sqlite-value";
 
 function debugRepositoryQuery(message: string, data?: unknown): void {
   console.debug(`[repository-db] ${message}`, data);
@@ -9,50 +10,70 @@ export interface PluginRepository {
   url: string;
   name: string | null;
   addedAt: number;
+  /** 1 is first. The first enabled repository listing a plugin id wins. */
+  priority: number;
+  enabled: boolean;
 }
 
+interface RawRepositoryRow extends Omit<PluginRepository, "enabled"> {
+  enabled: unknown;
+}
+
+/** Every repository, in priority order. */
 export async function listRepositories(): Promise<PluginRepository[]> {
   const db = await getDb();
-  const rows = await db.select<PluginRepository[]>(`
+  const rows = await db.select<RawRepositoryRow[]>(`
     SELECT
       id,
       url,
       name,
-      added_at AS addedAt
+      added_at AS addedAt,
+      priority,
+      enabled
     FROM repository
-    ORDER BY id
+    ORDER BY priority, id
   `);
-  debugRepositoryQuery("list complete", { count: rows.length, rows });
-  return rows;
+  debugRepositoryQuery("list complete", { count: rows.length });
+  return rows.map((row) => ({ ...row, enabled: sqliteBoolean(row.enabled) }));
 }
 
-export interface UpsertRepositoryInput {
+export interface AddRepositoryInput {
   url: string;
   name?: string | null;
 }
 
-export async function upsertRepository(
-  input: UpsertRepositoryInput,
-): Promise<void> {
-  debugRepositoryQuery("upsert start", {
-    url: input.url,
-    name: input.name ?? null,
-  });
+/**
+ * Appends a repository after the others, enabled. Resolves false when the
+ * URL is already in the list, which is left unchanged.
+ */
+export async function addRepository(input: AddRepositoryInput): Promise<boolean> {
+  debugRepositoryQuery("add start", { url: input.url });
   const db = await getDb();
-  debugRepositoryQuery("upsert repository start", { url: input.url });
-  await db.execute(
-    `INSERT INTO repository (id, url, name)
-     VALUES (1, $1, $2)
-     ON CONFLICT(id) DO UPDATE SET
-       url = excluded.url,
-       name = excluded.name,
-       added_at = unixepoch()`,
+  const result = await db.execute(
+    `INSERT INTO repository (url, name, priority, enabled)
+     VALUES ($1, $2, (SELECT COALESCE(MAX(priority), 0) + 1 FROM repository), 1)
+     ON CONFLICT(url) DO NOTHING`,
     [input.url, input.name ?? null],
   );
-  debugRepositoryQuery("upsert repository complete", { url: input.url });
-  debugRepositoryQuery("delete stale cache start", { url: input.url });
-  await db.execute(`DELETE FROM repository_index_cache`);
-  debugRepositoryQuery("delete stale cache complete", { url: input.url });
+  debugRepositoryQuery("add complete", { url: input.url, added: result.rowsAffected > 0 });
+  return result.rowsAffected > 0;
+}
+
+export async function setRepositoryEnabled(id: number, enabled: boolean): Promise<void> {
+  const db = await getDb();
+  await db.execute(`UPDATE repository SET enabled = $1 WHERE id = $2`, [enabled ? 1 : 0, id]);
+}
+
+/** Stores `orderedIds` as priorities 1..n in one statement. */
+export async function reorderRepositories(orderedIds: readonly number[]): Promise<void> {
+  if (orderedIds.length === 0) return;
+  const db = await getDb();
+  const cases = orderedIds.map((_, index) => `WHEN $${index + 1} THEN ${index + 1}`).join(" ");
+  const ids = orderedIds.map((_, index) => `$${index + 1}`).join(", ");
+  await db.execute(
+    `UPDATE repository SET priority = CASE id ${cases} END WHERE id IN (${ids})`,
+    [...orderedIds],
+  );
 }
 
 export async function removeRepository(id: number): Promise<void> {

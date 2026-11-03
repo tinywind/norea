@@ -279,6 +279,8 @@ struct BackupRestoreRepository {
     url: String,
     name: Option<String>,
     added_at: i64,
+    priority: i64,
+    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,6 +294,8 @@ struct BackupRestoreInstalledPlugin {
     source_url: String,
     source_code: String,
     installed_at: i64,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    repository_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -385,12 +389,31 @@ async fn restore_novel_download_goals(
     Ok(())
 }
 
+fn validate_restore_repositories(repositories: &[BackupRestoreRepository]) -> Result<(), String> {
+    let mut urls = std::collections::HashSet::new();
+    for repository in repositories {
+        if repository.priority < 1 {
+            return Err(format!(
+                "backup_restore_snapshot: repository {} has invalid priority {}",
+                repository.id, repository.priority
+            ));
+        }
+        if !urls.insert(repository.url.as_str()) {
+            return Err(format!(
+                "backup_restore_snapshot: repository URL {} is listed more than once",
+                repository.url
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
     cache: &BackupRestoreCache,
 ) -> Result<(), String> {
-    if manifest.version != 4 {
+    if manifest.version != 5 {
         return Err(format!(
             "backup_restore_snapshot: unsupported backup version {}",
             manifest.version
@@ -403,9 +426,7 @@ async fn execute_restore_snapshot(
     {
         return Err("backup_restore_snapshot: inline chapter bodies are not supported".to_string());
     }
-    if manifest.repositories.len() > 1 {
-        return Err("backup_restore_snapshot: at most one repository is supported".to_string());
-    }
+    validate_restore_repositories(&manifest.repositories)?;
     sqlx::query("DELETE FROM novel_category")
         .execute(&mut **tx)
         .await
@@ -451,12 +472,17 @@ async fn execute_restore_snapshot(
             .map_err(|err| format!("backup_restore_snapshot: insert category: {err}"))?;
     }
 
-    if let Some(repository) = manifest.repositories.first() {
-        sqlx::query("INSERT INTO repository (id, url, name, added_at) VALUES ($1, $2, $3, $4)")
+    for repository in &manifest.repositories {
+        sqlx::query(
+            "INSERT INTO repository (id, url, name, added_at, priority, enabled)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
             .bind(repository.id)
             .bind(repository.url.as_str())
             .bind(repository.name.as_deref())
             .bind(repository.added_at)
+            .bind(repository.priority)
+            .bind(bool_to_int(repository.enabled))
             .execute(&mut **tx)
             .await
             .map_err(|err| format!("backup_restore_snapshot: insert repository: {err}"))?;
@@ -465,8 +491,8 @@ async fn execute_restore_snapshot(
     for plugin in &manifest.installed_plugins {
         sqlx::query(
             "INSERT INTO installed_plugin (
-                id, name, lang, version, icon_url, source_url, source_code, installed_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                id, name, lang, version, icon_url, source_url, source_code, installed_at, repository_url
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(plugin.id.as_str())
         .bind(plugin.name.as_str())
@@ -476,6 +502,7 @@ async fn execute_restore_snapshot(
         .bind(plugin.source_url.as_str())
         .bind(plugin.source_code.as_str())
         .bind(plugin.installed_at)
+        .bind(plugin.repository_url.as_deref())
         .execute(&mut **tx)
         .await
         .map_err(|err| format!("backup_restore_snapshot: insert installed_plugin: {err}"))?;
@@ -1001,7 +1028,7 @@ mod tests {
     #[test]
     fn restore_manifest_rejects_an_unknown_vpn_gate_verdict() {
         let json = r#"{
-            "version": 4,
+            "version": 5,
             "installedPlugins": [],
             "downloadGoals": [],
             "novels": [],
@@ -1137,7 +1164,7 @@ mod tests {
             chapter
         }).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 4,
+            "version": 5,
             "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
                 "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 }],
             "chapters": chapters, "categories": [], "novelCategories": [], "repositories": [],
@@ -1164,7 +1191,7 @@ mod tests {
         let pool = restore_pool().await;
         let json = format!(
             r#"{{
-                "version": 4,
+                "version": 5,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
                 "downloadGoals": [],
@@ -1205,7 +1232,7 @@ mod tests {
         }
         let json = format!(
             r#"{{
-                "version": 4,
+                "version": 5,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
                 "downloadGoals": [],
@@ -1272,7 +1299,7 @@ mod tests {
         sqlx::query("INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES('demo','/original',7)")
             .execute(&pool).await.expect("seed pending revision");
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 4, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+            "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
             "repositories": [], "installedPlugins": [], "vpnGateServerVerdicts": [], "downloadGoals": []
         })).expect("parse manifest");
         let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
@@ -1298,7 +1325,7 @@ mod tests {
         let novels: Vec<_> = [1, 2].into_iter().map(|id| serde_json::json!({ "id": id, "pluginId": "demo",
             "path": format!("/n/{id}"), "name": "Novel", "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 })).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 4,
+            "version": 5,
             "novels": novels,
             "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
@@ -1313,7 +1340,7 @@ mod tests {
             [(1, "keep_ahead".to_string(), Some(3), 10), (2, "none".to_string(), None, 11)]);
 
         let invalid: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 4, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "keep_ahead", "count": null, "updatedAt": 10 }]
         })).expect("parse manifest");
@@ -1323,7 +1350,7 @@ mod tests {
         assert!(serde_json::from_value::<BackupRestoreNovelDownloadGoal>(serde_json::json!({
             "novelId": 1, "kind": "next10", "count": null, "updatedAt": 1 })).is_err());
         let opt_out_with_count: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 4, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "none", "count": 2, "updatedAt": 10 }]
         })).expect("parse manifest");
@@ -1334,13 +1361,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_snapshot_restores_every_repository_with_order_and_plugin_publishers() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql("INSERT INTO repository(id,url) VALUES(7,'https://current.test/plugins.json');
+            INSERT INTO repository_index_cache(repo_url,items_json) VALUES('https://current.test/plugins.json','[]');")
+            .execute(&pool).await.expect("seed current repository");
+        let plugin = |id: &str, repository: serde_json::Value| serde_json::json!({ "id": id, "name": id, "lang": "en",
+            "version": "1.0.0", "iconUrl": "", "sourceUrl": format!("https://first.test/{id}.js"),
+            "sourceCode": "code", "installedAt": 1, "repositoryUrl": repository });
+        let manifest = |repositories: serde_json::Value| -> BackupRestoreManifest {
+            serde_json::from_value(serde_json::json!({
+                "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+                "repositories": repositories,
+                "installedPlugins": [plugin("bound", serde_json::json!("https://first.test/plugins.json")),
+                    plugin("unknown", serde_json::Value::Null)],
+                "vpnGateServerVerdicts": [], "downloadGoals": []
+            })).expect("parse manifest")
+        };
+        let repositories = serde_json::json!([
+            { "id": 1, "url": "https://first.test/plugins.json", "name": "First", "addedAt": 10, "priority": 1, "enabled": true },
+            { "id": 2, "url": "https://second.test/plugins.json", "name": null, "addedAt": 20, "priority": 2, "enabled": false }
+        ]);
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest(repositories), &BackupRestoreCache::default()).await.expect("restore");
+        tx.commit().await.expect("commit");
+        assert_eq!(sqlx::query_as::<_, (i64, String, i64, i64)>("SELECT id,url,priority,enabled FROM repository ORDER BY priority")
+            .fetch_all(&pool).await.expect("read repositories"), [
+                (1, "https://first.test/plugins.json".to_string(), 1, 1),
+                (2, "https://second.test/plugins.json".to_string(), 2, 0),
+            ]);
+        assert_eq!(sqlx::query_as::<_, (String, Option<String>)>("SELECT id,repository_url FROM installed_plugin ORDER BY id")
+            .fetch_all(&pool).await.expect("read publishers"), [
+                ("bound".to_string(), Some("https://first.test/plugins.json".to_string())),
+                ("unknown".to_string(), None),
+            ]);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM repository_index_cache").fetch_one(&pool).await.expect("count cache"), 0);
+
+        for invalid in [
+            serde_json::json!([
+                { "id": 1, "url": "https://same.test/plugins.json", "name": null, "addedAt": 1, "priority": 1, "enabled": true },
+                { "id": 2, "url": "https://same.test/plugins.json", "name": null, "addedAt": 1, "priority": 2, "enabled": true }
+            ]),
+            serde_json::json!([{ "id": 1, "url": "https://zero.test/plugins.json", "name": null, "addedAt": 1, "priority": 0, "enabled": true }]),
+        ] {
+            let mut tx = pool.begin().await.expect("begin");
+            assert!(execute_restore_snapshot(&mut tx, manifest(invalid), &BackupRestoreCache::default()).await.is_err());
+            tx.rollback().await.expect("rollback");
+        }
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM repository").fetch_one(&pool).await.expect("count kept"), 2);
+        assert!(serde_json::from_value::<BackupRestoreRepository>(serde_json::json!({
+            "id": 1, "url": "https://first.test/plugins.json", "name": null, "addedAt": 1, "priority": 1 })).is_err());
+        assert!(serde_json::from_value::<BackupRestoreInstalledPlugin>(serde_json::json!({ "id": "x", "name": "x", "lang": "en",
+            "version": "1", "iconUrl": "", "sourceUrl": "u", "sourceCode": "c", "installedAt": 1 })).is_err());
+    }
+
+    #[tokio::test]
     async fn restore_snapshot_rejects_obsolete_formats_before_replacing_rows() {
         let pool = restore_pool().await;
         sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES (99, 'Keep', 1, 0)")
             .execute(&pool)
             .await
             .expect("seed category");
-        for (version, content) in [(1, None), (2, None), (3, None), (4, Some("<p>old body</p>"))] {
+        for (version, content) in [(1, None), (2, None), (3, None), (4, None), (5, Some("<p>old body</p>"))] {
             let json = format!(
                 r#"{{"version":{version},"novels":[],"chapters":[{}],"categories":[],"novelCategories":[],"repositories":[],"installedPlugins":[],"vpnGateServerVerdicts":[],"downloadGoals":[]}}"#,
                 restore_chapter_json(10, true, content),
@@ -1389,7 +1471,7 @@ mod tests {
         let zip_path = dir.path().join("backup.zip");
         let zip_path_str = zip_path.to_string_lossy().to_string();
 
-        let manifest_json = r#"{"version":4,"exportedAt":1700000000}"#.to_string();
+        let manifest_json = r#"{"version":5,"exportedAt":1700000000}"#.to_string();
 
         write_backup_zip(&manifest_json, &zip_path_str).expect("pack");
 

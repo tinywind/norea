@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
   cache: new Map<string, { fetchedAt: number; items: unknown[] }>(),
-  repos: [] as { id: number; url: string; name: string | null; addedAt: number }[],
+  repos: [] as { id: number; url: string; name: string | null; addedAt: number; priority: number; enabled: boolean }[],
 }));
 
 vi.mock("../../db/queries/repository", () => ({
@@ -53,7 +53,7 @@ describe("refreshStaleRepositoryIndexesAtLaunch", () => {
     vi.clearAllMocks();
     resetLaunchRepositoryIndexRefreshForTests();
     db.cache.clear();
-    db.repos = [{ id: 1, url: REPO_URL, name: null, addedAt: 0 }];
+    db.repos = [{ id: 1, url: REPO_URL, name: null, addedAt: 0, priority: 1, enabled: true }];
   });
 
   it("refetches an index older than a day and publishes it to the catalog", async () => {
@@ -88,6 +88,14 @@ describe("refreshStaleRepositoryIndexesAtLaunch", () => {
     db.repos = [];
     await expect(refreshStaleRepositoryIndexesAtLaunch(new QueryClient(), NOW)).resolves.toBe(false);
     expect(enqueueMainTask).not.toHaveBeenCalled();
+  });
+
+  it("skips a repository that is turned off", async () => {
+    db.repos = [
+      { id: 1, url: REPO_URL, name: null, addedAt: 0, priority: 1, enabled: false },
+    ];
+    await expect(refreshStaleRepositoryIndexesAtLaunch(new QueryClient(), NOW)).resolves.toBe(false);
+    expect(pluginManager.fetchRepository).not.toHaveBeenCalled();
   });
 
   it("runs once per session", async () => {

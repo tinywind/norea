@@ -131,6 +131,19 @@ requirements must be decided explicitly before implementation.
   The automatic check interval is an additive `checkIntervalHours` field (0, 6,
   12 or 24; default 12) in the `norea-library-settings` entry, which both backup
   kinds carry; a missing or unknown value reads as 12.
+- Database migration 8 allows several plugin repositories. It drops the
+  single-repository index and adds `repository.priority` (1 is first, default 1)
+  and `repository.enabled` (0 or 1, default 1), so the existing repository stays
+  the first enabled entry with its URL, name and time. It adds
+  `installed_plugin.repository_url`, the publishing repository updates come
+  from. An existing install is bound to the existing repository only when its
+  `source_url` equals a plugin `url` in that repository's cached index; an id
+  match alone is not enough, and invalid cached indexes bind nothing. Every other
+  install, including local files, keeps a null publisher: it is never updated
+  automatically and Extensions offers "Choose publisher" when a repository lists
+  it. Removing a repository keeps the publisher URL of its plugins, so adding it
+  again restores their updates. Full device snapshots include the columns under
+  the exact-schema policy; portable backups carry them in manifest format 5.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it
@@ -249,9 +262,12 @@ requirements must be decided explicitly before implementation.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.
-- Portable local file backups use manifest format 4, which adds the
-  per-chapter `foundByCheck` flag to format 3 (format 3 added `downloadGoals`).
-  Format 3 and earlier archives are rejected without conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
+- Portable local file backups use manifest format 5, which lifts the
+  one-repository limit of format 4 and adds `priority` and `enabled` per
+  repository and the nullable `repositoryUrl` publisher per installed plugin.
+  Restore rejects a repository URL listed twice and a priority below 1 before it
+  replaces any row (format 4 added the per-chapter `foundByCheck` flag, format 3
+  `downloadGoals`). Format 4 and earlier archives are rejected without conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
   snapshots stored on the content server.
 - Portable file backup restore preserves every existing storage file, including
   `novel.json`, covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies

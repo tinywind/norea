@@ -192,3 +192,34 @@ it("upgrades populated v6 storage to freshness records without flagging any exis
       .toEqual([{ novelId: 1, failures: 2 }]);
   } finally { db.close(); }
 });
+
+it("upgrades populated v7 storage to a repository list that keeps the saved repository first", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    applyRegisteredMigrations(db, 0, 7);
+    db.exec(`INSERT INTO repository(id,url,name,added_at) VALUES(1,'https://repo.test/plugins.json','Saved',50);
+      INSERT INTO repository_index_cache(repo_url,items_json) VALUES('https://repo.test/plugins.json',
+        '[{"id":"bound","url":"https://repo.test/bound.js"},"odd",{"id":"github","url":"https://repo.test/github.js"},{"id":"same-id","url":"https://repo.test/same-id.js"}]');
+      INSERT INTO repository_index_cache(repo_url,items_json) VALUES('https://broken.test/plugins.json','not json');
+      INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code) VALUES
+        ('bound','Bound','en','1','','https://repo.test/bound.js','a'),
+        ('github:shelf','Shelf','en','1','','https://repo.test/github.js','b'),
+        ('same-id','Same id','en','1','','https://elsewhere.test/bound.js','c'),
+        ('local','Local','en','1','','local:local.js','d')`);
+    const cache = db.prepare("SELECT * FROM repository_index_cache ORDER BY repo_url").all();
+    applyRegisteredMigrations(db, 7);
+    expect(db.prepare("SELECT id,url,name,added_at AS addedAt,priority,enabled FROM repository").all())
+      .toEqual([{ id: 1, url: "https://repo.test/plugins.json", name: "Saved", addedAt: 50, priority: 1, enabled: 1 }]);
+    expect(db.prepare("SELECT id,repository_url AS repositoryUrl,source_code AS code FROM installed_plugin ORDER BY id").all()).toEqual([
+      { id: "bound", repositoryUrl: "https://repo.test/plugins.json", code: "a" },
+      { id: "github:shelf", repositoryUrl: "https://repo.test/plugins.json", code: "b" },
+      { id: "local", repositoryUrl: null, code: "d" },
+      { id: "same-id", repositoryUrl: null, code: "c" },
+    ]);
+    expect(db.prepare("SELECT * FROM repository_index_cache ORDER BY repo_url").all()).toEqual(cache);
+    db.exec("INSERT INTO repository(url,priority,enabled) VALUES('https://second.test/plugins.json',2,0)");
+    expect(() => db.exec("INSERT INTO repository(url) VALUES('https://second.test/plugins.json')")).toThrow();
+    expect(() => db.exec("UPDATE repository SET enabled=2 WHERE id=1")).toThrow();
+    expect(() => db.exec("UPDATE repository SET priority=0 WHERE id=1")).toThrow();
+  } finally { db.close(); }
+});

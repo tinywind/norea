@@ -36,6 +36,15 @@ function parseNotificationTargetLink(url: URL): TaskNotificationAction | null {
   return novel ? parseTaskNotificationAction({ type: "openNovel", novelId: Number(novel[1]) }) : null;
 }
 
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 export function parseDeepLink(raw: string): DeepLink {
   let url: URL;
   try {
@@ -47,10 +56,8 @@ export function parseDeepLink(raw: string): DeepLink {
     return { kind: "unknown", raw };
   }
   if (url.host === "repo" && url.pathname === "/add") {
-    const repoUrl = url.searchParams.get("url");
-    if (repoUrl && repoUrl.trim() !== "") {
-      return { kind: "repo-add", repoUrl: repoUrl.trim() };
-    }
+    const repoUrl = url.searchParams.get("url")?.trim() ?? "";
+    if (isHttpUrl(repoUrl)) return { kind: "repo-add", repoUrl };
   }
   const target = parseNotificationTargetLink(url);
   if (target) return { kind: "task-notification", action: target };

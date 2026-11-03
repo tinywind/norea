@@ -142,14 +142,15 @@ self-hosted examples.
 To add the sample source list:
 
 1. Open Browse -> Extensions.
-2. Choose the repository row (No repository configured).
+2. Choose the repository row (No repository configured). With repositories
+   already listed, open the list and choose Add repository.
 3. Paste this URL:
 
    ```text
    https://raw.githubusercontent.com/tinywind/norea-plugins/dist/0.2/.dist/plugins.json
    ```
 
-4. Save it.
+4. Choose Add.
 5. Install sources from the Available section.
 
 Only install and use sources you are allowed to access in your country and under

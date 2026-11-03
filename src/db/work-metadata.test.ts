@@ -76,6 +76,7 @@ beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
   sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0008_plugin_repositories.sql", "utf8"));
   db = {
     select: async (query: string, params: unknown[] = []) => sqlite.prepare(query).all(Object.fromEntries(params.map((value, i) => [`$${i + 1}`, value])) as never),
     execute: async (query: string, params: unknown[] = []) => {

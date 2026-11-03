@@ -141,6 +141,7 @@ function makeManifest(): BackupManifest {
         sourceUrl: "https://example.test/index.js",
         sourceCode: "module.exports.default = {};",
         installedAt: 1_700_000_000,
+        repositoryUrl: null,
       },
     ],
     settings: [{ key: "reader-settings", value: "{\"state\":{}}" }],

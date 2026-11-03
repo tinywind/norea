@@ -9,6 +9,8 @@ export interface InstalledPluginRow {
   sourceUrl: string;
   sourceCode: string;
   installedAt: number;
+  /** The publishing repository updates come from; null when unknown. */
+  repositoryUrl: string | null;
 }
 
 export interface UpsertInstalledPluginInput {
@@ -19,6 +21,7 @@ export interface UpsertInstalledPluginInput {
   iconUrl: string;
   sourceUrl: string;
   sourceCode: string;
+  repositoryUrl: string | null;
 }
 
 const SELECT_ALL = `
@@ -30,7 +33,8 @@ const SELECT_ALL = `
     icon_url    AS iconUrl,
     source_url  AS sourceUrl,
     source_code AS sourceCode,
-    installed_at AS installedAt
+    installed_at AS installedAt,
+    repository_url AS repositoryUrl
   FROM installed_plugin
   ORDER BY installed_at DESC, id ASC
 `;
@@ -50,8 +54,8 @@ export async function upsertInstalledPlugin(
   const db = await getDb();
   await db.execute(
     `INSERT INTO installed_plugin (
-       id, name, lang, version, icon_url, source_url, source_code
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       id, name, lang, version, icon_url, source_url, source_code, repository_url
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        lang = excluded.lang,
@@ -59,6 +63,7 @@ export async function upsertInstalledPlugin(
        icon_url = excluded.icon_url,
        source_url = excluded.source_url,
        source_code = excluded.source_code,
+       repository_url = excluded.repository_url,
        installed_at = unixepoch()`,
     [
       input.id,
@@ -68,6 +73,7 @@ export async function upsertInstalledPlugin(
       input.iconUrl,
       input.sourceUrl,
       input.sourceCode,
+      input.repositoryUrl,
     ],
   );
 }

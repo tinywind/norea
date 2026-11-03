@@ -158,6 +158,8 @@ const REPOSITORY = {
   url: "https://example.test/p.json",
   name: "Example",
   addedAt: 1_700_000_000,
+  priority: 1,
+  enabled: 1,
 };
 const INSTALLED_PLUGIN = {
   id: "demo",
@@ -168,6 +170,7 @@ const INSTALLED_PLUGIN = {
   sourceUrl: "https://example.test/index.js",
   sourceCode: "module.exports.default = {};",
   installedAt: 1_700_000_000,
+  repositoryUrl: "https://example.test/p.json",
 };
 const VPN_GATE_SERVER_VERDICT = {
   ip: "198.51.100.10",
@@ -206,6 +209,8 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.chapters[0]?.mediaBytes).toBe(99);
     expect(manifest.chapters[0]?.foundByCheck).toBe(true);
     expect(manifest.categories[0]?.isSystem).toBe(true);
+    expect(manifest.repositories).toEqual([{ ...REPOSITORY, enabled: true }]);
+    expect(manifest.installedPlugins[0]?.repositoryUrl).toBe("https://example.test/p.json");
     expect(manifest.vpnGateServerVerdicts).toEqual([
       VPN_GATE_SERVER_VERDICT,
     ]);

@@ -44,6 +44,9 @@ const VALID_ITEM = {
   iconUrl: "https://example.test/icon.png",
 };
 
+const REPO_URL = "https://example.test/plugins.json";
+const OTHER_REPO_URL = "https://other.test/plugins.json";
+
 const VALID_PLUGIN_SOURCE = `
   module.exports.default = {
     apiVersion: "0.2",
@@ -93,6 +96,7 @@ function installedRow(sourceCode = VALID_PLUGIN_SOURCE) {
     sourceUrl: VALID_ITEM.url,
     sourceCode,
     installedAt: 1,
+    repositoryUrl: REPO_URL as string | null,
   };
 }
 
@@ -180,7 +184,7 @@ describe("PluginManager.installPlugin", () => {
     const manager = new PluginManager();
     mockedFetchText.mockResolvedValueOnce(VALID_PLUGIN_SOURCE);
 
-    const plugin = await manager.installPlugin(VALID_ITEM);
+    const plugin = await manager.installPlugin(VALID_ITEM, REPO_URL);
 
     expect(plugin.id).toBe("demo");
     expect(manager.has("demo")).toBe(true);
@@ -197,7 +201,7 @@ describe("PluginManager.installPlugin", () => {
     const manager = new PluginManager();
     mockedFetchText.mockResolvedValueOnce(COUNTING_PLUGIN_SOURCE);
 
-    await manager.installPlugin(VALID_ITEM);
+    await manager.installPlugin(VALID_ITEM, REPO_URL);
 
     expect(lazyLoadCount()).toBe(1);
     expect(manager.getInstalledPluginMetadata("demo")).toEqual(
@@ -213,7 +217,7 @@ describe("PluginManager.installPlugin", () => {
       VALID_PLUGIN_SOURCE.replace('"demo"', '"other"'),
     );
 
-    await expect(manager.installPlugin(VALID_ITEM)).rejects.toBeInstanceOf(
+    await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toBeInstanceOf(
       PluginValidationError,
     );
     expect(manager.has("demo")).toBe(false);
@@ -225,7 +229,7 @@ describe("PluginManager.installPlugin", () => {
       VALID_PLUGIN_SOURCE.replace('    apiVersion: "0.2",\n', ""),
     );
 
-    await expect(manager.installPlugin(VALID_ITEM)).rejects.toThrow(
+    await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toThrow(
       "apiVersion '0.2'",
     );
   });
@@ -238,7 +242,7 @@ describe("PluginManager.updatePlugin", () => {
   async function installedManager(): Promise<PluginManager> {
     const manager = new PluginManager();
     mockedFetchText.mockResolvedValueOnce(VALID_PLUGIN_SOURCE);
-    await manager.installPlugin(VALID_ITEM);
+    await manager.installPlugin(VALID_ITEM, REPO_URL);
     mockedUpsertInstalledPlugin.mockClear();
     return manager;
   }
@@ -252,7 +256,7 @@ describe("PluginManager.updatePlugin", () => {
       runningDuringStore = manager.getPlugin("demo");
     });
 
-    const updated = await manager.updatePlugin("demo", NEWER_ITEM);
+    const updated = await manager.updatePlugin("demo", NEWER_ITEM, REPO_URL);
 
     expect(runningDuringStore).toBe(old);
     expect(updated.version).toBe("1.1.0");
@@ -268,7 +272,7 @@ describe("PluginManager.updatePlugin", () => {
     const old = manager.getPlugin("demo");
     mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE.replace("searchNovels:", "searchNovelz:"));
 
-    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toThrow("searchNovels");
+    await expect(manager.updatePlugin("demo", NEWER_ITEM, REPO_URL)).rejects.toThrow("searchNovels");
 
     expect(manager.getPlugin("demo")).toBe(old);
     expect(manager.getInstalledPluginMetadata("demo")?.version).toBe("1.0.0");
@@ -281,7 +285,7 @@ describe("PluginManager.updatePlugin", () => {
     mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE);
     mockedUpsertInstalledPlugin.mockRejectedValueOnce(new Error("disk full"));
 
-    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toThrow("disk full");
+    await expect(manager.updatePlugin("demo", NEWER_ITEM, REPO_URL)).rejects.toThrow("disk full");
 
     expect(manager.getPlugin("demo")).toBe(old);
     expect(manager.getInstalledPluginMetadata("demo")?.version).toBe("1.0.0");
@@ -291,14 +295,14 @@ describe("PluginManager.updatePlugin", () => {
     const manager = await installedManager();
     const old = manager.getPlugin("demo");
     mockedFetchText.mockRejectedValueOnce(new Error("offline"));
-    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toThrow("offline");
+    await expect(manager.updatePlugin("demo", NEWER_ITEM, REPO_URL)).rejects.toThrow("offline");
     mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE.replace('"demo"', '"other"'));
-    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toBeInstanceOf(
+    await expect(manager.updatePlugin("demo", NEWER_ITEM, REPO_URL)).rejects.toBeInstanceOf(
       PluginValidationError,
     );
 
     expect(manager.getPlugin("demo")).toBe(old);
-    await expect(manager.updatePlugin("missing", NEWER_ITEM)).rejects.toThrow("not installed");
+    await expect(manager.updatePlugin("missing", NEWER_ITEM, REPO_URL)).rejects.toThrow("not installed");
   });
 
   it("updates a source instance from its template and keeps its id, name and inputs", async () => {
@@ -308,16 +312,40 @@ describe("PluginManager.updatePlugin", () => {
     const instance = await manager.installPluginInstance(template, {
       name: "My shelf",
       inputs: { repository: "owner/shelf" },
-    });
+    }, REPO_URL);
     mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE);
 
-    const updated = await manager.updatePlugin(instance.id, { ...template, version: "1.1.0" });
+    const updated = await manager.updatePlugin(instance.id, { ...template, version: "1.1.0" }, REPO_URL);
 
     expect(updated.id).toBe("demo:owner-shelf");
     expect(updated.name).toBe("My shelf");
     expect(updated.version).toBe("1.1.0");
     expect(manager.getPlugin("demo:owner-shelf")).toBe(updated);
-    await expect(manager.updatePlugin(instance.id, NEWER_ITEM)).rejects.toThrow("cannot be updated");
+    await expect(manager.updatePlugin(instance.id, NEWER_ITEM, REPO_URL)).rejects.toThrow("cannot be updated");
+  });
+
+  it("records the repository a plugin came from and moves it only with an explicit publisher", async () => {
+    const manager = await installedManager();
+    expect(manager.getPluginRepositoryUrl("demo")).toBe(REPO_URL);
+    mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE);
+
+    await manager.updatePlugin("demo", NEWER_ITEM, OTHER_REPO_URL);
+
+    expect(manager.getPluginRepositoryUrl("demo")).toBe(OTHER_REPO_URL);
+    expect(mockedUpsertInstalledPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "demo", repositoryUrl: OTHER_REPO_URL }),
+    );
+    await manager.uninstallPlugin("demo");
+    expect(manager.getPluginRepositoryUrl("demo")).toBeNull();
+  });
+
+  it("keeps the publisher when an update fails", async () => {
+    const manager = await installedManager();
+    mockedFetchText.mockRejectedValueOnce(new Error("offline"));
+
+    await expect(manager.updatePlugin("demo", NEWER_ITEM, OTHER_REPO_URL)).rejects.toThrow("offline");
+
+    expect(manager.getPluginRepositoryUrl("demo")).toBe(REPO_URL);
   });
 });
 
@@ -387,6 +415,10 @@ describe("PluginManager.installPluginFromSource", () => {
     expect(plugin.lang).toBe("multi");
     expect(plugin.iconUrl).toBe("");
     expect(manager.has("demo")).toBe(true);
+    expect(manager.getPluginRepositoryUrl("demo")).toBeNull();
+    expect(mockedUpsertInstalledPlugin).toHaveBeenLastCalledWith(
+      expect.objectContaining({ repositoryUrl: null }),
+    );
   });
 });
 
@@ -402,6 +434,7 @@ describe("PluginManager.loadInstalledFromDb", () => {
     expect(lazyLoadCount()).toBeUndefined();
     expect(mockedCreateFetchShim).not.toHaveBeenCalled();
     expect(manager.list()).toHaveLength(1);
+    expect(manager.getPluginRepositoryUrl("demo")).toBe(REPO_URL);
     expect(manager.getPlugin("demo")).toMatchObject({
       id: "demo",
       name: "Demo",
@@ -519,7 +552,7 @@ describe("PluginManager.uninstallPlugin", () => {
     });
     const manager = new PluginManager();
     mockedFetchText.mockResolvedValueOnce(VALID_PLUGIN_SOURCE);
-    await manager.installPlugin(VALID_ITEM);
+    await manager.installPlugin(VALID_ITEM, REPO_URL);
 
     try {
       await expect(manager.uninstallPlugin("demo")).resolves.toBe(true);
@@ -538,7 +571,7 @@ describe("PluginManager.uninstallPlugin", () => {
   it("keeps the plugin installed when persisted deletion fails", async () => {
     const manager = new PluginManager();
     mockedFetchText.mockResolvedValueOnce(VALID_PLUGIN_SOURCE);
-    await manager.installPlugin(VALID_ITEM);
+    await manager.installPlugin(VALID_ITEM, REPO_URL);
     mockedDeleteInstalledPlugin.mockRejectedValueOnce(
       new Error("database is locked"),
     );

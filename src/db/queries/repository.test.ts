@@ -6,9 +6,11 @@ vi.mock("../client", () => ({
 
 import { getDb } from "../client";
 import {
+  addRepository,
   listRepositories,
   removeRepository,
-  upsertRepository,
+  reorderRepositories,
+  setRepositoryEnabled,
 } from "./repository";
 
 const mockedGetDb = vi.mocked(getDb);
@@ -26,57 +28,62 @@ beforeEach(() => {
 });
 
 describe("listRepositories", () => {
-  it("returns the configured repository row", async () => {
+  it("returns every repository in priority order with enabled as a boolean", async () => {
     mockSelect.mockResolvedValueOnce([
-      {
-        id: 1,
-        url: "https://a.test/index.json",
-        name: "Alpha",
-        addedAt: 100,
-      },
+      { id: 2, url: "https://b.test/index.json", name: null, addedAt: 200, priority: 1, enabled: 0 },
+      { id: 1, url: "https://a.test/index.json", name: "Alpha", addedAt: 100, priority: 2, enabled: 1 },
     ]);
 
     const rows = await listRepositories();
 
     const [sql] = mockSelect.mock.calls[0]!;
     expect(sql).toContain("FROM repository");
-    expect(sql).toContain("ORDER BY id");
-    expect(rows).toHaveLength(1);
+    expect(sql).toContain("ORDER BY priority, id");
+    expect(rows.map(({ id, enabled }) => [id, enabled])).toEqual([[2, false], [1, true]]);
   });
 });
 
-describe("upsertRepository", () => {
-  it("upserts the singleton repository with $1 url + $2 name", async () => {
-    mockExecute.mockResolvedValueOnce(undefined);
+describe("addRepository", () => {
+  it("appends the repository after the others without replacing any", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 1 });
 
-    await upsertRepository({
-      url: "https://example.test/p.json",
-      name: "Demo",
-    });
+    await expect(addRepository({ url: "https://example.test/p.json", name: "Demo" })).resolves.toBe(true);
 
     const [sql, params] = mockExecute.mock.calls[0]!;
-    expect(sql).toContain("INSERT INTO repository (id, url, name)");
-    expect(sql).toContain("VALUES (1, $1, $2)");
-    expect(sql).toContain("ON CONFLICT(id) DO UPDATE");
+    expect(sql).toContain("INSERT INTO repository (url, name, priority, enabled)");
+    expect(sql).toContain("COALESCE(MAX(priority), 0) + 1");
+    expect(sql).toContain("ON CONFLICT(url) DO NOTHING");
+    expect(sql).not.toContain("repository_index_cache");
     expect(params).toEqual(["https://example.test/p.json", "Demo"]);
   });
 
-  it("defaults name to null when not provided", async () => {
-    mockExecute.mockResolvedValueOnce(undefined);
+  it("reports a URL already in the list", async () => {
+    mockExecute.mockResolvedValueOnce({ rowsAffected: 0 });
 
-    await upsertRepository({ url: "https://example.test/p.json" });
-
-    const [, params] = mockExecute.mock.calls[0]!;
-    expect(params).toEqual(["https://example.test/p.json", null]);
+    await expect(addRepository({ url: "https://example.test/p.json" })).resolves.toBe(false);
+    expect(mockExecute.mock.calls[0]![1]).toEqual(["https://example.test/p.json", null]);
   });
+});
 
-  it("drops cached indexes when the repository is saved", async () => {
+describe("repository order and enabled state", () => {
+  it("stores enabled as 0 or 1", async () => {
     mockExecute.mockResolvedValue(undefined);
 
-    await upsertRepository({ url: "https://example.test/p.json" });
+    await setRepositoryEnabled(3, false);
 
-    const [sql] = mockExecute.mock.calls[1]!;
-    expect(sql).toContain("DELETE FROM repository_index_cache");
+    expect(mockExecute.mock.calls[0]).toEqual(["UPDATE repository SET enabled = $1 WHERE id = $2", [0, 3]]);
+  });
+
+  it("writes the new order as priorities 1..n in one statement", async () => {
+    mockExecute.mockResolvedValue(undefined);
+
+    await reorderRepositories([5, 2, 9]);
+
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    const [sql, params] = mockExecute.mock.calls[0]!;
+    expect(sql).toContain("CASE id WHEN $1 THEN 1 WHEN $2 THEN 2 WHEN $3 THEN 3 END");
+    expect(sql).toContain("WHERE id IN ($1, $2, $3)");
+    expect(params).toEqual([5, 2, 9]);
   });
 });
 

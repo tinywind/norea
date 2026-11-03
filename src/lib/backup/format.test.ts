@@ -65,6 +65,16 @@ const VALID_MANIFEST: BackupManifest = {
       url: "https://example.test/p.json",
       name: "Example",
       addedAt: 1_700_000_000,
+      priority: 1,
+      enabled: true,
+    },
+    {
+      id: 2,
+      url: "https://second.test/p.json",
+      name: null,
+      addedAt: 1_700_000_100,
+      priority: 2,
+      enabled: false,
     },
   ],
   installedPlugins: [
@@ -77,6 +87,18 @@ const VALID_MANIFEST: BackupManifest = {
       sourceUrl: "https://example.test/index.js",
       sourceCode: "module.exports.default = {};",
       installedAt: 1_700_000_000,
+      repositoryUrl: "https://example.test/p.json",
+    },
+    {
+      id: "local",
+      name: "Local",
+      lang: "en",
+      version: "1.0.0",
+      iconUrl: "",
+      sourceUrl: "local:local.js",
+      sourceCode: "module.exports.default = {};",
+      installedAt: 1_700_000_000,
+      repositoryUrl: null,
     },
   ],
   settings: [
@@ -231,7 +253,7 @@ describe("parseBackupManifest error cases", () => {
     expect(() => parseBackupManifest("[]")).toThrow(BackupFormatError);
   });
 
-  it.each([1, 2])("rejects version %i manifests written by earlier builds", (version) => {
+  it.each([1, 2, 3, 4])("rejects version %i manifests written by earlier builds", (version) => {
     const legacy = JSON.stringify({ ...VALID_MANIFEST, version });
     expect(() => parseBackupManifest(legacy)).toThrow(new RegExp(`version ${version}`));
   });
@@ -275,16 +297,46 @@ describe("parseBackupManifest error cases", () => {
     );
   });
 
-  it("rejects backups with multiple configured repositories", () => {
+  it("keeps every repository with its order, enabled state and plugin publishers", () => {
+    const parsed = parseBackupManifest(encodeBackupManifest(VALID_MANIFEST));
+    expect(parsed.repositories).toEqual(VALID_MANIFEST.repositories);
+    expect(parsed.installedPlugins.map(({ id, repositoryUrl }) => [id, repositoryUrl]))
+      .toEqual([["demo", "https://example.test/p.json"], ["local", null]]);
+  });
+
+  it("rejects a repository URL listed twice", () => {
     const manifest = {
       ...VALID_MANIFEST,
       repositories: [
         VALID_MANIFEST.repositories[0],
-        { ...VALID_MANIFEST.repositories[0], id: 2 },
+        { ...VALID_MANIFEST.repositories[0], id: 3, priority: 3 },
       ],
     };
     expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
-      /at most one repository/,
+      /repository URL more than once/,
+    );
+  });
+
+  it.each([
+    { priority: 0 },
+    { priority: 1.5 },
+    { enabled: 1 },
+    { enabled: undefined },
+  ])("rejects a malformed repository entry %o", (change) => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      repositories: [{ ...VALID_MANIFEST.repositories[0], ...change }],
+    };
+    expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+      /repositories contains a malformed entry/,
+    );
+  });
+
+  it("rejects an installed plugin without a publisher field", () => {
+    const { repositoryUrl: _omitted, ...plugin } = VALID_MANIFEST.installedPlugins[0]!;
+    const manifest = { ...VALID_MANIFEST, installedPlugins: [plugin] };
+    expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(
+      /installedPlugins contains a malformed entry/,
     );
   });
 

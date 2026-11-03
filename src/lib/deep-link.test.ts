@@ -47,6 +47,13 @@ describe("parseDeepLink", () => {
     expect(parseDeepLink(raw)).toEqual({ kind: "unknown", raw });
   });
 
+  it("returns unknown when the repository URL is not a web address", () => {
+    for (const repoUrl of ["javascript%3Aalert(1)", "file%3A%2F%2F%2Fetc%2Fpasswd", "plugins.json"]) {
+      const raw = `norea://repo/add?url=${repoUrl}`;
+      expect(parseDeepLink(raw)).toEqual({ kind: "unknown", raw });
+    }
+  });
+
   it("returns unknown for non-matching paths under repo", () => {
     const raw = "norea://repo/wrong?url=https://example.test/p.json";
     expect(parseDeepLink(raw)).toEqual({ kind: "unknown", raw });

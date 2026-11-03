@@ -217,6 +217,7 @@ export interface InstalledPluginMetadata extends PluginItem {
 export class PluginManager {
   private readonly installed = new Map<string, Plugin>();
   private readonly runtimeHandles = new Map<string, PluginRuntimeHandle>();
+  private readonly publishers = new Map<string, string | null>();
   private installedLoadPromise: Promise<void> | null = null;
 
   /**
@@ -248,9 +249,10 @@ export class PluginManager {
    * Download `item.url`, sandbox-load it, register the result keyed
    * by the loaded plugin's `id`, and persist the source to DB so
    * the next app start rehydrates it without re-fetching. Throws if
-   * the loaded plugin's `id` doesn't match `item.id`.
+   * the loaded plugin's `id` doesn't match `item.id`. `repositoryUrl` is the
+   * repository whose index listed `item`; later updates come only from it.
    */
-  async installPlugin(item: PluginItem): Promise<Plugin> {
+  async installPlugin(item: PluginItem, repositoryUrl: string | null): Promise<Plugin> {
     if (item.installMode === "multiSource") {
       throw new PluginValidationError(
         `Plugin '${item.id}' must be installed as a source instance.`,
@@ -263,13 +265,14 @@ export class PluginManager {
         `Plugin id mismatch: repository index says '${item.id}', source says '${plugin.id}'.`,
       );
     }
-    await this.registerInstalledPlugin(plugin, item.url, source);
+    await this.registerInstalledPlugin(plugin, item.url, source, repositoryUrl);
     return plugin;
   }
 
   async installPluginInstance(
     item: PluginItem,
     input: PluginInstanceInstallInput,
+    repositoryUrl: string | null,
   ): Promise<Plugin> {
     const name = input.name.trim();
     if (name === "") {
@@ -296,7 +299,7 @@ export class PluginManager {
     const plugin = this.loadRuntimePlugin(source, instanceItem, "immediate", {
       overrideIdentity: true,
     });
-    await this.registerInstalledPlugin(plugin, item.url, source);
+    await this.registerInstalledPlugin(plugin, item.url, source, repositoryUrl);
 
     for (const [key, value] of Object.entries(input.inputs ?? {})) {
       setPluginInputValue(plugin.id, key, value);
@@ -330,7 +333,7 @@ export class PluginManager {
       sourceUrl,
     );
     const plugin = this.loadRuntimePlugin(source, item, "immediate");
-    await this.registerInstalledPlugin(plugin, sourceUrl, source);
+    await this.registerInstalledPlugin(plugin, sourceUrl, source, null);
     return plugin;
   }
 
@@ -377,8 +380,14 @@ export class PluginManager {
    * name. The new source is downloaded, compiled and validated, then stored,
    * and only then swapped in, so a failure at any step leaves the old plugin
    * running and stored. Plugin inputs and settings are keyed by id and stay.
+   * `repositoryUrl` lists `item` and becomes the plugin's publisher, so
+   * passing another repository is how the user switches publisher.
    */
-  async updatePlugin(pluginId: string, item: PluginItem): Promise<Plugin> {
+  async updatePlugin(
+    pluginId: string,
+    item: PluginItem,
+    repositoryUrl: string,
+  ): Promise<Plugin> {
     const current = this.runtimeHandles.get(pluginId);
     if (!current) {
       throw new PluginValidationError(`Plugin '${pluginId}' is not installed.`);
@@ -405,7 +414,7 @@ export class PluginManager {
           { overrideIdentity: true },
         )
       : provider;
-    await this.registerInstalledPlugin(plugin, item.url, source);
+    await this.registerInstalledPlugin(plugin, item.url, source, repositoryUrl);
     return plugin;
   }
 
@@ -414,6 +423,7 @@ export class PluginManager {
     plugin: Plugin,
     sourceUrl: string,
     source: string,
+    repositoryUrl: string | null,
   ): Promise<void> {
     const item = pluginItemFromPlugin(plugin, sourceUrl);
     const handle = createPluginRuntimeHandle({
@@ -433,9 +443,11 @@ export class PluginManager {
       iconUrl: plugin.iconUrl,
       sourceUrl,
       sourceCode: source,
+      repositoryUrl,
     });
     this.installed.set(plugin.id, plugin);
     this.runtimeHandles.set(plugin.id, handle);
+    this.publishers.set(plugin.id, repositoryUrl);
   }
 
   /**
@@ -458,6 +470,7 @@ export class PluginManager {
     this.installedLoadPromise = null;
     this.installed.clear();
     this.runtimeHandles.clear();
+    this.publishers.clear();
     await this.loadInstalledFromDb();
   }
 
@@ -492,6 +505,7 @@ export class PluginManager {
         });
         this.runtimeHandles.set(row.id, handle);
         this.installed.set(row.id, createLazyPluginProxy(handle));
+        this.publishers.set(row.id, row.repositoryUrl);
       } catch (error) {
         // eslint-disable-next-line no-console
         console.warn(
@@ -500,6 +514,14 @@ export class PluginManager {
         );
       }
     }
+  }
+
+  /**
+   * The repository an installed plugin was installed or last updated from;
+   * null for local files and installs whose publisher is unknown.
+   */
+  getPluginRepositoryUrl(id: string): string | null {
+    return this.publishers.get(id) ?? null;
   }
 
   getPlugin(id: string): Plugin | undefined {
@@ -546,6 +568,7 @@ export class PluginManager {
     }
     this.installed.delete(id);
     this.runtimeHandles.delete(id);
+    this.publishers.delete(id);
     clearPluginInputValues(id);
     return true;
   }

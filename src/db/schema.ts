@@ -384,8 +384,9 @@ export const novelCategoryTable = sqliteTable(
   }),
 );
 
-// Repository: single plugin source registry URL pointing at a JSON
-// catalog of available plugins.
+// Repository: plugin source registry URLs pointing at JSON catalogs of
+// available plugins. The available catalog merges the enabled ones; a lower
+// `priority` wins when several list the same plugin id.
 export const repositoryTable = sqliteTable(
   "repository",
   {
@@ -395,10 +396,13 @@ export const repositoryTable = sqliteTable(
     addedAt: integer("added_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),
+    priority: integer("priority").notNull().default(1),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   },
   (t) => ({
     urlUniq: uniqueIndex("repository_url_uniq").on(t.url),
-    singletonUniq: uniqueIndex("repository_singleton_uniq").on(sql`(1)`),
+    priorityCheck: check("repository_priority_check", sql`${t.priority} >= 1`),
+    enabledCheck: check("repository_enabled_check", sql`${t.enabled} IN (0, 1)`),
   }),
 );
 
@@ -418,6 +422,8 @@ export const installedPluginTable = sqliteTable(
     installedAt: integer("installed_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),
+    /** The publishing repository updates come from; null when unknown. */
+    repositoryUrl: text("repository_url"),
   },
 );
 

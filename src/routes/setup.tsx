@@ -4,8 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { PageFrame, StateView } from "../components/AppFrame";
 import { CheckIcon } from "../components/ui/icons";
-import { setCachedRepoIndex } from "../db/queries/repo-index-cache";
-import { upsertRepository } from "../db/queries/repository";
+import { addPluginRepository } from "../components/browse/use-plugin-catalog";
 import { formatPluginLanguageForLocale, useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { describeError } from "../lib/errors";
@@ -49,6 +48,7 @@ export function SetupPage() {
   const [step, setStep] = useState<SetupStep>("repository");
   const [url, setUrl] = useState("");
   const [items, setItems] = useState<PluginItem[]>([]);
+  const [repositoryUrl, setRepositoryUrl] = useState("");
   const [languages, setLanguages] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
@@ -69,18 +69,14 @@ export function SetupPage() {
     mutationFn: (repositoryUrl: string) =>
       enqueueMainTask({
         kind: "repository.add",
-        run: async () => {
-          const fetched = await pluginManager.fetchRepository(repositoryUrl);
-          await upsertRepository({ url: repositoryUrl });
-          await setCachedRepoIndex(repositoryUrl, fetched);
-          return fetched;
-        },
+        run: async () => (await addPluginRepository(repositoryUrl)).items,
         subject: { url: repositoryUrl },
-        title: t("browse.setRepository"),
+        title: t("extensions.repositories.add"),
       }).promise,
-    onSuccess: (fetched) => {
+    onSuccess: (fetched, added) => {
       void queryClient.invalidateQueries({ queryKey: ["repository"] });
       void queryClient.invalidateQueries({ queryKey: ["plugin", "available"] });
+      setRepositoryUrl(added);
       setItems(fetched);
       setLanguages(initialSetupLanguages(fetched, locale));
       setStep("languages");
@@ -96,7 +92,7 @@ export function SetupPage() {
         try {
           await enqueueMainTask({
             kind: "plugin.install",
-            run: () => pluginManager.installPlugin(item),
+            run: () => pluginManager.installPlugin(item, repositoryUrl),
             subject: { pluginId: item.id, url: item.url },
             title: t("tasks.task.installPlugin", { name: item.name }),
           }).promise;

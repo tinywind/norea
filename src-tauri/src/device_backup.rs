@@ -1333,8 +1333,10 @@ mod tests {
     async fn full_app_schema_restores_personal_data_and_rechecks_physical_downloads() {
         let dir = tempfile::tempdir().unwrap();
         let pool = database(&dir.path().join("current.db")).await;
-        pool.execute(include_str!("schema.sql")).await.unwrap();
-        pool.execute("INSERT INTO repository(url) VALUES('https://plugins.example.test/index.json'); INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code) VALUES('test','Test','en','1','','https://plugins.example.test/test.js','full plugin source'); INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'test','/novel','Saved novel',1); INSERT INTO category(id,name,sort) VALUES(1,'Saved category',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1); INSERT INTO chapter(novel_id,path,name,position,progress,bookmark,unread,is_downloaded,content_bytes,media_bytes,stored_content_type) VALUES(1,'/chapter','Saved chapter',1,42,1,0,1,123,456,'html');").await.unwrap();
+        for migration in crate::database::schema_migrations() {
+            pool.execute(migration.sql).await.unwrap();
+        }
+        pool.execute("INSERT INTO repository(url,priority,enabled) VALUES('https://plugins.example.test/index.json',1,1),('https://second.example.test/index.json',2,0); INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code,repository_url) VALUES('test','Test','en','1','','https://plugins.example.test/test.js','full plugin source','https://plugins.example.test/index.json'); INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'test','/novel','Saved novel',1); INSERT INTO category(id,name,sort) VALUES(1,'Saved category',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1); INSERT INTO chapter(novel_id,path,name,position,progress,bookmark,unread,is_downloaded,content_bytes,media_bytes,stored_content_type) VALUES(1,'/chapter','Saved chapter',1,42,1,0,1,123,456,'html');").await.unwrap();
         let snapshot = dir.path().join("snapshot.db");
         sqlx::query("VACUUM INTO ?")
             .bind(snapshot.to_str().unwrap())
@@ -1367,6 +1369,23 @@ mod tests {
                 .await
                 .unwrap(),
             "full plugin source"
+        );
+        assert_eq!(
+            sqlx::query_as::<_, (String, i64, i64)>("SELECT url,priority,enabled FROM repository ORDER BY priority")
+                .fetch_all(&pool)
+                .await
+                .unwrap(),
+            [
+                ("https://plugins.example.test/index.json".to_string(), 1, 1),
+                ("https://second.example.test/index.json".to_string(), 2, 0),
+            ]
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>("SELECT repository_url FROM installed_plugin")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            Some("https://plugins.example.test/index.json".to_string())
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT in_library FROM novel")

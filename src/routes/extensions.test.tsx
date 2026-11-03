@@ -19,7 +19,10 @@ vi.mock("../lib/plugins/manager", () => ({
 import {
   findDifferentPluginVersions,
   findPluginUpdates,
+  findPublisherOffers,
+  mergeCatalogEntries,
   updatePlugins,
+  type AvailableEntry,
 } from "../components/browse/use-plugin-catalog";
 import { AvailableSection, InstalledSection, UpdatesSection } from "./extensions";
 
@@ -39,9 +42,12 @@ function render(node: ReactNode) {
 }
 
 const availableProps = {
+  enabledRepositoryCount: 1,
   failures: [],
   filter: "",
-  hasRepository: true,
+  onOpenRepositories: vi.fn(),
+  repositoryCount: 1,
+  repositoryLabels: new Map<string, string>(),
   installingPluginIds: new Set<string>(),
   languages: ["en"],
   listedCount: 2,
@@ -104,11 +110,53 @@ describe("Extensions available plugins", () => {
 
   it("offers the guided source setup when no repository is set", () => {
     const $ = render(
-      <AvailableSection {...availableProps} entries={[]} hasRepository={false} installableCount={0} />,
+      <AvailableSection
+        {...availableProps}
+        enabledRepositoryCount={0}
+        entries={[]}
+        installableCount={0}
+        repositoryCount={0}
+      />,
     );
 
     expect($("button").filter((_, button) => $(button).text() === "Set up sources")).toHaveLength(1);
-    expect($("button").filter((_, button) => $(button).text() === "Set repository")).toHaveLength(1);
+    expect($("button").filter((_, button) => $(button).text() === "Add repository")).toHaveLength(1);
+  });
+
+  it("points to the repository list when every repository is turned off", () => {
+    const $ = render(
+      <AvailableSection
+        {...availableProps}
+        enabledRepositoryCount={0}
+        entries={[]}
+        installableCount={0}
+        repositoryCount={2}
+      />,
+    );
+
+    expect($("body").text()).toContain("Every repository is turned off.");
+    expect($("button").filter((_, button) => $(button).text() === "Repositories")).toHaveLength(1);
+  });
+
+  it("names the repository on each row only when several are turned on", () => {
+    const entries = [{ item: item("a"), repoUrl: "https://two.example/index.json" }];
+    const labels = new Map([["https://two.example/index.json", "owner/two"]]);
+    const single = render(
+      <AvailableSection {...availableProps} entries={entries} installableCount={1} repositoryLabels={labels} />,
+    );
+    const several = render(
+      <AvailableSection
+        {...availableProps}
+        enabledRepositoryCount={2}
+        entries={entries}
+        installableCount={1}
+        repositoryCount={2}
+        repositoryLabels={labels}
+      />,
+    );
+
+    expect(single("body").text()).not.toContain("owner/two");
+    expect(several("body").text()).toContain("English · 1.0.0 · owner/two");
   });
 
   it("does not show the repository URL or versions on multi-source rows", () => {
@@ -125,6 +173,16 @@ describe("Extensions available plugins", () => {
   });
 });
 
+const installedProps = {
+  onOpenSettings: vi.fn(),
+  onSwitchPublisher: vi.fn(),
+  onUninstall: vi.fn(),
+  publisherOf: (): string | null => "r",
+  publisherOffers: new Map<string, AvailableEntry[]>(),
+  repositoryLabels: new Map([["r", "first"], ["s", "second"]]),
+  switchingPluginIds: new Set<string>(),
+};
+
 describe("Extensions installed plugins", () => {
   it("shows uninstall progress only on the plugin being uninstalled", () => {
     const $ = render(
@@ -132,8 +190,7 @@ describe("Extensions installed plugins", () => {
         differentVersions={new Map()}
         loading={false}
         locale="en"
-        onOpenSettings={vi.fn()}
-        onUninstall={vi.fn()}
+        {...installedProps}
         plugins={[plugin("a"), plugin("b")]}
         uninstallingPluginIds={new Set(["a"])}
       />,
@@ -152,8 +209,7 @@ describe("Extensions installed plugins", () => {
         focusPluginId="b"
         loading={false}
         locale="en"
-        onOpenSettings={vi.fn()}
-        onUninstall={vi.fn()}
+        {...installedProps}
         plugins={[plugin("a"), plugin("b")]}
         uninstallingPluginIds={new Set()}
       />,
@@ -175,6 +231,7 @@ describe("Extensions updates", () => {
         { item: item("odd", "next"), repoUrl: "r" },
         { item: item("missing", "9.0.0"), repoUrl: "r" },
       ],
+      () => "r",
     );
 
     expect(updates.map(({ plugin: installed }) => installed.id)).toEqual(["newer"]);
@@ -185,6 +242,7 @@ describe("Extensions updates", () => {
     const updates = findPluginUpdates(
       [plugin("github:owner-shelf", "1.0.0"), plugin("github:other", "2.0.0"), plugin("github", "1.0.0")],
       [{ item: template, repoUrl: "r" }],
+      () => "r",
     );
 
     expect(updates.map(({ plugin: installed }) => installed.id)).toEqual(["github:owner-shelf"]);
@@ -199,6 +257,7 @@ describe("Extensions updates", () => {
         { item: item("odd", "next"), repoUrl: "r" },
         { item: item("newer", "1.1.0"), repoUrl: "r" },
       ],
+      () => "r",
     );
 
     expect(different.map(({ plugin: installed }) => installed.id)).toEqual(["older", "odd"]);
@@ -207,13 +266,86 @@ describe("Extensions updates", () => {
         differentVersions={new Map([["older", "3.0.9"]])}
         loading={false}
         locale="en"
-        onOpenSettings={vi.fn()}
-        onUninstall={vi.fn()}
+        {...installedProps}
         plugins={[plugin("older", "3.1.0")]}
         uninstallingPluginIds={new Set()}
       />,
     );
     expect($("#norea-extension-older").text()).toContain("Different version available (3.0.9)");
+  });
+
+  it("updates a plugin only from its publishing repository", () => {
+    const publishers: Record<string, string | null> = { first: "r", second: "s", unknown: null };
+    const updates = findPluginUpdates(
+      [plugin("first", "1.0.0"), plugin("second", "1.0.0"), plugin("unknown", "1.0.0")],
+      [
+        { item: item("first", "1.0.0"), repoUrl: "r" },
+        { item: item("second", "5.0.0"), repoUrl: "r" },
+        { item: item("first", "2.0.0"), repoUrl: "s" },
+        { item: item("second", "1.5.0"), repoUrl: "s" },
+        { item: item("unknown", "9.0.0"), repoUrl: "r" },
+      ],
+      (id) => publishers[id] ?? null,
+    );
+
+    expect(updates.map(({ plugin: installed, item: entry, repoUrl }) => [installed.id, entry.version, repoUrl]))
+      .toEqual([["second", "1.5.0", "s"]]);
+  });
+
+  it("lists other repositories offering a plugin, and every offer for an unknown publisher", () => {
+    const template = item("github", "2.0.0", { installMode: "multiSource" });
+    const offers = findPublisherOffers(
+      [plugin("known", "1.0.0"), plugin("unknown", "1.0.0"), plugin("github:shelf", "1.0.0")],
+      [
+        { item: item("known", "1.0.0"), repoUrl: "r" },
+        { item: item("known", "1.2.0"), repoUrl: "s" },
+        { item: item("unknown", "1.0.0"), repoUrl: "r" },
+        { item: item("unknown", "1.0.0"), repoUrl: "s" },
+        { item: template, repoUrl: "s" },
+      ],
+      (id) => (id === "unknown" ? null : "r"),
+    );
+
+    expect([...offers].map(([id, list]) => [id, list.map(({ repoUrl }) => repoUrl)])).toEqual([
+      ["known", ["s"]],
+      ["unknown", ["r", "s"]],
+      ["github:shelf", ["s"]],
+    ]);
+  });
+
+  it("keeps the highest-priority repository's entry for a plugin listed twice", () => {
+    const merged = mergeCatalogEntries([
+      { item: item("a", "1.0.0"), repoUrl: "r" },
+      { item: item("b", "1.0.0"), repoUrl: "r" },
+      { item: item("a", "3.0.0"), repoUrl: "s" },
+      { item: item("c", "1.0.0"), repoUrl: "s" },
+    ]);
+
+    expect(merged.map(({ item: entry, repoUrl }) => [entry.id, entry.version, repoUrl]))
+      .toEqual([["a", "1.0.0", "r"], ["b", "1.0.0", "r"], ["c", "1.0.0", "s"]]);
+  });
+
+  it("asks for a publisher and shows newer offers from other repositories", () => {
+    const $ = render(
+      <InstalledSection
+        {...installedProps}
+        differentVersions={new Map()}
+        loading={false}
+        locale="en"
+        plugins={[plugin("known", "1.0.0"), plugin("unknown", "1.0.0")]}
+        publisherOf={(id) => (id === "unknown" ? null : "r")}
+        publisherOffers={new Map([
+          ["known", [{ item: item("known", "1.4.0"), repoUrl: "s" }]],
+          ["unknown", [{ item: item("unknown", "1.0.0"), repoUrl: "r" }]],
+        ])}
+        uninstallingPluginIds={new Set()}
+      />,
+    );
+
+    expect($("#norea-extension-known").text()).toContain("Also available from second (1.4.0)");
+    expect($("#norea-extension-known").text()).not.toContain("Choose publisher");
+    expect($("#norea-extension-unknown").text()).toContain("Unknown publisher");
+    expect($('button[aria-label="Choose publisher: Plugin unknown"]')).toHaveLength(1);
   });
 
   it("offers Update all for several updates and marks every pending row", () => {
@@ -224,8 +356,8 @@ describe("Extensions updates", () => {
         onUpdateAll={vi.fn()}
         updatingPluginIds={new Set(["a"])}
         updates={[
-          { item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0") },
-          { item: item("b", "2.1.0"), plugin: plugin("b", "2.0.0") },
+          { item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0"), repoUrl: "r" },
+          { item: item("b", "2.1.0"), plugin: plugin("b", "2.0.0"), repoUrl: "r" },
         ]}
       />,
     );
@@ -243,7 +375,7 @@ describe("Extensions updates", () => {
         onUpdate={vi.fn()}
         onUpdateAll={vi.fn()}
         updatingPluginIds={new Set()}
-        updates={[{ item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0") }]}
+        updates={[{ item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0"), repoUrl: "r" }]}
       />,
     );
 
@@ -258,8 +390,8 @@ describe("Extensions updates", () => {
         onUpdateAll={vi.fn()}
         updatingPluginIds={new Set()}
         updates={[
-          { item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0") },
-          { item: item("b", "2.1.0"), plugin: plugin("b", "2.0.0") },
+          { item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0"), repoUrl: "r" },
+          { item: item("b", "2.1.0"), plugin: plugin("b", "2.0.0"), repoUrl: "r" },
         ]}
       />,
     );
@@ -274,9 +406,9 @@ describe("Extensions updates", () => {
     const order: string[] = [];
     const outcomes = await updatePlugins(
       [
-        { item: item("a", "1.1.0"), plugin: plugin("a") },
-        { item: item("b", "1.1.0"), plugin: plugin("b") },
-        { item: item("c", "1.1.0"), plugin: plugin("c") },
+        { item: item("a", "1.1.0"), plugin: plugin("a"), repoUrl: "r" },
+        { item: item("b", "1.1.0"), plugin: plugin("b"), repoUrl: "r" },
+        { item: item("c", "1.1.0"), plugin: plugin("c"), repoUrl: "r" },
       ],
       async ({ plugin: target }) => {
         order.push(target.id);

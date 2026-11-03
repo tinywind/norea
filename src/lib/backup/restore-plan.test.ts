@@ -35,7 +35,7 @@ function save(path: string, value: unknown) {
   storage.files.set(path, [...new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value, null, 2))]);
 }
 function manifest(): BackupManifest {
-  return { version: 4, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
+  return { version: 5, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
     summary: "Stale summary", author: "Old author", artist: null, status: null, genres: null, inLibrary: true, isLocal: false,
     createdAt: 1, updatedAt: 1, libraryAddedAt: 42, lastReadAt: 73 }],
     chapters: [1, 2].map(number => ({ id: number, novelId: 1, path: `/chapter/${number}`, name: `Old chapter ${number}`, chapterNumber: String(number), position: number,

@@ -634,3 +634,11 @@
   pointer-events: none;
   position: absolute;
 }
+
+.norea-extension-section-note {
+  color: var(--norea-color-ink-muted);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-sm);
+  margin: 0;
+  min-width: 0;
+}

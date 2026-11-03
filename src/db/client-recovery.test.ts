@@ -72,7 +72,10 @@ beforeEach(async () => {
   storage.calls = []; storage.writes = 0; storage.failRead = false; storage.active = 0;
   addWork("old", first, "First");
   sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  const registration = readFileSync("src-tauri/src/database.rs", "utf8");
+  for (const match of registration.matchAll(/sql:\s*include_str!\("([^"]+)"\)/g)) {
+    sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
+  }
   sqlite.exec("INSERT INTO repository(id,url,name) VALUES(1,'https://example.test/plugins.json','Installed repository')");
   sql.get.mockReturnValue({
     path: "sqlite:norea.db",

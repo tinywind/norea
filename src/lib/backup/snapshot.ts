@@ -93,6 +93,11 @@ interface RawInstalledPluginRow {
   sourceUrl: string;
   sourceCode: string;
   installedAt: number;
+  repositoryUrl: string | null;
+}
+
+interface RawRepositoryRow extends Omit<BackupRepository, "enabled"> {
+  enabled: unknown;
 }
 
 const BACKUP_SETTING_KEYS = new Set([
@@ -172,9 +177,9 @@ const SELECT_NOVEL_CATEGORIES = `
 `;
 
 const SELECT_REPOSITORIES = `
-  SELECT id, url, name, added_at AS addedAt
+  SELECT id, url, name, added_at AS addedAt, priority, enabled
   FROM repository
-  ORDER BY id
+  ORDER BY priority, id
 `;
 
 const SELECT_INSTALLED_PLUGINS = `
@@ -186,7 +191,8 @@ const SELECT_INSTALLED_PLUGINS = `
     icon_url    AS iconUrl,
     source_url  AS sourceUrl,
     source_code AS sourceCode,
-    installed_at AS installedAt
+    installed_at AS installedAt,
+    repository_url AS repositoryUrl
   FROM installed_plugin
   ORDER BY installed_at DESC, id ASC
 `;
@@ -328,6 +334,7 @@ function toInstalledPlugin(row: RawInstalledPluginRow): BackupInstalledPlugin {
     sourceUrl: row.sourceUrl,
     sourceCode: row.sourceCode,
     installedAt: row.installedAt,
+    repositoryUrl: row.repositoryUrl,
   };
 }
 
@@ -354,7 +361,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
       db.select<RawChapterRow[]>(SELECT_CHAPTERS),
       db.select<RawCategoryRow[]>(SELECT_CATEGORIES),
       db.select<BackupNovelCategory[]>(SELECT_NOVEL_CATEGORIES),
-      db.select<BackupRepository[]>(SELECT_REPOSITORIES),
+      db.select<RawRepositoryRow[]>(SELECT_REPOSITORIES),
       db.select<RawInstalledPluginRow[]>(SELECT_INSTALLED_PLUGINS),
       db.select<BackupVpnGateServerVerdict[]>(
         SELECT_VPN_GATE_SERVER_VERDICTS,
@@ -369,7 +376,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
     chapters: chapters.map(toChapter),
     categories: categories.map(toCategory),
     novelCategories,
-    repositories,
+    repositories: repositories.map((row) => ({ ...row, enabled: sqliteBoolean(row.enabled) })),
     installedPlugins: installedPlugins.map(toInstalledPlugin),
     settings: readBackupSettings(),
     vpnGateServerVerdicts,

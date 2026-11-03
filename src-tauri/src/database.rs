@@ -70,6 +70,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0007_novel_freshness.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 8,
+            description: "allow several plugin repositories and record plugin publishers",
+            sql: include_str!("migrations/0008_plugin_repositories.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -317,6 +323,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registered_v7_upgrade_keeps_the_repository_first_and_binds_publishers_by_source_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..7]).await.unwrap();
+        sqlx::query("INSERT INTO repository(id,url,name,added_at) VALUES(1,'https://repo.test/plugins.json','Saved',50)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(r#"INSERT INTO repository_index_cache(repo_url,items_json) VALUES('https://repo.test/plugins.json','[{"id":"bound","url":"https://repo.test/bound.js"},7,{"id":"github","url":"https://repo.test/github.js"},{"id":"moved","url":"https://repo.test/new-moved.js"}]')"#)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code) VALUES
+            ('bound','Bound','en','1','','https://repo.test/bound.js','a'),
+            ('github:shelf','Shelf','en','1','','https://repo.test/github.js','b'),
+            ('moved','Moved','en','1','','https://repo.test/old-moved.js','c'),
+            ('local','Local','en','1','','local:local.js','d')")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = bootstrap(&path, &migrations).await.unwrap();
+            assert_eq!(sqlx::query_as::<_, (i64, String, Option<String>, i64, i64, i64)>(
+                "SELECT id,url,name,added_at,priority,enabled FROM repository").fetch_all(&pool).await.unwrap(),
+                [(1, "https://repo.test/plugins.json".to_string(), Some("Saved".to_string()), 50, 1, 1)]);
+            assert_eq!(sqlx::query_as::<_, (String, Option<String>, String)>(
+                "SELECT id,repository_url,source_code FROM installed_plugin ORDER BY id").fetch_all(&pool).await.unwrap(), [
+                ("bound".to_string(), Some("https://repo.test/plugins.json".to_string()), "a".to_string()),
+                ("github:shelf".to_string(), Some("https://repo.test/plugins.json".to_string()), "b".to_string()),
+                ("local".to_string(), None, "d".to_string()),
+                ("moved".to_string(), None, "c".to_string()),
+            ]);
+            pool.close().await;
+        }
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query("INSERT INTO repository(url,priority,enabled) VALUES('https://second.test/plugins.json',2,0)")
+            .execute(&pool).await.unwrap();
+        assert!(sqlx::query("INSERT INTO repository(url) VALUES('https://second.test/plugins.json')").execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE repository SET enabled=2 WHERE id=1").execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE repository SET priority=0 WHERE id=1").execute(&pool).await.is_err());
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn registered_v1_upgrade_preserves_library_chapters_and_ordinary_queue() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
@@ -344,7 +393,7 @@ mod tests {
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_download_plan")
                 .fetch_one(&pool).await.unwrap(), 0);
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
-                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5,6,7]);
+                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5,6,7,8]);
             pool.close().await;
         }
     }

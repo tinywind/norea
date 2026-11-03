@@ -17,11 +17,19 @@ import { IconButton } from "../components/IconButton";
 import { PluginIcon } from "../components/browse/PluginIcon";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
 import {
+  RepositoriesDialog,
+  repositoryLabel,
+} from "../components/browse/RepositoriesDialog";
+import {
   AVAILABLE_QUERY_KEY,
+  addPluginRepository,
   findDifferentPluginVersions,
   findPluginUpdates,
+  findPublisherOffers,
   hasPluginInputs,
+  installedPluginPublisher,
   isMultiSourcePlugin,
+  mergeCatalogEntries,
   refreshAvailablePlugins,
   sortPluginsByName,
   updatePlugins,
@@ -30,6 +38,7 @@ import {
   useRepositories,
   type AvailableEntry,
   type AvailableResult,
+  type PluginPublisherLookup,
   type PluginUpdate,
   type RepoFetchFailure,
 } from "../components/browse/use-plugin-catalog";
@@ -38,9 +47,9 @@ import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   BackIcon,
   CheckIcon,
+  ChevronRightIcon,
   GithubIcon,
   ImportIcon,
-  RefreshIcon,
   RepositoryIcon,
   SettingsIcon,
   TrashIcon,
@@ -49,7 +58,8 @@ import { ListRow } from "../components/ui/ListRow";
 import { OverflowMenu } from "../components/ui/OverflowMenu";
 import {
   removeRepository,
-  upsertRepository,
+  reorderRepositories,
+  setRepositoryEnabled,
   type PluginRepository,
 } from "../db/queries/repository";
 import {
@@ -69,6 +79,7 @@ import {
 import { pluginManager } from "../lib/plugins/manager";
 import { clearSourceFilterStorage } from "../lib/plugins/source-filter-storage";
 import type { Plugin, PluginItem } from "../lib/plugins/types";
+import { comparePluginVersions } from "../lib/plugins/version";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
 import { useBrowseStore } from "../store/browse";
 import "../styles/browse.css";
@@ -235,10 +246,12 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const lastUsedPluginId = useBrowseStore((s) => s.lastUsedPluginId);
   const setLastUsedPluginId = useBrowseStore((s) => s.setLastUsedPluginId);
 
+  const [repositoryListOpen, setRepositoryListOpen] = useState(false);
   const [repositoryDialogOpen, setRepositoryDialogOpen] = useState(false);
   const [repositoryUrl, setRepositoryUrl] = useState("");
+  const [refreshingRepoUrl, setRefreshingRepoUrl] = useState<string | null>(null);
   const [settingsPlugin, setSettingsPlugin] = useState<Plugin | null>(null);
-  const [sourceTemplate, setSourceTemplate] = useState<PluginItem | null>(null);
+  const [sourceTemplate, setSourceTemplate] = useState<AvailableEntry | null>(null);
   const [sourceForm, setSourceForm] = useState<SourceInstanceForm>(DEFAULT_SOURCE_INSTANCE_FORM);
   const [availableFilter, setAvailableFilter] = useState("");
   const [installingPluginIds, setInstallingPluginIds] = useState<ReadonlySet<string>>(
@@ -255,38 +268,52 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const repository = repos.data?.[0] ?? null;
+  const repositories = useMemo(() => repos.data ?? [], [repos.data]);
+  const enabledRepositories = useMemo(
+    () => repositories.filter((repository) => repository.enabled),
+    [repositories],
+  );
+  const repositoryLabels = useMemo(
+    () => new Map(repositories.map((repository) => [repository.url, repositoryLabel(repository)])),
+    [repositories],
+  );
   const installedPlugins = useMemo(() => sortPluginsByName(installed.data ?? []), [installed.data]);
   const installedById = useMemo(
     () => new Map(installedPlugins.map((plugin) => [plugin.id, plugin])),
     [installedPlugins],
   );
   const availableEntries = useMemo(
-    () => (repository ? (available.data?.entries ?? []) : []),
-    [available.data, repository],
+    () => (enabledRepositories.length > 0 ? (available.data?.entries ?? []) : []),
+    [available.data, enabledRepositories.length],
   );
-  const failures = repository ? (available.data?.failures ?? []) : [];
+  const failures = enabledRepositories.length > 0 ? (available.data?.failures ?? []) : [];
   const updates = useMemo(
-    () => findPluginUpdates(installedPlugins, availableEntries),
+    () => findPluginUpdates(installedPlugins, availableEntries, installedPluginPublisher),
     [availableEntries, installedPlugins],
   );
   const differentVersions = useMemo(
     () =>
       new Map(
-        findDifferentPluginVersions(installedPlugins, availableEntries).map(({ item, plugin }) => [
-          plugin.id,
-          item.version,
-        ]),
+        findDifferentPluginVersions(installedPlugins, availableEntries, installedPluginPublisher)
+          .map(({ item, plugin }) => [plugin.id, item.version]),
       ),
+    [availableEntries, installedPlugins],
+  );
+  const publisherOffers = useMemo(
+    () => findPublisherOffers(installedPlugins, availableEntries, installedPluginPublisher),
     [availableEntries, installedPlugins],
   );
   const installableEntries = useMemo(
     () =>
-      availableEntries
+      mergeCatalogEntries(availableEntries)
         .filter(({ item }) => isMultiSourcePlugin(item) || !installedById.has(item.id))
         .sort((a, b) => a.item.name.localeCompare(b.item.name)),
     [availableEntries, installedById],
   );
+  useEffect(() => {
+    if (!available.isFetching) setRefreshingRepoUrl(null);
+  }, [available.isFetching]);
+
   const availableLanguages = useMemo(
     () =>
       [...new Set([...pluginLanguageFilter, ...installableEntries.map(({ item }) => item.lang)])]
@@ -301,7 +328,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
       (filterText === "" || item.name.toLocaleLowerCase().includes(filterText)),
   );
   const githubSourceTemplate =
-    installableEntries.find(({ item }) => isMultiSourcePlugin(item))?.item ?? null;
+    installableEntries.find(({ item }) => isMultiSourcePlugin(item)) ?? null;
 
   useEffect(() => {
     if (pendingRepoUrl === null) return;
@@ -328,10 +355,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   }, [currentHref, navigate]);
   usePageBackNavigation(goBack);
 
-  const resetRepositoryState = () => {
-    clearSourceFilterStorage();
-    setPluginLanguageFilter([]);
-    queryClient.setQueryData<AvailableResult>(AVAILABLE_QUERY_KEY, { entries: [], failures: [] });
+  const reloadRepositories = () => {
     void queryClient.invalidateQueries({ queryKey: ["repository"] });
     void queryClient.invalidateQueries({ queryKey: AVAILABLE_QUERY_KEY });
   };
@@ -339,15 +363,16 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const saveRepository = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: async (url: string) => {
-      await enqueueMainTask({
+      const { added } = await enqueueMainTask({
         kind: "repository.add",
-        title: repository ? t("browse.changeRepository") : t("browse.setRepository"),
+        title: t("extensions.repositories.add"),
         subject: { url },
-        run: () => upsertRepository({ url }),
+        run: () => addPluginRepository(url),
       }).promise;
+      if (!added) throw new Error(t("extensions.repositories.duplicate"));
     },
     onSuccess: () => {
-      resetRepositoryState();
+      reloadRepositories();
       setRepositoryUrl("");
       setRepositoryDialogOpen(false);
     },
@@ -358,37 +383,94 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
     mutationFn: async (id: number) => {
       await enqueueMainTask({
         kind: "repository.remove",
-        title: t("browse.changeRepository"),
+        title: t("extensions.repositories.remove"),
         run: () => removeRepository(id),
       }).promise;
     },
-    onSuccess: resetRepositoryState,
+    onSuccess: () => {
+      clearSourceFilterStorage();
+      setPluginLanguageFilter([]);
+      queryClient.setQueryData<AvailableResult>(AVAILABLE_QUERY_KEY, { entries: [], failures: [] });
+      reloadRepositories();
+    },
   });
 
+  const editRepositories = useMutation({
+    meta: { errorPresentation: "inline" },
+    mutationFn: (edit: () => Promise<void>) => edit(),
+    onSettled: reloadRepositories,
+  });
+  const toggleRepository = (target: PluginRepository, enabled: boolean) =>
+    editRepositories.mutate(() => setRepositoryEnabled(target.id, enabled));
+  const moveRepository = (target: PluginRepository, offset: -1 | 1) => {
+    const ids = repositories.map((repository) => repository.id);
+    const from = ids.indexOf(target.id);
+    const to = from + offset;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    [ids[from], ids[to]] = [ids[to]!, ids[from]!];
+    editRepositories.mutate(() => reorderRepositories(ids));
+  };
+  const removingRepositoryUrl = removeRepositoryMutation.isPending
+    ? repositories.find(({ id }) => id === removeRepositoryMutation.variables)?.url
+    : undefined;
+  const repositoryStatus = useMemo(() => {
+    const pluginCounts = new Map<string, number>();
+    for (const { repoUrl } of availableEntries) {
+      pluginCounts.set(repoUrl, (pluginCounts.get(repoUrl) ?? 0) + 1);
+    }
+    const busyUrls = new Set<string>();
+    if (refreshingRepoUrl !== null) busyUrls.add(refreshingRepoUrl);
+    if (removingRepositoryUrl !== undefined) busyUrls.add(removingRepositoryUrl);
+    return {
+      pluginCounts,
+      failures: new Map(failures.map((failure) => [failure.repoUrl, failure.message])),
+      busyUrls,
+    };
+  }, [availableEntries, failures, refreshingRepoUrl, removingRepositoryUrl]);
+  const refreshRepository = (target: PluginRepository) => {
+    setRefreshingRepoUrl(target.url);
+    refreshAvailablePlugins(queryClient, target.url);
+  };
+
   const install = useMutation({
-    mutationFn: (item: PluginItem): Promise<Plugin> =>
+    mutationFn: ({ item, repoUrl }: AvailableEntry): Promise<Plugin> =>
       enqueueMainTask({
         kind: "plugin.install",
         title: t("tasks.task.installPlugin", { name: item.name }),
         subject: { pluginId: item.id, url: item.url },
-        run: () => pluginManager.installPlugin(item),
+        run: () => pluginManager.installPlugin(item, repoUrl),
       }).promise,
-    onMutate: (item) => setInstallingPluginIds((ids) => withPendingId(ids, item.id)),
+    onMutate: ({ item }) => setInstallingPluginIds((ids) => withPendingId(ids, item.id)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["plugin"] }),
-    onSettled: (_plugin, _error, item) =>
+    onSettled: (_plugin, _error, { item }) =>
       setInstallingPluginIds((ids) => withoutPendingId(ids, item.id)),
+  });
+
+  const switchPublisher = useMutation({
+    meta: { errorPresentation: "toast" },
+    mutationFn: ({ item, plugin, repoUrl }: PluginUpdate): Promise<Plugin> =>
+      enqueueMainTask({
+        kind: "plugin.install",
+        title: t("extensions.updateAction", { name: plugin.name }),
+        subject: { pluginId: plugin.id, url: item.url },
+        run: () => pluginManager.updatePlugin(plugin.id, item, repoUrl),
+      }).promise,
+    onMutate: ({ plugin }) => setUpdatingPluginIds((ids) => withPendingId(ids, plugin.id)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["plugin"] }),
+    onSettled: (_plugin, _error, { plugin }) =>
+      setUpdatingPluginIds((ids) => withoutPendingId(ids, plugin.id)),
   });
 
   const update = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: (targets: readonly PluginUpdate[]) =>
-      updatePlugins(targets, async ({ item, plugin }) => {
+      updatePlugins(targets, async ({ item, plugin, repoUrl }) => {
         try {
           await enqueueMainTask({
             kind: "plugin.install",
             title: t("extensions.updateAction", { name: plugin.name }),
             subject: { pluginId: plugin.id, url: item.url },
-            run: () => pluginManager.updatePlugin(plugin.id, item),
+            run: () => pluginManager.updatePlugin(plugin.id, item, repoUrl),
           }).promise;
           void queryClient.invalidateQueries({ queryKey: ["plugin"] });
         } finally {
@@ -418,25 +500,26 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
 
   const installSource = useMutation({
     meta: { errorPresentation: "inline" },
-    mutationFn: ({ item, form }: { item: PluginItem; form: SourceInstanceForm }): Promise<Plugin> =>
+    mutationFn: ({ entry, form }: { entry: AvailableEntry; form: SourceInstanceForm }): Promise<Plugin> =>
       enqueueMainTask({
         kind: "plugin.install",
         title: t("tasks.task.installPlugin", { name: form.workTitle }),
-        subject: { pluginId: item.id, url: item.url },
+        subject: { pluginId: entry.item.id, url: entry.item.url },
         run: () =>
-          pluginManager.installPluginInstance(item, {
-            name: form.workTitle,
-            inputs: sourceInstanceInputs(form),
-          }),
+          pluginManager.installPluginInstance(
+            entry.item,
+            { name: form.workTitle, inputs: sourceInstanceInputs(form) },
+            entry.repoUrl,
+          ),
       }).promise,
-    onMutate: ({ item }) => setInstallingPluginIds((ids) => withPendingId(ids, item.id)),
+    onMutate: ({ entry }) => setInstallingPluginIds((ids) => withPendingId(ids, entry.item.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["plugin"] });
       setSourceTemplate(null);
       setSourceForm(DEFAULT_SOURCE_INSTANCE_FORM);
     },
-    onSettled: (_plugin, _error, { item }) =>
-      setInstallingPluginIds((ids) => withoutPendingId(ids, item.id)),
+    onSettled: (_plugin, _error, { entry }) =>
+      setInstallingPluginIds((ids) => withoutPendingId(ids, entry.item.id)),
   });
 
   const installFromFile = useMutation({
@@ -484,22 +567,27 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
 
   const openRepositoryDialog = () => {
     saveRepository.reset();
-    setRepositoryUrl(repository?.url ?? "");
+    setRepositoryUrl("");
     setRepositoryDialogOpen(true);
   };
   const closeRepositoryDialog = () => {
     setRepositoryDialogOpen(false);
     saveRepository.reset();
   };
-  const openSourceForm = (item: PluginItem) => {
+  const openSourceForm = (entry: AvailableEntry) => {
     installSource.reset();
     setSourceForm(DEFAULT_SOURCE_INSTANCE_FORM);
-    setSourceTemplate(item);
+    setSourceTemplate(entry);
   };
   const closeSourceForm = () => {
     setSourceTemplate(null);
     installSource.reset();
   };
+  const closeRepositoryList = () => {
+    setRepositoryListOpen(false);
+    editRepositories.reset();
+  };
+  useOverlayBackNavigation(repositoryListOpen && !repositoryDialogOpen, closeRepositoryList);
   useOverlayBackNavigation(repositoryDialogOpen, closeRepositoryDialog);
   useOverlayBackNavigation(sourceTemplate !== null, closeSourceForm);
 
@@ -580,13 +668,12 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
         <RepositoryCard
           error={repos.error}
           loading={repos.isLoading}
-          onEdit={openRepositoryDialog}
-          onRefresh={() => refreshAvailablePlugins(queryClient)}
-          onRemove={(target) => void confirmRemoveRepository(target)}
+          onOpen={() => {
+            if (repositories.length === 0) openRepositoryDialog();
+            else setRepositoryListOpen(true);
+          }}
           onRetry={() => void repos.refetch()}
-          refreshing={available.isFetching}
-          removing={removeRepositoryMutation.isPending}
-          repository={repository}
+          repositories={repositories}
         />
 
         {updates.length > 0 ? (
@@ -605,8 +692,13 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
           loading={installed.isLoading}
           locale={locale}
           onOpenSettings={setSettingsPlugin}
+          onSwitchPublisher={(target) => switchPublisher.mutate(target)}
           onUninstall={(plugin) => void confirmUninstall(plugin)}
           plugins={installedPlugins}
+          publisherOf={installedPluginPublisher}
+          publisherOffers={publisherOffers}
+          repositoryLabels={repositoryLabels}
+          switchingPluginIds={updatingPluginIds}
           uninstallingPluginIds={uninstallingPluginIds}
         />
 
@@ -614,7 +706,9 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
           entries={visibleEntries}
           failures={failures}
           filter={availableFilter}
-          hasRepository={repository !== null}
+          enabledRepositoryCount={enabledRepositories.length}
+          repositoryCount={repositories.length}
+          repositoryLabels={repositoryLabels}
           installableCount={installableEntries.length}
           installingPluginIds={installingPluginIds}
           languages={availableLanguages}
@@ -626,11 +720,12 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
             setPluginLanguageFilter([]);
           }}
           onFilterChange={setAvailableFilter}
-          onInstall={(item) => {
-            if (isMultiSourcePlugin(item)) openSourceForm(item);
-            else install.mutate(item);
+          onInstall={(entry) => {
+            if (isMultiSourcePlugin(entry.item)) openSourceForm(entry);
+            else install.mutate(entry);
           }}
           onLanguagesChange={setPluginLanguageFilter}
+          onOpenRepositories={() => setRepositoryListOpen(true)}
           onRetry={() => refreshAvailablePlugins(queryClient)}
           onSetRepository={openRepositoryDialog}
           onSetUpSources={() => void navigate({ to: "/setup" })}
@@ -638,10 +733,24 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
         />
       </PageFrame>
 
+      <RepositoriesDialog
+        desktop={desktop}
+        error={editRepositories.error}
+        onAdd={openRepositoryDialog}
+        onClose={closeRepositoryList}
+        onMove={moveRepository}
+        onRefresh={refreshRepository}
+        onRemove={(target) => void confirmRemoveRepository(target)}
+        onToggle={toggleRepository}
+        opened={repositoryListOpen}
+        repositories={repositories}
+        status={repositoryStatus}
+      />
+
       <Modal
         opened={repositoryDialogOpen}
         onClose={closeRepositoryDialog}
-        title={repository ? t("browse.changeRepository") : t("browse.setRepository")}
+        title={t("extensions.repositories.add")}
       >
         <form
           onSubmit={(event) => {
@@ -674,7 +783,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
                 loading={saveRepository.isPending}
                 type="submit"
               >
-                {t("common.save")}
+                {t("extensions.repositories.addAction")}
               </Button>
             </Group>
           </Stack>
@@ -692,7 +801,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
           onSubmit={(event) => {
             event.preventDefault();
             if (sourceTemplate && isSourceInstanceFormComplete(sourceForm)) {
-              installSource.mutate({ item: sourceTemplate, form: sourceForm });
+              installSource.mutate({ entry: sourceTemplate, form: sourceForm });
             }
           }}
         >
@@ -750,26 +859,12 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
 interface RepositoryCardProps {
   error: unknown;
   loading: boolean;
-  onEdit: () => void;
-  onRefresh: () => void;
-  onRemove: (repository: PluginRepository) => void;
+  onOpen: () => void;
   onRetry: () => void;
-  refreshing: boolean;
-  removing: boolean;
-  repository: PluginRepository | null;
+  repositories: readonly PluginRepository[];
 }
 
-function RepositoryCard({
-  error,
-  loading,
-  onEdit,
-  onRefresh,
-  onRemove,
-  onRetry,
-  refreshing,
-  removing,
-  repository,
-}: RepositoryCardProps) {
+function RepositoryCard({ error, loading, onOpen, onRetry, repositories }: RepositoryCardProps) {
   const { t } = useTranslation();
 
   if (loading) return <ExtensionRowsSkeleton label={t("common.loading")} />;
@@ -784,48 +879,26 @@ function RepositoryCard({
     );
   }
 
+  const enabled = repositories.filter((repository) => repository.enabled).length;
   return (
     <div className="norea-extension-repository">
       <ListRow
         leading={<RepositoryIcon />}
-        onClick={onEdit}
+        onClick={onOpen}
         subtitle={
-          repository
-            ? t("browse.repository.title")
-            : t("browse.repository.emptyMessage")
+          repositories.length === 0
+            ? t("browse.repository.emptyMessage")
+            : enabled < repositories.length
+              ? t("extensions.repositories.enabledCount", { count: enabled })
+              : repositories.map(repositoryLabel).join(", ")
         }
         title={
-          repository
-            ? (repository.name ?? repository.url)
-            : t("browse.repository.emptyTitle")
+          repositories.length === 0
+            ? t("browse.repository.emptyTitle")
+            : t("extensions.repositories.count", { count: repositories.length })
         }
+        trailing={repositories.length === 0 ? undefined : <ChevronRightIcon />}
       />
-      {repository ? (
-        <span className="norea-extension-row-trailing">
-          {refreshing || removing ? (
-            <span
-              aria-label={refreshing ? t("browse.fetchingRepositoryIndex") : t("extensions.removingRepository")}
-              className="norea-extension-busy"
-              role="status"
-            >
-              <Loader aria-hidden="true" size="xs" />
-            </span>
-          ) : (
-            <OverflowMenu
-              items={[
-                { icon: RefreshIcon, label: t("common.refresh"), onClick: onRefresh },
-                {
-                  danger: true,
-                  icon: TrashIcon,
-                  label: t("common.remove"),
-                  onClick: () => onRemove(repository),
-                },
-              ]}
-              label={t("extensions.repositoryActions")}
-            />
-          )}
-        </span>
-      ) : null}
     </div>
   );
 }
@@ -918,8 +991,14 @@ interface InstalledSectionProps {
   loading: boolean;
   locale: AppLocale;
   onOpenSettings: (plugin: Plugin) => void;
+  onSwitchPublisher: (target: PluginUpdate) => void;
   onUninstall: (plugin: Plugin) => void;
   plugins: readonly Plugin[];
+  publisherOf: PluginPublisherLookup;
+  /** Repositories other than the publisher that offer a plugin, by plugin id. */
+  publisherOffers: ReadonlyMap<string, readonly AvailableEntry[]>;
+  repositoryLabels: ReadonlyMap<string, string>;
+  switchingPluginIds: ReadonlySet<string>;
   uninstallingPluginIds: ReadonlySet<string>;
 }
 
@@ -929,11 +1008,37 @@ export function InstalledSection({
   loading,
   locale,
   onOpenSettings,
+  onSwitchPublisher,
   onUninstall,
   plugins,
+  publisherOf,
+  publisherOffers,
+  repositoryLabels,
+  switchingPluginIds,
   uninstallingPluginIds,
 }: InstalledSectionProps) {
   const { t } = useTranslation();
+  const labelOf = (repoUrl: string) => repositoryLabels.get(repoUrl) ?? repoUrl;
+  const subtitleOf = (plugin: Plugin): string => {
+    const parts = [pluginMeta(locale, plugin)];
+    const offers = publisherOffers.get(plugin.id) ?? [];
+    if (publisherOf(plugin.id) === null) {
+      if (offers.length > 0) parts.push(t("extensions.publisher.unknown"));
+    } else {
+      const different = differentVersions.get(plugin.id);
+      if (different !== undefined) {
+        parts.push(t("extensions.differentVersion", { version: different }));
+      }
+      const newer = offers.find(({ item }) => comparePluginVersions(item.version, plugin.version) === "newer");
+      if (newer) {
+        parts.push(t("extensions.publisher.alsoAvailable", {
+          repository: labelOf(newer.repoUrl),
+          version: newer.item.version,
+        }));
+      }
+    }
+    return parts.join(" · ");
+  };
 
   return (
     <ExtensionSection
@@ -955,29 +1060,60 @@ export function InstalledSection({
               id={extensionRowId(plugin.id)}
               key={plugin.id}
               leading={<PluginIcon plugin={plugin} />}
-              subtitle={
-                differentVersions.has(plugin.id)
-                  ? `${pluginMeta(locale, plugin)} · ${t("extensions.differentVersion", {
-                      version: differentVersions.get(plugin.id)!,
-                    })}`
-                  : pluginMeta(locale, plugin)
-              }
+              subtitle={subtitleOf(plugin)}
               title={plugin.name}
               trailing={
-                uninstallingPluginIds.has(plugin.id) ? (
+                uninstallingPluginIds.has(plugin.id) || switchingPluginIds.has(plugin.id) ? (
                   <span
-                    aria-label={t("extensions.uninstalling", { name: plugin.name })}
+                    aria-label={
+                      uninstallingPluginIds.has(plugin.id)
+                        ? t("extensions.uninstalling", { name: plugin.name })
+                        : t("extensions.updateAction", { name: plugin.name })
+                    }
                     className="norea-extension-busy"
                     role="status"
                   >
                     <Loader aria-hidden="true" size="xs" />
                   </span>
                 ) : (
+                  <>
+                    {publisherOf(plugin.id) === null && publisherOffers.has(plugin.id) ? (
+                      <OverflowMenu
+                        items={publisherOffers.get(plugin.id)!.map((offer) => ({
+                          icon: RepositoryIcon,
+                          label: t("extensions.publisher.useRepository", {
+                            repository: labelOf(offer.repoUrl),
+                            version: offer.item.version,
+                          }),
+                          onClick: () => onSwitchPublisher({ ...offer, plugin }),
+                        }))}
+                        label={t("extensions.publisher.choose")}
+                        trigger={
+                          <Button
+                            aria-label={`${t("extensions.publisher.choose")}: ${plugin.name}`}
+                            size="compact-sm"
+                            variant="light"
+                          >
+                            {t("extensions.publisher.choose")}
+                          </Button>
+                        }
+                      />
+                    ) : null}
                   <OverflowMenu
                     items={[
                       ...(hasPluginInputs(plugin)
                         ? [{ icon: SettingsIcon, label: t("common.settings"), onClick: () => onOpenSettings(plugin) }]
                         : []),
+                      ...(publisherOf(plugin.id) === null
+                        ? []
+                        : (publisherOffers.get(plugin.id) ?? []).map((offer) => ({
+                            icon: RepositoryIcon,
+                            label: t("extensions.publisher.switch", {
+                              repository: labelOf(offer.repoUrl),
+                              version: offer.item.version,
+                            }),
+                            onClick: () => onSwitchPublisher({ ...offer, plugin }),
+                          }))),
                       {
                         danger: true,
                         icon: TrashIcon,
@@ -987,6 +1123,7 @@ export function InstalledSection({
                     ]}
                     label={t("extensions.rowActions", { name: plugin.name })}
                   />
+                  </>
                 )
               }
             />
@@ -998,10 +1135,10 @@ export function InstalledSection({
 }
 
 interface AvailableSectionProps {
+  enabledRepositoryCount: number;
   entries: readonly AvailableEntry[];
   failures: readonly RepoFetchFailure[];
   filter: string;
-  hasRepository: boolean;
   installableCount: number;
   installingPluginIds: ReadonlySet<string>;
   languages: readonly string[];
@@ -1011,19 +1148,22 @@ interface AvailableSectionProps {
   locale: AppLocale;
   onClearFilters: () => void;
   onFilterChange: (filter: string) => void;
-  onInstall: (item: PluginItem) => void;
+  onInstall: (entry: AvailableEntry) => void;
   onLanguagesChange: (languages: string[]) => void;
+  onOpenRepositories: () => void;
   onRetry: () => void;
   onSetRepository: () => void;
   onSetUpSources: () => void;
+  repositoryCount: number;
+  repositoryLabels: ReadonlyMap<string, string>;
   selectedLanguages: readonly string[];
 }
 
 export function AvailableSection({
+  enabledRepositoryCount,
   entries,
   failures,
   filter,
-  hasRepository,
   installableCount,
   installingPluginIds,
   languages,
@@ -1034,12 +1174,18 @@ export function AvailableSection({
   onFilterChange,
   onInstall,
   onLanguagesChange,
+  onOpenRepositories,
   onRetry,
   onSetRepository,
   onSetUpSources,
+  repositoryCount,
+  repositoryLabels,
   selectedLanguages,
 }: AvailableSectionProps) {
   const { t } = useTranslation();
+  const hasRepository = enabledRepositoryCount > 0;
+  const labelOf = (repoUrl: string) =>
+    enabledRepositoryCount > 1 ? (repositoryLabels.get(repoUrl) ?? repoUrl) : null;
   const toggleLanguage = (lang: string) =>
     onLanguagesChange(
       selectedLanguages.includes(lang)
@@ -1101,38 +1247,46 @@ export function AvailableSection({
           color="danger"
           details={{ content: failure.message, label: t("common.details") }}
           key={failure.repoUrl}
+          message={labelOf(failure.repoUrl) ?? undefined}
           title={t("browse.repositoryFetchError")}
         />
       ))}
 
-      {!hasRepository ? (
+      {repositoryCount === 0 ? (
         <StateView
-          action={{ label: t("browse.setRepository"), onClick: onSetRepository }}
+          action={{ label: t("extensions.repositories.add"), onClick: onSetRepository }}
           message={t("browse.noAvailablePlugins.noRepository")}
           secondaryAction={{ label: t("setup.entry"), onClick: onSetUpSources }}
+          title={t("browse.noAvailablePlugins.title")}
+        />
+      ) : !hasRepository ? (
+        <StateView
+          action={{ label: t("extensions.repositories.title"), onClick: onOpenRepositories }}
+          message={t("extensions.repositories.allOff")}
           title={t("browse.noAvailablePlugins.title")}
         />
       ) : loading ? (
         <ExtensionRowsSkeleton label={t("browse.fetchingRepositoryIndex")} />
       ) : entries.length > 0 ? (
         <ul className="norea-extension-list">
-          {entries.map(({ item, repoUrl }) => {
+          {entries.map((entry) => {
+            const { item, repoUrl } = entry;
             const label = isMultiSourcePlugin(item) ? t("browse.addSource") : t("common.install");
+            const repository = labelOf(repoUrl);
+            const meta = isMultiSourcePlugin(item)
+              ? languageLabel(locale, item.lang)
+              : pluginMeta(locale, item);
             return (
               <ExtensionRow
                 key={`${repoUrl}::${item.id}`}
                 leading={<PluginIcon plugin={item} />}
-                subtitle={
-                  isMultiSourcePlugin(item)
-                    ? languageLabel(locale, item.lang)
-                    : pluginMeta(locale, item)
-                }
+                subtitle={repository ? `${meta} · ${repository}` : meta}
                 title={item.name}
                 trailing={
                   <Button
                     aria-label={`${label}: ${item.name}`}
                     loading={installingPluginIds.has(item.id)}
-                    onClick={() => onInstall(item)}
+                    onClick={() => onInstall(entry)}
                     size="compact-sm"
                     variant="light"
                   >

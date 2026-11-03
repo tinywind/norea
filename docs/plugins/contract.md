@@ -35,6 +35,13 @@ template entry and keep their id, name, and inputs. An update stores the new
 validated source before it replaces the running plugin, so a failed update
 leaves the installed version working.
 
+The app can list several repositories. The available catalog merges the
+enabled ones, and when more than one lists a plugin id, the repository higher in
+the list provides it. Each installed plugin records the repository it was
+installed from, and updates come only from that repository. Another repository's
+entry for the same id is shown as an alternative, and installing from it is an
+explicit publisher switch. Plugins installed from a file have no publisher.
+
 ## Chapter acquisition
 
 Plugins describe how to acquire a chapter. They do not fetch ordinary chapter
