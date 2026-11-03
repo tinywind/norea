@@ -941,6 +941,7 @@
   "categories.addToWork": "Category",
   "library.title": "Currently reading",
   "selection.exit": "Exit selection",
+  "sheet.resize": "Resize sheet",
   "selection.selectAll": "Select all",
   "library.mainLabel": "Library novels",
   "library.selectedCount": "{count} selected",

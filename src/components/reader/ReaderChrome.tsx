@@ -277,7 +277,10 @@ function getReaderSettingsTarget({
     : { kind: "global" };
 }
 
-/** "Aa" below 1200px: a bottom sheet on phones and a modal on tablets. */
+/**
+ * "Aa" below 1200px: a resizable bottom sheet on phones and tablets, so the
+ * text being adjusted stays visible above it.
+ */
 export function ReaderSettingsSheet({
   content,
   onClose,
@@ -289,8 +292,10 @@ export function ReaderSettingsSheet({
   return (
     <ResponsiveSheet
       className="norea-reader-quick-sheet"
+      desktopVariant="bottom"
       onClose={onClose}
       opened={opened}
+      resizable
       title={t("settings.category.reader.title")}
     >
       <ReaderQuickSettings

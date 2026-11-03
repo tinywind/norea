@@ -114,6 +114,36 @@
   padding-bottom: calc(var(--mantine-spacing-md) + var(--norea-safe-area-bottom));
 }
 
+.norea-responsive-sheet.norea-responsive-sheet--resizable {
+  height: calc(var(--norea-viewport-height) * var(--norea-sheet-fraction, 0.55));
+}
+
+.norea-responsive-sheet--resizable .norea-responsive-sheet-header::before {
+  content: none;
+}
+
+.norea-responsive-sheet-handle {
+  cursor: ns-resize;
+  height: var(--norea-space-5);
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+  touch-action: none;
+}
+
+.norea-responsive-sheet-handle::before {
+  background: var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-full);
+  content: "";
+  height: 0.25rem;
+  left: 50%;
+  position: absolute;
+  top: var(--norea-space-2);
+  transform: translateX(-50%);
+  width: 2rem;
+}
+
 .norea-responsive-sheet--full {
   padding-top: var(--norea-safe-area-top);
 }
@@ -303,4 +333,12 @@ body[data-norea-reader-bars] {
 
 .norea-toasts[data-position^="bottom"] {
   bottom: calc(var(--mantine-spacing-md) + var(--norea-toast-bottom-offset));
+}
+
+/* A bottom sheet kept from 768px up (desktopVariant "bottom") stays a readable width. */
+@media (min-width: 768px) {
+  .norea-responsive-sheet--drawer {
+    margin-inline: auto;
+    max-width: 40rem;
+  }
 }

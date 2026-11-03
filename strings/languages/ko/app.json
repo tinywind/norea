@@ -941,6 +941,7 @@
   "categories.addToWork": "카테고리",
   "library.title": "읽는 중",
   "selection.exit": "선택 종료",
+  "sheet.resize": "시트 높이 조절",
   "selection.selectAll": "모두 선택",
   "library.mainLabel": "서재 소설",
   "library.selectedCount": "{count}개 선택됨",

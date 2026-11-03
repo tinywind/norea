@@ -822,12 +822,7 @@
 .norea-reader-quick-sheet {
   display: flex;
   flex-direction: column;
-  height: min(40rem, calc(var(--norea-viewport-height) * 0.8));
   overflow: hidden;
-}
-
-.norea-reader-quick-sheet.norea-responsive-sheet--drawer {
-  height: calc(var(--norea-viewport-height) * 0.55);
 }
 
 .norea-reader-quick-sheet .norea-responsive-sheet-body {
