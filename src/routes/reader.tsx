@@ -421,6 +421,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         bookmarkDisabled={!chapter}
         bookmarkLoading={bookmarkMutation.isPending}
         incognitoMode={incognitoMode}
+        novelName={currentNovel?.name}
         onBack={handleReaderBack}
         onOpenSettings={openReaderSettingsPanel}
         onRepairMedia={() => repairMediaMutation.mutate()}

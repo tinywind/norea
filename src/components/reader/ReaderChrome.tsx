@@ -32,6 +32,7 @@ function getReaderTitle(
 
 function getReaderMeta(
   chapter: ChapterRow | null | undefined,
+  novelName: string | undefined,
   chapterIndex: number,
   chapterCount: number,
   t: ReturnType<typeof useTranslation>["t"],
@@ -41,14 +42,13 @@ function getReaderMeta(
     chapterIndex >= 0 && chapterCount > 0
       ? `${chapterIndex + 1} / ${chapterCount}`
       : getChapterLabel(chapter, t);
-  const status = chapter.isDownloaded
-    ? t("reader.offline")
-    : t("reader.notDownloaded");
   return [
-    t("reader.novelMeta", { id: chapter.novelId }),
+    novelName?.trim(),
     indexLabel,
-    status,
-  ].join(" / ");
+    chapter.isDownloaded ? undefined : t("reader.notDownloaded"),
+  ]
+    .filter(Boolean)
+    .join(" / ");
 }
 
 export function ReaderTopChrome({
@@ -58,6 +58,7 @@ export function ReaderTopChrome({
   bookmarkDisabled,
   bookmarkLoading,
   incognitoMode,
+  novelName,
   onBack,
   onOpenSettings,
   onRepairMedia,
@@ -75,6 +76,7 @@ export function ReaderTopChrome({
   bookmarkDisabled: boolean;
   bookmarkLoading: boolean;
   incognitoMode: boolean;
+  novelName?: string;
   onBack: () => void;
   onOpenSettings: () => void;
   onRepairMedia: () => void;
@@ -100,7 +102,7 @@ export function ReaderTopChrome({
           {getReaderTitle(chapter, t)}
         </div>
         <div className="norea-reader-meta">
-          {getReaderMeta(chapter, chapterIndex, chapterCount, t)}
+          {getReaderMeta(chapter, novelName, chapterIndex, chapterCount, t)}
         </div>
       </div>
       <div className="norea-reader-topbar-spacer" />
