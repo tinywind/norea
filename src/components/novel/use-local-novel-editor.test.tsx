@@ -60,3 +60,24 @@ it("closes the local metadata editor on back without leaving the novel page", as
   expect(metadataModal().props.opened).toBe(false);
   expect(pageBack).not.toHaveBeenCalled();
 });
+
+it.each([[true, true], [false, false]])("fills the screen with the metadata editor on phones (phone: %s)", async (phone, fullScreen) => {
+  harness = mountBackNavigationHarness();
+  Object.assign(window, {
+    matchMedia: (query: string) => ({
+      matches: query === "(max-width: 767px)" && phone,
+      addEventListener() {},
+      removeEventListener() {},
+    }),
+  });
+  await harness.render(<Page><EditorProbe /></Page>);
+  expect(Boolean(metadataModal().props.fullScreen)).toBe(fullScreen);
+});
+
+it("keeps the author and artist fields on separate rows on phones", async () => {
+  harness = mountBackNavigationHarness();
+  await harness.render(<Page><EditorProbe /></Page>);
+  const grids = collectElements(metadataModal().props.children as ReactNode)
+    .filter((element) => (element.props.cols as { base?: number } | undefined)?.base === 1);
+  expect(grids).toHaveLength(2);
+});

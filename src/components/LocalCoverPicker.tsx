@@ -1,5 +1,5 @@
-import { useRef, useState, type ChangeEvent } from "react";
-import { Group, Stack, Text } from "@mantine/core";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Group, Loader, Stack, Text } from "@mantine/core";
 import {
   convertLocalCoverFile,
   isLocalCoverSource,
@@ -15,6 +15,8 @@ interface LocalCoverPickerProps {
   alt: string;
   disabled?: boolean;
   onChange: (cover: string) => void;
+  /** Reports whether a chosen image is still being converted. */
+  onPendingChange?: (pending: boolean) => void;
   value: string | null | undefined;
 }
 
@@ -22,24 +24,44 @@ export function LocalCoverPicker({
   alt,
   disabled = false,
   onChange,
+  onPendingChange,
   value,
 }: LocalCoverPickerProps) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const requestRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const coverSource: string | null = isLocalCoverSource(value) ? value : null;
   const maxMegabytes = LOCAL_COVER_LIMITS.fileBytes / (1024 * 1024);
+
+  useEffect(() => () => {
+    requestRef.current += 1;
+  }, []);
+
+  const setConverting = (converting: boolean) => {
+    setPending(converting);
+    onPendingChange?.(converting);
+  };
 
   const handleFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0] ?? null;
     event.currentTarget.value = "";
     if (!file) return;
 
+    // Only the latest choice may set the cover; an earlier, slower conversion is dropped.
+    const request = ++requestRef.current;
     setError(null);
+    setConverting(true);
     try {
-      onChange(await convertLocalCoverFile(file));
+      const cover = await convertLocalCoverFile(file);
+      if (request === requestRef.current) onChange(cover);
     } catch (caught) {
-      setError(localCoverErrorMessage(caught, maxMegabytes, t));
+      if (request === requestRef.current) {
+        setError(localCoverErrorMessage(caught, maxMegabytes, t));
+      }
+    } finally {
+      if (request === requestRef.current) setConverting(false);
     }
   };
 
@@ -68,8 +90,10 @@ export function LocalCoverPicker({
               {t("library.localNovel.coverChoose")}
             </TextButton>
             <TextButton
-              disabled={disabled || !coverSource}
+              disabled={disabled || (!coverSource && !pending)}
               onClick={() => {
+                requestRef.current += 1;
+                setConverting(false);
                 setError(null);
                 onChange("");
               }}
@@ -79,13 +103,20 @@ export function LocalCoverPicker({
               {t("library.localNovel.coverClear")}
             </TextButton>
           </Group>
-          <Text c="dimmed" size="xs">
-            {t("library.localNovel.coverHelp", { size: maxMegabytes })}
-          </Text>
+          {pending ? (
+            <Group gap="xs" role="status">
+              <Loader size="xs" />
+              <Text size="xs">{t("library.localNovel.coverConverting")}</Text>
+            </Group>
+          ) : (
+            <Text c="dimmed" size="xs">
+              {t("library.localNovel.coverHelp", { size: maxMegabytes })}
+            </Text>
+          )}
         </Stack>
       </Group>
       {error ? (
-        <Text c="danger" size="sm">
+        <Text c="danger" role="alert" size="sm">
           {error}
         </Text>
       ) : null}

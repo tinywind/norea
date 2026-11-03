@@ -1,4 +1,5 @@
-import { Group, Modal, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import { Group, Modal, SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
@@ -84,6 +85,10 @@ export function useLocalNovelEditor(
     null,
   );
   const [localMetadataOpen, setLocalMetadataOpen] = useState(false);
+  const [coverPending, setCoverPending] = useState(false);
+  const phone = useMediaQuery("(max-width: 767px)", undefined, {
+    getInitialValueInEffect: false,
+  });
   const [localMetadataForm, setLocalMetadataForm] =
     useState<LocalNovelMetadataInput>(EMPTY_LOCAL_NOVEL_FORM);
   const addLocalChapters = useMutation({
@@ -166,6 +171,7 @@ export function useLocalNovelEditor(
   function openLocalMetadataEditor(): void {
     if (!novel?.isLocal) return;
     updateLocalMetadata.reset();
+    setCoverPending(false);
     setLocalMetadataForm(localMetadataFromNovel(novel));
     setLocalMetadataOpen(true);
   }
@@ -181,7 +187,7 @@ export function useLocalNovelEditor(
 
   function handleLocalMetadataSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    if (!novel?.isLocal || localMetadataForm.name.trim() === "") return;
+    if (!novel?.isLocal || coverPending || localMetadataForm.name.trim() === "") return;
     updateLocalMetadata.mutate(localMetadataForm);
   }
 
@@ -229,10 +235,15 @@ export function useLocalNovelEditor(
         type="file"
       />
       <Modal
+        classNames={{ inner: "norea-novel-editor-modal" }}
+        closeOnClickOutside={!updateLocalMetadata.isPending}
+        closeOnEscape={!updateLocalMetadata.isPending}
+        fullScreen={phone}
         opened={localMetadataEditorOpen}
         onClose={closeLocalMetadataEditor}
         size="lg"
         title={t("novel.local.editMetadata")}
+        withCloseButton={!updateLocalMetadata.isPending}
       >
         <form onSubmit={handleLocalMetadataSubmit}>
           <Stack gap="sm">
@@ -250,7 +261,7 @@ export function useLocalNovelEditor(
               required
               value={localMetadataForm.name}
             />
-            <Group grow>
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <TextInput
                 label={t("library.localNovel.author")}
                 onChange={(event) => {
@@ -273,8 +284,8 @@ export function useLocalNovelEditor(
                 }}
                 value={localMetadataForm.artist ?? ""}
               />
-            </Group>
-            <Group grow>
+            </SimpleGrid>
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <TextInput
                 label={t("library.localNovel.status")}
                 onChange={(event) => {
@@ -297,7 +308,7 @@ export function useLocalNovelEditor(
                 }}
                 value={localMetadataForm.genres ?? ""}
               />
-            </Group>
+            </SimpleGrid>
             <LocalCoverPicker
               alt={localMetadataForm.name || t("library.localNovel.name")}
               disabled={updateLocalMetadata.isPending}
@@ -307,6 +318,7 @@ export function useLocalNovelEditor(
                   cover,
                 }))
               }
+              onPendingChange={setCoverPending}
               value={localMetadataForm.cover}
             />
             <Textarea
@@ -323,7 +335,7 @@ export function useLocalNovelEditor(
               value={localMetadataForm.summary ?? ""}
             />
             {updateLocalMetadata.error ? (
-              <Text c="danger" size="sm">
+              <Text c="danger" role="alert" size="sm">
                 {updateLocalMetadata.error instanceof Error
                   ? updateLocalMetadata.error.message
                   : String(updateLocalMetadata.error)}
@@ -341,6 +353,7 @@ export function useLocalNovelEditor(
               <TextButton
                 disabled={
                   localMetadataForm.name.trim() === "" ||
+                  coverPending ||
                   updateLocalMetadata.isPending
                 }
                 loading={updateLocalMetadata.isPending}

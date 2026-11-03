@@ -987,6 +987,7 @@
   "library.localNovel.coverChoose": "Choose image",
   "library.localNovel.coverClear": "Clear image",
   "library.localNovel.coverHelp": "PNG, JPG, WEBP, GIF, or AVIF up to {size} MB. The image is stored locally.",
+  "library.localNovel.coverConverting": "Preparing the image…",
   "library.localNovel.coverReadFailed": "Failed to read the cover image.",
   "library.localNovel.coverTooLarge": "Cover image must be {size} MB or smaller.",
   "library.localNovel.coverUnsupported": "Choose a PNG, JPG, WEBP, GIF, or AVIF image.",
