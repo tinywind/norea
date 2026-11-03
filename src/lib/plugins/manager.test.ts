@@ -20,6 +20,7 @@ import { appFetchText, createPluginFetchShim } from "../http";
 import {
   deleteInstalledPlugin,
   listInstalledPlugins,
+  upsertInstalledPlugin,
 } from "../../db/queries/installed-plugin";
 import {
   PluginManager,
@@ -31,6 +32,7 @@ const mockedFetchText = vi.mocked(appFetchText);
 const mockedCreateFetchShim = vi.mocked(createPluginFetchShim);
 const mockedDeleteInstalledPlugin = vi.mocked(deleteInstalledPlugin);
 const mockedListInstalledPlugins = vi.mocked(listInstalledPlugins);
+const mockedUpsertInstalledPlugin = vi.mocked(upsertInstalledPlugin);
 
 const VALID_ITEM = {
   apiVersion: "0.2" as const,
@@ -108,6 +110,7 @@ beforeEach(() => {
   clearLazyLoadCount();
   mockedDeleteInstalledPlugin.mockResolvedValue(undefined);
   mockedListInstalledPlugins.mockResolvedValue([]);
+  mockedUpsertInstalledPlugin.mockResolvedValue(undefined);
 });
 
 describe("isValidPluginItem", () => {
@@ -225,6 +228,96 @@ describe("PluginManager.installPlugin", () => {
     await expect(manager.installPlugin(VALID_ITEM)).rejects.toThrow(
       "apiVersion '0.2'",
     );
+  });
+});
+
+describe("PluginManager.updatePlugin", () => {
+  const NEWER_ITEM = { ...VALID_ITEM, version: "1.1.0" };
+  const NEWER_SOURCE = VALID_PLUGIN_SOURCE.replace('version: "1.0.0"', 'version: "1.1.0"');
+
+  async function installedManager(): Promise<PluginManager> {
+    const manager = new PluginManager();
+    mockedFetchText.mockResolvedValueOnce(VALID_PLUGIN_SOURCE);
+    await manager.installPlugin(VALID_ITEM);
+    mockedUpsertInstalledPlugin.mockClear();
+    return manager;
+  }
+
+  it("stores the new source before swapping the running plugin", async () => {
+    const manager = await installedManager();
+    const old = manager.getPlugin("demo");
+    let runningDuringStore: unknown;
+    mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE);
+    mockedUpsertInstalledPlugin.mockImplementationOnce(async () => {
+      runningDuringStore = manager.getPlugin("demo");
+    });
+
+    const updated = await manager.updatePlugin("demo", NEWER_ITEM);
+
+    expect(runningDuringStore).toBe(old);
+    expect(updated.version).toBe("1.1.0");
+    expect(manager.getPlugin("demo")).toBe(updated);
+    expect(manager.getInstalledPluginMetadata("demo")?.version).toBe("1.1.0");
+    expect(mockedUpsertInstalledPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "demo", version: "1.1.0", sourceCode: NEWER_SOURCE }),
+    );
+  });
+
+  it("keeps the old plugin running when the new source fails validation", async () => {
+    const manager = await installedManager();
+    const old = manager.getPlugin("demo");
+    mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE.replace("searchNovels:", "searchNovelz:"));
+
+    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toThrow("searchNovels");
+
+    expect(manager.getPlugin("demo")).toBe(old);
+    expect(manager.getInstalledPluginMetadata("demo")?.version).toBe("1.0.0");
+    expect(mockedUpsertInstalledPlugin).not.toHaveBeenCalled();
+  });
+
+  it("keeps the old plugin running when storing the new source fails", async () => {
+    const manager = await installedManager();
+    const old = manager.getPlugin("demo");
+    mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE);
+    mockedUpsertInstalledPlugin.mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toThrow("disk full");
+
+    expect(manager.getPlugin("demo")).toBe(old);
+    expect(manager.getInstalledPluginMetadata("demo")?.version).toBe("1.0.0");
+  });
+
+  it("keeps the old plugin when the download fails or names another plugin", async () => {
+    const manager = await installedManager();
+    const old = manager.getPlugin("demo");
+    mockedFetchText.mockRejectedValueOnce(new Error("offline"));
+    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toThrow("offline");
+    mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE.replace('"demo"', '"other"'));
+    await expect(manager.updatePlugin("demo", NEWER_ITEM)).rejects.toBeInstanceOf(
+      PluginValidationError,
+    );
+
+    expect(manager.getPlugin("demo")).toBe(old);
+    await expect(manager.updatePlugin("missing", NEWER_ITEM)).rejects.toThrow("not installed");
+  });
+
+  it("updates a source instance from its template and keeps its id, name and inputs", async () => {
+    const manager = new PluginManager();
+    const template = { ...VALID_ITEM, installMode: "multiSource" as const };
+    mockedFetchText.mockResolvedValueOnce(VALID_PLUGIN_SOURCE);
+    const instance = await manager.installPluginInstance(template, {
+      name: "My shelf",
+      inputs: { repository: "owner/shelf" },
+    });
+    mockedFetchText.mockResolvedValueOnce(NEWER_SOURCE);
+
+    const updated = await manager.updatePlugin(instance.id, { ...template, version: "1.1.0" });
+
+    expect(updated.id).toBe("demo:owner-shelf");
+    expect(updated.name).toBe("My shelf");
+    expect(updated.version).toBe("1.1.0");
+    expect(manager.getPlugin("demo:owner-shelf")).toBe(updated);
+    await expect(manager.updatePlugin(instance.id, NEWER_ITEM)).rejects.toThrow("cannot be updated");
   });
 });
 

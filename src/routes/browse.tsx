@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Badge, Button, Tabs } from "@mantine/core";
 import { PageFrame } from "../components/AppFrame";
@@ -6,9 +5,8 @@ import { BrowseSearchTab } from "../components/browse/BrowseSearchTab";
 import { BrowseServerTab } from "../components/browse/BrowseServerTab";
 import { BrowseSourcesTab } from "../components/browse/BrowseSourcesTab";
 import {
-  findPluginUpdates,
-  useCachedAvailablePlugins,
   useInstalledPlugins,
+  usePluginUpdateCount,
 } from "../components/browse/use-plugin-catalog";
 import { ExtensionsIcon } from "../components/ui/icons";
 import { useTranslation } from "../i18n";
@@ -31,14 +29,10 @@ export function BrowsePage({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const installed = useInstalledPlugins(active && tab !== "server");
-  const cachedAvailable = useCachedAvailablePlugins(active);
   const serverConfigured = useContentSyncStore((state) => state.serverUrl !== "");
   const showServerTab = serverConfigured || tab === "server";
   const installedPlugins = installed.data ?? [];
-  const updateCount = useMemo(
-    () => findPluginUpdates(installed.data ?? [], cachedAvailable.data ?? []).length,
-    [cachedAvailable.data, installed.data],
-  );
+  const updateCount = usePluginUpdateCount(active);
 
   return (
     <div className="norea-browse-page">

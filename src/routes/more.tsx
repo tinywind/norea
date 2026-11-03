@@ -1,10 +1,12 @@
 import { Switch } from "@mantine/core";
 import { Link } from "@tanstack/react-router";
 import { PageFrame, PageHeader } from "../components/AppFrame";
+import { usePluginUpdateCount } from "../components/browse/use-plugin-catalog";
 import {
   AboutIcon,
   ChevronRightIcon,
   DownloadsIcon,
+  ExtensionsIcon,
   SettingsIcon,
   type AppIcon,
 } from "../components/ui/icons";
@@ -27,7 +29,7 @@ function MoreLinkRow({
   description?: string;
   icon: AppIcon;
   label: string;
-  to: "/downloads" | "/settings";
+  to: "/downloads" | "/browse/extensions" | "/settings";
   section?: string;
 }) {
   const content = (
@@ -49,6 +51,10 @@ function MoreLinkRow({
         <Link className={ROW_CLASS_NAME} search={{ section }} to="/settings">
           {content}
         </Link>
+      ) : to === "/browse/extensions" ? (
+        <Link className={ROW_CLASS_NAME} search={{}} to="/browse/extensions">
+          {content}
+        </Link>
       ) : (
         <Link
           className={ROW_CLASS_NAME}
@@ -67,6 +73,7 @@ export function MorePage() {
   const incognitoMode = useLibraryStore((state) => state.incognitoMode);
   const setIncognitoMode = useLibraryStore((state) => state.setIncognitoMode);
   const taskAttentionCount = useTaskAttentionCount();
+  const pluginUpdateCount = usePluginUpdateCount(true);
 
   return (
     <PageFrame className="norea-more-page" size="narrow">
@@ -88,6 +95,12 @@ export function MorePage() {
           icon={DownloadsIcon}
           label={t("downloads.title")}
           to="/downloads"
+        />
+        <MoreLinkRow
+          badge={pluginUpdateCount}
+          icon={ExtensionsIcon}
+          label={t("extensions.title")}
+          to="/browse/extensions"
         />
         <MoreLinkRow
           icon={SettingsIcon}

@@ -189,6 +189,14 @@ function pluginItemFromPlugin(plugin: Plugin, sourceUrl: string): PluginItem {
   };
 }
 
+/**
+ * Whether an installed plugin id names a source instance created from the
+ * multi-source template `item` (`<template id>:<slug>`).
+ */
+export function isPluginSourceInstanceOf(pluginId: string, item: PluginItem): boolean {
+  return item.installMode === "multiSource" && pluginId.startsWith(`${item.id}:`);
+}
+
 export interface PluginInstanceInstallInput {
   name: string;
   inputs?: Record<string, string>;
@@ -362,25 +370,61 @@ export class PluginManager {
     return plugin;
   }
 
+  /**
+   * Replace an installed plugin with the repository source `item` points at.
+   * `item` is the plugin's own index entry, or the multi-source template an
+   * installed source instance was created from; an instance keeps its id and
+   * name. The new source is downloaded, compiled and validated, then stored,
+   * and only then swapped in, so a failure at any step leaves the old plugin
+   * running and stored. Plugin inputs and settings are keyed by id and stay.
+   */
+  async updatePlugin(pluginId: string, item: PluginItem): Promise<Plugin> {
+    const current = this.runtimeHandles.get(pluginId);
+    if (!current) {
+      throw new PluginValidationError(`Plugin '${pluginId}' is not installed.`);
+    }
+    const instance = isPluginSourceInstanceOf(pluginId, item);
+    if (!instance && pluginId !== item.id) {
+      throw new PluginValidationError(
+        `Plugin '${pluginId}' cannot be updated from repository entry '${item.id}'.`,
+      );
+    }
+
+    const source = await appFetchText(item.url);
+    const provider = this.loadRuntimePlugin(source, item, "immediate");
+    if (provider.id !== item.id) {
+      throw new PluginValidationError(
+        `Plugin id mismatch: repository index says '${item.id}', source says '${provider.id}'.`,
+      );
+    }
+    const plugin = instance
+      ? this.loadRuntimePlugin(
+          source,
+          { ...item, id: pluginId, name: current.item.name, installMode: "single" },
+          "immediate",
+          { overrideIdentity: true },
+        )
+      : provider;
+    await this.registerInstalledPlugin(plugin, item.url, source);
+    return plugin;
+  }
+
+  /** Stores the plugin first and swaps it in memory only once it is stored. */
   private async registerInstalledPlugin(
     plugin: Plugin,
     sourceUrl: string,
     source: string,
   ): Promise<void> {
     const item = pluginItemFromPlugin(plugin, sourceUrl);
-    this.installed.set(plugin.id, plugin);
-    this.runtimeHandles.set(
-      plugin.id,
-      createPluginRuntimeHandle({
-        item,
-        source,
-        initialRuntime: plugin,
-        compiler: ({ executor, item, overrideIdentity, source }) =>
-          this.loadRuntimePlugin(source, item, executor, {
-            overrideIdentity,
-          }),
-      }),
-    );
+    const handle = createPluginRuntimeHandle({
+      item,
+      source,
+      initialRuntime: plugin,
+      compiler: ({ executor, item, overrideIdentity, source }) =>
+        this.loadRuntimePlugin(source, item, executor, {
+          overrideIdentity,
+        }),
+    });
     await upsertInstalledPlugin({
       id: plugin.id,
       name: plugin.name,
@@ -390,6 +434,8 @@ export class PluginManager {
       sourceUrl,
       sourceCode: source,
     });
+    this.installed.set(plugin.id, plugin);
+    this.runtimeHandles.set(plugin.id, handle);
   }
 
   /**

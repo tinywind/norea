@@ -10,11 +10,17 @@ vi.mock("@tanstack/react-router", () => ({
   useRouterState: () => "/browse/extensions",
 }));
 vi.mock("../lib/plugins/manager", () => ({
+  isPluginSourceInstanceOf: (pluginId: string, entry: PluginItem) =>
+    entry.installMode === "multiSource" && pluginId.startsWith(`${entry.id}:`),
   isValidPluginItem: () => true,
   pluginManager: { list: () => [] },
 }));
 
-import { findPluginUpdates } from "../components/browse/use-plugin-catalog";
+import {
+  findDifferentPluginVersions,
+  findPluginUpdates,
+  updatePlugins,
+} from "../components/browse/use-plugin-catalog";
 import { AvailableSection, InstalledSection, UpdatesSection } from "./extensions";
 
 function item(id: string, version = "1.0.0", extra: Partial<PluginItem> = {}): PluginItem {
@@ -123,6 +129,7 @@ describe("Extensions installed plugins", () => {
   it("shows uninstall progress only on the plugin being uninstalled", () => {
     const $ = render(
       <InstalledSection
+        differentVersions={new Map()}
         loading={false}
         locale="en"
         onOpenSettings={vi.fn()}
@@ -141,6 +148,7 @@ describe("Extensions installed plugins", () => {
   it("marks the plugin opened from Manage in Extensions", () => {
     const $ = render(
       <InstalledSection
+        differentVersions={new Map()}
         focusPluginId="b"
         loading={false}
         locale="en"
@@ -172,12 +180,49 @@ describe("Extensions updates", () => {
     expect(updates.map(({ plugin: installed }) => installed.id)).toEqual(["newer"]);
   });
 
-  it("updates each row on its own, without an Update all action", () => {
-    const onUpdate = vi.fn();
+  it("updates source instances from their multi-source template", () => {
+    const template = item("github", "2.0.0", { installMode: "multiSource" });
+    const updates = findPluginUpdates(
+      [plugin("github:owner-shelf", "1.0.0"), plugin("github:other", "2.0.0"), plugin("github", "1.0.0")],
+      [{ item: template, repoUrl: "r" }],
+    );
+
+    expect(updates.map(({ plugin: installed }) => installed.id)).toEqual(["github:owner-shelf"]);
+    expect(updates[0]?.item).toBe(template);
+  });
+
+  it("reports lower or unorderable repository versions apart from updates", () => {
+    const different = findDifferentPluginVersions(
+      [plugin("older", "3.1.0"), plugin("odd", "1.0.0"), plugin("newer", "1.0.0")],
+      [
+        { item: item("older", "3.0.9"), repoUrl: "r" },
+        { item: item("odd", "next"), repoUrl: "r" },
+        { item: item("newer", "1.1.0"), repoUrl: "r" },
+      ],
+    );
+
+    expect(different.map(({ plugin: installed }) => installed.id)).toEqual(["older", "odd"]);
+    const $ = render(
+      <InstalledSection
+        differentVersions={new Map([["older", "3.0.9"]])}
+        loading={false}
+        locale="en"
+        onOpenSettings={vi.fn()}
+        onUninstall={vi.fn()}
+        plugins={[plugin("older", "3.1.0")]}
+        uninstallingPluginIds={new Set()}
+      />,
+    );
+    expect($("#norea-extension-older").text()).toContain("Different version available (3.0.9)");
+  });
+
+  it("offers Update all for several updates and marks every pending row", () => {
     const $ = render(
       <UpdatesSection
-        installingPluginIds={new Set(["a"])}
-        onUpdate={onUpdate}
+        failedUpdates={new Map()}
+        onUpdate={vi.fn()}
+        onUpdateAll={vi.fn()}
+        updatingPluginIds={new Set(["a"])}
         updates={[
           { item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0") },
           { item: item("b", "2.1.0"), plugin: plugin("b", "2.0.0") },
@@ -188,6 +233,62 @@ describe("Extensions updates", () => {
     expect($('button[aria-label="Update Plugin a"]').attr("data-loading")).toBeDefined();
     expect($('button[aria-label="Update Plugin b"]').attr("data-loading")).toBeUndefined();
     expect($("body").text()).toContain("2.0.0 → 2.1.0");
+    expect($("button:contains('Update all')")).toHaveLength(1);
+  });
+
+  it("leaves a single update to its row button", () => {
+    const $ = render(
+      <UpdatesSection
+        failedUpdates={new Map()}
+        onUpdate={vi.fn()}
+        onUpdateAll={vi.fn()}
+        updatingPluginIds={new Set()}
+        updates={[{ item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0") }]}
+      />,
+    );
+
     expect($("body").text()).not.toContain("Update all");
+  });
+
+  it("reports a failed update on its row and keeps it retryable", () => {
+    const $ = render(
+      <UpdatesSection
+        failedUpdates={new Map([["b", new Error("offline")]])}
+        onUpdate={vi.fn()}
+        onUpdateAll={vi.fn()}
+        updatingPluginIds={new Set()}
+        updates={[
+          { item: item("a", "1.1.0"), plugin: plugin("a", "1.0.0") },
+          { item: item("b", "2.1.0"), plugin: plugin("b", "2.0.0") },
+        ]}
+      />,
+    );
+
+    expect($("body").text()).toContain("2.0.0 → 2.1.0 · Update failed");
+    expect($('button[aria-label="Update Plugin b"]').text()).toBe("Retry");
+    expect($("body").text()).toContain("Couldn't update 1 extensions");
+    expect($("body").text()).toContain("Plugin b: offline");
+  });
+
+  it("keeps updating the others after one plugin fails", async () => {
+    const order: string[] = [];
+    const outcomes = await updatePlugins(
+      [
+        { item: item("a", "1.1.0"), plugin: plugin("a") },
+        { item: item("b", "1.1.0"), plugin: plugin("b") },
+        { item: item("c", "1.1.0"), plugin: plugin("c") },
+      ],
+      async ({ plugin: target }) => {
+        order.push(target.id);
+        if (target.id === "b") throw new Error("broken source");
+      },
+    );
+
+    expect(order).toEqual(["a", "b", "c"]);
+    expect(outcomes.map(({ error, plugin: target }) => [target.id, error ? String(error) : null])).toEqual([
+      ["a", null],
+      ["b", "Error: broken source"],
+      ["c", null],
+    ]);
   });
 });

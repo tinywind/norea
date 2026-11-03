@@ -8,6 +8,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { PageSlot } from "../components/PageSlot";
+import { refreshStaleRepositoryIndexesAtLaunch } from "../components/browse/use-plugin-catalog";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
@@ -359,6 +360,13 @@ export function RootLayout() {
   }, [location.historyIndex, location.href, pathname]);
 
   useEffect(() => startAndroidBackNavigationBridge(), []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    refreshStaleRepositoryIndexesAtLaunch(queryClient).catch((error) =>
+      console.warn("[browse:repository] launch index refresh failed", error),
+    );
+  }, [queryClient]);
 
   useEffect(() => {
     let disposed = false;

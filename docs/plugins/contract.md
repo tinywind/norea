@@ -25,6 +25,16 @@ interface PluginItem {
 The host rejects missing or different API versions before registering a
 plugin. Source IDs must remain stable after release.
 
+A repository entry is offered as an update only when its `version` is strictly
+newer than the installed one under semver precedence, with any number of
+numeric release parts and an optional leading `v`. When neither version is
+semver-like, the strings are compared with numeric awareness. A lower or
+unorderable version is shown as a different version and never updated
+automatically. Source instances of a `multiSource` plugin update from that
+template entry and keep their id, name, and inputs. An update stores the new
+validated source before it replaces the running plugin, so a failed update
+leaves the installed version working.
+
 ## Chapter acquisition
 
 Plugins describe how to acquire a chapter. They do not fetch ordinary chapter

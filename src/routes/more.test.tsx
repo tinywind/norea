@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const taskAttention = vi.hoisted(() => ({ count: 0 }));
+const pluginUpdates = vi.hoisted(() => ({ count: 0 }));
 const library = vi.hoisted(() => ({
   incognitoMode: false,
   setIncognitoMode: vi.fn(),
@@ -31,6 +32,9 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../lib/tasks/hooks", () => ({
   useTaskAttentionCount: () => taskAttention.count,
 }));
+vi.mock("../components/browse/use-plugin-catalog", () => ({
+  usePluginUpdateCount: () => pluginUpdates.count,
+}));
 vi.mock("../store/library", () => ({
   useLibraryStore: <T,>(select: (state: typeof library) => T) => select(library),
 }));
@@ -52,6 +56,7 @@ function linkHrefs(markup: string): string[] {
 describe("More page", () => {
   afterEach(() => {
     taskAttention.count = 0;
+    pluginUpdates.count = 0;
     library.incognitoMode = false;
   });
 
@@ -60,6 +65,7 @@ describe("More page", () => {
 
     expect(linkHrefs(markup)).toEqual([
       "/downloads?view=queue",
+      "/browse/extensions",
       "/settings",
       "/settings?section=about",
     ]);
@@ -75,6 +81,14 @@ describe("More page", () => {
 
     expect(markup).toContain('<span class="norea-more-row-badge">4</span>');
     expect(markup.match(/norea-more-row-badge/g)).toHaveLength(1);
+  });
+
+  it("badges Extensions with the plugin update count", () => {
+    pluginUpdates.count = 3;
+    const markup = renderMorePage();
+
+    expect(markup).toContain("Extensions");
+    expect(markup).toMatch(/Extensions<\/span><\/span><span class="norea-more-row-badge">3<\/span>/);
   });
 
   it("shows no badge when no task needs attention", () => {

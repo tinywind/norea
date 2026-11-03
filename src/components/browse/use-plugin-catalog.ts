@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import {
   getCachedRepoIndex,
@@ -7,12 +8,17 @@ import {
   listRepositories,
   type PluginRepository,
 } from "../../db/queries/repository";
-import { useTranslation } from "../../i18n";
-import { isValidPluginItem, pluginManager } from "../../lib/plugins/manager";
+import { translate, useTranslation } from "../../i18n";
+import {
+  isPluginSourceInstanceOf,
+  isValidPluginItem,
+  pluginManager,
+} from "../../lib/plugins/manager";
 import type { Plugin, PluginItem } from "../../lib/plugins/types";
-import { isNewerPluginVersion } from "../../lib/plugins/version";
+import { comparePluginVersions } from "../../lib/plugins/version";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
 import { isTauriRuntime } from "../../lib/tauri-runtime";
+import { useAppearanceStore } from "../../store/appearance";
 
 export const REPO_QUERY_KEY = ["repository", "list"] as const;
 export const AVAILABLE_QUERY_KEY = ["plugin", "available"] as const;
@@ -34,9 +40,18 @@ export interface AvailableResult {
 }
 
 export interface PluginUpdate {
+  /** The plugin's own index entry, or the template of a source instance. */
   item: PluginItem;
   plugin: Plugin;
 }
+
+export interface PluginUpdateOutcome {
+  plugin: Plugin;
+  error?: unknown;
+}
+
+const REPOSITORY_INDEX_MAX_AGE_SECONDS = 24 * 60 * 60;
+let launchIndexRefresh: Promise<boolean> | null = null;
 
 let forceRefreshNext = false;
 
@@ -177,18 +192,129 @@ export function isMultiSourcePlugin(item: PluginItem): boolean {
   return item.installMode === "multiSource";
 }
 
-/** Installed plugins whose repository entry carries a strictly newer version. */
+/**
+ * The repository entry an installed plugin updates from: its own entry, or,
+ * for a source instance (`<template id>:<slug>`), the multi-source template.
+ */
+function repositoryEntryFor(
+  plugin: Plugin,
+  available: ReadonlyMap<string, PluginItem>,
+): PluginItem | undefined {
+  const own = available.get(plugin.id);
+  if (own) return isMultiSourcePlugin(own) ? undefined : own;
+  const separator = plugin.id.lastIndexOf(":");
+  if (separator <= 0) return undefined;
+  const template = available.get(plugin.id.slice(0, separator));
+  return template && isPluginSourceInstanceOf(plugin.id, template) ? template : undefined;
+}
+
+function pluginVersionMatches(
+  installed: readonly Plugin[],
+  entries: readonly AvailableEntry[],
+  relation: "newer" | "different",
+): PluginUpdate[] {
+  const available = new Map(entries.map(({ item }) => [item.id, item]));
+  return installed.flatMap((plugin) => {
+    const item = repositoryEntryFor(plugin, available);
+    return item && comparePluginVersions(item.version, plugin.version) === relation
+      ? [{ item, plugin }]
+      : [];
+  });
+}
+
+/**
+ * Installed plugins, source instances included, whose repository entry
+ * carries a strictly newer version.
+ */
 export function findPluginUpdates(
   installed: readonly Plugin[],
   entries: readonly AvailableEntry[],
 ): PluginUpdate[] {
-  const available = new Map(entries.map(({ item }) => [item.id, item]));
-  return installed.flatMap((plugin) => {
-    const item = available.get(plugin.id);
-    return item && !isMultiSourcePlugin(item) && isNewerPluginVersion(item.version, plugin.version)
-      ? [{ item, plugin }]
-      : [];
-  });
+  return pluginVersionMatches(installed, entries, "newer");
+}
+
+/**
+ * Installed plugins whose repository version is lower or cannot be ordered.
+ * They are shown, never offered as updates.
+ */
+export function findDifferentPluginVersions(
+  installed: readonly Plugin[],
+  entries: readonly AvailableEntry[],
+): PluginUpdate[] {
+  return pluginVersionMatches(installed, entries, "different");
+}
+
+/** Update count from the cached index, for the Extensions entry badges. */
+export function usePluginUpdateCount(active: boolean): number {
+  const installed = useInstalledPlugins(active);
+  const cachedAvailable = useCachedAvailablePlugins(active);
+  return useMemo(
+    () => findPluginUpdates(installed.data ?? [], cachedAvailable.data ?? []).length,
+    [cachedAvailable.data, installed.data],
+  );
+}
+
+/**
+ * Updates each plugin in turn and reports every outcome. A failed update
+ * leaves that plugin as it was and does not stop the others.
+ */
+export async function updatePlugins(
+  updates: readonly PluginUpdate[],
+  update: (pluginUpdate: PluginUpdate) => Promise<unknown>,
+): Promise<PluginUpdateOutcome[]> {
+  const outcomes: PluginUpdateOutcome[] = [];
+  for (const pluginUpdate of updates) {
+    try {
+      await update(pluginUpdate);
+      outcomes.push({ plugin: pluginUpdate.plugin });
+    } catch (error) {
+      outcomes.push({ plugin: pluginUpdate.plugin, error });
+    }
+  }
+  return outcomes;
+}
+
+async function hasStaleRepositoryIndex(
+  repos: readonly PluginRepository[],
+  nowSeconds: number,
+): Promise<boolean> {
+  for (const repo of repos) {
+    const cached = await getCachedRepoIndex(repo.url);
+    if (!cached || nowSeconds - cached.fetchedAt >= REPOSITORY_INDEX_MAX_AGE_SECONDS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Refetches the repository indexes at launch when any cached index is a day
+ * old or missing, so the update counts stay current without a manual
+ * refresh. Runs once per session; resolves whether a refresh ran.
+ */
+export function refreshStaleRepositoryIndexesAtLaunch(
+  queryClient: QueryClient,
+  nowSeconds: number = Date.now() / 1000,
+): Promise<boolean> {
+  launchIndexRefresh ??= (async () => {
+    const repos = await listRepositories();
+    if (repos.length === 0 || !(await hasStaleRepositoryIndex(repos, nowSeconds))) {
+      return false;
+    }
+    const result = await enqueueMainTask({
+      kind: "repository.refreshIndex",
+      title: translate(useAppearanceStore.getState().appLocale, "browse.repositoryIndex"),
+      run: () => fetchAllAvailable(repos, true),
+    }).promise;
+    queryClient.setQueryData<AvailableResult>(AVAILABLE_QUERY_KEY, result);
+    void queryClient.invalidateQueries({ queryKey: [...AVAILABLE_QUERY_KEY, "cached"] });
+    return true;
+  })();
+  return launchIndexRefresh;
+}
+
+export function resetLaunchRepositoryIndexRefreshForTests(): void {
+  launchIndexRefresh = null;
 }
 
 export function hasPluginInputs(plugin: Plugin | null | undefined): boolean {

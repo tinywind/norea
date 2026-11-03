@@ -18,11 +18,13 @@ import { PluginIcon } from "../components/browse/PluginIcon";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
 import {
   AVAILABLE_QUERY_KEY,
+  findDifferentPluginVersions,
   findPluginUpdates,
   hasPluginInputs,
   isMultiSourcePlugin,
   refreshAvailablePlugins,
   sortPluginsByName,
+  updatePlugins,
   useAvailablePlugins,
   useInstalledPlugins,
   useRepositories,
@@ -31,6 +33,7 @@ import {
   type PluginUpdate,
   type RepoFetchFailure,
 } from "../components/browse/use-plugin-catalog";
+import { showSettingsToast } from "../components/settings/settings-toast";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   BackIcon,
@@ -244,6 +247,12 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const [uninstallingPluginIds, setUninstallingPluginIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [updatingPluginIds, setUpdatingPluginIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [failedUpdates, setFailedUpdates] = useState<ReadonlyMap<string, unknown>>(
+    () => new Map(),
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const repository = repos.data?.[0] ?? null;
@@ -259,6 +268,16 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const failures = repository ? (available.data?.failures ?? []) : [];
   const updates = useMemo(
     () => findPluginUpdates(installedPlugins, availableEntries),
+    [availableEntries, installedPlugins],
+  );
+  const differentVersions = useMemo(
+    () =>
+      new Map(
+        findDifferentPluginVersions(installedPlugins, availableEntries).map(({ item, plugin }) => [
+          plugin.id,
+          item.version,
+        ]),
+      ),
     [availableEntries, installedPlugins],
   );
   const installableEntries = useMemo(
@@ -358,6 +377,43 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["plugin"] }),
     onSettled: (_plugin, _error, item) =>
       setInstallingPluginIds((ids) => withoutPendingId(ids, item.id)),
+  });
+
+  const update = useMutation({
+    meta: { errorPresentation: "inline" },
+    mutationFn: (targets: readonly PluginUpdate[]) =>
+      updatePlugins(targets, async ({ item, plugin }) => {
+        try {
+          await enqueueMainTask({
+            kind: "plugin.install",
+            title: t("extensions.updateAction", { name: plugin.name }),
+            subject: { pluginId: plugin.id, url: item.url },
+            run: () => pluginManager.updatePlugin(plugin.id, item),
+          }).promise;
+          void queryClient.invalidateQueries({ queryKey: ["plugin"] });
+        } finally {
+          setUpdatingPluginIds((ids) => withoutPendingId(ids, plugin.id));
+        }
+      }),
+    onMutate: (targets) => {
+      setUpdatingPluginIds((ids) => new Set([...ids, ...targets.map(({ plugin }) => plugin.id)]));
+      setFailedUpdates((current) => {
+        const next = new Map(current);
+        for (const { plugin } of targets) next.delete(plugin.id);
+        return next;
+      });
+    },
+    onSuccess: (outcomes) => {
+      const failed = outcomes.filter((outcome) => outcome.error !== undefined);
+      setFailedUpdates((current) => {
+        const next = new Map(current);
+        for (const { error, plugin } of failed) next.set(plugin.id, error);
+        return next;
+      });
+      if (outcomes.length > 1 && failed.length === 0) {
+        showSettingsToast("ok", t("extensions.updatedAll", { count: outcomes.length }));
+      }
+    },
   });
 
   const installSource = useMutation({
@@ -535,13 +591,16 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
 
         {updates.length > 0 ? (
           <UpdatesSection
-            installingPluginIds={installingPluginIds}
-            onUpdate={(item) => install.mutate(item)}
+            failedUpdates={failedUpdates}
+            onUpdate={(target) => update.mutate([target])}
+            onUpdateAll={() => update.mutate(updates)}
             updates={updates}
+            updatingPluginIds={updatingPluginIds}
           />
         ) : null}
 
         <InstalledSection
+          differentVersions={differentVersions}
           focusPluginId={focusPluginId}
           loading={installed.isLoading}
           locale={locale}
@@ -772,45 +831,89 @@ function RepositoryCard({
 }
 
 interface UpdatesSectionProps {
-  installingPluginIds: ReadonlySet<string>;
-  onUpdate: (item: PluginItem) => void;
+  /** Errors from the last update attempt, by installed plugin id. */
+  failedUpdates: ReadonlyMap<string, unknown>;
+  onUpdate: (update: PluginUpdate) => void;
+  onUpdateAll: () => void;
   updates: readonly PluginUpdate[];
+  updatingPluginIds: ReadonlySet<string>;
 }
 
-export function UpdatesSection({ installingPluginIds, onUpdate, updates }: UpdatesSectionProps) {
+export function UpdatesSection({
+  failedUpdates,
+  onUpdate,
+  onUpdateAll,
+  updates,
+  updatingPluginIds,
+}: UpdatesSectionProps) {
   const { t } = useTranslation();
+  const failed = updates.filter(({ plugin }) => failedUpdates.has(plugin.id));
 
   return (
     <ExtensionSection
+      actions={
+        updates.length > 1 ? (
+          <Button
+            disabled={updates.every(({ plugin }) => updatingPluginIds.has(plugin.id))}
+            onClick={onUpdateAll}
+            size="compact-sm"
+            variant="light"
+          >
+            {t("extensions.updateAll")}
+          </Button>
+        ) : undefined
+      }
       id="norea-extensions-updates"
       title={t("extensions.updates.title", { count: updates.length })}
     >
       <ul className="norea-extension-list">
-        {updates.map(({ item, plugin }) => (
-          <ExtensionRow
-            key={plugin.id}
-            leading={<PluginIcon plugin={plugin} />}
-            subtitle={`${plugin.version} → ${item.version}`}
-            title={plugin.name}
-            trailing={
-              <Button
-                aria-label={t("extensions.updateAction", { name: plugin.name })}
-                loading={installingPluginIds.has(item.id)}
-                onClick={() => onUpdate(item)}
-                size="compact-sm"
-                variant="light"
-              >
-                {t("extensions.update")}
-              </Button>
-            }
-          />
-        ))}
+        {updates.map((pluginUpdate) => {
+          const { item, plugin } = pluginUpdate;
+          return (
+            <ExtensionRow
+              key={plugin.id}
+              leading={<PluginIcon plugin={plugin} />}
+              subtitle={
+                failedUpdates.has(plugin.id)
+                  ? `${plugin.version} → ${item.version} · ${t("extensions.updateFailed")}`
+                  : `${plugin.version} → ${item.version}`
+              }
+              title={plugin.name}
+              trailing={
+                <Button
+                  aria-label={t("extensions.updateAction", { name: plugin.name })}
+                  loading={updatingPluginIds.has(plugin.id)}
+                  onClick={() => onUpdate(pluginUpdate)}
+                  size="compact-sm"
+                  variant="light"
+                >
+                  {failedUpdates.has(plugin.id) ? t("common.retry") : t("extensions.update")}
+                </Button>
+              }
+            />
+          );
+        })}
       </ul>
+      {failed.length > 0 ? (
+        <StateView
+          color="danger"
+          details={{
+            content: failed
+              .map(({ plugin }) => `${plugin.name}: ${describeError(failedUpdates.get(plugin.id))}`)
+              .join("\n"),
+            label: t("common.details"),
+          }}
+          message={t("extensions.updateFailedMessage")}
+          title={t("extensions.updateFailedTitle", { count: failed.length })}
+        />
+      ) : null}
     </ExtensionSection>
   );
 }
 
 interface InstalledSectionProps {
+  /** Repository versions that are lower or cannot be ordered, by plugin id. */
+  differentVersions: ReadonlyMap<string, string>;
   focusPluginId?: string;
   loading: boolean;
   locale: AppLocale;
@@ -821,6 +924,7 @@ interface InstalledSectionProps {
 }
 
 export function InstalledSection({
+  differentVersions,
   focusPluginId,
   loading,
   locale,
@@ -851,7 +955,13 @@ export function InstalledSection({
               id={extensionRowId(plugin.id)}
               key={plugin.id}
               leading={<PluginIcon plugin={plugin} />}
-              subtitle={pluginMeta(locale, plugin)}
+              subtitle={
+                differentVersions.has(plugin.id)
+                  ? `${pluginMeta(locale, plugin)} · ${t("extensions.differentVersion", {
+                      version: differentVersions.get(plugin.id)!,
+                    })}`
+                  : pluginMeta(locale, plugin)
+              }
               title={plugin.name}
               trailing={
                 uninstallingPluginIds.has(plugin.id) ? (
