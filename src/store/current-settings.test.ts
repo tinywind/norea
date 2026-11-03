@@ -107,6 +107,31 @@ describe("current persisted settings", () => {
     );
   });
 
+  it("rehydrates the retired navigation tab switches without losing other settings", async () => {
+    storageHarness.values.set("app-appearance-settings", JSON.stringify({
+      version: 0,
+      state: {
+        appThemeId: "default",
+        showDownloadsTab: false,
+        showHistoryTab: false,
+        showLabelsInNav: false,
+        showTasksTab: false,
+        showUpdatesTab: false,
+        themeMode: "dark",
+      },
+    }));
+    await useAppearanceStore.persist.rehydrate();
+    expect(useAppearanceStore.getState()).toMatchObject({
+      showDownloadsTab: false,
+      showHistoryTab: false,
+      showLabelsInNav: false,
+      showTasksTab: false,
+      showUpdatesTab: false,
+      themeMode: "dark",
+    });
+    useAppearanceStore.getState().resetAppearance();
+  });
+
   it("keeps saved CSS unchanged even when it matches an old preset", async () => {
     const customCss = READER_CUSTOM_CSS_PRESETS.find(
       (preset) => preset.id === "page-fit-media",

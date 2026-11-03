@@ -1080,50 +1080,6 @@ function AppSettingsSection({ isBusy }: { isBusy: boolean }) {
         title={t("settings.app.navigation.title")}
       >
         <SettingsFieldRow
-          label={t("settings.app.historyTab.label")}
-          description={t("settings.app.historyTab.description")}
-        >
-          <Switch
-            checked={appearance.showHistoryTab}
-            onChange={(event) =>
-              appearance.setShowHistoryTab(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("settings.app.updatesTab.label")}
-          description={t("settings.app.updatesTab.description")}
-        >
-          <Switch
-            checked={appearance.showUpdatesTab}
-            onChange={(event) =>
-              appearance.setShowUpdatesTab(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("settings.app.cacheTab.label")}
-          description={t("settings.app.cacheTab.description")}
-        >
-          <Switch
-            checked={appearance.showDownloadsTab}
-            onChange={(event) =>
-              appearance.setShowDownloadsTab(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("settings.app.tasksTab.label")}
-          description={t("settings.app.tasksTab.description")}
-        >
-          <Switch
-            checked={appearance.showTasksTab}
-            onChange={(event) =>
-              appearance.setShowTasksTab(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
           label={t("settings.app.navLabels.label")}
           description={t("settings.app.navLabels.description")}
         >

@@ -18,6 +18,8 @@ interface AppearanceState {
   customAccentColor: string;
   fontScalePercent: number;
   appLocale: AppLocale;
+  // The four show*Tab fields are ignored since D3. They stay so stores written
+  // by earlier builds rehydrate unchanged.
   showHistoryTab: boolean;
   showUpdatesTab: boolean;
   showDownloadsTab: boolean;
@@ -30,10 +32,6 @@ interface AppearanceState {
   setCustomAccentColor: (customAccentColor: string) => void;
   setFontScalePercent: (fontScalePercent: unknown) => void;
   setAppLocale: (appLocale: string) => void;
-  setShowHistoryTab: (showHistoryTab: boolean) => void;
-  setShowUpdatesTab: (showUpdatesTab: boolean) => void;
-  setShowDownloadsTab: (showDownloadsTab: boolean) => void;
-  setShowTasksTab: (showTasksTab: boolean) => void;
   setShowLabelsInNav: (showLabelsInNav: boolean) => void;
   resetAppearance: () => void;
 }
@@ -116,10 +114,6 @@ export const useAppearanceStore = create<AppearanceState>()(
         set({ fontScalePercent: normalizeFontScalePercent(fontScalePercent) }),
       setAppLocale: (appLocale) =>
         set({ appLocale: normalizeAppLocale(appLocale) }),
-      setShowHistoryTab: (showHistoryTab) => set({ showHistoryTab }),
-      setShowUpdatesTab: (showUpdatesTab) => set({ showUpdatesTab }),
-      setShowDownloadsTab: (showDownloadsTab) => set({ showDownloadsTab }),
-      setShowTasksTab: (showTasksTab) => set({ showTasksTab }),
       setShowLabelsInNav: (showLabelsInNav) => set({ showLabelsInNav }),
       resetAppearance: () =>
         set((state) => ({ ...DEFAULT_APPEARANCE, appLocale: state.appLocale })),
