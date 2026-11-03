@@ -1,4 +1,5 @@
 import { Alert, Button, Checkbox, Group, Loader, Stack, Text } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -63,6 +64,7 @@ export function NovelCategoryEditor({
         queryClient.invalidateQueries({ queryKey: ["novel", "library"] }),
       ]);
       onCloseSheet();
+      notifications.show({ color: "ok", message: t("categories.workSaved") });
     },
     onError: () => {
       void queryClient.invalidateQueries({ queryKey: ["category"] });

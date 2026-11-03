@@ -13,6 +13,7 @@ import { useContentSyncStore } from "../store/content-sync";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 import { ReadingStateSettings } from "./ReadingStateSettings";
+import { showSettingsToast } from "./settings/settings-toast";
 
 export function ContentServerSettings() {
   const { t } = useTranslation();
@@ -79,7 +80,10 @@ export function ContentServerSettings() {
             onChange={(event) => setUrlDraft(event.currentTarget.value)}
           />
           <TextButton tone="accent" disabled={disabled || urlDraft === serverUrl} onClick={() => {
-            void run(async () => { setServerUrl(urlDraft.trim()); });
+            void run(async () => {
+              setServerUrl(urlDraft.trim());
+              showSettingsToast("ok", t("settings.toast.saved"));
+            });
           }}>{t("common.save")}</TextButton>
         </div>
       </SettingsFieldRow>

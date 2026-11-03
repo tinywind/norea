@@ -156,6 +156,7 @@
   "categories.clearWork": "모두 해제",
   "categories.workNotFound": "이 작품이 서재에서 제거되었습니다. 서재에 다시 추가한 뒤 카테고리를 편집하세요.",
   "categories.selectionUnavailable": "선택한 카테고리가 삭제되었습니다. 편집 창을 닫았다 다시 열어 카테고리를 새로 불러오세요.",
+  "categories.workSaved": "카테고리를 변경했습니다",
   "library.editSelectedCategories": "선택한 작품의 카테고리 편집",
   "library.categoryAction.hint": "작품의 카테고리 지정만 바뀝니다. 작품과 다운로드는 유지됩니다.",
   "library.categoryAction.title": "소설 {count}편의 카테고리",

@@ -9,8 +9,11 @@ import {
 const mocks = vi.hoisted(() => ({
   assigned: [4] as number[],
   mutate: vi.fn(),
+  mutationOptions: null as null | { onSuccess: (data: unknown, ids: number[]) => Promise<void> },
   saveError: null as unknown,
+  showToast: vi.fn(),
 }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.showToast } }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => ({
@@ -21,7 +24,10 @@ vi.mock("@tanstack/react-query", () => ({
     error: null,
     refetch: vi.fn(),
   }),
-  useMutation: () => ({ isPending: false, error: mocks.saveError, reset: vi.fn(), mutate: mocks.mutate }),
+  useMutation: (options: NonNullable<typeof mocks.mutationOptions>) => {
+    mocks.mutationOptions = options;
+    return { isPending: false, error: mocks.saveError, reset: vi.fn(), mutate: mocks.mutate };
+  },
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../db/queries/category", () => ({
@@ -99,6 +105,13 @@ it("starts the sheet from the saved assignment and applies the edited choice", a
   const apply = sheetElements().find((element) => element.props.children === "common.apply")!;
   await harness!.run(() => (apply.props.onClick as () => void)());
   expect(mocks.mutate).toHaveBeenCalledWith([4, 5]);
+});
+
+it("closes the sheet and confirms with a toast once the assignment is saved", async () => {
+  await render(true);
+  await mocks.mutationOptions!.onSuccess(undefined, [4, 5]);
+  expect(onCloseSheet).toHaveBeenCalledTimes(1);
+  expect(mocks.showToast).toHaveBeenCalledWith({ color: "ok", message: "categories.workSaved" });
 });
 
 it("clears the choice without saving until Apply and closes on Cancel", async () => {

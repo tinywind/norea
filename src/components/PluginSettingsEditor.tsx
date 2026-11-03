@@ -19,6 +19,7 @@ import {
   SettingsFieldRow,
   SettingsInlineControls,
 } from "./SettingsPrimitives";
+import { showSettingsToast } from "./settings/settings-toast";
 import { TextButton } from "./TextButton";
 
 type PluginSettingValue = string | boolean;
@@ -202,6 +203,7 @@ export function PluginSettingsEditor({
                   setPluginInputValue(plugin.id, key, String(value));
                 }
               }
+              showSettingsToast("ok", t("settings.toast.saved"));
               onSaved?.();
             }}
           >

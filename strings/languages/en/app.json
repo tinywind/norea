@@ -156,6 +156,7 @@
   "categories.clearWork": "Clear all",
   "categories.workNotFound": "This work is no longer in your library. Add it again before editing categories.",
   "categories.selectionUnavailable": "A selected category was removed. Close and reopen this editor to reload the available categories.",
+  "categories.workSaved": "Updated categories",
   "library.editSelectedCategories": "Edit selected novels' categories",
   "library.categoryAction.hint": "Only category assignments change. Works and downloads are kept.",
   "library.categoryAction.title": "Categories for {count} novels",
