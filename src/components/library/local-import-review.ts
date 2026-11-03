@@ -1,4 +1,3 @@
-import { type LocalNovelImportResult } from "../../db/queries/novel";
 import { findLocalImportedChapter } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
 import {
@@ -27,13 +26,6 @@ export interface LocalImportReviewItem {
   importedChapterCount?: number;
   importedNovelId?: number;
   status: LocalImportReviewStatus;
-}
-
-export interface LocalImportItemResult {
-  error?: string;
-  itemId: string;
-  result?: LocalNovelImportResult;
-  status: "error" | "imported";
 }
 
 export async function analyzeLocalImportReviewItem(

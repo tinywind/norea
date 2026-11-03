@@ -959,6 +959,8 @@
   "library.localImport.empty": "No files selected.",
   "library.localImport.summary": "{ready} ready - {blocked} blocked - {imported} imported - {total} total",
   "library.localImport.importReady": "Import {count}",
+  "library.localImport.waiting": "{count} more files waiting",
+  "library.localImport.result": "Imported {imported} · Skipped {skipped} · Failed {failed}",
   "library.localImport.formatUnknown": "Unknown",
   "library.localImport.error": "Import failed.",
   "library.localImport.duplicateLibrary": "This file is already in the library.",

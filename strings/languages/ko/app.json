@@ -959,6 +959,8 @@
   "library.localImport.empty": "선택한 파일이 없습니다.",
   "library.localImport.summary": "준비 {ready}개 - 제외 {blocked}개 - 가져옴 {imported}개 - 총 {total}개",
   "library.localImport.importReady": "{count}개 가져오기",
+  "library.localImport.waiting": "대기 중인 파일 {count}개",
+  "library.localImport.result": "가져옴 {imported} · 건너뜀 {skipped} · 실패 {failed}",
   "library.localImport.formatUnknown": "알 수 없음",
   "library.localImport.error": "가져오기에 실패했습니다.",
   "library.localImport.duplicateLibrary": "이 파일은 이미 서재에 있습니다.",

@@ -16,10 +16,7 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
-import {
-  upsertLocalNovel,
-  type LocalNovelImportResult,
-} from "../../db/queries/novel";
+import { upsertLocalNovel } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { clearLocalImportFileCache } from "../../lib/local-import";
@@ -28,11 +25,19 @@ import { LOCAL_NOVEL_NAME, LOCAL_NOVEL_PATH } from "../../lib/local-library-iden
 import { useLibraryStore } from "../../store/library";
 import { TextButton } from "../TextButton";
 import {
+  beginLocalImport,
+  getLocalImportResultCounts,
+  isLocalImportBusy,
+  replaceLocalImportItem,
+  startLocalImportBatch,
+  updateLocalImportBatch,
+  type LocalImportBatch,
+} from "./local-import-batch";
+import {
   analyzeLocalImportReviewItem,
   getLocalImportErrorMessage,
   getLocalImportSummary,
   markSelectedLocalImportDuplicates,
-  type LocalImportItemResult,
   type LocalImportReviewItem,
 } from "./local-import-review";
 import { LocalImportReviewRow } from "./LocalImportReviewRow";
@@ -56,92 +61,10 @@ export const LibraryLocalImport = forwardRef<
     (s) => s.takePendingLocalImportFiles,
   );
   const localImportInputRef = useRef<HTMLInputElement>(null);
-  const [localImportOpen, setLocalImportOpen] = useState(false);
-  const [localImportItems, setLocalImportItems] = useState<
-    LocalImportReviewItem[]
-  >([]);
-  const [localImportAnalyzing, setLocalImportAnalyzing] = useState(false);
-  const localImportMutation = useMutation({
-    meta: { errorPresentation: "inline" },
-    mutationFn: async (
-      items: readonly LocalImportReviewItem[],
-    ): Promise<LocalImportItemResult[]> => {
-      const results: LocalImportItemResult[] = [];
-
-      for (const item of items) {
-        try {
-          const result = await importLocalFileToLibrary(item.file, {
-            analysis: item.analysis,
-          });
-          results.push({ itemId: item.id, result, status: "imported" });
-        } catch (error) {
-          results.push({
-            error: getLocalImportErrorMessage(error),
-            itemId: item.id,
-            status: "error",
-          });
-        } finally {
-          clearLocalImportFileCache(item.file);
-        }
-      }
-
-      return results;
-    },
-    onMutate: (items) => {
-      const importingIds = new Set(items.map((item) => item.id));
-      setLocalImportItems((current) =>
-        current.map((item) =>
-          importingIds.has(item.id) ? { ...item, status: "importing" } : item,
-        ),
-      );
-    },
-    onSuccess: (results) => {
-      const resultById = new Map(
-        results.map((result) => [result.itemId, result]),
-      );
-      setLocalImportItems((current) =>
-        current.map((item) => {
-          const result = resultById.get(item.id);
-          if (!result) return item;
-
-          if (result.status === "imported" && result.result) {
-            return {
-              ...item,
-              error: undefined,
-              importedChapterCount: result.result.chapterCount,
-              importedNovelId: result.result.novelId,
-              status: "imported",
-            };
-          }
-
-          return {
-            ...item,
-            error: result.error ?? t("library.localImport.error"),
-            status: "error",
-          };
-        }),
-      );
-      void queryClient.invalidateQueries({ queryKey: ["category"] });
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
-      void queryClient.invalidateQueries({ queryKey: ["chapter"] });
-
-      const imported = results.filter(
-        (
-          result,
-        ): result is LocalImportItemResult & {
-          result: LocalNovelImportResult;
-          status: "imported";
-        } => result.status === "imported" && !!result.result,
-      );
-      if (results.length === 1 && imported.length === 1) {
-        setLocalImportOpen(false);
-        void navigate({
-          to: "/novel",
-          search: { id: imported[0].result.novelId },
-        });
-      }
-    },
-  });
+  const [batch, setBatch] = useState<LocalImportBatch | null>(null);
+  const [waitingFiles, setWaitingFiles] = useState<readonly File[]>([]);
+  const nextBatchIdRef = useRef(0);
+  const activeBatchIdRef = useRef<number | null>(null);
 
   const openLocalHome = useMutation({
     meta: { errorPresentation: "inline" },
@@ -153,93 +76,141 @@ export const LibraryLocalImport = forwardRef<
     },
   });
 
-  const openLocalImportInput = useCallback(() => {
-    localImportMutation.reset();
-    localImportInputRef.current?.click();
-  }, [localImportMutation]);
-
-  const closeLocalImportReview = useCallback(() => {
-    if (localImportMutation.isPending) return;
-    localImportMutation.reset();
-    for (const item of localImportItems) {
-      clearLocalImportFileCache(item.file);
+  const startBatch = useCallback(async (files: readonly File[]) => {
+    const id = ++nextBatchIdRef.current;
+    activeBatchIdRef.current = id;
+    setBatch(startLocalImportBatch(id));
+    const analyzedItems = await Promise.all(
+      files.map((file, index) => analyzeLocalImportReviewItem(file, index)),
+    );
+    if (activeBatchIdRef.current !== id) {
+      for (const item of analyzedItems) clearLocalImportFileCache(item.file);
+      return;
     }
-    setLocalImportOpen(false);
-    setLocalImportItems([]);
-  }, [localImportItems, localImportMutation]);
+    setBatch((current) =>
+      updateLocalImportBatch(current, id, (started) => ({
+        ...started,
+        items: markSelectedLocalImportDuplicates(analyzedItems),
+        phase: "review",
+      })),
+    );
+  }, []);
 
-  const reviewLocalImportFiles = useCallback(
-    async (files: readonly File[]) => {
+  const requestImport = useCallback(
+    (files: readonly File[]) => {
       if (files.length === 0) return;
-      localImportMutation.reset();
-      for (const item of localImportItems) {
+      if (activeBatchIdRef.current !== null) {
+        setWaitingFiles((current) => [...current, ...files]);
+        return;
+      }
+      void startBatch(files);
+    },
+    [startBatch],
+  );
+
+  const importReadyFiles = useCallback(async () => {
+    if (!batch || batch.phase !== "review") return;
+    const { id } = batch;
+    const importing = beginLocalImport(batch);
+    setBatch(importing);
+    let importedNovelId: number | null = null;
+
+    for (const item of batch.items.filter((entry) => entry.status === "ready")) {
+      let next: LocalImportReviewItem;
+      try {
+        const result = await importLocalFileToLibrary(item.file, {
+          analysis: item.analysis,
+        });
+        importedNovelId = result.novelId;
+        next = {
+          ...item,
+          error: undefined,
+          importedChapterCount: result.chapterCount,
+          importedNovelId: result.novelId,
+          status: "imported",
+        };
+      } catch (error) {
+        next = {
+          ...item,
+          error: getLocalImportErrorMessage(error) || t("library.localImport.error"),
+          status: "error",
+        };
+      } finally {
         clearLocalImportFileCache(item.file);
       }
-      setLocalImportOpen(true);
-      setLocalImportAnalyzing(true);
-      setLocalImportItems([]);
-
-      const analyzedItems = await Promise.all(
-        files.map((file, index) => analyzeLocalImportReviewItem(file, index)),
+      setBatch((current) =>
+        updateLocalImportBatch(current, id, (started) =>
+          replaceLocalImportItem(started, next),
+        ),
       );
-      setLocalImportItems(markSelectedLocalImportDuplicates(analyzedItems));
-      setLocalImportAnalyzing(false);
-    },
-    [localImportItems, localImportMutation],
-  );
+    }
 
-  const localImportReviewQueueRef = useRef(Promise.resolve());
-  const queueLocalImportReview = useCallback(
-    (files: readonly File[]) => {
-      localImportReviewQueueRef.current =
-        localImportReviewQueueRef.current.then(() =>
-          reviewLocalImportFiles(files),
-        );
-      return localImportReviewQueueRef.current;
-    },
-    [reviewLocalImportFiles],
-  );
+    void queryClient.invalidateQueries({ queryKey: ["category"] });
+    void queryClient.invalidateQueries({ queryKey: ["novel"] });
+    void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+    if (activeBatchIdRef.current !== id) return;
+
+    if (batch.items.length === 1 && importedNovelId !== null) {
+      activeBatchIdRef.current = null;
+      setBatch(null);
+      void navigate({ to: "/novel", search: { id: importedNovelId } });
+      return;
+    }
+    setBatch((current) =>
+      updateLocalImportBatch(current, id, (started) => ({ ...started, phase: "result" })),
+    );
+  }, [batch, navigate, queryClient, t]);
+
+  const dismissBatch = useCallback(() => {
+    if (!batch || isLocalImportBusy(batch)) return;
+    for (const item of batch.items) clearLocalImportFileCache(item.file);
+    activeBatchIdRef.current = null;
+    setBatch(null);
+    if (waitingFiles.length > 0) {
+      setWaitingFiles([]);
+      void startBatch(waitingFiles);
+    }
+  }, [batch, startBatch, waitingFiles]);
+
+  // A queued request starts once the single-file shortcut has left the modal closed.
+  useEffect(() => {
+    if (batch !== null || activeBatchIdRef.current !== null || waitingFiles.length === 0) return;
+    setWaitingFiles([]);
+    void startBatch(waitingFiles);
+  }, [batch, startBatch, waitingFiles]);
 
   useEffect(() => {
     if (pendingLocalImportFiles.length === 0) return;
-    const files = takePendingLocalImportFiles();
-    void queueLocalImportReview(files);
-  }, [
-    pendingLocalImportFiles,
-    queueLocalImportReview,
-    takePendingLocalImportFiles,
-  ]);
+    requestImport(takePendingLocalImportFiles());
+  }, [pendingLocalImportFiles, requestImport, takePendingLocalImportFiles]);
 
   const handleLocalImportFilesSelected = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.currentTarget.files ?? []);
       event.currentTarget.value = "";
-      void queueLocalImportReview(files);
+      requestImport(files);
     },
-    [queueLocalImportReview],
+    [requestImport],
   );
 
-  const readyLocalImportItems = localImportItems.filter(
-    (item) => item.status === "ready",
-  );
-  const localImportSummary = localImportAnalyzing
-    ? t("library.localImport.analyzing")
-    : getLocalImportSummary(localImportItems, t);
+  const busy = isLocalImportBusy(batch);
+  const items = batch?.items ?? [];
+  const readyCount = items.filter((item) => item.status === "ready").length;
+  const result = batch?.phase === "result" ? getLocalImportResultCounts(batch) : null;
   const localHomeErrorOpen = active && Boolean(openLocalHome.error);
-  useOverlayBackNavigation(active && localImportOpen, closeLocalImportReview);
+  useOverlayBackNavigation(active && batch !== null, dismissBatch);
   useOverlayBackNavigation(localHomeErrorOpen, () => openLocalHome.reset());
 
   useImperativeHandle(
     ref,
     () => ({
-      openFilePicker: openLocalImportInput,
+      openFilePicker: () => localImportInputRef.current?.click(),
       openLocalHome: () => openLocalHome.mutate(),
     }),
-    [openLocalImportInput, openLocalHome],
+    [openLocalHome],
   );
   return (
     <>
-      {" "}
       <input
         ref={localImportInputRef}
         accept={LOCAL_IMPORT_ACCEPT}
@@ -249,14 +220,17 @@ export const LibraryLocalImport = forwardRef<
         type="file"
       />
       <Modal
-        opened={active && localImportOpen}
-        onClose={closeLocalImportReview}
+        closeOnClickOutside={!busy}
+        closeOnEscape={!busy}
+        onClose={dismissBatch}
+        opened={active && batch !== null}
         size="lg"
         title={t("library.localImport.title")}
+        withCloseButton={!busy}
       >
         <Stack gap="sm">
-          {localImportAnalyzing ? (
-            <Group gap="xs">
+          {batch?.phase === "analyzing" ? (
+            <Group gap="xs" role="status">
               <Loader size="sm" />
               <Text c="dimmed" size="sm">
                 {t("library.localImport.analyzing")}
@@ -264,9 +238,9 @@ export const LibraryLocalImport = forwardRef<
             </Group>
           ) : null}
 
-          {localImportItems.length > 0 ? (
+          {items.length > 0 ? (
             <div className="norea-library-local-import-list">
-              {localImportItems.map((item) => (
+              {items.map((item) => (
                 <LocalImportReviewRow
                   item={item}
                   key={item.id}
@@ -277,42 +251,56 @@ export const LibraryLocalImport = forwardRef<
             </div>
           ) : null}
 
-          {localImportMutation.error ? (
-            <Text c="danger" size="sm">
-              {getLocalImportErrorMessage(localImportMutation.error)}
+          {waitingFiles.length > 0 ? (
+            <Text c="dimmed" size="sm">
+              {t("library.localImport.waiting", { count: waitingFiles.length })}
             </Text>
           ) : null}
 
           <Group justify="space-between" wrap="wrap">
-            <Text c="dimmed" size="sm">
-              {localImportSummary}
+            <Text aria-live="polite" c="dimmed" size="sm">
+              {result
+                ? t("library.localImport.result", result)
+                : batch?.phase === "analyzing"
+                  ? null
+                  : getLocalImportSummary(items, t)}
             </Text>
-            <Group gap="xs">
-              <TextButton
-                disabled={localImportMutation.isPending}
-                onClick={closeLocalImportReview}
-                type="button"
-                variant="subtle"
-              >
-                {t("common.cancel")}
-              </TextButton>
-              <TextButton
-                disabled={
-                  localImportAnalyzing ||
-                  readyLocalImportItems.length === 0 ||
-                  localImportMutation.isPending
-                }
-                loading={localImportMutation.isPending}
-                onClick={() =>
-                  localImportMutation.mutate(readyLocalImportItems)
-                }
-                type="button"
-              >
-                {t("library.localImport.importReady", {
-                  count: readyLocalImportItems.length,
-                })}
-              </TextButton>
-            </Group>
+            {result ? (
+              <Group gap="xs">
+                <TextButton
+                  onClick={() => {
+                    dismissBatch();
+                    openLocalHome.mutate();
+                  }}
+                  type="button"
+                  variant="subtle"
+                >
+                  {t("library.localNovel.create")}
+                </TextButton>
+                <TextButton onClick={dismissBatch} type="button">
+                  {t("common.done")}
+                </TextButton>
+              </Group>
+            ) : (
+              <Group gap="xs">
+                <TextButton
+                  disabled={busy}
+                  onClick={dismissBatch}
+                  type="button"
+                  variant="subtle"
+                >
+                  {t("common.cancel")}
+                </TextButton>
+                <TextButton
+                  disabled={busy || readyCount === 0}
+                  loading={batch?.phase === "importing"}
+                  onClick={() => void importReadyFiles()}
+                  type="button"
+                >
+                  {t("library.localImport.importReady", { count: readyCount })}
+                </TextButton>
+              </Group>
+            )}
           </Group>
         </Stack>
       </Modal>
@@ -321,7 +309,7 @@ export const LibraryLocalImport = forwardRef<
         onClose={() => openLocalHome.reset()}
         title={t("library.localNovel.title")}
       >
-        <Text c="danger">{getLocalImportErrorMessage(openLocalHome.error)}</Text>
+        <Text c="danger" role="alert">{getLocalImportErrorMessage(openLocalHome.error)}</Text>
       </Modal>
     </>
   );
