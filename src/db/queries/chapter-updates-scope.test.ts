@@ -36,3 +36,16 @@ it("counts the new chapters found since Updates was last opened", async () => {
   expect(await countNewLibraryChaptersSince(200)).toBe(1);
   expect(await countNewLibraryChaptersSince(400)).toBe(0);
 });
+
+it("sorts new chapters by a parseable source release time and pages through it", async () => {
+  sqlite.exec(`UPDATE chapter SET release_time='1970-01-01T00:01:40Z' WHERE id=4;
+    UPDATE chapter SET release_time='3 days ago' WHERE id=2;
+    INSERT INTO chapter(id,novel_id,path,name,position,unread,found_at,found_by_check,release_time) VALUES
+      (6,1,'/6','Released later than found',6,1,250,1,'2099-01-01')`);
+
+  const first = await listLibraryUpdatesPage(2);
+  expect(first.updates.map((row) => [row.chapterId, row.sortAt])).toEqual([[6, 250], [2, 200]]);
+  const second = await listLibraryUpdatesPage(2, first.nextCursor);
+  expect(second.updates.map((row) => [row.chapterId, row.sortAt])).toEqual([[4, 100]]);
+  expect((await listLibraryUpdatesPage(10, null, "backlog")).updates.map((row) => row.sortAt)).toEqual([400, 250, 200, 100]);
+});

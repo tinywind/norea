@@ -8,7 +8,7 @@ const day = (year: number, month: number, date: number, hour = 12) =>
 function entry(
   chapterId: number,
   novelId: number,
-  foundAt: number,
+  sortAt: number,
   position = chapterId,
 ): LibraryUpdateEntry {
   return {
@@ -16,7 +16,7 @@ function entry(
     chapterName: `Chapter ${chapterId}`,
     chapterPath: `/c/${chapterId}`,
     contentType: "html",
-    foundAt,
+    sortAt,
     isDownloaded: false,
     novelCover: null,
     novelId,

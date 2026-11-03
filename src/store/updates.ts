@@ -97,7 +97,7 @@ function getNextCursor(
   if (!last) return null;
   return {
     chapterId: last.chapterId,
-    foundAt: last.foundAt,
+    sortAt: last.sortAt,
     position: last.position,
   };
 }

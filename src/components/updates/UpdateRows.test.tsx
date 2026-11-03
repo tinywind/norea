@@ -22,7 +22,7 @@ const entry: LibraryUpdateEntry = {
   chapterName: "The Return",
   chapterPath: "/c/7",
   contentType: "html",
-  foundAt: 1,
+  sortAt: 1,
   isDownloaded: false,
   novelCover: null,
   novelId: 3,

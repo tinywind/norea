@@ -1048,7 +1048,11 @@ export interface LibraryUpdateEntry {
   chapterName: string;
   contentType: ChapterContentType;
   position: number;
-  foundAt: number;
+  /**
+   * Unix seconds the row sorts and groups by: in the new-chapters list, the source's release time
+   * when the plugin gave a parseable date no later than the find; otherwise when it was found.
+   */
+  sortAt: number;
   isDownloaded: boolean;
   novelName: string;
   novelCover: string | null;
@@ -1075,7 +1079,7 @@ export interface LibraryUpdatesPage {
 
 export interface LibraryUpdatesCursor {
   chapterId: number;
-  foundAt: number;
+  sortAt: number;
   position: number;
 }
 
@@ -1085,7 +1089,7 @@ function getUpdatesCursor(
   if (!entry) return null;
   return {
     chapterId: entry.chapterId,
-    foundAt: entry.foundAt,
+    sortAt: entry.sortAt,
     position: entry.position,
   };
 }
@@ -1096,6 +1100,17 @@ function getUpdatesCursor(
  */
 export type LibraryUpdatesScope = "new" | "backlog";
 
+/**
+ * A release time the plugin gave as a date ("2026-11-02", "2026.11.02", local midnight) or an
+ * ISO date and time, capped at the found time; free-form text such as "3 days ago" falls back to it.
+ */
+const RELEASE_OR_FOUND_AT_SQL = `MIN(COALESCE(CASE
+    WHEN c.release_time GLOB '[0-9][0-9][0-9][0-9][-.][0-9][0-9][-.][0-9][0-9]'
+      THEN unixepoch(replace(c.release_time, '.', '-'), 'utc')
+    WHEN c.release_time GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][ T][0-9][0-9]:[0-9][0-9]*'
+      THEN unixepoch(c.release_time)
+  END, c.found_at), c.found_at)`;
+
 export async function listLibraryUpdates(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
@@ -1104,15 +1119,16 @@ export async function listLibraryUpdates(
 ): Promise<LibraryUpdateEntry[]> {
   const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
+  const sortAt = scope === "new" ? RELEASE_OR_FOUND_AT_SQL : "c.found_at";
   const cursorClause = cursor
     ? `AND (
-         c.found_at < $1
-         OR (c.found_at = $1 AND c.position < $2)
-         OR (c.found_at = $1 AND c.position = $2 AND c.id < $3)
+         ${sortAt} < $1
+         OR (${sortAt} = $1 AND c.position < $2)
+         OR (${sortAt} = $1 AND c.position = $2 AND c.id < $3)
        )`
     : "";
   const params = cursor
-    ? [cursor.foundAt, cursor.position, cursor.chapterId, normalizedLimit]
+    ? [cursor.sortAt, cursor.position, cursor.chapterId, normalizedLimit]
     : [normalizedLimit];
   const limitParam = cursor ? "$4" : "$1";
   const rows = await db.select<RawLibraryUpdate[]>(
@@ -1126,7 +1142,7 @@ export async function listLibraryUpdates(
        c.name            AS chapterName,
        COALESCE(c.stored_content_type, c.content_type) AS contentType,
        c.position,
-       c.found_at        AS foundAt,
+       ${sortAt} AS sortAt,
        c.is_downloaded   AS isDownloaded,
        n.name            AS novelName,
        n.cover           AS novelCover,
@@ -1139,7 +1155,7 @@ export async function listLibraryUpdates(
        AND c.unread = 1
        ${scope === "new" ? "AND c.found_by_check = 1" : ""}
        ${cursorClause}
-      ORDER BY foundAt DESC, c.position DESC, c.id DESC
+      ORDER BY sortAt DESC, c.position DESC, c.id DESC
       LIMIT ${limitParam}`,
     params,
   );

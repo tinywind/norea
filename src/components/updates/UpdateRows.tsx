@@ -52,7 +52,7 @@ function UpdateMeta({ entry }: { entry: LibraryUpdateEntry }) {
   return (
     <span className="norea-updates-row-meta">
       {entry.pluginName ?? entry.pluginId} ·{" "}
-      {formatRelativeTimeForLocale(locale, entry.foundAt)}
+      {formatRelativeTimeForLocale(locale, entry.sortAt)}
     </span>
   );
 }

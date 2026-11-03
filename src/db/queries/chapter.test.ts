@@ -683,8 +683,8 @@ describe("listLibraryUpdates", () => {
     expect(sql).toContain(
       "COALESCE(c.stored_content_type, c.content_type) AS contentType",
     );
-    expect(sql).toContain("c.found_at        AS foundAt");
-    expect(sql).toContain("ORDER BY foundAt DESC");
+    expect(sql).toContain("unixepoch(c.release_time)");
+    expect(sql).toContain("ORDER BY sortAt DESC");
     expect(sql).not.toContain("OFFSET");
     expect(params).toEqual([100]);
   });
@@ -699,7 +699,7 @@ describe("listLibraryUpdates", () => {
         chapterName: "Ch1",
         contentType: "text",
         position: 1,
-        foundAt: 1_700_000_000,
+        sortAt: 1_700_000_000,
         isDownloaded: 1,
         novelName: "Sample",
         novelCover: null,
@@ -731,9 +731,9 @@ describe("listLibraryUpdates", () => {
     mockSelect.mockResolvedValueOnce([]);
     await listLibraryUpdates(25, {
       chapterId: 9,
-      foundAt: 1_700_000_000,
+      sortAt: 1_700_000_000,
       position: 4,
-    });
+    }, "backlog");
     const [sql, params] = mockSelect.mock.calls[0]!;
     expect(sql).toContain("c.found_at < $1");
     expect(sql).toContain("c.position < $2");
@@ -751,7 +751,7 @@ describe("listLibraryUpdates", () => {
         chapterName: `Ch${index + 1}`,
         contentType: "html",
         position: index + 1,
-        foundAt: 1_700_000_000 - index,
+        sortAt: 1_700_000_000 - index,
         isDownloaded: 0,
         novelName: "Sample",
         novelCover: null,
@@ -766,7 +766,7 @@ describe("listLibraryUpdates", () => {
     expect(page.hasMore).toBe(true);
     expect(page.nextCursor).toEqual({
       chapterId: 100,
-      foundAt: 1_700_000_000 - 99,
+      sortAt: 1_700_000_000 - 99,
       position: 100,
     });
   });

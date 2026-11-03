@@ -59,7 +59,7 @@ function collapseNovelRuns(
 }
 
 /**
- * Groups update rows by the local day they were found, keeping the incoming
+ * Groups update rows by the local day they sort at (release or found time), keeping the incoming
  * order. Within a day, a novel's chapters stay individual rows unless it has
  * more than `UPDATE_RUN_COLLAPSE_LIMIT`, which become one run at its first row.
  */
@@ -68,7 +68,7 @@ export function groupUpdatesByDate(
 ): UpdateDateSection[] {
   const days = new Map<number, LibraryUpdateEntry[]>();
   for (const entry of entries) {
-    const dayStart = localDayStart(entry.foundAt);
+    const dayStart = localDayStart(entry.sortAt);
     const dayEntries = days.get(dayStart);
     if (dayEntries) dayEntries.push(entry);
     else days.set(dayStart, [entry]);
