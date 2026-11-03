@@ -54,7 +54,7 @@
   --norea-font-ui: "Pretendard Variable", Pretendard, system-ui, -apple-system,
     "Segoe UI", "Malgun Gothic", Roboto, "Noto Sans KR", sans-serif;
   --norea-font-meta: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
-  --norea-focus-ring: 0 0 0 0.125rem var(--norea-design-bg), 0 0 0 0.25rem var(--norea-design-accent);
+  --norea-focus-ring: 0 0 0 0.125rem var(--norea-color-bg), 0 0 0 0.25rem var(--norea-color-focus);
 }
 
 html {
@@ -85,8 +85,8 @@ body,
 
 body {
   margin: 0;
-  background: var(--norea-design-bg);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-bg);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -107,9 +107,9 @@ body {
 }
 
 .norea-storage-setup-card {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule);
-  box-shadow: var(--norea-design-shadow-floating);
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule);
+  box-shadow: var(--norea-shadow-floating);
   box-sizing: border-box;
   max-width: 30rem;
   padding: 1.25rem;
@@ -117,25 +117,25 @@ body {
 }
 
 .norea-storage-setup-title {
-  color: var(--norea-design-ink);
-  font-size: 1.375rem;
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-xl);
   line-height: 1.2;
 }
 
 .norea-storage-setup-copy {
-  color: var(--norea-design-ink-muted);
-  font-size: 0.9375rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-md);
   line-height: 1.5;
 }
 
 .norea-storage-setup-error {
   background: rgba(196, 74, 58, 0.1);
   border: 1px solid rgba(196, 74, 58, 0.24);
-  border-radius: var(--norea-border-radius);
-  color: var(--norea-design-error);
-  font-size: 0.875rem;
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-danger);
+  font-size: var(--norea-text-md);
   line-height: 1.45;
-  padding: 0.75rem;
+  padding: var(--norea-space-3);
 }
 
 a {
@@ -148,28 +148,28 @@ a {
 }
 
 .norea-app-rail {
-  background: var(--norea-design-panel);
-  border-color: var(--norea-design-rule);
+  background: var(--norea-color-surface-raised);
+  border-color: var(--norea-color-rule);
   box-sizing: border-box;
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   padding-left: var(--norea-safe-area-left);
   padding-top: var(--norea-safe-area-top);
 }
 
 .norea-rail-brand {
   align-items: center;
-  border-bottom: 1px solid var(--norea-design-rule);
-  color: var(--norea-design-ink);
+  border-bottom: 1px solid var(--norea-color-rule);
+  color: var(--norea-color-ink);
   display: flex;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   height: 3rem;
   justify-content: center;
-  padding: 0 0.75rem;
+  padding: 0 var(--norea-space-3);
   text-decoration: none;
 }
 
 .norea-rail-mark {
-  border-radius: 0.5rem;
+  border-radius: var(--norea-radius-md);
   box-shadow: 0 0.25rem 0.75rem rgba(18, 40, 46, 0.18);
   display: block;
   flex-shrink: 0;
@@ -181,7 +181,7 @@ a {
 .norea-rail-title {
   display: none;
   font-family: var(--norea-font-ui);
-  font-size: 0.875rem;
+  font-size: var(--norea-text-md);
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -191,33 +191,33 @@ a {
 .norea-rail-nav {
   display: flex;
   flex-direction: column;
-  padding-top: 0.25rem;
+  padding-top: var(--norea-space-1);
 }
 
 .norea-rail-link {
   align-items: center;
   border-left: 2px solid transparent;
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: var(--norea-space-1);
   height: 3rem;
   justify-content: center;
-  padding: 0 0.375rem;
+  padding: 0 var(--norea-space-2);
   position: relative;
   text-decoration: none;
 }
 
 .norea-rail-link:hover {
-  background: var(--norea-design-accent-soft);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  color: var(--norea-color-accent);
   text-decoration: none;
 }
 
 .norea-rail-link--active {
-  background: var(--norea-design-accent-soft);
-  border-left-color: var(--norea-design-accent);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-left-color: var(--norea-color-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-rail-icon {
@@ -230,13 +230,13 @@ a {
 
 .norea-rail-label {
   display: none;
-  font-size: 0.53125rem;
+  font-size: var(--norea-text-xs);
   font-weight: 600;
   line-height: 1;
 }
 
 .norea-rail-nav[data-show-labels="true"] .norea-rail-link {
-  gap: 0.1875rem;
+  gap: var(--norea-space-1);
 }
 
 .norea-rail-nav[data-show-labels="true"] .norea-rail-label {
@@ -248,14 +248,15 @@ a {
 }
 
 .norea-rail-badge {
-  background: var(--norea-design-accent);
-  border-radius: 0.375rem;
-  color: var(--norea-design-on-accent);
-  font-family: var(--norea-font-meta);
-  font-size: 0.5625rem;
+  background: var(--norea-color-accent);
+  border-radius: var(--norea-radius-md);
+  color: var(--norea-color-on-accent);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   line-height: 0.75rem;
   min-width: 0.875rem;
-  padding: 0 0.25rem;
+  padding: 0 var(--norea-space-1);
   position: absolute;
   right: 0.5rem;
   text-align: center;
@@ -337,11 +338,11 @@ a {
 }
 
 .norea-mobile-nav {
-  background: var(--norea-design-panel);
-  border-top: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-surface-raised);
+  border-top: 1px solid var(--norea-color-rule);
   box-sizing: border-box;
   bottom: 0;
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   height: var(--norea-mobile-nav-height);
@@ -353,9 +354,9 @@ a {
   right: 0;
   transform: translateY(0);
   transition:
-    opacity 180ms ease,
-    transform 180ms ease;
-  z-index: 200;
+    opacity var(--norea-duration-base) var(--norea-ease-standard),
+    transform var(--norea-duration-base) var(--norea-ease-standard);
+  z-index: var(--norea-z-nav);
 }
 
 .norea-mobile-nav[data-reader-full-page="true"] {
@@ -372,12 +373,12 @@ a {
 
 .norea-mobile-nav-link {
   align-items: center;
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
   flex-direction: column;
-  font-size: 0.59375rem;
+  font-size: var(--norea-text-xs);
   font-weight: 600;
-  gap: 0.125rem;
+  gap: var(--norea-space-1);
   justify-content: center;
   min-width: 0;
   position: relative;
@@ -386,7 +387,7 @@ a {
 }
 
 .norea-mobile-nav-link--active {
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-mobile-nav[data-show-labels="true"] .norea-rail-label {
@@ -404,15 +405,15 @@ a {
 
   .norea-rail-nav[data-show-labels="true"] .norea-rail-link {
     flex-direction: row;
-    gap: 0.625rem;
+    gap: var(--norea-space-3);
     height: 2.375rem;
     justify-content: flex-start;
-    padding: 0 0.75rem;
+    padding: 0 var(--norea-space-3);
   }
 
   .norea-rail-nav[data-show-labels="true"] .norea-rail-label {
     flex: 1;
-    font-size: 0.78125rem;
+    font-size: var(--norea-text-sm);
     text-align: left;
   }
 
@@ -449,7 +450,7 @@ a {
   align-items: flex-start;
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: var(--norea-space-4);
   justify-content: space-between;
 }
 
@@ -460,16 +461,15 @@ a {
 
 .norea-page-kicker {
   color: var(--norea-color-ink-muted);
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 700;
   letter-spacing: 0;
-  text-transform: uppercase;
 }
 
 .norea-page-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
-  font-size: clamp(1.25rem, 1.8vw, 1.5rem);
+  font-size: clamp(var(--norea-text-xl), 1.8vw, var(--norea-text-2xl));
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.12;
@@ -477,14 +477,14 @@ a {
 }
 
 .norea-page-description {
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   max-width: 42.5rem;
 }
 
 .norea-surface {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule);
+  color: var(--norea-color-ink);
 }
 
 .norea-blocking-loading-overlay {
@@ -501,14 +501,14 @@ a {
   position: fixed;
   right: 0;
   top: 0;
-  z-index: 1100;
+  z-index: var(--norea-z-blocking);
 }
 
 .norea-blocking-loading-panel {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule-strong);
-  box-shadow: var(--norea-design-shadow-floating);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule-strong);
+  box-shadow: var(--norea-shadow-floating);
+  color: var(--norea-color-ink);
   max-width: 24rem;
   width: min(100%, 24rem);
 }
@@ -523,10 +523,10 @@ a {
   --norea-icon-button-size: 1.75rem;
   --norea-icon-glyph-size: 0.9375rem;
   align-items: center;
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 0.25rem;
-  color: var(--norea-design-ink-muted);
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
   flex: 0 0 auto;
   height: var(--norea-icon-button-size);
@@ -548,33 +548,29 @@ a {
 }
 
 .norea-icon-button:hover:not(:disabled) {
-  background: var(--norea-design-panel);
-  border-color: var(--norea-design-rule-strong);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-surface-raised);
+  border-color: var(--norea-color-rule-strong);
+  color: var(--norea-color-accent);
 }
 
 .norea-icon-button[data-active="true"],
 .norea-icon-button[data-tone="accent"] {
-  background: var(--norea-design-accent-soft);
-  border-color: var(--norea-design-accent);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-color: var(--norea-color-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-icon-button[data-tone="danger"] {
-  border-color: color-mix(
-    in srgb,
-    var(--norea-design-error) 62%,
-    var(--norea-design-rule)
-  );
-  color: var(--norea-design-error);
+  border-color: var(--norea-color-danger);
+  color: var(--norea-color-danger);
 }
 
 .norea-icon-button[data-tone="success"] {
-  color: var(--norea-design-ok);
+  color: var(--norea-color-ok);
 }
 
 .norea-icon-button[data-tone="warning"] {
-  color: var(--norea-design-warn);
+  color: var(--norea-color-warn);
 }
 
 .norea-icon-button svg {
@@ -590,12 +586,13 @@ a {
 .norea-text-button {
   --norea-text-button-height: 2.5rem;
   --norea-text-button-padding-inline: 0.875rem;
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 0.25rem;
-  color: var(--norea-design-ink-muted);
-  font-family: var(--norea-font-meta);
-  font-size: 0.75rem;
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   font-weight: 800;
   height: var(--norea-text-button-height);
   line-height: 1;
@@ -607,7 +604,7 @@ a {
 .norea-text-button--sm {
   --norea-text-button-height: 1.75rem;
   --norea-text-button-padding-inline: 0.625rem;
-  font-size: 0.6875rem;
+  font-size: var(--norea-text-xs);
 }
 
 .norea-text-button--lg {
@@ -616,43 +613,35 @@ a {
 }
 
 .norea-text-button:hover:not(:disabled) {
-  background: var(--norea-design-panel);
-  border-color: var(--norea-design-rule-strong);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface-raised);
+  border-color: var(--norea-color-rule-strong);
+  color: var(--norea-color-ink);
 }
 
 .norea-text-button[data-active="true"],
 .norea-text-button[data-tone="accent"] {
-  background: var(--norea-design-accent-soft);
-  border-color: var(--norea-design-accent);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-color: var(--norea-color-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-text-button[data-tone="danger"],
 .norea-text-button[data-tone="error"] {
-  border-color: color-mix(
-    in srgb,
-    var(--norea-design-error) 62%,
-    var(--norea-design-rule)
-  );
-  color: var(--norea-design-error);
+  border-color: var(--norea-color-danger);
+  color: var(--norea-color-danger);
 }
 
 .norea-text-button[data-active="true"][data-tone="danger"],
 .norea-text-button[data-active="true"][data-tone="error"] {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-error) 14%,
-    var(--norea-design-surface)
-  );
+  background: var(--norea-color-danger-soft);
 }
 
 .norea-text-button[data-tone="success"] {
-  color: var(--norea-design-ok);
+  color: var(--norea-color-ok);
 }
 
 .norea-text-button[data-tone="warning"] {
-  color: var(--norea-design-warn);
+  color: var(--norea-color-warn);
 }
 
 .norea-segmented-toggle {
@@ -671,7 +660,7 @@ a {
   display: flex;
   height: 2rem;
   justify-content: center;
-  padding-inline: 0.75rem;
+  padding-inline: var(--norea-space-3);
 }
 
 .norea-search-bar {
@@ -694,9 +683,9 @@ a {
 
 .norea-list-row {
   transition:
-    background-color 120ms ease,
-    border-color 120ms ease,
-    transform 120ms ease;
+    background-color var(--norea-duration-fast) var(--norea-ease-standard),
+    border-color var(--norea-duration-fast) var(--norea-ease-standard),
+    transform var(--norea-duration-fast) var(--norea-ease-standard);
 }
 
 .norea-list-row--interactive {
@@ -704,8 +693,8 @@ a {
 }
 
 .norea-list-row--interactive:hover {
-  background: var(--norea-design-panel);
-  border-color: var(--norea-design-accent);
+  background: var(--norea-color-surface-raised);
+  border-color: var(--norea-color-accent);
 }
 
 .norea-list-row-leading {
@@ -718,7 +707,7 @@ a {
 }
 
 .norea-list-row-heading {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-weight: 700;
   line-height: 1.25;
   min-width: 0;
@@ -726,15 +715,15 @@ a {
 }
 
 .norea-list-row-subtitle {
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   line-height: 1.35;
-  margin-top: 0.25rem;
+  margin-top: var(--norea-space-1);
   overflow-wrap: anywhere;
 }
 
 .norea-list-row-meta {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.8125rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
 }
 
 .norea-list-row-actions {
@@ -746,29 +735,28 @@ a {
 .norea-console-section-count,
 .norea-console-status,
 .norea-console-status-strip {
-  font-family: var(--norea-font-meta);
+  font-family: var(--norea-font-ui);
+  font-variant-numeric: tabular-nums;
 }
 
 .norea-console-kicker,
 .norea-console-panel-title {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.625rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
   font-weight: 700;
-  letter-spacing: 0.14em;
   line-height: 1.4;
-  text-transform: uppercase;
 }
 
 .norea-console-panel {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule);
-  border-radius: 0.3125rem;
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
 }
 
 .norea-console-panel-title {
-  border-bottom: 1px solid var(--norea-design-rule);
-  padding: 0.6875rem 0.875rem 0.5rem;
+  border-bottom: 1px solid var(--norea-color-rule);
+  padding: var(--norea-space-3) var(--norea-space-3) var(--norea-space-2);
 }
 
 .norea-console-section-header {
@@ -776,16 +764,16 @@ a {
 }
 
 .norea-console-section-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
-  font-size: 1rem;
+  font-size: var(--norea-text-md);
   font-weight: 600;
   line-height: 1.2;
 }
 
 .norea-console-section-count {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.625rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
   white-space: nowrap;
 }
 
@@ -796,7 +784,7 @@ a {
     var(--norea-color-accent-soft) var(--norea-console-cover-accent-stop, 0%),
     var(--norea-color-surface-raised)
   );
-  border-radius: 0.125rem;
+  border-radius: var(--norea-radius-sm);
   box-shadow: inset 0 0 0 0.0625rem rgba(0, 0, 0, 0.06);
   color: var(--norea-color-on-accent-soft);
   display: inline-flex;
@@ -809,7 +797,7 @@ a {
 }
 
 .norea-console-cover[data-fit="contain"]:has(.norea-console-cover-image) {
-  background: var(--norea-design-panel);
+  background: var(--norea-color-surface-raised);
 }
 
 .norea-console-cover-image {
@@ -839,7 +827,7 @@ a {
 .norea-console-cover-fallback-title {
   box-sizing: border-box;
   display: block;
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 750;
   letter-spacing: 0;
   line-height: 1.08;
@@ -860,8 +848,8 @@ a {
 }
 
 .norea-console-progress {
-  background: var(--norea-design-rule);
-  border-radius: 0.125rem;
+  background: var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
   display: inline-block;
   height: 0.25rem;
   min-width: 3.5rem;
@@ -871,53 +859,51 @@ a {
 }
 
 .norea-console-progress-bar {
-  background: var(--norea-design-accent);
+  background: var(--norea-color-accent);
   display: block;
   height: 100%;
 }
 
 .norea-console-progress-bar[data-status="done"] {
-  background: var(--norea-design-ok);
+  background: var(--norea-color-ok);
 }
 
 .norea-console-progress-bar[data-status="idle"] {
-  background: var(--norea-design-ink-subtle);
+  background: var(--norea-color-icon-subtle);
 }
 
 .norea-console-status {
   align-items: center;
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  font-size: 0.625rem;
+  font-size: var(--norea-text-xs);
   font-weight: 700;
-  gap: 0.3125rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  gap: var(--norea-space-1);
   white-space: nowrap;
 }
 
 .norea-console-status[data-status="active"] {
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-console-status[data-status="done"],
 .norea-console-chip[data-tone="success"] {
-  color: var(--norea-design-ok);
+  color: var(--norea-color-ok);
 }
 
 .norea-console-status[data-status="warning"],
 .norea-console-chip[data-tone="warning"] {
-  color: var(--norea-design-warn);
+  color: var(--norea-color-warn);
 }
 
 .norea-console-status[data-status="error"],
 .norea-console-chip[data-tone="error"] {
-  color: var(--norea-design-error);
+  color: var(--norea-color-danger);
 }
 
 .norea-console-status-dot {
   background: currentColor;
-  border-radius: 0.1875rem;
+  border-radius: var(--norea-radius-sm);
   display: inline-block;
   height: 0.375rem;
   width: 0.375rem;
@@ -926,31 +912,31 @@ a {
 .norea-console-chip {
   align-items: center;
   appearance: none;
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 999px;
-  color: var(--norea-design-ink-muted);
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  font-size: 0.6875rem;
+  font-size: var(--norea-text-xs);
   font-weight: 600;
-  gap: 0.25rem;
+  gap: var(--norea-space-1);
   line-height: 1.2;
-  padding: 0.1875rem 0.5625rem;
+  padding: var(--norea-space-1) 0.5625rem;
   white-space: nowrap;
 }
 
 button.norea-console-chip {
   cursor: pointer;
-  padding-inline: 0.75rem;
+  padding-inline: var(--norea-space-3);
 }
 
 button.norea-console-chip:hover:not(:disabled) {
-  background: var(--norea-design-panel);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface-raised);
+  color: var(--norea-color-ink);
 }
 
 button.norea-console-chip:focus-visible {
-  outline: 0.125rem solid var(--norea-design-accent);
+  outline: 0.125rem solid var(--norea-color-accent);
   outline-offset: 0.125rem;
 }
 
@@ -961,23 +947,23 @@ button.norea-console-chip:disabled {
 
 .norea-console-chip[data-active="true"],
 .norea-console-chip[data-tone="accent"] {
-  background: var(--norea-design-accent-soft);
-  border-color: var(--norea-design-accent);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-color: var(--norea-color-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-console-status-strip {
   align-items: center;
-  background: var(--norea-design-panel);
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.3125rem;
-  color: var(--norea-design-ink-subtle);
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
   display: flex;
   flex-wrap: wrap;
-  font-size: 0.6875rem;
-  gap: 0.625rem;
+  font-size: var(--norea-text-xs);
+  gap: var(--norea-space-3);
   justify-content: space-between;
-  padding: 0.4375rem 0.75rem;
+  padding: var(--norea-space-2) var(--norea-space-3);
 }
 
 .norea-history-page {
@@ -988,14 +974,14 @@ button.norea-console-chip:disabled {
   align-items: baseline;
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   min-width: 0;
 }
 
 .norea-history-header-description {
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   font-family: var(--norea-font-ui);
-  font-size: 0.5em;
+  font-size: var(--norea-text-xs);
   font-weight: 500;
   line-height: 1.2;
 }
@@ -1008,40 +994,39 @@ button.norea-console-chip:disabled {
 .norea-history-row-meta,
 .norea-history-removing,
 .norea-history-loading-label {
-  font-family: var(--norea-font-meta);
+  font-family: var(--norea-font-ui);
+  font-variant-numeric: tabular-nums;
 }
 
 .norea-history-kicker,
 .norea-history-section-title {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.625rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
   font-weight: 700;
-  letter-spacing: 0.14em;
   line-height: 1.4;
-  text-transform: uppercase;
 }
 
 .norea-history-top-grid {
   display: grid;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   grid-template-columns: minmax(0, 1fr);
 }
 
 .norea-history-resume,
 .norea-history-summary {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule);
-  border-radius: 0.375rem;
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
 }
 
 .norea-history-resume {
   display: flex;
-  gap: 1.125rem;
-  padding: 1rem 1.125rem;
+  gap: var(--norea-space-4);
+  padding: var(--norea-space-4);
 }
 
 .norea-history-resume-main {
-  column-gap: 0.625rem;
+  column-gap: var(--norea-space-3);
   display: grid;
   flex: 1;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1056,30 +1041,30 @@ button.norea-console-chip:disabled {
 
 .norea-history-resume-title,
 .norea-history-summary-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.15;
-  margin: 0.125rem 0 0;
+  margin: var(--norea-space-1) 0 0;
 }
 
 .norea-history-resume-title {
-  font-size: 1.375rem;
+  font-size: var(--norea-text-xl);
   grid-column: 1;
   grid-row: 2;
   min-width: 0;
 }
 
 .norea-history-summary-title {
-  font-size: 1.375rem;
+  font-size: var(--norea-text-xl);
 }
 
 .norea-history-resume-last,
 .norea-history-summary-copy {
-  color: var(--norea-design-ink-muted);
-  font-size: 0.78125rem;
-  margin-top: 0.25rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  margin-top: var(--norea-space-1);
 }
 
 .norea-history-resume-last {
@@ -1107,34 +1092,35 @@ button.norea-console-chip:disabled {
 
 .norea-history-resume-last span,
 .norea-history-row-chapter span {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-variant-numeric: tabular-nums;
 }
 
 .norea-history-next,
 .norea-history-percent {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.6875rem;
-  margin-top: 0.25rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  margin-top: var(--norea-space-1);
 }
 
 .norea-history-summary {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: var(--norea-space-3) var(--norea-space-4);
 }
 
 .norea-history-filter {
   align-items: center;
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.375rem;
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
   display: grid;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
-  padding: 0.5rem;
+  padding: var(--norea-space-2);
   width: 100%;
 }
 
@@ -1150,24 +1136,24 @@ button.norea-console-chip:disabled {
 
 .norea-history-search input,
 .norea-history-segments {
-  border-color: var(--norea-design-rule-strong);
+  border-color: var(--norea-color-rule-strong);
 }
 
 .norea-history-row {
   align-items: center;
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule);
-  border-radius: 0.3125rem;
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
   cursor: pointer;
   display: flex;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   margin-bottom: 0;
-  padding: 0.75rem 0.875rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-history-row:hover {
-  background: var(--norea-design-panel);
-  border-color: var(--norea-design-rule-strong);
+  background: var(--norea-color-surface-raised);
+  border-color: var(--norea-color-rule-strong);
 }
 
 .norea-history-row[data-removing="true"] {
@@ -1180,25 +1166,25 @@ button.norea-console-chip:disabled {
 }
 
 .norea-history-row-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
-  font-size: 0.96875rem;
+  font-size: var(--norea-text-md);
   font-weight: 600;
   line-height: 1.25;
   min-width: 0;
 }
 
 .norea-history-row-chapter {
-  color: var(--norea-design-ink-muted);
-  font-size: 0.75rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
   line-height: 1.35;
 }
 
 .norea-history-row-meta {
   align-items: center;
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.65625rem;
-  margin-top: 0.375rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  margin-top: var(--norea-space-2);
 }
 
 .norea-history-row-progress {
@@ -1210,13 +1196,13 @@ button.norea-console-chip:disabled {
 .norea-history-row-actions {
   display: flex;
   flex: 0 0 auto;
-  gap: 0.3125rem;
+  gap: var(--norea-space-1);
   justify-content: flex-end;
 }
 
 .norea-history-progress {
-  background: var(--norea-design-rule);
-  border-radius: 0.125rem;
+  background: var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
   height: 0.25rem;
   overflow: hidden;
   position: relative;
@@ -1224,24 +1210,24 @@ button.norea-console-chip:disabled {
 }
 
 .norea-history-progress-bar {
-  background: var(--norea-design-accent);
+  background: var(--norea-color-accent);
   height: 100%;
 }
 
 .norea-history-progress-bar[data-status="finished"] {
-  background: var(--norea-design-ok);
+  background: var(--norea-color-ok);
 }
 
 .norea-history-icon-button {
   align-items: center;
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
   justify-content: center;
 }
 
 .norea-history-icon-button:hover:not(:disabled) {
-  background: var(--norea-design-panel);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface-raised);
+  color: var(--norea-color-ink);
 }
 
 .norea-history-icon-button:disabled {
@@ -1250,27 +1236,27 @@ button.norea-console-chip:disabled {
 }
 
 .norea-history-icon-button[data-tone="accent"] {
-  background: var(--norea-design-accent-soft);
-  border-color: var(--norea-design-accent);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-color: var(--norea-color-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-history-icon-button[data-tone="danger"] {
-  color: var(--norea-design-error);
+  color: var(--norea-color-danger);
 }
 
 .norea-history-icon-flag {
   align-items: center;
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 0.25rem;
-  color: var(--norea-design-ink-subtle);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 0.25rem;
+  gap: var(--norea-space-1);
   height: 1.5rem;
   justify-content: center;
   min-width: 1.5rem;
-  padding: 0 0.25rem;
+  padding: 0 var(--norea-space-1);
 }
 
 .norea-history-icon-flag:not([data-count="true"]) {
@@ -1278,20 +1264,21 @@ button.norea-console-chip:disabled {
 }
 
 .norea-history-icon-flag[data-tone="accent"] {
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-history-icon-flag[data-tone="done"] {
-  color: var(--norea-design-ok);
+  color: var(--norea-color-ok);
 }
 
 .norea-history-icon-flag[data-tone="danger"] {
-  color: var(--norea-design-error);
+  color: var(--norea-color-danger);
 }
 
 .norea-history-icon-count {
-  font-family: var(--norea-font-meta);
-  font-size: 0.625rem;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   line-height: 1;
   max-width: 3ch;
@@ -1311,10 +1298,10 @@ button.norea-console-chip:disabled {
 
 .norea-history-removing {
   align-items: center;
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  font-size: 0.6875rem;
-  gap: 0.375rem;
+  font-size: var(--norea-text-xs);
+  gap: var(--norea-space-2);
 }
 
 .norea-history-section {
@@ -1322,43 +1309,43 @@ button.norea-console-chip:disabled {
 }
 
 .norea-history-section-count {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.625rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
 }
 
 .norea-history-empty {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule-strong);
-  border-radius: 0.375rem;
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-md);
   border-style: dashed;
   padding: 2.25rem 1.375rem;
   text-align: center;
 }
 
 .norea-history-empty h3 {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
-  font-size: 1.0625rem;
+  font-size: var(--norea-text-lg);
   font-weight: 600;
 }
 
 .norea-history-empty p {
-  color: var(--norea-design-ink-muted);
-  font-size: 0.78125rem;
-  margin: 0.25rem auto 0;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  margin: var(--norea-space-1) auto 0;
   max-width: 23.75rem;
 }
 
 .norea-history-loading-label {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.6875rem;
-  margin-top: 0.5rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  margin-top: var(--norea-space-2);
   text-align: center;
 }
 
 @media (max-width: 767px) {
   .norea-page-frame {
-    padding-top: 1.125rem;
+    padding-top: var(--norea-space-4);
   }
 
   .norea-page-header-copy,
@@ -1384,11 +1371,11 @@ button.norea-console-chip:disabled {
 
   .norea-history-resume {
     align-items: flex-start;
-    column-gap: 0.625rem;
+    column-gap: var(--norea-space-3);
     display: grid;
     grid-template-columns: 4rem minmax(0, 1fr);
     row-gap: 0;
-    padding: 0.75rem 0.875rem;
+    padding: var(--norea-space-3);
   }
 
   .norea-history-resume .norea-console-cover {
@@ -1399,7 +1386,7 @@ button.norea-console-chip:disabled {
   }
 
   .norea-history-resume-main {
-    column-gap: 0.5rem;
+    column-gap: var(--norea-space-2);
     display: grid;
     grid-column: 2;
     grid-row: 1;
@@ -1414,7 +1401,7 @@ button.norea-console-chip:disabled {
   }
 
   .norea-history-resume-title {
-    font-size: 1.125rem;
+    font-size: var(--norea-text-lg);
     grid-column: 1;
     grid-row: 2;
   }
@@ -1435,7 +1422,7 @@ button.norea-console-chip:disabled {
 
   .norea-history-resume-actions {
     align-self: start;
-    gap: 0.25rem !important;
+    gap: var(--norea-space-1) !important;
     grid-column: 2;
     grid-row: 2;
     justify-self: end;
@@ -1458,11 +1445,12 @@ button.norea-console-chip:disabled {
 
   .norea-history-row {
     align-items: flex-start;
-    column-gap: 0.5rem;
+    column-gap: var(--norea-space-2);
     display: grid;
     grid-template-columns: 2.625rem minmax(0, 1fr) auto;
     row-gap: 0;
-    padding: 0.4375rem 0.375rem 0.4375rem 0.125rem;
+    padding: var(--norea-space-2) var(--norea-space-2) var(--norea-space-2)
+      var(--norea-space-1);
   }
 
   .norea-history-row .norea-console-cover {
@@ -1484,7 +1472,7 @@ button.norea-console-chip:disabled {
 
   .norea-history-row-title {
     flex: 1 1 auto;
-    font-size: 0.84375rem;
+    font-size: var(--norea-text-sm);
     min-width: 0;
   }
 
@@ -1498,7 +1486,7 @@ button.norea-console-chip:disabled {
 
   .norea-history-row-actions {
     align-self: start;
-    gap: 0.25rem !important;
+    gap: var(--norea-space-1) !important;
     grid-column: 3;
     grid-row: 1;
     min-width: 0;
