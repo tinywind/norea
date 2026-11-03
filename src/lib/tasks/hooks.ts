@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { taskScheduler, type TaskSnapshot } from "./scheduler";
 import { getVpnDownloadRuntimeSnapshot, subscribeVpnDownloadRuntime } from "./vpn-download-runtime";
 import { getChapterDownloadRequestSnapshot, subscribeChapterDownloadRequests } from "./chapter-download-requests";
+import { getChapterDownloadFailureSnapshot, subscribeChapterDownloadFailures } from "./chapter-download-failures";
 
 function subscribeInactiveTaskSnapshot(): () => void {
   return () => undefined;
@@ -42,5 +43,14 @@ export function useChapterDownloadRequestSnapshot(active = true) {
     active ? subscribeChapterDownloadRequests : subscribeInactiveTaskSnapshot,
     getChapterDownloadRequestSnapshot,
     getChapterDownloadRequestSnapshot,
+  );
+}
+
+/** Persisted chapter download failures, refreshed after every recorded or cleared failure. */
+export function useChapterDownloadFailureSnapshot(active = true) {
+  return useSyncExternalStore(
+    active ? subscribeChapterDownloadFailures : subscribeInactiveTaskSnapshot,
+    getChapterDownloadFailureSnapshot,
+    getChapterDownloadFailureSnapshot,
   );
 }
