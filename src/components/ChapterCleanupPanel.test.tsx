@@ -25,10 +25,10 @@ import { ChapterCleanupPanel } from "./ChapterCleanupPanel";
 describe("ChapterCleanupPanel", () => {
   it("shows the four server choices, reading and category filters before any preview", () => {
     const html = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ChapterCleanupPanel opened onClose={() => {}} /></QueryClientProvider>);
-    expect(html).toContain("Present on server");
-    expect(html).toContain("Server coverage at least device coverage");
-    expect(html).toContain("Server contains all device content");
-    expect(html).toContain("Ignore server state");
+    expect(html).toContain("Chapter exists on server");
+    expect(html).toContain("Server has at least as much as this device");
+    expect(html).toContain("Server has everything on this device");
+    expect(html).toContain("Don&#x27;t check the server");
     expect(html).toContain("Read chapters");
     expect(html).toContain("All chapters");
     expect(html).toContain("Selected categories");

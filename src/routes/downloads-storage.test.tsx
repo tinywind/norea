@@ -41,7 +41,7 @@ function render(rows: DownloadCacheNovel[]) {
 describe("Downloads storage", () => {
   it("shows each novel's count and size on its own line that phones keep", () => {
     const $ = render([novel()]);
-    expect($(".norea-downloads-novel-count").text()).toBe("120/300 cached · 340 MB");
+    expect($(".norea-downloads-novel-count").text()).toBe("120/300 downloaded · 340 MB");
     const css = readFileSync(new URL("../styles/downloads.css", import.meta.url), "utf8");
     const phone = css.slice(css.indexOf("@media (max-width: 767px)"));
     expect(phone).not.toMatch(/\.norea-downloads-novel-count[^{]*\{\s*display: none/);

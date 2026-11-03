@@ -233,21 +233,6 @@ function taskStatusKey(status: TaskStatus): TranslationKey {
   }
 }
 
-function taskPriorityKey(priority: TaskPriority): TranslationKey {
-  switch (priority) {
-    case "interactive":
-      return "tasks.priority.interactive";
-    case "user":
-      return "tasks.priority.user";
-    case "normal":
-      return "tasks.priority.normal";
-    case "deferred":
-      return "tasks.priority.deferred";
-    case "background":
-      return "tasks.priority.background";
-  }
-}
-
 function statusTone(
   status: TaskStatus,
 ): "active" | "done" | "error" | "idle" | "warning" {
@@ -263,17 +248,6 @@ function statusTone(
     case "cancelled":
       return "warning";
   }
-}
-
-function taskMeta(
-  t: ReturnType<typeof useTranslation>["t"],
-  task: TaskRecord,
-): string {
-  const lane =
-    task.lane === "main" ? t("tasks.lane.main") : t("tasks.lane.source");
-  return [task.source?.name, lane, t(taskPriorityKey(task.priority))]
-    .filter(Boolean)
-    .join(" / ");
 }
 
 function progressLabel(task: TaskRecord): string | null {
@@ -495,9 +469,11 @@ const TaskRow = memo(function TaskRow({
           )}
           {label ? <span className="norea-task-progress-text">{label}</span> : null}
         </div>
-        <Text className="norea-task-row-meta" lineClamp={1}>
-          {taskMeta(t, currentTask)}
-        </Text>
+        {currentTask.source?.name ? (
+          <Text className="norea-task-row-meta" lineClamp={1}>
+            {currentTask.source.name}
+          </Text>
+        ) : null}
         {isRetryWaiting(currentTask) ? (
           <RetryCountdown retryAt={currentTask.retryAt!} />
         ) : sourcePaused ? (

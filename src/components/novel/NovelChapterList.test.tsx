@@ -149,7 +149,7 @@ describe("download state", () => {
 
   it("repairs missing media in place with a labeled button", () => {
     const $ = renderRow({ contentBytes: 10, mediaRepairNeeded: true });
-    expect(describedText($)).toContain("Media missing");
+    expect(describedText($)).toContain("Missing images");
     expect(siblingButtons($).text()).toBe("Repair");
   });
 
@@ -187,15 +187,15 @@ describe("download state", () => {
 });
 
 describe("server chapter completeness", () => {
-  it("shows Incomplete on server and keeps the download action", () => {
+  it("shows a partial server copy and keeps the download action", () => {
     const $ = renderRow({ serverComplete: false });
-    expect(describedText($)).toContain("Incomplete on server");
+    expect(describedText($)).toContain("Partial copy on server");
     expect(siblingButtons($).attr("aria-label")).toBe("Download chapter");
   });
 
   it("preserves a complete local copy when the server copy is incomplete", () => {
     const $ = renderRow({ serverComplete: false, isDownloaded: true });
-    expect(describedText($)).toContain("Incomplete on server");
+    expect(describedText($)).toContain("Partial copy on server");
     expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
   });
 
@@ -203,7 +203,7 @@ describe("server chapter completeness", () => {
     const $ = renderRow({ serverComplete: true });
     const description = $(`#${openButton($).attr("aria-describedby")}`);
     expect(description.text()).not.toContain("server");
-    expect(description.attr("title")).toBe("Complete on server");
+    expect(description.attr("title")).toBe("Full copy on server");
   });
 });
 
