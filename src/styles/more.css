@@ -82,3 +82,14 @@
   color: var(--norea-color-icon-subtle);
   flex-shrink: 0;
 }
+
+/* The shared phone rule hides page headers that have no actions; More has no app bar, so its title stays. */
+@media (max-width: 767px) {
+  .norea-more-page .norea-page-header[data-has-actions] {
+    display: flex;
+  }
+
+  .norea-more-page .norea-page-header .norea-page-header-copy {
+    display: block;
+  }
+}

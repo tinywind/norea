@@ -1,4 +1,5 @@
 import { MantineProvider } from "@mantine/core";
+import { readFileSync } from "node:fs";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -92,5 +93,14 @@ describe("More page", () => {
     library.incognitoMode = true;
 
     expect(switchState()).toBe("true");
+  });
+
+  it("keeps the page title visible on phones", () => {
+    const css = readFileSync(new URL("../styles/more.css", import.meta.url), "utf8");
+    const phone = css.slice(css.indexOf("@media (max-width: 767px)"));
+
+    expect(renderMorePage()).toContain('class="norea-page-title');
+    expect(phone).toMatch(/\.norea-more-page \.norea-page-header\[data-has-actions\] \{\s*display: flex;/);
+    expect(phone).toMatch(/\.norea-more-page \.norea-page-header \.norea-page-header-copy \{\s*display: block;/);
   });
 });
