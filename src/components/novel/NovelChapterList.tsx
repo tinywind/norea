@@ -64,6 +64,8 @@ const CHAPTER_LIST_OVERSCAN = 8;
 
 const CHAPTER_LIST_FALLBACK_ROWS = 14;
 
+const JUMP_HIGHLIGHT_MS = 2000;
+
 const CHAPTER_DOWNLOAD_LABELS: Record<
   "queued" | "running",
   Record<ChapterDownloadPhase, TranslationKey>
@@ -90,6 +92,7 @@ interface ChapterListItemProps {
   canMoveDown: boolean;
   canMoveUp: boolean;
   duplicateSourceChapterCount: number;
+  highlighted: boolean;
   isCurrent: boolean;
   isSelected: boolean;
   reorderMode: boolean;
@@ -101,6 +104,7 @@ interface ChapterListItemProps {
   onOpen: () => void;
   onDownload: () => void;
   onDeleteDownload: () => void;
+  onExtendSelection: () => void;
   onMoveDown: () => void;
   onMoveUp: () => void;
   onRepairMedia: () => void;
@@ -113,6 +117,7 @@ function ChapterListItem({
   canMoveDown,
   canMoveUp,
   duplicateSourceChapterCount,
+  highlighted,
   isCurrent,
   isSelected,
   reorderMode,
@@ -124,6 +129,7 @@ function ChapterListItem({
   onOpen,
   onDownload,
   onDeleteDownload,
+  onExtendSelection,
   onMoveDown,
   onMoveUp,
   onRepairMedia,
@@ -149,7 +155,7 @@ function ChapterListItem({
   };
   const downloadActive = status?.kind === "queued" || status?.kind === "running";
   const failedMessage = status?.kind === "failed" ? status.error : null;
-  const longPress = useLongPress(reorderMode ? undefined : onToggleSelected, 450);
+  const longPress = useLongPress(reorderMode ? undefined : onExtendSelection, 450);
   const progress = getChapterReadingProgress(chapter);
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
@@ -272,6 +278,7 @@ function ChapterListItem({
       className="norea-novel-chapter"
       data-current={isCurrent ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
+      data-highlighted={highlighted ? "true" : undefined}
       data-selected={isSelected ? "true" : undefined}
       style={style}
     >
@@ -328,9 +335,13 @@ function ChapterListItem({
           ) : undefined
         }
         data-pressing={longPress.pressing ? "true" : undefined}
-        onClick={() => {
+        onClick={(event) => {
           if (longPress.consumeFired()) return;
           if (reorderMode) return;
+          if (event.shiftKey) {
+            onExtendSelection();
+            return;
+          }
           if (selectionMode) {
             onToggleSelected();
             return;
@@ -386,6 +397,8 @@ interface VirtualChapterListProps {
   deleteBusyChapterId: number | undefined;
   duplicateSourceChapterCounts: ReadonlyMap<number, number>;
   deletePending: boolean;
+  /** Scrolls the row into view and highlights it briefly; each new object is a new jump. */
+  jumpRequest: { chapterId: number } | null;
   lastReadChapterId: number | undefined;
   repairBusyChapterId: number | undefined;
   repairPending: boolean;
@@ -399,6 +412,8 @@ interface VirtualChapterListProps {
   statuses: ReadonlyMap<number, ChapterDownloadStatus>;
   onDeleteDownload: (chapterId: number) => void;
   onDownload: (chapter: ChapterListRow) => void;
+  /** Long-press or Shift-click: selects the rows from the selection anchor to this one. */
+  onExtendSelection: (chapterId: number) => void;
   onOpen: (chapter: ChapterListRow) => void;
   onRepairMedia: (chapter: ChapterListRow) => void;
   onReorderChapter: (chapterId: number, beforeChapterId: number | null) => void;
@@ -411,6 +426,7 @@ export function VirtualChapterList({
   deleteBusyChapterId,
   duplicateSourceChapterCounts,
   deletePending,
+  jumpRequest,
   lastReadChapterId,
   repairBusyChapterId,
   repairPending,
@@ -422,6 +438,7 @@ export function VirtualChapterList({
   statuses,
   onDeleteDownload,
   onDownload,
+  onExtendSelection,
   onOpen,
   onRepairMedia,
   onReorderChapter,
@@ -498,6 +515,26 @@ export function VirtualChapterList({
     };
   }, [chapterRowHeight, scrollElement]);
 
+  const [highlightedChapterId, setHighlightedChapterId] = useState<number | null>(null);
+  const chaptersRef = useRef(chapters);
+  chaptersRef.current = chapters;
+  useEffect(() => {
+    const list = listRef.current;
+    if (!jumpRequest || !list || !scrollElement) return;
+    const index = chaptersRef.current.findIndex((chapter) => chapter.id === jumpRequest.chapterId);
+    if (index < 0) return;
+    const listTop =
+      list.getBoundingClientRect().top - scrollElement.getBoundingClientRect().top + scrollElement.scrollTop;
+    // Centered, so the sticky app bar and list header never cover the row.
+    scrollElement.scrollTop = Math.max(
+      0,
+      listTop + index * chapterRowHeight - (scrollElement.clientHeight - chapterRowHeight) / 2,
+    );
+    setHighlightedChapterId(jumpRequest.chapterId);
+    const timer = window.setTimeout(() => setHighlightedChapterId(null), JUMP_HIGHLIGHT_MS);
+    return () => window.clearTimeout(timer);
+  }, [chapterRowHeight, jumpRequest, scrollElement]);
+
   const handleDragEnd = (event: DragEndEvent) => {
     if (!reorderMode || reorderPending) return;
     const overId = event.over?.id;
@@ -541,6 +578,7 @@ export function VirtualChapterList({
                 duplicateSourceChapterCount={
                   duplicateSourceChapterCounts.get(chapter.id) ?? 0
                 }
+                highlighted={chapter.id === highlightedChapterId}
                 isCurrent={chapter.id === lastReadChapterId}
                 isSelected={selectedChapterIds.has(chapter.id)}
                 reorderMode={reorderMode}
@@ -552,6 +590,7 @@ export function VirtualChapterList({
                 onOpen={() => onOpen(chapter)}
                 onDownload={() => onDownload(chapter)}
                 onDeleteDownload={() => onDeleteDownload(chapter.id)}
+                onExtendSelection={() => onExtendSelection(chapter.id)}
                 onMoveDown={() =>
                   onReorderChapter(chapter.id, chapters[displayIndex + 2]?.id ?? null)
                 }

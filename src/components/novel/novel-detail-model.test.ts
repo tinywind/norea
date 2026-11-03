@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ChapterListRow } from "../../db/queries/chapter";
-import { findContinueReadingChapter } from "./novel-detail-model";
+import {
+  chapterIdsBetween,
+  chapterIdsInNumberRange,
+  findChapterForJump,
+  findContinueReadingChapter,
+} from "./novel-detail-model";
 
 function chapter(
   id: number,
@@ -69,5 +74,54 @@ describe("findContinueReadingChapter", () => {
   it("opens the first chapter without history when every chapter is read", () => {
     const chapters = [chapter(2, 2, { progress: 100 }), chapter(1, 1, { progress: 100 })];
     expect(targetId(chapters, undefined)).toBe(1);
+  });
+});
+
+describe("chapter ranges", () => {
+  const chapters = [chapter(1, 1), chapter(2, 2), chapter(3, 3), chapter(4, 4), chapter(5, 5)];
+
+  it("selects every row between the anchor and the target in list order, both included", () => {
+    expect(chapterIdsBetween(chapters, 2, 4)).toEqual([2, 3, 4]);
+    expect(chapterIdsBetween(chapters, 4, 2)).toEqual([2, 3, 4]);
+    expect(chapterIdsBetween([...chapters].reverse(), 2, 4)).toEqual([4, 3, 2]);
+    expect(chapterIdsBetween(chapters, 3, 3)).toEqual([3]);
+  });
+
+  it("selects nothing when an endpoint is not listed", () => {
+    expect(chapterIdsBetween(chapters, 2, 9)).toEqual([]);
+  });
+
+  it("selects chapters by their shown number in either direction", () => {
+    expect(chapterIdsInNumberRange(chapters, 2, 4)).toEqual([2, 3, 4]);
+    expect(chapterIdsInNumberRange(chapters, 4, 2)).toEqual([2, 3, 4]);
+    expect(chapterIdsInNumberRange(chapters, 6, 9)).toEqual([]);
+  });
+
+  it("uses the source number, falls back to the position and skips text numbers", () => {
+    const rows = [
+      { ...chapter(1, 1), chapterNumber: "10" },
+      { ...chapter(2, 2), chapterNumber: "10.5" },
+      { ...chapter(3, 3), chapterNumber: null },
+      { ...chapter(4, 4), chapterNumber: "Epilogue" },
+    ];
+    expect(chapterIdsInNumberRange(rows, 3, 11)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("findChapterForJump", () => {
+  const chapters = [
+    { ...chapter(1, 1), name: "Prologue" },
+    { ...chapter(2, 2), name: "Storm 12" },
+    { ...chapter(12, 12), name: "Aftermath" },
+  ];
+
+  it("prefers an exact chapter number", () => {
+    expect(findChapterForJump(chapters, " 12 ")?.id).toBe(12);
+  });
+
+  it("falls back to the first title containing the text, ignoring case", () => {
+    expect(findChapterForJump(chapters, "storm")?.id).toBe(2);
+    expect(findChapterForJump(chapters, "99")).toBeUndefined();
+    expect(findChapterForJump(chapters, "  ")).toBeUndefined();
   });
 });

@@ -316,6 +316,23 @@
   z-index: 2;
 }
 
+.norea-novel-chapters-header[data-jump-open="true"] {
+  flex-wrap: wrap;
+  padding-bottom: var(--norea-space-2);
+}
+
+.norea-novel-chapter-jump {
+  align-items: flex-start;
+  display: flex;
+  flex: 1 0 100%;
+  gap: var(--norea-space-1);
+}
+
+.norea-novel-chapter-jump-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .norea-novel-chapters-title {
   color: var(--norea-color-ink);
   flex: 1 1 auto;
@@ -452,6 +469,11 @@
 
 .norea-novel-chapter[data-selected="true"] {
   background: var(--norea-color-selected);
+}
+
+.norea-novel-chapter[data-highlighted="true"] {
+  background: var(--norea-color-accent-soft);
+  transition: background-color var(--norea-duration-slow) var(--norea-ease-standard);
 }
 
 .norea-novel-chapter-meta {

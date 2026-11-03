@@ -529,12 +529,94 @@ it("offers anchor-relative read actions only for a single selected chapter", asy
       return (menu.props.items as MenuItem[]).map((item) => item.label);
     };
     expect(moreLabels()).toEqual([
+      "novel.selection.selectRange",
       "novel.selection.downloadPrevious",
       "novel.selection.markPreviousRead",
       "novel.selection.markFollowingUnread",
     ]);
     await run(() => (list().props.onToggleSelected as (id: number) => void)(3));
-    expect(moreLabels()).toEqual(["novel.selection.downloadPrevious"]);
+    expect(moreLabels()).toEqual(["novel.selection.selectRange", "novel.selection.downloadPrevious"]);
+  });
+});
+
+const numberedChapters = () =>
+  Array.from({ length: 6 }, (_, index) => ({
+    ...chapter, id: index + 1, position: index + 1, chapterNumber: String(index + 1), name: `Chapter ${index + 1}`,
+  }));
+
+type FindElement = (predicate: (props: Record<string, unknown>) => boolean) => ReturnType<typeof collectElements>[number] | undefined;
+
+const chapterList = (find: FindElement) => find((props) => typeof props.onExtendSelection === "function")!;
+const selectedIds = (find: FindElement) =>
+  [...(chapterList(find).props.selectedChapterIds as ReadonlySet<number>)].sort((left, right) => left - right);
+
+it("starts a selection at the first long-pressed row and selects every row up to the next one", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters();
+  await withPageTree(async (find, run) => {
+    const extend = (id: number) => (chapterList(find).props.onExtendSelection as (id: number) => void)(id);
+    await run(() => extend(2));
+    expect(chapterList(find).props.selectionMode).toBe(true);
+    expect(selectedIds(find)).toEqual([2]);
+    await run(() => extend(4));
+    expect(selectedIds(find)).toEqual([2, 3, 4]);
+    await run(() => extend(1));
+    expect(selectedIds(find)).toEqual([1, 2, 3, 4]);
+  });
+});
+
+it("toggles the anchor itself and picks the next selected row as the new anchor", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters();
+  await withPageTree(async (find, run) => {
+    const list = () => chapterList(find).props;
+    await run(() => (list().onToggleSelected as (id: number) => void)(2));
+    await run(() => (list().onExtendSelection as (id: number) => void)(2));
+    expect(selectedIds(find)).toEqual([]);
+    await run(() => (list().onToggleSelected as (id: number) => void)(5));
+    await run(() => (list().onExtendSelection as (id: number) => void)(6));
+    expect(selectedIds(find)).toEqual([5, 6]);
+  });
+});
+
+it("adds chapters chosen by number to the selection, prefilled from the anchor", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters();
+  await withPageTree(async (find, run) => {
+    await run(() => (chapterList(find).props.onToggleSelected as (id: number) => void)(2));
+    const bar = find((props) => typeof props.onSelectAll === "function")!;
+    const menu = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
+      .find((element) => Array.isArray(element.props.items))!;
+    const selectRange = (menu.props.items as MenuItem[]).find((item) => item.label === "novel.selection.selectRange")!;
+    await run(() => selectRange.onClick());
+    const sheet = () => find((props) => typeof props.onSelect === "function" && "initialFrom" in props)!;
+    expect(sheet().props.opened).toBe(true);
+    expect(sheet().props.initialFrom).toBe(2);
+    await run(() => (sheet().props.onSelect as (ids: number[]) => void)([4, 5]));
+    expect(sheet().props.opened).toBe(false);
+    expect(selectedIds(find)).toEqual([2, 4, 5]);
+  });
+});
+
+it("jumps to a chapter by number or title and reports a miss inline", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters();
+  await withPageTree(async (find, run) => {
+    const open = find((props) => props.label === "novel.jump.open")!;
+    await run(() => (open.props.onClick as () => void)());
+    const input = () => find((props) => props.placeholder === "novel.jump.placeholder")!;
+    const submit = () => (find((props) => props.role === "search")!.props.onSubmit as (event: { preventDefault: () => void }) => void)({ preventDefault() {} });
+    const type = (value: string) => (input().props.onChange as (event: { currentTarget: { value: string } }) => void)({ currentTarget: { value } });
+    await run(() => type("5"));
+    await run(submit);
+    expect(chapterList(find).props.jumpRequest).toEqual({ chapterId: 5 });
+    await run(() => type("chapter 3"));
+    await run(submit);
+    expect(chapterList(find).props.jumpRequest).toEqual({ chapterId: 3 });
+    await run(() => type("99"));
+    await run(submit);
+    expect(input().props.error).toBe("novel.jump.noMatch");
+    expect(chapterList(find).props.jumpRequest).toEqual({ chapterId: 3 });
   });
 });
 

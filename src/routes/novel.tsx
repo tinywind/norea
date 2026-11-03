@@ -1,4 +1,4 @@
-import { Button, Drawer, Text, VisuallyHidden } from "@mantine/core";
+import { Button, Drawer, Text, TextInput, VisuallyHidden } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -9,6 +9,8 @@ import { IconButton } from "../components/IconButton";
 import {
   BackIcon,
   CategoryIcon,
+  ChapterListIcon,
+  CloseIcon,
   DeleteDownloadIcon,
   DownloadIcon,
   DragIcon,
@@ -21,6 +23,7 @@ import {
   ReaderSettingsIcon,
   RefreshAllIcon,
   RefreshIcon,
+  SelectAllIcon,
   SelectIcon,
   ServerIcon,
   SourceIcon,
@@ -31,14 +34,18 @@ import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import {
   buildMissingChapterDownloadTargets,
   buildPreviousChapterDownloadTargets,
+  chapterIdsBetween,
+  chapterNumberValue,
   chaptersKey,
   EMPTY_CHAPTERS,
+  findChapterForJump,
   FINISHED_PROGRESS,
   novelKey,
   resolveNovelSourceUrl,
   sourceDuplicateChapterCountsById,
 } from "../components/novel/novel-detail-model";
 import { ChapterSortPicker } from "../components/novel/NovelActions";
+import { ChapterRangeSheet } from "../components/novel/ChapterRangeSheet";
 import {
   ChapterRowsSkeleton,
   VirtualChapterList,
@@ -107,6 +114,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const [selectedChapterIds, setSelectedChapterIds] = useState<
     ReadonlySet<number>
   >(() => new Set());
+  const [selectionAnchorId, setSelectionAnchorId] = useState<number | null>(null);
+  const [rangeSheetOpen, setRangeSheetOpen] = useState(false);
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpQuery, setJumpQuery] = useState("");
+  const [jumpMissed, setJumpMissed] = useState(false);
+  const [jumpRequest, setJumpRequest] = useState<{ chapterId: number } | null>(null);
   const chapterSelectionGuardRef = useRef(false);
 
   const novelQuery = useQuery({
@@ -248,6 +261,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     selectedAnchorIndex < 0
       ? 0
       : Math.max(0, rows.length - selectedAnchorIndex - 1);
+  const rangeAnchorId =
+    selectionAnchorId !== null && selectedChapterIds.has(selectionAnchorId)
+      ? selectionAnchorId
+      : null;
   const allChaptersSelected =
     chapters.length > 0 && selectedChapterCount === chapters.length;
   const chapterSelectionBusy =
@@ -260,6 +277,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     setSelectedChapterIds(new Set());
     setReorderMode(false);
     setCategorySheetOpen(false);
+    setRangeSheetOpen(false);
+    setJumpOpen(false);
+    setJumpQuery("");
+    setJumpMissed(false);
+    setJumpRequest(null);
     chapterSelectionGuardRef.current = false;
   }, [id]);
 
@@ -340,15 +362,47 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   function toggleChapterSelected(chapterId: number): void {
     setChapterSelectionMode(true);
-    setSelectedChapterIds((current) => {
-      const next = new Set(current);
-      if (next.has(chapterId)) {
-        next.delete(chapterId);
-      } else {
-        next.add(chapterId);
-      }
-      return next;
-    });
+    const next = new Set(selectedChapterIds);
+    if (next.has(chapterId)) {
+      next.delete(chapterId);
+    } else {
+      next.add(chapterId);
+      if (rangeAnchorId === null) setSelectionAnchorId(chapterId);
+    }
+    setSelectedChapterIds(next);
+  }
+
+  /** Selects every row from the anchor (the first selected row) to this one in list order. */
+  function extendChapterSelection(chapterId: number): void {
+    if (rangeAnchorId === null || rangeAnchorId === chapterId) {
+      toggleChapterSelected(chapterId);
+      return;
+    }
+    setChapterSelectionMode(true);
+    setSelectedChapterIds(
+      new Set([...selectedChapterIds, ...chapterIdsBetween(chapters, rangeAnchorId, chapterId)]),
+    );
+  }
+
+  function selectChapterRange(chapterIds: number[]): void {
+    setRangeSheetOpen(false);
+    setChapterSelectionMode(true);
+    if (rangeAnchorId === null && chapterIds[0] !== undefined) {
+      setSelectionAnchorId(chapterIds[0]);
+    }
+    setSelectedChapterIds(new Set([...selectedChapterIds, ...chapterIds]));
+  }
+
+  function jumpToChapter(): void {
+    const match = findChapterForJump(chapters, jumpQuery);
+    setJumpMissed(!match);
+    if (match) setJumpRequest({ chapterId: match.id });
+  }
+
+  function closeChapterJump(): void {
+    setJumpOpen(false);
+    setJumpQuery("");
+    setJumpMissed(false);
   }
 
   function selectAllChapters(): void {
@@ -595,7 +649,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  const selectionMoreItems: OverflowMenuItem[] = [];
+  const anchorChapter = rangeAnchorId === null
+    ? undefined
+    : chapters.find((chapter) => chapter.id === rangeAnchorId);
+  const selectionMoreItems: OverflowMenuItem[] = [{
+    icon: SelectAllIcon,
+    label: t("novel.selection.selectRange"),
+    onClick: () => setRangeSheetOpen(true),
+  }];
   if (!novel.isLocal) {
     selectionMoreItems.push({
       disabled: previousDownloadTargets.length === 0,
@@ -745,7 +806,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             </aside>
 
             <section aria-labelledby={chaptersHeadingId} className="norea-novel-chapters">
-              <div className="norea-novel-chapters-header">
+              <div
+                className="norea-novel-chapters-header"
+                data-jump-open={jumpOpen && !reorderMode ? "true" : undefined}
+              >
                 <h2 className="norea-novel-chapters-title" id={chaptersHeadingId}>
                   {t("novel.chapterSummary", {
                     total: chapters.length,
@@ -759,6 +823,17 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   </Button>
                 ) : (
                   <>
+                    {chapters.length > 0 ? (
+                      <IconButton
+                        active={jumpOpen}
+                        aria-expanded={jumpOpen}
+                        label={t("novel.jump.open")}
+                        onClick={() => (jumpOpen ? closeChapterJump() : setJumpOpen(true))}
+                        size="lg"
+                      >
+                        <ChapterListIcon />
+                      </IconButton>
+                    ) : null}
                     <ChapterSortPicker
                       onChange={setDefaultChapterSort}
                       value={defaultChapterSort}
@@ -771,6 +846,36 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       >
                         {t("novel.select")}
                       </Button>
+                    ) : null}
+                    {jumpOpen && chapters.length > 0 ? (
+                      <form
+                        className="norea-novel-chapter-jump"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          jumpToChapter();
+                        }}
+                        role="search"
+                      >
+                        <TextInput
+                          aria-label={t("novel.jump.open")}
+                          autoFocus
+                          className="norea-novel-chapter-jump-input"
+                          enterKeyHint="go"
+                          error={jumpMissed ? t("novel.jump.noMatch", { query: jumpQuery.trim() }) : undefined}
+                          onChange={(event) => {
+                            setJumpQuery(event.currentTarget.value);
+                            setJumpMissed(false);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") closeChapterJump();
+                          }}
+                          placeholder={t("novel.jump.placeholder")}
+                          value={jumpQuery}
+                        />
+                        <IconButton label={t("novel.jump.close")} onClick={closeChapterJump} size="lg">
+                          <CloseIcon />
+                        </IconButton>
+                      </form>
                     ) : null}
                   </>
                 )}
@@ -840,6 +945,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   deleteBusyChapterId={clearDownload.variables}
                   duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
                   deletePending={clearDownload.isPending}
+                  jumpRequest={jumpRequest}
                   lastReadChapterId={lastReadChapterId}
                   repairBusyChapterId={repairMedia.variables?.id}
                   repairPending={repairMedia.isPending}
@@ -852,6 +958,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     void openChapter(chapter);
                   }}
                   onDownload={downloadChapter}
+                  onExtendSelection={extendChapterSelection}
                   onRepairMedia={(chapter) => repairMedia.mutate(chapter)}
                   onReorderChapter={reorderLocalChapter}
                   onToggleSelected={toggleChapterSelected}
@@ -865,6 +972,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           </div>
         </PageFrame>
       </div>
+
+      <ChapterRangeSheet
+        chapters={chapters}
+        initialFrom={anchorChapter ? chapterNumberValue(anchorChapter) : null}
+        onClose={() => setRangeSheetOpen(false)}
+        onSelect={selectChapterRange}
+        opened={rangeSheetOpen}
+      />
 
       {serverManagerSource ? (
         <ServerChapterManager

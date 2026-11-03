@@ -62,6 +62,58 @@ export function formatChapterNumber(
   return chapter.chapterNumber?.trim() || String(chapter.position);
 }
 
+/** The chapter's shown number as a value, or `null` when it is not numeric. */
+export function chapterNumberValue(
+  chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
+): number | null {
+  const text = formatChapterNumber(chapter);
+  return /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : null;
+}
+
+/** The ids from `anchorId` to `targetId`, both included, in list order. */
+export function chapterIdsBetween(
+  chapters: readonly ChapterListRow[],
+  anchorId: number,
+  targetId: number,
+): number[] {
+  const anchorIndex = chapters.findIndex((chapter) => chapter.id === anchorId);
+  const targetIndex = chapters.findIndex((chapter) => chapter.id === targetId);
+  if (anchorIndex < 0 || targetIndex < 0) return [];
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  return chapters.slice(start, end + 1).map((chapter) => chapter.id);
+}
+
+/** The ids of chapters numbered from `from` to `to`, both included, in either order. */
+export function chapterIdsInNumberRange(
+  chapters: readonly ChapterListRow[],
+  from: number,
+  to: number,
+): number[] {
+  const low = Math.min(from, to);
+  const high = Math.max(from, to);
+  return chapters.flatMap((chapter) => {
+    const value = chapterNumberValue(chapter);
+    return value !== null && value >= low && value <= high ? [chapter.id] : [];
+  });
+}
+
+/** The chapter a "Go to chapter" query names: an exact number first, else the first title containing it. */
+export function findChapterForJump(
+  chapters: readonly ChapterListRow[],
+  query: string,
+): ChapterListRow | undefined {
+  const text = query.trim();
+  if (!text) return undefined;
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const value = Number(text);
+    const numbered = chapters.find((chapter) => chapterNumberValue(chapter) === value);
+    if (numbered) return numbered;
+  }
+  const needle = text.toLocaleLowerCase();
+  return chapters.find((chapter) => chapter.name.toLocaleLowerCase().includes(needle));
+}
+
 const NOVEL_STATUS_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
   [NovelStatus.Ongoing]: "novel.status.ongoing",
   [NovelStatus.Completed]: "novel.status.completed",
