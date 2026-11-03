@@ -530,6 +530,10 @@
   color: var(--norea-color-ink-muted);
 }
 
+.norea-library-badge[data-kind="downloaded"][data-goal-state="attention"] {
+  color: var(--norea-color-warn);
+}
+
 .norea-library-card-cover .norea-library-badge[data-kind="unread"] {
   margin-left: auto;
 }

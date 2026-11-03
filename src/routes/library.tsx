@@ -39,6 +39,7 @@ import { useLibraryEntry } from "../components/library/use-library-entry";
 import { StorageRecoveryBanner } from "../components/runtime/StorageRecovery";
 import { useLibrarySelection } from "../components/library/use-library-selection";
 import { LibraryGrid, LibraryGridSkeleton } from "../components/LibraryGrid";
+import { useDownloadGoalOfflineStates } from "../components/library/use-download-goal-offline-states";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
@@ -176,6 +177,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
+  const offlineStates = useDownloadGoalOfflineStates(active && showDownloadBadges);
   const [categorySheetOpen, setCategorySheetOpen] = useState(false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsTab, setViewOptionsTab] =
@@ -514,6 +516,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     showDownloadBadges={showDownloadBadges}
                     showUnreadBadges={showUnreadBadges}
                     showNumberBadges={showNumberBadges}
+                    offlineStates={offlineStates}
                     selectedIds={selectedIds}
                     selectionMode={selectionMode}
                     onActivate={handleActivate}

@@ -1,12 +1,13 @@
 import { Skeleton, VisuallyHidden } from "@mantine/core";
 import { memo, type CSSProperties, type MouseEvent } from "react";
 import type { LibraryNovel } from "../db/queries/novel";
+import type { DownloadGoalOfflineState } from "../lib/download-goals/goal-offline-state";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { useLongPress } from "../lib/use-long-press";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
 import { ConsoleCover } from "./ConsolePrimitives";
-import { CheckIcon, DownloadedIcon, UnreadIcon } from "./ui/icons";
+import { CheckIcon, DownloadedIcon, DownloadIcon, UnreadIcon, WarningIcon } from "./ui/icons";
 import { ListRow } from "./ui/ListRow";
 
 const LONG_PRESS_MS = 500;
@@ -19,6 +20,8 @@ interface LibraryGridProps {
   showDownloadBadges: boolean;
   showUnreadBadges: boolean;
   showNumberBadges: boolean;
+  /** Offline state of novels with a download goal in effect, shown on the downloaded badge. */
+  offlineStates?: ReadonlyMap<number, DownloadGoalOfflineState>;
   selectedIds?: ReadonlySet<number>;
   /** Taps toggle selection and every item shows its check state. */
   selectionMode?: boolean;
@@ -33,6 +36,7 @@ export function LibraryGrid({
   showDownloadBadges,
   showUnreadBadges,
   showNumberBadges,
+  offlineStates,
   selectedIds,
   selectionMode = false,
   onActivate,
@@ -41,6 +45,7 @@ export function LibraryGrid({
   const itemProps = (novel: LibraryNovel, index: number): LibraryItemProps => ({
     index,
     novel,
+    offlineState: offlineStates?.get(novel.id),
     onActivate,
     onLongPress,
     selected: selectedIds?.has(novel.id) ?? false,
@@ -136,6 +141,7 @@ export function LibraryGridSkeleton({
 interface LibraryItemProps {
   index: number;
   novel: LibraryNovel;
+  offlineState: DownloadGoalOfflineState | undefined;
   onActivate?: (id: number) => void;
   onLongPress?: (id: number) => void;
   selected: boolean;
@@ -204,6 +210,7 @@ const LibraryCard = memo(function LibraryCard({
   displayMode,
   index,
   novel,
+  offlineState,
   onActivate,
   onLongPress,
   selected,
@@ -234,6 +241,7 @@ const LibraryCard = memo(function LibraryCard({
         <LibraryBadges
           index={index}
           novel={novel}
+          offlineState={offlineState}
           showDownloadBadges={showDownloadBadges}
           showNumberBadges={showNumberBadges}
           showUnreadBadges={showUnreadBadges}
@@ -268,6 +276,7 @@ const LibraryCard = memo(function LibraryCard({
 const LibraryListRow = memo(function LibraryListRow({
   index,
   novel,
+  offlineState,
   onActivate,
   onLongPress,
   selected,
@@ -308,6 +317,7 @@ const LibraryListRow = memo(function LibraryListRow({
         <LibraryBadges
           index={index}
           novel={novel}
+          offlineState={offlineState}
           showDownloadBadges={showDownloadBadges}
           showNumberBadges={showNumberBadges}
           showUnreadBadges={showUnreadBadges}
@@ -318,18 +328,30 @@ const LibraryListRow = memo(function LibraryListRow({
   );
 });
 
+const OFFLINE_STATE_LABELS: Record<DownloadGoalOfflineState, TranslationKey> = {
+  ready: "library.grid.offline.ready",
+  downloading: "library.grid.offline.downloading",
+  attention: "library.grid.offline.attention",
+};
+
+const OFFLINE_STATE_ICONS = { ready: DownloadedIcon, downloading: DownloadIcon, attention: WarningIcon };
+
 function LibraryBadges({
   index,
   novel,
+  offlineState,
   showDownloadBadges,
   showNumberBadges,
   showUnreadBadges,
 }: Omit<LibraryItemProps, "onActivate" | "onLongPress" | "selected" | "selectionMode">) {
   const { t } = useTranslation();
   const unread = showUnreadBadges && novel.chaptersUnread > 0;
-  const downloaded = showDownloadBadges && novel.chaptersDownloaded > 0;
+  const goalState = showDownloadBadges ? offlineState : undefined;
+  const downloaded = showDownloadBadges && (novel.chaptersDownloaded > 0 || goalState !== undefined);
   if (!unread && !downloaded && !showNumberBadges) return null;
-  const downloadedLabel = t("library.grid.downloadedBadge", { count: novel.chaptersDownloaded });
+  const downloadedCount = t("library.grid.downloadedBadge", { count: novel.chaptersDownloaded });
+  const downloadedLabel = goalState ? `${downloadedCount} · ${t(OFFLINE_STATE_LABELS[goalState])}` : downloadedCount;
+  const DownloadedStateIcon = OFFLINE_STATE_ICONS[goalState ?? "ready"];
   const unreadLabel = t("library.grid.unreadBadge", { count: novel.chaptersUnread });
 
   return (
@@ -340,8 +362,8 @@ function LibraryBadges({
         </span>
       ) : null}
       {downloaded ? (
-        <span className="norea-library-badge" data-kind="downloaded" title={downloadedLabel}>
-          <DownloadedIcon size="0.875rem" />
+        <span className="norea-library-badge" data-goal-state={goalState} data-kind="downloaded" title={downloadedLabel}>
+          <DownloadedStateIcon size="0.875rem" />
           <span aria-hidden="true">{novel.chaptersDownloaded}</span>
           <VisuallyHidden>{downloadedLabel}</VisuallyHidden>
         </span>

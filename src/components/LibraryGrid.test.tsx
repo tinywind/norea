@@ -88,6 +88,28 @@ it("tells the unread and downloaded badges apart by icon and hover label", () =>
   expect(downloaded.find("svg").attr("class")).toContain("tabler-icon-cloud-check");
 });
 
+it("shows a goal novel's offline state on its downloaded badge, even before anything is downloaded", () => {
+  const $ = load(renderToStaticMarkup(
+    <MantineProvider>
+      <LibraryGrid
+        displayMode="comfortable"
+        novels={[novel, { ...novel, id: 8, chaptersDownloaded: 0 }, { ...novel, id: 9 }, { ...novel, id: 10, chaptersDownloaded: 0 }]}
+        novelsPerRow={3}
+        offlineStates={new Map([[7, "ready"], [8, "downloading"], [9, "attention"]])}
+        showDownloadBadges
+        showNumberBadges={false}
+        showUnreadBadges={false}
+      />
+    </MantineProvider>,
+  ));
+  const badges = $('[data-kind="downloaded"]');
+  expect(badges.map((_, badge) => $(badge).attr("data-goal-state")).get()).toEqual(["ready", "downloading", "attention"]);
+  expect(badges.eq(0).attr("title")).toBe("library.grid.downloadedBadge · library.grid.offline.ready");
+  expect(badges.eq(0).find("svg").attr("class")).toContain("tabler-icon-cloud-check");
+  expect(badges.eq(1).find("svg").attr("class")).toContain("tabler-icon-download");
+  expect(badges.eq(2).find("svg").attr("class")).toContain("tabler-icon-alert-triangle");
+});
+
 it("shows the title only on the cover in covers-only mode", () => {
   const $ = renderGrid("cover-only");
   expect($("li > button").first().find("[aria-hidden=true] .norea-console-cover")).toHaveLength(0);
