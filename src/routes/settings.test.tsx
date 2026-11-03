@@ -96,6 +96,7 @@ describe("settings sections", () => {
     ["backup", ["Backup file", "Content server"], ["Plugin VPN"]],
     ["network", ["Plugin VPN"], ["Backup file"]],
     ["reset", ["Clear library", "Clear reading progress", "Clear updates tab", "Appearance defaults", "Reader defaults"], ["Clear WebView cache"]],
+    ["browse", ["Update extensions automatically"], ["Storage folder"]],
     ["about", ["Version", "Official release", "GitHub Releases"], ["Log level", "Dev build"]],
     ["developer", ["Log level", "Dev build", "Build time", "Custom User-Agent", "Clear WebView cache", "Source request timeout"], ["Official release"]],
   ])("places the %s settings in their section", (section, present, absent) => {
@@ -107,6 +108,5 @@ describe("settings sections", () => {
   it("opens the renamed sections of earlier links", () => {
     expect(detail(renderSettings("data"))).toContain("Backup file");
     expect(detail(renderSettings("app"))).toContain("Theme mode");
-    expect(detail(renderSettings("browse"))).toContain("Storage folder");
   });
 });

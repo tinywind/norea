@@ -83,6 +83,8 @@ interface BrowseState {
   lastUsedPluginId: string | null;
   /** Order of global search result sections; the last choice is kept. */
   globalSearchSort: GlobalSearchSort;
+  /** Install newer versions from each plugin's publisher without asking. */
+  autoUpdateExtensions: boolean;
   globalSearch: BrowseGlobalSearchState;
   setPendingRepoUrl: (url: string | null) => void;
   clearPendingRepoUrl: () => void;
@@ -93,6 +95,7 @@ interface BrowseState {
   togglePinnedPlugin: (pluginId: string) => void;
   setLastUsedPluginId: (pluginId: string | null) => void;
   setGlobalSearchSort: (sort: GlobalSearchSort) => void;
+  setAutoUpdateExtensions: (enabled: boolean) => void;
   beginGlobalSearch: (search: BrowseGlobalSearchState) => void;
   appendGlobalSearchResult: (
     searchKey: string,
@@ -114,6 +117,7 @@ export const useBrowseStore = create<BrowseState>()(
       pinnedPluginIds: [],
       lastUsedPluginId: null,
       globalSearchSort: "pinned",
+      autoUpdateExtensions: false,
       globalSearch: EMPTY_GLOBAL_SEARCH,
       setPendingRepoUrl: (pendingRepoUrl) => set({ pendingRepoUrl }),
       clearPendingRepoUrl: () => set({ pendingRepoUrl: null }),
@@ -153,6 +157,7 @@ export const useBrowseStore = create<BrowseState>()(
       setLastUsedPluginId: (lastUsedPluginId) => set({ lastUsedPluginId }),
       setGlobalSearchSort: (globalSearchSort) =>
         set({ globalSearchSort: normalizeGlobalSearchSort(globalSearchSort) }),
+      setAutoUpdateExtensions: (autoUpdateExtensions) => set({ autoUpdateExtensions }),
       beginGlobalSearch: (globalSearch) => set({ globalSearch }),
       appendGlobalSearchResult: (searchKey, result) =>
         set((state) => {
@@ -214,6 +219,7 @@ export const useBrowseStore = create<BrowseState>()(
               ? persisted.lastUsedPluginId
               : null,
           globalSearchSort: normalizeGlobalSearchSort(persisted.globalSearchSort),
+          autoUpdateExtensions: persisted.autoUpdateExtensions === true,
         };
       },
       partialize: (state) => ({
@@ -234,6 +240,7 @@ export const useBrowseStore = create<BrowseState>()(
         pinnedPluginIds: normalizeStringArray(state.pinnedPluginIds, []),
         lastUsedPluginId: state.lastUsedPluginId,
         globalSearchSort: normalizeGlobalSearchSort(state.globalSearchSort),
+        autoUpdateExtensions: state.autoUpdateExtensions,
       }),
     },
   ),

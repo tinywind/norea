@@ -1774,5 +1774,13 @@
   "extensions.publisher.choose": "배포 저장소 선택",
   "extensions.publisher.useRepository": "{repository} ({version})",
   "extensions.publisher.alsoAvailable": "{repository}에도 있음 ({version})",
-  "extensions.publisher.switch": "{repository}에서 업데이트 받기 ({version})"
+  "extensions.publisher.switch": "{repository}에서 업데이트 받기 ({version})",
+  "settings.category.browse.title": "탐색",
+  "settings.summary.browse.autoUpdateOn": "확장 기능 자동 업데이트",
+  "settings.summary.browse.autoUpdateOff": "확장 기능 업데이트 알림만",
+  "settings.browse.extensions.title": "확장 기능",
+  "settings.browse.autoUpdateExtensions.label": "확장 기능 자동 업데이트",
+  "settings.browse.autoUpdateExtensions.description": "확장 기능을 설치한 저장소의 새 버전을 자동으로 설치합니다. 배포 저장소를 모르면 업데이트하지 않습니다.",
+  "settingsSearch.synonyms.extensionUpdates": "플러그인 소스 업그레이드 extension plugin",
+  "extensions.autoUpdate.updated": "확장 기능 {count}개를 자동으로 업데이트했습니다"
 }

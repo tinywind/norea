@@ -11,6 +11,7 @@ const SECTION_SOURCES = [
   "./GeneralSection.tsx",
   "./DownloadsSection.tsx",
   "./BackupSection.tsx",
+  "./BrowseSection.tsx",
   "./NetworkSection.tsx",
   "./ResetSection.tsx",
   "./AboutSection.tsx",

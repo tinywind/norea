@@ -8,6 +8,7 @@ export const SETTINGS_SECTION_TITLE_KEYS: Record<SettingsSectionId, TranslationK
   library: "settings.category.library.title",
   downloads: "settings.category.downloads.title",
   backup: "settings.category.backup.title",
+  browse: "settings.category.browse.title",
   network: "settings.category.network.title",
   reset: "settings.category.reset.title",
   about: "settings.category.about.title",

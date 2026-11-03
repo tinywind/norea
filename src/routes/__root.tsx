@@ -8,7 +8,11 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { PageSlot } from "../components/PageSlot";
-import { refreshStaleRepositoryIndexesAtLaunch } from "../components/browse/use-plugin-catalog";
+import {
+  applyAutomaticExtensionUpdates,
+  refreshStaleRepositoryIndexesAtLaunch,
+  reportAutomaticExtensionUpdates,
+} from "../components/browse/use-plugin-catalog";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
@@ -369,9 +373,13 @@ export function RootLayout() {
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
-    refreshStaleRepositoryIndexesAtLaunch(queryClient).catch((error) =>
-      console.warn("[browse:repository] launch index refresh failed", error),
-    );
+    void refreshStaleRepositoryIndexesAtLaunch(queryClient)
+      .catch((error) => console.warn("[browse:repository] launch index refresh failed", error))
+      .then(async () => {
+        if (!useBrowseStore.getState().autoUpdateExtensions) return;
+        reportAutomaticExtensionUpdates(await applyAutomaticExtensionUpdates(queryClient));
+      })
+      .catch((error) => console.warn("[browse:repository] automatic extension updates failed", error));
   }, [queryClient]);
 
   useEffect(() => {

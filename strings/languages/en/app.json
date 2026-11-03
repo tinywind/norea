@@ -1774,5 +1774,13 @@
   "extensions.publisher.choose": "Choose publisher",
   "extensions.publisher.useRepository": "{repository} ({version})",
   "extensions.publisher.alsoAvailable": "Also available from {repository} ({version})",
-  "extensions.publisher.switch": "Get updates from {repository} ({version})"
+  "extensions.publisher.switch": "Get updates from {repository} ({version})",
+  "settings.category.browse.title": "Browse",
+  "settings.summary.browse.autoUpdateOn": "Extensions update automatically",
+  "settings.summary.browse.autoUpdateOff": "Extension updates are shown",
+  "settings.browse.extensions.title": "Extensions",
+  "settings.browse.autoUpdateExtensions.label": "Update extensions automatically",
+  "settings.browse.autoUpdateExtensions.description": "Installs newer versions from the repository each extension came from. Unknown publishers are never updated.",
+  "settingsSearch.synonyms.extensionUpdates": "plugin plugins source sources upgrade",
+  "extensions.autoUpdate.updated": "{count} extensions updated automatically"
 }

@@ -76,6 +76,8 @@ export const SETTINGS_SEARCH_ROWS: readonly SettingsSearchRow[] = [
 
   { section: "backup", label: "settings.data.backupFile.label", synonyms: "settingsSearch.synonyms.backup" },
 
+  { section: "browse", label: "settings.browse.autoUpdateExtensions.label", synonyms: "settingsSearch.synonyms.extensionUpdates" },
+
   { section: "network", label: "settings.data.pluginVpn.status.label", condition: "settingsSearch.condition.android", synonyms: "settingsSearch.synonyms.vpn" },
   { section: "network", label: "settings.data.pluginVpn.connection.label", condition: "settingsSearch.condition.android", synonyms: "settingsSearch.synonyms.vpn" },
   { section: "network", label: "settings.data.pluginVpn.profile.label", condition: "settingsSearch.condition.android", synonyms: "settingsSearch.synonyms.vpn" },

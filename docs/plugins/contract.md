@@ -41,6 +41,9 @@ the list provides it. Each installed plugin records the repository it was
 installed from, and updates come only from that repository. Another repository's
 entry for the same id is shown as an alternative, and installing from it is an
 explicit publisher switch. Plugins installed from a file have no publisher.
+Automatic updates are off by default. When the user turns them on, the app
+installs strictly newer versions from each plugin's publisher after the launch
+index refresh; plugins without a publisher are never updated automatically.
 
 ## Chapter acquisition
 

@@ -18,10 +18,23 @@ vi.mock("../../db/queries/repo-index-cache", () => ({
     db.cache.set(url, { fetchedAt: NOW, items });
   }),
 }));
+const installed = vi.hoisted(() => ({
+  plugins: [] as { id: string; name: string; version: string }[],
+  publishers: new Map<string, string | null>(),
+}));
+
 vi.mock("../../lib/plugins/manager", () => ({
   isPluginSourceInstanceOf: () => false,
   isValidPluginItem: () => true,
-  pluginManager: { fetchRepository: vi.fn(async () => [ITEM]) },
+  pluginManager: {
+    fetchRepository: vi.fn(async () => [ITEM]),
+    getPluginRepositoryUrl: (id: string) => installed.publishers.get(id) ?? null,
+    list: () => installed.plugins,
+    loadInstalledFromDb: vi.fn(async () => undefined),
+    updatePlugin: vi.fn(async (id: string) => {
+      if (id === "broken") throw new Error("broken source");
+    }),
+  },
 }));
 vi.mock("../../lib/tasks/main-tasks", () => ({
   enqueueMainTask: vi.fn(({ run }: { run: () => Promise<unknown> }) => ({ promise: run() })),
@@ -31,6 +44,7 @@ import { pluginManager } from "../../lib/plugins/manager";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
 import {
   AVAILABLE_QUERY_KEY,
+  applyAutomaticExtensionUpdates,
   refreshStaleRepositoryIndexesAtLaunch,
   resetLaunchRepositoryIndexRefreshForTests,
 } from "./use-plugin-catalog";
@@ -104,5 +118,47 @@ describe("refreshStaleRepositoryIndexesAtLaunch", () => {
     await refreshStaleRepositoryIndexesAtLaunch(queryClient, NOW + 2 * DAY);
 
     expect(pluginManager.fetchRepository).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("applyAutomaticExtensionUpdates", () => {
+  const OTHER_URL = "https://other.example/plugins.json";
+  const entry = (id: string, version: string) => ({ ...ITEM, id, name: id, version });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.cache.clear();
+    db.repos = [
+      { id: 1, url: REPO_URL, name: null, addedAt: 0, priority: 1, enabled: true },
+      { id: 2, url: OTHER_URL, name: null, addedAt: 0, priority: 2, enabled: false },
+    ];
+    installed.plugins = ["demo", "unknown", "elsewhere", "broken", "current"]
+      .map((id) => ({ id, name: id, version: "1.0.0" }));
+    installed.publishers = new Map([
+      ["demo", REPO_URL], ["unknown", null], ["elsewhere", OTHER_URL], ["broken", REPO_URL], ["current", REPO_URL],
+    ]);
+    db.cache.set(REPO_URL, { fetchedAt: NOW, items: [
+      entry("demo", "1.1.0"), entry("unknown", "2.0.0"), entry("elsewhere", "3.0.0"),
+      entry("broken", "1.2.0"), entry("current", "1.0.0"),
+    ] });
+    db.cache.set(OTHER_URL, { fetchedAt: NOW, items: [entry("elsewhere", "4.0.0")] });
+  });
+
+  it("updates only from each plugin's own enabled publisher and reports every outcome", async () => {
+    const outcomes = await applyAutomaticExtensionUpdates(new QueryClient());
+
+    expect(vi.mocked(pluginManager.updatePlugin).mock.calls.map(([id, item, repoUrl]) => [id, item.version, repoUrl]))
+      .toEqual([["demo", "1.1.0", REPO_URL], ["broken", "1.2.0", REPO_URL]]);
+    expect(outcomes.map(({ error, plugin }) => [plugin.id, error === undefined])).toEqual([
+      ["demo", true],
+      ["broken", false],
+    ]);
+  });
+
+  it("does nothing when no publisher lists a newer version", async () => {
+    db.cache.set(REPO_URL, { fetchedAt: NOW, items: [entry("demo", "1.0.0")] });
+
+    await expect(applyAutomaticExtensionUpdates(new QueryClient())).resolves.toEqual([]);
+    expect(enqueueMainTask).not.toHaveBeenCalled();
   });
 });

@@ -76,7 +76,6 @@ it("opens the section index for missing or unknown sections", async () => {
 it("keeps every section id and maps the ids of earlier builds to their new sections", () => {
   for (const id of SETTINGS_SECTION_IDS) expect(normalizeSettingsSection(id)).toBe(id);
   expect(normalizeSettingsSection("app")).toBe("appearance");
-  expect(normalizeSettingsSection("browse")).toBe("downloads");
   expect(normalizeSettingsSection("data")).toBe("backup");
   expect(normalizeSettingsSection(" DATA ")).toBe("backup");
   expect(normalizeSettingsSection("")).toBeNull();

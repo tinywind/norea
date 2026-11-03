@@ -144,6 +144,9 @@ requirements must be decided explicitly before implementation.
   it. Removing a repository keeps the publisher URL of its plugins, so adding it
   again restores their updates. Full device snapshots include the columns under
   the exact-schema policy; portable backups carry them in manifest format 5.
+  Automatic extension updates are an additive `autoUpdateExtensions` flag in the
+  `browse-plugin-settings` entry, which both backup kinds carry; a missing or
+  non-boolean value reads as off.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it

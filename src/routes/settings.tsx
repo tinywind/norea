@@ -6,6 +6,7 @@ import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
 import { AboutSection } from "../components/settings/AboutSection";
 import { AppearanceSection } from "../components/settings/AppearanceSection";
 import { BackupSection } from "../components/settings/BackupSection";
+import { BrowseSection } from "../components/settings/BrowseSection";
 import { DeveloperSection } from "../components/settings/DeveloperSection";
 import { DownloadsSection } from "../components/settings/DownloadsSection";
 import { GeneralSection } from "../components/settings/GeneralSection";
@@ -54,6 +55,8 @@ function SettingsSectionContent({
       return <DownloadsSection isBusy={busy.isBusy} />;
     case "backup":
       return <BackupSection {...busy} />;
+    case "browse":
+      return <BrowseSection />;
     case "network":
       return <NetworkSection isBusy={busy.isBusy} />;
     case "reset":

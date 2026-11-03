@@ -67,3 +67,12 @@ describe("browse store global search sort", () => {
     expect(useBrowseStore.getState().globalSearchSort).toBe("pinned");
   });
 });
+
+describe("browse store automatic extension updates", () => {
+  it("is off until the user turns it on", () => {
+    expect(useBrowseStore.getInitialState().autoUpdateExtensions).toBe(false);
+    useBrowseStore.getState().setAutoUpdateExtensions(true);
+    expect(useBrowseStore.getState().autoUpdateExtensions).toBe(true);
+    useBrowseStore.getState().setAutoUpdateExtensions(false);
+  });
+});

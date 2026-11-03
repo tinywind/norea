@@ -9,6 +9,7 @@ export const SETTINGS_SECTION_IDS = [
   "library",
   "downloads",
   "backup",
+  "browse",
   "network",
   "reset",
   "about",
@@ -20,7 +21,6 @@ export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
 /** Section ids used by earlier builds and links, mapped to their new home. */
 const RENAMED_SETTINGS_SECTIONS: Readonly<Record<string, SettingsSectionId>> = {
   app: "appearance",
-  browse: "downloads",
   data: "backup",
 };
 

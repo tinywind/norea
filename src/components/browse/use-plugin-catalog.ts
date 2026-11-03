@@ -20,6 +20,7 @@ import { comparePluginVersions } from "../../lib/plugins/version";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
 import { isTauriRuntime } from "../../lib/tauri-runtime";
 import { useAppearanceStore } from "../../store/appearance";
+import { showSettingsToast } from "../settings/settings-toast";
 
 export const REPO_QUERY_KEY = ["repository", "list"] as const;
 export const AVAILABLE_QUERY_KEY = ["plugin", "available"] as const;
@@ -185,19 +186,21 @@ export function useAvailablePlugins(
 export function useCachedAvailablePlugins(enabled: boolean) {
   return useQuery({
     queryKey: [...AVAILABLE_QUERY_KEY, "cached"] as const,
-    queryFn: async (): Promise<AvailableEntry[]> => {
-      const entries: AvailableEntry[] = [];
-      for (const repo of await listRepositories()) {
-        if (!repo.enabled) continue;
-        const cached = await getCachedRepoIndex(repo.url);
-        for (const item of cached?.items.filter(isValidPluginItem) ?? []) {
-          entries.push({ item, repoUrl: repo.url });
-        }
-      }
-      return entries;
-    },
+    queryFn: listCachedAvailableEntries,
     enabled,
   });
+}
+
+async function listCachedAvailableEntries(): Promise<AvailableEntry[]> {
+  const entries: AvailableEntry[] = [];
+  for (const repo of await listRepositories()) {
+    if (!repo.enabled) continue;
+    const cached = await getCachedRepoIndex(repo.url);
+    for (const item of cached?.items.filter(isValidPluginItem) ?? []) {
+      entries.push({ item, repoUrl: repo.url });
+    }
+  }
+  return entries;
 }
 
 /**
@@ -380,6 +383,53 @@ export async function updatePlugins(
     }
   }
   return outcomes;
+}
+
+/**
+ * RD7 automatic updates: installs every strictly newer version that an
+ * installed plugin's own publisher lists in the cached index. Unknown
+ * publishers and other repositories never update a plugin. Each update runs
+ * as its own task; one failure leaves that plugin as it was and the others
+ * continue. Resolves the outcomes, empty when nothing was due.
+ */
+export async function applyAutomaticExtensionUpdates(
+  queryClient: QueryClient,
+): Promise<PluginUpdateOutcome[]> {
+  await pluginManager.loadInstalledFromDb();
+  const due = findPluginUpdates(
+    pluginManager.list(),
+    await listCachedAvailableEntries(),
+    installedPluginPublisher,
+  );
+  if (due.length === 0) return [];
+  const locale = useAppearanceStore.getState().appLocale;
+  const outcomes = await updatePlugins(due, ({ item, plugin, repoUrl }) =>
+    enqueueMainTask({
+      kind: "plugin.install",
+      title: translate(locale, "extensions.updateAction", { name: plugin.name }),
+      subject: { pluginId: plugin.id, url: item.url },
+      run: () => pluginManager.updatePlugin(plugin.id, item, repoUrl),
+    }).promise,
+  );
+  void queryClient.invalidateQueries({ queryKey: ["plugin"] });
+  return outcomes;
+}
+
+/** Toasts how many automatic updates applied and how many failed. */
+export function reportAutomaticExtensionUpdates(outcomes: readonly PluginUpdateOutcome[]): void {
+  const locale = useAppearanceStore.getState().appLocale;
+  const failed = outcomes.filter((outcome) => outcome.error !== undefined).length;
+  const updated = outcomes.length - failed;
+  if (updated > 0) {
+    showSettingsToast("ok", translate(locale, "extensions.autoUpdate.updated", { count: updated }));
+  }
+  if (failed > 0) {
+    showSettingsToast(
+      "danger",
+      translate(locale, "extensions.updateFailedTitle", { count: failed }),
+      translate(locale, "extensions.updateFailedMessage"),
+    );
+  }
 }
 
 async function hasStaleRepositoryIndex(
