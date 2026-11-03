@@ -9,7 +9,6 @@ const NOT_YET_MIGRATED = new Set([
   "downloads.css",
   "novel-merge.css",
   "plugin-vpn-finder.css",
-  "reader.css",
   "settings.css",
   "tasks.css",
   "updates.css",

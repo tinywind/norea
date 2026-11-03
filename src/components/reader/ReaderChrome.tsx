@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { type ChapterListRow, type ChapterRow } from "../../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../../i18n";
+import {
+  normalizeFontScalePercent,
+  useAppearanceStore,
+} from "../../store/appearance";
 import { ReaderSettingsGlyph, RetryGlyph } from "../ActionGlyphs";
 import { BackIconButton } from "../BackIconButton";
 import { IconButton } from "../IconButton";
 import { ReaderSettingsPanel } from "../ReaderSettingsPanel";
 
 const FINISHED_PROGRESS = 100;
-const READER_CHAPTER_ROW_HEIGHT = 30;
+const READER_CHAPTER_ROW_HEIGHT = 36;
 
 const READER_CHAPTER_PANEL_FALLBACK_ROWS = 36;
 
@@ -265,23 +269,28 @@ export function ReaderChapterPanel({
 }) {
   const { t } = useTranslation();
   const panelRef = useRef<HTMLElement | null>(null);
+  const fontScalePercent = useAppearanceStore(
+    (state) => state.fontScalePercent,
+  );
+  const chapterRowHeight =
+    READER_CHAPTER_ROW_HEIGHT *
+    (normalizeFontScalePercent(fontScalePercent) / 100);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(
-    READER_CHAPTER_ROW_HEIGHT * READER_CHAPTER_PANEL_FALLBACK_ROWS,
+    chapterRowHeight * READER_CHAPTER_PANEL_FALLBACK_ROWS,
   );
-  const totalHeight = chapters.length * READER_CHAPTER_ROW_HEIGHT;
+  const totalHeight = chapters.length * chapterRowHeight;
   const startIndex = Math.max(
     0,
-    Math.floor(scrollTop / READER_CHAPTER_ROW_HEIGHT) -
-      READER_CHAPTER_PANEL_OVERSCAN,
+    Math.floor(scrollTop / chapterRowHeight) - READER_CHAPTER_PANEL_OVERSCAN,
   );
   const endIndex = Math.min(
     chapters.length,
-    Math.ceil((scrollTop + viewportHeight) / READER_CHAPTER_ROW_HEIGHT) +
+    Math.ceil((scrollTop + viewportHeight) / chapterRowHeight) +
       READER_CHAPTER_PANEL_OVERSCAN,
   );
   const visibleChapters = chapters.slice(startIndex, endIndex);
-  const offsetY = startIndex * READER_CHAPTER_ROW_HEIGHT;
+  const offsetY = startIndex * chapterRowHeight;
 
   useEffect(() => {
     const element = panelRef.current;
@@ -350,7 +359,7 @@ export function ReaderChapterPanel({
                   data-status={status}
                   key={item.id}
                   onClick={() => onOpenChapter(item)}
-                  style={{ height: READER_CHAPTER_ROW_HEIGHT }}
+                  style={{ height: chapterRowHeight }}
                   title={item.name}
                   type="button"
                 >
