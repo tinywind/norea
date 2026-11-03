@@ -70,7 +70,7 @@ describe("Android task notification groups",()=>{
   });
   it("releases the wake lock while an aggregate waits on source verification",()=>{
     const download=task("download","chapter.download");
-    const aggregate={...task("metadata","library.refreshMetadata"),lane:"main" as const,status:"running" as const};
+    const aggregate={...task("check","library.checkUpdates"),lane:"main" as const,status:"running" as const};
     mocks.getSnapshot.mockReturnValue(snapshot([download,aggregate],[block("source-a")]));
     dispose=startAndroidTaskNotifications(t,"progress");
     expect(payload().executionActive).toBe(true);

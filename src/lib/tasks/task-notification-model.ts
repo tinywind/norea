@@ -372,7 +372,7 @@ export function isActiveTaskNotificationCandidate(task: TaskRecord): boolean {
 }
 
 export function isAggregateTaskNotification(task: TaskRecord): boolean {
-  return task.kind === "library.checkUpdates" || task.kind === "library.refreshMetadata";
+  return task.kind === "library.checkUpdates";
 }
 
 export function taskNotificationGroupKey(task: TaskRecord): TaskNotificationGroupKey | null {

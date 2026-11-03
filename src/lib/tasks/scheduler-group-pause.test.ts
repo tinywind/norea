@@ -86,11 +86,11 @@ describe("notification task group pause", () => {
   });
 
   it("gates queued main aggregates while unrelated main work can start", async () => {
-    scheduler.pauseTaskGroup("libraryMetadata");
+    scheduler.pauseTaskGroup("libraryUpdates");
     const completed: string[] = [];
-    const metadata = scheduler.enqueueMain({
-      kind: "library.refreshMetadata", title: "Refresh metadata",
-      run: async () => { completed.push("metadata"); },
+    const check = scheduler.enqueueMain({
+      kind: "library.checkUpdates", title: "Check for new chapters",
+      run: async () => { completed.push("check"); },
     });
     const other = scheduler.enqueueMain({
       kind: "repository.refreshIndex", title: "Refresh repositories",
@@ -99,20 +99,20 @@ describe("notification task group pause", () => {
     await settle();
     await other.promise;
     expect(completed).toEqual(["repository"]);
-    expect(scheduler.getTask(metadata.id)?.status).toBe("queued");
-    scheduler.resumeTaskGroup("libraryMetadata");
+    expect(scheduler.getTask(check.id)?.status).toBe("queued");
+    scheduler.resumeTaskGroup("libraryUpdates");
     await settle();
-    await metadata.promise;
-    expect(completed).toEqual(["repository", "metadata"]);
+    await check.promise;
+    expect(completed).toEqual(["repository", "check"]);
   });
 
   it("keeps a running main aggregate waiting for its paused child", async () => {
     let childId = "";
     let attempts = 0;
     const aggregate = scheduler.enqueueMain({
-      kind: "library.refreshMetadata", title: "Refresh metadata",
+      kind: "library.checkUpdates", title: "Check for new chapters",
       run: async () => {
-        const child = enqueue("source.refreshNovel", context => {
+        const child = enqueue("source.checkLibraryUpdates", context => {
           attempts += 1;
           if (attempts > 1) return Promise.resolve();
           return new Promise<void>((_resolve, reject) => {
@@ -125,14 +125,14 @@ describe("notification task group pause", () => {
     });
     void aggregate.promise.catch(() => undefined);
     await settle();
-    scheduler.pauseTaskGroup("libraryMetadata");
+    scheduler.pauseTaskGroup("libraryUpdates");
     await settle();
     expect(scheduler.getTask(aggregate.id)?.status).toBe("running");
     expect(scheduler.getTask(childId)?.status).toBe("queued");
     const download = enqueue("chapter.download", async () => undefined);
     await settle();
     await download.promise;
-    scheduler.resumeTaskGroup("libraryMetadata");
+    scheduler.resumeTaskGroup("libraryUpdates");
     await settle();
     await aggregate.promise;
     expect(scheduler.getTask(aggregate.id)?.status).toBe("succeeded");

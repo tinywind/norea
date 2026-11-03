@@ -20,7 +20,6 @@ export function taskNotificationGroupForKind(
     case "chapter.download":
     case "chapter.repairMedia":
       return "downloads";
-    case "library.refreshMetadata":
     case "source.refreshNovel":
       return "libraryMetadata";
     case "library.checkUpdates":
@@ -53,7 +52,6 @@ export type MainTaskKind =
   | "backup.auto"
   | "backup.restore"
   | "library.checkUpdates"
-  | "library.refreshMetadata"
   | "maintenance.clearLibraryMembership"
   | "maintenance.clearDownloadedContent"
   | "maintenance.clearWebViewCache"
