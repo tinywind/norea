@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
-  Box,
+  Button,
+  Checkbox,
   Group,
   Loader,
   Stack,
@@ -9,35 +9,34 @@ import {
 } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { BlockingLoadingOverlay } from "../AppFrame";
-import {
-  ConsoleChip,
-  ConsoleSectionHeader,
-  ConsoleStatusDot,
-  ConsoleStatusStrip,
-} from "../ConsolePrimitives";
-import {
-  ChevronDownGlyph,
-  ChevronUpGlyph,
-  DetailsGlyph,
-  ExternalLinkGlyph,
-  PinGlyph,
-  RefreshGlyph,
-  RetryGlyph,
-  UnpinGlyph,
-} from "../ActionGlyphs";
+import { BlockingLoadingOverlay, StateView } from "../AppFrame";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
-import { SegmentedToggle } from "../SegmentedToggle";
+import {
+  SourceAccessVerifyButton,
+  useSourceAccessBlocks,
+} from "../SourceAccessVerifyButton";
 import { SourceNovelCover } from "../SourceNovelCover";
-import { TextButton } from "../TextButton";
+import {
+  BrowseIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  PinIcon,
+  RetryIcon,
+  SourceIcon,
+  UnpinIcon,
+  WarningIcon,
+} from "../ui/icons";
+import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
+import { PluginIcon } from "./PluginIcon";
 import { useTranslation } from "../../i18n";
 import { registerPageBackNavigationHandler } from "../../lib/android-back-navigation";
 import {
   globalSearch,
   type GlobalSearchResult,
 } from "../../lib/plugins/global-search";
-import { getPluginBaseUrl } from "../../lib/plugins/base-url";
 import { enqueueOpenNovelFromSourceTask } from "../../lib/plugins/open-novel-task";
 import { pluginManager } from "../../lib/plugins/manager";
 import type { NovelItem, Plugin } from "../../lib/plugins/types";
@@ -45,11 +44,11 @@ import {
   taskScheduler,
   type TaskHandle,
 } from "../../lib/tasks/scheduler";
-import { enqueueOpenSiteTask } from "../../lib/tasks/source-tasks";
+import { openPluginSite } from "../../lib/plugins/open-plugin-site";
 import { isAbortError } from "../../lib/abort";
 import { describeError } from "../../lib/errors";
 import { useLibraryNovelMembership } from "../../lib/use-library-novel-membership";
-import { useBrowseStore } from "../../store/browse";
+import { useBrowseStore, type GlobalSearchSort } from "../../store/browse";
 import "../../styles/browse.css";
 
 const PREVIEW_RESULT_COUNT = 20;
@@ -57,33 +56,41 @@ const activeSearchControllers = new Map<string, Set<AbortController>>();
 const activeSearchControllerPluginIds = new Map<AbortController, Set<string>>();
 const activeSearchPluginIds = new Map<string, Set<string>>();
 
-type ScopeMode = "all" | "pinned" | "selected";
-type ResultSortMode = "pinned" | "count" | "source";
-
-interface ResultViewRow {
-  pending: boolean;
+interface SourceResult {
   plugin: Plugin;
-  result: GlobalSearchResult | null;
+  result: GlobalSearchResult;
 }
 
 function resultKey(pluginId: string, novelPath: string): string {
   return `${pluginId}::${novelPath}`;
 }
 
-function isCloudflareError(message: string): boolean {
-  return /cloudflare|challenge|captcha|403|forbidden/i.test(message);
+/**
+ * Whether a source error reads as a site access check. A bare HTTP 403 or
+ * "Forbidden" is an ordinary failure: Retry, not Verify.
+ */
+export function isCloudflareError(message: string): boolean {
+  return /\bcloudflare\b|\bcaptcha\b|\bchallenge\b|\bcf-chl|just a moment|attention required|verification (?:is )?required/i.test(
+    message,
+  );
 }
 
 function sortPluginsByName(plugins: readonly Plugin[]): Plugin[] {
   return [...plugins].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function pluginInitial(plugin: Plugin): string {
-  return (plugin.name.trim()[0] ?? "?").toUpperCase();
-}
-
-function rowResultCount(row: ResultViewRow): number {
-  return row.result?.novels.length ?? 0;
+/** Pinned sources first, then by result count; or by source name. */
+export function sortSourceResults(
+  rows: readonly SourceResult[],
+  sort: GlobalSearchSort,
+  pinnedPluginIds: readonly string[],
+): SourceResult[] {
+  return [...rows].sort((a, b) => {
+    if (sort === "name") return a.plugin.name.localeCompare(b.plugin.name);
+    const pinned =
+      Number(pinnedPluginIds.includes(b.plugin.id)) - Number(pinnedPluginIds.includes(a.plugin.id));
+    return pinned || b.result.novels.length - a.result.novels.length;
+  });
 }
 
 function hasSameStringItems(
@@ -177,358 +184,105 @@ function abortSearchesExcept(searchKey: string): void {
   }
 }
 
-interface ScopePanelProps {
+type ScopeMode = "all" | "pinned" | "selected";
+
+interface SearchScopeChipsProps {
   installedPlugins: readonly Plugin[];
-  lastUsedPlugin: Plugin | null;
-  pinnedPluginIds: readonly string[];
+  pinnedCount: number;
   scopeMode: ScopeMode;
-  scopedCount: number;
   selectedPluginIds: readonly string[];
-  onClearSelected: () => void;
-  onOpenSite: (plugin: Plugin) => void;
-  onOpenSource: (plugin: Plugin) => void;
   onScopeModeChange: (mode: ScopeMode) => void;
-  onTogglePinnedPlugin: (pluginId: string) => void;
-  onToggleSelectedPlugin: (pluginId: string) => void;
+  onSelectedPluginIdsChange: (pluginIds: string[]) => void;
 }
 
-function ScopePanel({
+function SearchScopeChips({
   installedPlugins,
-  lastUsedPlugin,
-  pinnedPluginIds,
+  pinnedCount,
   scopeMode,
-  scopedCount,
   selectedPluginIds,
-  onClearSelected,
-  onOpenSite,
-  onOpenSource,
   onScopeModeChange,
-  onTogglePinnedPlugin,
-  onToggleSelectedPlugin,
-}: ScopePanelProps) {
+  onSelectedPluginIdsChange,
+}: SearchScopeChipsProps) {
   const { t } = useTranslation();
-  const [sourceListOpen, setSourceListOpen] = useState(false);
-  const pinnedPlugins = installedPlugins.filter((plugin) =>
-    pinnedPluginIds.includes(plugin.id),
-  );
-  const visiblePinnedPlugins = pinnedPlugins.filter(
-    (plugin) => plugin.id !== lastUsedPlugin?.id,
-  );
-  const unpinnedPlugins = installedPlugins.filter(
-    (plugin) => !pinnedPluginIds.includes(plugin.id),
-  );
-  const renderSourceChip = (
-    plugin: Plugin,
-    options?: { onSelect?: () => void },
-  ) => {
-    const active = selectedPluginIds.includes(plugin.id);
-    const pinned = pinnedPluginIds.includes(plugin.id);
-
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const chip = (mode: ScopeMode, label: string, onClick: () => void) => {
+    const active = scopeMode === mode;
     return (
-      <div
-        key={plugin.id}
-        className="norea-search-source-chip norea-search-source-chip--with-actions"
-        data-active={active}
-        data-pinned={pinned ? "true" : "false"}
+      <Button
+        aria-pressed={active}
+        leftSection={active ? <CheckIcon size="1rem" /> : undefined}
+        onClick={onClick}
+        radius="xl"
+        size="compact-sm"
+        variant={active ? "light" : "default"}
       >
-        <button
-          type="button"
-          className="norea-search-source-select"
-          aria-pressed={active}
-          onClick={
-            options?.onSelect ?? (() => onToggleSelectedPlugin(plugin.id))
-          }
-        >
-          <span className="norea-search-source-icon">
-            {pluginInitial(plugin)}
-          </span>
-          <span className="norea-search-source-name">{plugin.name}</span>
-        </button>
-        <span className="norea-search-source-actions">
-          <IconButton
-            active={pinned}
-            label={`${pinned ? t("browse.unpin") : t("browse.pin")}: ${plugin.name}`}
-            size="lg"
-            variant={pinned ? "light" : "subtle"}
-            aria-pressed={pinned}
-            title={pinned ? t("browse.unpin") : t("browse.pin")}
-            onClick={() => onTogglePinnedPlugin(plugin.id)}
-          >
-            {pinned ? <UnpinGlyph /> : <PinGlyph />}
-          </IconButton>
-          <IconButton
-            label={`${t("common.source")}: ${plugin.name}`}
-            size="lg"
-            variant="subtle"
-            title={t("common.source")}
-            onClick={() => onOpenSource(plugin)}
-          >
-            <DetailsGlyph />
-          </IconButton>
-          <IconButton
-            label={`${t("common.openSite")}: ${plugin.name}`}
-            size="lg"
-            variant="subtle"
-            title={t("common.openSite")}
-            onClick={() => onOpenSite(plugin)}
-          >
-            <ExternalLinkGlyph />
-          </IconButton>
-        </span>
-      </div>
+        {label}
+      </Button>
     );
   };
 
   return (
-    <aside className="norea-search-scope">
-      <ConsoleSectionHeader
-        eyebrow={t("globalSearch.scope.eyebrow")}
-        title={t("globalSearch.scope.title")}
-        count={`${scopedCount}/${installedPlugins.length}`}
-      />
-
-      <div className="norea-search-scope-mode-row">
-        <SegmentedToggle
-          value={scopeMode}
-          onChange={(value) => onScopeModeChange(value as ScopeMode)}
-          data={[
-            {
-              value: "all",
-              label: t("globalSearch.scope.all", {
-                count: installedPlugins.length,
-              }),
-            },
-            {
-              value: "pinned",
-              label: t("globalSearch.scope.pinned", {
-                count: pinnedPlugins.length,
-              }),
-            },
-            {
-              value: "selected",
-              label: t("globalSearch.scope.selected", {
-                count: selectedPluginIds.length,
-              }),
-            },
-          ]}
-          fullWidth
-          className="norea-search-scope-mode"
-        />
-        <IconButton
-          label={t("globalSearch.clearSelected")}
-          disabled={selectedPluginIds.length === 0}
-          size="lg"
-          variant="subtle"
-          onClick={onClearSelected}
-        >
-          <RefreshGlyph />
-        </IconButton>
+    <>
+      <div aria-label={t("globalSearch.scope.label")} className="norea-browse-chips" role="group">
+        {chip("all", t("globalSearch.scope.all", { count: installedPlugins.length }), () =>
+          onScopeModeChange("all"),
+        )}
+        {chip("pinned", t("globalSearch.scope.pinned", { count: pinnedCount }), () =>
+          onScopeModeChange("pinned"),
+        )}
+        {chip(
+          "selected",
+          scopeMode === "selected"
+            ? t("globalSearch.scope.custom", { count: selectedPluginIds.length })
+            : t("globalSearch.scope.customEdit"),
+          () => {
+            onScopeModeChange("selected");
+            setSheetOpen(true);
+          },
+        )}
       </div>
-
-      {lastUsedPlugin ? (
-        <div className="norea-search-scope-block">
-          <Text className="norea-console-kicker">{t("globalSearch.recentlyUsed")}</Text>
-          {renderSourceChip(lastUsedPlugin, {
-            onSelect: () => {
-              if (!selectedPluginIds.includes(lastUsedPlugin.id)) {
-                onToggleSelectedPlugin(lastUsedPlugin.id);
-              }
-              onScopeModeChange("selected");
-            },
-          })}
-        </div>
-      ) : null}
-
-      {visiblePinnedPlugins.length > 0 ? (
-        <div className="norea-search-scope-block norea-search-pinned-source-block">
-          <div className="norea-search-pinned-source-list">
-            {visiblePinnedPlugins.map((plugin) => renderSourceChip(plugin))}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="norea-search-scope-block norea-search-scope-source-block">
-        <div className="norea-search-source-heading">
-          <span className="norea-search-source-heading-actions">
-            <IconButton
-              size="lg"
-              variant="subtle"
-              className="norea-search-source-toggle"
-              aria-expanded={sourceListOpen}
-              label={
-                sourceListOpen
-                  ? t("globalSearch.hideSources")
-                  : t("globalSearch.showSources")
-              }
-              aria-controls="norea-search-source-list"
-              title={
-                sourceListOpen
-                  ? t("globalSearch.hideSources")
-                  : t("globalSearch.showSources")
-              }
-              onClick={() => setSourceListOpen((open) => !open)}
+      <ResponsiveSheet
+        footer={
+          <Button fullWidth onClick={() => setSheetOpen(false)}>
+            {t("common.done")}
+          </Button>
+        }
+        onClose={() => setSheetOpen(false)}
+        opened={sheetOpen}
+        title={t("globalSearch.scope.sheetTitle")}
+      >
+        <div className="norea-search-scope-sheet">
+          <Group gap="xs">
+            <Button
+              onClick={() => onSelectedPluginIdsChange(installedPlugins.map((plugin) => plugin.id))}
+              size="compact-sm"
+              variant="light"
             >
-              {sourceListOpen ? <ChevronUpGlyph /> : <ChevronDownGlyph />}
-            </IconButton>
-          </span>
+              {t("globalSearch.scope.selectAll")}
+            </Button>
+            <Button
+              disabled={selectedPluginIds.length === 0}
+              onClick={() => onSelectedPluginIdsChange([])}
+              size="compact-sm"
+              variant="subtle"
+            >
+              {t("common.clear")}
+            </Button>
+          </Group>
+          <Checkbox.Group
+            label={t("globalSearch.scope.sources")}
+            onChange={onSelectedPluginIdsChange}
+            value={[...selectedPluginIds]}
+          >
+            <Stack className="norea-search-scope-options" gap={0}>
+              {installedPlugins.map((plugin) => (
+                <Checkbox key={plugin.id} label={plugin.name} value={plugin.id} />
+              ))}
+            </Stack>
+          </Checkbox.Group>
         </div>
-        <div
-          id="norea-search-source-list"
-          className="norea-search-source-list"
-          data-open={sourceListOpen ? "true" : "false"}
-        >
-          {unpinnedPlugins.map((plugin) => renderSourceChip(plugin))}
-        </div>
-      </div>
-
-    </aside>
-  );
-}
-
-interface ActiveScopeRowProps {
-  scopeMode: ScopeMode;
-  scopedCount: number;
-  selectedCount: number;
-}
-
-function ActiveScopeRow({
-  scopeMode,
-  scopedCount,
-  selectedCount,
-}: ActiveScopeRowProps) {
-  const { t } = useTranslation();
-  const scopeLabel =
-    scopeMode === "all"
-      ? t("common.all")
-      : scopeMode === "pinned"
-        ? t("common.pinned")
-        : t("common.selected");
-
-  return (
-    <Group className="norea-search-active-row" gap={6} wrap="wrap">
-      <Text className="norea-console-kicker">{t("globalSearch.active")}</Text>
-      <ConsoleChip active>{scopeLabel}</ConsoleChip>
-      <ConsoleChip active>
-        {t("globalSearch.sourcesCount", { count: scopedCount })}
-      </ConsoleChip>
-      {scopeMode === "selected" ? (
-        <ConsoleChip active>
-          {t("globalSearch.selectedCount", { count: selectedCount })}
-        </ConsoleChip>
-      ) : null}
-    </Group>
-  );
-}
-
-interface ResultFiltersProps {
-  failedCount: number;
-  hideEmpty: boolean;
-  onHideEmptyChange: (hideEmpty: boolean) => void;
-  onRetryFailed: () => void;
-  onShowFailuresChange: (showFailures: boolean) => void;
-  onSortModeChange: (sortMode: ResultSortMode) => void;
-  showFailures: boolean;
-  sortMode: ResultSortMode;
-}
-
-function ResultFilters({
-  failedCount,
-  hideEmpty,
-  onHideEmptyChange,
-  onRetryFailed,
-  onShowFailuresChange,
-  onSortModeChange,
-  showFailures,
-  sortMode,
-}: ResultFiltersProps) {
-  const { t } = useTranslation();
-
-  return (
-    <Group className="norea-search-result-filters" gap={6} wrap="wrap">
-      <TextButton
-        aria-pressed={hideEmpty}
-        active={hideEmpty}
-        size="lg"
-        variant={hideEmpty ? "light" : "default"}
-        onClick={() => onHideEmptyChange(!hideEmpty)}
-      >
-        {t("globalSearch.hideEmpty")}
-      </TextButton>
-      <TextButton
-        aria-pressed={showFailures}
-        active={showFailures}
-        size="lg"
-        tone="danger"
-        variant={showFailures ? "light" : "default"}
-        onClick={() => onShowFailuresChange(!showFailures)}
-      >
-        {t("globalSearch.failuresCount", { count: failedCount })}
-      </TextButton>
-      <SegmentedToggle
-        value={sortMode}
-        onChange={(value) => onSortModeChange(value as ResultSortMode)}
-        data={[
-          { value: "pinned", label: t("common.pinned") },
-          { value: "count", label: t("globalSearch.sort.count") },
-          { value: "source", label: t("common.source") },
-        ]}
-        className="norea-search-sort"
-      />
-      {failedCount > 0 ? (
-        <TextButton
-          size="lg"
-          tone="danger"
-          variant="subtle"
-          onClick={onRetryFailed}
-        >
-          {t("globalSearch.retryFailed")}
-        </TextButton>
-      ) : null}
-    </Group>
-  );
-}
-
-interface SearchSummaryProps {
-  emptyCount: number;
-  failedCount: number;
-  pendingCount: number;
-  query: string;
-  searchedCount: number;
-  totalPluginCount: number;
-  withResultsCount: number;
-}
-
-function SearchSummary({
-  emptyCount,
-  failedCount,
-  pendingCount,
-  query,
-  searchedCount,
-  totalPluginCount,
-  withResultsCount,
-}: SearchSummaryProps) {
-  const { t } = useTranslation();
-
-  return (
-    <ConsoleStatusStrip className="norea-search-summary">
-      <span className="norea-search-summary-query">"{query}"</span>
-      <span>
-        {t("globalSearch.summary.searched", {
-          searched: searchedCount,
-          total: totalPluginCount,
-        })}
-      </span>
-      <span>
-        {t("globalSearch.summary.withResults", { count: withResultsCount })}
-      </span>
-      <span>{t("globalSearch.summary.empty", { count: emptyCount })}</span>
-      <span data-tone={failedCount > 0 ? "error" : undefined}>
-        {t("globalSearch.summary.failed", { count: failedCount })}
-      </span>
-      {pendingCount > 0 ? (
-        <span>{t("globalSearch.summary.pending", { count: pendingCount })}</span>
-      ) : null}
-    </ConsoleStatusStrip>
+      </ResponsiveSheet>
+    </>
   );
 }
 
@@ -536,154 +290,266 @@ interface SearchResultSectionProps {
   isInLibrary: (pluginId: string, path: string) => boolean;
   openingKey: string | null;
   pinned: boolean;
-  row: ResultViewRow;
+  plugin: Plugin;
+  result: GlobalSearchResult;
   onMore: (row: GlobalSearchResult) => void;
   onOpen: (row: GlobalSearchResult, novel: NovelItem) => void;
-  onOpenWebView: (plugin: Plugin) => void;
-  onRetry: (pluginId: string) => void;
+  onOpenSite: (plugin: Plugin) => void;
+  onOpenSource: (plugin: Plugin) => void;
+  onTogglePinned: (pluginId: string) => void;
 }
 
 function SearchResultSection({
   isInLibrary,
   openingKey,
   pinned,
-  row,
+  plugin,
+  result,
   onMore,
   onOpen,
-  onOpenWebView,
-  onRetry,
+  onOpenSite,
+  onOpenSource,
+  onTogglePinned,
 }: SearchResultSectionProps) {
   const { t } = useTranslation();
-  const { plugin, result } = row;
-  const previewNovels = result?.novels.slice(0, PREVIEW_RESULT_COUNT) ?? [];
-  const error = result?.error;
-  const cloudflare = error ? isCloudflareError(error) : false;
-  const status: "active" | "done" | "idle" | "warning" | "error" = row.pending
-    ? "active"
-    : error
-      ? cloudflare
-        ? "warning"
-        : "error"
-      : previewNovels.length > 0
-        ? "done"
-        : "idle";
-  const statusLabel = row.pending
-    ? t("common.searching")
-    : error
-      ? cloudflare
-        ? t("globalSearch.status.webviewNeeded")
-        : t("common.failed")
-      : t("globalSearch.status.results", {
-          count: result?.novels.length ?? 0,
-        });
+  const headingId = `norea-search-result-${plugin.id}`;
 
   return (
-    <section className="norea-search-result-row">
-      <Group className="norea-search-result-head" gap="sm" wrap="nowrap">
-        <span className="norea-search-source-icon">{pluginInitial(plugin)}</span>
-        <Box className="norea-search-result-title">
-          <Group gap={6} wrap="nowrap">
-            <Text size="sm" fw={700} truncate>
-              {plugin.name}
-            </Text>
-            {pinned ? (
-              <span
-                className="norea-icon-state"
-                data-active="true"
-                role="img"
-                aria-label={t("common.pinned")}
-                title={t("common.pinned")}
-              >
-                <UnpinGlyph />
-              </span>
-            ) : null}
-            <ConsoleChip>{plugin.lang.toUpperCase()}</ConsoleChip>
-          </Group>
-          <Text size="xs" c="dimmed" truncate>
-            {getPluginBaseUrl(plugin)}
-          </Text>
-        </Box>
-        <ConsoleStatusDot status={status} label={statusLabel} />
-        <Group className="norea-search-result-actions" gap={6} wrap="nowrap">
-          {error ? (
-            <>
-              <IconButton
-                label={t("common.retry")}
-                size="lg"
-                variant="subtle"
-                onClick={() => onRetry(plugin.id)}
-              >
-                <RetryGlyph />
-              </IconButton>
-              <IconButton
-                label={t("common.openWebView")}
-                size="lg"
-                variant="light"
-                onClick={() => onOpenWebView(plugin)}
-              >
-                <ExternalLinkGlyph />
-              </IconButton>
-            </>
-          ) : result && result.novels.length > 0 ? (
-            <IconButton
-              label={t("globalSearch.openSourceResults")}
-              size="lg"
-              variant="light"
-              onClick={() => onMore(result)}
-            >
-              <DetailsGlyph />
-            </IconButton>
-          ) : null}
-        </Group>
-      </Group>
-
-      {error ? (
-        <Alert
-          color={cloudflare ? "warn" : "danger"}
-          variant="light"
-          className="norea-search-diagnostic"
+    <section aria-labelledby={headingId} className="norea-search-result-row">
+      <div className="norea-search-result-head">
+        <PluginIcon plugin={plugin} />
+        <h3 className="norea-search-result-title" id={headingId}>
+          <span className="norea-search-result-name">{plugin.name}</span>
+          <span className="norea-search-result-count">
+            {t("globalSearch.status.results", { count: result.novels.length })}
+          </span>
+        </h3>
+        <OverflowMenu
+          items={[
+            {
+              icon: pinned ? UnpinIcon : PinIcon,
+              label: pinned ? t("browse.unpin") : t("browse.pin"),
+              onClick: () => onTogglePinned(plugin.id),
+            },
+            { icon: BrowseIcon, label: t("globalSearch.openSource"), onClick: () => onOpenSource(plugin) },
+            { icon: SourceIcon, label: t("common.openSite"), onClick: () => onOpenSite(plugin) },
+          ]}
+          label={t("browse.sources.rowActions", { name: plugin.name })}
+        />
+        <IconButton
+          label={t("globalSearch.openSourceResultsFor", { name: plugin.name })}
+          onClick={() => onMore(result)}
+          size="lg"
         >
-          {error}
-        </Alert>
-      ) : previewNovels.length > 0 && result ? (
-        <div className="norea-search-preview-strip">
-          {previewNovels.map((novel, index) => {
-            const key = resultKey(result.pluginId, novel.path);
-            return (
-              <button
-                key={`${key}::${index}`}
-                type="button"
-                className="norea-search-preview-card"
-                data-selected={openingKey === key}
-                onClick={() => onOpen(result, novel)}
-              >
-                <SourceNovelCover
-                  height={108}
-                  inLibrary={isInLibrary(result.pluginId, novel.path)}
-                  item={novel}
-                  plugin={plugin}
-                  width={74}
-                />
-                <span className="norea-search-preview-title" title={novel.name}>
-                  {novel.name}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ) : row.pending ? (
-        <Group gap="sm" className="norea-search-pending">
-          <Loader size="xs" />
-          <Text size="xs" c="dimmed">
-            {t("globalSearch.waiting")}
-          </Text>
-        </Group>
-      ) : (
-        <Text className="norea-search-empty-row" size="sm" c="dimmed">
-          {t("globalSearch.noResultsFromSource")}
-        </Text>
-      )}
+          <ChevronRightIcon />
+        </IconButton>
+      </div>
+      <div className="norea-search-preview-strip">
+        {result.novels.slice(0, PREVIEW_RESULT_COUNT).map((novel, index) => {
+          const key = resultKey(result.pluginId, novel.path);
+          return (
+            <button
+              key={`${key}::${index}`}
+              type="button"
+              className="norea-search-preview-card"
+              data-selected={openingKey === key}
+              onClick={() => onOpen(result, novel)}
+            >
+              <SourceNovelCover
+                height={108}
+                inLibrary={isInLibrary(result.pluginId, novel.path)}
+                item={novel}
+                plugin={plugin}
+                width={74}
+              />
+              <span className="norea-search-preview-title" title={novel.name}>
+                {novel.name}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </section>
+  );
+}
+
+function EmptySources({ plugins }: { plugins: readonly Plugin[] }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  if (plugins.length === 0) return null;
+
+  return (
+    <div className="norea-search-empty-sources">
+      <Button
+        aria-controls="norea-search-empty-source-list"
+        aria-expanded={open}
+        justify="flex-start"
+        onClick={() => setOpen((current) => !current)}
+        rightSection={open ? <ChevronDownIcon size="1rem" /> : <ChevronRightIcon size="1rem" />}
+        size="compact-sm"
+        variant="subtle"
+      >
+        {t("globalSearch.emptySources", { count: plugins.length })}
+      </Button>
+      <ul hidden={!open} id="norea-search-empty-source-list">
+        {plugins.map((plugin) => (
+          <li key={plugin.id}>{plugin.name}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export interface FailedSearchSource {
+  error: string;
+  plugin: Plugin;
+}
+
+interface SearchFailuresProps {
+  active: boolean;
+  failures: readonly FailedSearchSource[];
+  onOpenSite: (plugin: Plugin) => void;
+  onRetry: (pluginId: string) => void;
+  onRetryAll: () => void;
+}
+
+/**
+ * Recovery for failed sources. One failure shows Retry and, for an access
+ * check, Verify in place; more collapse into a chip that opens a sheet.
+ */
+export function SearchFailures({
+  active,
+  failures,
+  onOpenSite,
+  onRetry,
+  onRetryAll,
+}: SearchFailuresProps) {
+  const { t } = useTranslation();
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const blockFor = useSourceAccessBlocks(active);
+  if (failures.length === 0) return null;
+
+  const verifyAction = ({ error, plugin }: FailedSearchSource) => {
+    const block = blockFor(plugin.id);
+    if (block) {
+      return (
+        <SourceAccessVerifyButton
+          block={block}
+          label={t("updates.failure.verify")}
+          sourceName={plugin.name}
+        />
+      );
+    }
+    if (!isCloudflareError(error)) return null;
+    return (
+      <Button onClick={() => onOpenSite(plugin)} size="compact-sm" variant="light">
+        {t("updates.failure.verify")}
+      </Button>
+    );
+  };
+  const retryButton = (plugin: Plugin) => (
+    <Button
+      aria-label={t("globalSearch.retrySource", { name: plugin.name })}
+      leftSection={<RetryIcon size="1rem" />}
+      onClick={() => onRetry(plugin.id)}
+      size="compact-sm"
+      variant="light"
+    >
+      {t("common.retry")}
+    </Button>
+  );
+  const reason = ({ error, plugin }: FailedSearchSource) =>
+    blockFor(plugin.id) || isCloudflareError(error)
+      ? t("updates.failure.verification")
+      : t("updates.failure.error");
+  const single = failures.length === 1 ? failures[0]! : null;
+
+  return (
+    <>
+      {single ? (
+        <section className="norea-search-failure-notice" role="status">
+          <WarningIcon className="norea-search-failure-icon" size="1.25rem" />
+          <div className="norea-search-failure-copy">
+            <Text fw={700} size="sm">
+              {t("globalSearch.failure.oneSource", { name: single.plugin.name })}
+            </Text>
+            <Text c="dimmed" size="sm">
+              {reason(single)}
+            </Text>
+            <details className="norea-state-details">
+              <summary>{t("common.details")}</summary>
+              <Text c="dimmed" component="div" size="xs">
+                {single.error}
+              </Text>
+            </details>
+          </div>
+          <div className="norea-search-failure-actions">
+            {retryButton(single.plugin)}
+            {verifyAction(single)}
+          </div>
+        </section>
+      ) : (
+        <div className="norea-search-failure-chip-bar">
+          <Button
+            color="danger"
+            onClick={() => setSheetOpen(true)}
+            radius="xl"
+            rightSection={<ChevronRightIcon size="1rem" />}
+            size="compact-sm"
+            variant="light"
+          >
+            {t("globalSearch.failure.chip", { count: failures.length })}
+          </Button>
+        </div>
+      )}
+
+      <ResponsiveSheet
+        footer={
+          <Button
+            fullWidth
+            leftSection={<RetryIcon size="1rem" />}
+            onClick={() => {
+              setSheetOpen(false);
+              onRetryAll();
+            }}
+          >
+            {t("updates.failure.retryAll")}
+          </Button>
+        }
+        onClose={() => setSheetOpen(false)}
+        opened={sheetOpen && failures.length > 1}
+        title={t("updates.failure.sheetTitle")}
+      >
+        <div className="norea-search-failure-sources">
+          {failures.map((failure) => (
+            <section
+              aria-labelledby={`norea-search-failed-${failure.plugin.id}`}
+              className="norea-search-failure-source"
+              key={failure.plugin.id}
+            >
+              <div className="norea-search-failure-source-header">
+                <Text component="h3" fw={700} id={`norea-search-failed-${failure.plugin.id}`} size="sm">
+                  {failure.plugin.name}
+                </Text>
+                <Group gap="xs">
+                  {retryButton(failure.plugin)}
+                  {verifyAction(failure)}
+                </Group>
+              </div>
+              <Text c="dimmed" size="sm">
+                {reason(failure)}
+              </Text>
+              <details className="norea-state-details">
+                <summary>{t("common.details")}</summary>
+                <Text c="dimmed" component="div" size="xs">
+                  {failure.error}
+                </Text>
+              </details>
+            </section>
+          ))}
+        </div>
+      </ResponsiveSheet>
+    </>
   );
 }
 
@@ -702,18 +568,11 @@ export function BrowseSearchTab({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const isInLibrary = useLibraryNovelMembership();
-  const openSite = (plugin: Plugin) => {
-    const url = getPluginBaseUrl(plugin);
-    void enqueueOpenSiteTask(
-      plugin,
-      url,
-      t("tasks.task.openSite", { source: plugin.name }),
-    ).promise.catch(() => undefined);
-  };
+  const openSite = (plugin: Plugin) =>
+    openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name }));
   const setLastUsedPluginId = useBrowseStore((s) => s.setLastUsedPluginId);
   const pinnedPluginIds = useBrowseStore((s) => s.pinnedPluginIds);
   const togglePinnedPlugin = useBrowseStore((s) => s.togglePinnedPlugin);
-  const lastUsedPluginId = useBrowseStore((s) => s.lastUsedPluginId);
   const currentSearchKey = useBrowseStore((s) => s.globalSearch.searchKey);
   const globalSearchState = useBrowseStore((s) => s.globalSearch);
   const beginGlobalSearch = useBrowseStore((s) => s.beginGlobalSearch);
@@ -740,9 +599,8 @@ export function BrowseSearchTab({
   const openTaskRef = useRef<TaskHandle<number> | null>(null);
   const [scopeMode, setScopeMode] = useState<ScopeMode>("all");
   const [selectedPluginIds, setSelectedPluginIds] = useState<string[]>([]);
-  const [hideEmpty, setHideEmpty] = useState(true);
-  const [showFailures, setShowFailures] = useState(true);
-  const [sortMode, setSortMode] = useState<ResultSortMode>("pinned");
+  const sort = useBrowseStore((s) => s.globalSearchSort);
+  const setSort = useBrowseStore((s) => s.setGlobalSearchSort);
   const [retryPluginIds, setRetryPluginIds] = useState<string[]>([]);
   const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
   const trimmedQuery = restoredQuery.trim();
@@ -763,8 +621,6 @@ export function BrowseSearchTab({
     }
     return installedPlugins;
   }, [installedPlugins, pinnedPluginIds, scopeMode, selectedPluginIds]);
-  const lastUsedPlugin =
-    installedPlugins.find((plugin) => plugin.id === lastUsedPluginId) ?? null;
   const searchKey = JSON.stringify([
     trimmedQuery,
     scopedPlugins.map((plugin) => plugin.id).sort(),
@@ -784,12 +640,6 @@ export function BrowseSearchTab({
     () => new Map(results.map((row) => [row.pluginId, row])),
     [results],
   );
-  const searching =
-    isCurrentSearch &&
-    scopedPlugins.some(
-      (plugin) =>
-        activePluginIdSet.has(plugin.id) && !resultMap.has(plugin.id),
-    );
   const resultPluginIds = useMemo(
     () =>
       new Set(
@@ -799,75 +649,56 @@ export function BrowseSearchTab({
       ),
     [results, retryPluginIdSet],
   );
-  const rows = useMemo<ResultViewRow[]>(
-    () =>
-      trimmedQuery === ""
-        ? []
-        : scopedPlugins.map((plugin) => {
-            const result = resultMap.get(plugin.id) ?? null;
-            return {
-              plugin,
-              result,
-              pending: !result && activePluginIdSet.has(plugin.id),
-            };
-          }),
-    [activePluginIdSet, resultMap, scopedPlugins, trimmedQuery],
-  );
-  const filteredRows = useMemo(() => {
-    const next = rows.filter((row) => {
-      if (row.pending) return true;
-      if (!row.result) return false;
-      if (row.result.error) return showFailures;
-      if (row.result.novels.length === 0) return !hideEmpty;
-      return true;
-    });
-
-    return next.sort((a, b) => {
-      if (sortMode === "count") {
-        return rowResultCount(b) - rowResultCount(a);
-      }
-      if (sortMode === "source") {
-        return a.plugin.name.localeCompare(b.plugin.name);
-      }
-      const aPinned = pinnedPluginIds.includes(a.plugin.id) ? 1 : 0;
-      const bPinned = pinnedPluginIds.includes(b.plugin.id) ? 1 : 0;
-      if (aPinned !== bPinned) return bPinned - aPinned;
-      return rowResultCount(b) - rowResultCount(a);
-    });
-  }, [hideEmpty, pinnedPluginIds, rows, showFailures, sortMode]);
-  const installedCount = installedPlugins.length;
   const hasSearchTerm = trimmedQuery !== "";
-  const scopedPluginIdSet = useMemo(
-    () => new Set(scopedPlugins.map((plugin) => plugin.id)),
-    [scopedPlugins],
+  const pendingCount = hasSearchTerm
+    ? scopedPlugins.filter(
+        (plugin) => activePluginIdSet.has(plugin.id) || retryPluginIdSet.has(plugin.id),
+      ).length
+    : 0;
+  const settledResults = useMemo<SourceResult[]>(
+    () =>
+      hasSearchTerm
+        ? scopedPlugins.flatMap((plugin) => {
+            const result = resultMap.get(plugin.id);
+            return result &&
+              !activePluginIdSet.has(plugin.id) &&
+              !retryPluginIdSet.has(plugin.id)
+              ? [{ plugin, result }]
+              : [];
+          })
+        : [],
+    [activePluginIdSet, hasSearchTerm, resultMap, retryPluginIdSet, scopedPlugins],
   );
-  const scopedResults = useMemo(
-    () => results.filter((row) => scopedPluginIdSet.has(row.pluginId)),
-    [results, scopedPluginIdSet],
+  const sourcesWithResults = useMemo(
+    () =>
+      sortSourceResults(
+        settledResults.filter(({ result }) => !result.error && result.novels.length > 0),
+        sort,
+        pinnedPluginIds,
+      ),
+    [pinnedPluginIds, settledResults, sort],
+  );
+  const emptySources = settledResults
+    .filter(({ result }) => !result.error && result.novels.length === 0)
+    .map(({ plugin }) => plugin);
+  const failures = useMemo<FailedSearchSource[]>(
+    () =>
+      settledResults.flatMap(({ plugin, result }) =>
+        result.error ? [{ error: result.error, plugin }] : [],
+      ),
+    [settledResults],
   );
   const failedPluginIds = useMemo(
-    () => scopedResults.filter((row) => row.error).map((row) => row.pluginId),
-    [scopedResults],
+    () => failures.map(({ plugin }) => plugin.id),
+    [failures],
   );
-  const searchedCount = scopedResults.length;
-  const failedCount = scopedResults.filter((row) => row.error).length;
-  const withResultsCount = scopedResults.filter(
-    (row) => row.novels.length > 0,
-  ).length;
-  const emptyCount = scopedResults.filter(
-    (row) => !row.error && row.novels.length === 0,
-  ).length;
-  const pendingCount = scopedPlugins.filter(
-    (plugin) =>
-      activePluginIdSet.has(plugin.id) && !resultMap.has(plugin.id),
-  ).length;
-  const totalPluginCount = scopedPlugins.length;
   const hasOnlyEmptyResults =
     hasSearchTerm &&
-    !searching &&
-    scopedResults.length > 0 &&
-    scopedResults.length === scopedPlugins.length &&
-    scopedResults.every((row) => row.novels.length === 0 && !row.error);
+    scopedPlugins.length > 0 &&
+    pendingCount === 0 &&
+    settledResults.length === scopedPlugins.length &&
+    sourcesWithResults.length === 0 &&
+    failures.length === 0;
   const pluginsToSearch = useMemo(
     () =>
       hasSearchTerm
@@ -1122,13 +953,22 @@ export function BrowseSearchTab({
     setRetryPluginIds((current) => withRetryPluginId(current, pluginId));
   }, []);
 
-  const toggleSelectedPlugin = useCallback((pluginId: string) => {
-    setSelectedPluginIds((current) =>
-      current.includes(pluginId)
-        ? current.filter((id) => id !== pluginId)
-        : [...current, pluginId],
-    );
-  }, []);
+  const openSource = (plugin: Plugin) => {
+    setLastUsedPluginId(plugin.id);
+    void navigate({ to: "/source", search: { pluginId: plugin.id, query: "" } });
+  };
+  const sortItems: OverflowMenuItem[] = [
+    {
+      icon: sort === "pinned" ? CheckIcon : undefined,
+      label: t("globalSearch.sort.pinned"),
+      onClick: () => setSort("pinned"),
+    },
+    {
+      icon: sort === "name" ? CheckIcon : undefined,
+      label: t("globalSearch.sort.name"),
+      onClick: () => setSort("name"),
+    },
+  ];
 
   return (
     <div className="norea-search-console">
@@ -1139,117 +979,101 @@ export function BrowseSearchTab({
           onCancel={cancelOpenNovel}
         />
       ) : null}
-      <ScopePanel
-        installedPlugins={installedPlugins}
-        lastUsedPlugin={lastUsedPlugin}
-        pinnedPluginIds={pinnedPluginIds}
-        scopeMode={scopeMode}
-        scopedCount={scopedPlugins.length}
-        selectedPluginIds={selectedPluginIds}
-        onClearSelected={() => setSelectedPluginIds([])}
-        onOpenSite={openSite}
-        onOpenSource={(plugin) => {
-          setLastUsedPluginId(plugin.id);
-          void navigate({
-            to: "/source",
-            search: {
-              pluginId: plugin.id,
-              query: "",
-            },
-          });
-        }}
-        onScopeModeChange={setScopeMode}
-        onTogglePinnedPlugin={togglePinnedPlugin}
-        onToggleSelectedPlugin={toggleSelectedPlugin}
+
+      <SearchBar
+        value={search}
+        onChange={setSearch}
+        onSubmit={submitSearch}
+        placeholder={t("globalSearch.placeholder")}
       />
 
-      <section className="norea-search-results">
-        <div className="norea-search-result-heading">
-          <ConsoleSectionHeader
-            title={t("globalSearch.searchInstalledSources")}
-            count={t("globalSearch.eligibleCount", { count: installedCount })}
+      {installedPlugins.length === 0 ? (
+        <StateView
+          action={{
+            label: t("browse.sources.openExtensions"),
+            onClick: () => {
+              void navigate({ to: "/browse/extensions", search: {} });
+            },
+          }}
+          message={t("globalSearch.noPlugins.message")}
+          title={t("globalSearch.noPlugins.title")}
+        />
+      ) : (
+        <div className="norea-search-toolbar">
+          <SearchScopeChips
+            installedPlugins={installedPlugins}
+            onScopeModeChange={setScopeMode}
+            onSelectedPluginIdsChange={setSelectedPluginIds}
+            pinnedCount={installedPlugins.filter((plugin) => pinnedPluginIds.includes(plugin.id)).length}
+            scopeMode={scopeMode}
+            selectedPluginIds={selectedPluginIds}
           />
+          {hasSearchTerm ? (
+            <OverflowMenu items={sortItems} label={t("globalSearch.resultOptions")} />
+          ) : null}
         </div>
+      )}
 
-        <SearchBar
-          value={search}
-          onChange={setSearch}
-          onSubmit={submitSearch}
-          placeholder={t("globalSearch.placeholder")}
+      {hasSearchTerm && installedPlugins.length > 0 && scopedPlugins.length === 0 ? (
+        <StateView
+          action={{ label: t("globalSearch.searchAllSources"), onClick: () => setScopeMode("all") }}
+          color="warn"
+          message={t("globalSearch.noSources.message")}
+          title={t("globalSearch.noSources.title")}
         />
+      ) : null}
 
-        <ActiveScopeRow
-          scopeMode={scopeMode}
-          scopedCount={scopedPlugins.length}
-          selectedCount={selectedPluginIds.length}
+      {pendingCount > 0 ? (
+        <div className="norea-search-progress" role="status">
+          <Loader size="xs" />
+          {t("globalSearch.searchingCount", { count: pendingCount })}
+        </div>
+      ) : null}
+
+      {hasSearchTerm ? (
+        <SearchFailures
+          active
+          failures={failures}
+          onOpenSite={openSite}
+          onRetry={retrySource}
+          onRetryAll={retryFailed}
         />
+      ) : null}
 
-        {installedCount === 0 ? (
-          <Alert color="info" title={t("globalSearch.noPlugins.title")}>
-            {t("globalSearch.noPlugins.message")}
-          </Alert>
-        ) : null}
+      {openError ? (
+        <StateView
+          color="danger"
+          details={{ content: openError, label: t("common.details") }}
+          title={t("common.openFailed")}
+        />
+      ) : null}
 
-        {hasSearchTerm && scopedPlugins.length === 0 ? (
-          <Alert color="warn" title={t("globalSearch.noSources.title")}>
-            {t("globalSearch.noSources.message")}
-          </Alert>
-        ) : null}
+      {hasOnlyEmptyResults ? (
+        <StateView
+          message={t("globalSearch.noMatches.message", { query: trimmedQuery })}
+          title={t("common.noMatches")}
+        />
+      ) : null}
 
-        {hasSearchTerm ? (
-          <>
-            <SearchSummary
-              emptyCount={emptyCount}
-              failedCount={failedCount}
-              pendingCount={pendingCount}
-              query={trimmedQuery}
-              searchedCount={searchedCount}
-              totalPluginCount={totalPluginCount}
-              withResultsCount={withResultsCount}
-            />
-            <ResultFilters
-              failedCount={failedCount}
-              hideEmpty={hideEmpty}
-              onHideEmptyChange={setHideEmpty}
-              onRetryFailed={retryFailed}
-              onShowFailuresChange={setShowFailures}
-              onSortModeChange={setSortMode}
-              showFailures={showFailures}
-              sortMode={sortMode}
-            />
-          </>
-        ) : null}
+      {sourcesWithResults.map(({ plugin, result }) => (
+        <SearchResultSection
+          isInLibrary={isInLibrary}
+          key={plugin.id}
+          onMore={openPluginResults}
+          onOpen={(resultRow, novel) => {
+            void handleOpenNovel(resultRow, novel);
+          }}
+          onOpenSite={openSite}
+          onOpenSource={openSource}
+          onTogglePinned={togglePinnedPlugin}
+          openingKey={openingKey}
+          pinned={pinnedPluginIds.includes(plugin.id)}
+          plugin={plugin}
+          result={result}
+        />
+      ))}
 
-        {openError ? (
-          <Alert color="danger" variant="light" title={t("common.openFailed")}>
-            {openError}
-          </Alert>
-        ) : null}
-
-        {!searching && hasOnlyEmptyResults ? (
-          <Alert color="warn" title={t("common.noMatches")}>
-            {t("globalSearch.noMatches.message", { query })}
-          </Alert>
-        ) : null}
-
-        <Stack gap="xs">
-          {filteredRows.map((row) => (
-            <SearchResultSection
-              key={row.plugin.id}
-              isInLibrary={isInLibrary}
-              row={row}
-              pinned={pinnedPluginIds.includes(row.plugin.id)}
-              openingKey={openingKey}
-              onOpen={(resultRow, novel) => {
-                void handleOpenNovel(resultRow, novel);
-              }}
-              onMore={openPluginResults}
-              onOpenWebView={openSite}
-              onRetry={retrySource}
-            />
-          ))}
-        </Stack>
-      </section>
+      {hasSearchTerm && !hasOnlyEmptyResults ? <EmptySources plugins={emptySources} /> : null}
     </div>
   );
 }

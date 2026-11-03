@@ -46,6 +46,12 @@ function normalizeChapterDownloadCooldownSeconds(value: unknown): number {
   return Math.max(0, Math.min(60, Math.round(numeric)));
 }
 
+export type GlobalSearchSort = "pinned" | "name";
+
+function normalizeGlobalSearchSort(value: unknown): GlobalSearchSort {
+  return value === "name" ? "name" : "pinned";
+}
+
 interface BrowseGlobalSearchState {
   query: string;
   searchKey: string;
@@ -75,6 +81,8 @@ interface BrowseState {
   chapterDownloadCooldownSeconds: number;
   pinnedPluginIds: string[];
   lastUsedPluginId: string | null;
+  /** Order of global search result sections; the last choice is kept. */
+  globalSearchSort: GlobalSearchSort;
   globalSearch: BrowseGlobalSearchState;
   setPendingRepoUrl: (url: string | null) => void;
   clearPendingRepoUrl: () => void;
@@ -84,6 +92,7 @@ interface BrowseState {
   setChapterDownloadCooldownSeconds: (seconds: number) => void;
   togglePinnedPlugin: (pluginId: string) => void;
   setLastUsedPluginId: (pluginId: string | null) => void;
+  setGlobalSearchSort: (sort: GlobalSearchSort) => void;
   beginGlobalSearch: (search: BrowseGlobalSearchState) => void;
   appendGlobalSearchResult: (
     searchKey: string,
@@ -104,6 +113,7 @@ export const useBrowseStore = create<BrowseState>()(
         DEFAULT_CHAPTER_DOWNLOAD_COOLDOWN_SECONDS,
       pinnedPluginIds: [],
       lastUsedPluginId: null,
+      globalSearchSort: "pinned",
       globalSearch: EMPTY_GLOBAL_SEARCH,
       setPendingRepoUrl: (pendingRepoUrl) => set({ pendingRepoUrl }),
       clearPendingRepoUrl: () => set({ pendingRepoUrl: null }),
@@ -141,6 +151,8 @@ export const useBrowseStore = create<BrowseState>()(
             : [...state.pinnedPluginIds, pluginId],
         })),
       setLastUsedPluginId: (lastUsedPluginId) => set({ lastUsedPluginId }),
+      setGlobalSearchSort: (globalSearchSort) =>
+        set({ globalSearchSort: normalizeGlobalSearchSort(globalSearchSort) }),
       beginGlobalSearch: (globalSearch) => set({ globalSearch }),
       appendGlobalSearchResult: (searchKey, result) =>
         set((state) => {
@@ -201,6 +213,7 @@ export const useBrowseStore = create<BrowseState>()(
             typeof persisted.lastUsedPluginId === "string"
               ? persisted.lastUsedPluginId
               : null,
+          globalSearchSort: normalizeGlobalSearchSort(persisted.globalSearchSort),
         };
       },
       partialize: (state) => ({
@@ -220,6 +233,7 @@ export const useBrowseStore = create<BrowseState>()(
           ),
         pinnedPluginIds: normalizeStringArray(state.pinnedPluginIds, []),
         lastUsedPluginId: state.lastUsedPluginId,
+        globalSearchSort: normalizeGlobalSearchSort(state.globalSearchSort),
       }),
     },
   ),

@@ -57,3 +57,13 @@ describe("browse store source request timeout", () => {
     expect(getSourceRequestTimeoutSeconds()).toBe(120);
   });
 });
+
+describe("browse store global search sort", () => {
+  it("keeps a known sort choice and falls back to pinned order otherwise", () => {
+    useBrowseStore.getState().setGlobalSearchSort("name");
+    expect(useBrowseStore.getState().globalSearchSort).toBe("name");
+
+    useBrowseStore.getState().setGlobalSearchSort("count" as never);
+    expect(useBrowseStore.getState().globalSearchSort).toBe("pinned");
+  });
+});

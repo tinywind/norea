@@ -1,12 +1,12 @@
 import { Button, Text } from "@mantine/core";
 import { useState } from "react";
 import { useTranslation } from "../../i18n";
-import { useTaskSnapshot } from "../../lib/tasks/hooks";
-import { taskScheduler } from "../../lib/tasks/scheduler";
-import { openSourceAccessBrowser } from "../../lib/tasks/source-access-coordinator";
 import type { SourceAccessBlock } from "../../lib/tasks/source-access-gate";
 import type { UpdateCheckFailure } from "../../lib/updates/check-library-updates";
-import { useSiteBrowserStore } from "../../store/site-browser";
+import {
+  SourceAccessVerifyButton,
+  useSourceAccessBlocks,
+} from "../SourceAccessVerifyButton";
 import { ChevronRightIcon, RetryIcon, WarningIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
@@ -57,47 +57,6 @@ function friendlyReason(
   return t("updates.failure.error");
 }
 
-function useSourceAccessBlocks(active: boolean): (pluginId: string) => SourceAccessBlock | undefined {
-  const blocks = useTaskSnapshot(active).sourceAccessBlocks;
-  return (pluginId) => blocks.find((block) => block.sourceId === pluginId);
-}
-
-function VerifyButton({
-  block,
-  sourceName,
-}: {
-  block: SourceAccessBlock;
-  sourceName: string;
-}) {
-  const { t } = useTranslation();
-  const browserVisible = useSiteBrowserStore((state) => state.visible);
-  const verifying = block.verificationRequested || block.verificationTaskId !== undefined;
-
-  return (
-    <Button
-      disabled={
-        browserVisible ||
-        verifying ||
-        !taskScheduler.canBeginSourceAccessVerification(block.scopeKey)
-      }
-      loading={verifying}
-      onClick={() => {
-        void openSourceAccessBrowser(block, {
-          sourceName,
-          title:
-            block.challenge.kind === "captcha"
-              ? t("sourceAccess.captchaTitle")
-              : t("sourceAccess.cloudflareTitle"),
-        });
-      }}
-      size="compact-sm"
-      variant="light"
-    >
-      {t("updates.failure.verify")}
-    </Button>
-  );
-}
-
 interface UpdateFailuresProps {
   active: boolean;
   onOpenNovel: (novelId: number) => void;
@@ -143,7 +102,11 @@ export function UpdateFailures({
           </div>
           <div className="norea-updates-failure-actions">
             {singleBlock ? (
-              <VerifyButton block={singleBlock} sourceName={single.name} />
+              <SourceAccessVerifyButton
+                block={singleBlock}
+                label={t("updates.failure.verify")}
+                sourceName={single.name}
+              />
             ) : single.pluginMissing && single.failures.length === 1 ? (
               <Button
                 onClick={() => openNovel(single.failures[0]!.novelId)}
@@ -221,7 +184,13 @@ export function UpdateFailures({
                   >
                     {source.name}
                   </Text>
-                  {block ? <VerifyButton block={block} sourceName={source.name} /> : null}
+                  {block ? (
+                    <SourceAccessVerifyButton
+                      block={block}
+                      label={t("updates.failure.verify")}
+                      sourceName={source.name}
+                    />
+                  ) : null}
                 </div>
                 <Text c="dimmed" size="sm">
                   {friendlyReason(source, block, t)}

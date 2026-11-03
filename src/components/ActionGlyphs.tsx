@@ -91,38 +91,6 @@ export function PauseGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function PinGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M14 4l6 6" />
-      <path d="M9 14 4 19" />
-      <path d="M10 4h7l3 3-7 7v5l-2 1-7-7 1-2h5z" />
-    </svg>
-  );
-}
-
-export function UnpinGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 17v5" />
-      <path d="M7 17h10" />
-      <path d="M9 4h6" />
-      <path d="M10 4v7l-3 6h10l-3-6V4" />
-    </svg>
-  );
-}
-
-export function RefreshGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M20 12a8 8 0 0 1-13.66 5.66" />
-      <path d="M4 12A8 8 0 0 1 17.66 6.34" />
-      <path d="M17 3v4h-4" />
-      <path d="M7 21v-4h4" />
-    </svg>
-  );
-}
-
 export function RetryGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
