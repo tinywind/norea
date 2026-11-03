@@ -2,9 +2,9 @@
   --norea-reader-bar-height: calc(
     var(--norea-control-sm) + var(--norea-space-2) + 1px
   );
-  background: var(--norea-color-bg);
+  background: var(--norea-reader-bg, var(--norea-color-bg));
   box-sizing: border-box;
-  color: var(--norea-color-ink);
+  color: var(--norea-reader-ink, var(--norea-color-ink));
   display: flex;
   flex-direction: column;
   height: var(--norea-viewport-height);
@@ -19,9 +19,9 @@
 
 .norea-reader-topbar,
 .norea-reader-bottombar {
-  background: var(--norea-color-surface);
+  background: var(--norea-reader-chrome-bg, var(--norea-color-surface));
   box-sizing: border-box;
-  color: var(--norea-color-ink);
+  color: var(--norea-reader-ink, var(--norea-color-ink));
   flex: 0 0 auto;
   gap: var(--norea-space-1);
   padding: var(--norea-space-1) var(--norea-space-2);
@@ -30,14 +30,14 @@
 
 .norea-reader-topbar {
   align-items: center;
-  border-bottom: 1px solid var(--norea-color-rule);
+  border-bottom: 1px solid var(--norea-reader-rule, var(--norea-color-rule));
   display: flex;
   min-height: var(--norea-reader-bar-height);
 }
 
 .norea-reader-bottombar {
   align-items: center;
-  border-top: 1px solid var(--norea-color-rule);
+  border-top: 1px solid var(--norea-reader-rule, var(--norea-color-rule));
   display: grid;
   grid-template-areas:
     "seek seek seek seek"
@@ -74,7 +74,7 @@
 }
 
 .norea-reader-seek-label {
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   flex: 0 0 auto;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
@@ -154,7 +154,7 @@
 }
 
 .norea-reader-subtitle {
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   font-size: var(--norea-text-xs);
   line-height: var(--norea-leading-tight);
 }
@@ -193,8 +193,8 @@
 }
 
 .norea-reader-chapter-panel {
-  background: var(--norea-color-surface-raised);
-  border-right: 1px solid var(--norea-color-rule);
+  background: var(--norea-reader-chrome-bg, var(--norea-color-surface-raised));
+  border-right: 1px solid var(--norea-reader-rule, var(--norea-color-rule));
   display: flex;
   flex: 0 0 15rem;
   flex-direction: column;
@@ -215,7 +215,7 @@
 }
 
 .norea-reader-panel-kicker {
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   font-size: var(--norea-text-xs);
   font-weight: 700;
   margin: 0;
@@ -223,7 +223,7 @@
 }
 
 .norea-reader-panel-empty {
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   font-size: var(--norea-text-xs);
   padding: var(--norea-space-2) var(--norea-space-3);
 }
@@ -237,7 +237,7 @@
   align-items: center;
   border-left: 2px solid transparent;
   box-sizing: border-box;
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   cursor: pointer;
   display: grid;
   gap: var(--norea-space-2);
@@ -249,18 +249,18 @@
 }
 
 .norea-reader-chapter-row:hover {
-  background: var(--norea-color-surface);
+  background: var(--norea-reader-chrome-raised, var(--norea-color-surface));
 }
 
 .norea-reader-chapter-row[data-current="true"] {
-  background: var(--norea-color-surface);
+  background: var(--norea-reader-chrome-raised, var(--norea-color-surface));
   border-left-color: var(--norea-color-accent);
-  color: var(--norea-color-ink);
+  color: var(--norea-reader-ink, var(--norea-color-ink));
   font-weight: 700;
 }
 
 .norea-reader-chapter-number {
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   font-size: var(--norea-text-xs);
   white-space: nowrap;
 }
@@ -539,8 +539,8 @@
 
 .norea-pdf-reader-state {
   align-items: center;
-  background: var(--norea-color-bg);
-  color: var(--norea-color-ink-muted);
+  background: var(--norea-reader-bg, var(--norea-color-bg));
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   display: flex;
   flex-direction: column;
   font-size: var(--norea-text-sm);
@@ -557,7 +557,8 @@
 
 .norea-reader-state-frame {
   align-items: center;
-  background: var(--norea-color-bg);
+  background: var(--norea-reader-bg, var(--norea-color-bg));
+  color: var(--norea-reader-ink, var(--norea-color-ink));
   display: flex;
   flex-direction: column;
   gap: var(--norea-space-3);
@@ -621,7 +622,7 @@
 }
 
 .norea-reader-floating-seekbar-track {
-  background: var(--norea-color-rule);
+  background: var(--norea-reader-rule, var(--norea-color-rule));
   border-radius: var(--norea-radius-full);
   display: block;
   overflow: visible;

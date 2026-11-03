@@ -12,6 +12,7 @@ import {
   ReaderSettingsSidePanel,
   ReaderTopBar,
 } from "../components/reader/ReaderChrome";
+import { getReaderChromeThemeStyle } from "../components/reader/reader-chrome-theme";
 import { useNextReaderChapter } from "../components/reader/use-next-reader-chapter";
 import { useReaderChapterDocument } from "../components/reader/use-reader-chapter-document";
 import { useReaderChapterNavigation } from "../components/reader/use-reader-chapter-navigation";
@@ -345,6 +346,10 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     [openAdjacent],
   );
 
+  const readerChromeThemeStyle = useMemo(
+    () => getReaderChromeThemeStyle(effectiveReaderAppearance),
+    [effectiveReaderAppearance],
+  );
   const retryChapterQuery = () => {
     void chapterQuery.refetch();
   };
@@ -481,6 +486,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       data-chrome-visible={readerChromeVisible}
       data-full-page={fullPageReader}
       aria-busy={readerBusy}
+      style={readerChromeThemeStyle}
       onPointerDown={handleReaderActivity}
       onPointerMove={handleFrequentReaderActivity}
       onWheel={handleFrequentReaderActivity}
