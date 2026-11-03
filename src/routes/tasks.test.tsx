@@ -104,7 +104,7 @@ describe("task work group order", () => {
 });
 
 describe("virtual task row geometry", () => {
-  it.each([[100, 64], [125, 80], [75, 48]])("sizes rows from the %i%% root font scale", (fontScalePercent, rowHeight) => {
+  it.each([[100, 72], [125, 90], [75, 54]])("sizes rows from the %i%% root font scale", (fontScalePercent, rowHeight) => {
     state.fontScalePercent = fontScalePercent;
     const records: TaskRecord[] = Array.from({ length: 81 }, (_, index) => ({
       id: `main-${index}`, lane: "main", kind: "plugin.install", priority: "user",

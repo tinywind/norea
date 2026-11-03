@@ -55,7 +55,7 @@ import {
 import { useSiteBrowserStore } from "../store/site-browser";
 import "../styles/tasks.css";
 
-const TASK_ROW_HEIGHT = 64;
+const TASK_ROW_HEIGHT = 72;
 const TASK_ROW_OVERSCAN = 8;
 const TASK_VIRTUAL_FALLBACK_ROWS = 14;
 const TASK_VIRTUALIZATION_THRESHOLD = 80;

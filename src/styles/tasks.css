@@ -1,8 +1,8 @@
 .norea-vpn-download-queue {
-  border-bottom: 1px solid var(--norea-design-rule);
-  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--norea-color-rule);
+  margin-bottom: var(--norea-space-4);
   min-width: 0;
-  padding: 1rem 0;
+  padding: var(--norea-space-4) 0;
 }
 
 .norea-vpn-download-heading {
@@ -11,17 +11,17 @@
 }
 
 .norea-vpn-download-work {
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 0.5rem;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
   min-width: 0;
-  padding: 0.75rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-vpn-download-range {
-  border-top: 1px solid var(--norea-design-rule);
+  border-top: 1px solid var(--norea-color-rule);
   min-width: 0;
   overflow-wrap: anywhere;
-  padding-top: 0.75rem;
+  padding-top: var(--norea-space-3);
 }
 
 .norea-vpn-download-progress {
@@ -30,36 +30,37 @@
 
 .norea-download-requests {
   display: grid;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
+  gap: var(--norea-space-3);
+  margin-bottom: var(--norea-space-4);
 }
 
 .norea-task-page-title {
   align-items: center;
   display: inline-flex;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   min-width: 0;
 }
 
 .norea-task-title-count {
   align-items: center;
-  background: var(--norea-design-surface-muted, var(--norea-design-panel));
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 999px;
-  color: var(--norea-design-ink-muted);
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  font-family: var(--norea-font-meta);
-  font-size: 0.75rem;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   font-weight: 650;
   height: 1.5rem;
   justify-content: center;
   min-width: 1.5rem;
-  padding: 0 0.45rem;
+  padding: 0 var(--norea-space-2);
 }
 
 .norea-task-header-actions {
   display: inline-flex;
-  gap: 0.35rem;
+  gap: var(--norea-space-2);
   position: relative;
 }
 
@@ -69,128 +70,104 @@
 }
 
 .norea-task-sort-popover {
-  background: var(--norea-design-surface);
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 8px;
-  box-shadow: var(--norea-design-shadow-floating);
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-md);
+  box-shadow: var(--norea-shadow-floating);
   display: grid;
-  gap: 0.45rem;
+  gap: var(--norea-space-2);
   min-width: 13rem;
-  padding: 0.45rem;
+  padding: var(--norea-space-2);
   position: absolute;
   right: 0;
   top: calc(100% + 0.35rem);
-  z-index: 30;
+  z-index: 10;
 }
 
 .norea-task-sort-section {
   display: grid;
-  gap: 0.15rem;
+  gap: var(--norea-space-1);
 }
 
 .norea-task-sort-heading {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
-  font-size: 0.6875rem;
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
-  padding: 0.2rem 0.35rem;
-  text-transform: uppercase;
+  padding: var(--norea-space-1) var(--norea-space-2);
 }
 
 .norea-task-sort-section button {
   background: transparent;
   border: 0;
-  border-radius: 6px;
-  color: var(--norea-design-ink);
+  border-radius: var(--norea-radius-md);
+  color: var(--norea-color-ink);
   cursor: pointer;
   font: inherit;
   min-height: 2rem;
-  padding: 0.35rem 0.45rem;
+  padding: var(--norea-space-2);
   text-align: left;
 }
 
 .norea-task-sort-section button:hover {
-  background: var(--norea-design-surface-muted, var(--norea-design-panel));
+  background: var(--norea-color-surface-raised);
 }
 
 .norea-task-summary-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: var(--norea-space-2);
   min-width: 0;
 }
 
 .norea-task-summary-pill {
   align-items: center;
-  background: var(--norea-design-surface-muted, var(--norea-design-panel));
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 999px;
-  color: var(--norea-design-ink-muted);
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  font-family: var(--norea-font-meta);
-  font-size: 0.75rem;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
   height: 1.5rem;
-  padding: 0 0.55rem;
+  padding: 0 var(--norea-space-2);
   white-space: nowrap;
 }
 
 .norea-task-summary-pill[data-tone="error"] {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-error) 10%,
-    var(--norea-design-surface)
-  );
-  border-color: color-mix(
-    in srgb,
-    var(--norea-design-error) 30%,
-    var(--norea-design-rule)
-  );
-  color: var(--norea-design-error);
+  background: var(--norea-color-danger-soft);
+  border-color: var(--norea-color-danger);
+  color: var(--norea-color-on-danger-soft);
 }
 
 .norea-task-summary-pill[data-tone="warning"] {
-  background: color-mix(
-    in srgb,
-    var(--norea-color-warn) 10%,
-    var(--norea-design-surface)
-  );
-  border-color: color-mix(
-    in srgb,
-    var(--norea-color-warn) 35%,
-    var(--norea-design-rule)
-  );
+  background: var(--norea-color-warn-soft);
+  border-color: var(--norea-color-warn);
   color: var(--norea-color-on-warn-soft);
 }
 
 .norea-source-access-banners {
   display: grid;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
 }
 
 .norea-source-access-banner {
   align-items: center;
-  background: color-mix(
-    in srgb,
-    var(--norea-color-warn) 7%,
-    var(--norea-design-surface)
-  );
-  border: 1px solid
-    color-mix(
-      in srgb,
-      var(--norea-color-warn) 35%,
-      var(--norea-design-rule)
-    );
-  border-radius: 8px;
+  background: var(--norea-color-warn-soft);
+  border: 1px solid var(--norea-color-warn);
+  border-radius: var(--norea-radius-md);
   display: grid;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   grid-template-columns: minmax(0, 1fr) auto;
-  padding: 0.75rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-source-access-copy {
   display: grid;
-  gap: 0.2rem;
+  gap: var(--norea-space-1);
   min-width: 0;
 }
 
@@ -200,69 +177,66 @@
 }
 
 .norea-task-shell {
-  border: 1px solid var(--norea-design-rule);
-  border-radius: 8px;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
   display: grid;
   overflow: hidden;
 }
 
 .norea-task-group {
-  background: var(--norea-design-surface);
+  background: var(--norea-color-surface);
   display: grid;
   min-width: 0;
 }
 
 .norea-task-group + .norea-task-group {
-  border-top: 1px solid var(--norea-design-rule-strong);
+  border-top: 1px solid var(--norea-color-rule-strong);
 }
 
 .norea-task-group-header {
   align-items: center;
-  background: var(--norea-design-surface-muted, var(--norea-design-panel));
+  background: var(--norea-color-surface-raised);
   display: grid;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 2.75rem;
-  padding: 0.45rem 0.65rem 0.45rem 0.8rem;
+  padding: var(--norea-space-2) var(--norea-space-3);
 }
 
 .norea-task-group-copy {
   align-items: center;
   display: flex;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   min-width: 0;
 }
 
 .norea-task-group-title {
-  color: var(--norea-design-ink);
-  font-size: 0.875rem;
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-md);
   font-weight: 700;
   min-width: 0;
 }
 
 .norea-task-group[data-source-group] {
-  background: var(--norea-design-surface-muted, var(--norea-design-panel));
+  background: var(--norea-color-surface-raised);
   border-left: 0.25rem solid transparent;
 }
 
 .norea-task-group[data-source-group] .norea-task-group-header {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-accent) 8%,
-    var(--norea-design-surface-muted, var(--norea-design-panel))
-  );
-  padding-left: 0.7rem;
+  background: var(--norea-color-accent-soft);
+  padding-left: var(--norea-space-3);
 }
 
 .norea-task-group[data-source-group] .norea-task-group-title {
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-task-group-count {
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   flex: 0 0 auto;
-  font-family: var(--norea-font-meta);
-  font-size: 0.75rem;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -270,21 +244,21 @@
 .norea-task-row-actions {
   align-items: center;
   display: inline-flex;
-  gap: 0.25rem;
+  gap: var(--norea-space-1);
 }
 
 .norea-task-group[data-source-group] > .norea-task-rows {
-  background: var(--norea-design-surface-muted, var(--norea-design-panel));
-  border-top: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-surface-raised);
+  border-top: 1px solid var(--norea-color-rule);
   display: grid;
-  gap: 0.25rem;
-  padding: 0.35rem 0 0.35rem 0.7rem;
+  gap: var(--norea-space-1);
+  padding: var(--norea-space-2) 0 var(--norea-space-2) var(--norea-space-3);
 }
 
 .norea-task-work-group {
-  background: var(--norea-design-surface);
-  border-left: 0.1875rem solid var(--norea-design-rule-strong);
-  border-top: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-surface);
+  border-left: 0.1875rem solid var(--norea-color-rule-strong);
+  border-top: 1px solid var(--norea-color-rule);
   display: grid;
   min-width: 0;
 }
@@ -295,38 +269,35 @@
 
 .norea-task-work-header {
   align-items: center;
-  background: var(--norea-design-surface);
+  background: var(--norea-color-surface);
   border-bottom: 1px solid transparent;
   display: grid;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 2.5rem;
-  padding: 0.35rem 0.65rem 0.35rem 0.55rem;
+  padding: var(--norea-space-2) var(--norea-space-3) var(--norea-space-2)
+    var(--norea-space-2);
 }
 
 .norea-task-work-group:not([data-collapsed]) {
-  border-left-color: var(--norea-design-accent);
+  border-left-color: var(--norea-color-accent);
 }
 
 .norea-task-work-group:not([data-collapsed]) .norea-task-work-header {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-accent) 5%,
-    var(--norea-design-surface)
-  );
-  border-bottom-color: var(--norea-design-rule);
+  background: var(--norea-color-surface-raised);
+  border-bottom-color: var(--norea-color-rule);
 }
 
 .norea-task-work-copy {
   align-items: center;
   display: flex;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   min-width: 0;
 }
 
 .norea-task-work-title {
-  color: var(--norea-design-ink);
-  font-size: 0.8125rem;
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-sm);
   font-weight: 600;
   min-width: 0;
 }
@@ -372,23 +343,23 @@
 .norea-task-row {
   align-items: center;
   background: transparent;
-  border-top: 1px solid var(--norea-design-rule);
-  contain-intrinsic-size: auto 4rem;
+  border-top: 1px solid var(--norea-color-rule);
+  contain-intrinsic-size: auto 4.5rem;
   content-visibility: auto;
   display: grid;
-  gap: 0.55rem;
+  gap: var(--norea-space-2);
   grid-template-columns: auto minmax(0, 1fr) auto;
-  min-height: 4rem;
-  padding: 0.55rem 0.65rem 0.55rem 0.8rem;
+  min-height: 4.5rem;
+  padding: var(--norea-space-2) var(--norea-space-3);
 }
 
 .norea-task-virtual-window .norea-task-row {
-  height: 4rem;
-  min-height: 4rem;
+  height: 4.5rem;
+  min-height: 4.5rem;
 }
 
 .norea-task-virtual-window .norea-task-row:first-child {
-  border-top: 1px solid var(--norea-design-rule);
+  border-top: 1px solid var(--norea-color-rule);
 }
 
 .norea-task-row[role="button"] {
@@ -396,16 +367,12 @@
 }
 
 .norea-task-row:focus-visible {
-  outline: 2px solid var(--norea-design-accent);
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
   outline-offset: -2px;
 }
 
 .norea-task-row[data-selected="true"] {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-accent) 10%,
-    var(--norea-design-surface)
-  );
+  background: var(--norea-color-selected);
 }
 
 .norea-task-row:first-child {
@@ -413,37 +380,29 @@
 }
 
 .norea-task-row[data-status="failed"] {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-error) 6%,
-    var(--norea-design-surface)
-  );
+  background: var(--norea-color-danger-soft);
 }
 
 .norea-task-row[data-status="running"] {
-  background: color-mix(
-    in srgb,
-    var(--norea-design-accent) 6%,
-    var(--norea-design-surface)
-  );
+  background: var(--norea-color-surface-raised);
 }
 
 .norea-task-row-main {
   display: grid;
-  gap: 0.18rem;
+  gap: var(--norea-space-1);
   min-width: 0;
 }
 
 .norea-task-row-heading {
   align-items: center;
   display: flex;
-  gap: 0.5rem;
+  gap: var(--norea-space-2);
   min-width: 0;
 }
 
 .norea-task-row-title {
-  color: var(--norea-design-ink);
-  font-size: 0.875rem;
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-md);
   font-weight: 650;
   min-width: 0;
 }
@@ -451,7 +410,7 @@
 .norea-task-row-download-title {
   align-items: baseline;
   display: flex;
-  gap: 0.4rem;
+  gap: var(--norea-space-2);
   max-width: 100%;
 }
 
@@ -466,49 +425,52 @@
 }
 
 .norea-task-row-download-chapter {
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   flex: 0 0 auto;
-  font-family: var(--norea-font-meta);
+  font-family: var(--norea-font-ui);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .norea-task-progress-text {
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
   flex: 0 0 auto;
-  font-family: var(--norea-font-meta);
-  font-size: 0.75rem;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .norea-task-row-meta,
 .norea-task-row-detail,
 .norea-task-row-error {
-  font-size: 0.75rem;
+  font-size: var(--norea-text-sm);
   line-height: 1.25;
   min-width: 0;
 }
 
 .norea-task-row-meta {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-variant-numeric: tabular-nums;
 }
 
 .norea-task-row-detail {
-  color: var(--norea-design-ink-muted);
+  color: var(--norea-color-ink-muted);
 }
 
 .norea-task-row-error {
-  color: var(--norea-design-error);
+  color: var(--norea-color-danger);
 }
 
 .norea-task-row-progress {
-  margin-top: 0.2rem;
+  margin-top: var(--norea-space-1);
   max-width: 24rem;
 }
 
 @media (max-width: 767px) {
   .norea-task-group-header {
-    padding-left: 0.65rem;
+    padding-left: var(--norea-space-3);
   }
 
   .norea-task-group-copy {
@@ -518,9 +480,10 @@
   }
 
   .norea-task-row {
-    gap: 0.45rem;
+    gap: var(--norea-space-2);
     grid-template-columns: auto minmax(0, 1fr) auto;
-    padding: 0.55rem 0.5rem 0.55rem 0.65rem;
+    padding: var(--norea-space-2) var(--norea-space-2) var(--norea-space-2)
+      var(--norea-space-3);
   }
 }
 
@@ -531,20 +494,16 @@
   }
 
   .norea-task-summary-strip {
-    gap: 0.25rem;
+    gap: var(--norea-space-1);
   }
 
   .norea-task-summary-pill {
-    font-size: 0.6875rem;
-    padding: 0 0.45rem;
-  }
-
-  .norea-task-row {
-    min-height: 4.5rem;
+    font-size: var(--norea-text-xs);
+    padding: 0 var(--norea-space-2);
   }
 
   .norea-task-row-title {
-    font-size: 0.8125rem;
+    font-size: var(--norea-text-sm);
   }
 
   .norea-task-row-download-novel {
@@ -555,6 +514,6 @@
   .norea-task-row-meta,
   .norea-task-row-detail,
   .norea-task-row-error {
-    font-size: 0.6875rem;
+    font-size: var(--norea-text-xs);
   }
 }
