@@ -50,6 +50,14 @@ requirements must be decided explicitly before implementation.
   exact-schema policy. A restored or reloaded coordinator also reads the native
   worker generation floor; an older snapshot cannot reuse a surviving worker's
   generation. Ordinary queue cleanup cannot remove VPN-owned jobs.
+  Plan JSON may retain `consumedReallowRevisions` per range, keyed by profile ID.
+  Missing maps mean no reallow has been consumed; existing plans and queue rows
+  remain intact. These revisions cannot regress during ordinary updates and reset
+  only after full chapter settlement or an explicit profile-pass restart. Native
+  scraper timeouts consume a range attempt without creating a batch/IP exclusion.
+  Released automatic recovery ranges may exchange profile assignments atomically;
+  unfinished assignments stay distinct and explicit user holds are preserved.
+  These fields do not change the SQL schema, backup tables or source plugin format.
 
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
   to titles. Source metadata fetches merge this catalog; downloads, download deletions,

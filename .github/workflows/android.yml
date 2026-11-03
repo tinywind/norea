@@ -1,29 +1,14 @@
-name: Android Release APKs
+name: Y700 ARM64 fix candidate
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["0.2"]
-    tags:
-      - "v*"
-    paths:
-      - ".github/workflows/android.yml"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "src/**"
-      - "src-tauri/**"
-      - "drizzle/**"
-      - "public/**"
-      - "index.html"
-      - "vite.config.*"
-      - "tsconfig*.json"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: y700-fix-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   ANDROID_SDK_PLATFORM: android-36
@@ -31,47 +16,34 @@ env:
   ANDROID_BUILD_TOOLS: 36.0.0
   ANDROID_NDK_VERSION: 29.0.14206865
   ANDROID_CMAKE_VERSION: 3.22.1
-  DEV_RELEASE_TAG: dev-0.2
-  RELEASE_SIGNED_APK_DIR: .tmp/android-release-apks
 
 jobs:
-  android-release-apks:
-    name: Android release APKs
+  y700-arm64:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
           cache: pnpm
-
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: 17
-
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-
-      - name: Add Rust Android targets
-        run: |
-          rustup target add \
-            aarch64-linux-android \
-            x86_64-linux-android
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      - run: rustup target add aarch64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           workspaces: src-tauri
 
       - name: Install Android SDK packages
         run: |
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          test -x "$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null
-          "$SDKMANAGER" --install \
+          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null
+          "$sdkmanager" --install \
             "platform-tools" \
             "platforms;${ANDROID_SDK_PLATFORM}" \
             "build-tools;${ANDROID_BUILD_TOOLS}" \
@@ -80,39 +52,22 @@ jobs:
           echo "NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Configure OpenVPN native build tools
+      - name: Configure native build tools
         run: |
           set -euo pipefail
+          toolchain="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64"
+          cmake="${ANDROID_HOME}/cmake/${ANDROID_CMAKE_VERSION}/bin/cmake"
+          test -x "$cmake"
+          resource_dir="$($toolchain/bin/clang --print-resource-dir)"
+          test -f "$resource_dir/include/stddef.h"
+          test -f "$toolchain/lib/libclang.so"
+          echo "CMAKE=$cmake" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$toolchain/lib" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$toolchain/sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
 
-          cmake_bin="${ANDROID_HOME}/cmake/${ANDROID_CMAKE_VERSION}/bin/cmake"
-          ndk_home="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
-          test -x "$cmake_bin"
-          "$cmake_bin" --version
-          clang_bin="${ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
-          libclang_path="${ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/lib"
-          sysroot="${ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          test -x "$clang_bin"
-          test -x "${clang_bin}++"
-          test -f "${libclang_path}/libclang.so"
-          test -d "$sysroot"
+      - run: pnpm install --frozen-lockfile
 
-          resource_dir="$($clang_bin --print-resource-dir)"
-          test -f "${resource_dir}/include/stddef.h"
-          echo "CMAKE=$cmake_bin" >> "$GITHUB_ENV"
-          echo "LIBCLANG_PATH=$libclang_path" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=$sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android=--target=x86_64-linux-android24 --sysroot=$sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
-
-      - name: Install JS dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Initialize Android project
-        run: |
-          if [ ! -d src-tauri/gen/android ]; then
-            pnpm tauri android init --ci --skip-targets-install
-          fi
-
-      - name: Configure Android release signing secrets
+      - name: Require existing release signing
         env:
           ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
@@ -120,235 +75,54 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          test -n "$ANDROID_RELEASE_KEYSTORE_BASE64"
+          test -n "$ANDROID_RELEASE_KEY_ALIAS"
+          test -n "$ANDROID_RELEASE_STORE_PASSWORD"
+          test -n "$ANDROID_RELEASE_KEY_PASSWORD"
+          mkdir -p .tmp/y700-ci-signing
+          keystore="$(pwd)/.tmp/y700-ci-signing/release.jks"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "ANDROID_RELEASE_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
+          echo "ANDROID_RELEASE_KEY_ALIAS=$ANDROID_RELEASE_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_RELEASE_STORE_PASSWORD=$ANDROID_RELEASE_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_RELEASE_KEY_PASSWORD=$ANDROID_RELEASE_KEY_PASSWORD" >> "$GITHUB_ENV"
 
-          signing_dir=".tmp/android-release-signing"
-
-          if [ -n "$ANDROID_RELEASE_KEYSTORE_BASE64" ] &&
-             [ -n "$ANDROID_RELEASE_KEY_ALIAS" ] &&
-             [ -n "$ANDROID_RELEASE_STORE_PASSWORD" ] &&
-             [ -n "$ANDROID_RELEASE_KEY_PASSWORD" ]; then
-            mkdir -p "$signing_dir"
-            keystore="$(pwd)/$signing_dir/release.jks"
-            printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-            echo "ANDROID_RELEASE_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
-            echo "ANDROID_RELEASE_KEY_ALIAS=$ANDROID_RELEASE_KEY_ALIAS" >> "$GITHUB_ENV"
-            echo "ANDROID_RELEASE_STORE_PASSWORD=$ANDROID_RELEASE_STORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "ANDROID_RELEASE_KEY_PASSWORD=$ANDROID_RELEASE_KEY_PASSWORD" >> "$GITHUB_ENV"
-          else
-            mkdir -p "$signing_dir"
-            keystore="$(pwd)/$signing_dir/test-release.jks"
-            keytool -genkeypair \
-              -keystore "$keystore" \
-              -storepass android \
-              -keypass android \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Norea Test Release,O=Norea,C=US"
-            echo "ANDROID_RELEASE_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
-            echo "ANDROID_RELEASE_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
-            echo "ANDROID_RELEASE_STORE_PASSWORD=android" >> "$GITHUB_ENV"
-            echo "ANDROID_RELEASE_KEY_PASSWORD=android" >> "$GITHUB_ENV"
-            echo "::warning::Android release signing secrets are not configured; generated a public test release key."
-          fi
-
-      - name: Stamp build metadata
+      - name: Stamp candidate identity
         run: |
-          set -euo pipefail
-
-          channel="dev"
-          version=""
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            channel="release"
-            version="${{ github.ref_name }}"
-            version="${version#v}"
-          fi
-
-          echo "NOREA_BUILD_CHANNEL=$channel" >> "$GITHUB_ENV"
-          echo "NOREA_BUILD_VERSION=$version" >> "$GITHUB_ENV"
+          echo "NOREA_BUILD_CHANNEL=dev" >> "$GITHUB_ENV"
+          echo "NOREA_GIT_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"
           echo "NOREA_BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
-          echo "NOREA_GIT_SHA=${GITHUB_SHA}" >> "$GITHUB_ENV"
-          echo "NOREA_GITHUB_RUN_ID=${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
-          echo "NOREA_GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          echo "NOREA_GITHUB_RUN_ID=$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+          echo "NOREA_GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
-      - name: Build arm64 and x86_64 release APKs
+      - name: Build only the Y700 ABI
         env:
           ANDROID_PLATFORM: ${{ env.ANDROID_NATIVE_PLATFORM }}
-        run: pnpm android:apk:release
+        run: pnpm exec tauri android build --apk --target aarch64
 
-      - name: Collect signed release APKs
+      - name: Verify and collect signed APK
         run: |
           set -euo pipefail
+          apk="src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk"
+          test -f "$apk"
+          "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" verify --verbose "$apk"
+          mkdir -p .tmp/y700-ci
+          cp "$apk" .tmp/y700-ci/norea-arm64.apk
+          cd .tmp/y700-ci
+          sha256sum norea-arm64.apk > SHA256SUMS.txt
 
-          release_apk_root="src-tauri/gen/android/app/build/outputs/apk"
-          mkdir -p "$RELEASE_SIGNED_APK_DIR"
-
-          apksigner="${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
-          checksum_file="$RELEASE_SIGNED_APK_DIR/SHA256SUMS.txt"
-          : > "$checksum_file"
-
-          for release_apk in \
-            "$release_apk_root/arm64/release/app-arm64-release.apk" \
-            "$release_apk_root/x86_64/release/app-x86_64-release.apk"; do
-            if [ ! -f "$release_apk" ]; then
-              echo "Expected release APK not found: $release_apk"
-              exit 1
-            fi
-
-            variant="$(basename "$(dirname "$(dirname "$release_apk")")")"
-            collected_apk="$RELEASE_SIGNED_APK_DIR/norea-${variant}.apk"
-
-            "$apksigner" verify --verbose "$release_apk"
-            cp "$release_apk" "$collected_apk"
-            (cd "$RELEASE_SIGNED_APK_DIR" && sha256sum "$(basename "$collected_apk")") >> "$checksum_file"
-          done
-
-          channel="dev"
-          version=""
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            channel="stable"
-            version="${{ github.ref_name }}"
-            version="${version#v}"
-          fi
-
-          UPDATE_CHANNEL="$channel" \
-          UPDATE_VERSION="$version" \
-          UPDATE_WORKFLOW="android.yml" \
-          UPDATE_RUN_ID="$GITHUB_RUN_ID" \
-          UPDATE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-          UPDATE_HEAD_SHA="$GITHUB_SHA" \
-          node <<'NODE'
-          const crypto = require("crypto");
-          const fs = require("fs");
-          const path = require("path");
-
-          const artifactDir = process.env.RELEASE_SIGNED_APK_DIR;
-          const channel = process.env.UPDATE_CHANNEL;
-          const version = process.env.UPDATE_VERSION || null;
-          const pairs = [
-            ["android-arm64", "norea-arm64.apk"],
-            ["android-x86_64", "norea-x86_64.apk"],
-          ];
-
-          for (const [platform, name] of pairs) {
-            const filePath = path.join(artifactDir, name);
-            const bytes = fs.readFileSync(filePath);
-            const manifest = {
-              schemaVersion: 1,
-              channel,
-              platform,
-              version,
-              generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-              assets: [
-                {
-                  name,
-                  artifactName: name,
-                  platform,
-                  size: bytes.length,
-                  sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
-                  signature: null,
-                  signingKeyId: null,
-                },
-              ],
-              signature: null,
-              signingKeyId: null,
-              dev: channel === "dev" ? {
-                workflow: process.env.UPDATE_WORKFLOW,
-                runId: process.env.UPDATE_RUN_ID,
-                runAttempt: process.env.UPDATE_RUN_ATTEMPT,
-                headSha: process.env.UPDATE_HEAD_SHA,
-                artifactName: null,
-              } : null,
-            };
-            fs.writeFileSync(
-              path.join(artifactDir, `norea-updates-${platform}.json`),
-              `${JSON.stringify(manifest, null, 2)}\n`,
-            );
-          }
-          NODE
-
-      - name: Upload arm64 signed release APK
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: norea-arm64.apk
-          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-arm64.apk
-          if-no-files-found: error
-          archive: false
+          name: norea-y700-arm64
+          path: |
+            .tmp/y700-ci/norea-arm64.apk
+            .tmp/y700-ci/SHA256SUMS.txt
+          archive: true
           compression-level: 0
-          retention-days: 30
-
-      - name: Upload x86_64 signed release APK
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: norea-x86_64.apk
-          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-x86_64.apk
           if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 30
+          retention-days: 1
 
-      - name: Upload signed release APK checksums
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: norea-android-checksums
-          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/SHA256SUMS.txt
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 30
-
-      - name: Upload arm64 Android update metadata
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: norea-updates-android-arm64.json
-          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-updates-android-arm64.json
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 30
-
-      - name: Upload x86_64 Android update metadata
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: norea-updates-android-x86_64.json
-          path: ${{ env.RELEASE_SIGNED_APK_DIR }}/norea-updates-android-x86_64.json
-          if-no-files-found: error
-          archive: false
-          compression-level: 0
-          retention-days: 30
-
-      - name: Upload signed APKs to GitHub Release
-        if: github.ref_type == 'tag'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" "$RELEASE_SIGNED_APK_DIR"/* --clobber
-
-      - name: Upload signed APKs to dev release
-        if: github.ref_type != 'tag'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if ! gh release view "$DEV_RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$DEV_RELEASE_TAG" \
-              --title "Latest 0.2 dev build" \
-              --notes "Latest successful 0.2 development build assets." \
-              --prerelease \
-              --target "$GITHUB_SHA" ||
-              gh release view "$DEV_RELEASE_TAG" >/dev/null
-          fi
-
-          gh release view "$DEV_RELEASE_TAG" --json assets --jq '.assets[].name' |
-            while IFS= read -r asset_name; do
-              case "$asset_name" in
-                norea-arm64.apk|norea-x86_64.apk)
-                  ;;
-                norea-arm64*apk*|norea-x86_64*apk*|norea-signed-release-apk-checksums)
-                  gh release delete-asset "$DEV_RELEASE_TAG" "$asset_name" --yes || true
-                  ;;
-              esac
-            done
-
-          gh release upload "$DEV_RELEASE_TAG" "$RELEASE_SIGNED_APK_DIR"/* --clobber
+      - name: Remove signing input
+        if: always()
+        run: rm -f .tmp/y700-ci-signing/release.jks

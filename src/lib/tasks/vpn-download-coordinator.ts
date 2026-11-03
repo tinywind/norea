@@ -84,6 +84,15 @@ const key = (planId: string, rangeId: string): string => JSON.stringify([planId,
 const addAttempt = (range: VpnDownloadRangeState, profileId: string): void => {
   if (!range.attemptedProfileIds.includes(profileId)) range.attemptedProfileIds.push(profileId);
 };
+const consumeReallow = (range: VpnDownloadRangeState, profileId: string, issue: VpnDownloadProfileIssue | undefined): void => {
+  if (issue?.excluded !== false) return;
+  range.consumedReallowRevisions = {
+    ...range.consumedReallowRevisions,
+    [profileId]: Math.max(range.consumedReallowRevisions?.[profileId] ?? 0, issue.revision),
+  };
+};
+const isScraperTimeout = (error: unknown): boolean => error instanceof Error &&
+  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$)/i.test(error.message);
 
 function freezePlan(input: VpnDownloadPlan): VpnDownloadPlan {
   const plan = clone(input);
@@ -91,6 +100,7 @@ function freezePlan(input: VpnDownloadPlan): VpnDownloadPlan {
     Object.freeze(range.chapterIds);
     Object.freeze(range.selectedChapterIds);
     Object.freeze(range.attemptedProfileIds);
+    if (range.consumedReallowRevisions) Object.freeze(range.consumedReallowRevisions);
     if (range.challenge) Object.freeze(range.challenge);
     Object.freeze(range);
   }
@@ -231,6 +241,7 @@ export class VpnDownloadCoordinator {
       if (options.restartPass) {
         next.generation = ++this.generation;
         next.attemptedProfileIds = [];
+        delete next.consumedReallowRevisions;
         next.attemptProfileId = null;
       }
     }, epoch, options.restartPass);
@@ -300,9 +311,7 @@ export class VpnDownloadCoordinator {
       range.waitingProfiles = undefined;
       const state = this.state(range);
       if (epochs.get(range) !== range.epoch || range.userHeld || state.pauseReason !== "profiles-exhausted" || state.userPaused || range.manual || this.cancellingPlans.has(range.planId)) continue;
-      const batchId = this.plans.get(range.planId)!.batchId;
-      if (profiles.some(profile => !this.profileExcluded(range, profile) &&
-        (!state.attemptedProfileIds.includes(profile.id) || this.profileIssues.get(batchId)?.get(profile.ip)?.excluded === false))) {
+      if (profiles.some(profile => this.profileEligibleForAttempt(range, profile))) {
         pending.push(this.resumeRange(range.planId, range.rangeId));
       }
     }
@@ -505,12 +514,12 @@ export class VpnDownloadCoordinator {
     return result;
   }
 
-  private updateRange(range: RangeRuntime, update: (state: VpnDownloadRangeState) => void, epoch?: number, restartPass = false): Promise<void> {
+  private updateRange(range: RangeRuntime, update: (state: VpnDownloadRangeState, plan: VpnDownloadPlan) => void, epoch?: number, restartPass = false): Promise<void> {
     return this.serialize(range.planId, async () => {
       const current = this.plans.get(range.planId);
       if (!current || (epoch !== undefined && !this.isEpoch(range, epoch))) return;
       const next = clone(current);
-      update(next.ranges.find(candidate => candidate.id === range.rangeId)!);
+      update(next.ranges.find(candidate => candidate.id === range.rangeId)!, next);
       if (JSON.stringify(current) === JSON.stringify(next)) return;
       this.install(await this.runtime.updatePlan(next, current.revision, restartPass ? { restartPassRangeId: range.rangeId } : undefined));
     });
@@ -556,7 +565,14 @@ export class VpnDownloadCoordinator {
   }
 
   private profileAssignedToSibling(range: RangeRuntime, profileId: string): boolean {
-    return this.plans.get(range.planId)!.ranges.some(other => other.id !== range.rangeId && !terminal(other) && other.profileId === profileId);
+    return this.plans.get(range.planId)!.ranges.some(other => other.id !== range.rangeId && !terminal(other) &&
+      other.profileId === profileId && !this.canYieldProfile(range, other));
+  }
+
+  private canYieldProfile(range: RangeRuntime, other: VpnDownloadRangeState): boolean {
+    const sibling = this.requireRange(range.planId, other.id);
+    return other.phase === "paused" && other.attemptProfileId === null && other.attemptedProfileIds.includes(other.profileId) &&
+      this.canWork(sibling, sibling.epoch) && !sibling.worker && !sibling.task;
   }
 
   private loadProfileIssues(batchId: string): Promise<void> {
@@ -581,6 +597,14 @@ export class VpnDownloadCoordinator {
   private profileExcluded(range: RangeRuntime, profile: SavedVpnProfile): boolean {
     const batchId = this.plans.get(range.planId)!.batchId;
     return this.pendingExclusions.has(key(batchId, profile.ip)) || this.profileIssues.get(batchId)?.get(profile.ip)?.excluded === true;
+  }
+
+  private profileEligibleForAttempt(range: RangeRuntime, profile: SavedVpnProfile): boolean {
+    const plan = this.plans.get(range.planId)!;
+    const state = this.state(range);
+    const issue = this.profileIssues.get(plan.batchId)?.get(profile.ip);
+    return !this.profileExcluded(range, profile) && (!state.attemptedProfileIds.includes(profile.id) ||
+      issue?.excluded === false && (state.consumedReallowRevisions?.[profile.id] ?? 0) < issue.revision);
   }
 
   private async excludeProfile(range: RangeRuntime, lease: WorkerLease, cause: VpnDownloadProfileIssueCause): Promise<void> {
@@ -684,6 +708,22 @@ export class VpnDownloadCoordinator {
           await this.closeLease(lease);
           continue;
         }
+        else if (isScraperTimeout(outcome.error)) {
+          const issue = this.profileIssues.get(plan.batchId)?.get(lease.profile.ip);
+          await this.updateRange(range, next => {
+            if (terminal(next) || next.generation !== lease.ref.generation || next.checkpoint !== state.checkpoint) return;
+            addAttempt(next, lease.profile.id);
+            next.attemptProfileId = null;
+            if (this.isEpoch(range, epoch)) next.phase = "paused";
+            consumeReallow(next, lease.profile.id, issue);
+          });
+          await this.closeLease(lease);
+          if (state.challenge && plan.policies[state.challenge.kind] === "pause") {
+            await this.fail(range, epoch, "download-failed", outcome.error);
+            return;
+          }
+          continue;
+        }
         else await this.fail(range, epoch, "download-failed", outcome.error);
         return;
       }
@@ -711,9 +751,9 @@ export class VpnDownloadCoordinator {
       const nextProfile = (excluded || state.attemptProfileId === null && state.attemptedProfileIds.includes(state.profileId)) &&
         (!state.challenge || plan.policies[state.challenge.kind] === "nextProfile");
       const candidates = nextProfile
-        ? profiles.filter(profile => !this.profileExcluded(range, profile) &&
-          (!state.attemptedProfileIds.includes(profile.id) || this.profileIssues.get(plan.batchId)?.get(profile.ip)?.excluded === false))
-        : profiles.filter(profile => profile.id === state.profileId && profile.hash === state.profileHash && !this.profileExcluded(range, profile));
+        ? profiles.filter(profile => this.profileEligibleForAttempt(range, profile))
+        : profiles.filter(profile => profile.id === state.profileId && profile.hash === state.profileHash &&
+          !this.profileExcluded(range, profile) && (state.attemptProfileId === profile.id || this.profileEligibleForAttempt(range, profile)));
       const selected = candidates.find(profile => !this.profileReserved(range, profile.id) && !this.profileAssignedToSibling(range, profile.id)) ?? candidates[0];
       if (!selected) {
         await this.fail(range, epoch, nextProfile || excluded ? "profiles-exhausted" : "profile-unavailable");
@@ -733,15 +773,25 @@ export class VpnDownloadCoordinator {
       const lease: WorkerLease = { owner: range, ref, profile: clone(candidate), abort: new AbortController(), connected: false };
       range.worker = lease;
       this.slots[slot] = lease;
-      await this.updateRange(range, next => {
+      let assigned = false;
+      await this.updateRange(range, (next, plan) => {
+        const sibling = plan.ranges.find(other => other.id !== range.rangeId && !terminal(other) && other.profileId === candidate.id);
+        if (sibling) {
+          if (!this.canYieldProfile(range, sibling)) return;
+          sibling.profileId = next.profileId;
+          sibling.profileHash = next.profileHash;
+        }
         next.profileId = candidate.id;
         next.profileHash = candidate.hash;
         next.attemptProfileId = candidate.id;
         next.generation = ref.generation;
         next.phase = "connecting";
         next.pauseReason = null;
+        consumeReallow(next, candidate.id, this.profileIssues.get(plan.batchId)?.get(candidate.ip));
+        assigned = true;
       }, epoch);
       if (!this.owns(range, epoch, lease)) { await this.closeLease(lease); return; }
+      if (!assigned) { await this.closeLease(lease); continue; }
       if (this.workerAboveLimit(lease)) { await this.releaseWorkerForCapacity(range, epoch, lease); return; }
       let outcome: "connected" | "authentication-required";
       try {
