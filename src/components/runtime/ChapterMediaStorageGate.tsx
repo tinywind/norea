@@ -92,6 +92,11 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
                     : "storageSetup.description",
                 )}
               </Text>
+              {isAndroidRuntime() ? (
+                <Text className="norea-storage-setup-hint">
+                  {translate(appLocale, "storageSetup.androidPickerHint")}
+                </Text>
+              ) : null}
             </Stack>
             {error ? (
               <Text className="norea-storage-setup-error" role="alert">

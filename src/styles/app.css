@@ -110,6 +110,12 @@ body {
   line-height: 1.5;
 }
 
+.norea-storage-setup-hint {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
+}
+
 .norea-startup-splash {
   align-items: center;
   display: flex;

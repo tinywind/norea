@@ -158,4 +158,25 @@ describe("ChapterMediaStorageGate", () => {
     expect(text(setup)).toContain("Choose where to save chapters");
     expect(text(setup)).toContain("Select external folder");
   });
+
+  it("tells Android users to pick the Norea folder itself, not a folder inside it", async () => {
+    mocks.storageRoot.mockResolvedValueOnce(null);
+    render(ChapterMediaStorageGate);
+    runEffects();
+    await vi.waitFor(() => expect(mocks.states[0]).toBe(false));
+
+    const copy = text(render(ChapterMediaStorageGate));
+    expect(copy).toContain("choose that same Norea folder itself, not a folder inside it");
+    expect(copy).toContain("Use this folder");
+  });
+
+  it("leaves the Android picker hint out on desktop", async () => {
+    mocks.android = false;
+    mocks.storageRoot.mockResolvedValueOnce(null);
+    render(ChapterMediaStorageGate);
+    runEffects();
+    await vi.waitFor(() => expect(mocks.states[0]).toBe(false));
+
+    expect(text(render(ChapterMediaStorageGate))).not.toContain("Use this folder");
+  });
 });
