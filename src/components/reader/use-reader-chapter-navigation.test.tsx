@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { enqueueChapterDownload } from "../../lib/tasks/chapter-download";
+import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
+import { taskScheduler } from "../../lib/tasks/scheduler";
 import { useReaderChapterNavigation } from "./use-reader-chapter-navigation";
 import { useNextReaderChapter } from "./use-next-reader-chapter";
 import { useReaderDocument } from "../use-reader-document";
@@ -22,6 +23,7 @@ vi.mock("../use-reader-document", () => ({ useReaderDocument: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   subscribeChapterDownloads: vi.fn(() => () => {}),
   enqueueChapterDownload: vi.fn(() => ({ id: "download", promise: new Promise<void>(() => {}) })),
+  cancelChapterDownloadBatches: vi.fn(() => 1),
 }));
 
 let root: Root | undefined;
@@ -53,10 +55,10 @@ function mount() {
   root = createRoot(container as unknown as Element);
 }
 
-function Probe({ storedChapter, nextChapter }: { storedChapter: NavigationChapter; nextChapter?: NavigationChapter }) {
+function Probe({ storedChapter, nextChapter, ready = true }: { storedChapter: NavigationChapter; nextChapter?: NavigationChapter; ready?: boolean }) {
   current = useReaderChapterNavigation({
     chapterId: storedChapter.id, chapter: storedChapter, previousChapter: undefined, nextChapter,
-    readerProgressPersistenceReady: true, contentRef: { current: null }, openedChapterRef: { current: storedChapter.id },
+    readerProgressPersistenceReady: ready, contentRef: { current: null }, openedChapterRef: { current: storedChapter.id },
   });
   return null;
 }
@@ -72,6 +74,7 @@ afterEach(async () => {
   root = undefined;
   queryClient?.clear();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -116,4 +119,16 @@ it("still schedules an interactive download when the chapter body is missing", a
   await render({ ...chapter, contentBytes: 0 });
   expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 11, priority: "interactive" }));
   expect(current.autoDownloadingChapterId).toBe(11);
+});
+
+it("cancels an admitted VPN chapter handle when leaving the reader without cancelling an unrelated scheduler task", async () => {
+  mount();
+  const cancel = vi.spyOn(taskScheduler, "cancel");
+  await act(async () => root!.render(<QueryClientProvider client={queryClient}>
+    <Probe storedChapter={{ ...chapter, contentBytes: 0 }} ready={false} />
+  </QueryClientProvider>));
+  await act(async () => { current.handleReaderBack(); });
+  expect(cancelChapterDownloadBatches).toHaveBeenCalledExactlyOnceWith(["download"]);
+  expect(cancel).not.toHaveBeenCalled();
+  expect(current.autoDownloadingChapterId).toBeNull();
 });

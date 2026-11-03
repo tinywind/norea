@@ -28,7 +28,7 @@ import {
   novelDetailQueryKey,
   novelLibraryQueryKey,
 } from "../../lib/reader-query-invalidation";
-import { enqueueChapterDownload } from "../../lib/tasks/chapter-download";
+import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
 import { taskScheduler, type TaskHandle } from "../../lib/tasks/scheduler";
 import { type ReaderContentHandle } from "../ReaderContent";
 
@@ -98,7 +98,7 @@ export function useReaderChapterNavigation({
     suppressedAutoDownloadChapterRef.current =
       pendingChapterId > 0 ? pendingChapterId : null;
     if (activeTask) {
-      taskScheduler.cancel(activeTask.handle.id);
+      if (!cancelChapterDownloadBatches([activeTask.handle.id])) taskScheduler.cancel(activeTask.handle.id);
       activeChapterOpenTaskRef.current = null;
     }
     autoDownloadingChapterRef.current = null;

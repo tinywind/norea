@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { taskScheduler, type TaskSnapshot } from "./scheduler";
+import { getVpnDownloadRuntimeSnapshot, subscribeVpnDownloadRuntime } from "./vpn-download-runtime";
+import { getChapterDownloadRequestSnapshot, subscribeChapterDownloadRequests } from "./chapter-download-requests";
 
 function subscribeInactiveTaskSnapshot(): () => void {
   return () => undefined;
@@ -10,5 +12,21 @@ export function useTaskSnapshot(active = true): TaskSnapshot {
     active ? taskScheduler.subscribe : subscribeInactiveTaskSnapshot,
     taskScheduler.getSnapshot,
     taskScheduler.getSnapshot,
+  );
+}
+
+export function useVpnDownloadRuntimeSnapshot(active = true) {
+  return useSyncExternalStore(
+    active ? subscribeVpnDownloadRuntime : subscribeInactiveTaskSnapshot,
+    getVpnDownloadRuntimeSnapshot,
+    getVpnDownloadRuntimeSnapshot,
+  );
+}
+
+export function useChapterDownloadRequestSnapshot(active = true) {
+  return useSyncExternalStore(
+    active ? subscribeChapterDownloadRequests : subscribeInactiveTaskSnapshot,
+    getChapterDownloadRequestSnapshot,
+    getChapterDownloadRequestSnapshot,
   );
 }

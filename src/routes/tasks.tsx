@@ -1,4 +1,4 @@
-import { Button, Group, Progress, Text } from "@mantine/core";
+import { Alert, Button, Group, Progress, Text } from "@mantine/core";
 import {
   memo,
   useEffect,
@@ -24,9 +24,13 @@ import {
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { VpnDownloadPanel } from "../components/VpnDownloadPanel";
+import { TextButton } from "../components/TextButton";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { describeError } from "../lib/errors";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
-import { useTaskSnapshot } from "../lib/tasks/hooks";
+import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
+import { useTaskSnapshot, useVpnDownloadRuntimeSnapshot, useChapterDownloadRequestSnapshot } from "../lib/tasks/hooks";
+import { pauseVpnDownloadRun, resumeVpnDownloadRun, cancelVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
 import {
   applySourceAccessBrowserOutcome,
   cancelSourceAccessWait,
@@ -1081,6 +1085,11 @@ interface TasksPageProps {
 export function TasksPage({ active = true }: TasksPageProps = {}) {
   const { t } = useTranslation();
   const snapshot = useTaskSnapshot(active);
+  const vpn = useVpnDownloadRuntimeSnapshot(active);
+  const requests = useChapterDownloadRequestSnapshot(active);
+  const [queueActionPending, setQueueActionPending] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const queueAction = useRef(false);
   const [collapsedSourceIds, setCollapsedSourceIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1089,8 +1098,13 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
   );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const tasks = useMemo(
-    () => [...snapshot.records].sort(compareTaskQueueOrder),
-    [snapshot.records],
+    () => {
+      const owned = new Set(vpn.ownedChapterIds ?? []);
+      return snapshot.records.filter(task => !task.vpnWorker &&
+        !(task.kind === "chapter.download" && task.subject?.chapterId !== undefined && owned.has(task.subject.chapterId)))
+        .sort(compareTaskQueueOrder);
+    },
+    [snapshot.records, vpn.ownedChapterIds],
   );
   useEffect(() => {
     if (selectedTaskId && !tasks.some((task) => task.id === selectedTaskId)) {
@@ -1109,6 +1123,10 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
     () => tasks.filter((task) => task.lane === "source"),
     [tasks],
   );
+  const hasVpnRun = Boolean(vpn.run && vpn.run.status !== "completed" && vpn.run.status !== "cancelled");
+  const allPaused = hasVpnRun ? (vpn.run?.status === "paused" || vpn.run?.status === "interrupted") &&
+    (!sourceTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
+  const ordinaryBlocks = snapshot.sourceAccessBlocks.filter(block => !block.rangeId);
   const taskStats = useMemo(
     () => ({
       running: snapshot.running,
@@ -1119,8 +1137,8 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
     [snapshot.failed, snapshot.queued, snapshot.running, snapshot.succeeded],
   );
   const hasCancellableTasks = useMemo(
-    () => hasCancellableActiveTask(tasks),
-    [tasks],
+    () => hasCancellableActiveTask(tasks) || hasVpnRun || requests.length > 0,
+    [tasks, hasVpnRun, requests.length],
   );
   const sourceGroups = useMemo(() => {
     const sourceGroupsById = new Map<string, SourceTaskGroup>();
@@ -1194,6 +1212,14 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
     setOpenWorkGroupKey((current) => (current === key ? null : key));
   };
 
+  async function runQueueAction(action: () => void | Promise<void>): Promise<void> {
+    if (queueAction.current) return;
+    queueAction.current = true; setQueueActionPending(true); setQueueError(null);
+    try { await action(); }
+    catch (error) { setQueueError(describeError(error)); }
+    finally { queueAction.current = false; setQueueActionPending(false); }
+  }
+
   return (
     <PageFrame className="norea-tasks-page" size="wide">
       <PageHeader
@@ -1207,33 +1233,38 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
           <div className="norea-task-header-actions">
             <TaskSortMenu />
             <IconButton
-              active={snapshot.sourceQueuesPaused}
-              disabled={sourceTasks.length === 0}
+              active={allPaused}
+              disabled={queueActionPending || (!sourceTasks.length && !hasVpnRun && !requests.length)}
               label={
-                snapshot.sourceQueuesPaused
+                allPaused
                   ? t("tasks.resumeAll")
                   : t("tasks.pauseAll")
               }
-              onClick={() => {
-                if (snapshot.sourceQueuesPaused) {
+              onClick={() => runQueueAction(async () => {
+                if (allPaused) {
                   taskScheduler.resumeSourceQueue();
+                  if (hasVpnRun) await resumeVpnDownloadRun();
                 } else {
                   taskScheduler.pauseSourceQueue();
+                  if (hasVpnRun) await pauseVpnDownloadRun();
                 }
-              }}
+              })}
               size="lg"
             >
-              {snapshot.sourceQueuesPaused ? <PlayGlyph /> : <PauseGlyph />}
+              {allPaused ? <PlayGlyph /> : <PauseGlyph />}
             </IconButton>
             <IconButton
-              disabled={!hasCancellableTasks}
+              disabled={!hasCancellableTasks || queueActionPending}
               label={t("tasks.cancelAllCurrent")}
-              onClick={() => {
+              onClick={() => runQueueAction(async () => {
+                const cancellingVpn = hasVpnRun ? cancelVpnDownloadRun() : Promise.resolve();
+                for (const request of requests) cancelChapterDownloadRequest(request.id);
                 cancelChapterDownloadBatches(
                   activeChapterDownloadBatchIds(tasks),
                 );
                 taskScheduler.cancelActiveTasks({ discardQueued: true });
-              }}
+                await cancellingVpn;
+              })}
               size="lg"
               tone="danger"
             >
@@ -1277,11 +1308,28 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
         }
       />
 
-      {active ? <VpnDownloadPanel /> : null}
+      {queueError ? <Alert color="red" role="alert">{queueError}</Alert> : null}
 
-      {snapshot.sourceAccessBlocks.length > 0 ? (
+      {active ? <VpnDownloadPanel snapshot={vpn} /> : null}
+
+      {requests.length ? <section className="norea-download-requests" aria-label={t("tasks.downloadRequests")}>
+        {requests.map(request => <div className="norea-vpn-download-work" key={request.id} data-download-request={request.id}>
+          <Group justify="space-between" gap="sm" align="flex-start">
+            <div className="norea-vpn-download-heading">
+              <Text component="h3" size="sm" fw={600}>{request.title}</Text>
+              <Text size="sm" role="status">{t(request.phase === "failed" ? "vpnDownload.phase.failed" :
+                request.phase === "publishing" ? "tasks.downloadPublishing" : "vpnDownload.phase.preparing")}</Text>
+            </div>
+            <TextButton tone="danger" aria-label={t("tasks.cancelDownloadRequest", { title: request.title })}
+              onClick={() => cancelChapterDownloadRequest(request.id)}>{t("vpnDownload.cancelDraft")}</TextButton>
+          </Group>
+          {request.error ? <Alert color="red" role="alert">{request.error}</Alert> : null}
+        </div>)}
+      </section> : null}
+
+      {ordinaryBlocks.length > 0 ? (
         <div className="norea-source-access-banners">
-          {snapshot.sourceAccessBlocks.map((block) => (
+          {ordinaryBlocks.map((block) => (
             <SourceAccessBanner
               block={block}
               key={block.scopeKey}
@@ -1291,7 +1339,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
         </div>
       ) : null}
 
-      {tasks.length === 0 ? (
+      {tasks.length === 0 && !requests.length && !hasVpnRun && !vpn.drafts.length && !vpn.plans.length ? (
         <StateView
           color="blue"
           title={t("tasks.empty.title")}

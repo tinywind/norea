@@ -1,3 +1,39 @@
+.norea-vpn-download-queue {
+  border-bottom: 1px solid var(--norea-design-rule);
+  margin-bottom: 1rem;
+  min-width: 0;
+  padding: 1rem 0;
+}
+
+.norea-vpn-download-heading {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.norea-vpn-download-work {
+  border: 1px solid var(--norea-design-rule);
+  border-radius: 0.5rem;
+  min-width: 0;
+  padding: 0.75rem;
+}
+
+.norea-vpn-download-range {
+  border-top: 1px solid var(--norea-design-rule);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-top: 0.75rem;
+}
+
+.norea-vpn-download-progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.norea-download-requests {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
 .norea-task-page-title {
   align-items: center;
   display: inline-flex;

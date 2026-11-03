@@ -3,10 +3,17 @@ import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
+import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
+import type { ChapterDownloadRequestState } from "../lib/tasks/chapter-download-requests";
 
-const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined }));
-vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot }));
+const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined,
+  vpn: { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {}, ownedChapterIds: [] } as VpnDownloadRuntimeSnapshot,
+  requests: [] as ChapterDownloadRequestState[],
+}));
+vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, useVpnDownloadRuntimeSnapshot: () => state.vpn, useChapterDownloadRequestSnapshot: () => state.requests }));
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
+vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: vi.fn() }));
+vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn(), resumeVpnDownloadRun: vi.fn(), cancelVpnDownloadRun: vi.fn() }));
 vi.mock("../components/VpnDownloadPanel", () => ({ VpnDownloadPanel: () => null }));
 vi.mock("../lib/tasks/source-access-coordinator", () => ({
   applySourceAccessBrowserOutcome: vi.fn(), cancelSourceAccessWait: vi.fn(),
@@ -20,7 +27,7 @@ function chapter(id: number, novelId: number, status: TaskRecord["status"], queu
   return {
     id: String(id), lane: "source", kind: "chapter.download", priority: "background",
     title: `Chapter ${id}`, source: { id: "source", name: "Source" },
-    subject: { novelId, novelName: `Novel ${novelId}` }, status,
+    subject: { chapterId: id, novelId, novelName: `Novel ${novelId}` }, status,
     createdAt: id, canCancel: status === "queued" || status === "running", canRetry: false,
     ...(queueIndex === undefined ? {} : { queueIndex, queueSize: 4 }),
   };
@@ -36,6 +43,22 @@ function workTitles(records: TaskRecord[]): string[] {
 }
 
 describe("task work group order", () => {
+  it("omits VPN-owned chapter rows and their authentication banners from the ordinary queue", () => {
+    state.vpn.ownedChapterIds = [1];
+    const records = [chapter(1, 1, "queued", 0), { ...chapter(2, 2, "running", 1), vpnWorker: { rangeId: "range", slot: 9 as const, generation: 1 } }, chapter(3, 3, "queued", 2)];
+    expect(workTitles(records)).toEqual(["Novel 3"]);
+    state.vpn.ownedChapterIds = [];
+  });
+
+  it("shows a newly accepted request before chapter tasks or catalogs are ready", () => {
+    state.snapshot = new TaskScheduler().getSnapshot();
+    state.requests = [{ id: "request", title: "Newly requested work", novelIds: [42], total: null, phase: "preparing", error: null }];
+    const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+    expect($.text()).toContain("Newly requested work");
+    expect($('[data-download-request="request"]').text()).toContain("Preparing downloads");
+    expect($.text()).not.toContain("Nothing in the queue");
+    state.requests = [];
+  });
   it("shows mandatory CAPTCHA verification instead of a network retry", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [{
       challenge: { kind: "captcha", url: "https://source.test/chapter/16" },

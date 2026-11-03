@@ -1,68 +1,67 @@
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { VpnDownloadLaunchOptions } from "../lib/tasks/vpn-download-types";
 
-const state = vi.hoisted(() => ({
-  mode: "off", workerCount: 2, captchaPolicy: "pause", cloudflarePolicy: "pause",
-  setMode: vi.fn(), setWorkerCount: vi.fn(), setCaptchaPolicy: vi.fn(), setCloudflarePolicy: vi.fn(),
-}));
-vi.mock("../store/vpn-download", () => ({ useVpnDownloadStore: (select: (value: typeof state) => unknown) => select(state) }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../store/vpn-download", () => ({ useVpnDownloadStore: (select: (value: unknown) => unknown) => select({
+  mode: "parallel", workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile",
+  setMode: vi.fn(), setWorkerCount: vi.fn(), setCaptchaPolicy: vi.fn(), setCloudflarePolicy: vi.fn(),
+}) }));
 import { VpnDownloadSettings } from "./VpnDownloadSettings";
 
-interface Props { children?: ReactNode; "aria-label"?: string; value?: unknown; disabled?: boolean; max?: number; data?: { value: string; disabled?: boolean }[]; onChange?: (value: string | number) => void }
+interface Props {
+  children?: ReactNode;
+  "aria-label"?: string;
+  value?: unknown;
+  disabled?: boolean;
+  min?: number;
+  max?: number;
+  onChange?: (value: string | number | null) => void;
+}
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Props>;
   return [element, ...controls(element.props.children)];
 }
-const capabilities = { supported: true, parallelSupported: true, maxWorkers: 2 };
-const render = (caps = capabilities, hasPlans = false) => controls(VpnDownloadSettings({ capabilities: caps, hasPlans }));
-beforeEach(() => { vi.clearAllMocks(); state.mode = "off"; state.workerCount = 2; state.captchaPolicy = "pause"; state.cloudflarePolicy = "pause"; });
+const capabilities = { supported: true, parallelSupported: true, maxWorkers: 10 };
+const value: VpnDownloadLaunchOptions = { workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile" };
+const change = vi.fn();
+const render = (caps = capabilities, disabled = false) => controls(VpnDownloadSettings({ capabilities: caps, value, onChange: change, disabled }));
+const get = (view: ReactElement<Props>[], key: string) => view.find(element => element.props["aria-label"] === key)!;
+beforeEach(() => { vi.clearAllMocks(); });
 
-it("keeps separate policy defaults and routes explicit selections to the settings store", () => {
-  state.mode = "single";
+it("edits only the unsubmitted launch options and keeps the two challenge policies independent", () => {
   const view = render();
-  const get = (key: string) => view.find(element => element.props["aria-label"] === key)!;
-  expect(get("vpnDownload.captchaPolicy").props.value).toBe("pause");
-  expect(get("vpnDownload.cloudflarePolicy").props.value).toBe("pause");
-  get("vpnDownload.mode").props.onChange!("off");
-  get("vpnDownload.captchaPolicy").props.onChange!("nextProfile");
-  get("vpnDownload.cloudflarePolicy").props.onChange!("pause");
-  expect(state.setMode).toHaveBeenCalledWith("off");
-  expect(state.setCaptchaPolicy).toHaveBeenCalledWith("nextProfile");
-  expect(state.setCloudflarePolicy).toHaveBeenCalledWith("pause");
+  expect(get(view, "vpnDownload.captchaPolicy").props.value).toBe("nextProfile");
+  expect(get(view, "vpnDownload.cloudflarePolicy").props.value).toBe("nextProfile");
+  get(view, "vpnDownload.captchaPolicy").props.onChange!("pause");
+  expect(change).toHaveBeenLastCalledWith({ workerCount: 2, captchaPolicy: "pause", cloudflarePolicy: "nextProfile" });
+  get(view, "vpnDownload.cloudflarePolicy").props.onChange!("pause");
+  expect(change).toHaveBeenLastCalledWith({ workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "pause" });
+  expect(get(view, "vpnDownload.mode")).toBeUndefined();
 });
 
-it("only shows the bounded worker count in parallel mode and explains that active plans are frozen", () => {
-  expect(render().some(element => element.props["aria-label"] === "vpnDownload.workerCount")).toBe(false);
-  state.mode = "parallel";
+it.each([1, 3, 10])("accepts a global worker count of %s without profile or range inputs", count => {
+  const workers = get(render(), "vpnDownload.workerCount");
+  expect(workers.props.min).toBe(1);
+  expect(workers.props.max).toBe(10);
+  workers.props.onChange!(count);
+  expect(change).toHaveBeenCalledWith({ ...value, workerCount: count });
+});
+
+it.each([0, 11, 1.5, "", null])("does not submit an invalid worker count %s", count => {
+  get(render(), "vpnDownload.workerCount").props.onChange!(count);
+  expect(change).not.toHaveBeenCalled();
+});
+
+it("limits a single-worker device and guards callbacks while submission is pending", () => {
+  expect(get(render({ supported: true, parallelSupported: false, maxWorkers: 1 }), "vpnDownload.workerCount").props.max).toBe(1);
   const view = render(capabilities, true);
-  const workers = view.find(element => element.props["aria-label"] === "vpnDownload.workerCount")!;
-  expect(workers.props.max).toBe(2);
-  workers.props.onChange!(1);
-  expect(state.setWorkerCount).toHaveBeenCalledWith(1);
-  expect(view.some(element => element.props.children === "vpnDownload.newBatchesOnly")).toBe(true);
-});
-
-it("leaves Off available while disabling unsupported native choices and guarding their callbacks", () => {
-  const view = render({ supported: false, parallelSupported: false, maxWorkers: 0 });
-  const mode = view.find(element => element.props["aria-label"] === "vpnDownload.mode")!;
-  expect(mode.props.data).toEqual([
-    { value: "off", label: "vpnDownload.mode.off" },
-    { value: "single", label: "vpnDownload.mode.single", disabled: true },
-    { value: "parallel", label: "vpnDownload.mode.parallel", disabled: true },
-  ]);
-  mode.props.onChange!("parallel");
-  expect(state.setMode).not.toHaveBeenCalled();
-  mode.props.onChange!("off");
-  expect(state.setMode).toHaveBeenCalledWith("off");
-  expect(view.some(element => element.props.children === "vpnDownload.unsupported")).toBe(true);
-});
-
-it("disables only parallel mode when single-worker recovery is supported", () => {
-  const view = render({ supported: true, parallelSupported: false, maxWorkers: 1 });
-  const mode = view.find(element => element.props["aria-label"] === "vpnDownload.mode")!;
-  expect(mode.props.data?.find(option => option.value === "single")?.disabled).toBe(false);
-  expect(mode.props.data?.find(option => option.value === "parallel")?.disabled).toBe(true);
+  for (const key of ["vpnDownload.workerCount", "vpnDownload.captchaPolicy", "vpnDownload.cloudflarePolicy"]) {
+    expect(get(view, key).props.disabled).toBe(true);
+  }
+  get(view, "vpnDownload.workerCount").props.onChange!(3);
+  get(view, "vpnDownload.captchaPolicy").props.onChange!("pause");
+  expect(change).not.toHaveBeenCalled();
 });

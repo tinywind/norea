@@ -42,18 +42,21 @@ vi.mock("../../db/queries/chapter", async (importOriginal) => ({
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, listLibraryNovelIds: mocks.listIds, setNovelInLibrary: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownloadBatch: mocks.enqueue,
+  cancelChapterDownloadBatches: vi.fn(),
   isChapterDownloadQueued: (id: number) => mocks.queued.has(id),
 }));
 vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn() }));
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: {} }) } }));
 vi.mock("./use-library-download-availability", () => ({ useLibraryDownloadAvailability: mocks.availability }));
 import { useLibrarySelection } from "./use-library-selection";
+import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot } from "../../lib/tasks/chapter-download-requests";
 
 function chapter(id: number, overrides: Partial<LibraryDownloadChapter> = {}): LibraryDownloadChapter {
   return { id, position: id, path: `/chapter/${id}`, name: `Chapter ${id}`, isDownloaded: false, isDownloadQueued: false, ...overrides } as LibraryDownloadChapter;
 }
 
 beforeEach(() => {
+  for (const request of getChapterDownloadRequestSnapshot()) cancelChapterDownloadRequest(request.id);
   vi.clearAllMocks();
   mocks.mutations.length = 0;
   mocks.selected = new Set([1]);
@@ -61,6 +64,24 @@ beforeEach(() => {
   mocks.queued.clear();
   mocks.listChapters.mockReset().mockImplementation(async (id: number) => [chapter(id)]);
   mocks.getNovel.mockReset().mockImplementation(async (id: number) => ({ id, name: `Novel ${id}`, pluginId: "source", path: `/work/${id}`, isLocal: false }));
+});
+
+it("shows a pending library request before chapter selection finishes", async () => {
+  let release!: (chapters: LibraryDownloadChapter[]) => void;
+  mocks.listChapters.mockReturnValue(new Promise<LibraryDownloadChapter[]>(resolve => { release = resolve; }));
+  mocks.enqueue.mockReturnValue({ id: "held-library", materialized: Promise.resolve(), promise: Promise.resolve({ total: 1, succeeded: 1, failed: 0, cancelled: 0 }) });
+  useLibrarySelection({}, "nameAsc");
+  const pending = mocks.mutations[1]!.mutationFn("all");
+  try {
+    expect(getChapterDownloadRequestSnapshot()).toMatchObject([{ novelIds: [1], phase: "preparing", total: null }]);
+    await vi.waitFor(() => expect(mocks.listChapters).toHaveBeenCalled());
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  } finally {
+    await vi.waitFor(() => expect(mocks.listChapters).toHaveBeenCalled());
+    release([chapter(1)]);
+    await pending;
+  }
+  await vi.waitFor(() => expect(getChapterDownloadRequestSnapshot()).toEqual([]));
 });
 
 it("finishes preparation when jobs are queued and accepts another selection while downloads continue", async () => {

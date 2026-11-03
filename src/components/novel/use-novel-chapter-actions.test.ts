@@ -30,6 +30,7 @@ vi.mock("../../db/queries/chapter", () => ({
 vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadStateQueries: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownload: vi.fn(), enqueueChapterDownloadBatch: vi.fn(), enqueueChapterMediaRepair: vi.fn(),
+  cancelChapterDownloadBatches: vi.fn(),
 }));
 vi.mock("../../store/content-deletion", () => ({
   confirmContentDeletion: mocks.deleteCache,
@@ -38,11 +39,30 @@ vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty:
 
 import { useNovelChapterActions } from "./use-novel-chapter-actions";
 import { enqueueChapterDownload, enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
+import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot } from "../../lib/tasks/chapter-download-requests";
 import type { ChapterListRow } from "../../db/queries/chapter";
 
 beforeEach(() => {
+  for (const request of getChapterDownloadRequestSnapshot()) cancelChapterDownloadRequest(request.id);
   vi.clearAllMocks();
   mocks.mutations.length = 0;
+});
+
+it.each([false, true])("admits the chapter request before its queue is materialized (batch: %s)", async batch => {
+  let release!: () => void;
+  const materialized = new Promise<void>(resolve => { release = resolve; });
+  const handle = { id: "held-novel", materialized, promise: materialized.then(() => ({ total: 1, succeeded: 1, failed: 0, cancelled: 0 })) };
+  vi.mocked(enqueueChapterDownload).mockReturnValue(handle as never);
+  vi.mocked(enqueueChapterDownloadBatch).mockReturnValue(handle);
+  const chapter = { id: 7, name: "Opening", path: "/chapter/1", chapterNumber: "1", contentType: "html" } as ChapterListRow;
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, [chapter]);
+  if (batch) actions.downloadChapters([chapter]);
+  else actions.downloadChapter(chapter);
+  try {
+    expect(getChapterDownloadRequestSnapshot()).toMatchObject([{ novelIds: [3], total: 1, phase: "preparing" }]);
+  } finally { release(); }
+  await vi.waitFor(() => expect(getChapterDownloadRequestSnapshot()).toEqual([]));
+  expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([expect.objectContaining({ id: 7, novelId: 3 })]);
 });
 
 it.each([

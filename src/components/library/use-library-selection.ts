@@ -13,7 +13,8 @@ import {
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { showErrorToast } from "../../lib/runtime/error-toast";
-import { enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
+import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
+import { REQUEST_CANCELLED_ERROR, throwIfAborted } from "../../lib/abort";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
 import { useReaderStore } from "../../store/reader";
@@ -87,60 +88,51 @@ export function useLibrarySelection(
 
   const batchDownloadMutation = useMutation({
     mutationFn: async (mode: LibraryBatchDownloadMode) => {
-      const batchSources: Array<{
-        chapters: LibraryDownloadChapter[];
-        novel: Pick<LibraryNovel, "id" | "name" | "path" | "pluginId">;
-      }> = [];
+      const novelIds = [...selectedIds];
       const lastReadChapterByNovel =
         useReaderStore.getState().lastReadChapterByNovel;
-
-      for (const novelId of selectedIds) {
-        const novel = await getNovelById(novelId);
-        if (!novel || novel.isLocal) continue;
-
-        const chapters = await listLibraryDownloadChapters(novel.id);
-        const targetChapters = getLibraryBatchDownloadTargets(
-          mode,
-          chapters,
-          lastReadChapterByNovel[novel.id],
-        );
-
-        if (targetChapters.length > 0) {
-          batchSources.push({
-            chapters: targetChapters,
-            novel,
-          });
-        }
-      }
-
-      const chapterDownloadJobs = batchSources.flatMap(({ chapters, novel }) =>
-        getLibraryBatchDownloadTargets("all", chapters, undefined).map((chapter) => ({
-          id: chapter.id,
-          pluginId: novel.pluginId,
-          chapterPath: chapter.path,
-          chapterName: chapter.name,
-          chapterNumber: chapter.chapterNumber ?? undefined,
-          contentType: chapter.contentType,
-          novelId: novel.id,
-          novelName: novel.name,
-          novelPath: novel.path,
-          title: t("tasks.task.downloadChapter", { name: chapter.name }),
-        })),
-      );
-      const total = chapterDownloadJobs.length;
-      if (total === 0) return 0;
-
-      const handle = enqueueChapterDownloadBatch({
-        jobs: chapterDownloadJobs,
-        materializeAllTasks: true,
-        title: t("tasks.task.downloadChapterBatch", { count: total }),
-        total,
+      let total = 0;
+      const handle = submitChapterDownloadRequest({
+        key: JSON.stringify(["library", mode, [...novelIds].sort((left, right) => left - right), novelIds.map(novelId => lastReadChapterByNovel[novelId])]),
+        title: t("library.batchDownload.open"),
+        novelIds,
+        prepare: async signal => {
+          const batchSources: Array<{
+            chapters: LibraryDownloadChapter[];
+            novel: Pick<LibraryNovel, "id" | "name" | "path" | "pluginId">;
+          }> = [];
+          for (const novelId of novelIds) {
+            throwIfAborted(signal, REQUEST_CANCELLED_ERROR);
+            const novel = await getNovelById(novelId);
+            throwIfAborted(signal, REQUEST_CANCELLED_ERROR);
+            if (!novel || novel.isLocal) continue;
+            const chapters = await listLibraryDownloadChapters(novel.id);
+            throwIfAborted(signal, REQUEST_CANCELLED_ERROR);
+            const targetChapters = getLibraryBatchDownloadTargets(mode, chapters, lastReadChapterByNovel[novel.id]);
+            if (targetChapters.length > 0) batchSources.push({ chapters: targetChapters, novel });
+          }
+          const jobs = batchSources.flatMap(({ chapters, novel }) =>
+            getLibraryBatchDownloadTargets("all", chapters, undefined).map(chapter => ({
+              id: chapter.id,
+              pluginId: novel.pluginId,
+              chapterPath: chapter.path,
+              chapterName: chapter.name,
+              chapterNumber: chapter.chapterNumber ?? undefined,
+              contentType: chapter.contentType,
+              novelId: novel.id,
+              novelName: novel.name,
+              novelPath: novel.path,
+              title: t("tasks.task.downloadChapter", { name: chapter.name }),
+            })),
+          );
+          total = jobs.length;
+          return { jobs, materializeAllTasks: true, title: t("tasks.task.downloadChapterBatch", { count: total }), total };
+        },
       });
       void handle.promise
-        .finally(() =>
-          queryClient.invalidateQueries({ queryKey: ["novel", "library"] }),
-        )
+        .finally(() => total > 0 ? queryClient.invalidateQueries({ queryKey: ["novel", "library"] }) : undefined)
         .catch(() => undefined);
+      await handle.materialized;
       return total;
     },
     onSettled: () => {

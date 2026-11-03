@@ -9,10 +9,9 @@ import { useTranslation } from "../../i18n";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import {
-  enqueueChapterDownload,
-  enqueueChapterDownloadBatch,
   enqueueChapterMediaRepair,
 } from "../../lib/tasks/chapter-download";
+import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { chaptersKey } from "./novel-detail-model";
@@ -123,23 +122,10 @@ export function useNovelChapterActions(
   });
 
   function downloadChapter(chapter: ChapterListRow): void {
-    if (!novel) return;
-    void enqueueChapterDownload({
-      id: chapter.id,
-      pluginId: novel.pluginId,
-      chapterPath: chapter.path,
-      chapterName: chapter.name,
-      chapterNumber: chapter.chapterNumber ?? undefined,
-      contentType: chapter.contentType,
-      novelId: novel.id,
-      novelName: novel.name,
-      novelPath: novel.path,
-      priority: "user",
-      title: t("tasks.task.downloadChapter", { name: chapter.name }),
-    }).promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
+    downloadChapters([chapter], "user");
   }
 
-  function downloadChapters(chaptersToDownload: ChapterListRow[]): void {
+  function downloadChapters(chaptersToDownload: ChapterListRow[], priority?: "user"): void {
     if (!novel || chaptersToDownload.length === 0) return;
     const batchNovel = novel;
     const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
@@ -152,16 +138,16 @@ export function useNovelChapterActions(
       novelId: batchNovel.id,
       novelName: batchNovel.name,
       novelPath: batchNovel.path,
+      priority,
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
-
-    void enqueueChapterDownloadBatch({
-      jobs: chapterDownloadJobs,
-      materializeAllTasks: true,
-      title: t("tasks.task.downloadChapterBatch", {
-        count: chaptersToDownload.length,
-      }),
+    const title = t("tasks.task.downloadChapterBatch", { count: chaptersToDownload.length });
+    void submitChapterDownloadRequest({
+      key: JSON.stringify([batchNovel.pluginId, batchNovel.id, chapterDownloadJobs.map(job => job.id).sort((left, right) => left - right), priority]),
+      title,
+      novelIds: [batchNovel.id],
       total: chaptersToDownload.length,
+      prepare: async () => ({ jobs: chapterDownloadJobs, materializeAllTasks: true, title, total: chaptersToDownload.length }),
     }).promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
   }
 
