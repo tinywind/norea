@@ -52,12 +52,12 @@ function assertPlan(value: unknown): asserts value is VpnDownloadPlan {
     throw new Error("Invalid VPN download plan identity, policies or ranges.");
   }
   const rangeIds = new Set<string>();
-  const profiles = new Set<string>();
   const chapterIds = new Set<number>();
   let selectedCount = 0;
   for (const range of value.ranges) {
-    if (!isObject(range) || !isIdentity(range.id) || !isIdentity(range.profileId) ||
-      !isIdentity(range.profileHash) || !isCounter(range.checkpoint) ||
+    if (!isObject(range) || !isIdentity(range.id) ||
+      (range.profileId === null ? range.profileHash !== null : !isIdentity(range.profileId) || !isIdentity(range.profileHash)) ||
+      !isCounter(range.checkpoint) ||
       !isCounter(range.generation) || typeof range.userPaused !== "boolean" ||
       (range.pauseReason !== null && typeof range.pauseReason !== "string") ||
       typeof range.phase !== "string" || !["paused", "connecting", "running", "completed", "cancelled"].includes(range.phase) ||
@@ -72,12 +72,8 @@ function assertPlan(value: unknown): asserts value is VpnDownloadPlan {
       !Object.entries(range.consumedReallowRevisions).every(([id, revision]) => isIdentity(id) && isCounter(revision)))) {
       throw new Error("Invalid VPN download reallow revisions.");
     }
-    const reservesProfile = range.phase !== "completed" && range.phase !== "cancelled";
-    if (rangeIds.has(range.id) || (reservesProfile && profiles.has(range.profileId))) {
-      throw new Error("VPN download range IDs and unfinished profile assignments must be distinct.");
-    }
+    if (rangeIds.has(range.id)) throw new Error("VPN download range IDs must be distinct.");
     rangeIds.add(range.id);
-    if (reservesProfile) profiles.add(range.profileId);
     for (const id of range.chapterIds) {
       if (chapterIds.has(id)) throw new Error("VPN download ranges overlap or repeat a chapter.");
       chapterIds.add(id);

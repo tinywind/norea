@@ -95,7 +95,6 @@ let automaticStopEpoch = 0;
 let deviceRestore: symbol | undefined;
 let initialization: Promise<void> | undefined;
 let activeRun: ActiveRun | undefined;
-let profileRevision = 0;
 let snapshot: VpnDownloadRuntimeSnapshot = {
   drafts: [], plans: [], loading: true, error: null,
   capabilities: { supported: false, parallelSupported: false, maxWorkers: 0 }, chapterLabels: {},
@@ -150,7 +149,6 @@ async function disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void> {
   ]).then(() => {
     session.unregister?.();
     if (sessions.get(executor) === session) sessions.delete(executor);
-    profileRevision++;
     syncBatches();
     retryPendingDrafts();
   });
@@ -341,11 +339,9 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
       }
     });
     window.addEventListener(SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT, () => {
-      profileRevision++;
       if (!deviceRestore) { void coordinator.profilesChanged().catch(report); retryPendingDrafts(); }
     });
     window.addEventListener(PLUGIN_VPN_PROFILE_RELEASED_EVENT, () => {
-      profileRevision++;
       if (deviceRestore || activeRun?.status !== "running") return;
       void coordinator.profilesChanged().catch(report);
       retryPendingDrafts();
@@ -873,29 +869,22 @@ export async function startVpnDownloadDraft(draftId: string, assignments?: reado
   if (draft.work.userPaused) return;
   if (assignments) requireDraftStartSettings(assignments.length);
   const stopEpoch = automaticStopEpoch;
-  const eligibilityRevision = profileRevision;
   draft.starting = "profiles";
   try {
     await prepareDraft(draft);
     if (drafts.get(draftId) !== draft || draft.cancelling || draft.work.userPaused || stopEpoch !== automaticStopEpoch) return;
-    const profiles = (await availableProfiles()).filter(profile => !reservedProfiles.includes(profile.id));
-    if (drafts.get(draftId) !== draft || draft.cancelling || draft.work.userPaused || stopEpoch !== automaticStopEpoch || useVpnDownloadStore.getState().mode === "off") return;
+    if (useVpnDownloadStore.getState().mode === "off") return;
     const configured = useVpnDownloadStore.getState();
-    const count = Math.min(configured.mode === "single" ? 1 : configured.workerCount, snapshot.capabilities.maxWorkers, profiles.length, draft.jobs.length);
-    if (!assignments && count === 0) { draft.work = { ...draft.work, phase: "waiting-profile" }; publish(); return; }
+    // Ranges lease a server only when a worker takes them, so the range count no longer depends on the saved pool.
+    const count = Math.min(configured.mode === "single" ? 1 : configured.workerCount, snapshot.capabilities.maxWorkers, draft.jobs.length);
     const settings = requireDraftStartSettings(assignments?.length ?? count);
     draft.starting = "publishing";
-    const occupied = new Set([...sessions.values()].map(session => session.profileId));
-    for (const plan of coordinator.getPlans()) {
-      for (const range of plan.ranges) if (range.phase === "connecting" || range.phase === "running") occupied.add(range.attemptProfileId ?? range.profileId);
-    }
-    profiles.sort((left, right) => Number(occupied.has(left.id)) - Number(occupied.has(right.id)));
-    const ranges = planVpnDownloadRanges(draft.work.chapters, draft.work.selectedChapterIds, (assignments ? profiles : profiles.slice(0, count)).map(profile => profile.id), assignments);
+    const ranges = planVpnDownloadRanges(draft.work.chapters, draft.work.selectedChapterIds, count, assignments);
     const id = `vpn-plan-${crypto.randomUUID()}`;
     const batch = batches.get(draft.work.batchId)!;
     const plan: VpnDownloadPlan = { id, batchId: batch.runBatchId, pluginId: draft.work.pluginId, novelId: draft.work.novelId, title: draft.work.title,
       mode: settings.mode, policies: { captcha: activeRun?.options.captchaPolicy ?? settings.captchaPolicy, cloudflare: activeRun?.options.cloudflarePolicy ?? settings.cloudflarePolicy }, createdAt: Date.now(), revision: 0,
-      ranges: ranges.map((range, index) => ({ ...range, id: `${id}-${index}`, profileHash: profiles.find(profile => profile.id === range.profileId)!.hash,
+      ranges: ranges.map((range, index) => ({ ...range, id: `${id}-${index}`, profileId: null, profileHash: null,
         checkpoint: 0, phase: "paused", userPaused: false, pauseReason: null, attemptedProfileIds: [], attemptProfileId: null, generation: 0, challenge: null })),
     };
     const jobs = draft.jobs.map(job => ({ ...job, batchId: batch.runBatchId, vpnBatchId: batch.runBatchId, batchTitle: draft.work.title,
@@ -911,7 +900,6 @@ export async function startVpnDownloadDraft(draftId: string, assignments?: reado
     syncBatches();
   } finally {
     draft.starting = false;
-    if (profileRevision !== eligibilityRevision && drafts.get(draftId) === draft && !draft.cancelling) queueMicrotask(retryPendingDrafts);
   }
 }
 

@@ -477,13 +477,17 @@ it.each(["completed", "cancelled"] as const)("reuses a %s range's released profi
   expect((await getVpnDownloadRangeJobs("plan-1", "lane-b")).map(job => job.id)).toEqual([4, 12]);
 });
 
-it("still rejects duplicate profile assignments between unfinished ranges", async () => {
+it("treats range profiles as optional hints that unfinished ranges may share", async () => {
   await createVpnDownloadPlan(plan(), jobs());
   const value = plan();
   value.ranges[1]!.profileId = "profile-a";
+  value.ranges[1]!.profileHash = value.ranges[0]!.profileHash;
   value.ranges[1]!.generation += 1;
-  await expect(updateVpnDownloadPlan(value, 0)).rejects.toThrow(/distinct/i);
-  expect(await listVpnDownloadPlans()).toEqual([plan()]);
+  const shared = await updateVpnDownloadPlan(value, 0);
+  shared.ranges[0]!.profileId = null;
+  shared.ranges[0]!.profileHash = null;
+  await updateVpnDownloadPlan(shared, 1);
+  expect((await listVpnDownloadPlans())[0]!.ranges.map(range => range.profileId)).toEqual([null, "profile-a"]);
 });
 
 it("rolls back the checkpoint and recovery reset when deleting its queued job fails", async () => {
@@ -605,7 +609,8 @@ it.each([
   ["missing canonical hole", (value: VpnDownloadPlan) => { value.ranges[0]!.chapterIds = [31, 22]; }],
   ["reversed selected order", (value: VpnDownloadPlan) => { value.ranges[0]!.selectedChapterIds.reverse(); }],
   ["duplicate range", (value: VpnDownloadPlan) => { value.ranges[1]!.id = "lane-a"; }],
-  ["duplicate profile", (value: VpnDownloadPlan) => { value.ranges[1]!.profileId = "profile-a"; }],
+  ["profile hash without profile", (value: VpnDownloadPlan) => { value.ranges[1]!.profileId = null; }],
+  ["profile without hash", (value: VpnDownloadPlan) => { value.ranges[1]!.profileHash = null; }],
   ["wrong source", (value: VpnDownloadPlan) => { value.pluginId = "other-source"; }],
   ["non-string policy", (value: VpnDownloadPlan) => { value.policies.captcha = ["pause"] as never; }],
   ["non-string phase", (value: VpnDownloadPlan) => { value.ranges[0]!.phase = ["paused"] as never; }],

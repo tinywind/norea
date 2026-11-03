@@ -1,11 +1,13 @@
-import type { SavedVpnProfile } from "../plugin-vpn-profiles";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
 import type { SourceAccessBlock } from "./source-access-gate";
 import { isTaskUserCancelledError } from "./task-errors";
 import type { TaskHandle } from "./task-types";
-import type { VpnDownloadPlan, VpnDownloadProfileIssue, VpnDownloadProfileIssueCause, VpnDownloadProfileIssueInput, VpnDownloadRangeState, VpnDownloadWorkerRef } from "./vpn-download-types";
+import type {
+  VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileIssue, VpnDownloadProfileIssueCause,
+  VpnDownloadProfileIssueInput, VpnDownloadRangeState, VpnDownloadWorkerRef,
+} from "./vpn-download-types";
 import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
 
 export interface VpnDownloadNotice {
@@ -25,12 +27,12 @@ export interface VpnDownloadRuntime {
   settleChapter(planId: string, rangeId: string, chapterId: number, expectedGeneration: number): Promise<VpnDownloadPlan>;
   cancelRange(planId: string, rangeId: string): Promise<VpnDownloadPlan>;
   cancelPlan(planId: string): Promise<void>;
-  listProfiles(): Promise<readonly SavedVpnProfile[]>;
+  listProfiles(): Promise<readonly VpnDownloadProfile[]>;
   loadProfileIssues(batchId: string): Promise<VpnDownloadProfileIssue[]>;
   recordProfileIssue(input: VpnDownloadProfileIssueInput): Promise<VpnDownloadProfileIssue>;
   reallowProfile(batchId: string, ip: string, expectedRevision: number): Promise<VpnDownloadProfileIssue>;
   reservedProfileIds(): readonly string[];
-  connectWorker(worker: VpnDownloadWorkerRef, profile: SavedVpnProfile, signal: AbortSignal): Promise<"connected" | "authentication-required">;
+  connectWorker(worker: VpnDownloadWorkerRef, profile: VpnDownloadProfile, signal: AbortSignal): Promise<"connected" | "authentication-required">;
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
   showWorker(worker: VpnDownloadWorkerRef, url: string): Promise<void>;
   enqueueChapter(job: ChapterDownloadJob, worker: VpnDownloadWorkerRef, planId: string): TaskHandle<unknown>;
@@ -44,7 +46,7 @@ export interface VpnDownloadRuntime {
 interface WorkerLease {
   owner: RangeRuntime;
   ref: VpnDownloadWorkerRef;
-  profile: SavedVpnProfile;
+  profile: VpnDownloadProfile;
   abort: AbortController;
   connected: boolean;
   closing?: Promise<void>;
@@ -75,7 +77,10 @@ interface RangeRuntime {
   task?: EnrolledChapter;
   run?: { epoch: number };
   transition: Promise<void>;
+  /** Leased candidates this range waits for. */
   waitingProfiles?: string[];
+  /** Holds one dispatch budget unit between scheduling and slot allocation. */
+  dispatching?: boolean;
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -130,6 +135,9 @@ export class VpnDownloadCoordinator {
   private restoring = false;
   private automaticStopEpoch = 0;
   private workerLimit = 2;
+  private readonly connectedProfiles = new Map<string, number>();
+  private successSequence = 0;
+  private readonly failedProfiles = new Map<string, number>();
 
   constructor(private readonly runtime: VpnDownloadRuntime) {
     this.online = runtime.isOnline();
@@ -532,25 +540,48 @@ export class VpnDownloadCoordinator {
     this.scheduled = true;
     queueMicrotask(() => {
       this.scheduled = false;
-      for (const range of this.ranges.values()) {
+      const ranges = [...this.ranges.values()];
+      let budget = this.freeSlots() - ranges.filter(range => range.dispatching).length;
+      for (const range of this.dispatchOrder()) {
         if (!this.canWork(range, range.epoch) || range.run?.epoch === range.epoch) continue;
-        if (!range.worker && !this.availableSlot(range)) continue;
-        if (range.waitingProfiles?.every(id => this.profileReserved(range, id) || this.profileAssignedToSibling(range, id)) &&
-          !this.takesHeldAssignment(range, range.waitingProfiles)) continue;
+        if (!range.worker) {
+          if (range.waitingProfiles?.every(id => this.profileReserved(range, id))) continue;
+          if (budget <= 0 || !this.availableSlot(range)) continue;
+          budget--;
+          range.dispatching = true;
+        }
         const run = { epoch: range.epoch };
         range.run = run;
         void this.drive(range, run.epoch)
           .catch(error => this.fail(range, run.epoch, "runtime-error", error))
           .catch(error => this.notice(range, "runtime-error", error))
-          .finally(() => { if (range.run === run) { range.run = undefined; this.schedule(); } });
+          .finally(() => { range.dispatching = false; if (range.run === run) { range.run = undefined; this.schedule(); } });
       }
     });
   }
 
+  /** Stable priority: plan creation order, then range order inside the plan. */
+  private dispatchOrder(): RangeRuntime[] {
+    const plans = [...this.plans.values()].sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    return plans.flatMap(plan => plan.ranges.map(state => this.ranges.get(key(plan.id, state.id))).filter((range): range is RangeRuntime => range !== undefined));
+  }
+
+  private occupiedSlots(): number {
+    return this.slots.filter(Boolean).length;
+  }
+
+  private freeSlots(): number {
+    return Math.max(0, this.workerLimit - this.occupiedSlots());
+  }
+
+  private freeSlotIndex(): number {
+    return this.slots.findIndex(lease => !lease);
+  }
+
   private availableSlot(range: RangeRuntime): boolean {
     const cap = this.plans.get(range.planId)!.mode === "single" ? 1 : MAX_VPN_DOWNLOAD_WORKERS;
-    return this.slots.filter(Boolean).length < this.workerLimit &&
-      this.slots.filter(lease => lease?.owner.planId === range.planId).length < cap && this.slots.some(lease => !lease);
+    return this.occupiedSlots() < this.workerLimit &&
+      this.slots.filter(lease => lease?.owner.planId === range.planId).length < cap && this.freeSlotIndex() >= 0;
   }
 
   private workerAboveLimit(lease: WorkerLease): boolean {
@@ -567,31 +598,21 @@ export class VpnDownloadCoordinator {
       this.slots.some(lease => lease && lease.owner !== range && lease.profile.id === profileId);
   }
 
-  private profileAssignedToSibling(range: RangeRuntime, profileId: string): boolean {
-    return this.plans.get(range.planId)!.ranges.some(other => other.id !== range.rangeId && !terminal(other) &&
-      other.profileId === profileId && !this.canYieldProfile(range, other));
+  /** Recent successes first, then servers that have not failed this session, in pool order otherwise. */
+  private rankProfiles(profiles: readonly VpnDownloadProfile[]): VpnDownloadProfile[] {
+    return [...profiles].sort((left, right) =>
+      (this.connectedProfiles.get(right.id) ?? 0) - (this.connectedProfiles.get(left.id) ?? 0) ||
+      (this.failedProfiles.get(left.id) ?? 0) - (this.failedProfiles.get(right.id) ?? 0));
   }
 
-  private canYieldProfile(range: RangeRuntime, other: VpnDownloadRangeState): boolean {
-    const sibling = this.requireRange(range.planId, other.id);
-    return other.phase === "paused" && other.attemptProfileId === null && other.attemptedProfileIds.includes(other.profileId) &&
-      this.canWork(sibling, sibling.epoch) && !sibling.worker && !sibling.task;
-  }
-
-  private heldSiblingAssignment(range: RangeRuntime, profileId: string): VpnDownloadRangeState | undefined {
-    const plan = this.plans.get(range.planId)!;
-    return plan.ranges.find(other => {
-      if (other.id === range.rangeId || terminal(other) || other.profileId !== profileId || other.phase !== "paused") return false;
-      const sibling = this.requireRange(range.planId, other.id);
-      return !sibling.worker && !sibling.task && !sibling.manual && !this.canWork(sibling, sibling.epoch) &&
-        (!other.challenge || plan.policies[other.challenge.kind] === "nextProfile");
-    });
-  }
-
-  /** Held siblings keep idle assignments while a lease could still release a candidate; otherwise nothing would ever wake the waiter. */
-  private takesHeldAssignment(range: RangeRuntime, profileIds: readonly string[]): boolean {
-    return !profileIds.some(id => this.profileReserved(range, id) || !this.profileAssignedToSibling(range, id)) &&
-      profileIds.some(id => this.heldSiblingAssignment(range, id));
+  private recordProfileResult(profile: VpnDownloadProfile, connected: boolean): void {
+    if (connected) {
+      this.connectedProfiles.set(profile.id, ++this.successSequence);
+      this.failedProfiles.delete(profile.id);
+    } else {
+      this.connectedProfiles.delete(profile.id);
+      this.failedProfiles.set(profile.id, (this.failedProfiles.get(profile.id) ?? 0) + 1);
+    }
   }
 
   private loadProfileIssues(batchId: string): Promise<void> {
@@ -613,12 +634,12 @@ export class VpnDownloadCoordinator {
     return this.generationSeed;
   }
 
-  private profileExcluded(range: RangeRuntime, profile: SavedVpnProfile): boolean {
+  private profileExcluded(range: RangeRuntime, profile: VpnDownloadProfile): boolean {
     const batchId = this.plans.get(range.planId)!.batchId;
     return this.pendingExclusions.has(key(batchId, profile.ip)) || this.profileIssues.get(batchId)?.get(profile.ip)?.excluded === true;
   }
 
-  private profileEligibleForAttempt(range: RangeRuntime, profile: SavedVpnProfile): boolean {
+  private profileEligibleForAttempt(range: RangeRuntime, profile: VpnDownloadProfile): boolean {
     const plan = this.plans.get(range.planId)!;
     const state = this.state(range);
     const issue = this.profileIssues.get(plan.batchId)?.get(profile.ip);
@@ -722,6 +743,7 @@ export class VpnDownloadCoordinator {
         if (isTaskUserCancelledError(outcome.error)) await this.halt(range, "user-paused", true, true, false);
         else if (!this.runtime.isOnline()) await this.networkChanged(false);
         else if (isPluginVpnUnavailableError(outcome.error)) {
+          this.recordProfileResult(lease.profile, false);
           await this.excludeProfile(range, lease, "tunnel-lost");
           await this.updateRange(range, next => { addAttempt(next, lease.profile.id); next.attemptProfileId = null; next.phase = "paused"; }, epoch);
           await this.closeLease(lease);
@@ -766,48 +788,34 @@ export class VpnDownloadCoordinator {
       if (!this.runtime.isOnline()) { await this.networkChanged(false); return; }
       const state = this.state(range);
       const plan = this.plans.get(range.planId)!;
-      const excluded = profiles.some(profile => profile.id === state.profileId && this.profileExcluded(range, profile));
-      const missing = !profiles.some(profile => profile.id === state.profileId && profile.hash === state.profileHash);
-      const replaceable = !state.challenge || plan.policies[state.challenge.kind] === "nextProfile";
-      const nextProfile = missing || (excluded || state.attemptProfileId === null && state.attemptedProfileIds.includes(state.profileId)) && replaceable;
-      const eligible = profiles.filter(profile => this.profileEligibleForAttempt(range, profile));
-      const assignedProfile = profiles.filter(profile => profile.id === state.profileId && profile.hash === state.profileHash &&
-        !this.profileExcluded(range, profile) && (state.attemptProfileId === profile.id || this.profileEligibleForAttempt(range, profile)));
-      // An assignment leased by another plan's worker or the foreground VPN is busy, not fixed; idle eligible profiles serve instead.
-      const assignedBusy = replaceable && assignedProfile.some(profile => this.profileReserved(range, profile.id));
-      const candidates = nextProfile ? eligible
-        : assignedBusy ? [...assignedProfile, ...eligible.filter(profile => profile.id !== state.profileId)] : assignedProfile;
-      const takesHeld = this.takesHeldAssignment(range, candidates.map(profile => profile.id));
-      const selected = candidates.find(profile => !this.profileReserved(range, profile.id) && !this.profileAssignedToSibling(range, profile.id)) ??
-        (takesHeld ? candidates.find(profile => this.heldSiblingAssignment(range, profile.id)) : undefined) ?? candidates[0];
-      if (!selected) {
-        await this.fail(range, epoch, nextProfile || excluded ? "profiles-exhausted" : "profile-unavailable");
+      // A pause-policy challenge keeps the range on the server the user is asked to verify.
+      const pinned = state.challenge !== null && plan.policies[state.challenge.kind] === "pause" &&
+        profiles.some(profile => profile.id === state.profileId && profile.hash === state.profileHash);
+      const candidates = this.rankProfiles(profiles.filter(profile => this.profileEligibleForAttempt(range, profile) &&
+        (!pinned || profile.id === state.profileId && profile.hash === state.profileHash)));
+      if (!candidates.length) {
+        await this.fail(range, epoch, "profiles-exhausted");
         return;
       }
-      const candidate = clone(selected);
-      const heldOwner = takesHeld ? this.heldSiblingAssignment(range, candidate.id)?.id : undefined;
-      if (this.profileReserved(range, candidate.id) || (this.profileAssignedToSibling(range, candidate.id) && !heldOwner)) {
+      const selected = candidates.find(profile => !this.profileReserved(range, profile.id));
+      if (!selected) {
+        // Every eligible profile is leased; wait for a release.
         range.waitingProfiles = candidates.map(profile => profile.id);
-        await this.updateRange(range, next => { next.phase = "paused"; next.pauseReason = "profile-in-use"; }, epoch);
+        range.dispatching = false;
+        await this.updateRange(range, next => { next.phase = "paused"; next.pauseReason = null; }, epoch);
         return;
       }
       if (!this.availableSlot(range)) return;
       range.waitingProfiles = undefined;
-      const slot = this.slots.findIndex(lease => !lease);
+      const slot = this.freeSlotIndex();
       if (!isVpnDownloadWorkerSlot(slot)) return;
+      const candidate = clone(selected);
       const ref = Object.freeze({ rangeId: range.rangeId, slot, generation: ++this.generation });
       const lease: WorkerLease = { owner: range, ref, profile: clone(candidate), abort: new AbortController(), connected: false };
       range.worker = lease;
+      range.dispatching = false;
       this.slots[slot] = lease;
-      let assigned = false;
       await this.updateRange(range, (next, plan) => {
-        const sibling = plan.ranges.find(other => other.id !== range.rangeId && !terminal(other) && other.profileId === candidate.id);
-        if (sibling) {
-          if (!this.canYieldProfile(range, sibling) && !(sibling.id === heldOwner && this.heldSiblingAssignment(range, candidate.id))) return;
-          sibling.profileId = next.profileId;
-          sibling.profileHash = next.profileHash;
-          sibling.attemptProfileId = null;
-        }
         next.profileId = candidate.id;
         next.profileHash = candidate.hash;
         next.attemptProfileId = candidate.id;
@@ -815,10 +823,8 @@ export class VpnDownloadCoordinator {
         next.phase = "connecting";
         next.pauseReason = null;
         consumeReallow(next, candidate.id, this.profileIssues.get(plan.batchId)?.get(candidate.ip));
-        assigned = true;
       }, epoch);
       if (!this.owns(range, epoch, lease)) { await this.closeLease(lease); return; }
-      if (!assigned) { await this.closeLease(lease); continue; }
       if (this.workerAboveLimit(lease)) { await this.releaseWorkerForCapacity(range, epoch, lease); return; }
       let outcome: "connected" | "authentication-required";
       try {
@@ -833,6 +839,7 @@ export class VpnDownloadCoordinator {
           await this.fail(range, epoch, "runtime-error", error);
           return;
         }
+        this.recordProfileResult(candidate, false);
         await this.excludeProfile(range, lease, "connection-failed");
         await this.updateRange(range, next => {
           addAttempt(next, candidate.id);
@@ -855,6 +862,7 @@ export class VpnDownloadCoordinator {
         return;
       }
       lease.connected = true;
+      this.recordProfileResult(candidate, true);
       await this.updateRange(range, next => {
         next.phase = "running";
         next.pauseReason = null;

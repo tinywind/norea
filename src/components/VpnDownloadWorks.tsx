@@ -189,7 +189,7 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
       {work.handover.map(waiting => <Text key={waiting.id} size="sm" role="status" className="norea-vpn-download-range">{t("vpnDownload.phase.waitingHandover")}</Text>)}
       {work.drafts.map(draft => {
         const key = JSON.stringify(["draft", draft.id]);
-        const phaseKey: TranslationKey = !runEnabled || draft.userPaused ? "vpnDownload.phase.paused" : draft.phase === "waiting-profile" ? "vpnDownload.phase.waitingProfile" :
+        const phaseKey: TranslationKey = !runEnabled || draft.userPaused ? "vpnDownload.phase.paused" :
           draft.phase === "failed" ? "vpnDownload.phase.failed" : "vpnDownload.phase.preparing";
         return <Stack key={draft.id} gap="xs" className="norea-vpn-download-range">
           <Text size="sm" role="status">{t(phaseKey)}</Text>

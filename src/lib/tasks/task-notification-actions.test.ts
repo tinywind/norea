@@ -102,7 +102,7 @@ const owner: VpnDownloadRangeState = {
  generation:8,challenge:{kind:"captcha",url:"https://source.test/owned"},
 };
 const plan: VpnDownloadPlan = {id:"plan-a",batchId:"batch-a",pluginId:"source-a",novelId:1,title:"Work",mode:"single",policies:{captcha:"pause",cloudflare:"pause"},createdAt:1,revision:1,ranges:[owner]};
-const rangeAction = {type:"verifyVpnDownload" as const,planId:plan.id,sourceId:plan.pluginId,rangeId:owner.id,profileId:owner.profileId,generation:8,checkpoint:0};
+const rangeAction = {type:"verifyVpnDownload" as const,planId:plan.id,sourceId:plan.pluginId,rangeId:owner.id,profileId:owner.profileId!,generation:8,checkpoint:0};
 
 it("opens only the owning range after runtime and chapter queue restoration", async () => {
  let restore!:()=>void;

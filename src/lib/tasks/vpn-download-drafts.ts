@@ -10,7 +10,7 @@ export interface VpnDownloadDraftWork {
   chapters: readonly Pick<ChapterRow, "id" | "name" | "chapterNumber">[];
   selectedChapterIds: readonly number[];
   error: string | null;
-  phase?: "preparing" | "waiting-profile" | "paused" | "failed";
+  phase?: "preparing" | "paused" | "failed";
   userPaused?: boolean;
 }
 

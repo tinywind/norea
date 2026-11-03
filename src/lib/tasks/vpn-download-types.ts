@@ -1,3 +1,4 @@
+import type { SavedVpnProfile } from "../plugin-vpn-profiles";
 import type { SourceAccessChallenge } from "../plugins/types";
 import type { VpnDownloadRangePlan } from "./vpn-download-ranges";
 import type { vpnDownloadProfileIssueTable } from "../../db/schema";
@@ -31,6 +32,9 @@ export interface VpnDownloadRunSnapshot extends VpnDownloadLaunchOptions {
   closingWorkers: number;
 }
 
+/** A server a VPN download worker can lease. */
+export type VpnDownloadProfile = Pick<SavedVpnProfile, "id" | "ip" | "hash" | "protocol">;
+
 export interface VpnDownloadWorkerRef {
   rangeId: string;
   slot: VpnDownloadWorkerSlot;
@@ -39,7 +43,9 @@ export interface VpnDownloadWorkerRef {
 
 export interface VpnDownloadRangeState extends VpnDownloadRangePlan {
   id: string;
-  profileHash: string;
+  /** The profile this range leased last; a scheduling hint only, never a reservation. */
+  profileId: string | null;
+  profileHash: string | null;
   checkpoint: number;
   phase: "paused" | "connecting" | "running" | "completed" | "cancelled";
   userPaused: boolean;

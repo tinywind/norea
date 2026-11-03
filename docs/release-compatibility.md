@@ -57,8 +57,11 @@ requirements must be decided explicitly before implementation.
   scraper timeouts and the recognized browser tunnel-navigation failure consume a
   range attempt without creating a batch/IP exclusion. TLS certificate failures
   remain explicit stops.
-  Released automatic recovery ranges may exchange profile assignments atomically;
-  unfinished assignments stay distinct and explicit user holds are preserved.
+  A range's `profileId` and `profileHash` are a nullable pair that records the
+  profile it leased last. New plans start with both null; a worker leases any
+  eligible idle profile when it takes the range, so unfinished ranges may share a
+  recorded profile and an existing plan's assignment is only a preference.
+  Existing plans keep their checkpoints, attempts and queue rows unchanged.
   These fields do not change the SQL schema, backup tables or source plugin format.
 
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
