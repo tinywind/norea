@@ -21,6 +21,7 @@ import {
   type BackupManifest,
   type BackupNovel,
   type BackupNovelCategory,
+  type BackupNovelDownloadGoal,
   type BackupRepository,
   type BackupSetting,
   type BackupVpnGateServerVerdict,
@@ -195,6 +196,12 @@ const SELECT_VPN_GATE_SERVER_VERDICTS = `
   ORDER BY ip
 `;
 
+const SELECT_NOVEL_DOWNLOAD_GOALS = `
+  SELECT novel_id AS novelId, kind, count, updated_at AS updatedAt
+  FROM novel_download_goal
+  ORDER BY novel_id
+`;
+
 function browserLocalStorage(): Storage | null {
   try {
     return globalThis.localStorage ?? null;
@@ -335,6 +342,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
     repositories,
     installedPlugins,
     vpnGateServerVerdicts,
+    downloadGoals,
   ] =
     await Promise.all([
       db.select<RawNovelRow[]>(SELECT_NOVELS),
@@ -346,6 +354,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
       db.select<BackupVpnGateServerVerdict[]>(
         SELECT_VPN_GATE_SERVER_VERDICTS,
       ),
+      db.select<BackupNovelDownloadGoal[]>(SELECT_NOVEL_DOWNLOAD_GOALS),
     ]);
 
   return {
@@ -359,6 +368,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
     installedPlugins: installedPlugins.map(toInstalledPlugin),
     settings: readBackupSettings(),
     vpnGateServerVerdicts,
+    downloadGoals,
   };
 }
 

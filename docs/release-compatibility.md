@@ -78,6 +78,13 @@ requirements must be decided explicitly before implementation.
   scheduled retry time, so a restored snapshot never starts automatic downloads.
   Portable file backups exclude the table, and their restore drops it with the
   replaced chapter rows.
+- Database migration 5 adds `novel_download_goal`, one row per novel with its
+  persistent download goal: keep N chapters ahead (with `count`), all remaining
+  chapters, or the entire novel. It changes no existing table; queue rows,
+  failures, chapters and reading state upgrade unchanged. A row is removed with
+  its novel through the foreign key. Full device snapshots include the table
+  under the exact-schema policy. Goals are user intent, so portable file backups
+  carry them in manifest format 3.
 - Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
   beside the approved `saved-profiles/` vault, with their own index and private
   files. They never write or change an O/X verdict; an entry leaves the pool when
@@ -183,8 +190,9 @@ requirements must be decided explicitly before implementation.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.
-- Portable local file backups retain manifest format 2 and exclude device
-  authentication keys. Their restore behavior below is separate from full device
+- Portable local file backups use manifest format 3, which adds
+  `downloadGoals` to format 2. Format 2 and earlier archives are rejected without
+  conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
   snapshots stored on the content server.
 - Portable file backup restore preserves every existing storage file, including
   `novel.json`, covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies

@@ -96,6 +96,9 @@ const VALID_MANIFEST: BackupManifest = {
       updatedAt: 1_700_000_001,
     },
   ],
+  downloadGoals: [
+    { novelId: 1, kind: "keep_ahead", count: 3, updatedAt: 1_700_000_000 },
+  ],
 };
 
 describe("encodeBackupManifest + parseBackupManifest", () => {
@@ -190,7 +193,7 @@ describe("encodeBackupManifest + parseBackupManifest", () => {
     },
   );
 
-  it.each(["installedPlugins", "settings", "vpnGateServerVerdicts"])(
+  it.each(["installedPlugins", "settings", "vpnGateServerVerdicts", "downloadGoals"])(
     "rejects a manifest missing %s",
     (field) => {
       const manifest: Record<string, unknown> = { ...VALID_MANIFEST };
@@ -226,9 +229,9 @@ describe("parseBackupManifest error cases", () => {
     expect(() => parseBackupManifest("[]")).toThrow(BackupFormatError);
   });
 
-  it("rejects version 1 manifests written by earlier builds", () => {
-    const legacy = JSON.stringify({ ...VALID_MANIFEST, version: 1 });
-    expect(() => parseBackupManifest(legacy)).toThrow(/version 1/);
+  it.each([1, 2])("rejects version %i manifests written by earlier builds", (version) => {
+    const legacy = JSON.stringify({ ...VALID_MANIFEST, version });
+    expect(() => parseBackupManifest(legacy)).toThrow(new RegExp(`version ${version}`));
   });
 
   it("throws on a wrong version", () => {
@@ -327,6 +330,18 @@ describe("parseBackupManifest error cases", () => {
 
     expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
       /vpnGateServerVerdicts contains a malformed entry/,
+    );
+  });
+
+  it.each([
+    { novelId: 1, kind: "keep_ahead", count: null, updatedAt: 1 },
+    { novelId: 1, kind: "keep_ahead", count: 0, updatedAt: 1 },
+    { novelId: 1, kind: "entire", count: 3, updatedAt: 1 },
+    { novelId: 1, kind: "next10", count: null, updatedAt: 1 },
+    { novelId: "1", kind: "entire", count: null, updatedAt: 1 },
+  ])("throws on a malformed download goal %j", (goal) => {
+    expect(() => parseBackupManifest(JSON.stringify({ ...VALID_MANIFEST, downloadGoals: [goal] }))).toThrow(
+      /downloadGoals contains a malformed entry/,
     );
   });
 });

@@ -117,3 +117,27 @@ it("upgrades populated v3 storage to chapter download failure tracking without c
     expect(db.prepare("SELECT COUNT(*) AS count FROM chapter_download_failure").get()).toEqual({ count: 0 });
   } finally { db.close(); }
 });
+
+it("upgrades populated v4 storage to novel download goals without changing existing rows", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    applyRegisteredMigrations(db, 0, 4);
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='novel_download_goal'").all()).toEqual([]);
+    db.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',0);
+      INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40);
+      INSERT INTO chapter_download_queue VALUES(1,'{"id":1,"pluginId":"source","chapterPath":"/one","title":"One"}',10,20,NULL,0);
+      INSERT INTO chapter_download_failure VALUES(1,'source','transient','Timed out',NULL,1,30000,'{}',10)`);
+    const tables = ["novel", "chapter", "chapter_download_queue", "chapter_download_failure"];
+    const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+    applyRegisteredMigrations(db, 4);
+    expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    db.exec("INSERT INTO novel_download_goal VALUES(1,'keep_ahead',3,10),(2,'all_remaining',NULL,10)");
+    expect(() => db.exec("INSERT INTO novel_download_goal VALUES(1,'entire',NULL,10)")).toThrow();
+    expect(() => db.exec("UPDATE novel_download_goal SET count=0 WHERE novel_id=1")).toThrow();
+    expect(() => db.exec("UPDATE novel_download_goal SET count=4 WHERE novel_id=2")).toThrow();
+    expect(() => db.exec("UPDATE novel_download_goal SET kind='next10' WHERE novel_id=2")).toThrow();
+    db.exec("DELETE FROM novel WHERE id=2");
+    expect(db.prepare("SELECT novel_id AS novelId,kind,count FROM novel_download_goal").all())
+      .toEqual([{ novelId: 1, kind: "keep_ahead", count: 3 }]);
+  } finally { db.close(); }
+});

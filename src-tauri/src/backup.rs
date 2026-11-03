@@ -146,6 +146,34 @@ struct BackupRestoreManifest {
     repositories: Vec<BackupRestoreRepository>,
     installed_plugins: Vec<BackupRestoreInstalledPlugin>,
     vpn_gate_server_verdicts: Vec<BackupRestoreVpnGateServerVerdict>,
+    download_goals: Vec<BackupRestoreNovelDownloadGoal>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupRestoreNovelDownloadGoal {
+    novel_id: i64,
+    kind: BackupRestoreNovelDownloadGoalKind,
+    count: Option<i64>,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BackupRestoreNovelDownloadGoalKind {
+    KeepAhead,
+    AllRemaining,
+    Entire,
+}
+
+impl BackupRestoreNovelDownloadGoalKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepAhead => "keep_ahead",
+            Self::AllRemaining => "all_remaining",
+            Self::Entire => "entire",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -331,12 +359,35 @@ async fn restore_vpn_gate_server_verdicts(
     Ok(())
 }
 
+async fn restore_novel_download_goals(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    goals: &[BackupRestoreNovelDownloadGoal],
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM novel_download_goal")
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: delete novel_download_goal: {err}"))?;
+    for goal in goals {
+        sqlx::query(
+            "INSERT INTO novel_download_goal (novel_id, kind, count, updated_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(goal.novel_id)
+        .bind(goal.kind.as_str())
+        .bind(goal.count)
+        .bind(goal.updated_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: insert novel_download_goal: {err}"))?;
+    }
+    Ok(())
+}
+
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
     cache: &BackupRestoreCache,
 ) -> Result<(), String> {
-    if manifest.version != 2 {
+    if manifest.version != 3 {
         return Err(format!(
             "backup_restore_snapshot: unsupported backup version {}",
             manifest.version
@@ -521,6 +572,8 @@ async fn execute_restore_snapshot(
             .await
             .map_err(|err| format!("backup_restore_snapshot: insert novel_category: {err}"))?;
     }
+
+    restore_novel_download_goals(tx, &manifest.download_goals).await?;
 
     restore_metadata_cache(tx, cache).await
 }
@@ -944,8 +997,9 @@ mod tests {
     #[test]
     fn restore_manifest_rejects_an_unknown_vpn_gate_verdict() {
         let json = r#"{
-            "version": 2,
+            "version": 3,
             "installedPlugins": [],
+            "downloadGoals": [],
             "novels": [],
             "chapters": [],
             "categories": [],
@@ -1020,10 +1074,12 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("connect");
-        sqlx::raw_sql(include_str!("schema.sql"))
-            .execute(&pool)
-            .await
-            .expect("apply schema");
+        for migration in crate::database::schema_migrations() {
+            sqlx::raw_sql(migration.sql)
+                .execute(&pool)
+                .await
+                .expect("apply registered migrations");
+        }
         pool
     }
 
@@ -1076,11 +1132,11 @@ mod tests {
             chapter
         }).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 2,
+            "version": 3,
             "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
                 "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 }],
             "chapters": chapters, "categories": [], "novelCategories": [], "repositories": [],
-            "installedPlugins": [], "vpnGateServerVerdicts": []
+            "installedPlugins": [], "vpnGateServerVerdicts": [], "downloadGoals": []
         })).expect("parse exported manifest");
         let mut tx = pool.begin().await.expect("begin");
         execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default())
@@ -1098,9 +1154,10 @@ mod tests {
         let pool = restore_pool().await;
         let json = format!(
             r#"{{
-                "version": 2,
+                "version": 3,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
+                "downloadGoals": [],
                 "novels": [{{"id":1,"pluginId":"demo","path":"/n/1","name":"Novel","inLibrary":true,"isLocal":false,"createdAt":1,"updatedAt":1}}],
                 "chapters": [{}],
                 "categories": [],
@@ -1138,9 +1195,10 @@ mod tests {
         }
         let json = format!(
             r#"{{
-                "version": 2,
+                "version": 3,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
+                "downloadGoals": [],
                 "novels": [{{"id":1,"pluginId":"demo","path":"/n/1","name":"Novel","inLibrary":true,"isLocal":false,"createdAt":1,"updatedAt":1}}],
                 "chapters": [{}, {}],
                 "categories": [],
@@ -1204,8 +1262,8 @@ mod tests {
         sqlx::query("INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES('demo','/original',7)")
             .execute(&pool).await.expect("seed pending revision");
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 2, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
-            "repositories": [], "installedPlugins": [], "vpnGateServerVerdicts": []
+            "version": 3, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+            "repositories": [], "installedPlugins": [], "vpnGateServerVerdicts": [], "downloadGoals": []
         })).expect("parse manifest");
         let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
             "files": [{ "pluginId": "demo", "path": "/original", "novelId": 99,
@@ -1223,15 +1281,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_snapshot_replaces_download_goals_with_the_backup_intent() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql("INSERT INTO novel(id,plugin_id,path,name) VALUES(9,'demo','/old','Old');
+            INSERT INTO novel_download_goal VALUES(9,'entire',NULL,5);").execute(&pool).await.expect("seed current goal");
+        let novels: Vec<_> = [1, 2].into_iter().map(|id| serde_json::json!({ "id": id, "pluginId": "demo",
+            "path": format!("/n/{id}"), "name": "Novel", "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 })).collect();
+        let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
+            "version": 3,
+            "novels": novels,
+            "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "installedPlugins": [], "vpnGateServerVerdicts": [],
+            "downloadGoals": [{ "novelId": 1, "kind": "keep_ahead", "count": 3, "updatedAt": 10 },
+                { "novelId": 2, "kind": "all_remaining", "count": null, "updatedAt": 11 }]
+        })).expect("parse manifest");
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default()).await.expect("restore");
+        tx.commit().await.expect("commit");
+        assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>, i64)>("SELECT novel_id,kind,count,updated_at FROM novel_download_goal ORDER BY novel_id")
+            .fetch_all(&pool).await.expect("read goals"),
+            [(1, "keep_ahead".to_string(), Some(3), 10), (2, "all_remaining".to_string(), None, 11)]);
+
+        let invalid: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
+            "version": 3, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "installedPlugins": [], "vpnGateServerVerdicts": [],
+            "downloadGoals": [{ "novelId": 1, "kind": "keep_ahead", "count": null, "updatedAt": 10 }]
+        })).expect("parse manifest");
+        let mut tx = pool.begin().await.expect("begin");
+        assert!(execute_restore_snapshot(&mut tx, invalid, &BackupRestoreCache::default()).await.unwrap_err().contains("novel_download_goal"));
+        tx.rollback().await.expect("rollback");
+        assert!(serde_json::from_value::<BackupRestoreNovelDownloadGoal>(serde_json::json!({
+            "novelId": 1, "kind": "next10", "count": null, "updatedAt": 1 })).is_err());
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM novel_download_goal").fetch_one(&pool).await.expect("count"), 2);
+    }
+
+    #[tokio::test]
     async fn restore_snapshot_rejects_obsolete_formats_before_replacing_rows() {
         let pool = restore_pool().await;
         sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES (99, 'Keep', 1, 0)")
             .execute(&pool)
             .await
             .expect("seed category");
-        for (version, content) in [(1, None), (2, Some("<p>old body</p>"))] {
+        for (version, content) in [(1, None), (2, None), (3, Some("<p>old body</p>"))] {
             let json = format!(
-                r#"{{"version":{version},"novels":[],"chapters":[{}],"categories":[],"novelCategories":[],"repositories":[],"installedPlugins":[],"vpnGateServerVerdicts":[]}}"#,
+                r#"{{"version":{version},"novels":[],"chapters":[{}],"categories":[],"novelCategories":[],"repositories":[],"installedPlugins":[],"vpnGateServerVerdicts":[],"downloadGoals":[]}}"#,
                 restore_chapter_json(10, true, content),
             );
             let manifest = serde_json::from_str(&json).expect("parse obsolete manifest");
@@ -1278,7 +1371,7 @@ mod tests {
         let zip_path = dir.path().join("backup.zip");
         let zip_path_str = zip_path.to_string_lossy().to_string();
 
-        let manifest_json = r#"{"version":2,"exportedAt":1700000000}"#.to_string();
+        let manifest_json = r#"{"version":3,"exportedAt":1700000000}"#.to_string();
 
         write_backup_zip(&manifest_json, &zip_path_str).expect("pack");
 

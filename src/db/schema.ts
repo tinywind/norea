@@ -204,6 +204,22 @@ export const chapterDownloadFailureTable = sqliteTable("chapter_download_failure
   updatedAtCheck: check("chapter_download_failure_updated_at", sql`${t.updatedAt} >= 0`),
 }));
 
+export const NOVEL_DOWNLOAD_GOAL_KINDS = ["keep_ahead", "all_remaining", "entire"] as const;
+
+/** A novel's persistent download intent; `count` is set only for keep-ahead goals. */
+export const novelDownloadGoalTable = sqliteTable("novel_download_goal", {
+  novelId: integer("novel_id").primaryKey().notNull()
+    .references(() => novelTable.id, { onDelete: "cascade" }),
+  kind: text("kind", { enum: NOVEL_DOWNLOAD_GOAL_KINDS }).notNull(),
+  count: integer("count"),
+  updatedAt: integer("updated_at").notNull(),
+}, (t) => ({
+  kindCheck: check("novel_download_goal_kind", sql`${t.kind} IN ('keep_ahead', 'all_remaining', 'entire')`),
+  countCheck: check("novel_download_goal_count",
+    sql`(${t.kind} = 'keep_ahead' AND ${t.count} > 0) OR (${t.kind} <> 'keep_ahead' AND ${t.count} IS NULL)`),
+  updatedAtCheck: check("novel_download_goal_updated_at", sql`${t.updatedAt} >= 0`),
+}));
+
 export const vpnDownloadPlanTable = sqliteTable("vpn_download_plan", {
   id: text("id").primaryKey().notNull(),
   payload: text("payload").notNull(),

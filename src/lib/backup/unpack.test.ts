@@ -96,6 +96,7 @@ function makeLeanManifest(): BackupManifest {
     installedPlugins: [],
     settings: [],
     vpnGateServerVerdicts: [],
+    downloadGoals: [],
   };
 }
 

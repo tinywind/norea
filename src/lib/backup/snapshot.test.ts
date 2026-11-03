@@ -169,6 +169,7 @@ const VPN_GATE_SERVER_VERDICT = {
   verdict: "works",
   updatedAt: 1_700_000_000,
 };
+const DOWNLOAD_GOAL = { novelId: 1, kind: "keep_ahead", count: 3, updatedAt: 1_700_000_000 };
 
 function primeSelect(chapterRows: unknown[] = [RAW_CHAPTER]): void {
   mockSelect
@@ -178,7 +179,8 @@ function primeSelect(chapterRows: unknown[] = [RAW_CHAPTER]): void {
     .mockResolvedValueOnce([NOVEL_CATEGORY])
     .mockResolvedValueOnce([REPOSITORY])
     .mockResolvedValueOnce([INSTALLED_PLUGIN])
-    .mockResolvedValueOnce([VPN_GATE_SERVER_VERDICT]);
+    .mockResolvedValueOnce([VPN_GATE_SERVER_VERDICT])
+    .mockResolvedValueOnce([DOWNLOAD_GOAL]);
 }
 
 describe("gatherBackupSnapshot", () => {
@@ -201,6 +203,7 @@ describe("gatherBackupSnapshot", () => {
     expect(manifest.vpnGateServerVerdicts).toEqual([
       VPN_GATE_SERVER_VERDICT,
     ]);
+    expect(manifest.downloadGoals).toEqual([DOWNLOAD_GOAL]);
   });
 
   it("carries download metadata from the chapter row without reading storage", async () => {
@@ -231,7 +234,7 @@ describe("gatherBackupSnapshot", () => {
 
     const sqls = mockSelect.mock.calls.map((call) => call[0] as string);
     const chapterSql = sqls.find((sql) => /FROM chapter\b/m.test(sql));
-    expect(sqls).toHaveLength(7);
+    expect(sqls).toHaveLength(8);
     expect(sqls.some((s) => /FROM novel\b\s*$/m.test(s))).toBe(true);
     expect(sqls.some((s) => /FROM chapter\b/m.test(s))).toBe(true);
     expect(chapterSql).toContain("content_type   AS sourceContentType");
@@ -247,6 +250,7 @@ describe("gatherBackupSnapshot", () => {
     expect(
       sqls.some((s) => /FROM vpn_gate_server_verdict\b/m.test(s)),
     ).toBe(true);
+    expect(sqls.some((s) => /FROM novel_download_goal\b/m.test(s))).toBe(true);
   });
 
   it("survives round-trip through encode + parse", async () => {

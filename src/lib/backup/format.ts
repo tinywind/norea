@@ -14,7 +14,7 @@
 import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
 
-export const BACKUP_FORMAT_VERSION = 2 as const;
+export const BACKUP_FORMAT_VERSION = 3 as const;
 
 export interface BackupNovel {
   id: number;
@@ -108,6 +108,15 @@ export interface BackupVpnGateServerVerdict {
   updatedAt: number;
 }
 
+/** A novel's persistent download intent, keyed by the backup's novel ID. */
+export interface BackupNovelDownloadGoal {
+  novelId: number;
+  kind: "keep_ahead" | "all_remaining" | "entire";
+  /** Set only for keep-ahead goals. */
+  count: number | null;
+  updatedAt: number;
+}
+
 export interface BackupManifest {
   version: typeof BACKUP_FORMAT_VERSION;
   /** Unix-epoch seconds when the backup was created. */
@@ -121,6 +130,7 @@ export interface BackupManifest {
   installedPlugins: BackupInstalledPlugin[];
   settings: BackupSetting[];
   vpnGateServerVerdicts: BackupVpnGateServerVerdict[];
+  downloadGoals: BackupNovelDownloadGoal[];
 }
 
 export class BackupFormatError extends Error {
@@ -276,6 +286,20 @@ function isVpnGateServerVerdict(
   );
 }
 
+function isNovelDownloadGoal(value: unknown): value is BackupNovelDownloadGoal {
+  if (!isObject(value)) return false;
+  const keepAhead = value.kind === "keep_ahead";
+  return (
+    Number.isSafeInteger(value.novelId) &&
+    (keepAhead || value.kind === "all_remaining" || value.kind === "entire") &&
+    (keepAhead
+      ? Number.isSafeInteger(value.count) && (value.count as number) > 0
+      : value.count === null) &&
+    Number.isSafeInteger(value.updatedAt) &&
+    (value.updatedAt as number) >= 0
+  );
+}
+
 export function encodeBackupManifest(manifest: BackupManifest): string {
   return JSON.stringify(manifest);
 }
@@ -334,5 +358,6 @@ export function parseBackupManifest(json: string): BackupManifest {
       "vpnGateServerVerdicts",
       isVpnGateServerVerdict,
     ),
+    downloadGoals: asArray(parsed.downloadGoals, "downloadGoals", isNovelDownloadGoal),
   };
 }

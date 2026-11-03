@@ -91,6 +91,7 @@ function makeManifest(): BackupManifest {
     novelCategories: [{ id: 1, novelId: 1, categoryId: 1 }],
     repositories: [],
     vpnGateServerVerdicts: [],
+    downloadGoals: [],
     installedPlugins: [
       {
         id: "demo",
