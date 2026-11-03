@@ -1334,25 +1334,25 @@ function getReaderThemeLabel(
 function getTapActionBackground(action: ReaderTapAction): string {
   switch (action) {
     case "previous":
-      return "var(--mantine-color-blue-0)";
+      return "var(--norea-color-accent-soft)";
     case "next":
-      return "var(--mantine-color-teal-0)";
+      return "var(--norea-color-ok-soft)";
     case "menu":
-      return "var(--mantine-color-yellow-0)";
+      return "var(--norea-color-warn-soft)";
     case "none":
-      return "var(--mantine-color-gray-0)";
+      return "var(--norea-color-surface-raised)";
   }
 }
 
 function getTapActionColor(action: ReaderTapAction): string {
   switch (action) {
     case "previous":
-      return "var(--mantine-color-blue-9)";
+      return "var(--norea-color-on-accent-soft)";
     case "next":
-      return "var(--mantine-color-teal-9)";
+      return "var(--norea-color-on-ok-soft)";
     case "menu":
-      return "var(--mantine-color-yellow-9)";
+      return "var(--norea-color-on-warn-soft)";
     case "none":
-      return "var(--mantine-color-gray-7)";
+      return "var(--norea-color-ink-muted)";
   }
 }
