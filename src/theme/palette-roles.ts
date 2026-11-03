@@ -175,7 +175,7 @@ export function resolvePaletteRoles(
     onAccent: formatRgb(onAccent),
     accentSoft: formatRgb(accentSoft),
     onAccentSoft: formatRgb(
-      ensureContrast(accent, [accentSoft], TEXT_CONTRAST, ink),
+      ensureContrast(accent, [accentSoft, surfaceRaised], TEXT_CONTRAST, ink),
     ),
     danger: statusRole(danger, surface, ink, scheme),
     warn: statusRole(fixedHue("warn"), surface, ink, scheme),

@@ -176,20 +176,13 @@ function ConsoleCoverFallback({ title }: { title: string }) {
 
 function createCoverFallbackStyle(title: string): CSSProperties {
   const hash = hashTitle(title.trim() || "Untitled");
-  const hueA = hash % 360;
-  const hueB = (hueA + 48 + ((hash >>> 8) % 96)) % 360;
-  const stripeAngles = [0, 24, 45, 60, 90, 120, 135, 156];
-  const stripeAngle = stripeAngles[(hash >>> 16) % stripeAngles.length] ?? 45;
-  const stripeGap = 16 + ((hash >>> 20) % 12);
-  const stripeWidth = 5 + ((hash >>> 24) % 4);
+  const gradientAngles = [120, 135, 150, 165, 180, 195, 210, 225];
+  const gradientAngle = gradientAngles[hash % gradientAngles.length] ?? 150;
+  const accentStop = ((hash >>> 8) % 4) * 10;
 
   return {
-    "--norea-console-cover-bg-a": `hsl(${hueA}, 52%, 32%)`,
-    "--norea-console-cover-bg-b": `hsl(${hueB}, 48%, 20%)`,
-    "--norea-console-cover-glow": `hsla(${(hueA + 26) % 360}, 70%, 72%, 0.42)`,
-    "--norea-console-cover-stripe-angle": `${stripeAngle}deg`,
-    "--norea-console-cover-stripe-gap": pxToRem(stripeGap),
-    "--norea-console-cover-stripe-width": pxToRem(stripeWidth),
+    "--norea-console-cover-angle": `${gradientAngle}deg`,
+    "--norea-console-cover-accent-stop": `${accentStop}%`,
   } as CSSProperties;
 }
 

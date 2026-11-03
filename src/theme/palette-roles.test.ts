@@ -81,12 +81,9 @@ describe("resolvePaletteRoles contrast gate", () => {
 
   it.each(ALL_CASES)("$label keeps accent foregrounds readable", ({ roles }) => {
     expectContrast(roles.onAccent, roles.accent, TEXT_CONTRAST, "on-accent");
-    expectContrast(
-      roles.onAccentSoft,
-      roles.accentSoft,
-      TEXT_CONTRAST,
-      "on-accent-soft",
-    );
+    for (const background of [roles.accentSoft, roles.surfaceRaised]) {
+      expectContrast(roles.onAccentSoft, background, TEXT_CONTRAST, "on-accent-soft");
+    }
   });
 
   it.each(ALL_CASES)("$label keeps inverse surface text readable", ({ roles }) => {
