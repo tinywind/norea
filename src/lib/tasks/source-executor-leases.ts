@@ -16,6 +16,7 @@ export class SourceExecutorLeases {
   private readonly activeTaskIdsBySource = new Map<string, Set<string>>();
   private readonly poolTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
   private readonly searchTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
+  private readonly serverTaskIdsByExecutor = new Map<ScraperExecutorId, string>();
   private readonly executorBySource = new Map<string, ScraperExecutorId>();
   private immediateTaskId: string | null = null;
   private backgroundCount = 0;
@@ -35,7 +36,8 @@ export class SourceExecutorLeases {
   }
 
   get hasActiveExecutor(): boolean {
-    return this.immediateTaskId !== null || this.poolTaskIdsByExecutor.size > 0 || this.searchTaskIdsByExecutor.size > 0;
+    return this.immediateTaskId !== null || this.poolTaskIdsByExecutor.size > 0 ||
+      this.searchTaskIdsByExecutor.size > 0 || this.serverTaskIdsByExecutor.size > 0;
   }
 
   activeTaskIds(sourceId: string): ReadonlySet<string> | undefined {
@@ -63,6 +65,15 @@ export class SourceExecutorLeases {
     for (let index = 0; index < 3; index += 1) {
       const executorId: ScraperExecutorId = `search:${index}`;
       if (!this.searchTaskIdsByExecutor.has(executorId)) ids.push(executorId);
+    }
+    return ids;
+  }
+
+  freeServerExecutorIds(concurrency: number): ScraperExecutorId[] {
+    const ids: ScraperExecutorId[] = [];
+    for (let index = 0; index < concurrency; index += 1) {
+      const executorId: ScraperExecutorId = `server:${index}`;
+      if (!this.serverTaskIdsByExecutor.has(executorId)) ids.push(executorId);
     }
     return ids;
   }
@@ -104,6 +115,8 @@ export class SourceExecutorLeases {
       this.immediateTaskId = taskId;
     } else if (lease.executorId.startsWith("search:")) {
       this.searchTaskIdsByExecutor.set(lease.executorId, taskId);
+    } else if (lease.executorId.startsWith("server:")) {
+      this.serverTaskIdsByExecutor.set(lease.executorId, taskId);
     } else {
       this.poolTaskIdsByExecutor.set(lease.executorId, taskId);
     }
@@ -124,6 +137,8 @@ export class SourceExecutorLeases {
       if (this.immediateTaskId === taskId) this.immediateTaskId = null;
     } else if (this.searchTaskIdsByExecutor.get(lease.executorId) === taskId) {
       this.searchTaskIdsByExecutor.delete(lease.executorId);
+    } else if (this.serverTaskIdsByExecutor.get(lease.executorId) === taskId) {
+      this.serverTaskIdsByExecutor.delete(lease.executorId);
     } else if (this.poolTaskIdsByExecutor.get(lease.executorId) === taskId) {
       this.poolTaskIdsByExecutor.delete(lease.executorId);
     }

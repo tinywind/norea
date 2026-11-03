@@ -61,6 +61,7 @@ export async function tryDownloadServerChapter(
   job: Pick<ChapterDownloadJob, "id" | "novelId" | "pluginId" | "chapterPath">,
   signal?: AbortSignal,
   onPhase?: (phase: ChapterDownloadPhase) => void,
+  options: { requireComplete?: boolean } = {},
 ): Promise<boolean> {
   signal?.throwIfAborted();
   const chapter = await getChapterById(job.id);
@@ -102,6 +103,8 @@ export async function tryDownloadServerChapter(
     if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
       throw new Error("Content server download identity does not match the requested chapter.");
     }
+    // A listing can be stale; the server lane takes only a copy that is complete now.
+    if (options.requireComplete && !entry.complete && !serverRequired) return false;
     signal?.throwIfAborted();
     const { downloadServerChapterFromServer } = await import("./sync");
     signal?.throwIfAborted();

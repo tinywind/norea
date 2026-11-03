@@ -10,6 +10,7 @@ import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { useReaderStore } from "../../store/reader";
+import { planServerLaneJobs } from "../content-sync/server-lane";
 import { useNetworkStore } from "../network";
 import { pluginManager } from "../plugins/manager";
 import {
@@ -43,13 +44,6 @@ export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * 24 * 60 * 60;
 const RECONCILE_DELAY_MS = 500;
 const PAUSED_RECHECK_MS = 60_000;
 
-/** Prepares extra routing for a goal's chapters before they are queued, such as the content-server lane. */
-export type GoalJobPlanner = (
-  novel: DownloadGoalNovel,
-  jobs: ChapterDownloadJob[],
-  signal: AbortSignal,
-) => Promise<ChapterDownloadJob[]>;
-
 interface DownloadGoalPauseState {
   pause: DownloadGoalPause | null;
 }
@@ -61,7 +55,6 @@ let pendingNovelIds: Set<number> | "all" | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pausedRecheck: ReturnType<typeof setTimeout> | null = null;
 let running: Promise<void> = Promise.resolve();
-let planner: GoalJobPlanner = async (_novel, jobs) => jobs;
 const pauseListeners = new Set<() => void>();
 /** Chapters the user deleted or cancelled while a goal covered them; kept out of goal work until restart. */
 const excludedChapterIds = new Set<number>();
@@ -86,10 +79,6 @@ export function getDownloadGoalPauseSnapshot(): DownloadGoalPauseState {
 export function subscribeDownloadGoalPause(listener: () => void): () => void {
   pauseListeners.add(listener);
   return () => { pauseListeners.delete(listener); };
-}
-
-export function setDownloadGoalJobPlanner(next: GoalJobPlanner): void {
-  planner = next;
 }
 
 /** Schedules a reconcile for some novels, or for every goal novel when ids are omitted. */
@@ -210,7 +199,8 @@ function submitGoalWork(
     novelIds: [novel.id],
     total: jobs.length,
     prepare: async (signal) => {
-      const planned = await planner(novel, jobs, signal);
+      // Chapters the content server holds take the server lane; the rest keep their source route.
+      const planned = await planServerLaneJobs(novel, jobs, signal);
       return { jobs: planned, title, total: planned.length };
     },
   });
@@ -353,6 +343,5 @@ export function resetDownloadGoalsForTests(): void {
   timer = null; pausedRecheck = null; pendingNovelIds = null;
   started = false; allowedOnce = false; pauseState = { pause: null };
   running = Promise.resolve();
-  planner = async (_novel, jobs) => jobs;
   excludedChapterIds.clear(); submittedByNovel.clear(); preparingChapterIds.clear(); preparingRequestsByNovel.clear();
 }

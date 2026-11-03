@@ -121,10 +121,16 @@ interface TaskEntry {
   sourceAccessPauseRequested?: boolean;
   sourceAccessStarted?: boolean;
   sourceAccessVerificationRevision?: number;
+  /** Set once the server lane handed the task to its source route. */
+  serverLaneDone?: boolean;
   spec: TaskSpec<unknown>;
 }
 
 const DEFAULT_SOURCE_FOREGROUND_CONCURRENCY = 3;
+/** Concurrent app-owned transfers from the user's content server. */
+export const SERVER_LANE_CONCURRENCY = 3;
+/** Every server-lane lease shares this key, so it never occupies a source's serial slot. */
+const SERVER_LANE_LEASE_KEY = "content-server-lane";
 
 export const TASK_PAUSE_ABORT_MESSAGE = "Task was paused.";
 
@@ -1677,7 +1683,21 @@ export class TaskScheduler {
     this.drainImmediateExecutor();
     this.drainSearchExecutors();
     this.drainVpnWorkers();
+    this.drainServerLane();
     this.drainSourcePool();
+  }
+
+  private awaitsServerLane(entry: TaskEntry): boolean {
+    return entry.spec.serverLane === true && entry.serverLaneDone !== true && !entry.spec.vpnWorker &&
+      entry.sourceAccessVerificationRevision === undefined;
+  }
+
+  private drainServerLane(): void {
+    for (const executorId of this.sourceExecutors.freeServerExecutorIds(SERVER_LANE_CONCURRENCY)) {
+      const next = this.pickSourceTask((entry) => this.awaitsServerLane(entry), { allowActiveSource: true });
+      if (!next) return;
+      this.startSource(next, executorId);
+    }
   }
 
   private drainMain(): void {
@@ -1815,7 +1835,7 @@ export class TaskScheduler {
         const next =
           immediateInteraction ??
           this.pickSourceTaskFromQueue(sourceId, (entry) => {
-            if (entry.spec.vpnWorker) return false;
+            if (entry.spec.vpnWorker || this.awaitsServerLane(entry)) return false;
             if (shouldUseImmediateExecutor(entry) || usesSearchExecutor(entry)) return false;
             if (!this.canUseExecutorForSource(entry, executorId)) return false;
             if (
@@ -1861,11 +1881,13 @@ export class TaskScheduler {
 
   private startSource(entry: TaskEntry, executorId: ScraperExecutorId): void {
     // Keep the slot while running so pauses, retries, and local checks preserve manual order.
-    const sourceId = entry.spec.vpnWorker?.rangeId ?? entry.record.source!.id;
+    const sourceId = executorId.startsWith("server:")
+      ? SERVER_LANE_LEASE_KEY
+      : entry.spec.vpnWorker?.rangeId ?? entry.record.source!.id;
     this.sourceExecutors.acquire(entry.record.id, {
       sourceId,
       executorId,
-      background: !entry.spec.vpnWorker && isBackgroundPriority(entry.record.priority),
+      background: !entry.spec.vpnWorker && !executorId.startsWith("server:") && isBackgroundPriority(entry.record.priority),
     });
     entry.sourceExecutorId = executorId;
     entry.activeReleased = false;
@@ -2028,6 +2050,12 @@ export class TaskScheduler {
   }
 
   private tryStartSourceAccess(entry: TaskEntry): boolean {
+    if (entry.sourceExecutorId?.startsWith("server:")) {
+      // The server lane never reaches the source; the same task continues on its source route.
+      entry.serverLaneDone = true;
+      entry.sourceAccessDeferred = true;
+      return false;
+    }
     if (
       entry.record.status !== "running" ||
       entry.controller.signal.aborted ||
@@ -2296,6 +2324,8 @@ export class TaskScheduler {
     if (!executorId) {
       return Promise.reject(new Error("Source task is missing a scraper executor."));
     }
+    // Server-lane transfers are app-owned HTTP, so they must not claim the source's scraper route.
+    if (executorId.startsWith("server:")) return entry.spec.run(context);
 
     return runWithScraperExecutor(
       entry.record.source.id,

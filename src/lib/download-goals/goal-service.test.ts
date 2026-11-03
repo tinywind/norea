@@ -27,6 +27,9 @@ vi.mock("../../store/reader", async () => {
   const { create: createStore } = await import("zustand");
   return { useReaderStore: createStore(() => ({ lastReadChapterByNovel: {} as Record<number, number> })) };
 });
+vi.mock("../content-sync/server-lane", () => ({
+  planServerLaneJobs: async (_novel: unknown, jobs: unknown[]) => jobs,
+}));
 vi.mock("../network", async () => {
   const { create: createStore } = await import("zustand");
   return { useNetworkStore: createStore(() => ({ revision: 0 })) };
@@ -55,7 +58,9 @@ vi.mock("../tasks/chapter-download-failures", () => ({
   subscribeChapterDownloadFailures: () => () => undefined,
 }));
 vi.mock("../tasks/scheduler", () => ({
-  taskScheduler: { setAutomaticWorkPaused: vi.fn(), getSnapshot: () => ({ records: mocks.records }) },
+  taskScheduler: {
+    setAutomaticWorkPaused: vi.fn(), getSnapshot: () => ({ records: mocks.records }), subscribeEvents: () => () => undefined,
+  },
 }));
 vi.mock("../updates/update-index-events", () => ({ subscribeUpdatesIndexChanges: () => () => undefined }));
 vi.mock("./budget", async (importOriginal) => ({

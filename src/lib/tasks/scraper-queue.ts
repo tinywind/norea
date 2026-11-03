@@ -1,6 +1,7 @@
 import type { VpnDownloadWorkerSlot } from "./vpn-download-types";
 
-export type ScraperExecutorId = "immediate" | `pool:${number}` | `search:${number}` | `vpn:${VpnDownloadWorkerSlot}:${number}`;
+/** `server:N` runs app-owned content-server transfers and never hosts a WebView or plugin fetch. */
+export type ScraperExecutorId = "immediate" | `pool:${number}` | `search:${number}` | `server:${number}` | `vpn:${VpnDownloadWorkerSlot}:${number}`;
 
 const DEFAULT_SCRAPER_EXECUTOR: ScraperExecutorId = "immediate";
 

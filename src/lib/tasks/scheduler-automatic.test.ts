@@ -44,3 +44,34 @@ it("treats a goal chapter as explicit once the user asks for it", async () => {
   expect(run).toHaveBeenCalledOnce();
   expect(scheduler.getTask(handle.id)?.automatic).toBeUndefined();
 });
+
+it("runs server-lane chapters beside the source's serial work and hands a miss to the same task's source route", async () => {
+  const executors: string[] = [];
+  let finishSource!: () => void;
+  scheduler.enqueueSource(spec(({ executor }) => {
+    executors.push(`source:${executor}`);
+    return new Promise<void>((resolve) => { finishSource = resolve; });
+  }, "busy-source"));
+  await settle();
+  let attempts = 0;
+  const handle = scheduler.enqueueSource({
+    ...spec(async ({ executor, tryStartSourceAccess }) => {
+      attempts += 1;
+      executors.push(`lane:${executor}`);
+      if (executor?.startsWith("server:") && !tryStartSourceAccess!()) return;
+    }, "server-copy"),
+    canCompleteWithoutSourceAccess: true,
+    serverLane: true,
+  });
+  await settle();
+
+  expect(executors).toEqual(["source:pool:0", "lane:server:0"]);
+  expect(scheduler.getTask(handle.id)?.status).toBe("queued");
+
+  finishSource();
+  await settle();
+  await settle();
+  expect(executors).toEqual(["source:pool:0", "lane:server:0", "lane:pool:0"]);
+  expect(attempts).toBe(2);
+  await expect(handle.promise).resolves.toBeUndefined();
+});

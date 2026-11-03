@@ -86,6 +86,9 @@ requirements must be decided explicitly before implementation.
   novel's downloads stay. Ordinary queue rows submitted by a goal carry an
   optional `goal: true` in their job JSON so restored goal work still waits for
   the automatic-download budgets; rows without it are explicit work, as before.
+  A goal job may also carry `serverLane: true` when the content server listed a
+  complete copy; it is only a routing hint that is checked again at transfer
+  time, so restored rows with a stale hint still fall back to the source.
   A device restore sets the `download-goals-held-after-restore`
   localStorage entry, so restored goals queue nothing until the user resumes them
   from Needs attention. Full device snapshots include the table

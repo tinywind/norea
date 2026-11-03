@@ -114,6 +114,8 @@ export interface ChapterDownloadJob {
   retryAt?: number;
   /** Submitted by a download goal; waits while automatic downloads are paused. */
   goal?: true;
+  /** The content server listed a complete copy; try the server lane before the source. */
+  serverLane?: true;
   title: string;
 }
 
@@ -636,6 +638,7 @@ function normalizeQueuedChapterDownloadJob(
     priority: "background",
     ...(readPositiveIntegerField(record, "retryAt") ? { retryAt: readPositiveIntegerField(record, "retryAt") } : {}),
     ...(record.goal === true ? { goal: true as const } : {}),
+    ...(record.serverLane === true ? { serverLane: true as const } : {}),
     title,
   };
 }
@@ -1144,6 +1147,7 @@ function enqueueChapterDownloadForExecutor(
     } : {}),
     priority: job.priority ?? "background",
     ...(job.goal && !options.vpnWorker ? { automatic: true } : {}),
+    ...(job.serverLane && !options.vpnWorker ? { serverLane: true } : {}),
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
     ...(options.vpnWorker ? { vpnWorker: options.vpnWorker } : {}),
@@ -1232,7 +1236,10 @@ function enqueueChapterDownloadForExecutor(
           return;
         }
         let sourceJob = chapterDownloadSourceJob(job, chapter.path);
-        if (!(options.vpnWorker && sourceAccessVerification) && await tryDownloadServerChapter(sourceJob, signal, setChapterDownloadPhase)) {
+        // On the server lane only a complete copy counts; anything else continues on the source route as before.
+        const serverLane = executor?.startsWith("server:") === true;
+        if (!(options.vpnWorker && sourceAccessVerification) &&
+            await tryDownloadServerChapter(sourceJob, signal, setChapterDownloadPhase, { requireComplete: serverLane })) {
           if (signal.aborted) throw abortReason(signal);
           await completeJob();
           reportProgress(

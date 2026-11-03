@@ -57,6 +57,17 @@ it("checks the configured server before downloading an ordinary plugin chapter",
   expect(cache.size).toBe(0);
 });
 
+it("rechecks completeness for the server lane and leaves an incomplete copy to the source route", async () => {
+  settings.serverUrl = "http://configured";
+  vi.mocked(contentServerRequest).mockResolvedValue({ ...entry, complete: false });
+  expect(await tryDownloadServerChapter(job, undefined, undefined, { requireComplete: true })).toBe(false);
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+  expect(await tryDownloadServerChapter(job)).toBe(true);
+  vi.mocked(contentServerRequest).mockResolvedValue({ ...entry, complete: true });
+  expect(await tryDownloadServerChapter(job, undefined, undefined, { requireComplete: true })).toBe(true);
+  expect(downloadServerChapterFromServer).toHaveBeenCalledTimes(2);
+});
+
 it.each([404, 403, 503])("falls back to the plugin when the optional server returns %i", async status => {
   settings.serverUrl = "http://configured";
   vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(status));

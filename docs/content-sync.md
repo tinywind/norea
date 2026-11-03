@@ -109,6 +109,19 @@ back to the source plugin. Cancelling a transfer releases the download task with
 publishing late results. Native HTTP may finish in its private staging directory,
 which is removed after the request ends.
 
+When a download goal queues chapters and a content server is configured, Norea
+first lists that work's server chapters, 100 per page, within a 30 second
+deadline. Queued jobs whose chapter the listing shows as complete, by chapter
+path or by a unique chapter number, run first on the server lane: app-owned HTTP
+to the user's server with up to 3 transfers at once, outside the source's serial
+queue and without its cooldown. The lane is a route of the same queued task, so
+each chapter keeps one owner. Every transfer repeats the identity check above and
+also requires the server copy to be complete at that moment, because the listing
+can be stale. When it cannot finish, the same task continues on its source route
+exactly like any other download, including the ordinary server lookup. A failed
+listing leaves the jobs on that ordinary route. The lane never sends a chapter to
+a source plugin, and server-only chapters still fail instead of falling back.
+
 Chapter rows show the current step below the title: checking download status,
 checking the content server, downloading from the content server, or downloading
 from the original site. The label changes when a server attempt falls back to
