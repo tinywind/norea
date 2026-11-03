@@ -5,7 +5,7 @@ vi.mock("../i18n", () => ({
   useTranslation: () => ({ locale: "en", t: (key: string) => key }),
 }));
 
-import { ConsoleCover } from "./ConsolePrimitives";
+import { ConsoleCover, isBlankCoverImage } from "./ConsolePrimitives";
 
 function coverStyle(title: string): string {
   const html = renderToStaticMarkup(<ConsoleCover alt={title} src={null} />);
@@ -26,5 +26,19 @@ describe("ConsoleCover fallback", () => {
     expect(coverStyle("Moonlit Archive")).toBe(coverStyle("Moonlit Archive"));
     const titles = Array.from({ length: 16 }, (_, index) => `Volume ${index}`);
     expect(new Set(titles.map(coverStyle)).size).toBeGreaterThan(1);
+  });
+});
+
+describe("ConsoleCover image", () => {
+  it("keeps the title fallback under a cover until the image has loaded", () => {
+    const html = renderToStaticMarkup(<ConsoleCover alt="Moonlit Archive" src="https://source.test/cover.jpg" />);
+    expect(html.indexOf("norea-console-cover-fallback-title")).toBeGreaterThan(-1);
+    expect(html.indexOf("norea-console-cover-fallback-title")).toBeLessThan(html.indexOf("<img"));
+  });
+
+  it("treats a 1x1 placeholder pixel as a missing cover", () => {
+    expect(isBlankCoverImage({ naturalHeight: 1, naturalWidth: 1 })).toBe(true);
+    expect(isBlankCoverImage({ naturalHeight: 0, naturalWidth: 0 })).toBe(true);
+    expect(isBlankCoverImage({ naturalHeight: 300, naturalWidth: 200 })).toBe(false);
   });
 });

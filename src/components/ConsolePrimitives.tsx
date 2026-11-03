@@ -36,7 +36,9 @@ export function ConsoleCover({
 }: ConsoleCoverProps) {
   const normalizedSrc = normalizeCoverSource(src);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
   const showImage = normalizedSrc !== null && failedSrc !== normalizedSrc;
+  const imageLoaded = showImage && loadedSrc === normalizedSrc;
   const fallbackStyle = useMemo(() => createCoverFallbackStyle(alt), [alt]);
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export function ConsoleCover({
       data-fit={fit}
       style={style}
     >
+      {imageLoaded ? null : <ConsoleCoverFallback title={alt} />}
       {showImage ? (
         <img
           alt={alt}
@@ -66,14 +69,24 @@ export function ConsoleCover({
           draggable={false}
           loading="lazy"
           onError={() => setFailedSrc(normalizedSrc)}
+          onLoad={(event) => {
+            if (isBlankCoverImage(event.currentTarget)) setFailedSrc(normalizedSrc);
+            else setLoadedSrc(normalizedSrc);
+          }}
           src={normalizedSrc ?? undefined}
           style={{ objectFit: fit }}
         />
-      ) : (
-        <ConsoleCoverFallback title={alt} />
-      )}
+      ) : null}
     </span>
   );
+}
+
+/**
+ * Sources often hand out a 1x1 lazy-load pixel instead of a cover. It loads
+ * without an error, so it would leave the card blank instead of showing the title.
+ */
+export function isBlankCoverImage(image: Pick<HTMLImageElement, "naturalHeight" | "naturalWidth">): boolean {
+  return image.naturalWidth <= 1 || image.naturalHeight <= 1;
 }
 
 function normalizeCoverSource(src: string | null): string | null {
