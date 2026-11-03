@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
+  useInfiniteQuery,
   useMutation,
-  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -12,6 +12,7 @@ import {
   HistoryRow,
   HistoryRowsSkeleton,
 } from "../components/history/HistoryRows";
+import { NearEndSentinel } from "../components/NearEndSentinel";
 import { SearchBar } from "../components/SearchBar";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { CheckIcon, TrashIcon } from "../components/ui/icons";
@@ -23,13 +24,17 @@ import {
   type ChapterListRow,
   type RecentlyReadEntry,
 } from "../db/queries/chapter";
+import {
+  listReadingHistoryPage,
+  type HistoryCursor,
+  type HistoryProgressFilter,
+} from "../db/queries/history-search";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import "../styles/history.css";
 
 const HISTORY_LIMIT = 100;
 
-type ProgressFilter = "all" | "inProgress" | "finished";
 type DateBucket = "today" | "thisWeek" | "older";
 
 interface HistoryDateSection {
@@ -43,7 +48,7 @@ const DATE_BUCKET_LABEL_KEYS: Record<DateBucket, TranslationKey> = {
   thisWeek: "history.bucket.thisWeek",
   older: "history.bucket.older",
 };
-const PROGRESS_FILTERS: { label: TranslationKey; value: ProgressFilter }[] = [
+const PROGRESS_FILTERS: { label: TranslationKey; value: HistoryProgressFilter }[] = [
   { label: "history.filter.all", value: "all" },
   { label: "common.inProgress", value: "inProgress" },
   { label: "common.finished", value: "finished" },
@@ -70,23 +75,14 @@ function formatDateBucket(epochSeconds: number): DateBucket {
   return "older";
 }
 
-function matchesProgressFilter(
-  entry: RecentlyReadEntry,
-  filter: ProgressFilter,
-): boolean {
-  if (filter === "finished") return entry.progress >= FINISHED_PROGRESS;
-  if (filter === "inProgress") return entry.progress < FINISHED_PROGRESS;
-  return true;
-}
-
-function matchesSearch(entry: RecentlyReadEntry, search: string): boolean {
-  const normalized = search.trim().toLocaleLowerCase();
-  if (!normalized) return true;
-  return (
-    entry.novelName.toLocaleLowerCase().includes(normalized) ||
-    entry.chapterName.toLocaleLowerCase().includes(normalized) ||
-    String(entry.position).includes(normalized)
-  );
+/** Pages can overlap when a novel is read while older pages load. */
+function uniqueByNovel(entries: readonly RecentlyReadEntry[]): RecentlyReadEntry[] {
+  const seen = new Set<number>();
+  return entries.filter((entry) => {
+    if (seen.has(entry.novelId)) return false;
+    seen.add(entry.novelId);
+    return true;
+  });
 }
 
 /** Clears every novel's history, one novel at a time, until none is left. */
@@ -123,12 +119,20 @@ export function HistoryPage() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [progressFilter, setProgressFilter] =
-    useState<ProgressFilter>("all");
+    useState<HistoryProgressFilter>("all");
+  const appliedSearch = search.trim();
 
-  const query = useQuery({
+  const query = useInfiniteQuery({
     meta: { errorPresentation: "inline" },
-    queryKey: ["chapter", "history", HISTORY_LIMIT] as const,
-    queryFn: () => listRecentlyRead(HISTORY_LIMIT),
+    queryKey: ["chapter", "history", "page", appliedSearch, progressFilter] as const,
+    queryFn: ({ pageParam }) =>
+      listReadingHistoryPage({
+        cursor: pageParam,
+        progress: progressFilter,
+        search: appliedSearch,
+      }),
+    initialPageParam: null as HistoryCursor | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
   });
   const invalidateHistory = () => {
     void queryClient.invalidateQueries({ queryKey: ["chapter", "history"] });
@@ -144,19 +148,14 @@ export function HistoryPage() {
   });
 
   const visibleEntries = useMemo(
-    () =>
-      (query.data ?? []).filter(
-        (entry) =>
-          matchesSearch(entry, search) &&
-          matchesProgressFilter(entry, progressFilter),
-      ),
-    [progressFilter, query.data, search],
+    () => uniqueByNovel(query.data?.pages.flatMap((page) => page.entries) ?? []),
+    [query.data],
   );
   const sections = useMemo(
     () => groupByDateBucket(visibleEntries),
     [visibleEntries],
   );
-  const hasActiveFilter = search.trim() !== "" || progressFilter !== "all";
+  const hasActiveFilter = appliedSearch !== "" || progressFilter !== "all";
   const clearFilters = () => {
     setSearchInput("");
     setSearch("");
@@ -213,7 +212,9 @@ export function HistoryPage() {
           items={[
             {
               danger: true,
-              disabled: !query.data?.length || clearHistory.isPending,
+              disabled:
+                (!hasActiveFilter && visibleEntries.length === 0) ||
+                clearHistory.isPending,
               icon: TrashIcon,
               label: t("history.clearAll.action"),
               onClick: () => void confirmClearAll(),
@@ -258,7 +259,7 @@ export function HistoryPage() {
 
         {query.isLoading ? (
           <HistoryRowsSkeleton label={t("history.loading")} />
-        ) : query.error ? (
+        ) : query.error && visibleEntries.length === 0 ? (
           <StateView
             action={{
               label: t("common.retry"),
@@ -303,6 +304,21 @@ export function HistoryPage() {
                 ))}
               </section>
             ))}
+            <NearEndSentinel
+              className="norea-history-near-end"
+              enabled={query.hasNextPage && !query.isFetchingNextPage && !query.error}
+              onNearEnd={() => void query.fetchNextPage()}
+            />
+            {query.hasNextPage ? (
+              <Button
+                className="norea-history-load-more"
+                loading={query.isFetchingNextPage}
+                onClick={() => void query.fetchNextPage()}
+                variant="default"
+              >
+                {t("common.loadMore")}
+              </Button>
+            ) : null}
           </div>
         ) : hasActiveFilter ? (
           <StateView

@@ -44,6 +44,17 @@
   gap: var(--norea-space-4);
 }
 
+/* Zero height, with the list gap taken back so the spacing is unchanged. */
+.norea-history-near-end {
+  height: 0;
+  margin-top: calc(-1 * var(--norea-space-4));
+}
+
+.norea-history-load-more {
+  justify-self: center;
+  min-width: 12rem;
+}
+
 .norea-history-section-title {
   color: var(--norea-color-ink-muted);
   font-size: var(--norea-text-sm);
