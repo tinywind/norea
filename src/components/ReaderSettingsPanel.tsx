@@ -90,8 +90,7 @@ export type ReaderSettingsPanelTarget =
       label?: string;
     };
 
-interface ReaderSettingsPanelProps {
-  inlineAutomation?: boolean;
+interface ReaderSettingsEditorOptions {
   target?: ReaderSettingsPanelTarget;
   novelId?: number | null;
   /**
@@ -99,6 +98,12 @@ interface ReaderSettingsPanelProps {
    * a scope switch instead of the override toggle.
    */
   editEffectiveScope?: boolean;
+}
+
+/** What the open chapter needs, so settings that cannot apply stay hidden. */
+export interface ReaderSettingsContentContext {
+  kind: "html" | "pdf";
+  hasImages: boolean;
 }
 
 type ReaderNovelSettingsPanelTarget = Extract<
@@ -171,12 +176,11 @@ function getReaderAppearanceSettingsForEditor(
   };
 }
 
-export function ReaderSettingsPanel({
-  inlineAutomation = false,
+export function useReaderSettingsEditor({
   target,
   novelId = null,
   editEffectiveScope = false,
-}: ReaderSettingsPanelProps = {}) {
+}: ReaderSettingsEditorOptions = {}) {
   const { t } = useTranslation();
   const legacyNovelId =
     typeof novelId === "number" && novelId > 0 ? novelId : null;
@@ -525,122 +529,142 @@ export function ReaderSettingsPanel({
     }
   }
 
-  const automationSettings = (
-    <SettingsSection title={t("readerSettings.automation.title")}>
-      <SettingsFieldRow
-        label={t("readerSettings.autoDownloadNextChapter")}
-        description={t("readerSettings.autoDownloadNextChapter.description")}
-      >
-        <Switch
-          checked={general.autoDownloadNextChapter}
-          onChange={(event) =>
-            setActiveGeneral({
-              autoDownloadNextChapter: event.currentTarget.checked,
-            })
-          }
-        />
-      </SettingsFieldRow>
-      <SettingsFieldRow
-        label={t("readerSettings.autoScroll")}
-        description={t("readerSettings.autoScroll.description")}
-      >
-        <Switch
-          checked={!general.pageReader && general.autoScroll}
-          disabled={general.pageReader}
-          onChange={(event) =>
-            setActiveGeneral({ autoScroll: event.currentTarget.checked })
-          }
-        />
-      </SettingsFieldRow>
-      {!general.pageReader && general.autoScroll ? (
-        <>
-          <SettingsFieldRow
-            label={t("readerSettings.autoScrollInterval")}
-            description={t("readerSettings.autoScrollInterval.description")}
-          >
-            <NumberInput
-              value={general.autoScrollInterval}
-              min={16}
-              max={500}
-              onChange={(value) => {
-                if (typeof value === "number") {
-                  setActiveGeneral({ autoScrollInterval: value });
-                }
-              }}
-            />
-          </SettingsFieldRow>
-          <SettingsFieldRow
-            label={t("readerSettings.autoScrollOffset")}
-            description={t("readerSettings.autoScrollOffset.description")}
-          >
-            <NumberInput
-              value={general.autoScrollOffset}
-              min={0.25}
-              max={12}
-              step={0.25}
-              onChange={(value) => {
-                if (typeof value === "number") {
-                  setActiveGeneral({ autoScrollOffset: value });
-                }
-              }}
-            />
-          </SettingsFieldRow>
-        </>
-      ) : null}
-    </SettingsSection>
-  );
+  function setReaderMode(value: string): void {
+    switch (value) {
+      case "two-page":
+        setActiveGeneral({
+          autoScroll: false,
+          pageReader: true,
+          twoPageReader: true,
+        });
+        break;
+      case "paged":
+        setActiveGeneral({
+          autoScroll: false,
+          pageReader: true,
+          twoPageReader: false,
+        });
+        break;
+      default:
+        setActiveGeneral({
+          pageReader: false,
+          twoPageReader: false,
+        });
+        break;
+    }
+  }
 
-  return (
-    <Stack gap="md">
-      {effectiveScopeTarget ? (
-        <SettingsFieldRow
-          label={t("readerSettings.scope.applyTo")}
-          description={scopeDescription}
-        >
-          <SegmentedToggle
-            aria-label={t("readerSettings.scope.applyTo")}
-            data={[
+  return {
+    t,
+    appearance,
+    appliedScopeLabel,
+    closeResetConfirmation,
+    customCssPresetOptions,
+    customCssPresetValue,
+    effectiveScopeTarget,
+    general,
+    keepScopedSettings,
+    readerMode,
+    readerSourceOverride,
+    readerThemes,
+    resetConfirmOpen,
+    scopeBadge,
+    scopeDescription,
+    scopeDisplayName,
+    scopeTitle,
+    settingsLocked,
+    targetKind,
+    targetSettingsEnabled,
+    applyActiveTheme,
+    handleApplyTapZonePreset,
+    handleCustomCssPresetChange,
+    handleEffectiveScopeChange,
+    handleSaveCustomTheme,
+    handleTargetSettingsEnabledChange,
+    openResetConfirmation,
+    resetActiveReaderSettings,
+    setActiveAppearance,
+    setActiveGeneral,
+    setKeepScopedSettings,
+    setReaderMode,
+    setResetConfirmOpen,
+  };
+}
+
+export type ReaderSettingsEditor = ReturnType<typeof useReaderSettingsEditor>;
+
+/**
+ * Builds every reader settings field once, so the full settings panel and the
+ * reader's quick settings place the same controls without duplicating them.
+ */
+export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
+  const {
+    t,
+    appearance,
+    effectiveScopeTarget,
+    general,
+    readerSourceOverride,
+    setActiveAppearance,
+    setActiveGeneral,
+    targetKind,
+  } = editor;
+
+  const scopeControl = effectiveScopeTarget ? (
+    <SegmentedToggle
+      aria-label={t("readerSettings.scope.applyTo")}
+      data={[
+        {
+          value: "novel",
+          label: t("readerSettings.scope.applyToNovel"),
+        },
+        ...(effectiveScopeTarget.sourceId && readerSourceOverride
+          ? [
               {
-                value: "novel",
-                label: t("readerSettings.scope.applyToNovel"),
+                value: "source",
+                label: t("readerSettings.scope.applyToSource"),
               },
-              ...(effectiveScopeTarget.sourceId && readerSourceOverride
-                ? [
-                    {
-                      value: "source",
-                      label: t("readerSettings.scope.applyToSource"),
-                    },
-                  ]
-                : []),
-              {
-                value: "global",
-                label: t("readerSettings.scope.applyToAll"),
-              },
-            ]}
-            value={targetKind}
-            onChange={handleEffectiveScopeChange}
-          />
-        </SettingsFieldRow>
-      ) : (
-        <div
-          className="norea-reader-settings-scope-card"
-          data-enabled={targetSettingsEnabled}
-          data-scope={targetKind}
-        >
-          <div className="norea-reader-settings-scope-main">
-            <span className="norea-reader-settings-scope-title">
-              {scopeTitle}
-            </span>
-            <span className="norea-reader-settings-scope-description">
-              {scopeDescription}
-            </span>
-          </div>
-          <span className="norea-reader-settings-scope-badge">
-            {scopeBadge}
+            ]
+          : []),
+        {
+          value: "global",
+          label: t("readerSettings.scope.applyToAll"),
+        },
+      ]}
+      value={targetKind}
+      onChange={editor.handleEffectiveScopeChange}
+    />
+  ) : null;
+
+  return {
+    scopeControl,
+    scope: scopeControl ? (
+      <SettingsFieldRow
+        label={t("readerSettings.scope.applyTo")}
+        description={editor.scopeDescription}
+      >
+        {scopeControl}
+      </SettingsFieldRow>
+    ) : (
+      <div
+        className="norea-reader-settings-scope-card"
+        data-enabled={editor.targetSettingsEnabled}
+        data-scope={targetKind}
+      >
+        <div className="norea-reader-settings-scope-main">
+          <span className="norea-reader-settings-scope-title">
+            {editor.scopeTitle}
+          </span>
+          <span className="norea-reader-settings-scope-description">
+            {editor.scopeDescription}
           </span>
         </div>
-      )}
-      {targetKind !== "global" && !effectiveScopeTarget ? (
+        <span className="norea-reader-settings-scope-badge">
+          {editor.scopeBadge}
+        </span>
+      </div>
+    ),
+    scopeToggle:
+      targetKind !== "global" && !effectiveScopeTarget ? (
         <SettingsSection title={t("readerSettings.scope.title")}>
           <SettingsFieldRow
             label={t(
@@ -655,308 +679,357 @@ export function ReaderSettingsPanel({
             )}
           >
             <Switch
-              checked={targetSettingsEnabled}
+              checked={editor.targetSettingsEnabled}
               onChange={(event) =>
-                handleTargetSettingsEnabledChange(event.currentTarget.checked)
+                editor.handleTargetSettingsEnabledChange(
+                  event.currentTarget.checked,
+                )
               }
             />
           </SettingsFieldRow>
         </SettingsSection>
-      ) : null}
-      {settingsLocked ? (
-        <div className="norea-reader-settings-disabled-notice" role="status">
-          <span className="norea-reader-settings-disabled-title">
-            {t("readerSettings.scope.disabledTitle")}
-          </span>
-          <span className="norea-reader-settings-disabled-description">
-            {t("readerSettings.scope.disabledDescription", {
-              scope: appliedScopeLabel,
-            })}
-          </span>
-        </div>
-      ) : (
-        <fieldset className="norea-reader-settings-controls">
-          <Tabs
-            className="norea-reader-settings-tabs"
-            defaultValue="reading"
-            keepMounted={false}
-          >
-      <Tabs.List className="norea-reader-settings-tab-list">
-        <Tabs.Tab value="reading">
-          {t("readerSettings.reading.title")}
-        </Tabs.Tab>
-        <Tabs.Tab value="text">{t("readerSettings.text.title")}</Tabs.Tab>
-        <Tabs.Tab value="controls">
-          {t("readerSettings.controls.title")}
-        </Tabs.Tab>
-        {!inlineAutomation ? (
-          <Tabs.Tab value="automation">
-            {t("readerSettings.automation.title")}
-          </Tabs.Tab>
+      ) : null,
+    lockedNotice: (
+      <div className="norea-reader-settings-disabled-notice" role="status">
+        <span className="norea-reader-settings-disabled-title">
+          {t("readerSettings.scope.disabledTitle")}
+        </span>
+        <span className="norea-reader-settings-disabled-description">
+          {t("readerSettings.scope.disabledDescription", {
+            scope: editor.appliedScopeLabel,
+          })}
+        </span>
+      </div>
+    ),
+    readingMode: (
+      <SettingsFieldRow
+        label={t("readerSettings.readingMode")}
+        description={t("readerSettings.readingMode.description")}
+      >
+        <SegmentedToggle
+          aria-label={t("readerSettings.readingMode")}
+          data={[
+            { value: "scroll", label: t("readerSettings.scroll") },
+            { value: "paged", label: t("readerSettings.paged") },
+            { value: "two-page", label: t("readerSettings.twoPage") },
+          ]}
+          value={editor.readerMode}
+          onChange={editor.setReaderMode}
+        />
+      </SettingsFieldRow>
+    ),
+    pageTransition: (
+      <SettingSlider
+        label={t("readerSettings.pageTransitionDuration")}
+        description={t("readerSettings.pageTransitionDuration.description")}
+        valueLabel={
+          general.pageTransitionDuration === 0
+            ? t("readerSettings.pageTransitionDuration.off")
+            : t("readerSettings.pageTransitionDuration.value", {
+                duration: general.pageTransitionDuration,
+              })
+        }
+        min={READER_PAGE_TRANSITION_DURATION_MIN_MS}
+        max={READER_PAGE_TRANSITION_DURATION_MAX_MS}
+        step={50}
+        value={general.pageTransitionDuration}
+        onChange={(pageTransitionDuration) =>
+          setActiveGeneral({ pageTransitionDuration })
+        }
+      />
+    ),
+    pdfPageFit: (
+      <SettingsFieldRow
+        label={t("readerSettings.pdfPageFitMode")}
+        description={t("readerSettings.pdfPageFitMode.description")}
+      >
+        <SegmentedToggle
+          data={PDF_PAGE_FIT_OPTIONS.map((option) => ({
+            value: option.value,
+            label: t(option.labelKey),
+          }))}
+          value={general.pdfPageFitMode}
+          onChange={(pdfPageFitMode) =>
+            setActiveGeneral({
+              pdfPageFitMode: pdfPageFitMode as ReaderPdfPageFitMode,
+            })
+          }
+        />
+      </SettingsFieldRow>
+    ),
+    htmlImagePaging: (
+      <SettingsFieldRow
+        label={t("readerSettings.htmlImagePagingMode")}
+        description={t("readerSettings.htmlImagePagingMode.description")}
+      >
+        <SegmentedToggle
+          data={HTML_IMAGE_PAGING_OPTIONS.map((option) => ({
+            value: option.value,
+            label: t(option.labelKey),
+          }))}
+          value={general.htmlImagePagingMode}
+          onChange={(htmlImagePagingMode) =>
+            setActiveGeneral({
+              htmlImagePagingMode:
+                htmlImagePagingMode as ReaderHtmlImagePagingMode,
+            })
+          }
+        />
+      </SettingsFieldRow>
+    ),
+    fullPageReader: (
+      <SettingsFieldRow
+        label={t("readerSettings.fullPageReader")}
+        description={t("readerSettings.fullPageReader.description")}
+      >
+        <Switch
+          checked={general.fullPageReader}
+          onChange={(event) =>
+            setActiveGeneral({
+              fullPageReader: event.currentTarget.checked,
+            })
+          }
+        />
+      </SettingsFieldRow>
+    ),
+    keepScreenOn: (
+      <SettingsFieldRow
+        label={t("readerSettings.keepScreenOn")}
+        description={t("readerSettings.keepScreenOn.description")}
+      >
+        <Switch
+          checked={general.keepScreenOn}
+          onChange={(event) =>
+            setActiveGeneral({ keepScreenOn: event.currentTarget.checked })
+          }
+        />
+      </SettingsFieldRow>
+    ),
+    autoDownloadNextChapter: (
+      <SettingsFieldRow
+        label={t("readerSettings.autoDownloadNextChapter")}
+        description={t("readerSettings.autoDownloadNextChapter.description")}
+      >
+        <Switch
+          checked={general.autoDownloadNextChapter}
+          onChange={(event) =>
+            setActiveGeneral({
+              autoDownloadNextChapter: event.currentTarget.checked,
+            })
+          }
+        />
+      </SettingsFieldRow>
+    ),
+    autoScroll: (
+      <>
+        <SettingsFieldRow
+          label={t("readerSettings.autoScroll")}
+          description={t("readerSettings.autoScroll.description")}
+        >
+          <Switch
+            checked={!general.pageReader && general.autoScroll}
+            disabled={general.pageReader}
+            onChange={(event) =>
+              setActiveGeneral({ autoScroll: event.currentTarget.checked })
+            }
+          />
+        </SettingsFieldRow>
+        {!general.pageReader && general.autoScroll ? (
+          <>
+            <SettingsFieldRow
+              label={t("readerSettings.autoScrollInterval")}
+              description={t("readerSettings.autoScrollInterval.description")}
+            >
+              <NumberInput
+                aria-label={t("readerSettings.autoScrollInterval")}
+                value={general.autoScrollInterval}
+                min={16}
+                max={500}
+                rightSection={t("readerSettings.unit.milliseconds")}
+                onChange={(value) => {
+                  if (typeof value === "number") {
+                    setActiveGeneral({ autoScrollInterval: value });
+                  }
+                }}
+              />
+            </SettingsFieldRow>
+            <SettingsFieldRow
+              label={t("readerSettings.autoScrollOffset")}
+              description={t("readerSettings.autoScrollOffset.description")}
+            >
+              <NumberInput
+                aria-label={t("readerSettings.autoScrollOffset")}
+                value={general.autoScrollOffset}
+                min={0.25}
+                max={12}
+                step={0.25}
+                rightSection={t("readerSettings.unit.pixels")}
+                onChange={(value) => {
+                  if (typeof value === "number") {
+                    setActiveGeneral({ autoScrollOffset: value });
+                  }
+                }}
+              />
+            </SettingsFieldRow>
+          </>
         ) : null}
-        <Tabs.Tab value="indicators">
-          {t("readerSettings.indicators.title")}
-        </Tabs.Tab>
-        <Tabs.Tab value="advanced">{t("readerSettings.advanced")}</Tabs.Tab>
-      </Tabs.List>
-
-      <Tabs.Panel className="norea-reader-settings-tab-panel" value="reading">
-        <Stack gap="lg">
-          <SettingsSection title={t("readerSettings.reading.title")}>
-        <SettingsFieldRow
-          label={t("readerSettings.readingMode")}
-          description={t("readerSettings.readingMode.description")}
-        >
-          <SegmentedToggle
-            data={[
-              { value: "scroll", label: t("readerSettings.scroll") },
-              { value: "paged", label: t("readerSettings.paged") },
-              { value: "two-page", label: t("readerSettings.twoPage") },
-            ]}
-            value={readerMode}
-            onChange={(value) => {
-              switch (value) {
-                case "two-page":
-                  setActiveGeneral({
-                    autoScroll: false,
-                    pageReader: true,
-                    twoPageReader: true,
-                  });
-                  break;
-                case "paged":
-                  setActiveGeneral({
-                    autoScroll: false,
-                    pageReader: true,
-                    twoPageReader: false,
-                  });
-                  break;
-                default:
-                  setActiveGeneral({
-                    pageReader: false,
-                    twoPageReader: false,
-                  });
-                  break;
-              }
-            }}
-          />
-        </SettingsFieldRow>
-        <SettingSlider
-          label={t("readerSettings.pageTransitionDuration")}
-          description={t("readerSettings.pageTransitionDuration.description")}
-          valueLabel={
-            general.pageTransitionDuration === 0
-              ? t("readerSettings.pageTransitionDuration.off")
-              : t("readerSettings.pageTransitionDuration.value", {
-                  duration: general.pageTransitionDuration,
-                })
-          }
-          min={READER_PAGE_TRANSITION_DURATION_MIN_MS}
-          max={READER_PAGE_TRANSITION_DURATION_MAX_MS}
-          step={50}
-          value={general.pageTransitionDuration}
-          onChange={(pageTransitionDuration) =>
-            setActiveGeneral({ pageTransitionDuration })
+      </>
+    ),
+    readerTheme: (
+      <SettingsFieldRow
+        label={t("readerSettings.readerTheme")}
+        description={t("readerSettings.readerTheme.description")}
+      >
+        <Select
+          data={editor.readerThemes.map((theme) => ({
+            value: theme.id,
+            label: getReaderThemeLabel(theme.id, theme.label, t),
+          }))}
+          value={appearance.themeId}
+          onChange={(themeId) => {
+            const nextTheme = editor.readerThemes.find(
+              (theme) => theme.id === themeId,
+            );
+            if (nextTheme) editor.applyActiveTheme(nextTheme);
+          }}
+        />
+      </SettingsFieldRow>
+    ),
+    backgroundColor: (
+      <SettingsFieldRow
+        label={t("readerSettings.background")}
+        description={t("readerSettings.background.description")}
+      >
+        <ColorInput
+          value={appearance.backgroundColor}
+          onChange={(backgroundColor) =>
+            setActiveAppearance({ backgroundColor })
           }
         />
-        <SettingsFieldRow
-          label={t("readerSettings.pdfPageFitMode")}
-          description={t("readerSettings.pdfPageFitMode.description")}
-        >
-          <SegmentedToggle
-            data={PDF_PAGE_FIT_OPTIONS.map((option) => ({
-              value: option.value,
-              label: t(option.labelKey),
-            }))}
-            value={general.pdfPageFitMode}
-            onChange={(pdfPageFitMode) =>
-              setActiveGeneral({
-                pdfPageFitMode: pdfPageFitMode as ReaderPdfPageFitMode,
-              })
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.htmlImagePagingMode")}
-          description={t("readerSettings.htmlImagePagingMode.description")}
-        >
-          <SegmentedToggle
-            data={HTML_IMAGE_PAGING_OPTIONS.map((option) => ({
-              value: option.value,
-              label: t(option.labelKey),
-            }))}
-            value={general.htmlImagePagingMode}
-            onChange={(htmlImagePagingMode) =>
-              setActiveGeneral({
-                htmlImagePagingMode:
-                  htmlImagePagingMode as ReaderHtmlImagePagingMode,
-              })
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.fullPageReader")}
-          description={t("readerSettings.fullPageReader.description")}
-        >
-          <Switch
-            checked={general.fullPageReader}
-            onChange={(event) =>
-              setActiveGeneral({
-                fullPageReader: event.currentTarget.checked,
-              })
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.keepScreenOn")}
-          description={t("readerSettings.keepScreenOn.description")}
-        >
-          <Switch
-            checked={general.keepScreenOn}
-            onChange={(event) =>
-              setActiveGeneral({ keepScreenOn: event.currentTarget.checked })
-            }
-          />
-        </SettingsFieldRow>
-      </SettingsSection>
-          {inlineAutomation ? automationSettings : null}
-        </Stack>
-      </Tabs.Panel>
-
-      <Tabs.Panel className="norea-reader-settings-tab-panel" value="text">
-        <Stack gap="lg">
-      <SettingsSection
-        title={t("readerSettings.text.title")}
+      </SettingsFieldRow>
+    ),
+    textColor: (
+      <SettingsFieldRow
+        label={t("readerSettings.textColor")}
+        description={t("readerSettings.textColor.description")}
       >
-        <SettingsFieldRow
-          label={t("readerSettings.readerTheme")}
-          description={t("readerSettings.readerTheme.description")}
-        >
-          <Select
-            data={readerThemes.map((theme) => ({
-              value: theme.id,
-              label: getReaderThemeLabel(theme.id, theme.label, t),
-            }))}
-            value={appearance.themeId}
-            onChange={(themeId) => {
-              const nextTheme = readerThemes.find(
-                (theme) => theme.id === themeId,
-              );
-              if (nextTheme) applyActiveTheme(nextTheme);
-            }}
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.background")}
-          description={t("readerSettings.background.description")}
-        >
-          <ColorInput
-            value={appearance.backgroundColor}
-            onChange={(backgroundColor) =>
-              setActiveAppearance({ backgroundColor })
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.textColor")}
-          description={t("readerSettings.textColor.description")}
-        >
-          <ColorInput
-            value={appearance.textColor}
-            onChange={(textColor) => setActiveAppearance({ textColor })}
-          />
-        </SettingsFieldRow>
-        <SettingSlider
-          label={t("readerSettings.textSize")}
-          description={t("readerSettings.textSize.description")}
-          valueLabel={`${appearance.textSize}px`}
-          min={12}
-          max={36}
-          step={1}
-          value={appearance.textSize}
-          onChange={(textSize) => setActiveAppearance({ textSize })}
+        <ColorInput
+          value={appearance.textColor}
+          onChange={(textColor) => setActiveAppearance({ textColor })}
         />
-        <SettingSlider
-          label={t("readerSettings.lineHeight")}
-          description={t("readerSettings.lineHeight.description")}
-          valueLabel={appearance.lineHeight.toFixed(2)}
-          min={1}
-          max={2.6}
-          step={0.05}
-          value={appearance.lineHeight}
-          onChange={(lineHeight) => setActiveAppearance({ lineHeight })}
-        />
-        <SettingSlider
-          label={t("readerSettings.padding")}
-          description={t("readerSettings.padding.description")}
-          valueLabel={`${appearance.padding}px`}
-          min={0}
-          max={64}
-          step={1}
-          value={appearance.padding}
-          onChange={(padding) => setActiveAppearance({ padding })}
-        />
-        <SettingsFieldRow
-          label={t("readerSettings.font")}
-          description={t("readerSettings.font.description")}
-        >
-          <Select
-            data={READER_FONT_OPTIONS.map((option) => ({
-              ...option,
-              label:
-                option.value === ""
-                  ? t("readerSettings.font.original")
-                  : option.label,
-            }))}
-            value={appearance.fontFamily}
-            onChange={(fontFamily) =>
-              setActiveAppearance({ fontFamily: fontFamily ?? "" })
-            }
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.alignment")}
-          description={t("readerSettings.alignment.description")}
-        >
-          <SegmentedToggle
-            value={appearance.textAlign}
-            onChange={(textAlign) =>
-              setActiveAppearance({
-                textAlign: textAlign as typeof appearance.textAlign,
-              })
-            }
-            data={[
-              { value: "left", label: t("readerSettings.align.left") },
-              {
-                value: "justify",
-                label: t("readerSettings.align.justify"),
-              },
-              { value: "center", label: t("readerSettings.align.center") },
-              { value: "right", label: t("readerSettings.align.right") },
-            ]}
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("readerSettings.actions")}
-          description={t("readerSettings.actions.description")}
-        >
-          <SettingsInlineControls>
-            <TextButton variant="default" onClick={handleSaveCustomTheme}>
-              {t("readerSettings.saveCustomTheme")}
-            </TextButton>
-            <TextButton variant="default" onClick={openResetConfirmation}>
-              {t("common.reset")}
-            </TextButton>
-          </SettingsInlineControls>
-        </SettingsFieldRow>
-      </SettingsSection>
-        </Stack>
-      </Tabs.Panel>
-
-      <Tabs.Panel className="norea-reader-settings-tab-panel" value="controls">
-        <Stack gap="lg">
-      <SettingsSection
-        title={t("readerSettings.controls.title")}
+      </SettingsFieldRow>
+    ),
+    textSize: (
+      <SettingSlider
+        label={t("readerSettings.textSize")}
+        description={t("readerSettings.textSize.description")}
+        valueLabel={`${appearance.textSize}px`}
+        min={12}
+        max={36}
+        step={1}
+        value={appearance.textSize}
+        onChange={(textSize) => setActiveAppearance({ textSize })}
+      />
+    ),
+    lineHeight: (
+      <SettingSlider
+        label={t("readerSettings.lineHeight")}
+        description={t("readerSettings.lineHeight.description")}
+        valueLabel={appearance.lineHeight.toFixed(2)}
+        min={1}
+        max={2.6}
+        step={0.05}
+        value={appearance.lineHeight}
+        onChange={(lineHeight) => setActiveAppearance({ lineHeight })}
+      />
+    ),
+    padding: (
+      <SettingSlider
+        label={t("readerSettings.padding")}
+        description={t("readerSettings.padding.description")}
+        valueLabel={`${appearance.padding}px`}
+        min={0}
+        max={64}
+        step={1}
+        value={appearance.padding}
+        onChange={(padding) => setActiveAppearance({ padding })}
+      />
+    ),
+    font: (
+      <SettingsFieldRow
+        label={t("readerSettings.font")}
+        description={t("readerSettings.font.description")}
       >
+        <Select
+          aria-label={t("readerSettings.font")}
+          data={READER_FONT_OPTIONS.map((option) => ({
+            ...option,
+            label:
+              option.value === ""
+                ? t("readerSettings.font.original")
+                : option.label,
+          }))}
+          value={appearance.fontFamily}
+          onChange={(fontFamily) =>
+            setActiveAppearance({ fontFamily: fontFamily ?? "" })
+          }
+        />
+      </SettingsFieldRow>
+    ),
+    alignment: (
+      <SettingsFieldRow
+        label={t("readerSettings.alignment")}
+        description={t("readerSettings.alignment.description")}
+      >
+        <SegmentedToggle
+          aria-label={t("readerSettings.alignment")}
+          value={appearance.textAlign}
+          onChange={(textAlign) =>
+            setActiveAppearance({
+              textAlign: textAlign as typeof appearance.textAlign,
+            })
+          }
+          data={[
+            { value: "left", label: t("readerSettings.align.left") },
+            {
+              value: "justify",
+              label: t("readerSettings.align.justify"),
+            },
+            { value: "center", label: t("readerSettings.align.center") },
+            { value: "right", label: t("readerSettings.align.right") },
+          ]}
+        />
+      </SettingsFieldRow>
+    ),
+    themeActions: (
+      <SettingsFieldRow
+        label={t("readerSettings.actions")}
+        description={t("readerSettings.actions.description")}
+      >
+        <SettingsInlineControls>
+          <TextButton variant="default" onClick={editor.handleSaveCustomTheme}>
+            {t("readerSettings.saveCustomTheme")}
+          </TextButton>
+          <TextButton variant="default" onClick={editor.openResetConfirmation}>
+            {t("common.reset")}
+          </TextButton>
+        </SettingsInlineControls>
+      </SettingsFieldRow>
+    ),
+    saveTheme: (
+      <SettingsFieldRow>
+        <TextButton variant="default" onClick={editor.handleSaveCustomTheme}>
+          {t("readerSettings.saveCustomTheme")}
+        </TextButton>
+      </SettingsFieldRow>
+    ),
+    reset: (
+      <TextButton variant="default" onClick={editor.openResetConfirmation}>
+        {t("common.reset")}
+      </TextButton>
+    ),
+    controls: (
+      <>
         <SettingsFieldRow
           label={t("readerSettings.swipeGestures")}
           description={t("readerSettings.swipeGestures.description")}
@@ -993,28 +1066,17 @@ export function ReaderSettingsPanel({
                     index={index}
                     preset={preset}
                     selected={preset.id === general.tapZonePresetId}
-                    onApply={handleApplyTapZonePreset}
+                    onApply={editor.handleApplyTapZonePreset}
                   />
                 ))}
               </div>
             </SettingsWideField>
           </SettingsFieldRow>
         ) : null}
-      </SettingsSection>
-        </Stack>
-      </Tabs.Panel>
-
-      {!inlineAutomation ? (
-        <Tabs.Panel className="norea-reader-settings-tab-panel" value="automation">
-          <Stack gap="lg">{automationSettings}</Stack>
-        </Tabs.Panel>
-      ) : null}
-
-      <Tabs.Panel className="norea-reader-settings-tab-panel" value="indicators">
-        <Stack gap="lg">
-      <SettingsSection
-        title={t("readerSettings.indicators.title")}
-      >
+      </>
+    ),
+    indicators: (
+      <>
         <SettingsFieldRow
           label={t("readerSettings.seekbar")}
           description={t("readerSettings.seekbar.description")}
@@ -1067,133 +1129,237 @@ export function ReaderSettingsPanel({
             }
           />
         </SettingsFieldRow>
-      </SettingsSection>
-        </Stack>
-      </Tabs.Panel>
-
-      <Tabs.Panel className="norea-reader-settings-tab-panel" value="advanced">
-        <Stack gap="lg">
-          <SettingsSection title={t("readerSettings.advanced")}>
-            <Stack gap="md">
-              <SettingsFieldRow
-                label={t("readerSettings.bionicReading")}
-                description={t("readerSettings.bionicReading.description")}
-              >
-                <Switch
-                  checked={general.bionicReading}
-                  onChange={(event) =>
-                    setActiveGeneral({
-                      bionicReading: event.currentTarget.checked,
-                    })
-                  }
-                />
-              </SettingsFieldRow>
-              <SettingsFieldRow
-                label={t("readerSettings.removeExtraParagraphSpacing")}
-                description={t(
-                  "readerSettings.removeExtraParagraphSpacing.description",
-                )}
-              >
-                <Switch
-                  checked={general.removeExtraParagraphSpacing}
-                  onChange={(event) =>
-                    setActiveGeneral({
-                      removeExtraParagraphSpacing:
-                        event.currentTarget.checked,
-                    })
-                  }
-                />
-              </SettingsFieldRow>
-              <SettingsFieldRow
-                label={t("readerSettings.customCssPreset")}
-                description={t("readerSettings.customCssPreset.description")}
-              >
-                <Select
-                  data={customCssPresetOptions}
-                  value={customCssPresetValue}
-                  onChange={handleCustomCssPresetChange}
-                />
-              </SettingsFieldRow>
-              <SettingsFieldRow
-                label={t("readerSettings.customCss")}
-                description={t("readerSettings.customCss.description")}
-                layout="stacked"
-              >
-                <SettingsWideField>
-                  <Textarea
-                    value={appearance.customCss}
-                    autosize
-                    minRows={5}
-                    onChange={(event) =>
-                      setActiveAppearance({
-                        customCss: event.currentTarget.value,
-                      })
-                    }
-                  />
-                </SettingsWideField>
-              </SettingsFieldRow>
-              <SettingsFieldRow
-                label={t("readerSettings.customJs")}
-                description={t("readerSettings.customJs.description")}
-                layout="stacked"
-              >
-                <SettingsWideField>
-                  <Textarea
-                    value={appearance.customJs}
-                    autosize
-                    minRows={5}
-                    onChange={(event) =>
-                      setActiveAppearance({
-                        customJs: event.currentTarget.value,
-                      })
-                    }
-                  />
-                </SettingsWideField>
-              </SettingsFieldRow>
-            </Stack>
-          </SettingsSection>
-        </Stack>
-      </Tabs.Panel>
-          </Tabs>
-        </fieldset>
-      )}
+      </>
+    ),
+    advanced: (
+      <>
+        <SettingsFieldRow
+          label={t("readerSettings.bionicReading")}
+          description={t("readerSettings.bionicReading.description")}
+        >
+          <Switch
+            checked={general.bionicReading}
+            onChange={(event) =>
+              setActiveGeneral({
+                bionicReading: event.currentTarget.checked,
+              })
+            }
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("readerSettings.removeExtraParagraphSpacing")}
+          description={t(
+            "readerSettings.removeExtraParagraphSpacing.description",
+          )}
+        >
+          <Switch
+            checked={general.removeExtraParagraphSpacing}
+            onChange={(event) =>
+              setActiveGeneral({
+                removeExtraParagraphSpacing: event.currentTarget.checked,
+              })
+            }
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("readerSettings.customCssPreset")}
+          description={t("readerSettings.customCssPreset.description")}
+        >
+          <Select
+            data={editor.customCssPresetOptions}
+            value={editor.customCssPresetValue}
+            onChange={editor.handleCustomCssPresetChange}
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("readerSettings.customCss")}
+          description={t("readerSettings.customCss.description")}
+          layout="stacked"
+        >
+          <SettingsWideField>
+            <Textarea
+              value={appearance.customCss}
+              autosize
+              minRows={5}
+              onChange={(event) =>
+                setActiveAppearance({
+                  customCss: event.currentTarget.value,
+                })
+              }
+            />
+          </SettingsWideField>
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("readerSettings.customJs")}
+          description={t("readerSettings.customJs.description")}
+          layout="stacked"
+        >
+          <SettingsWideField>
+            <Textarea
+              value={appearance.customJs}
+              autosize
+              minRows={5}
+              onChange={(event) =>
+                setActiveAppearance({
+                  customJs: event.currentTarget.value,
+                })
+              }
+            />
+          </SettingsWideField>
+        </SettingsFieldRow>
+      </>
+    ),
+    resetConfirmation: (
       <Modal
         centered
-        opened={resetConfirmOpen}
-        onClose={closeResetConfirmation}
+        opened={editor.resetConfirmOpen}
+        onClose={editor.closeResetConfirmation}
         title={t("readerSettings.reset.title")}
       >
         <Stack gap="md">
           <Text size="sm">
             {targetKind === "source"
               ? t("readerSettings.reset.sourceMessage", {
-                  name: scopeDisplayName,
+                  name: editor.scopeDisplayName,
                 })
               : targetKind === "novel"
                 ? t("readerSettings.reset.novelMessage", {
-                    name: scopeDisplayName,
+                    name: editor.scopeDisplayName,
                   })
                 : t("readerSettings.reset.globalMessage")}
           </Text>
           {targetKind === "global" ? (
             <Checkbox
-              checked={keepScopedSettings}
+              checked={editor.keepScopedSettings}
               label={t("readerSettings.reset.keepScopedSettings")}
               onChange={(event) =>
-                setKeepScopedSettings(event.currentTarget.checked)
+                editor.setKeepScopedSettings(event.currentTarget.checked)
               }
             />
           ) : null}
           <SettingsInlineControls>
-            <TextButton onClick={() => setResetConfirmOpen(false)}>
+            <TextButton onClick={() => editor.setResetConfirmOpen(false)}>
               {t("common.cancel")}
             </TextButton>
-            <TextButton tone="danger" onClick={resetActiveReaderSettings}>
+            <TextButton
+              tone="danger"
+              onClick={editor.resetActiveReaderSettings}
+            >
               {t("common.reset")}
             </TextButton>
           </SettingsInlineControls>
         </Stack>
       </Modal>
+    ),
+  };
+}
+
+interface ReaderSettingsPanelProps {
+  target?: ReaderSettingsPanelTarget;
+  novelId?: number | null;
+}
+
+/** The full reader settings, grouped in tabs, for settings pages. */
+export function ReaderSettingsPanel({
+  target,
+  novelId = null,
+}: ReaderSettingsPanelProps = {}) {
+  const editor = useReaderSettingsEditor({ target, novelId });
+  const { t } = editor;
+  const fields = buildReaderSettingsFields(editor);
+
+  return (
+    <Stack gap="md">
+      {fields.scope}
+      {fields.scopeToggle}
+      {editor.settingsLocked ? (
+        fields.lockedNotice
+      ) : (
+        <fieldset className="norea-reader-settings-controls">
+          <Tabs
+            className="norea-reader-settings-tabs"
+            defaultValue="reading"
+            keepMounted={false}
+          >
+            <Tabs.List className="norea-reader-settings-tab-list">
+              <Tabs.Tab value="reading">
+                {t("readerSettings.reading.title")}
+              </Tabs.Tab>
+              <Tabs.Tab value="text">{t("readerSettings.text.title")}</Tabs.Tab>
+              <Tabs.Tab value="controls">
+                {t("readerSettings.controls.title")}
+              </Tabs.Tab>
+              <Tabs.Tab value="automation">
+                {t("readerSettings.automation.title")}
+              </Tabs.Tab>
+              <Tabs.Tab value="indicators">
+                {t("readerSettings.indicators.title")}
+              </Tabs.Tab>
+              <Tabs.Tab value="advanced">{t("readerSettings.advanced")}</Tabs.Tab>
+            </Tabs.List>
+
+            <Tabs.Panel
+              className="norea-reader-settings-tab-panel"
+              value="reading"
+            >
+              <SettingsSection>
+                {fields.readingMode}
+                {fields.pageTransition}
+                {fields.pdfPageFit}
+                {fields.htmlImagePaging}
+                {fields.fullPageReader}
+                {fields.keepScreenOn}
+              </SettingsSection>
+            </Tabs.Panel>
+
+            <Tabs.Panel className="norea-reader-settings-tab-panel" value="text">
+              <SettingsSection>
+                {fields.readerTheme}
+                {fields.backgroundColor}
+                {fields.textColor}
+                {fields.textSize}
+                {fields.lineHeight}
+                {fields.padding}
+                {fields.font}
+                {fields.alignment}
+                {fields.themeActions}
+              </SettingsSection>
+            </Tabs.Panel>
+
+            <Tabs.Panel
+              className="norea-reader-settings-tab-panel"
+              value="controls"
+            >
+              <SettingsSection>{fields.controls}</SettingsSection>
+            </Tabs.Panel>
+
+            <Tabs.Panel
+              className="norea-reader-settings-tab-panel"
+              value="automation"
+            >
+              <SettingsSection>
+                {fields.autoDownloadNextChapter}
+                {fields.autoScroll}
+              </SettingsSection>
+            </Tabs.Panel>
+
+            <Tabs.Panel
+              className="norea-reader-settings-tab-panel"
+              value="indicators"
+            >
+              <SettingsSection>{fields.indicators}</SettingsSection>
+            </Tabs.Panel>
+
+            <Tabs.Panel
+              className="norea-reader-settings-tab-panel"
+              value="advanced"
+            >
+              <SettingsSection>{fields.advanced}</SettingsSection>
+            </Tabs.Panel>
+          </Tabs>
+        </fieldset>
+      )}
+      {fields.resetConfirmation}
     </Stack>
   );
 }
@@ -1322,7 +1488,7 @@ function TapZonePreview({ preset }: { preset: ReaderTapPreset }) {
   );
 }
 
-function getReaderThemeLabel(
+export function getReaderThemeLabel(
   themeId: string,
   fallback: string,
   t: (key: TranslationKey) => string,

@@ -1,4 +1,7 @@
 .norea-reader-shell {
+  --norea-reader-bar-height: calc(
+    var(--norea-control-sm) + var(--norea-space-2) + 1px
+  );
   background: var(--norea-color-bg);
   box-sizing: border-box;
   color: var(--norea-color-ink);
@@ -29,6 +32,7 @@
   align-items: center;
   border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
+  min-height: var(--norea-reader-bar-height);
 }
 
 .norea-reader-bottombar {
@@ -695,98 +699,177 @@
   width: 1.25rem;
 }
 
-.norea-reader-settings-overlay {
-  box-sizing: border-box;
+.norea-reader-quick-sheet {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  inset: 0;
-  max-height: 100%;
-  min-height: 0;
-  pointer-events: auto;
-  position: absolute;
-  z-index: 9;
+  height: min(40rem, calc(var(--norea-viewport-height) * 0.8));
+  overflow: hidden;
 }
 
-.norea-reader-settings-sheet {
-  background: var(--norea-color-surface);
-  border-top: 1px solid var(--norea-color-rule-strong);
-  box-shadow: 0 -0.75rem 2rem rgba(15, 23, 42, 0.18);
-  color: var(--norea-color-ink);
+.norea-reader-quick-sheet.norea-responsive-sheet--drawer {
+  height: calc(var(--norea-viewport-height) * 0.55);
+}
+
+.norea-reader-quick-sheet .norea-responsive-sheet-body {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  flex: 0 1 min(50%, 100%);
-  max-height: 100%;
+  min-height: 0;
+  padding: 0;
+}
+
+.norea-reader-settings-panel {
+  background: var(--norea-color-surface);
+  border-left: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 22rem;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  pointer-events: auto;
-  width: 100%;
+  width: 22rem;
 }
 
-.norea-reader-settings-header {
+.norea-reader-settings-panel-header,
+.norea-reader-quick-heading {
   align-items: center;
-  background: var(--norea-color-surface-raised);
-  border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
-  flex: 0 0 2.5rem;
-  gap: var(--norea-space-3);
-  min-height: 2.5rem;
-  padding: 0 var(--norea-space-3);
+  flex: 0 0 auto;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-2) var(--norea-space-3);
 }
 
-.norea-reader-settings-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
+.norea-reader-settings-panel-header {
+  border-bottom: 1px solid var(--norea-color-rule);
+  justify-content: space-between;
+}
+
+.norea-reader-settings-panel-title,
+.norea-reader-quick-title {
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-md);
-  font-weight: 700;
-  line-height: 1.2;
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
   margin: 0;
+}
+
+.norea-reader-quick {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.norea-reader-quick-top {
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-2) var(--norea-space-4) var(--norea-space-3);
+}
+
+.norea-reader-quick-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--norea-space-2);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--norea-space-3) var(--norea-space-4)
+    calc(var(--norea-space-4) + var(--norea-safe-area-bottom));
+}
+
+.norea-reader-quick-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.norea-reader-quick-footer {
+  border-top: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: var(--norea-space-2) var(--norea-space-4)
+    calc(var(--norea-space-2) + var(--norea-safe-area-bottom));
+}
+
+.norea-reader-quick-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-3);
+  justify-content: space-between;
   min-width: 0;
 }
 
-.norea-reader-settings-actions {
+.norea-reader-quick-label {
+  color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
+  font-size: var(--norea-text-sm);
+  font-weight: 700;
+}
+
+.norea-reader-stepper {
   align-items: center;
   display: inline-flex;
-  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+}
+
+.norea-reader-stepper-value {
+  font-size: var(--norea-text-md);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  min-width: 2.5rem;
+  text-align: center;
+}
+
+.norea-reader-theme-swatches {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--norea-space-2);
+  justify-content: flex-end;
 }
 
-.norea-reader-settings-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
+.norea-reader-theme-swatch {
+  align-items: center;
+  appearance: none;
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  height: var(--norea-control-sm);
+  justify-content: center;
+  padding: 0;
+  width: var(--norea-control-sm);
 }
 
-.norea-reader-shell[data-full-page="true"] .norea-reader-settings-sheet {
-  max-height: calc(
-    var(--norea-viewport-height) - var(--norea-safe-area-top) -
-      var(--norea-safe-area-bottom)
-  );
+.norea-reader-theme-swatch[aria-pressed="true"] {
+  outline: var(--norea-focus-width) solid var(--norea-color-accent);
+  outline-offset: 0.125rem;
 }
 
-@media (min-width: 992px) {
-  .norea-reader-settings-overlay {
-    align-items: flex-end;
-    justify-content: flex-start;
-    padding: calc(var(--norea-safe-area-top) + 3.25rem)
-      var(--norea-safe-area-right) var(--norea-safe-area-bottom)
-      var(--norea-safe-area-left);
-  }
+.norea-reader-theme-swatch-ink {
+  border-radius: 50%;
+  height: 0.625rem;
+  width: 0.625rem;
+}
 
-  .norea-reader-settings-sheet {
-    border-bottom: 1px solid var(--norea-color-rule-strong);
-    border-left: 1px solid var(--norea-color-rule-strong);
-    border-radius: 0 0 0 var(--norea-radius-md);
-    box-shadow: var(--norea-shadow-floating);
-    flex-basis: 100%;
-    max-height: min(50%, 100%);
-    width: min(100%, 34rem);
-  }
-
-  .norea-reader-shell[data-full-page="true"] .norea-reader-settings-sheet {
-    max-height: min(50%, 100%);
-  }
+.norea-reader-quick-more {
+  align-items: center;
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-weight: 700;
+  justify-content: space-between;
+  min-height: var(--norea-control-md);
+  padding: 0 var(--norea-space-3);
 }
 
 .norea-reader-shell[data-full-page="true"] .norea-reader-topbar,
@@ -830,6 +913,13 @@
 .norea-reader-shell[data-full-page="true"][data-chrome-visible="true"]
   .norea-reader-status-overlay {
   opacity: 0;
+}
+
+.norea-reader-shell[data-full-page="true"][data-chrome-visible="true"]
+  .norea-reader-chapter-panel,
+.norea-reader-shell[data-full-page="true"][data-chrome-visible="true"]
+  .norea-reader-settings-panel {
+  padding-block: var(--norea-reader-bar-height);
 }
 
 @media (max-width: 767px) {

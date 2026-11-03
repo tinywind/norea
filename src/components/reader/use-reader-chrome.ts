@@ -1,4 +1,3 @@
-import { useNavigate } from "@tanstack/react-router";
 import {
   useCallback,
   useEffect,
@@ -19,7 +18,6 @@ export function useReaderChrome({
   fullPageReader,
   readerStateVisible,
 }: ReaderChromeOptions) {
-  const navigate = useNavigate();
   const chromeHideTimerRef = useRef<number | null>(null);
   const focusInsideChromeRef = useRef(false);
   const seekbarActiveRef = useRef(false);
@@ -142,10 +140,6 @@ export function useReaderChrome({
     return false;
   }, [chapterListOpen, readerSettingsOpen]);
 
-  const openReaderSettingsPage = useCallback(() => {
-    void navigate({ to: "/settings", search: { section: "reader" } });
-  }, [navigate]);
-
   useEffect(() => {
     if (!overlayOpen && chromeVisibleRef.current) scheduleChromeHide();
   }, [overlayOpen, scheduleChromeHide]);
@@ -166,7 +160,6 @@ export function useReaderChrome({
     openChapterList,
     closeChapterList,
     closeTopReaderOverlay,
-    openReaderSettingsPage,
     handleReaderMenuTap,
     hideReaderChrome,
     handleReaderActivity,

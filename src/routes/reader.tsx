@@ -8,7 +8,8 @@ import {
   ReaderBottomBar,
   ReaderChapterPanel,
   ReaderChapterSheet,
-  ReaderSettingsOverlay,
+  ReaderSettingsSheet,
+  ReaderSettingsSidePanel,
   ReaderTopBar,
 } from "../components/reader/ReaderChrome";
 import { useNextReaderChapter } from "../components/reader/use-next-reader-chapter";
@@ -212,7 +213,6 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     openChapterList,
     closeChapterList,
     closeTopReaderOverlay,
-    openReaderSettingsPage,
     handleReaderMenuTap,
     hideReaderChrome,
     handleReaderActivity,
@@ -230,19 +230,19 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     },
     [openAdjacent],
   );
+  const wideReader = useMediaQuery("(min-width: 1200px)", undefined, {
+    getInitialValueInEffect: false,
+  });
   useReaderKeyboard({
     active,
     contentRef,
     closeTopReaderOverlay,
-    modalOverlayOpen: readerSettingsOpen || chapterListOpen,
+    modalOverlayOpen: (readerSettingsOpen && !wideReader) || chapterListOpen,
     readerChromeDismissible,
     hideReaderChrome,
     handleReaderActivity,
     handleReaderBack,
     openAdjacentChapter,
-  });
-  const chapterPanelAvailable = useMediaQuery("(min-width: 1200px)", undefined, {
-    getInitialValueInEffect: false,
   });
   const chapterPanelOpen = useReaderLayoutStore(
     (state) => state.chapterPanelOpen,
@@ -250,19 +250,25 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const setChapterPanelOpen = useReaderLayoutStore(
     (state) => state.setChapterPanelOpen,
   );
-  const showChapterPanel = chapterPanelAvailable && chapterPanelOpen;
+  const showChapterPanel = wideReader && chapterPanelOpen;
   const toggleChapters = useCallback(() => {
-    if (chapterPanelAvailable) {
+    if (wideReader) {
       setChapterPanelOpen(!chapterPanelOpen);
       return;
     }
     openChapterList();
-  }, [
-    chapterPanelAvailable,
-    chapterPanelOpen,
-    openChapterList,
-    setChapterPanelOpen,
-  ]);
+  }, [chapterPanelOpen, openChapterList, setChapterPanelOpen, wideReader]);
+  const toggleReaderSettings = readerSettingsOpen
+    ? closeReaderSettingsPanel
+    : openReaderSettingsPanel;
+  const readerSettingsContent = useMemo(
+    () => ({
+      kind: isPdfChapter ? ("pdf" as const) : ("html" as const),
+      hasImages:
+        !isPdfChapter && /<(img|picture|svg|video|canvas)\b/i.test(content),
+    }),
+    [content, isPdfChapter],
+  );
   const openChapterFromList = useCallback(
     (target: (typeof chapters)[number]) => {
       closeChapterList();
@@ -482,7 +488,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         novelName={currentNovel?.name}
         onBack={handleReaderBack}
         onIncognitoModeChange={setIncognitoMode}
-        onOpenSettings={openReaderSettingsPanel}
+        onOpenSettings={toggleReaderSettings}
         onRepairMedia={() => repairMediaMutation.mutate()}
         onToggleBookmark={() => bookmarkMutation.mutate()}
         repairMediaDisabled={!chapter || !currentNovel}
@@ -501,6 +507,16 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
           />
         ) : null}
         <Box className="norea-reader-content-frame">{readerContent}</Box>
+        {readerSettingsOpen && wideReader ? (
+          <ReaderSettingsSidePanel
+            content={readerSettingsContent}
+            novelId={chapterNovelId}
+            novelName={currentNovel?.name}
+            onClose={closeReaderSettingsPanel}
+            sourceId={currentSourceId}
+            sourceName={currentSourceName}
+          />
+        ) : null}
       </Box>
       <ReaderBottomBar
         chapterListExpanded={showChapterPanel || chapterListOpen}
@@ -509,7 +525,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         hasPreviousChapter={!!previousChapter}
         onNextChapter={() => openAdjacentChapter(1)}
         onOpenChapters={toggleChapters}
-        onOpenSettings={openReaderSettingsPanel}
+        onOpenSettings={toggleReaderSettings}
         onPreviousChapter={() => openAdjacentChapter(-1)}
         seekSlotRef={setSeekbarContainer}
         settingsOpen={readerSettingsOpen}
@@ -520,18 +536,17 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         loading={chapterListQuery.isLoading}
         onClose={closeChapterList}
         onOpenChapter={openChapterFromList}
-        opened={chapterListOpen && !chapterPanelAvailable}
+        opened={chapterListOpen && !wideReader}
       />
-      {readerSettingsOpen ? (
-        <ReaderSettingsOverlay
-          novelId={chapterNovelId}
-          novelName={currentNovel?.name}
-          onClose={closeReaderSettingsPanel}
-          onOpenSettingsPage={openReaderSettingsPage}
-          sourceId={currentSourceId}
-          sourceName={currentSourceName}
-        />
-      ) : null}
+      <ReaderSettingsSheet
+        content={readerSettingsContent}
+        novelId={chapterNovelId}
+        novelName={currentNovel?.name}
+        onClose={closeReaderSettingsPanel}
+        opened={readerSettingsOpen && !wideReader}
+        sourceId={currentSourceId}
+        sourceName={currentSourceName}
+      />
       {readerBusy ? (
         <BlockingLoadingOverlay
           cancelLabel={t("common.back")}

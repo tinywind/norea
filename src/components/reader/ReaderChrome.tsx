@@ -8,7 +8,10 @@ import {
 } from "../../store/appearance";
 import { BackIconButton } from "../BackIconButton";
 import { IconButton } from "../IconButton";
-import { ReaderSettingsPanel } from "../ReaderSettingsPanel";
+import {
+  type ReaderSettingsContentContext,
+  type ReaderSettingsPanelTarget,
+} from "../ReaderSettingsPanel";
 import {
   BookmarkIcon,
   ChapterListIcon,
@@ -20,6 +23,7 @@ import {
   RepairIcon,
 } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
+import { ReaderQuickSettings } from "./ReaderQuickSettings";
 
 const FINISHED_PROGRESS = 100;
 const READER_CHAPTER_ROW_HEIGHT = 36;
@@ -246,87 +250,91 @@ export function ReaderBottomBar({
   );
 }
 
-export function ReaderSettingsOverlay({
-  novelId,
-  novelName,
-  onClose,
-  onOpenSettingsPage,
-  sourceId,
-  sourceName,
-}: {
+interface ReaderSettingsSurfaceProps {
+  content: ReaderSettingsContentContext;
   novelId?: number;
   novelName?: string;
   onClose: () => void;
-  onOpenSettingsPage: () => void;
   sourceId?: string | null;
   sourceName?: string | null;
-}) {
+}
+
+function getReaderSettingsTarget({
+  novelId,
+  novelName,
+  sourceId,
+  sourceName,
+}: Omit<ReaderSettingsSurfaceProps, "content" | "onClose">):
+  ReaderSettingsPanelTarget {
+  return novelId && novelId > 0
+    ? {
+        kind: "novel",
+        novelId,
+        sourceId,
+        sourceLabel: sourceName,
+        label: novelName,
+      }
+    : { kind: "global" };
+}
+
+/** "Aa" below 1200px: a bottom sheet on phones and a modal on tablets. */
+export function ReaderSettingsSheet({
+  content,
+  onClose,
+  opened,
+  ...target
+}: ReaderSettingsSurfaceProps & { opened: boolean }) {
   const { t } = useTranslation();
-  const settingsTarget =
-    novelId && novelId > 0
-      ? {
-          kind: "novel" as const,
-          novelId,
-          sourceId,
-          sourceLabel: sourceName,
-          label: novelName,
-        }
-      : { kind: "global" as const };
 
   return (
-    <div
-      className="norea-reader-settings-overlay"
-      onPointerDown={(event) => event.stopPropagation()}
-      onPointerUp={(event) => event.stopPropagation()}
-      onPointerMove={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (event.target !== event.currentTarget) return;
-        event.preventDefault();
-        onClose();
-      }}
-      onWheel={(event) => event.stopPropagation()}
+    <ResponsiveSheet
+      className="norea-reader-quick-sheet"
+      onClose={onClose}
+      opened={opened}
+      title={t("settings.category.reader.title")}
     >
-      <section
-        aria-labelledby="reader-settings-overlay-title"
-        className="norea-reader-settings-sheet"
-        role="dialog"
-      >
-        <header className="norea-reader-settings-header">
-          <h2
-            className="norea-reader-settings-title"
-            id="reader-settings-overlay-title"
-          >
-            {t("settings.category.reader.title")}
-          </h2>
-          <div className="norea-reader-settings-actions">
-            <IconButton
-              className="norea-reader-icon-button norea-state-layer"
-              label={t("reader.openFullSettings")}
-              onClick={onOpenSettingsPage}
-              size="sm"
-            >
-              <ReaderSettingsIcon />
-            </IconButton>
-            <IconButton
-              className="norea-reader-icon-button norea-state-layer"
-              label={t("reader.closeSettings")}
-              onClick={onClose}
-              size="sm"
-            >
-              <CloseIcon />
-            </IconButton>
-          </div>
-        </header>
-        <div className="norea-reader-settings-scroll">
-          <ReaderSettingsPanel
-            editEffectiveScope
-            inlineAutomation
-            target={settingsTarget}
-          />
-        </div>
-      </section>
-    </div>
+      <ReaderQuickSettings
+        content={content}
+        target={getReaderSettingsTarget(target)}
+      />
+    </ResponsiveSheet>
+  );
+}
+
+/** "Aa" from 1200px: a non-modal side panel, so the text reflows beside it. */
+export function ReaderSettingsSidePanel({
+  content,
+  onClose,
+  ...target
+}: ReaderSettingsSurfaceProps) {
+  const { t } = useTranslation();
+
+  return (
+    <aside
+      aria-labelledby="reader-settings-panel-title"
+      className="norea-reader-settings-panel"
+    >
+      <header className="norea-reader-settings-panel-header">
+        <h2
+          className="norea-reader-settings-panel-title"
+          id="reader-settings-panel-title"
+        >
+          {t("settings.category.reader.title")}
+        </h2>
+        <IconButton
+          className="norea-reader-icon-button norea-state-layer"
+          label={t("reader.closeSettings")}
+          onClick={onClose}
+          size="sm"
+        >
+          <CloseIcon />
+        </IconButton>
+      </header>
+      <ReaderQuickSettings
+        content={content}
+        target={getReaderSettingsTarget(target)}
+      />
+    </aside>
   );
 }
 

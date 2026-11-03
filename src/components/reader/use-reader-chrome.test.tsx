@@ -2,8 +2,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-
 import { useReaderChrome } from "./use-reader-chrome";
 
 type Chrome = ReturnType<typeof useReaderChrome>;

@@ -5,7 +5,8 @@ import { ConsolePanel } from "./ConsolePrimitives";
 interface SettingsSectionProps {
   children: ReactNode;
   description?: string;
-  title: string;
+  /** Omit when a surrounding tab or sheet already names the section. */
+  title?: string;
 }
 
 interface SettingsFieldRowProps {
@@ -28,12 +29,14 @@ export function SettingsSection({
     <ConsolePanel
       className="norea-settings-group"
       title={
-        <>
-          <Text className="norea-settings-group-title">{title}</Text>
-          {description ? (
-            <Text className="norea-settings-group-description">{description}</Text>
-          ) : null}
-        </>
+        title ? (
+          <>
+            <Text className="norea-settings-group-title">{title}</Text>
+            {description ? (
+              <Text className="norea-settings-group-description">{description}</Text>
+            ) : null}
+          </>
+        ) : undefined
       }
     >
       <div className="norea-settings-group-body">{children}</div>

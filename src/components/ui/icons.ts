@@ -32,6 +32,7 @@ import {
   IconInfoCircle,
   IconInfoSquareRounded,
   IconListNumbers,
+  IconMinus,
   IconPencil,
   IconPin,
   IconPinnedOff,
@@ -99,6 +100,7 @@ export const BookmarkIcon = withAppDefaults(IconBookmark);
 export const ExternalLinkIcon = withAppDefaults(IconExternalLink);
 export const OverflowIcon = withAppDefaults(IconDotsVertical);
 export const PlusIcon = withAppDefaults(IconPlus);
+export const MinusIcon = withAppDefaults(IconMinus);
 export const PlayIcon = withAppDefaults(IconPlayerPlay);
 export const PauseIcon = withAppDefaults(IconPlayerPause);
 export const RestartIcon = withAppDefaults(IconRotateClockwise);

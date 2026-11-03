@@ -5,6 +5,8 @@ import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 
 interface ResponsiveSheetProps {
   children: ReactNode;
+  /** Added to the sheet surface, for a caller that sizes its own layout. */
+  className?: string;
   /** Stays pinned to the bottom edge while the body scrolls. */
   footer?: ReactNode;
   onClose: () => void;
@@ -18,6 +20,7 @@ interface ResponsiveSheetProps {
  */
 export function ResponsiveSheet({
   children,
+  className,
   footer,
   onClose,
   opened,
@@ -32,9 +35,13 @@ export function ResponsiveSheet({
     body: footer
       ? "norea-responsive-sheet-body norea-responsive-sheet-body--with-footer"
       : "norea-responsive-sheet-body",
-    content: desktop
-      ? "norea-responsive-sheet"
-      : "norea-responsive-sheet norea-responsive-sheet--drawer",
+    content: [
+      "norea-responsive-sheet",
+      desktop ? undefined : "norea-responsive-sheet--drawer",
+      className,
+    ]
+      .filter(Boolean)
+      .join(" "),
     header: "norea-responsive-sheet-header",
   };
   const body = (

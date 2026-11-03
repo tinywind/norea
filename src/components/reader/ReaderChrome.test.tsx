@@ -6,7 +6,7 @@ vi.mock("react", async (importOriginal) => ({
   useState: <T,>(initial: T) => [initial, vi.fn()],
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../ReaderSettingsPanel", () => ({ ReaderSettingsPanel: () => null }));
+vi.mock("./ReaderQuickSettings", () => ({ ReaderQuickSettings: () => null }));
 
 import { ReaderBottomBar, ReaderTopBar } from "./ReaderChrome";
 
