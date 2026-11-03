@@ -1,5 +1,6 @@
 import { type WheelEvent } from "react";
 import { type ReaderTapZone } from "../../store/reader";
+import { prefersReducedMotion } from "../../theme/motion";
 import { isReaderMediaEventTarget } from "./reader-content-media";
 export interface PageInfo {
   current: number;
@@ -57,6 +58,45 @@ export function dispatchReaderScrollEvent(node: HTMLElement): void {
 
 export function easeOutCubic(progress: number): number {
   return 1 - Math.pow(1 - progress, 3);
+}
+
+/** How long a reader scroll animation runs; reduced motion turns it into a jump. */
+export function readerScrollAnimationDuration(durationMs: number): number {
+  return prefersReducedMotion() ? 0 : Math.max(0, Math.round(durationMs));
+}
+
+/**
+ * Eases `node.scrollTop` by `distance` over `durationMs`. Scroll changes made
+ * by others while it runs, such as virtual range anchoring, shift the path
+ * instead of being overwritten. Returns a function that stops it.
+ */
+export function animateScrollTop(
+  node: HTMLElement,
+  distance: number,
+  durationMs: number,
+  onComplete: () => void,
+): () => void {
+  const startedAt = performance.now();
+  let base = node.scrollTop;
+  let lastTop = node.scrollTop;
+  let frame: number | null = null;
+  const step = (now: number) => {
+    if (Math.abs(node.scrollTop - lastTop) > 1) base += node.scrollTop - lastTop;
+    const progress = Math.min(1, (now - startedAt) / durationMs);
+    node.scrollTop = base + distance * easeOutCubic(progress);
+    lastTop = node.scrollTop;
+    if (progress < 1) {
+      frame = window.requestAnimationFrame(step);
+      return;
+    }
+    frame = null;
+    onComplete();
+  };
+  frame = window.requestAnimationFrame(step);
+  return () => {
+    if (frame !== null) window.cancelAnimationFrame(frame);
+    frame = null;
+  };
 }
 
 export function isInteractiveTarget(target: EventTarget | null): boolean {

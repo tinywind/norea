@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  animateScrollTop,
   getPageInfo,
   getProgress,
   isAtReadingEnd,
+  readerScrollAnimationDuration,
   scrollToProgress,
   virtualScrollAnchorDelta,
 } from "./reader-content-metrics";
@@ -86,5 +88,78 @@ describe("reader progress geometry", () => {
     expect(
       virtualScrollAnchorDelta(150, [0, 100, 200, 300], [0, 100, 270, 400]),
     ).toBe(0);
+  });
+});
+
+describe("reader scroll animation", () => {
+  let now = 0;
+  let frames: FrameRequestCallback[] = [];
+
+  function stubWindow(reducedMotion: boolean) {
+    now = 0;
+    frames = [];
+    vi.stubGlobal("performance", { now: () => now });
+    vi.stubGlobal("window", {
+      matchMedia: (query: string) => ({
+        matches: reducedMotion && query === "(prefers-reduced-motion: reduce)",
+      }),
+      requestAnimationFrame: (callback: FrameRequestCallback) => frames.push(callback),
+      cancelAnimationFrame: (id: number) => {
+        frames[id - 1] = () => undefined;
+      },
+    });
+  }
+
+  function frame(at: number) {
+    now = at;
+    const callback = frames[frames.length - 1]!;
+    callback(at);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("jumps instead of animating when reduced motion is on", () => {
+    stubWindow(true);
+    expect(readerScrollAnimationDuration(200)).toBe(0);
+    stubWindow(false);
+    expect(readerScrollAnimationDuration(200)).toBe(200);
+    expect(readerScrollAnimationDuration(-5)).toBe(0);
+  });
+
+  it("eases scrollTop to the target and completes on the last frame", () => {
+    stubWindow(false);
+    const node = { scrollTop: 100 } as HTMLElement;
+    const onComplete = vi.fn();
+    animateScrollTop(node, 500, 200, onComplete);
+    frame(100);
+    expect(node.scrollTop).toBeGreaterThan(100);
+    expect(node.scrollTop).toBeLessThan(600);
+    expect(onComplete).not.toHaveBeenCalled();
+    frame(200);
+    expect(node.scrollTop).toBe(600);
+    expect(onComplete).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a scroll anchoring shift made while it runs", () => {
+    stubWindow(false);
+    const node = { scrollTop: 0 } as HTMLElement;
+    animateScrollTop(node, 400, 200, () => undefined);
+    frame(100);
+    node.scrollTop += 50;
+    frame(200);
+    expect(node.scrollTop).toBe(450);
+  });
+
+  it("stops when cancelled", () => {
+    stubWindow(false);
+    const node = { scrollTop: 0 } as HTMLElement;
+    const onComplete = vi.fn();
+    const cancel = animateScrollTop(node, 400, 200, onComplete);
+    cancel();
+    frame(200);
+    expect(node.scrollTop).toBe(0);
+    expect(onComplete).not.toHaveBeenCalled();
   });
 });

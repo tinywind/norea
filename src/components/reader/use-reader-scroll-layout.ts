@@ -18,7 +18,9 @@ import {
   virtualRangeForScroll,
 } from "../reader-virtualization";
 import { readerVirtualSegmentHasMedia } from "./reader-content-media";
+import { MOTION_DURATION_BASE_MS } from "../../theme/motion";
 import {
+  animateScrollTop,
   dispatchReaderScrollEvent,
   easeOutCubic,
   getPagedLeft,
@@ -27,6 +29,7 @@ import {
   getReaderDebugSnapshot,
   logReaderInput,
   PAGED_SCROLL_COMPLETION_BUFFER_MS,
+  readerScrollAnimationDuration,
   SCROLL_PAGE_FRACTION,
   virtualScrollAnchorDelta,
 } from "./reader-content-metrics";
@@ -58,6 +61,7 @@ export function useReaderScrollLayout({
   const pageScrollCompletionTimerRef = useRef<number | null>(null);
   const pageScrollCompletionFrameRef = useRef<number | null>(null);
   const pageScrollAnimatingRef = useRef(false);
+  const scrollStepAnimationRef = useRef<{ cancel: () => void; targetTop: number } | null>(null);
   const nativeWheelActionLockedUntilRef = useRef(0);
   const pendingVirtualScrollAdjustmentRef = useRef(0);
   const scrollStepFloorRef = useRef<{ expiresAt: number; top: number } | null>(
@@ -114,6 +118,8 @@ export function useReaderScrollLayout({
       window.cancelAnimationFrame(pageScrollCompletionFrameRef.current);
       pageScrollCompletionFrameRef.current = null;
     }
+    scrollStepAnimationRef.current?.cancel();
+    scrollStepAnimationRef.current = null;
     pageScrollAnimatingRef.current = false;
   }, []);
 
@@ -200,11 +206,8 @@ export function useReaderScrollLayout({
         return;
       }
 
-      const duration = Math.max(
-        0,
-        Math.round(
-          pageTransitionDuration ?? READER_PAGE_TRANSITION_DURATION_DEFAULT_MS,
-        ),
+      const duration = readerScrollAnimationDuration(
+        pageTransitionDuration ?? READER_PAGE_TRANSITION_DURATION_DEFAULT_MS,
       );
       if (duration <= 0) {
         node.scrollTo({ left: targetLeft, behavior: "auto" });
@@ -285,7 +288,8 @@ export function useReaderScrollLayout({
         return;
       }
       const axisMax = node.scrollHeight - node.clientHeight;
-      const current = node.scrollTop;
+      // A step during a running step continues from where that one lands.
+      const current = scrollStepAnimationRef.current?.targetTop ?? node.scrollTop;
       logReaderInput("page-step-request", () => ({
         source,
         direction,
@@ -317,17 +321,34 @@ export function useReaderScrollLayout({
         targetTop: Math.round(targetTop),
         snapshot: getReaderDebugSnapshot(node),
       }));
-      node.scrollTo({ top: targetTop, behavior: "auto" });
       syncScrollVirtualRange(targetTop, node.clientHeight);
-      if (direction === 1) {
-        scrollStepFloorRef.current = {
-          expiresAt: performance.now() + 250,
-          top: targetTop,
-        };
-        window.requestAnimationFrame(enforceScrollStepFloor);
-      } else {
-        scrollStepFloorRef.current = null;
+      const holdForwardStep = (top: number) => {
+        if (direction === 1) {
+          scrollStepFloorRef.current = {
+            expiresAt: performance.now() + 250,
+            top,
+          };
+          window.requestAnimationFrame(enforceScrollStepFloor);
+        } else {
+          scrollStepFloorRef.current = null;
+        }
+      };
+      scrollStepAnimationRef.current?.cancel();
+      scrollStepAnimationRef.current = null;
+      const duration = readerScrollAnimationDuration(MOTION_DURATION_BASE_MS);
+      if (duration <= 0) {
+        node.scrollTo({ top: targetTop, behavior: "auto" });
+        holdForwardStep(targetTop);
+        return;
       }
+      scrollStepFloorRef.current = null;
+      scrollStepAnimationRef.current = {
+        cancel: animateScrollTop(node, targetTop - node.scrollTop, duration, () => {
+          scrollStepAnimationRef.current = null;
+          holdForwardStep(node.scrollTop);
+        }),
+        targetTop,
+      };
     },
     [
       enforceScrollStepFloor,
