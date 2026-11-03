@@ -403,6 +403,11 @@ export class TaskScheduler {
           if (isUiInteraction(activeEntry) || activeEntry.record.retryAt !== undefined) {
             this.clearTaskRetry(activeEntry);
           }
+          const queue = this.queueForEntry(activeEntry);
+          if (queue && activeEntry.record.lane === "source") {
+            this.removeQueuedId(queue, activeEntry.record.id);
+            this.insertSourceQueueEntry(queue, activeEntry);
+          }
           this.handleUiResponsiveSourceEnqueue(activeEntry);
           this.publishSnapshot();
           this.requestDrain();
@@ -476,7 +481,7 @@ export class TaskScheduler {
       const sourceId = spec.source!.id;
       this.ensureSourceQueueOrder(sourceId);
       const queue = this.sourceQueues.get(sourceId) ?? [];
-      queue.push(id);
+      this.insertSourceQueueEntry(queue, entry);
       this.sourceQueues.set(sourceId, queue);
       this.handleUiResponsiveSourceEnqueue(entry);
     }
@@ -1115,6 +1120,27 @@ export class TaskScheduler {
       entry.record.status === "queued" &&
       isUiInteraction(entry)
     );
+  }
+
+  /**
+   * A requested download (for example a single tapped chapter) goes ahead of queued
+   * downloads with a lower priority from the same source; other work keeps arrival order.
+   */
+  private insertSourceQueueEntry(queue: string[], entry: TaskEntry): void {
+    if (!isInterruptibleDownloadKind(entry.record.kind) || entry.spec.vpnWorker || isBackgroundPriority(entry.record.priority)) {
+      queue.push(entry.record.id);
+      return;
+    }
+    const rank = priorityRank(entry.record.priority);
+    // Scan back over the trailing lower-priority downloads only, so same-priority arrivals stay O(1).
+    let index = queue.length;
+    while (index > 0) {
+      const queued = this.entries.get(queue[index - 1]!);
+      if (!queued || queued.record.status !== "queued" || queued.spec.vpnWorker ||
+          !isInterruptibleDownloadKind(queued.record.kind) || priorityRank(queued.record.priority) <= rank) break;
+      index -= 1;
+    }
+    queue.splice(index, 0, entry.record.id);
   }
 
   private promoteQueuedUiSourceEntry(entry: TaskEntry): void {
