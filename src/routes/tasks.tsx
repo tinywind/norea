@@ -48,6 +48,10 @@ import {
   type TaskSnapshot,
   type TaskStatus,
 } from "../lib/tasks/scheduler";
+import {
+  normalizeFontScalePercent,
+  useAppearanceStore,
+} from "../store/appearance";
 import { useSiteBrowserStore } from "../store/site-browser";
 import "../styles/tasks.css";
 
@@ -727,22 +731,27 @@ function VirtualTaskRows({
   const viewportRef = useRef<HTMLDivElement>(null);
   const pendingScrollTopRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
+  const fontScalePercent = useAppearanceStore(
+    (state) => state.fontScalePercent,
+  );
+  const taskRowHeight =
+    TASK_ROW_HEIGHT * (normalizeFontScalePercent(fontScalePercent) / 100);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(
-    TASK_ROW_HEIGHT * TASK_VIRTUAL_FALLBACK_ROWS,
+    taskRowHeight * TASK_VIRTUAL_FALLBACK_ROWS,
   );
-  const totalHeight = tasks.length * TASK_ROW_HEIGHT;
+  const totalHeight = tasks.length * taskRowHeight;
   const startIndex = Math.max(
     0,
-    Math.floor(scrollTop / TASK_ROW_HEIGHT) - TASK_ROW_OVERSCAN,
+    Math.floor(scrollTop / taskRowHeight) - TASK_ROW_OVERSCAN,
   );
   const endIndex = Math.min(
     tasks.length,
-    Math.ceil((scrollTop + viewportHeight) / TASK_ROW_HEIGHT) +
+    Math.ceil((scrollTop + viewportHeight) / taskRowHeight) +
       TASK_ROW_OVERSCAN,
   );
   const visibleTasks = tasks.slice(startIndex, endIndex);
-  const offsetY = startIndex * TASK_ROW_HEIGHT;
+  const offsetY = startIndex * taskRowHeight;
 
   useEffect(() => {
     const element = viewportRef.current;

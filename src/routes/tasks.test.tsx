@@ -9,12 +9,17 @@ import type { ChapterDownloadRequestState } from "../lib/tasks/chapter-download-
 const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined,
   vpn: { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {}, ownedChapterIds: [] } as VpnDownloadRuntimeSnapshot,
   requests: [] as ChapterDownloadRequestState[],
+  fontScalePercent: 100,
 }));
 vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, useVpnDownloadRuntimeSnapshot: () => state.vpn, useChapterDownloadRequestSnapshot: () => state.requests }));
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn(), resumeVpnDownloadRun: vi.fn(), cancelVpnDownloadRun: vi.fn() }));
 vi.mock("../components/VpnDownloadPanel", () => ({ VpnDownloadPanel: () => null }));
+vi.mock("../store/appearance", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../store/appearance")>(),
+  useAppearanceStore: (selector: (appearance: { fontScalePercent: number }) => unknown) => selector({ fontScalePercent: state.fontScalePercent }),
+}));
 vi.mock("../lib/tasks/source-access-coordinator", () => ({
   applySourceAccessBrowserOutcome: vi.fn(), cancelSourceAccessWait: vi.fn(),
   openSourceAccessBrowser: vi.fn(), sourceAccessBlockSourceNames: () => [],
@@ -95,5 +100,22 @@ describe("task work group order", () => {
     expect(workTitles([
       chapter(1, 1, "succeeded"), chapter(2, 2, "queued", 0), chapter(3, 3, "failed"),
     ])).toEqual(["Novel 2", "Novel 3", "Novel 1"]);
+  });
+});
+
+describe("virtual task row geometry", () => {
+  it.each([[100, 64], [125, 80], [75, 48]])("sizes rows from the %i%% root font scale", (fontScalePercent, rowHeight) => {
+    state.fontScalePercent = fontScalePercent;
+    const records: TaskRecord[] = Array.from({ length: 81 }, (_, index) => ({
+      id: `main-${index}`, lane: "main", kind: "plugin.install", priority: "user",
+      title: `Install ${index}`, status: "queued", createdAt: index, canCancel: true, canRetry: false,
+    }));
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), records, total: records.length };
+    try {
+      const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+      expect($(".norea-task-virtual-spacer").attr("style")).toBe(`height:${81 * rowHeight}px`);
+    } finally {
+      state.fontScalePercent = 100;
+    }
   });
 });
