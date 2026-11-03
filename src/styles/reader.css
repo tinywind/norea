@@ -600,7 +600,7 @@
 
 .norea-reader-floating-seekbar:focus-visible,
 .norea-reader-floating-seekbar[data-active="true"] {
-  outline: 0.125rem solid var(--norea-color-focus);
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
   outline-offset: 0.125rem;
 }
 

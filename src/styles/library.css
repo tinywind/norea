@@ -435,6 +435,11 @@
   padding: 0;
 }
 
+.norea-library-command-search:focus-within {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: 2px;
+}
+
 .norea-library-command-search input::placeholder {
   color: var(--norea-color-ink-muted);
   opacity: 1;

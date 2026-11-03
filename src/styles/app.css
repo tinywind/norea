@@ -124,9 +124,23 @@ a {
   color: inherit;
 }
 
-:focus-visible {
-  outline: 0;
-  box-shadow: var(--norea-focus-ring);
+:focus-visible,
+.mantine-focus-auto:focus-visible,
+.mantine-focus-always:focus {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: 2px;
+}
+
+[data-mantine-color-scheme] .mantine-Input-wrapper:not([data-variant="unstyled"]) {
+  --input-bd-focus: var(--norea-color-focus);
+}
+
+@media (forced-colors: active) {
+  :focus-visible,
+  .mantine-focus-auto:focus-visible,
+  .mantine-focus-always:focus {
+    outline-color: Highlight;
+  }
 }
 
 .norea-app-rail {
@@ -918,7 +932,7 @@ button.norea-console-chip:hover:not(:disabled) {
 }
 
 button.norea-console-chip:focus-visible {
-  outline: 0.125rem solid var(--norea-color-accent);
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
   outline-offset: 0.125rem;
 }
 

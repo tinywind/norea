@@ -360,15 +360,6 @@
   gap: var(--norea-space-1);
 }
 
-.norea-icon-button:focus-visible,
-.norea-search-source-chip:focus-visible,
-.norea-search-source-select:focus-visible,
-.norea-search-preview-card:focus-visible,
-.norea-source-card:focus-visible {
-  box-shadow: var(--norea-focus-ring);
-  outline: 0;
-}
-
 .norea-search-source-icon {
   align-items: center;
   background: var(--norea-color-surface-raised);
