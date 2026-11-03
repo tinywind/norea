@@ -1,39 +1,24 @@
-import {
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  Alert,
-  Group,
-  Loader,
-  Modal,
-  Stack,
-  Text,
-  Title,
-} from "@mantine/core";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Group, Loader, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { notifications } from "@mantine/notifications";
-import { PageFrame, PageSection, StateView } from "../components/AppFrame";
-import { BackIconButton } from "../components/BackIconButton";
-import { ConsoleCover } from "../components/ConsolePrimitives";
-import { SearchBar } from "../components/SearchBar";
-import { SourceNovelCover } from "../components/SourceNovelCover";
-import { TextButton } from "../components/TextButton";
+import { PageFrame, StateView } from "../components/AppFrame";
+import { IconButton } from "../components/IconButton";
 import {
-  listChaptersByNovel,
-  type ChapterListRow,
-} from "../db/queries/chapter";
+  MergeChooseStep,
+  mergeTargetKey,
+  type MergeTargetCandidate,
+} from "../components/novel-merge/MergeChooseStep";
+import { MergeConfirmStep } from "../components/novel-merge/MergeConfirmStep";
+import { MergeMapStep } from "../components/novel-merge/MergeMapStep";
+import { summarizeNovelMergeDecisions } from "../components/novel-merge/merge-map-rows";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+import { BackIcon } from "../components/ui/icons";
+import { listChaptersByNovel } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
-import { useTranslation } from "../i18n";
+import { useTranslation, type TranslationKey } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
-import {
-  useNovelCoverSource,
-  type NovelCoverSourceInput,
-} from "../lib/use-novel-cover-source";
 import {
   globalSearch,
   type GlobalSearchResult,
@@ -43,11 +28,7 @@ import {
   enqueueNovelMergeTargetPreviewTask,
   NovelMergePreviewValidationError,
 } from "../lib/plugins/novel-merge-preview";
-import type {
-  ChapterItem,
-  NovelItem,
-  SourceNovel,
-} from "../lib/plugins/types";
+import type { SourceNovel } from "../lib/plugins/types";
 import {
   taskScheduler,
   type TaskHandle,
@@ -56,6 +37,11 @@ import {
   executeNovelMerge,
   type NovelMergeChapterDecision,
 } from "../lib/novel-merge";
+import {
+  findNovelMergeCopyConflicts,
+  matchNovelMergeChapters,
+  type NovelMergeChapterMatching,
+} from "../lib/novel-merge-matching";
 import { getSourceRequestTimeoutMs } from "../store/browse";
 import { useReaderStore } from "../store/reader";
 import { describeError } from "../lib/errors";
@@ -173,329 +159,28 @@ export function validateNovelMergeDecisions({
   };
 }
 
-interface MergeTargetCandidate {
-  item: NovelItem;
-  pluginId: string;
-  pluginName: string;
-}
 
 interface SelectedMergeTarget extends MergeTargetCandidate {
   novel: SourceNovel;
+  matching: NovelMergeChapterMatching;
 }
 
-interface NovelSummaryCardProps {
-  chapterCount: number;
-  cover: ReactNode;
-  label: string;
-  name: string;
-  sourceName: string;
-}
+type MergeStep = "choose" | "map" | "confirm";
 
-function NovelSummaryCard({
-  chapterCount,
-  cover,
-  label,
-  name,
-  sourceName,
-}: NovelSummaryCardProps) {
-  const { t } = useTranslation();
+const MERGE_STEPS: readonly { id: MergeStep; label: TranslationKey }[] = [
+  { id: "choose", label: "novelMerge.step.choose" },
+  { id: "map", label: "novelMerge.step.map" },
+  { id: "confirm", label: "novelMerge.step.confirm" },
+];
 
-  return (
-    <article className="norea-novel-merge-summary-card">
-      {cover}
-      <div className="norea-novel-merge-summary-copy">
-        <Text className="norea-novel-merge-summary-label">{label}</Text>
-        <Title className="norea-novel-merge-summary-title" order={3}>
-          {name}
-        </Title>
-        <Text size="xs" c="dimmed">
-          {sourceName}
-        </Text>
-        <Text size="xs" c="dimmed">
-          {t("novel.chaptersCount", { count: chapterCount })}
-        </Text>
-      </div>
-    </article>
-  );
-}
-
-function StoredNovelCover({ novel }: { novel: NovelCoverSourceInput }) {
-  const source = useNovelCoverSource(novel);
-  return <ConsoleCover alt={novel.name} height={108} src={source} width={74} />;
-}
-
-function sourceChapterLabel(chapter: ChapterListRow): string {
-  const number = chapter.chapterNumber ?? String(chapter.position);
-  return `#${number} - ${chapter.name}`;
-}
-
-function targetChapterLabel(chapter: ChapterItem): string {
-  return `#${chapter.chapterNumber} - ${chapter.name}`;
-}
-
-interface DecisionWorkbenchProps {
-  activeSourceChapterId: number | null;
-  artifactSourceChapterIdByTargetPath: Readonly<Record<string, number>>;
-  decisionsBySourceChapterId: Readonly<
-    Record<number, NovelMergeChapterDecision | undefined>
-  >;
-  onActiveSourceChapterChange: (chapterId: number) => void;
-  onArtifactSourceChapterChange: (
-    targetPath: string,
-    sourceChapterId: number | null,
-  ) => void;
-  onDecisionChange: (
-    sourceChapterId: number,
-    decision: NovelMergeChapterDecision | null,
-  ) => void;
-  sourceChapters: readonly ChapterListRow[];
-  targetChapters: readonly ChapterItem[];
-}
-
-function DecisionWorkbench({
-  activeSourceChapterId,
-  artifactSourceChapterIdByTargetPath,
-  decisionsBySourceChapterId,
-  onActiveSourceChapterChange,
-  onArtifactSourceChapterChange,
-  onDecisionChange,
-  sourceChapters,
-  targetChapters,
-}: DecisionWorkbenchProps) {
-  const { t } = useTranslation();
-  const sourceById = useMemo(
-    () => new Map(sourceChapters.map((chapter) => [chapter.id, chapter])),
-    [sourceChapters],
-  );
-  const targetByPath = useMemo(
-    () => new Map(targetChapters.map((chapter) => [chapter.path, chapter])),
-    [targetChapters],
-  );
-  const mappedSourceIdsByTargetPath = useMemo(() => {
-    const mapped = new Map<string, number[]>();
-    for (const chapter of sourceChapters) {
-      const decision = decisionsBySourceChapterId[chapter.id];
-      if (decision?.kind !== "map") continue;
-      mapped.set(decision.targetChapterPath, [
-        ...(mapped.get(decision.targetChapterPath) ?? []),
-        chapter.id,
-      ]);
-    }
-    return mapped;
-  }, [decisionsBySourceChapterId, sourceChapters]);
-  const activeSourceChapter =
-    activeSourceChapterId === null
-      ? null
-      : (sourceById.get(activeSourceChapterId) ?? null);
-  const activeDecision = activeSourceChapter
-    ? decisionsBySourceChapterId[activeSourceChapter.id]
-    : undefined;
-  const activeTarget =
-    activeDecision?.kind === "map"
-      ? targetByPath.get(activeDecision.targetChapterPath)
-      : undefined;
-
-  return (
-    <div className="norea-novel-merge-workbench">
-      <section className="norea-novel-merge-chapter-column">
-        <header className="norea-novel-merge-column-header">
-          <Text fw={700}>{t("novelMerge.sourceChapters")}</Text>
-          <Text size="xs" c="dimmed">
-            {t("novel.chaptersCount", { count: sourceChapters.length })}
-          </Text>
-        </header>
-        <div className="norea-novel-merge-chapter-list">
-          {sourceChapters.length === 0 ? (
-            <Text className="norea-novel-merge-empty" size="sm" c="dimmed">
-              {t("novel.noChapters")}
-            </Text>
-          ) : (
-            sourceChapters.map((chapter) => {
-              const decision = decisionsBySourceChapterId[chapter.id];
-              const mappedTarget =
-                decision?.kind === "map"
-                  ? targetByPath.get(decision.targetChapterPath)
-                  : undefined;
-              const decisionLabel =
-                decision?.kind === "exclude"
-                  ? t("novelMerge.decision.excluded")
-                  : mappedTarget
-                    ? t("novelMerge.decision.mappedTo", {
-                        name: mappedTarget.name,
-                      })
-                    : t("novelMerge.decision.undecided");
-
-              return (
-                <button
-                  aria-pressed={activeSourceChapterId === chapter.id}
-                  className="norea-novel-merge-chapter-button"
-                  data-active={
-                    activeSourceChapterId === chapter.id ? "true" : undefined
-                  }
-                  data-decided={decision ? "true" : undefined}
-                  key={chapter.id}
-                  onClick={() => onActiveSourceChapterChange(chapter.id)}
-                  type="button"
-                >
-                  <span className="norea-novel-merge-chapter-name">
-                    {sourceChapterLabel(chapter)}
-                  </span>
-                  <span className="norea-novel-merge-chapter-status">
-                    {chapter.isDownloaded
-                      ? t("novelMerge.decision.downloadedStatus", {
-                          decision: decisionLabel,
-                        })
-                      : decisionLabel}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      </section>
-
-      <section className="norea-novel-merge-decision-column">
-        <header className="norea-novel-merge-column-header">
-          <Text fw={700}>{t("novelMerge.decision.title")}</Text>
-        </header>
-        {activeSourceChapter ? (
-          <Stack gap="sm" className="norea-novel-merge-decision-card">
-            <Text fw={700}>{sourceChapterLabel(activeSourceChapter)}</Text>
-            <Text size="sm" c="dimmed">
-              {activeDecision?.kind === "exclude"
-                ? t("novelMerge.decision.excludedDescription")
-                : activeTarget
-                  ? t("novelMerge.decision.mappedDescription", {
-                      name: targetChapterLabel(activeTarget),
-                    })
-                  : t("novelMerge.decision.chooseTarget")}
-            </Text>
-            <Group gap="xs" wrap="wrap">
-              <TextButton
-                active={activeDecision?.kind === "exclude"}
-                onClick={() =>
-                  onDecisionChange(activeSourceChapter.id, {
-                    kind: "exclude",
-                    sourceChapterId: activeSourceChapter.id,
-                  })
-                }
-                size="sm"
-                tone="warning"
-              >
-                {t("novelMerge.decision.exclude")}
-              </TextButton>
-              {activeDecision ? (
-                <TextButton
-                  onClick={() =>
-                    onDecisionChange(activeSourceChapter.id, null)
-                  }
-                  size="sm"
-                >
-                  {t("novelMerge.decision.clear")}
-                </TextButton>
-              ) : null}
-            </Group>
-          </Stack>
-        ) : (
-          <Text className="norea-novel-merge-empty" size="sm" c="dimmed">
-            {t("novelMerge.decision.selectSource")}
-          </Text>
-        )}
-      </section>
-
-      <section className="norea-novel-merge-chapter-column">
-        <header className="norea-novel-merge-column-header">
-          <Text fw={700}>{t("novelMerge.targetChapters")}</Text>
-          <Text size="xs" c="dimmed">
-            {t("novel.chaptersCount", { count: targetChapters.length })}
-          </Text>
-        </header>
-        <div className="norea-novel-merge-chapter-list">
-          {targetChapters.length === 0 ? (
-            <Text className="norea-novel-merge-empty" size="sm" c="dimmed">
-              {t("novelMerge.targetNoChapters")}
-            </Text>
-          ) : (
-            targetChapters.map((chapter, index) => {
-              const mappedSourceIds =
-                mappedSourceIdsByTargetPath.get(chapter.path) ?? [];
-              const downloadedMappedSources = mappedSourceIds
-                .map((sourceId) => sourceById.get(sourceId))
-                .filter(
-                  (source): source is ChapterListRow =>
-                    source?.isDownloaded === true,
-                );
-              const active =
-                activeDecision?.kind === "map" &&
-                activeDecision.targetChapterPath === chapter.path;
-
-              return (
-                <div
-                  className="norea-novel-merge-target-row"
-                  data-active={active ? "true" : undefined}
-                  key={`${chapter.path}:${index}`}
-                >
-                  <button
-                    className="norea-novel-merge-chapter-button"
-                    disabled={!activeSourceChapter}
-                    onClick={() => {
-                      if (!activeSourceChapter) return;
-                      onDecisionChange(activeSourceChapter.id, {
-                        kind: "map",
-                        sourceChapterId: activeSourceChapter.id,
-                        targetChapterPath: chapter.path,
-                      });
-                    }}
-                    type="button"
-                  >
-                    <span className="norea-novel-merge-chapter-name">
-                      {targetChapterLabel(chapter)}
-                    </span>
-                    <span className="norea-novel-merge-chapter-status">
-                      {mappedSourceIds.length > 0
-                        ? t("novelMerge.mappedSourceCount", {
-                            count: mappedSourceIds.length,
-                          })
-                        : t("novelMerge.targetAvailable")}
-                    </span>
-                  </button>
-                  {downloadedMappedSources.length > 1 ? (
-                    <label className="norea-novel-merge-artifact-field">
-                      <span>{t("novelMerge.artifact.label")}</span>
-                      <select
-                        aria-label={t("novelMerge.artifact.labelFor", {
-                          name: chapter.name,
-                        })}
-                        onChange={(event) =>
-                          onArtifactSourceChapterChange(
-                            chapter.path,
-                            event.currentTarget.value
-                              ? Number(event.currentTarget.value)
-                              : null,
-                          )
-                        }
-                        value={
-                          artifactSourceChapterIdByTargetPath[chapter.path] ?? ""
-                        }
-                      >
-                        <option value="">
-                          {t("novelMerge.artifact.placeholder")}
-                        </option>
-                        {downloadedMappedSources.map((source) => (
-                          <option key={source.id} value={source.id}>
-                            {sourceChapterLabel(source)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : null}
-                </div>
-              );
-            })
-          )}
-        </div>
-      </section>
-    </div>
+function initialDecisions(
+  matching: NovelMergeChapterMatching,
+): Record<number, NovelMergeChapterDecision> {
+  return Object.fromEntries(
+    matching.matched.map((match) => [
+      match.sourceChapterId,
+      { kind: "map", ...match } satisfies NovelMergeChapterDecision,
+    ]),
   );
 }
 
@@ -507,22 +192,21 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const initializedSearchRef = useRef(false);
   const searchAbortRef = useRef<AbortController | null>(null);
   const previewTaskRef = useRef<TaskHandle<SourceNovel> | null>(null);
+  const [step, setStep] = useState<MergeStep>("choose");
   const [searchText, setSearchText] = useState("");
   const [searchResults, setSearchResults] = useState<GlobalSearchResult[]>([]);
   const [selectedTarget, setSelectedTarget] =
     useState<SelectedMergeTarget | null>(null);
-  const [activeSourceChapterId, setActiveSourceChapterId] = useState<
-    number | null
-  >(null);
   const [decisionsBySourceChapterId, setDecisionsBySourceChapterId] = useState<
     Record<number, NovelMergeChapterDecision | undefined>
   >({});
   const [artifactSourceChapterIdByTargetPath, setArtifactSourceChapterIdByTargetPath] =
     useState<Record<string, number>>({});
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [decisionsEdited, setDecisionsEdited] = useState(false);
 
   const sourceNovelQuery = useQuery({
     meta: { errorPresentation: "inline" },
@@ -546,7 +230,10 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     staleTime: 0,
   });
   const sourceNovel = sourceNovelQuery.data ?? null;
-  const sourceChapters = sourceChaptersQuery.data ?? [];
+  const sourceChapters = useMemo(
+    () => sourceChaptersQuery.data ?? [],
+    [sourceChaptersQuery.data],
+  );
   const targetPlugins = useMemo(
     () =>
       (installedPluginsQuery.data ?? [])
@@ -554,12 +241,6 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
         .sort((a, b) => a.name.localeCompare(b.name)),
     [installedPluginsQuery.data, sourceNovel?.pluginId],
   );
-
-  useEffect(() => {
-    if (!sourceNovel || initializedSearchRef.current) return;
-    initializedSearchRef.current = true;
-    setSearchText(sourceNovel.name);
-  }, [sourceNovel]);
 
   useEffect(
     () => () => {
@@ -577,6 +258,10 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       const controller = new AbortController();
       searchAbortRef.current = controller;
       return globalSearch(pluginManager, query, {
+        onResult: (result) =>
+          setSearchResults((current) =>
+            [...current, result].sort((a, b) => a.pluginName.localeCompare(b.pluginName)),
+          ),
         plugins: targetPlugins,
         signal: controller.signal,
         timeoutMs: getSourceRequestTimeoutMs(),
@@ -588,11 +273,21 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       });
     },
     onMutate: () => setSearchResults([]),
-    onSuccess: (results) =>
-      setSearchResults(
-        [...results].sort((a, b) => a.pluginName.localeCompare(b.pluginName)),
-      ),
   });
+
+  useEffect(() => {
+    if (
+      !sourceNovel ||
+      initializedSearchRef.current ||
+      !installedPluginsQuery.isSuccess ||
+      targetPlugins.length === 0
+    ) {
+      return;
+    }
+    initializedSearchRef.current = true;
+    setSearchText(sourceNovel.name);
+    searchTargets.mutate(sourceNovel.name);
+  }, [installedPluginsQuery.isSuccess, searchTargets.mutate, sourceNovel, targetPlugins.length]);
 
   const previewTarget = useMutation({
     meta: { errorPresentation: "inline" },
@@ -613,10 +308,12 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       }
     },
     onSuccess: (target) => {
-      setSelectedTarget(target);
-      setDecisionsBySourceChapterId({});
+      const matching = matchNovelMergeChapters(sourceChapters, target.novel.chapters);
+      setSelectedTarget({ ...target, matching });
+      setDecisionsBySourceChapterId(initialDecisions(matching));
       setArtifactSourceChapterIdByTargetPath({});
-      setActiveSourceChapterId(sourceChapters[0]?.id ?? null);
+      setDecisionsEdited(false);
+      setStep("map");
     },
   });
 
@@ -628,64 +325,49 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       }),
     [decisionsBySourceChapterId, sourceChapters],
   );
+  const copyConflicts = useMemo(
+    () => findNovelMergeCopyConflicts(sourceChapters, orderedDecisions),
+    [orderedDecisions, sourceChapters],
+  );
+  const artifactSelectionsForMerge = useMemo(() => {
+    const conflictSourceIds = new Map(
+      copyConflicts.map((conflict) => [
+        conflict.targetChapterPath,
+        conflict.sourceChapterIds,
+      ]),
+    );
+    return Object.fromEntries(
+      Object.entries(artifactSourceChapterIdByTargetPath).filter(
+        ([targetPath, sourceChapterId]) =>
+          conflictSourceIds.get(targetPath)?.includes(sourceChapterId) === true,
+      ),
+    );
+  }, [artifactSourceChapterIdByTargetPath, copyConflicts]);
   const validation = useMemo(
     () =>
       validateNovelMergeDecisions({
-        artifactSourceChapterIdByTargetPath,
+        artifactSourceChapterIdByTargetPath: artifactSelectionsForMerge,
         decisions: orderedDecisions,
         sourceChapters,
         targetChapterPaths:
           selectedTarget?.novel.chapters.map((chapter) => chapter.path) ?? [],
       }),
     [
-      artifactSourceChapterIdByTargetPath,
+      artifactSelectionsForMerge,
       orderedDecisions,
       selectedTarget?.novel.chapters,
       sourceChapters,
     ],
   );
-  const decidedCount =
-    sourceChapters.length - validation.undecidedSourceChapterIds.length;
-  const artifactSelectionsForMerge = useMemo(() => {
-    const downloadedSourceIds = new Set(
-      sourceChapters
-        .filter((chapter) => chapter.isDownloaded)
-        .map((chapter) => chapter.id),
-    );
-    const downloadedSourceIdsByTargetPath = new Map<string, Set<number>>();
-    for (const decision of orderedDecisions) {
-      if (
-        decision.kind !== "map" ||
-        !downloadedSourceIds.has(decision.sourceChapterId)
-      ) {
-        continue;
-      }
-      const mappedIds =
-        downloadedSourceIdsByTargetPath.get(decision.targetChapterPath) ??
-        new Set<number>();
-      mappedIds.add(decision.sourceChapterId);
-      downloadedSourceIdsByTargetPath.set(
-        decision.targetChapterPath,
-        mappedIds,
-      );
-    }
-    return Object.fromEntries(
-      Object.entries(artifactSourceChapterIdByTargetPath).filter(
-        ([targetPath, sourceChapterId]) => {
-          const mappedIds = downloadedSourceIdsByTargetPath.get(targetPath);
-          return (
-            mappedIds !== undefined &&
-            mappedIds.size > 1 &&
-            mappedIds.has(sourceChapterId)
-          );
-        },
+  const summary = useMemo(
+    () =>
+      summarizeNovelMergeDecisions(
+        sourceChapters,
+        decisionsBySourceChapterId,
+        copyConflicts,
       ),
-    );
-  }, [
-    artifactSourceChapterIdByTargetPath,
-    orderedDecisions,
-    sourceChapters,
-  ]);
+    [copyConflicts, decisionsBySourceChapterId, sourceChapters],
+  );
 
   const mergeNovel = useMutation({
     meta: { errorPresentation: "inline" },
@@ -711,15 +393,23 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       return result;
     },
     onSuccess: (result) => {
-      setConfirmationOpen(false);
+      const targetName = selectedTarget?.novel.name ?? "";
+      notifications.show({
+        color: "ok",
+        message: t("novelMerge.success", { target: targetName }),
+      });
       if (result.cleanupWarnings.length > 0) {
         console.warn("[novel-merge] cleanup warnings", result.cleanupWarnings);
         notifications.show({
           color: "warn",
           title: t("novelMerge.cleanupWarning.title"),
-          message: t("novelMerge.cleanupWarning.description"),
+          message: t("novelMerge.cleanupWarning.outcome", {
+            count: result.cleanupWarnings.length,
+            source: sourceNovel?.name ?? "",
+          }),
         });
       }
+      setDecisionsEdited(false);
       void queryClient.invalidateQueries({ queryKey: ["novel"] });
       void queryClient.invalidateQueries({ queryKey: ["chapter"] });
       void queryClient.invalidateQueries({ queryKey: ["category"] });
@@ -740,20 +430,39 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     });
   }
 
+  function confirmDiscardDecisions(
+    title: string,
+    confirmLabel: string,
+  ): Promise<boolean> {
+    if (!decisionsEdited || !selectedTarget) return Promise.resolve(true);
+    return confirm({
+      confirmLabel,
+      danger: true,
+      message: t("novelMerge.discard.message", { target: selectedTarget.novel.name }),
+      title,
+    });
+  }
+
+  async function leaveFlow(): Promise<void> {
+    const leave = await confirmDiscardDecisions(
+      t("novelMerge.discard.leaveTitle"),
+      t("novelMerge.discard.leave"),
+    );
+    if (leave) backToSourceNovel();
+  }
+
   function goBack(): boolean {
     if (mergeNovel.isPending) return true;
-    if (confirmationOpen) {
-      setConfirmationOpen(false);
+    if (step === "confirm") {
+      mergeNovel.reset();
+      setStep("map");
       return true;
     }
-    if (selectedTarget) {
-      setSelectedTarget(null);
-      setDecisionsBySourceChapterId({});
-      setArtifactSourceChapterIdByTargetPath({});
-      previewTarget.reset();
+    if (step === "map") {
+      setStep("choose");
       return true;
     }
-    backToSourceNovel();
+    void leaveFlow();
     return true;
   }
 
@@ -773,41 +482,52 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     searchTargets.mutate(query);
   }
 
+  async function pickTarget(candidate: MergeTargetCandidate): Promise<void> {
+    if (previewTarget.isPending) return;
+    if (selectedTarget && mergeTargetKey(selectedTarget) === mergeTargetKey(candidate)) {
+      setStep("map");
+      return;
+    }
+    const change = await confirmDiscardDecisions(
+      t("novelMerge.discard.changeTitle"),
+      t("novelMerge.discard.change"),
+    );
+    if (change) previewTarget.mutate(candidate);
+  }
+
   function changeDecision(
     sourceChapterId: number,
     decision: NovelMergeChapterDecision | null,
   ): void {
-    const previousDecision = decisionsBySourceChapterId[sourceChapterId];
+    setDecisionsEdited(true);
     setDecisionsBySourceChapterId((current) => {
       const next = { ...current };
       if (decision) next[sourceChapterId] = decision;
       else delete next[sourceChapterId];
       return next;
     });
-    if (previousDecision?.kind === "map") {
-      setArtifactSourceChapterIdByTargetPath((current) => {
-        if (
-          current[previousDecision.targetChapterPath] !== sourceChapterId
-        ) {
-          return current;
-        }
-        const next = { ...current };
-        delete next[previousDecision.targetChapterPath];
-        return next;
-      });
-    }
+  }
+
+  function excludeRemaining(): void {
+    setDecisionsEdited(true);
+    setDecisionsBySourceChapterId((current) => {
+      const next = { ...current };
+      for (const chapter of sourceChapters) {
+        next[chapter.id] ??= { kind: "exclude", sourceChapterId: chapter.id };
+      }
+      return next;
+    });
   }
 
   function changeArtifactSourceChapter(
     targetPath: string,
-    sourceChapterId: number | null,
+    sourceChapterId: number,
   ): void {
-    setArtifactSourceChapterIdByTargetPath((current) => {
-      const next = { ...current };
-      if (sourceChapterId === null) delete next[targetPath];
-      else next[targetPath] = sourceChapterId;
-      return next;
-    });
+    setDecisionsEdited(true);
+    setArtifactSourceChapterIdByTargetPath((current) => ({
+      ...current,
+      [targetPath]: sourceChapterId,
+    }));
   }
 
   if (sourceNovelId <= 0) {
@@ -890,301 +610,106 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     sourceNovel.pluginName ??
     pluginManager.getPlugin(sourceNovel.pluginId)?.name ??
     sourceNovel.pluginId;
-  const previewingKey = previewTarget.variables
-    ? `${previewTarget.variables.pluginId}:${previewTarget.variables.item.path}`
-    : null;
+  const previewingKey =
+    previewTarget.isPending && previewTarget.variables
+      ? mergeTargetKey(previewTarget.variables)
+      : null;
+  const stepIndex = MERGE_STEPS.findIndex((entry) => entry.id === step);
 
   return (
-    <PageFrame className="norea-novel-merge-page" size="wide">
-      <header className="norea-novel-merge-header">
-        <BackIconButton onClick={() => goBack()} />
-        <div>
-          <Text className="norea-page-kicker">{t("novelMerge.eyebrow")}</Text>
-          <Title className="norea-page-title" order={1}>
-            {t("novelMerge.title")}
-          </Title>
-          <Text className="norea-page-description" mt="xs">
-            {t("novelMerge.description")}
-          </Text>
-        </div>
+    <div className="norea-novel-merge-page" data-step={step}>
+      <header className="norea-merge-app-bar">
+        <IconButton
+          disabled={mergeNovel.isPending}
+          label={t("common.back")}
+          onClick={() => goBack()}
+          size="lg"
+        >
+          <BackIcon />
+        </IconButton>
+        <h1 className="norea-merge-app-bar-title">
+          {t("novelMerge.title", { name: sourceNovel.name })}
+        </h1>
+        <span className="norea-merge-step-count">
+          {t("novelMerge.step.count", {
+            current: stepIndex + 1,
+            total: MERGE_STEPS.length,
+          })}
+        </span>
       </header>
+      <ol aria-label={t("novelMerge.step.label")} className="norea-merge-steps">
+        {MERGE_STEPS.map((entry, index) => (
+          <li
+            aria-current={entry.id === step ? "step" : undefined}
+            data-done={index < stepIndex ? "true" : undefined}
+            key={entry.id}
+          >
+            {t(entry.label)}
+          </li>
+        ))}
+      </ol>
 
-      {selectedTarget ? (
-        <>
-          <PageSection className="norea-novel-merge-overview">
-            <NovelSummaryCard
-              chapterCount={sourceChapters.length}
-              cover={<StoredNovelCover novel={sourceNovel} />}
-              label={t("novelMerge.sourceNovel")}
-              name={sourceNovel.name}
-              sourceName={sourceName}
-            />
-            <div className="norea-novel-merge-direction" aria-hidden="true">
-              &rarr;
-            </div>
-            <NovelSummaryCard
-              chapterCount={selectedTarget.novel.chapters.length}
-              cover={
-                <SourceNovelCover
-                  height={108}
-                  item={{
-                    ...selectedTarget.item,
-                    cover:
-                      selectedTarget.novel.cover ?? selectedTarget.item.cover,
-                  }}
-                  plugin={pluginManager.getPlugin(selectedTarget.pluginId)}
-                  width={74}
-                />
-              }
-              label={t("novelMerge.targetNovel")}
-              name={selectedTarget.novel.name}
-              sourceName={selectedTarget.pluginName}
-            />
-            <TextButton onClick={() => goBack()} size="sm">
-              {t("novelMerge.changeTarget")}
-            </TextButton>
-          </PageSection>
-
-          <PageSection className="norea-novel-merge-decision-section">
-            <Group justify="space-between" align="flex-start" wrap="wrap">
-              <div>
-                <Title order={2} size="h3">
-                  {t("novelMerge.decisions.title")}
-                </Title>
-                <Text size="sm" c="dimmed" mt={4}>
-                  {t("novelMerge.decisions.description")}
-                </Text>
-              </div>
-              <div className="norea-novel-merge-progress" role="status">
-                {t("novelMerge.decisions.progress", {
-                  decided: decidedCount,
-                  total: sourceChapters.length,
-                })}
-              </div>
-            </Group>
-
-            <DecisionWorkbench
-              activeSourceChapterId={activeSourceChapterId}
-              artifactSourceChapterIdByTargetPath={
-                artifactSourceChapterIdByTargetPath
-              }
-              decisionsBySourceChapterId={decisionsBySourceChapterId}
-              onActiveSourceChapterChange={setActiveSourceChapterId}
-              onArtifactSourceChapterChange={changeArtifactSourceChapter}
-              onDecisionChange={changeDecision}
-              sourceChapters={sourceChapters}
-              targetChapters={selectedTarget.novel.chapters}
-            />
-
-            {validation.undecidedSourceChapterIds.length > 0 ? (
-              <Alert color="warn" variant="light">
-                {t("novelMerge.decisions.undecided", {
-                  count: validation.undecidedSourceChapterIds.length,
-                })}
-              </Alert>
-            ) : null}
-            {validation.artifactChoiceRequiredTargetPaths.length > 0 ? (
-              <Alert color="warn" variant="light">
-                {t("novelMerge.artifact.required", {
-                  count: validation.artifactChoiceRequiredTargetPaths.length,
-                })}
-              </Alert>
-            ) : null}
-            {mergeNovel.isError ? (
-              <Alert color="danger" title={t("novelMerge.mergeFailed")}>
-                {describeError(mergeNovel.error)}
-              </Alert>
-            ) : null}
-
-            <Group justify="flex-end" gap="sm" wrap="wrap">
-              <TextButton onClick={() => goBack()}>
-                {t("common.cancel")}
-              </TextButton>
-              <TextButton
-                disabled={!validation.canConfirm || mergeNovel.isPending}
-                onClick={() => setConfirmationOpen(true)}
-                tone="accent"
-              >
-                {t("novelMerge.reviewMerge")}
-              </TextButton>
-            </Group>
-          </PageSection>
-        </>
+      {step === "choose" || !selectedTarget ? (
+        <MergeChooseStep
+          noTargetPlugins={
+            installedPluginsQuery.isSuccess && targetPlugins.length === 0
+          }
+          onCancelSearch={() => searchAbortRef.current?.abort()}
+          onContinue={() => setStep("map")}
+          onPick={(candidate) => void pickTarget(candidate)}
+          onSearch={submitSearch}
+          onSearchTextChange={setSearchText}
+          pluginsError={
+            installedPluginsQuery.isError
+              ? describeError(installedPluginsQuery.error)
+              : null
+          }
+          previewError={
+            previewTarget.isError
+              ? previewTarget.error instanceof NovelMergePreviewValidationError
+                ? t("novelMerge.findTarget.previewInvalid")
+                : describeError(previewTarget.error)
+              : null
+          }
+          previewingKey={previewingKey}
+          results={searchResults}
+          searchError={
+            searchTargets.isError ? describeError(searchTargets.error) : null
+          }
+          searchSettled={searchTargets.isSuccess}
+          searchText={searchText}
+          searching={searchTargets.isPending}
+          selectedKey={selectedTarget ? mergeTargetKey(selectedTarget) : null}
+          sourceName={sourceName}
+        />
+      ) : step === "map" ? (
+        <MergeMapStep
+          canContinue={validation.canConfirm}
+          conflicts={copyConflicts}
+          copyChoices={artifactSourceChapterIdByTargetPath}
+          decisions={decisionsBySourceChapterId}
+          matching={selectedTarget.matching}
+          onContinue={() => setStep("confirm")}
+          onCopyChoiceChange={changeArtifactSourceChapter}
+          onDecisionChange={changeDecision}
+          onExcludeRemaining={excludeRemaining}
+          sourceChapters={sourceChapters}
+          targetChapters={selectedTarget.novel.chapters}
+        />
       ) : (
-        <>
-          <PageSection className="norea-novel-merge-source-summary">
-            <NovelSummaryCard
-              chapterCount={sourceChapters.length}
-              cover={<StoredNovelCover novel={sourceNovel} />}
-              label={t("novelMerge.sourceNovel")}
-              name={sourceNovel.name}
-              sourceName={sourceName}
-            />
-          </PageSection>
-
-          <PageSection className="norea-novel-merge-target-search">
-            <Title order={2} size="h3">
-              {t("novelMerge.findTarget.title")}
-            </Title>
-            <Text size="sm" c="dimmed">
-              {t("novelMerge.findTarget.description", { source: sourceName })}
-            </Text>
-            {installedPluginsQuery.isError ? (
-              <Alert color="danger" title={t("common.loadFailed")}>
-                {describeError(installedPluginsQuery.error)}
-              </Alert>
-            ) : targetPlugins.length === 0 && !installedPluginsQuery.isPending ? (
-              <Alert color="warn">
-                {t("novelMerge.findTarget.noPlugins")}
-              </Alert>
-            ) : (
-              <SearchBar
-                onChange={setSearchText}
-                onSubmit={submitSearch}
-                placeholder={t("novelMerge.findTarget.placeholder")}
-                value={searchText}
-              />
-            )}
-
-            {searchTargets.isPending ? (
-              <Group gap="sm" className="norea-novel-merge-search-state">
-                <Loader size="sm" />
-                <Text size="sm">{t("novelMerge.findTarget.searching")}</Text>
-              </Group>
-            ) : null}
-            {searchTargets.isError ? (
-              <Alert color="danger" title={t("novelMerge.findTarget.searchFailed")}>
-                {describeError(searchTargets.error)}
-              </Alert>
-            ) : null}
-            {previewTarget.isError ? (
-              <Alert color="danger" title={t("novelMerge.findTarget.previewFailed")}>
-                {previewTarget.error instanceof NovelMergePreviewValidationError
-                  ? t("novelMerge.findTarget.previewInvalid")
-                  : describeError(previewTarget.error)}
-              </Alert>
-            ) : null}
-
-            <div className="norea-novel-merge-search-results">
-              {searchResults.map((result) => (
-                <section className="norea-novel-merge-source-results" key={result.pluginId}>
-                  <Group justify="space-between" gap="sm" wrap="nowrap">
-                    <Text fw={700}>{result.pluginName}</Text>
-                    <Text size="xs" c="dimmed">
-                      {t("novelMerge.findTarget.resultCount", {
-                        count: result.novels.length,
-                      })}
-                    </Text>
-                  </Group>
-                  {result.error ? (
-                    <Alert color="danger" variant="light">
-                      {result.error}
-                    </Alert>
-                  ) : result.novels.length === 0 ? (
-                    <Text size="sm" c="dimmed">
-                      {t("novelMerge.findTarget.noResultsFromSource")}
-                    </Text>
-                  ) : (
-                    <div className="norea-novel-merge-result-grid">
-                      {result.novels.map((item, index) => {
-                        const key = `${result.pluginId}:${item.path}`;
-                        const previewing =
-                          previewTarget.isPending && previewingKey === key;
-                        return (
-                          <button
-                            className="norea-novel-merge-result-card"
-                            disabled={previewTarget.isPending}
-                            key={`${key}:${index}`}
-                            onClick={() =>
-                              previewTarget.mutate({
-                                item,
-                                pluginId: result.pluginId,
-                                pluginName: result.pluginName,
-                              })
-                            }
-                            type="button"
-                          >
-                            <SourceNovelCover
-                              height={108}
-                              item={item}
-                              plugin={pluginManager.getPlugin(result.pluginId)}
-                              width={74}
-                            />
-                            <span className="norea-novel-merge-result-name">
-                              {item.name}
-                            </span>
-                            <span className="norea-novel-merge-result-action">
-                              {previewing ? (
-                                <Loader size="xs" />
-                              ) : (
-                                t("novelMerge.findTarget.preview")
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
-              ))}
-            </div>
-
-            {!searchTargets.isPending &&
-            searchResults.length > 0 &&
-            searchResults.every(
-              (result) => result.error || result.novels.length === 0,
-            ) ? (
-              <Text size="sm" c="dimmed">
-                {t("novelMerge.findTarget.noResults")}
-              </Text>
-            ) : null}
-          </PageSection>
-        </>
+        <MergeConfirmStep
+          error={mergeNovel.isError ? describeError(mergeNovel.error) : null}
+          onConfirm={() => {
+            if (!mergeNovel.isPending) mergeNovel.mutate();
+          }}
+          pending={mergeNovel.isPending}
+          sourceName={sourceNovel.name}
+          sourcePluginName={sourceName}
+          summary={summary}
+          targetName={selectedTarget.novel.name}
+          targetPluginName={selectedTarget.pluginName}
+        />
       )}
-
-      <Modal
-        centered
-        closeOnClickOutside={!mergeNovel.isPending}
-        closeOnEscape={!mergeNovel.isPending}
-        onClose={() => {
-          if (!mergeNovel.isPending) setConfirmationOpen(false);
-        }}
-        opened={confirmationOpen}
-        title={t("novelMerge.confirmation.title")}
-      >
-        <Stack gap="md">
-          <Text size="sm">
-            {t("novelMerge.confirmation.description", {
-              source: sourceNovel.name,
-              target: selectedTarget?.novel.name ?? "",
-            })}
-          </Text>
-          <Alert color="warn" variant="light">
-            {t("novelMerge.confirmation.warning")}
-          </Alert>
-          {mergeNovel.isError ? (
-            <Alert color="danger">{describeError(mergeNovel.error)}</Alert>
-          ) : null}
-          <Group justify="flex-end" gap="sm">
-            <TextButton
-              disabled={mergeNovel.isPending}
-              onClick={() => setConfirmationOpen(false)}
-            >
-              {t("common.cancel")}
-            </TextButton>
-            <TextButton
-              disabled={!validation.canConfirm || mergeNovel.isPending}
-              loading={mergeNovel.isPending}
-              onClick={() => mergeNovel.mutate()}
-              tone="warning"
-            >
-              {mergeNovel.isPending
-                ? t("novelMerge.merging")
-                : t("novelMerge.confirmation.confirm")}
-            </TextButton>
-          </Group>
-        </Stack>
-      </Modal>
-    </PageFrame>
+    </div>
   );
 }

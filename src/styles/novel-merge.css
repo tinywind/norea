@@ -1,328 +1,384 @@
 .norea-novel-merge-page {
   --norea-page-max-width: 90rem;
-  min-height: var(--norea-app-content-height);
-}
-
-.norea-novel-merge-header {
-  align-items: flex-start;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: auto minmax(0, 1fr);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: var(--norea-app-content-height);
+  min-height: 0;
 }
 
 .norea-novel-merge-loading {
   min-height: 12rem;
 }
 
-.norea-novel-merge-source-summary,
-.norea-novel-merge-target-search,
-.norea-novel-merge-decision-section {
-  display: grid;
-  gap: var(--norea-space-4);
-}
-
-.norea-novel-merge-source-summary {
-  max-width: 38rem;
-}
-
-.norea-novel-merge-summary-card {
-  align-items: center;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: auto minmax(0, 1fr);
-  min-width: 0;
-}
-
-.norea-novel-merge-summary-copy {
-  min-width: 0;
-}
-
-.norea-novel-merge-summary-label {
-  color: var(--norea-color-accent);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-}
-
-.norea-novel-merge-summary-title {
-  color: var(--norea-color-ink);
-  font-family: var(--norea-font-heading);
-  font-size: var(--norea-text-lg);
-  line-height: 1.25;
-  margin-block: var(--norea-space-1);
-  overflow-wrap: anywhere;
-}
-
-.norea-novel-merge-overview {
-  align-items: center;
-  display: grid;
-  gap: var(--norea-space-4);
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
-}
-
-.norea-novel-merge-direction {
-  color: var(--norea-color-accent);
-  font-family: var(--norea-font-heading);
-  font-size: var(--norea-text-2xl);
-  font-weight: 700;
-}
-
-.norea-novel-merge-search-state {
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
-  padding: var(--norea-space-3);
-}
-
-.norea-novel-merge-search-results {
-  display: grid;
-  gap: var(--norea-space-3);
-}
-
-.norea-novel-merge-source-results {
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
-  display: grid;
-  gap: var(--norea-space-3);
-  padding: var(--norea-space-3);
-}
-
-.norea-novel-merge-result-grid {
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-}
-
-.norea-novel-merge-result-card {
+.norea-merge-app-bar {
   align-items: center;
   background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
-  color: var(--norea-color-ink);
-  cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-2);
-  min-width: 0;
-  padding: var(--norea-space-3);
-  text-align: center;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+  min-height: 3.5rem;
+  padding: 0 var(--norea-space-4) 0 var(--norea-space-2);
 }
 
-.norea-novel-merge-result-card:hover:not(:disabled),
-.norea-novel-merge-result-card:focus-visible {
-  background: var(--norea-color-surface-raised);
+.norea-merge-app-bar-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-lg);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-merge-step-count {
+  color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.norea-merge-steps {
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--norea-space-4) var(--norea-space-3);
+}
+
+.norea-merge-steps li {
+  align-items: center;
+  color: var(--norea-color-ink-muted);
+  display: flex;
+  font-size: var(--norea-text-sm);
+  gap: var(--norea-space-2);
+  min-width: 0;
+}
+
+.norea-merge-steps li::before {
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  content: "";
+  flex: 0 0 auto;
+  height: 0.625rem;
+  width: 0.625rem;
+}
+
+.norea-merge-steps li[aria-current="step"],
+.norea-merge-steps li[data-done="true"] {
+  color: var(--norea-color-ink);
+}
+
+.norea-merge-steps li[aria-current="step"] {
+  font-weight: var(--norea-weight-bold);
+}
+
+.norea-merge-steps li[aria-current="step"]::before,
+.norea-merge-steps li[data-done="true"]::before {
+  background: var(--norea-color-accent);
   border-color: var(--norea-color-accent);
 }
 
-.norea-novel-merge-result-card:disabled {
-  cursor: default;
-  opacity: 0.65;
-}
-
-.norea-novel-merge-result-name {
-  display: -webkit-box;
-  font-size: var(--norea-text-sm);
-  font-weight: 700;
-  line-height: 1.3;
-  min-height: 2.1em;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.norea-novel-merge-result-action {
-  align-items: center;
-  color: var(--norea-color-accent);
-  display: inline-flex;
-  font-size: var(--norea-text-xs);
-  font-weight: 700;
-  min-height: 1rem;
-}
-
-.norea-novel-merge-progress {
-  background: var(--norea-color-accent-soft);
-  border: 1px solid var(--norea-color-accent);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-accent);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  padding: var(--norea-space-2) var(--norea-space-3);
-}
-
-.norea-novel-merge-workbench {
-  align-items: stretch;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: minmax(15rem, 1fr) minmax(13rem, 0.7fr) minmax(15rem, 1fr);
-  min-width: 0;
-}
-
-.norea-novel-merge-chapter-column,
-.norea-novel-merge-decision-column {
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
-  display: flex;
-  flex-direction: column;
-  min-height: 22rem;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.norea-novel-merge-column-header {
-  align-items: center;
-  background: var(--norea-color-surface);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  gap: var(--norea-space-3);
-  justify-content: space-between;
-  min-height: 3rem;
-  padding: var(--norea-space-3);
-}
-
-.norea-novel-merge-chapter-list {
+.norea-merge-choose,
+.norea-merge-map,
+.norea-merge-confirm {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  max-height: min(58vh, 40rem);
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: var(--norea-space-2);
+  min-height: 0;
 }
 
-.norea-novel-merge-chapter-button {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink);
-  cursor: pointer;
+.norea-merge-step-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--norea-space-3);
+  margin-inline: auto;
+  max-width: 48rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--norea-space-4);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.norea-merge-search-state {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-3);
+}
+
+.norea-merge-result-group {
   display: grid;
-  gap: var(--norea-space-1);
   min-width: 0;
-  padding: 0.5625rem var(--norea-space-3);
+}
+
+.norea-merge-result-group-title {
+  align-items: baseline;
+  color: var(--norea-color-ink);
+  display: flex;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+  margin: var(--norea-space-2) 0 var(--norea-space-1);
+}
+
+.norea-merge-result-row .norea-list-item-leading {
+  border-radius: var(--norea-radius-sm);
+  overflow: hidden;
+}
+
+.norea-merge-failed-sources {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+}
+
+.norea-merge-failed-sources ul {
+  margin: var(--norea-space-2) 0 0;
+  overflow-wrap: anywhere;
+  padding-left: var(--norea-space-5);
+}
+
+.norea-merge-footer {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-top: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  justify-content: flex-end;
+  padding: var(--norea-space-3) var(--norea-space-4);
+}
+
+.norea-merge-footer-status {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.norea-merge-toolbar {
+  align-items: center;
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2) var(--norea-space-4);
+  padding: var(--norea-space-2) var(--norea-space-4);
+}
+
+.norea-merge-virtual-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.norea-merge-virtual-spacer {
+  overflow-anchor: none;
+  position: relative;
+}
+
+.norea-merge-virtual-row {
+  box-sizing: border-box;
+  display: flex;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.norea-merge-virtual-row > * {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.norea-merge-section-header {
+  align-items: center;
+  background: var(--norea-color-bg);
+  border: 0;
+  color: var(--norea-color-ink);
+  display: flex;
+  font: inherit;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+  margin: 0;
+  padding: 0 var(--norea-space-4);
   text-align: left;
+}
+
+.norea-merge-section-header[data-section="conflicts"] {
+  color: var(--norea-color-warn);
+}
+
+.norea-merge-section-toggle {
+  cursor: pointer;
+  position: relative;
   width: 100%;
 }
 
-.norea-novel-merge-chapter-button:hover:not(:disabled),
-.norea-novel-merge-chapter-button:focus-visible {
-  background: var(--norea-color-surface);
-  border-color: var(--norea-color-rule-strong);
+.norea-merge-source-row,
+.norea-merge-target-row {
+  height: 100%;
 }
 
-.norea-novel-merge-chapter-button[data-active="true"],
-.norea-novel-merge-target-row[data-active="true"] > .norea-novel-merge-chapter-button {
-  background: var(--norea-color-accent-soft);
-  border-color: var(--norea-color-accent);
+.norea-merge-source-row[data-undecided="true"] {
+  box-shadow: inset 0.1875rem 0 0 var(--norea-color-warn);
 }
 
-.norea-novel-merge-chapter-button[data-decided="true"]
-  .norea-novel-merge-chapter-status {
-  color: var(--norea-color-ok);
-}
-
-.norea-novel-merge-chapter-button:disabled {
-  cursor: default;
-  opacity: 0.72;
-}
-
-.norea-novel-merge-chapter-name {
-  font-size: var(--norea-text-sm);
-  font-weight: 650;
-  line-height: 1.3;
+.norea-merge-source-row .norea-list-item-subtitle,
+.norea-merge-target-row .norea-list-item-subtitle {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.norea-novel-merge-chapter-status {
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.3;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-novel-merge-decision-card,
-.norea-novel-merge-empty {
-  padding: var(--norea-space-3);
-}
-
-.norea-novel-merge-target-row {
+.norea-merge-conflict-row {
   border-bottom: 1px solid var(--norea-color-rule);
+  box-shadow: inset 0.1875rem 0 0 var(--norea-color-warn);
   display: grid;
   gap: var(--norea-space-2);
-  padding-block: var(--norea-space-1) var(--norea-space-2);
+  padding: var(--norea-space-2) var(--norea-space-4);
 }
 
-.norea-novel-merge-target-row:last-child {
-  border-bottom: 0;
+.norea-merge-conflict-row[data-resolved="true"] {
+  box-shadow: none;
 }
 
-.norea-novel-merge-artifact-field {
-  color: var(--norea-color-ink-muted);
+.norea-merge-conflict-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-merge-conflict-choice {
+  align-items: center;
   display: grid;
-  font-size: var(--norea-text-xs);
-  gap: var(--norea-space-1);
-  padding-inline: var(--norea-space-3);
+  gap: var(--norea-space-2);
+  grid-template-columns: auto minmax(0, 1fr);
 }
 
-.norea-novel-merge-artifact-field select {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink);
-  font: inherit;
-  min-height: 2rem;
-  padding-inline: var(--norea-space-2);
-  width: 100%;
+.norea-merge-conflict-choice .mantine-SegmentedControl-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-@media (max-width: 991px) {
-  .norea-novel-merge-overview {
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  }
-
-  .norea-novel-merge-overview > .norea-text-button {
-    grid-column: 1 / -1;
-    justify-self: end;
-  }
-
-  .norea-novel-merge-workbench {
-    grid-template-columns: 1fr;
-  }
-
-  .norea-novel-merge-chapter-column,
-  .norea-novel-merge-decision-column {
-    min-height: 0;
-  }
-
-  .norea-novel-merge-chapter-list {
-    max-height: 22rem;
-  }
+.norea-merge-panes {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
 }
 
-@media (max-width: 575px) {
-  .norea-novel-merge-overview {
-    grid-template-columns: 1fr;
+.norea-merge-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.norea-merge-pane + .norea-merge-pane {
+  border-left: 1px solid var(--norea-color-rule);
+  gap: var(--norea-space-3);
+  padding: var(--norea-space-3) var(--norea-space-4) 0;
+}
+
+.norea-merge-pane-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-merge-empty {
+  padding: var(--norea-space-4);
+}
+
+.norea-merge-picker {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--norea-space-3);
+  min-height: 0;
+}
+
+.norea-merge-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+}
+
+.norea-merge-picker-list {
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+}
+
+.norea-responsive-sheet .norea-merge-picker-list {
+  flex: 0 0 auto;
+  height: max(16rem, calc(var(--norea-viewport-height) - 16rem));
+}
+
+.norea-merge-confirm-card {
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+  display: grid;
+  gap: var(--norea-space-4);
+  padding: var(--norea-space-4);
+}
+
+.norea-merge-confirm-novels {
+  display: grid;
+  gap: var(--norea-space-3);
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  overflow-wrap: anywhere;
+}
+
+.norea-merge-confirm-counts {
+  display: grid;
+  gap: var(--norea-space-2);
+  margin: 0;
+}
+
+.norea-merge-confirm-counts div {
+  display: flex;
+  gap: var(--norea-space-3);
+  justify-content: space-between;
+}
+
+.norea-merge-confirm-counts dt {
+  color: var(--norea-color-ink-muted);
+}
+
+.norea-merge-confirm-counts dd {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-bold);
+  margin: 0;
+}
+
+@media (any-pointer: coarse) {
+  .norea-merge-toolbar .mantine-Switch-body {
+    align-items: center;
+    min-height: var(--norea-control-md);
   }
 
-  .norea-novel-merge-direction {
-    transform: rotate(90deg);
+  .norea-merge-conflict-choice .mantine-SegmentedControl-control {
+    min-height: var(--norea-control-md);
   }
 
-  .norea-novel-merge-overview > .norea-text-button {
-    grid-column: auto;
-    justify-self: stretch;
-  }
-
-  .norea-novel-merge-result-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .norea-merge-conflict-choice .mantine-SegmentedControl-label {
+    align-items: center;
+    display: flex;
+    height: 100%;
+    justify-content: center;
   }
 }
