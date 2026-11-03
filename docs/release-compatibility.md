@@ -54,7 +54,9 @@ requirements must be decided explicitly before implementation.
   Missing maps mean no reallow has been consumed; existing plans and queue rows
   remain intact. These revisions cannot regress during ordinary updates and reset
   only after full chapter settlement or an explicit profile-pass restart. Native
-  scraper timeouts consume a range attempt without creating a batch/IP exclusion.
+  scraper timeouts and the recognized browser tunnel-navigation failure consume a
+  range attempt without creating a batch/IP exclusion. TLS certificate failures
+  remain explicit stops.
   Released automatic recovery ranges may exchange profile assignments atomically;
   unfinished assignments stay distinct and explicit user holds are preserved.
   These fields do not change the SQL schema, backup tables or source plugin format.

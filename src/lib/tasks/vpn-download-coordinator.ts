@@ -91,8 +91,8 @@ const consumeReallow = (range: VpnDownloadRangeState, profileId: string, issue: 
     [profileId]: Math.max(range.consumedReallowRevisions?.[profileId] ?? 0, issue.revision),
   };
 };
-const isScraperTimeout = (error: unknown): boolean => error instanceof Error &&
-  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$)/i.test(error.message);
+const isRetryableScraperFailure = (error: unknown): boolean => error instanceof Error &&
+  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(error.message);
 
 function freezePlan(input: VpnDownloadPlan): VpnDownloadPlan {
   const plan = clone(input);
@@ -708,7 +708,7 @@ export class VpnDownloadCoordinator {
           await this.closeLease(lease);
           continue;
         }
-        else if (isScraperTimeout(outcome.error)) {
+        else if (isRetryableScraperFailure(outcome.error)) {
           const issue = this.profileIssues.get(plan.batchId)?.get(lease.profile.ip);
           await this.updateRange(range, next => {
             if (terminal(next) || next.generation !== lease.ref.generation || next.checkpoint !== state.checkpoint) return;

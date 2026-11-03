@@ -365,6 +365,7 @@ describe("VPN download coordinator", () => {
     "webview_extract: timeout after 35000ms",
     "webview_fetch: timeout after 30000ms",
     "Android scraper extract timed out",
+    "scraper: navigation failed (-11): net::ERR_TUNNEL_CONNECTION_FAILED at https://source.test",
   ])("retries the same unfinished chapter on another route after %s without excluding the IP", async message => {
     const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
     const coordinator = new VpnDownloadCoordinator(runtime);
@@ -1053,7 +1054,11 @@ describe("VPN download coordinator", () => {
     expect(current(coordinator, "a")).toMatchObject({ attemptedProfileIds: [], attemptProfileId: null, challenge: null });
   });
 
-  it.each(["HTTP 503", "Request timed out", "Storage write failed"])("does not rotate for an unstructured task failure: %s", async message => {
+  it.each([
+    "HTTP 503", "Request timed out", "Storage write failed",
+    "scraper: TLS certificate error 3 at https://source.test",
+    "scraper: navigation failed (-11): net::ERR_CERT_AUTHORITY_INVALID at https://source.test",
+  ])("does not rotate for an unstructured task failure: %s", async message => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime);
     const value = plan();
