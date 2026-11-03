@@ -103,8 +103,10 @@
   text-align: left;
 }
 
-.norea-task-sort-section button:hover {
-  background: var(--norea-color-surface-raised);
+@media (hover: hover) {
+  .norea-task-sort-section button:hover {
+    background: var(--norea-color-surface-raised);
+  }
 }
 
 .norea-task-summary-strip {

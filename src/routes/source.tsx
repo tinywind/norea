@@ -190,7 +190,7 @@ function SourceNovelButton({
   return (
     <button
       type="button"
-      className="norea-source-card"
+      className="norea-source-card norea-state-layer"
       disabled={disabled}
       onClick={() => onOpen(item)}
     >

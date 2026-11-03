@@ -518,9 +518,11 @@
   text-align: left;
 }
 
-.norea-source-card:hover {
-  background: var(--norea-color-surface-raised);
-  border-color: var(--norea-color-rule);
+@media (hover: hover) {
+  .norea-source-card:hover {
+    background: var(--norea-color-surface-raised);
+    border-color: var(--norea-color-rule);
+  }
 }
 
 .norea-source-card:disabled {

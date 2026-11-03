@@ -45,8 +45,10 @@
   min-width: 1.75rem;
 }
 
-.norea-vpn-gate-verdict-control:not(:disabled):hover {
-  background: var(--norea-color-accent-soft);
+@media (hover: hover) {
+  .norea-vpn-gate-verdict-control:not(:disabled):hover {
+    background: var(--norea-color-accent-soft);
+  }
 }
 
 .norea-vpn-gate-verdict-control[data-verdict="works"] {

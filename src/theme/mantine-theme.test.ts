@@ -1,4 +1,7 @@
 import {
+  ActionIcon,
+  Button,
+  CloseButton,
   DEFAULT_THEME,
   MantineProvider,
   Menu,
@@ -11,7 +14,7 @@ import {
   toRgba,
   type MantineTheme,
 } from "@mantine/core";
-import { createElement as h } from "react";
+import { createElement as h, type ElementType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { BLACK, contrastRatio, parseColor, requireColor } from "./color";
@@ -214,5 +217,34 @@ describe("createNoreaMantineTheme variant colors", () => {
       variant: "filled",
     });
     expect(result.background).toBe("var(--mantine-color-red-filled)");
+  });
+});
+
+describe("createNoreaMantineTheme state layers", () => {
+  it("puts the shared state layer on Mantine buttons, icon buttons, close buttons and menu items", () => {
+    const [first] = CASES;
+    // Mantine's polymorphic components do not fit createElement's overloads.
+    const polymorphic = (component: unknown) => component as ElementType;
+    const html = renderToStaticMarkup(
+      h(
+        MantineProvider,
+        { theme: first!.mantine.theme },
+        h(polymorphic(Button), null, "button"),
+        h(polymorphic(ActionIcon), { "aria-label": "icon" }, "i"),
+        h(polymorphic(CloseButton), { "aria-label": "close" }),
+        h(
+          Menu,
+          { opened: true, withinPortal: false },
+          h(Menu.Target, null, h("button", { type: "button" }, "menu")),
+          h(Menu.Dropdown, null, h(polymorphic(Menu.Item), null, "item")),
+        ),
+      ),
+    );
+    for (const name of ["Button-root", "ActionIcon-root", "CloseButton-root", "Menu-item"]) {
+      const classes = [...html.matchAll(/class="([^"]*)"/g)]
+        .map((match) => match[1]!.split(" "))
+        .find((list) => list.includes(`mantine-${name}`));
+      expect(classes, name).toContain("norea-state-layer");
+    }
   });
 });

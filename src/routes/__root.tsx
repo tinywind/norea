@@ -231,7 +231,7 @@ function AppNavLink({
     <Anchor
       activeOptions={{ exact: item.to === "/" }}
       aria-label={accessibleLabel}
-      className={active ? `${className} ${activeClassName}` : className}
+      className={`${active ? `${className} ${activeClassName}` : className} norea-state-layer`}
       component={Link}
       title={accessibleLabel}
       to={item.to}

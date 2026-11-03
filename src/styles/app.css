@@ -222,10 +222,12 @@ a {
   text-decoration: none;
 }
 
-.norea-rail-link:hover {
-  background: var(--norea-color-accent-soft);
-  color: var(--norea-color-accent);
-  text-decoration: none;
+@media (hover: hover) {
+  .norea-rail-link:hover {
+    background: var(--norea-color-accent-soft);
+    color: var(--norea-color-accent);
+    text-decoration: none;
+  }
 }
 
 .norea-rail-link--active {
@@ -581,10 +583,12 @@ a {
   --norea-icon-glyph-size: 1.125rem;
 }
 
-.norea-icon-button:hover:not(:disabled) {
-  background: var(--norea-color-surface-raised);
-  border-color: var(--norea-color-rule-strong);
-  color: var(--norea-color-accent);
+@media (hover: hover) {
+  .norea-icon-button:hover:not(:disabled) {
+    background: var(--norea-color-surface-raised);
+    border-color: var(--norea-color-rule-strong);
+    color: var(--norea-color-accent);
+  }
 }
 
 .norea-icon-button[data-active="true"],
@@ -646,10 +650,12 @@ a {
   --norea-text-button-padding-inline: 0.875rem;
 }
 
-.norea-text-button:hover:not(:disabled) {
-  background: var(--norea-color-surface-raised);
-  border-color: var(--norea-color-rule-strong);
-  color: var(--norea-color-ink);
+@media (hover: hover) {
+  .norea-text-button:hover:not(:disabled) {
+    background: var(--norea-color-surface-raised);
+    border-color: var(--norea-color-rule-strong);
+    color: var(--norea-color-ink);
+  }
 }
 
 .norea-text-button[data-active="true"],
@@ -726,9 +732,11 @@ a {
   cursor: pointer;
 }
 
-.norea-list-row--interactive:hover {
-  background: var(--norea-color-surface-raised);
-  border-color: var(--norea-color-accent);
+@media (hover: hover) {
+  .norea-list-row--interactive:hover {
+    background: var(--norea-color-surface-raised);
+    border-color: var(--norea-color-accent);
+  }
 }
 
 .norea-list-row-leading {
@@ -938,9 +946,11 @@ button.norea-console-chip {
   padding-inline: var(--norea-space-3);
 }
 
-button.norea-console-chip:hover:not(:disabled) {
-  background: var(--norea-color-surface-raised);
-  color: var(--norea-color-ink);
+@media (hover: hover) {
+  button.norea-console-chip:hover:not(:disabled) {
+    background: var(--norea-color-surface-raised);
+    color: var(--norea-color-ink);
+  }
 }
 
 button.norea-console-chip:focus-visible {

@@ -109,10 +109,12 @@
   cursor: pointer;
 }
 
-.norea-reader-icon-button.norea-icon-button:hover:not(:disabled) {
-  background: transparent;
-  border-color: transparent;
-  color: var(--norea-color-accent);
+@media (hover: hover) {
+  .norea-reader-icon-button.norea-icon-button:hover:not(:disabled) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--norea-color-accent);
+  }
 }
 
 .norea-reader-icon-button.norea-icon-button:disabled {
@@ -248,8 +250,10 @@
   width: 100%;
 }
 
-.norea-reader-chapter-row:hover {
-  background: var(--norea-reader-chrome-raised, var(--norea-color-surface));
+@media (hover: hover) {
+  .norea-reader-chapter-row:hover {
+    background: var(--norea-reader-chrome-raised, var(--norea-color-surface));
+  }
 }
 
 .norea-reader-chapter-row[data-current="true"] {

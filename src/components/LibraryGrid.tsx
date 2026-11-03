@@ -159,7 +159,7 @@ function SelectToggle({ name, onSelect }: { name: string; onSelect: () => void }
   return (
     <button
       aria-label={t("library.selection.selectNamed", { name })}
-      className="norea-library-select-toggle"
+      className="norea-library-select-toggle norea-state-layer"
       onClick={onSelect}
       tabIndex={-1}
       type="button"

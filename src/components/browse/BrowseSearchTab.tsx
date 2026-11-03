@@ -351,7 +351,7 @@ function SearchResultSection({
             <button
               key={`${key}::${index}`}
               type="button"
-              className="norea-search-preview-card"
+              className="norea-search-preview-card norea-state-layer"
               data-selected={openingKey === key}
               onClick={() => onOpen(result, novel)}
             >

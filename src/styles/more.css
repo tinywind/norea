@@ -33,9 +33,11 @@
   text-decoration: none;
 }
 
-.norea-more-row:hover {
-  color: var(--norea-color-ink);
-  text-decoration: none;
+@media (hover: hover) {
+  .norea-more-row:hover {
+    color: var(--norea-color-ink);
+    text-decoration: none;
+  }
 }
 
 .norea-more-row-icon {

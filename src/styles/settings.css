@@ -432,7 +432,12 @@
   margin-bottom: var(--norea-space-2);
 }
 
-.norea-reader-tap-preset:hover,
+@media (hover: hover) {
+  .norea-reader-tap-preset:hover {
+    border-color: var(--norea-color-rule-strong);
+  }
+}
+
 .norea-reader-tap-preset:focus-visible {
   border-color: var(--norea-color-rule-strong);
 }

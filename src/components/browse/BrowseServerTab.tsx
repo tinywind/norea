@@ -108,7 +108,7 @@ export function BrowseServerTab({ active }: { active: boolean }) {
       {!error && enabled && !works.isLoading && items.length === 0 ? <StateView title={t("source.noResults")} /> : null}
       <div className="norea-source-grid">
         {items.map(work => (
-          <button type="button" className="norea-source-card" disabled={open.isPending} key={`${server}:${work.id}`} onClick={() => open.mutate(work)}>
+          <button type="button" className="norea-source-card norea-state-layer" disabled={open.isPending} key={`${server}:${work.id}`} onClick={() => open.mutate(work)}>
             <span className="norea-source-cover-frame">
               <ContentServerCover server={server} token={device.data!} work={work} />
               {isInLibrary(work.identity.pluginId, work.identity.novelPath) ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><InLibraryIcon size="1rem" /></span> : null}

@@ -50,11 +50,43 @@ describe("state layer utility", () => {
     expect(css).toMatch(/\.norea-state-layer:active[^{]*::after \{\s*opacity: 0\.12;/);
   });
 
+  it("anchors the layer without overriding a control's own position", () => {
+    expect(css).toMatch(/:where\(\.norea-state-layer\) \{\s*position: relative;\s*\}/);
+    expect(css).not.toMatch(/(^|\n)\.norea-state-layer \{/);
+  });
+
   it("replaces the white hover overlay variables in every stylesheet", () => {
     const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css"));
     for (const name of sheets) {
       const source = readFileSync(new URL(`./${name}`, stylesDir), "utf8");
       expect(source, name).not.toMatch(/hover-overlay/);
+    }
+  });
+});
+
+/** The stylesheet with every `@media (hover: hover ...)` block cut out. */
+function withoutHoverMedia(source: string): string {
+  let result = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (;;) {
+    const start = result.indexOf("@media (hover: hover");
+    if (start < 0) return result;
+    let depth = 0;
+    let end = result.indexOf("{", start);
+    for (; end < result.length; end += 1) {
+      if (result[end] === "{") depth += 1;
+      if (result[end] === "}") depth -= 1;
+      if (depth === 0) break;
+    }
+    result = result.slice(0, start) + result.slice(end + 1);
+  }
+}
+
+describe("hover styles", () => {
+  it("apply only on hover-capable pointers, so a touch never leaves a sticky hover", () => {
+    const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css"));
+    for (const name of sheets) {
+      const source = readFileSync(new URL(`./${name}`, stylesDir), "utf8");
+      expect(withoutHoverMedia(source), name).not.toMatch(/:hover/);
     }
   });
 });

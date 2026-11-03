@@ -49,6 +49,7 @@ const DISABLED_MIX = 0.08;
 const DISABLED_COLOR_MIX = 0.4;
 
 const BORDER_WIDTH = rem(1);
+const STATE_LAYER_CLASS = "norea-state-layer";
 
 function toTuple(colors: Rgb[]): MantineColorsTuple {
   return colors.map(formatRgb) as unknown as MantineColorsTuple;
@@ -294,7 +295,10 @@ export function createNoreaMantineTheme(
     },
     components: {
       Alert: { defaultProps: { radius: "sm" } },
-      Button: { defaultProps: { radius: "sm" } },
+      // Every Mantine control paints the shared hover and pressed state layer from ui.css.
+      ActionIcon: { classNames: { root: STATE_LAYER_CLASS } },
+      Button: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { radius: "sm" } },
+      CloseButton: { classNames: { root: STATE_LAYER_CLASS } },
       Paper: { defaultProps: { radius: "sm" } },
       TextInput: { defaultProps: { radius: "sm" } },
       Modal: { defaultProps: { zIndex: "var(--norea-z-overlay)" } },
@@ -305,6 +309,7 @@ export function createNoreaMantineTheme(
         styles: { dropdown: overlayDropdownStyles },
       },
       Menu: {
+        classNames: { item: STATE_LAYER_CLASS },
         defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
         styles: { dropdown: overlayDropdownStyles },
       },

@@ -262,7 +262,7 @@ export function ListRow({
 
   return (
     <Paper
-      className={`norea-surface norea-list-row${onActivate ? " norea-list-row--interactive" : ""}${className ? ` ${className}` : ""}`}
+      className={`norea-surface norea-list-row${onActivate ? " norea-list-row--interactive norea-state-layer" : ""}${className ? ` ${className}` : ""}`}
       onClick={onActivate}
       onKeyDown={handleKeyDown}
       p="md"

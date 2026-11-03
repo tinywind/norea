@@ -1,4 +1,5 @@
-.norea-state-layer {
+/* Zero specificity: a control that positions itself (absolute, sticky) keeps its own position. */
+:where(.norea-state-layer) {
   position: relative;
 }
 
