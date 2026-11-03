@@ -1674,6 +1674,8 @@
   "settings.backup.auto.never": "아직 자동 백업이 없습니다",
   "settings.backup.auto.last": "마지막 백업 {time}",
   "settings.backup.auto.failed": "마지막 시도 실패: {error}",
+  "settings.backup.auto.folderUnavailable": "백업 폴더를 사용할 수 없음",
+  "settings.backup.auto.chooseFolder": "폴더 선택",
   "settings.backup.auto.enableTitle": "자동 백업을 켤까요?",
   "settings.backup.auto.coverage": "백업에는 서재, 카테고리, 읽기 진도, 설정, 플러그인이 포함됩니다. 다운로드한 챕터와 이미지는 포함되지 않습니다. 백업은 저장 폴더에 저장되므로 그 폴더를 잃는 경우에는 보호되지 않습니다.",
   "settings.backup.auto.enable": "켜기",

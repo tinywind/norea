@@ -7,6 +7,9 @@ private const val AUTO_BACKUP_DIRECTORY = "backups"
 private const val MAX_AUTO_BACKUP_KEEP = 50
 private val AUTO_BACKUP_NAME = Regex("^norea-auto-backup-\\d{14}\\.zip$")
 
+/** Error prefix the UI reads as "Backup folder unavailable" with a Choose folder action. */
+internal const val AUTO_BACKUP_FOLDER_UNAVAILABLE = "Automatic backup folder unavailable"
+
 internal fun isAutoBackupName(name: String): Boolean = AUTO_BACKUP_NAME.matches(name)
 
 /** Automatic backups beyond the newest `keep`; other files are never listed. */
@@ -30,9 +33,11 @@ internal class AndroidAutoBackups(
     require(keep in 1..MAX_AUTO_BACKUP_KEEP) { "Automatic backup keep count is invalid: $keep" }
     val input = contentFiles.containedAppCacheFile(inputPath)
     require(input.isFile) { "Automatic backup temp file is unavailable." }
-    val root = storage.storageRoot(rootUri)
-    require(root.canWrite()) { "Android storage folder is not writable." }
-    val directory = storage.ensureStorageDirectory(root, AUTO_BACKUP_DIRECTORY)
+    val directory = runCatching {
+      val root = storage.storageRoot(rootUri)
+      check(root.canWrite()) { "the storage folder is not writable" }
+      storage.ensureStorageDirectory(root, AUTO_BACKUP_DIRECTORY)
+    }.getOrElse { error -> throw IllegalStateException("$AUTO_BACKUP_FOLDER_UNAVAILABLE: ${error.message}", error) }
     val partialName = ".$fileName.partial"
     val partial = storage.ensureStorageFile(rootUri, "$AUTO_BACKUP_DIRECTORY/$partialName", "application/octet-stream")
     try {

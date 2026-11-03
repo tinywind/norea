@@ -1,6 +1,7 @@
 import { Select, Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { BackupFolderAttention } from "../BackupFolderAttention";
 import { ContentServerSettings } from "../ContentServerSettings";
 import {
   SettingsFieldRow,
@@ -81,6 +82,7 @@ function AutomaticBackupSettings() {
 
   return (
     <SettingsSection title={t("settings.backup.auto.title")}>
+      <BackupFolderAttention />
       <SettingsFieldRow
         label={t("settings.backup.auto.schedule.label")}
         description={t("settings.backup.auto.schedule.description")}

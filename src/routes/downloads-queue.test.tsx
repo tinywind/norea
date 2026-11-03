@@ -27,6 +27,7 @@ vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn
 vi.mock("../components/VpnDownloadAttention", () => ({ VpnDownloadAttention: () => null }));
 vi.mock("../components/ChapterDownloadFailureAttention", () => ({ ChapterDownloadFailureAttention: () => null, ChapterDownloadRetryingStatus: () => null }));
 vi.mock("../components/DownloadGoalAttention", () => ({ DownloadGoalAttention: () => null }));
+vi.mock("../components/BackupFolderAttention", () => ({ BackupFolderAttention: () => null, useBackupFolderUnavailable: () => false }));
 vi.mock("../components/DownloadGoalWorkLine", () => ({ DownloadGoalWorkLine: () => null }));
 vi.mock("../components/VpnDownloadLaunchDialog", () => ({ VpnDownloadLaunchDialog: () => null }));
 vi.mock("../components/VpnDownloadWorks", () => ({ VpnDownloadWorkRow: () => null, vpnDownloadWorks: () => [] }));

@@ -278,9 +278,11 @@ requirements must be decided explicitly before implementation.
   succeeds are the oldest files with that exact name pattern beyond the kept
   count deleted; other files in the folder are never touched. The schedule
   (`off`, `daily` or `weekly`), the kept count (default 5) and the last
-  outcome live in the `auto-backup` localStorage entry. The folder belongs to
-  this device, so device snapshots carry the entry with the other settings and
-  portable backups leave it out; a missing or unknown value reads as off.
+  outcome, including whether it failed because the storage folder was
+  unavailable, live in the `auto-backup` localStorage entry. The folder belongs
+  to this device, so device snapshots carry the entry with the other settings
+  and portable backups leave it out; a missing or unknown schedule reads as off
+  and a missing folder flag as false.
 - Portable file backup restore preserves every existing storage file, including
   `novel.json`, covers, chapter bodies, `media.zip`, and chapter `manifest.json`. This applies
   to works omitted from the backup as well. Restore inspects current files

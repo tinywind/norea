@@ -43,6 +43,20 @@ export function reconcileChapterStorage(queryClient: QueryClient): void {
   });
 }
 
+/**
+ * Lets the user pick the storage folder and refreshes what depends on it.
+ * Resolves the chosen root, or null when the picker was dismissed.
+ */
+export async function chooseStorageFolder(queryClient: QueryClient): Promise<string | null> {
+  const root = await selectChapterMediaStorageRoot();
+  if (!root) return null;
+  queryClient.setQueryData(CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY, root);
+  reconcileChapterStorage(queryClient);
+  void queryClient.invalidateQueries({ queryKey: ["novel"] });
+  void queryClient.invalidateQueries({ queryKey: ["category"] });
+  return root;
+}
+
 function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -68,15 +82,11 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
   async function chooseMediaStorageRoot(): Promise<void> {
     setMediaStorageBusy(true);
     try {
-      const root = await selectChapterMediaStorageRoot();
+      const root = await chooseStorageFolder(queryClient);
       if (root) {
         setMediaStorageRoot(root);
         setLoadError(null);
-        queryClient.setQueryData(CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY, root);
-        reconcileChapterStorage(queryClient);
         showSettingsToast("ok", t("settings.toast.saved"));
-        void queryClient.invalidateQueries({ queryKey: ["novel"] });
-        void queryClient.invalidateQueries({ queryKey: ["category"] });
       }
     } catch (error) {
       showSettingsToast(

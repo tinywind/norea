@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import { useAutoBackupStore, type AutoBackupSchedule } from "../../store/auto-backup";
-import { publishAndroidAutoBackup } from "../android-storage";
+import { BackupFolderUnavailableError, publishAndroidAutoBackup } from "../android-storage";
 import { describeError } from "../errors";
 import { enqueueMainTask } from "../tasks/main-tasks";
 import { isAndroidRuntime } from "../tauri-runtime";
@@ -15,6 +15,8 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 /** A failed run waits this long before the next attempt, so it never loops. */
 const FAILURE_RETRY_MS = HOUR_MS;
+/** Matches `AUTO_BACKUP_FOLDER_UNAVAILABLE` in src-tauri/src/backup.rs. */
+const DESKTOP_FOLDER_UNAVAILABLE = "backup_publish_auto: storage folder unavailable";
 
 const SCHEDULE_INTERVAL_MS: Record<Exclude<AutoBackupSchedule, "off">, number> = {
   daily: DAY_MS,
@@ -51,7 +53,15 @@ export async function writeAutomaticBackup(keep: number, now: Date = new Date())
       );
     }
   } else {
-    await invoke("backup_publish_auto", { manifestJson: encodeBackupManifest(manifest), fileName, keep });
+    try {
+      await invoke("backup_publish_auto", { manifestJson: encodeBackupManifest(manifest), fileName, keep });
+    } catch (error) {
+      const message = describeError(error);
+      if (message.startsWith(DESKTOP_FOLDER_UNAVAILABLE)) {
+        throw new BackupFolderUnavailableError(message, { cause: error });
+      }
+      throw error;
+    }
   }
   return fileName;
 }
@@ -77,7 +87,11 @@ export function runAutomaticBackupIfDue(now: number = Date.now()): Promise<void>
       }).promise;
       useAutoBackupStore.getState().recordSuccess(Date.now(), fileName);
     } catch (error) {
-      useAutoBackupStore.getState().recordFailure(Date.now(), describeError(error));
+      useAutoBackupStore.getState().recordFailure(
+        Date.now(),
+        describeError(error),
+        error instanceof BackupFolderUnavailableError,
+      );
     } finally {
       running = null;
     }

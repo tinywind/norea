@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  BackupFolderUnavailableError,
   androidStorageZipEntrySizes,
   clearAndroidStorageRoot,
   copyAndroidContentUriToTempFile,
@@ -16,6 +17,7 @@ import {
   finalizeAndroidChapterStorageTransfer,
   prepareAndroidChapterStorageTransfer,
   prepareAndroidReaderMediaCache,
+  publishAndroidAutoBackup,
   readAndroidStorageText,
   renameAndroidStoragePath,
   readAndroidStorageZipEntriesDataUrls,
@@ -36,6 +38,7 @@ type TestBridge = {
   inspectChapterArtifacts?: ReturnType<typeof vi.fn>;
   finalizeChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   pickMediaStorageRoot?: ReturnType<typeof vi.fn>;
+  publishAutoBackup?: ReturnType<typeof vi.fn>;
   prepareChapterStorageTransfer?: ReturnType<typeof vi.fn>;
   prepareReaderMediaCache?: ReturnType<typeof vi.fn>;
   readContentUriFile?: ReturnType<typeof vi.fn>;
@@ -720,5 +723,38 @@ describe("android storage bridge facade", () => {
     ).rejects.toThrow("marker failed");
 
     expect(prepareReaderMediaCache).not.toHaveBeenCalled();
+  });
+});
+
+describe("publishAndroidAutoBackup", () => {
+  const answer = (response: object) => vi.fn((requestId: string) => {
+    queueMicrotask(() => window.__noreaResolveAndroidStorageOperation?.(requestId, JSON.stringify(response)));
+  });
+
+  it("reports a storage folder that is not selected as unavailable", async () => {
+    invokeMock.mockResolvedValue(null);
+    const publishAutoBackup = answer({ ok: true });
+    installBridge({ publishAutoBackup });
+
+    await expect(publishAndroidAutoBackup("/cache/backup/a.zip", "norea-auto-backup-20261104120000.zip", 5))
+      .rejects.toBeInstanceOf(BackupFolderUnavailableError);
+    expect(publishAutoBackup).not.toHaveBeenCalled();
+  });
+
+  it("reports a folder the bridge cannot write as unavailable and passes other failures through", async () => {
+    invokeMock.mockResolvedValue("content://tree/primary%3ANoreaAutoBackup");
+    const ensureNoMedia = vi.fn(() => JSON.stringify({ ok: true }));
+    installBridge({
+      ensureNoMedia,
+      publishAutoBackup: answer({ ok: false, error: "Automatic backup folder unavailable: Permission Denial" }),
+    });
+    await expect(publishAndroidAutoBackup("/cache/backup/a.zip", "norea-auto-backup-20261104120000.zip", 5))
+      .rejects.toBeInstanceOf(BackupFolderUnavailableError);
+
+    installBridge({ ensureNoMedia, publishAutoBackup: answer({ ok: false, error: "Automatic backup temp file is unavailable." }) });
+    const failure = await publishAndroidAutoBackup("/cache/backup/a.zip", "norea-auto-backup-20261104120000.zip", 5)
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(BackupFolderUnavailableError);
   });
 });

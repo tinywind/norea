@@ -1674,6 +1674,8 @@
   "settings.backup.auto.never": "No automatic backup yet",
   "settings.backup.auto.last": "Last backup {time}",
   "settings.backup.auto.failed": "Last attempt failed: {error}",
+  "settings.backup.auto.folderUnavailable": "Backup folder unavailable",
+  "settings.backup.auto.chooseFolder": "Choose folder",
   "settings.backup.auto.enableTitle": "Turn on automatic backup?",
   "settings.backup.auto.coverage": "Backups include your library, categories, reading progress, settings and plugins. They do not include downloaded chapters or media. They are saved in the storage folder, so they do not protect against losing that folder.",
   "settings.backup.auto.enable": "Turn on",

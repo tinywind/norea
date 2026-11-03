@@ -38,6 +38,8 @@ const MIN_BACKUP_RATIO_CHECK_BYTES: u64 = BYTES_PER_MIB;
 const AUTO_BACKUP_DIR: &str = "backups";
 const AUTO_BACKUP_PREFIX: &str = "norea-auto-backup-";
 const MAX_AUTO_BACKUP_KEEP: u32 = 50;
+/// Error prefix the UI reads as "Backup folder unavailable" with a Choose folder action.
+const AUTO_BACKUP_FOLDER_UNAVAILABLE: &str = "backup_publish_auto: storage folder unavailable";
 
 #[derive(Debug, Clone, Copy)]
 struct BackupArchiveLimits {
@@ -849,8 +851,15 @@ fn publish_auto_backup(
     if !(1..=MAX_AUTO_BACKUP_KEEP).contains(&keep) {
         return Err(format!("backup_publish_auto: invalid keep count {keep}"));
     }
-    fs::create_dir_all(dir)
-        .map_err(|err| format!("backup_publish_auto: create {}: {err}", dir.display()))?;
+    fs::create_dir_all(dir).map_err(|err| {
+        let prefix = match err.kind() {
+            std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::PermissionDenied => AUTO_BACKUP_FOLDER_UNAVAILABLE,
+            _ => "backup_publish_auto",
+        };
+        format!("{prefix}: create {}: {err}", dir.display())
+    })?;
     let partial = dir.join(format!(".{file_name}.partial"));
     let file = File::create(&partial)
         .map_err(|err| format!("backup_publish_auto: create {}: {err}", partial.display()))?;
@@ -888,7 +897,8 @@ pub async fn backup_publish_auto(
     keep: u32,
 ) -> Result<(), String> {
     backup_blocking("backup_publish_auto", move || {
-        let root = crate::chapter_media::media_root(&app)?;
+        let root = crate::chapter_media::media_root(&app)
+            .map_err(|err| format!("{AUTO_BACKUP_FOLDER_UNAVAILABLE}: {err}"))?;
         if root.to_string_lossy().starts_with("content://") {
             return Err("backup_publish_auto: content URI storage needs the Android bridge".to_string());
         }
@@ -1557,6 +1567,21 @@ mod tests {
         assert!(publish_auto_backup(&backups, "{}", "norea-auto-backup-20261103000000.zip", 1).is_err());
         assert!(backups.join("norea-auto-backup-20261101000000.zip").is_file());
         assert!(!backups.join(".norea-auto-backup-20261103000000.zip.partial").exists());
+    }
+
+    #[test]
+    fn auto_backup_reports_an_unreachable_storage_folder_as_unavailable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let not_a_folder = dir.path().join("storage");
+        fs::write(&not_a_folder, b"file").expect("seed file");
+        let error = publish_auto_backup(
+            &not_a_folder.join(AUTO_BACKUP_DIR),
+            "{}",
+            "norea-auto-backup-20261103000000.zip",
+            1,
+        )
+        .expect_err("a file in place of the storage folder");
+        assert!(error.starts_with(AUTO_BACKUP_FOLDER_UNAVAILABLE), "{error}");
     }
 
     fn test_limits() -> BackupArchiveLimits {

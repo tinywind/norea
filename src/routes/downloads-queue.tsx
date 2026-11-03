@@ -24,6 +24,7 @@ import {
   ChapterDownloadFailureAttention,
   ChapterDownloadRetryingStatus,
 } from "../components/ChapterDownloadFailureAttention";
+import { BackupFolderAttention, useBackupFolderUnavailable } from "../components/BackupFolderAttention";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
 import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/DownloadWorkStatusLabel";
@@ -987,8 +988,9 @@ function useHasDownloadAttention(
 ): boolean {
   const failures = useChapterDownloadFailureSnapshot(active);
   const { pause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
+  const backupFolderUnavailable = useBackupFolderUnavailable();
   const vpnItem = vpn.loading ? null : vpnDownloadAttention(vpn.plans, vpn.run?.status);
-  return ordinaryBlocks.length > 0 || pause !== null || vpnItem !== null ||
+  return ordinaryBlocks.length > 0 || pause !== null || vpnItem !== null || backupFolderUnavailable ||
     chapterDownloadFailureAttention(failures).groups.length > 0;
 }
 
@@ -1021,6 +1023,7 @@ function NeedsAttentionSection({
       {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
       {active ? <ChapterDownloadFailureAttention /> : null}
       {active ? <DownloadGoalAttention /> : null}
+      {active ? <BackupFolderAttention /> : null}
     </section>
   );
 }

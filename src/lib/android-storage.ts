@@ -1037,16 +1037,40 @@ export async function rollbackAndroidStorageRestore(
  * folder under a temporary name, renames it to `fileName`, then deletes the
  * oldest automatic backups beyond `keep`.
  */
+/** The storage folder that automatic backups are written to cannot be reached or written. */
+export class BackupFolderUnavailableError extends Error {
+  override name = "BackupFolderUnavailableError";
+}
+
+/** Matches `AUTO_BACKUP_FOLDER_UNAVAILABLE` in AndroidAutoBackups.kt. */
+const ANDROID_AUTO_BACKUP_FOLDER_UNAVAILABLE = "Automatic backup folder unavailable";
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function publishAndroidAutoBackup(
   inputPath: string,
   fileName: string,
   keep: number,
 ): Promise<void> {
-  const root = await androidStorageRoot();
+  let root: string;
+  try {
+    root = await androidStorageRoot();
+  } catch (error) {
+    throw new BackupFolderUnavailableError(errorMessage(error), { cause: error });
+  }
   const bridge = androidStorageBridge();
-  await runAndroidStorageOperation((requestId) =>
-    bridge.publishAutoBackup(requestId, root, inputPath, fileName, keep),
-  );
+  try {
+    await runAndroidStorageOperation((requestId) =>
+      bridge.publishAutoBackup(requestId, root, inputPath, fileName, keep),
+    );
+  } catch (error) {
+    if (errorMessage(error).startsWith(ANDROID_AUTO_BACKUP_FOLDER_UNAVAILABLE)) {
+      throw new BackupFolderUnavailableError(errorMessage(error), { cause: error });
+    }
+    throw error;
+  }
 }
 
 export async function renameAndroidStoragePath(

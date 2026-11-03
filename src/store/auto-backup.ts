@@ -20,10 +20,14 @@ interface AutoBackupState {
   /** Unix ms and reason of the last failed attempt, cleared by a success. */
   lastFailureAt: number | null;
   lastError: string | null;
+  /** The last attempt failed because the storage folder could not be reached or written. */
+  lastFailureFolderUnavailable: boolean;
   setSchedule: (schedule: AutoBackupSchedule) => void;
   setKeep: (keep: number) => void;
   recordSuccess: (at: number, fileName: string) => void;
-  recordFailure: (at: number, error: string) => void;
+  recordFailure: (at: number, error: string, folderUnavailable: boolean) => void;
+  /** Forgets the last failure so the next check runs at once, after the user fixed its cause. */
+  clearFailure: () => void;
 }
 
 export function normalizeAutoBackupSchedule(value: unknown): AutoBackupSchedule {
@@ -57,16 +61,21 @@ export const useAutoBackupStore = create<AutoBackupState>()(
       lastFileName: null,
       lastFailureAt: null,
       lastError: null,
+      lastFailureFolderUnavailable: false,
       setSchedule: (schedule) => set({ schedule: normalizeAutoBackupSchedule(schedule) }),
       setKeep: (keep) => set({ keep: normalizeAutoBackupKeep(keep) }),
       recordSuccess: (lastSuccessAt, lastFileName) =>
-        set({ lastSuccessAt, lastFileName, lastFailureAt: null, lastError: null }),
-      recordFailure: (lastFailureAt, lastError) => set({ lastFailureAt, lastError }),
+        set({ lastSuccessAt, lastFileName, lastFailureAt: null, lastError: null, lastFailureFolderUnavailable: false }),
+      recordFailure: (lastFailureAt, lastError, lastFailureFolderUnavailable) =>
+        set({ lastFailureAt, lastError, lastFailureFolderUnavailable }),
+      clearFailure: () => set({ lastFailureAt: null, lastError: null, lastFailureFolderUnavailable: false }),
     }),
     {
       name: AUTO_BACKUP_STORAGE_KEY,
-      partialize: ({ keep, lastError, lastFailureAt, lastFileName, lastSuccessAt, schedule }) => ({
-        keep, lastError, lastFailureAt, lastFileName, lastSuccessAt, schedule,
+      partialize: ({
+        keep, lastError, lastFailureAt, lastFailureFolderUnavailable, lastFileName, lastSuccessAt, schedule,
+      }) => ({
+        keep, lastError, lastFailureAt, lastFailureFolderUnavailable, lastFileName, lastSuccessAt, schedule,
       }),
       merge: (persistedState, currentState) => {
         if (persistedState === null || typeof persistedState !== "object") return currentState;
@@ -79,6 +88,7 @@ export const useAutoBackupStore = create<AutoBackupState>()(
           lastFileName: textOrNull(persisted.lastFileName),
           lastFailureAt: timestampOrNull(persisted.lastFailureAt),
           lastError: textOrNull(persisted.lastError),
+          lastFailureFolderUnavailable: persisted.lastFailureFolderUnavailable === true,
         };
       },
     },
