@@ -3,9 +3,6 @@ import { describe, expect, it } from "vitest";
 
 const stylesDir = new URL("../styles/", import.meta.url);
 
-/** Stylesheets that still carry literal values; each one leaves this list in its migration commit. */
-const NOT_YET_MIGRATED = new Set<string>();
-
 /** The root size carries the UI scale setting, so it is not a type-scale step. */
 const ALLOWED_FONT_SIZES = new Set([
   "inherit",
@@ -16,6 +13,7 @@ const ALLOWED_FONT_SIZES = new Set([
 const ALLOWED_RADIUS_PARTS = new Set(["0", "50%", "inherit"]);
 const ALLOWED_LETTER_SPACING = new Set(["0", "normal"]);
 const MAX_LOCAL_Z_INDEX = 10;
+const MIN_FONT_SIZE_PX = 12;
 
 interface Declaration {
   line: number;
@@ -73,8 +71,25 @@ function literalDurations(value: string): string[] {
     .filter((duration) => parseFloat(duration) !== 0);
 }
 
+function declaresFontSize(property: string): boolean {
+  return (
+    property === "font-size" ||
+    property === "font" ||
+    (property.startsWith("--") && property.includes("font-size"))
+  );
+}
+
+function pixelFontSizeBelowFloor(value: string): boolean {
+  return [...value.matchAll(/(?<![\w.-])(\d*\.?\d+)px\b/g)].some(
+    (match) => parseFloat(match[1]) < MIN_FONT_SIZE_PX,
+  );
+}
+
 function violation({ property, value }: Declaration): string | undefined {
   if (value.includes("color-mix(")) return "color-mix() instead of a role color";
+  if (declaresFontSize(property) && pixelFontSizeBelowFloor(value)) {
+    return `font size under ${MIN_FONT_SIZE_PX}px`;
+  }
   if (property === "font-size") {
     if (ALLOWED_FONT_SIZES.has(value) || value.includes("var(--norea-text-")) {
       return undefined;
@@ -125,19 +140,43 @@ const sheets = readdirSync(stylesDir)
   .sort();
 
 describe("design token guard", () => {
-  it("lists only existing stylesheets as not yet migrated", () => {
-    for (const name of NOT_YET_MIGRATED) expect(sheets).toContain(name);
+  for (const name of sheets) {
+    it(`${name} uses design tokens`, () => {
+      expect(violations(name)).toEqual([]);
+    });
+  }
+});
+
+describe("design token guard rules", () => {
+  const flagged = (property: string, value: string) =>
+    violation({ line: 1, property, value }) !== undefined;
+
+  it("flags pixel font sizes under the 12px floor in any font-size declaration", () => {
+    expect(flagged("font-size", "11px")).toBe(true);
+    expect(flagged("font-size", "max(10px, var(--norea-text-xs))")).toBe(true);
+    expect(flagged("font", "600 11.5px/1.2 var(--norea-font-ui)")).toBe(true);
+    expect(flagged("--norea-reader-meta-font-size", "10px")).toBe(true);
+    expect(flagged("--norea-root-font-size", "16px")).toBe(false);
+    expect(flagged("font-size", "var(--norea-text-xs)")).toBe(false);
   });
 
-  for (const name of sheets) {
-    if (NOT_YET_MIGRATED.has(name)) {
-      it(`${name} still needs migration, otherwise it leaves the allowlist`, () => {
-        expect(violations(name)).not.toEqual([]);
-      });
-    } else {
-      it(`${name} uses design tokens`, () => {
-        expect(violations(name)).toEqual([]);
-      });
-    }
-  }
+  it("flags the literal values the token scale replaces", () => {
+    expect(flagged("font-size", "0.6875rem")).toBe(true);
+    expect(flagged("border-radius", "0.25rem")).toBe(true);
+    expect(flagged("transition", "opacity 120ms ease")).toBe(true);
+    expect(flagged("z-index", "30")).toBe(true);
+    expect(flagged("text-transform", "uppercase")).toBe(true);
+    expect(flagged("letter-spacing", "0.08em")).toBe(true);
+    expect(flagged("background", "color-mix(in srgb, red 10%, white)")).toBe(true);
+    expect(flagged("font-family", "var(--norea-font-meta)")).toBe(true);
+  });
+
+  it("keeps the documented exceptions", () => {
+    expect(flagged("font-size", "var(--norea-root-font-size)")).toBe(false);
+    expect(flagged("border-radius", "50%")).toBe(false);
+    expect(flagged("border", "1px solid var(--norea-color-rule)")).toBe(false);
+    expect(flagged("padding-bottom", "var(--norea-safe-area-bottom)")).toBe(false);
+    expect(flagged("transition-duration", "0s")).toBe(false);
+    expect(flagged("z-index", "10")).toBe(false);
+  });
 });
