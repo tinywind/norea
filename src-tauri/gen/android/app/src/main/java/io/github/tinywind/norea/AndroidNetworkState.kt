@@ -14,6 +14,9 @@ object AndroidNetworkState {
   @JvmStatic
   private external fun publish(connectivity: Int, route: String)
 
+  @JvmStatic
+  private external fun publishMetered(metered: Boolean)
+
   @Synchronized
   fun start(context: Context) {
     if (started) return
@@ -51,6 +54,7 @@ object AndroidNetworkState {
 
       private fun update() {
         val caps = capabilities
+        if (caps != null) publishMetered(!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
         val state = when {
           blocked == true -> 2
           caps == null || blocked == null -> 0

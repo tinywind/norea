@@ -69,6 +69,7 @@ class MainActivity : TauriActivity() {
     AndroidAppLoggingBridge.register()
     RustlsPlatformVerifierBridge.init(applicationContext)
     AndroidNetworkState.start(applicationContext)
+    AndroidPowerState.start(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     TaskBackgroundExecution.attach(onBackgroundExecutionSuspended)

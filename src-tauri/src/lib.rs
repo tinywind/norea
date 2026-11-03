@@ -9,6 +9,7 @@ mod database;
 mod device_backup;
 mod desktop_file_open;
 mod device;
+mod download_budget;
 mod download_cache;
 mod download_queue;
 mod native_stream;
@@ -241,6 +242,7 @@ pub fn run() {
             native_stream::native_stream_read_chunk,
             native_stream::native_stream_write_chunk,
             network::network_status,
+            download_budget::download_budget_status,
             plugin_host::plugin_zip_list,
             plugin_host::plugin_zip_read_file,
             plugin_vpn::state::plugin_vpn_apply_finder_profile,
