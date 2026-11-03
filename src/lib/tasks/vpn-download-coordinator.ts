@@ -535,7 +535,8 @@ export class VpnDownloadCoordinator {
       for (const range of this.ranges.values()) {
         if (!this.canWork(range, range.epoch) || range.run?.epoch === range.epoch) continue;
         if (!range.worker && !this.availableSlot(range)) continue;
-        if (range.waitingProfiles?.every(id => this.profileReserved(range, id) || this.profileAssignedToSibling(range, id))) continue;
+        if (range.waitingProfiles?.every(id => this.profileReserved(range, id) || this.profileAssignedToSibling(range, id)) &&
+          !this.takesHeldAssignment(range, range.waitingProfiles)) continue;
         const run = { epoch: range.epoch };
         range.run = run;
         void this.drive(range, run.epoch)
@@ -575,6 +576,22 @@ export class VpnDownloadCoordinator {
     const sibling = this.requireRange(range.planId, other.id);
     return other.phase === "paused" && other.attemptProfileId === null && other.attemptedProfileIds.includes(other.profileId) &&
       this.canWork(sibling, sibling.epoch) && !sibling.worker && !sibling.task;
+  }
+
+  private heldSiblingAssignment(range: RangeRuntime, profileId: string): VpnDownloadRangeState | undefined {
+    const plan = this.plans.get(range.planId)!;
+    return plan.ranges.find(other => {
+      if (other.id === range.rangeId || terminal(other) || other.profileId !== profileId || other.phase !== "paused") return false;
+      const sibling = this.requireRange(range.planId, other.id);
+      return !sibling.worker && !sibling.task && !sibling.manual && !this.canWork(sibling, sibling.epoch) &&
+        (!other.challenge || plan.policies[other.challenge.kind] === "nextProfile");
+    });
+  }
+
+  /** Held siblings keep idle assignments while a lease could still release a candidate; otherwise nothing would ever wake the waiter. */
+  private takesHeldAssignment(range: RangeRuntime, profileIds: readonly string[]): boolean {
+    return !profileIds.some(id => this.profileReserved(range, id) || !this.profileAssignedToSibling(range, id)) &&
+      profileIds.some(id => this.heldSiblingAssignment(range, id));
   }
 
   private loadProfileIssues(batchId: string): Promise<void> {
@@ -751,19 +768,25 @@ export class VpnDownloadCoordinator {
       const plan = this.plans.get(range.planId)!;
       const excluded = profiles.some(profile => profile.id === state.profileId && this.profileExcluded(range, profile));
       const missing = !profiles.some(profile => profile.id === state.profileId && profile.hash === state.profileHash);
-      const nextProfile = missing || (excluded || state.attemptProfileId === null && state.attemptedProfileIds.includes(state.profileId)) &&
-        (!state.challenge || plan.policies[state.challenge.kind] === "nextProfile");
-      const candidates = nextProfile
-        ? profiles.filter(profile => this.profileEligibleForAttempt(range, profile))
-        : profiles.filter(profile => profile.id === state.profileId && profile.hash === state.profileHash &&
-          !this.profileExcluded(range, profile) && (state.attemptProfileId === profile.id || this.profileEligibleForAttempt(range, profile)));
-      const selected = candidates.find(profile => !this.profileReserved(range, profile.id) && !this.profileAssignedToSibling(range, profile.id)) ?? candidates[0];
+      const replaceable = !state.challenge || plan.policies[state.challenge.kind] === "nextProfile";
+      const nextProfile = missing || (excluded || state.attemptProfileId === null && state.attemptedProfileIds.includes(state.profileId)) && replaceable;
+      const eligible = profiles.filter(profile => this.profileEligibleForAttempt(range, profile));
+      const assignedProfile = profiles.filter(profile => profile.id === state.profileId && profile.hash === state.profileHash &&
+        !this.profileExcluded(range, profile) && (state.attemptProfileId === profile.id || this.profileEligibleForAttempt(range, profile)));
+      // An assignment leased by another plan's worker or the foreground VPN is busy, not fixed; idle eligible profiles serve instead.
+      const assignedBusy = replaceable && assignedProfile.some(profile => this.profileReserved(range, profile.id));
+      const candidates = nextProfile ? eligible
+        : assignedBusy ? [...assignedProfile, ...eligible.filter(profile => profile.id !== state.profileId)] : assignedProfile;
+      const takesHeld = this.takesHeldAssignment(range, candidates.map(profile => profile.id));
+      const selected = candidates.find(profile => !this.profileReserved(range, profile.id) && !this.profileAssignedToSibling(range, profile.id)) ??
+        (takesHeld ? candidates.find(profile => this.heldSiblingAssignment(range, profile.id)) : undefined) ?? candidates[0];
       if (!selected) {
         await this.fail(range, epoch, nextProfile || excluded ? "profiles-exhausted" : "profile-unavailable");
         return;
       }
       const candidate = clone(selected);
-      if (this.profileReserved(range, candidate.id) || this.profileAssignedToSibling(range, candidate.id)) {
+      const heldOwner = takesHeld ? this.heldSiblingAssignment(range, candidate.id)?.id : undefined;
+      if (this.profileReserved(range, candidate.id) || (this.profileAssignedToSibling(range, candidate.id) && !heldOwner)) {
         range.waitingProfiles = candidates.map(profile => profile.id);
         await this.updateRange(range, next => { next.phase = "paused"; next.pauseReason = "profile-in-use"; }, epoch);
         return;
@@ -780,9 +803,10 @@ export class VpnDownloadCoordinator {
       await this.updateRange(range, (next, plan) => {
         const sibling = plan.ranges.find(other => other.id !== range.rangeId && !terminal(other) && other.profileId === candidate.id);
         if (sibling) {
-          if (!this.canYieldProfile(range, sibling)) return;
+          if (!this.canYieldProfile(range, sibling) && !(sibling.id === heldOwner && this.heldSiblingAssignment(range, candidate.id))) return;
           sibling.profileId = next.profileId;
           sibling.profileHash = next.profileHash;
+          sibling.attemptProfileId = null;
         }
         next.profileId = candidate.id;
         next.profileHash = candidate.hash;

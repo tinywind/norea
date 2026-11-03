@@ -1175,7 +1175,7 @@ describe("VPN download coordinator", () => {
   });
 
   it("serializes exclusive profile allocation across plans then wakes the waiting owner", async () => {
-    const runtime = new Runtime();
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
     const coordinator = new VpnDownloadCoordinator(runtime);
     const first = plan([range("a", "a", [1])]);
     const second = plan([range("b", "a", [2])], "second");
@@ -1186,6 +1186,36 @@ describe("VPN download coordinator", () => {
     await until(() => expect(runtime.tasks.size).toBe(2));
     expect(runtime.task("b")[1].job.id).toBe(2);
     expect(runtime.native.size).toBe(1);
+  });
+
+  it("uses an idle eligible profile when another plan's worker or the foreground VPN holds the assigned one", async () => {
+    const runtime = new Runtime(); runtime.defaultProfiles = ["d"];
+    const coordinator = new VpnDownloadCoordinator(runtime); coordinator.setWorkerLimit(3);
+    const first = plan([range("a", "a", [1])]);
+    const second = plan([range("b", "a", [2]), range("c", "d", [3])], "second");
+    await coordinator.start(first, jobsFor(first)); await until(() => expect(runtime.tasks.size).toBe(1));
+    await coordinator.start(second, jobsFor(second)); await until(() => expect(runtime.tasks.size).toBe(3));
+    expect([...runtime.native.values()].map(item => item.profile.id).sort()).toEqual(["a", "b", "c"]);
+    expect(current(coordinator, "a").profileId).toBe("a");
+    expect([current(coordinator, "b").profileId, current(coordinator, "c").profileId].sort()).toEqual(["b", "c"]);
+    expect(runtime.events.filter(event => event.startsWith("connect:")).map(event => event.split(":")[2])).not.toContain("d");
+    expect(runtime.notices).toEqual([]);
+    await coordinator.stopAutomatic();
+  });
+
+  it("lets a waiting range take the unleased assignment of a held sibling instead of waiting with no worker", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan([range("a", "a", [1]), range("b", "b", [2])]);
+    await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(2));
+    await coordinator.handleTaskChallenge(runtime.task("a")[0], runtime.block("a"));
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("profile-in-use"));
+    await coordinator.pauseRange(value.id, "b");
+    await until(() => expect(runtime.task("a", 1)?.[1].job.id).toBe(1));
+    expect(runtime.native.size).toBe(1);
+    expect(current(coordinator, "a")).toMatchObject({ profileId: "b", checkpoint: 0, phase: "running" });
+    expect(current(coordinator, "b")).toMatchObject({ profileId: "a", attemptProfileId: null, userPaused: true, pauseReason: "user-paused" });
+    await coordinator.cancelPlan(value.id);
   });
 
   it.each([["removed", "c", "hash-c"], ["hash-changed", "a", "replacement-hash"]])("moves only the affected range to an idle eligible profile at the next chapter boundary when its exact profile is %s", async (change, profileId, profileHash) => {
@@ -1792,7 +1822,7 @@ describe("VPN download coordinator", () => {
   });
 
   it("wakes a profile waiter if release occurs while its wait-state write is pending", async () => {
-    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime);
+    const runtime = new Runtime(); runtime.profiles = [profile("a")]; const coordinator = new VpnDownloadCoordinator(runtime);
     const a = plan([range("a", "a", [1])], "first");
     await coordinator.start(a, jobsFor(a)); await until(() => expect(runtime.tasks.size).toBe(1));
     const disconnect = runtime.disconnectWorker.bind(runtime); const held = deferred(); const closing = deferred();

@@ -11,6 +11,7 @@ import {
 } from "../../db/queries/vpn-download-plans";
 import { listVpnDownloadProfileIssues, recordVpnDownloadProfileIssue, reallowVpnDownloadProfile } from "../../db/queries/vpn-download-profile-issues";
 import { cancelSourceAccessWait } from "./source-access-coordinator";
+import { usePluginVpnStore } from "../../store/plugin-vpn";
 import { useVpnDownloadStore } from "../../store/vpn-download";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
@@ -130,8 +131,10 @@ function report(error: unknown): void { publish({ error: describeError(error) })
 async function availableProfiles(): Promise<readonly SavedVpnProfile[]> {
   const [vault, status] = await Promise.all([listSavedPluginVpnProfiles(), getPluginVpnStatus()]);
   if (vault.cleanupError) throw new Error(vault.cleanupError);
-  reservedProfiles = status.phase !== "disabled" && status.profile
-    ? vault.profiles.filter(profile => profile.hash === status.profile!.hash || profile.ip === status.profile!.remoteHost).map(profile => profile.id) : [];
+  // Native leases refuse the foreground profile while its connection is requested, including the disabled reconnect backoff.
+  const foreground = status.phase !== "disabled" || usePluginVpnStore.getState().enabled ? status.profile : null;
+  reservedProfiles = foreground
+    ? vault.profiles.filter(profile => profile.hash === foreground.hash || profile.ip === foreground.remoteHost).map(profile => profile.id) : [];
   return vault.profiles;
 }
 

@@ -380,10 +380,10 @@ describe("automatic VPN run admission", () => {
     await runtime.cancelVpnDownloadRun();
   });
 
-  async function restartProcess() {
+  async function restartProcess(maxWorkers = 2) {
     vi.resetModules(); boundary.listeners.clear();
     vi.stubGlobal("window", new EventTarget());
-    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers: 2 }) } });
+    Object.assign(window, { localStorage, __NoreaAndroidVpnWorkers: { capabilities: () => JSON.stringify({ supported: true, parallelSupported: true, maxWorkers }) } });
     ({ interceptChapterDownloadBatch } = await import("./chapter-download-batch-interceptor"));
     return import("./vpn-download-runtime");
   }
@@ -452,6 +452,51 @@ describe("automatic VPN run admission", () => {
       expect(boundary.connect).toHaveBeenCalledTimes(connections);
       expect(restored.getVpnDownloadRuntimeSnapshot().run?.status).toBe("interrupted");
       expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.pauseReason === "interrupted")).toBe(true);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("fills every worker slot after restart while a failing foreground reconnect holds one assigned profile", async () => {
+    const pool = Array.from({ length: 19 }, (_, index) => ({
+      id: `p${index}`, hash: `hash-p${index}`, ip: `192.0.2.${index + 1}`, protocol: "tcp", approvedAt: index + 1, approvalSequence: index + 1,
+    }));
+    const foreground = pool[0]!;
+    // Every work was planned from the same ordered pool, so the foreground profile and the leading profiles repeat across plans.
+    for (let work = 0; work < 13; work++) {
+      const id = `plan-${work}`; const novelId = 100 + work;
+      const ranges = Array.from({ length: work === 12 ? 5 : 6 }, (_, index) => {
+        const chapterId = novelId * 100 + index;
+        return { id: `${id}-${index}`, profileId: pool[index]!.id, profileHash: pool[index]!.hash, startChapterId: chapterId, endChapterId: chapterId,
+          chapterIds: [chapterId], selectedChapterIds: [chapterId], checkpoint: 0, phase: "paused" as const, userPaused: false, pauseReason: "interrupted",
+          attemptedProfileIds: [], attemptProfileId: null, generation: 0, challenge: null };
+      });
+      boundary.plans.set(id, { id, batchId: "device-run", pluginId: "source-test", novelId, title: `Work ${work}`, mode: "parallel",
+        policies: { captcha: "nextProfile", cloudflare: "nextProfile" }, createdAt: 1, revision: 0, ranges });
+      for (const range of ranges) boundary.jobs.push({ id: range.selectedChapterIds[0]!, pluginId: "source-test", novelId, novelName: `Work ${work}`,
+        chapterPath: `/chapter/${range.selectedChapterIds[0]}`, title: `Chapter ${range.selectedChapterIds[0]}`,
+        batchId: "device-run", vpnBatchId: "device-run", vpnPlanId: id, vpnRangeId: range.id });
+    }
+    expect([...boundary.plans.values()].flatMap(plan => plan.ranges)).toHaveLength(77);
+    boundary.catalog.mockImplementation(async (novelId: number) => boundary.jobs.filter(job => job.novelId === novelId)
+      .map(job => ({ id: job.id, name: job.title, chapterNumber: `${job.id}` })));
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: pool, cleanupError: null });
+    // Reconnect backoff: the foreground is requested and keeps its profile while its status reads disabled.
+    boundary.status.mockResolvedValue({ phase: "disabled", profile: { hash: foreground.hash, remoteHost: foreground.ip }, supported: true, proxyPort: 123, error: null });
+    boundary.connect.mockImplementation(async (worker, profile) => {
+      if (profile.id === foreground.id) throw Object.assign(new Error("saved VPN profile is the current foreground profile"), { code: "vpn-worker-runtime-error" });
+      return { supported: true, worker, phase: "connected", profile: pool.find(candidate => candidate.id === profile.id), proxyPort: 12000 + worker.slot, error: null };
+    });
+    useVpnDownloadStore.setState({ workerCount: 10 });
+    const restored = await restartProcess(10);
+    (await import("../../store/plugin-vpn")).usePluginVpnStore.setState({ enabled: true });
+    await restored.initializeVpnDownloadRuntime();
+    try {
+      await vi.waitFor(() => expect(boundary.configure).toHaveBeenCalledTimes(10), { timeout: 3_000 });
+      await tick();
+      const ranges = restored.getVpnDownloadRuntimeSnapshot().plans.flatMap(plan => plan.ranges);
+      expect(boundary.connect.mock.calls.map(([, profile]) => profile.id)).not.toContain(foreground.id);
+      expect(ranges.filter(range => range.pauseReason === "runtime-error")).toEqual([]);
+      expect(new Set(boundary.configure.mock.calls.map(([, config]) => config.profileId)).size).toBe(10);
+      expect(boundary.enqueue).toHaveBeenCalledTimes(10);
     } finally { await restored.cancelVpnDownloadRun(); }
   });
 
