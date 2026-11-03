@@ -102,8 +102,10 @@
     "deep-link": {
       "mobile": [
         {
+          "scheme": ["norea"],
           "host": "repo",
-          "pathPrefix": ["/add"]
+          "pathPrefix": ["/add"],
+          "appLink": false
         }
       ],
       "desktop": {

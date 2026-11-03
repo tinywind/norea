@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
@@ -202,5 +203,31 @@ describe("startDeepLinkListener", () => {
 
     await expect(startDeepLinkListener({ onRepoAdd: vi.fn() })).rejects.toThrow("deep-link read failed");
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Android deep-link registration", () => {
+  const root = new URL("../../src-tauri/", import.meta.url);
+
+  it("registers norea://repo/add for Android VIEW intents without web app links", () => {
+    const config = JSON.parse(readFileSync(new URL("tauri.conf.json", root), "utf8")) as {
+      plugins: { "deep-link": { mobile: unknown[] } };
+    };
+    expect(config.plugins["deep-link"].mobile).toEqual([
+      { scheme: ["norea"], host: "repo", pathPrefix: ["/add"], appLink: false },
+    ]);
+  });
+
+  it("keeps the generated manifest filter in step with the config", () => {
+    const manifest = readFileSync(new URL("gen/android/app/src/main/AndroidManifest.xml", root), "utf8");
+    const marker = "<!-- DEEP LINK PLUGIN. AUTO-GENERATED. DO NOT REMOVE. -->";
+    const block = manifest.split(marker)[1] ?? "";
+    expect(block).toContain('<action android:name="android.intent.action.VIEW" />');
+    expect(block).toContain('<data android:scheme="norea" />');
+    expect(block).toContain('<data android:host="repo" />');
+    expect(block).toContain('<data android:pathPrefix="/add" />');
+    expect(block).not.toContain('android:scheme="https"');
+    expect(block).not.toContain("autoVerify");
+    expect(parseDeepLink("norea://repo/add?url=https%3A%2F%2Fexample.test%2Fp.json").kind).toBe("repo-add");
   });
 });
