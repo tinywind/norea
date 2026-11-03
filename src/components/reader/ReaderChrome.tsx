@@ -2,6 +2,7 @@ import { Popover, Switch } from "@mantine/core";
 import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import {
   normalizeFontScalePercent,
   useAppearanceStore,
@@ -307,6 +308,7 @@ export function ReaderSettingsSidePanel({
   ...target
 }: ReaderSettingsSurfaceProps) {
   const { t } = useTranslation();
+  useOverlayBackNavigation(true, onClose);
 
   return (
     <aside

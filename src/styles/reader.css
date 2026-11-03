@@ -729,6 +729,7 @@
 .norea-reader-settings-panel {
   background: var(--norea-color-surface);
   border-left: 1px solid var(--norea-color-rule);
+  color: var(--norea-color-ink);
   display: flex;
   flex: 0 0 22rem;
   flex-direction: column;
