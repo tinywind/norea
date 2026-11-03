@@ -85,7 +85,6 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
   const error = remove.error ?? chapters.error;
   const close = () => { if (!busy) onClose(); };
   return <Modal opened onClose={close} fullScreen title={t("contentSync.manageChapters")}
-    classNames={{ inner: "norea-server-management-modal", content: "norea-server-management-dialog" }}
     closeOnEscape={!busy} withCloseButton={!busy}>
     <Stack className="norea-server-management" gap="md">
       <ConsoleSectionHeader title={name} eyebrow={t("contentSync.manageChapters")}

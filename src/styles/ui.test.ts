@@ -283,3 +283,24 @@ describe("toast placement", () => {
     expect(ruleFor(reader, ":root").body).toMatch(/--norea-reader-bar-height:/);
   });
 });
+
+describe("full-screen dialogs", () => {
+  it("keep every full-screen modal inside the safe-area insets", () => {
+    const inner = ruleFor(appCss, ".mantine-Modal-root[data-full-screen] .mantine-Modal-inner").body;
+    expect(inner).toMatch(
+      /padding: var\(--norea-safe-area-top\) var\(--norea-safe-area-right\)\s+var\(--norea-safe-area-bottom\) var\(--norea-safe-area-left\);/,
+    );
+    const content = ruleFor(appCss, ".mantine-Modal-root[data-full-screen] .mantine-Modal-content").body;
+    expect(content).toMatch(
+      /height: calc\(\s*var\(--norea-viewport-height\) - var\(--norea-safe-area-top\) -\s+var\(--norea-safe-area-bottom\)\s*\);/,
+    );
+  });
+
+  it("leaves no per-dialog safe-area padding behind", () => {
+    const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css") && name !== "app.css");
+    for (const name of sheets) {
+      const source = readFileSync(new URL(name, stylesDir), "utf8");
+      expect(source, name).not.toMatch(/\[data-full-screen\]/);
+    }
+  });
+});

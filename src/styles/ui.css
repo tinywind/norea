@@ -144,11 +144,6 @@
   width: 2rem;
 }
 
-.norea-responsive-sheet--full {
-  padding-top: var(--norea-safe-area-top);
-}
-
-.norea-responsive-sheet--full .norea-responsive-sheet-body,
 .norea-responsive-sheet--side .norea-responsive-sheet-body {
   padding-bottom: calc(var(--mantine-spacing-md) + var(--norea-safe-area-bottom));
 }
@@ -168,7 +163,6 @@
 }
 
 .norea-responsive-sheet--drawer .norea-responsive-sheet-footer,
-.norea-responsive-sheet--full .norea-responsive-sheet-footer,
 .norea-responsive-sheet--side .norea-responsive-sheet-footer {
   padding-bottom: calc(var(--norea-space-3) + var(--norea-safe-area-bottom));
 }

@@ -347,6 +347,20 @@ a {
   padding-inline-start: max(5vw, var(--norea-safe-area-left));
 }
 
+/* Full-screen dialogs keep their title, close button and last row clear of the system bars. */
+.mantine-Modal-root[data-full-screen] .mantine-Modal-inner {
+  background: var(--mantine-color-body);
+  padding: var(--norea-safe-area-top) var(--norea-safe-area-right)
+    var(--norea-safe-area-bottom) var(--norea-safe-area-left);
+}
+
+.mantine-Modal-root[data-full-screen] .mantine-Modal-content {
+  height: calc(
+    var(--norea-viewport-height) - var(--norea-safe-area-top) -
+      var(--norea-safe-area-bottom)
+  );
+}
+
 .mantine-Modal-root:not([data-full-screen]) .mantine-Modal-content {
   max-height: calc(
     var(--norea-viewport-height) - max(5dvh, var(--norea-safe-area-top)) -

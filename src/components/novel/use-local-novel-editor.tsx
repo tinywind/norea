@@ -235,7 +235,6 @@ export function useLocalNovelEditor(
         type="file"
       />
       <Modal
-        classNames={{ inner: "norea-novel-editor-modal" }}
         closeOnClickOutside={!updateLocalMetadata.isPending}
         closeOnEscape={!updateLocalMetadata.isPending}
         fullScreen={phone}

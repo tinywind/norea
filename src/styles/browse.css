@@ -642,8 +642,3 @@
   margin: 0;
   min-width: 0;
 }
-
-.mantine-Modal-root[data-full-screen] .norea-repositories-modal {
-  padding: var(--norea-safe-area-top) var(--norea-safe-area-right)
-    var(--norea-safe-area-bottom) var(--norea-safe-area-left);
-}
