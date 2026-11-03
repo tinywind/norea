@@ -1336,6 +1336,7 @@ class AndroidScraperBridge(
             bodyTextLength: document.body ? document.body.textContent.length : 0,
             captureRunPresent: typeof window.__noreaChapterCaptureRunId === "string",
             captureObserverPresent: !!window.__noreaChapterCaptureObserver,
+            captureState: typeof window.__noreaChapterCaptureDiagnostic === "function" ? window.__noreaChapterCaptureDiagnostic() : null,
             nativeBridgeType: typeof window.AndroidScraper,
             nativePostType: typeof window.AndroidScraper === "object" ? typeof window.AndroidScraper.postExtractResultWithNonce : "missing",
             capturePostType: window.ReactNativeWebView ? typeof window.ReactNativeWebView.postMessage : "missing",
