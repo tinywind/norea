@@ -236,6 +236,26 @@ function chapterCaptureScript(
   var stableHeightRounds = 0;
   var lastScrollAt = 0;
   var imageWaitStartedAt = 0;
+  var pollCount = 0;
+  window.__noreaChapterCaptureDiagnostic = function () {
+    var root = document.querySelector(plan.contentSelector);
+    return {
+      pollCount: pollCount,
+      finished: finished,
+      currentRun: window.__noreaChapterCaptureRunId === interactionRunId,
+      interactionsState: interactionsState,
+      interactionCount: (plan.interactions || []).length,
+      contentType: contentType,
+      loadStrategy: plan.loadStrategy,
+      readyPresent: !!document.querySelector(plan.readySelector || plan.contentSelector),
+      contentPresent: !!root,
+      contentTextLength: root ? (root.textContent || "").length : 0,
+      lastResourceQuietMs: Date.now() - lastActivityAt,
+      stableHeightRounds: stableHeightRounds,
+      linkTargetPending: !!linkTargetUrl,
+      imageWaitAgeMs: imageWaitStartedAt ? Date.now() - imageWaitStartedAt : 0
+    };
+  };
   function post(payload) {
     if (finished || window.__noreaChapterCaptureRunId !== interactionRunId) return;
     finished = true;
@@ -366,6 +386,7 @@ function chapterCaptureScript(
     });
   }
   function poll() {
+    pollCount += 1;
     if (finished || window.__noreaChapterCaptureRunId !== interactionRunId) return;
     var manualAction = document.querySelector("[data-norea-manual-action]");
     var detectedKind = detectChallenge();
