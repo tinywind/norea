@@ -1,13 +1,18 @@
+import { useMemo } from "react";
 import {
   ColorInput,
-  NumberInput,
   Select,
-  Slider,
   Stack,
   Switch,
-  Text,
+  useComputedColorScheme,
 } from "@mantine/core";
-import { SettingsFieldRow, SettingsSection } from "../SettingsPrimitives";
+import {
+  SettingsAdvancedGroup,
+  SettingsFieldRow,
+  SettingsPercentSlider,
+  SettingsSection,
+  SettingsWideField,
+} from "../SettingsPrimitives";
 import { isAndroidRuntime } from "../../lib/tauri-runtime";
 import { useTranslation } from "../../i18n";
 import {
@@ -15,26 +20,68 @@ import {
   MAX_FONT_SCALE_PERCENT,
   MIN_ANDROID_VIEW_SCALE_PERCENT,
   MIN_FONT_SCALE_PERCENT,
-  normalizeAppThemeId,
   normalizeAppThemeMode,
   useAppearanceStore,
 } from "../../store/appearance";
-import { APP_THEME_OPTIONS } from "../../theme/md3";
+import { APP_THEMES, type AppThemeId } from "../../theme/md3";
+import { resolvePaletteRoles } from "../../theme/palette-roles";
 
-const ROOT_FONT_SIZE_PX = 16;
-const MIN_ROOT_FONT_SIZE_PX = Math.round(
-  (ROOT_FONT_SIZE_PX * MIN_FONT_SCALE_PERCENT) / 100,
-);
-const MAX_ROOT_FONT_SIZE_PX = Math.round(
-  (ROOT_FONT_SIZE_PX * MAX_FONT_SCALE_PERCENT) / 100,
-);
+const SCALE_STEP_PERCENT = 5;
 
-function fontScalePercentToRootFontSize(fontScalePercent: number): number {
-  return Math.round((ROOT_FONT_SIZE_PX * fontScalePercent) / 100);
-}
+function ThemeSwatches({
+  value,
+  onChange,
+}: {
+  value: AppThemeId;
+  onChange: (id: AppThemeId) => void;
+}) {
+  const { t } = useTranslation();
+  const scheme = useComputedColorScheme("light");
+  const swatches = useMemo(
+    () =>
+      APP_THEMES.map((theme) => {
+        const roles = resolvePaletteRoles(theme[scheme], scheme, {
+          customAccent: false,
+        });
+        return {
+          id: theme.id,
+          label: theme.label,
+          background: roles.bg,
+          surface: roles.surfaceRaised,
+          accent: roles.accent,
+        };
+      }),
+    [scheme],
+  );
 
-function rootFontSizeToFontScalePercent(rootFontSize: unknown): number {
-  return (Number(rootFontSize) / ROOT_FONT_SIZE_PX) * 100;
+  return (
+    <div
+      aria-label={t("settings.app.appTheme.label")}
+      className="norea-settings-theme-swatches"
+      role="radiogroup"
+    >
+      {swatches.map((swatch) => (
+        <button
+          aria-checked={swatch.id === value}
+          className="norea-settings-theme-swatch norea-state-layer"
+          key={swatch.id}
+          onClick={() => onChange(swatch.id)}
+          role="radio"
+          type="button"
+        >
+          <span
+            aria-hidden="true"
+            className="norea-settings-theme-swatch-preview"
+            style={{ background: swatch.background }}
+          >
+            <span style={{ background: swatch.surface }} />
+            <span style={{ background: swatch.accent }} />
+          </span>
+          <span className="norea-settings-theme-swatch-label">{swatch.label}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function AppearanceSection() {
@@ -64,14 +111,14 @@ export function AppearanceSection() {
         <SettingsFieldRow
           label={t("settings.app.appTheme.label")}
           description={t("settings.app.appTheme.description")}
+          layout="stacked"
         >
-          <Select
-            data={APP_THEME_OPTIONS}
-            value={appearance.appThemeId}
-            onChange={(appThemeId) =>
-              appearance.setAppThemeId(normalizeAppThemeId(appThemeId))
-            }
-          />
+          <SettingsWideField>
+            <ThemeSwatches
+              value={appearance.appThemeId}
+              onChange={appearance.setAppThemeId}
+            />
+          </SettingsWideField>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.app.amoled.label")}
@@ -84,46 +131,25 @@ export function AppearanceSection() {
             }
           />
         </SettingsFieldRow>
-        <SettingsFieldRow
+        <SettingsPercentSlider
           label={t("settings.app.fontScale.label")}
           description={t("settings.app.fontScale.description")}
-        >
-          <NumberInput
-            value={fontScalePercentToRootFontSize(appearance.fontScalePercent)}
-            min={MIN_ROOT_FONT_SIZE_PX}
-            max={MAX_ROOT_FONT_SIZE_PX}
-            step={1}
-            suffix="px"
-            onChange={(rootFontSize) =>
-              appearance.setFontScalePercent(
-                rootFontSizeToFontScalePercent(rootFontSize),
-              )
-            }
-          />
-        </SettingsFieldRow>
+          value={appearance.fontScalePercent}
+          min={MIN_FONT_SCALE_PERCENT}
+          max={MAX_FONT_SCALE_PERCENT}
+          step={SCALE_STEP_PERCENT}
+          onChange={appearance.setFontScalePercent}
+        />
         {showAndroidViewScale ? (
-          <SettingsFieldRow
+          <SettingsPercentSlider
             label={t("settings.app.androidViewScale.label")}
             description={t("settings.app.androidViewScale.description")}
-          >
-            <div className="norea-settings-slider-control">
-              <Text className="norea-settings-slider-value">
-                {appearance.androidViewScalePercent}%
-              </Text>
-              <Slider
-                value={appearance.androidViewScalePercent}
-                min={MIN_ANDROID_VIEW_SCALE_PERCENT}
-                max={MAX_ANDROID_VIEW_SCALE_PERCENT}
-                step={5}
-                label={(value) => `${value}%`}
-                marks={[
-                  { value: MIN_ANDROID_VIEW_SCALE_PERCENT, label: "75%" },
-                  { value: MAX_ANDROID_VIEW_SCALE_PERCENT, label: "100%" },
-                ]}
-                onChange={appearance.setAndroidViewScalePercent}
-              />
-            </div>
-          </SettingsFieldRow>
+            value={appearance.androidViewScalePercent}
+            min={MIN_ANDROID_VIEW_SCALE_PERCENT}
+            max={MAX_ANDROID_VIEW_SCALE_PERCENT}
+            step={SCALE_STEP_PERCENT}
+            onChange={appearance.setAndroidViewScalePercent}
+          />
         ) : null}
         <SettingsFieldRow
           label={t("settings.app.navLabels.label")}
@@ -136,16 +162,18 @@ export function AppearanceSection() {
             }
           />
         </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("settings.app.customAccent.label")}
-          description={t("settings.app.customAccent.description")}
-        >
-          <ColorInput
-            value={appearance.customAccentColor}
-            placeholder={t("settings.app.customAccent.placeholder")}
-            onChange={appearance.setCustomAccentColor}
-          />
-        </SettingsFieldRow>
+        <SettingsAdvancedGroup>
+          <SettingsFieldRow
+            label={t("settings.app.customAccent.label")}
+            description={t("settings.app.customAccent.description")}
+          >
+            <ColorInput
+              value={appearance.customAccentColor}
+              placeholder={t("settings.app.customAccent.placeholder")}
+              onChange={appearance.setCustomAccentColor}
+            />
+          </SettingsFieldRow>
+        </SettingsAdvancedGroup>
       </SettingsSection>
     </Stack>
   );

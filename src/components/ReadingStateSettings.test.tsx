@@ -14,7 +14,13 @@ vi.mock("@tanstack/react-query", () => ({
     ? { data: "This tablet" }
     : { data: [entry], refetch: mocks.refetch, isFetching: false, error: null },
 }));
-vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../i18n", () => ({
+  formatDateTimeForLocale: (locale: string, value: number) => `${locale}@${value}`,
+  useTranslation: () => ({
+    locale: "ko",
+    t: (key: string, values?: object) => (values ? `${key}:${JSON.stringify(values)}` : key),
+  }),
+}));
 vi.mock("../store/content-sync", () => ({ useContentSyncStore: () => "" }));
 vi.mock("../lib/content-sync/device-backup", () => ({
   defaultBackupDeviceName: vi.fn(), listDeviceBackups: vi.fn(), uploadDeviceBackup: mocks.upload,
@@ -52,6 +58,7 @@ it("offers all saved device names and requires confirmation before restoring", a
   mocks.selected = entry.deviceName;
   const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
   expect(elements.find(item => item.props.data)?.props.data).toEqual([{ value: entry.deviceName, label: entry.deviceName }]);
+  expect(elements.some(item => item.props.children === `deviceBackup.details:${JSON.stringify({ date: "ko@1000", size: "0.00" })}`)).toBe(true);
   elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!.props.onClick!();
   expect(mocks.restore).not.toHaveBeenCalled();
   elements.find(item => item.props.children === "deviceBackup.confirmRestore")!.props.onClick!();

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, NumberInput, Select, Text, TextInput } from "@mantine/core";
+import { NumberInput, Select, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
@@ -10,7 +10,7 @@ import {
   syncContentServer,
 } from "../lib/content-sync/sync";
 import { useContentSyncStore } from "../store/content-sync";
-import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
+import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 
@@ -43,6 +43,10 @@ export function ContentServerSettings() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const disabled = busy;
+  const syncStatus = [
+    status === "syncing" ? t("contentSync.background") : null,
+    progress ? t("contentSync.progress", progress) : null,
+  ].filter(Boolean).join(" · ") || null;
 
   function startSync(rescan = false) {
     setActionError(null);
@@ -113,12 +117,8 @@ export function ContentServerSettings() {
             onChange={(value) => { if (typeof value === "number") setSyncIntervalMinutes(value); }} />
         </SettingsFieldRow>
       ) : null}
-      <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
-        <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
-          min={1} max={120} allowDecimal={false} allowNegative={false}
-          onChange={(value) => { if (typeof value === "number") setLookupTimeoutSeconds(value); }} />
-      </SettingsFieldRow>
-      <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}>
+      <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}
+        status={syncStatus} error={actionError || (blocked ? t("contentSync.blocked") : error)}>
         <SettingsInlineControls>
           <TextButton tone="accent" loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
             {t("contentSync.syncNow")}
@@ -128,29 +128,29 @@ export function ContentServerSettings() {
           </TextButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
-      <SettingsFieldRow label={t("contentSync.uploadConflictPolicy")} description={t("contentSync.uploadConflictDescription")}>
-        <Select aria-label={t("contentSync.uploadConflictPolicy")} value={uploadConflictPolicy} allowDeselect={false}
-          data={[
-            { value: "prefer-complete", label: t("contentSync.preferComplete") },
-            { value: "keep-server", label: t("contentSync.keepServer") },
-            { value: "replace-server", label: t("contentSync.replaceServer") },
-          ]}
-          onChange={(value) => {
-            if (value === "prefer-complete" || value === "keep-server" || value === "replace-server") setUploadConflictPolicy(value);
-          }} />
-      </SettingsFieldRow>
-      {status === "syncing" || progress ? (
-        <div className="norea-settings-feedback" role="status">
-          {status === "syncing" ? <Text>{t("contentSync.background")}</Text> : null}
-          {progress ? <Text>{t("contentSync.progress", progress)}</Text> : null}
-        </div>
-      ) : null}
-      {actionError || error ? <Alert className="norea-settings-error" color="danger" role="alert" style={{ whiteSpace: "pre-wrap" }}>{actionError || (blocked ? t("contentSync.blocked") : error)}</Alert> : null}
       <SettingsFieldRow label={t("contentSync.catalog")} description={t("contentSync.browseHint")}>
         <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>
           {t("contentSync.browse")}
         </TextButton>
       </SettingsFieldRow>
+      <SettingsAdvancedGroup>
+        <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
+          <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
+            min={1} max={120} allowDecimal={false} allowNegative={false}
+            onChange={(value) => { if (typeof value === "number") setLookupTimeoutSeconds(value); }} />
+        </SettingsFieldRow>
+        <SettingsFieldRow label={t("contentSync.uploadConflictPolicy")} description={t("contentSync.uploadConflictDescription")}>
+          <Select aria-label={t("contentSync.uploadConflictPolicy")} value={uploadConflictPolicy} allowDeselect={false}
+            data={[
+              { value: "prefer-complete", label: t("contentSync.preferComplete") },
+              { value: "keep-server", label: t("contentSync.keepServer") },
+              { value: "replace-server", label: t("contentSync.replaceServer") },
+            ]}
+            onChange={(value) => {
+              if (value === "prefer-complete" || value === "keep-server" || value === "replace-server") setUploadConflictPolicy(value);
+            }} />
+        </SettingsFieldRow>
+      </SettingsAdvancedGroup>
     </SettingsSection>
     <ReadingStateSettings key={serverUrl} serverUrl={serverUrl} />
     </>

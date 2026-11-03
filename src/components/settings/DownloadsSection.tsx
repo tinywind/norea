@@ -4,6 +4,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
 import { StorageRecoveryBanner } from "../runtime/StorageRecovery";
 import {
+  SettingsAdvancedGroup,
   SettingsFieldRow,
   SettingsSection,
   SettingsWideField,
@@ -40,13 +41,16 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
   const queryClient = useQueryClient();
   const [mediaStorageRoot, setMediaStorageRoot] = useState<string | null>(null);
   const [mediaStorageBusy, setMediaStorageBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     void getChapterMediaStorageRoot()
-      .then(setMediaStorageRoot)
+      .then((root) => {
+        setMediaStorageRoot(root);
+        setLoadError(null);
+      })
       .catch((error: unknown) => {
-        showSettingsToast(
-          "danger",
+        setLoadError(
           t("settings.data.mediaStorage.loadFailed", {
             error: describeError(error),
           }),
@@ -60,6 +64,7 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
       const root = await selectChapterMediaStorageRoot();
       if (root) {
         setMediaStorageRoot(root);
+        setLoadError(null);
         queryClient.setQueryData(CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY, root);
         reconcileChapterStorage(queryClient);
         showSettingsToast("ok", t("settings.toast.saved"));
@@ -88,6 +93,7 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
             ? t("settings.data.mediaStorage.folder.androidDefaultDescription")
             : t("settings.data.mediaStorage.folder.description")
         }
+        error={loadError}
         layout="stacked"
       >
         <SettingsWideField>
@@ -153,41 +159,43 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             {t("settings.data.downloadedContent.button")}
           </TextButton>
         </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("browseSettings.sourceWorkConcurrency")}
-          description={t("browseSettings.sourceWorkConcurrency.description")}
-        >
-          <NumberInput
-            value={sourceWorkConcurrency}
-            min={1}
-            max={10}
-            step={1}
-            clampBehavior="strict"
-            onChange={(value) => {
-              if (typeof value === "number") {
-                setSourceWorkConcurrency(value);
-              }
-            }}
-          />
-        </SettingsFieldRow>
-        <SettingsFieldRow
-          label={t("browseSettings.chapterDownloadCooldown")}
-          description={t("browseSettings.chapterDownloadCooldown.description")}
-        >
-          <NumberInput
-            value={chapterDownloadCooldownSeconds}
-            min={0}
-            max={60}
-            step={1}
-            clampBehavior="strict"
-            suffix={` ${t("common.seconds")}`}
-            onChange={(value) => {
-              if (typeof value === "number") {
-                setChapterDownloadCooldownSeconds(value);
-              }
-            }}
-          />
-        </SettingsFieldRow>
+        <SettingsAdvancedGroup>
+          <SettingsFieldRow
+            label={t("browseSettings.sourceWorkConcurrency")}
+            description={t("browseSettings.sourceWorkConcurrency.description")}
+          >
+            <NumberInput
+              value={sourceWorkConcurrency}
+              min={1}
+              max={10}
+              step={1}
+              clampBehavior="strict"
+              onChange={(value) => {
+                if (typeof value === "number") {
+                  setSourceWorkConcurrency(value);
+                }
+              }}
+            />
+          </SettingsFieldRow>
+          <SettingsFieldRow
+            label={t("browseSettings.chapterDownloadCooldown")}
+            description={t("browseSettings.chapterDownloadCooldown.description")}
+          >
+            <NumberInput
+              value={chapterDownloadCooldownSeconds}
+              min={0}
+              max={60}
+              step={1}
+              clampBehavior="strict"
+              suffix={` ${t("common.seconds")}`}
+              onChange={(value) => {
+                if (typeof value === "number") {
+                  setChapterDownloadCooldownSeconds(value);
+                }
+              }}
+            />
+          </SettingsFieldRow>
+        </SettingsAdvancedGroup>
       </SettingsSection>
       <ChapterCleanupPanel
         opened={cleanupOpened}

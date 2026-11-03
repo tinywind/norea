@@ -3,7 +3,7 @@ import {
   buildReaderSettingsFields,
   useReaderSettingsEditor,
 } from "../ReaderSettingsPanel";
-import { SettingsSection } from "../SettingsPrimitives";
+import { SettingsAdvancedGroup, SettingsSection } from "../SettingsPrimitives";
 
 /** Global reader defaults. Per-novel and per-source settings live in the reader. */
 export function ReaderSection() {
@@ -43,8 +43,8 @@ export function ReaderSection() {
       <SettingsSection title={t("readerSettings.indicators.title")}>
         {fields.indicators}
       </SettingsSection>
-      <SettingsSection title={t("readerSettings.advanced")}>
-        {fields.advanced}
+      <SettingsSection>
+        <SettingsAdvancedGroup>{fields.advanced}</SettingsAdvancedGroup>
       </SettingsSection>
       {fields.resetConfirmation}
     </Stack>

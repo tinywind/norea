@@ -42,6 +42,9 @@ const LOG_LEVEL_LABEL_KEYS: Record<LogLevel, TranslationKey> = {
   off: "settings.about.logLevel.off",
 };
 
+/** Source WebViews read the User-Agent when they start, so a change applies after a restart. */
+const USER_AGENT_AT_STARTUP = useUserAgentStore.getState().userAgent;
+
 export function logLevelLabelKey(level: LogLevel): TranslationKey {
   return LOG_LEVEL_LABEL_KEYS[level];
 }
@@ -225,6 +228,11 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.data.userAgent.label")}
           description={t("settings.data.userAgent.description")}
           layout="stacked"
+          status={
+            userAgent === USER_AGENT_AT_STARTUP
+              ? null
+              : t("settings.data.userAgent.restartRequired")
+          }
         >
           <SettingsWideField>
             <Stack gap="sm">
@@ -240,7 +248,11 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
                   tone="accent"
                   onClick={() => {
                     setUserAgent(userAgentInput);
-                    showSettingsToast("ok", t("settings.toast.saved"));
+                    showSettingsToast(
+                      "ok",
+                      t("settings.toast.saved"),
+                      t("settings.data.userAgent.restartRequired"),
+                    );
                   }}
                 >
                   {t("common.save")}
@@ -249,7 +261,11 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
                   variant="default"
                   onClick={() => {
                     setUserAgentInput(resetUserAgent());
-                    showSettingsToast("ok", t("settings.toast.reset"));
+                    showSettingsToast(
+                      "ok",
+                      t("settings.toast.reset"),
+                      t("settings.data.userAgent.restartRequired"),
+                    );
                   }}
                 >
                   {t("common.reset")}

@@ -1,6 +1,12 @@
-import { Text } from "@mantine/core";
-import type { ReactNode } from "react";
+import { Collapse, Slider, Text } from "@mantine/core";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { useTranslation } from "../i18n";
 import { ConsolePanel } from "./ConsolePrimitives";
+import { IconButton } from "./IconButton";
+import { ChevronDownIcon, InfoIcon } from "./ui/icons";
+
+/** Longer descriptions move behind the row's info toggle to keep one short line. */
+const INLINE_DESCRIPTION_MAX_LENGTH = 90;
 
 interface SettingsSectionProps {
   children: ReactNode;
@@ -10,10 +16,14 @@ interface SettingsSectionProps {
 }
 
 interface SettingsFieldRowProps {
-  children: ReactNode;
+  children?: ReactNode;
   description?: string;
+  /** Inline error for this row; async outcomes also show a notification. */
+  error?: string | null;
   label?: string;
   layout?: "inline" | "stacked";
+  /** Inline status for this row, such as progress or a required restart. */
+  status?: string | null;
 }
 
 interface SettingsInlineControlsProps {
@@ -47,10 +57,18 @@ export function SettingsSection({
 export function SettingsFieldRow({
   children,
   description,
+  error,
   label,
   layout = "inline",
+  status,
 }: SettingsFieldRowProps) {
-  const hasCopy = Boolean(label || description);
+  const { t } = useTranslation();
+  const descriptionId = useId();
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
+  const hasCopy = Boolean(label || description || error || status);
+  const collapsibleDescription = Boolean(
+    label && description && description.length > INLINE_DESCRIPTION_MAX_LENGTH,
+  );
 
   return (
     <div
@@ -61,15 +79,132 @@ export function SettingsFieldRow({
       {hasCopy ? (
         <div className="norea-settings-form-copy">
           {label ? (
-            <Text className="norea-settings-form-label">{label}</Text>
+            <div className="norea-settings-form-label-row">
+              <Text className="norea-settings-form-label">{label}</Text>
+              {collapsibleDescription ? (
+                <IconButton
+                  active={descriptionOpen}
+                  aria-controls={descriptionId}
+                  aria-expanded={descriptionOpen}
+                  className="norea-settings-form-info"
+                  label={t("settings.row.moreInfo", { label })}
+                  onClick={() => setDescriptionOpen((open) => !open)}
+                >
+                  <InfoIcon />
+                </IconButton>
+              ) : null}
+            </div>
           ) : null}
           {description ? (
-            <Text className="norea-settings-form-description">{description}</Text>
+            <Text
+              className="norea-settings-form-description"
+              hidden={collapsibleDescription && !descriptionOpen}
+              id={descriptionId}
+            >
+              {description}
+            </Text>
+          ) : null}
+          {status ? (
+            <Text className="norea-settings-form-status" role="status">
+              {status}
+            </Text>
+          ) : null}
+          {error ? (
+            <Text className="norea-settings-form-error" role="alert">
+              {error}
+            </Text>
           ) : null}
         </div>
       ) : null}
-      <div className="norea-settings-form-control">{children}</div>
+      {children ? (
+        <div className="norea-settings-form-control">{children}</div>
+      ) : null}
     </div>
+  );
+}
+
+interface SettingsAdvancedGroupProps {
+  children: ReactNode;
+  /** Opens the group, for example when a row inside needs input or shows an error. */
+  forceOpen?: boolean;
+  /** Defaults to "Advanced". */
+  label?: string;
+}
+
+/** A collapsed group for rows most people never change. */
+export function SettingsAdvancedGroup({
+  children,
+  forceOpen = false,
+  label,
+}: SettingsAdvancedGroupProps) {
+  const { t } = useTranslation();
+  const bodyId = useId();
+  const [opened, setOpened] = useState(forceOpen);
+
+  useEffect(() => {
+    if (forceOpen) setOpened(true);
+  }, [forceOpen]);
+
+  return (
+    <div className="norea-settings-advanced" data-expanded={opened}>
+      <button
+        aria-controls={bodyId}
+        aria-expanded={opened}
+        className="norea-settings-advanced-toggle norea-state-layer"
+        onClick={() => setOpened((open) => !open)}
+        type="button"
+      >
+        <span className="norea-settings-advanced-label">
+          {label ?? t("settings.advanced")}
+        </span>
+        <ChevronDownIcon className="norea-settings-advanced-chevron" />
+      </button>
+      <Collapse expanded={opened} id={bodyId} keepMountedMode="display-none">
+        <div className="norea-settings-advanced-body">{children}</div>
+      </Collapse>
+    </div>
+  );
+}
+
+interface SettingsSliderProps {
+  description?: string;
+  label: string;
+  max: number;
+  min: number;
+  onChange: (value: number) => void;
+  step: number;
+  value: number;
+}
+
+/** A percent slider row with its current value beside it. */
+export function SettingsPercentSlider({
+  description,
+  label,
+  max,
+  min,
+  onChange,
+  step,
+  value,
+}: SettingsSliderProps) {
+  return (
+    <SettingsFieldRow label={label} description={description}>
+      <div className="norea-settings-slider-control">
+        <Text className="norea-settings-slider-value">{value}%</Text>
+        <Slider
+          thumbLabel={label}
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          label={(next) => `${next}%`}
+          marks={[
+            { value: min, label: `${min}%` },
+            { value: max, label: `${max}%` },
+          ]}
+          onChange={onChange}
+        />
+      </div>
+    </SettingsFieldRow>
   );
 }
 

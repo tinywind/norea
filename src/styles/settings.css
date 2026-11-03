@@ -185,11 +185,130 @@
   line-height: 1.3;
 }
 
+.norea-settings-form-label-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-1);
+  min-width: 0;
+}
+
 .norea-settings-form-description {
   color: var(--norea-color-ink-muted);
   font-size: var(--norea-text-sm);
   line-height: 1.35;
   margin-top: var(--norea-space-1);
+}
+
+.norea-settings-form-description[hidden] {
+  display: none;
+}
+
+.norea-settings-form-status,
+.norea-settings-form-error {
+  font-size: var(--norea-text-sm);
+  line-height: 1.35;
+  margin-top: var(--norea-space-1);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.norea-settings-form-status {
+  color: var(--norea-color-ink-muted);
+}
+
+.norea-settings-form-error {
+  color: var(--norea-color-danger);
+}
+
+.norea-settings-advanced {
+  border-bottom: 1px solid var(--norea-color-rule);
+}
+
+.norea-settings-advanced:last-child {
+  border-bottom: 0;
+}
+
+.norea-settings-advanced-toggle {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: var(--norea-text-sm);
+  font-weight: 650;
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+  min-height: 3.25rem;
+  padding: var(--norea-space-2) 0;
+  text-align: left;
+  width: 100%;
+}
+
+.norea-settings-advanced-chevron {
+  color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
+  transition: transform var(--norea-duration-fast) ease;
+}
+
+.norea-settings-advanced[data-expanded="true"] .norea-settings-advanced-chevron {
+  transform: rotate(180deg);
+}
+
+.norea-settings-advanced-body {
+  border-top: 1px solid var(--norea-color-rule);
+}
+
+.norea-settings-theme-swatches {
+  display: grid;
+  gap: var(--norea-space-2);
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+}
+
+.norea-settings-theme-swatch {
+  align-items: center;
+  background: none;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: var(--norea-space-2);
+  justify-items: center;
+  padding: var(--norea-space-2);
+}
+
+.norea-settings-theme-swatch[aria-checked="true"] {
+  border-color: var(--norea-color-accent);
+  box-shadow: inset 0 0 0 1px var(--norea-color-accent);
+}
+
+.norea-settings-theme-swatch-preview {
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
+  display: flex;
+  gap: var(--norea-space-1);
+  height: 2.75rem;
+  justify-content: flex-end;
+  padding: var(--norea-space-1);
+  width: 100%;
+}
+
+.norea-settings-theme-swatch-preview > span {
+  border-radius: var(--norea-radius-full);
+  flex: 0 0 1rem;
+  height: 1rem;
+}
+
+.norea-settings-theme-swatch-label {
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-tight);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .norea-settings-form-control {
@@ -289,28 +408,6 @@
   display: grid;
   gap: var(--norea-space-3);
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
-}
-
-.norea-settings-feedback {
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  display: grid;
-  gap: var(--norea-space-2);
-  margin-block: var(--norea-space-3);
-  overflow-wrap: anywhere;
-  padding: var(--norea-space-3);
-}
-
-.norea-settings-feedback .mantine-Text-root {
-  font-size: var(--norea-text-sm);
-  line-height: 1.5;
-}
-
-.norea-settings-error {
-  margin-block: var(--norea-space-3);
-  overflow-wrap: anywhere;
 }
 
 .norea-reader-tap-preset-grid {
@@ -550,5 +647,26 @@
   .norea-reader-tap-preset {
     flex-basis: 100%;
     width: 100%;
+  }
+
+  .norea-settings-form-row:has(> .norea-settings-form-control > .mantine-Switch-root) {
+    align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .norea-settings-form-control:has(> .mantine-Switch-root) {
+    justify-self: end;
+  }
+
+  .norea-settings-form-control > .mantine-Switch-root {
+    width: auto;
+  }
+}
+
+@media (any-pointer: coarse) {
+  /* D8: the Advanced toggle and theme choices are full touch targets. */
+  .norea-settings-advanced-toggle,
+  .norea-settings-theme-swatch {
+    min-height: var(--norea-control-md);
   }
 }

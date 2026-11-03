@@ -73,6 +73,17 @@ describe("settings sections", () => {
     }
   });
 
+  it("picks the app theme from swatches and the UI scale as a percent", () => {
+    const markup = detail(renderSettings("appearance"));
+
+    expect(markup).toContain('role="radiogroup"');
+    expect(markup.match(/role="radio"/g)).toHaveLength(9);
+    expect(markup).toMatch(/aria-checked="true"[^>]*role="radio"[^]*?>Moss</);
+    expect(markup).toContain("UI scale");
+    expect(markup).toContain(">100%<");
+    expect(markup).not.toContain("UI scale baseline");
+  });
+
   it("no longer offers pause reading history in library settings", () => {
     const markup = renderSettings("library");
 

@@ -5,6 +5,7 @@ import { ConsoleChip } from "../ConsolePrimitives";
 import { PluginVpnFinder } from "../PluginVpnFinder";
 import { SavedVpnProfilesSettings } from "../SavedVpnProfilesSettings";
 import {
+  SettingsAdvancedGroup,
   SettingsFieldRow,
   SettingsInlineControls,
   SettingsSection,
@@ -404,35 +405,64 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
           <SettingsFieldRow
             label={t("settings.data.pluginVpn.status.label")}
             description={t("settings.data.pluginVpn.status.description")}
+            error={vpnQuery.isError ? t("common.loadFailed") : visibleStatusError}
           >
-            <ConsoleChip tone={displayPhase === "connected" ? "accent" : undefined}>
-              {vpnQuery.isError
-                ? t("common.loadFailed")
-                : displayPhase
-                  ? t(PLUGIN_VPN_PHASE_KEYS[displayPhase])
-                  : t("settings.data.pluginVpn.status.loading")}
-            </ConsoleChip>
+            <SettingsInlineControls>
+              <ConsoleChip tone={displayPhase === "connected" ? "accent" : undefined}>
+                {vpnQuery.isError
+                  ? t("common.loadFailed")
+                  : displayPhase
+                    ? t(PLUGIN_VPN_PHASE_KEYS[displayPhase])
+                    : t("settings.data.pluginVpn.status.loading")}
+              </ConsoleChip>
+              {vpnQuery.isError ? (
+                <TextButton
+                  loading={vpnQuery.isFetching}
+                  variant="default"
+                  onClick={() => {
+                    void vpnQuery.refetch();
+                  }}
+                >
+                  {t("common.retry")}
+                </TextButton>
+              ) : null}
+            </SettingsInlineControls>
           </SettingsFieldRow>
-          {vpnQuery.isError ? (
-            <Stack align="flex-start" gap="xs">
-              <Text className="norea-storage-setup-error" role="alert">
-                {t("common.loadFailed")}
-              </Text>
-              <TextButton
-                loading={vpnQuery.isFetching}
-                variant="default"
-                onClick={() => {
-                  void vpnQuery.refetch();
-                }}
-              >
-                {t("common.retry")}
-              </TextButton>
-            </Stack>
-          ) : visibleStatusError ? (
-            <Text className="norea-storage-setup-error" role="alert">
-              {visibleStatusError}
-            </Text>
-          ) : null}
+          <SettingsFieldRow
+            label={t("settings.data.pluginVpn.connection.label")}
+            description={t("settings.data.pluginVpn.connection.description")}
+          >
+            <SettingsInlineControls>
+              {!showConnectionStop || (disconnected && vpnOperation === null) ? (
+                <TextButton
+                  disabled={!canConnect}
+                  onClick={() => {
+                    void connect();
+                  }}
+                >
+                  {t("settings.data.pluginVpn.connection.connect")}
+                </TextButton>
+              ) : null}
+              {showConnectionStop ? (
+                <TextButton
+                  disabled={
+                    profileOperationActive ||
+                    vpnOperation?.kind === "disconnect" ||
+                    (!vpnEnabled && !connectionRequestActive && !statusAvailable)
+                  }
+                  loading={vpnOperation?.kind === "disconnect"}
+                  variant="default"
+                  onClick={() => {
+                    void disconnect();
+                  }}
+                >
+                  {cancelConnection
+                    ? t("settings.data.pluginVpn.connection.cancel")
+                    : t("settings.data.pluginVpn.connection.disconnect")}
+                </TextButton>
+              ) : null}
+            </SettingsInlineControls>
+          </SettingsFieldRow>
           <SettingsFieldRow
             label={t("settings.data.pluginVpn.profile.label")}
             description={t("settings.data.pluginVpn.profile.description")}
@@ -478,142 +508,113 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
               </Stack>
             </SettingsWideField>
           </SettingsFieldRow>
-          {currentFinderIp ? (
-            <SettingsFieldRow
-              label={t("settings.data.pluginVpn.finder.verdict.label")}
-              description={t(
-                "settings.data.pluginVpn.finder.verdict.description",
-              )}
-            >
-              <Group gap="sm" wrap="nowrap">
-                <Text size="sm">{currentFinderIp}</Text>
-                <VpnGateServerVerdictControl
-                  disabled={
-                    verdictControlsDisabled ||
-                    verdictSavingIps.has(currentFinderIp)
-                  }
-                  disabledReason={
-                    verdictSavingIps.has(currentFinderIp)
-                      ? t("settings.data.pluginVpn.finder.verdict.saving")
-                      : verdictDisabledReason
-                  }
-                  ip={currentFinderIp}
-                  onChange={(verdict) =>
-                    updateServerVerdict(
-                      currentFinderIp,
-                      verdict,
-                      status?.profile
-                        ? { kind: "active", expectedHash: status.profile.hash }
-                        : undefined,
-                    )
-                  }
-                  verdict={verdicts.get(currentFinderIp) ?? null}
-                />
-              </Group>
-            </SettingsFieldRow>
-          ) : null}
           {status?.profile && !status.profile.isVpnGateFinder ? (
-            <SettingsFieldRow
+            <SettingsAdvancedGroup
+              forceOpen={status.profile.requiresUsernamePassword}
               label={t("settings.data.pluginVpn.credentials.label")}
-              description={t("settings.data.pluginVpn.credentials.description")}
-              layout="stacked"
             >
-              <SettingsWideField>
-                <div className="norea-settings-credentials">
-                  <TextInput
-                    autoComplete="off"
-                    label={t("settings.data.pluginVpn.credentials.username")}
-                    value={credentials.username}
-                    disabled={profileControlsDisabled}
-                    required={status.profile.requiresUsernamePassword}
-                    onChange={(event) => {
-                      const username = event.currentTarget.value;
-                      setCredentials((current) => ({
-                        ...current,
-                        username,
-                      }));
-                    }}
-                  />
-                  <PasswordInput
-                    autoComplete="new-password"
-                    label={t("settings.data.pluginVpn.credentials.password")}
-                    value={credentials.password}
-                    disabled={profileControlsDisabled}
-                    required={status.profile.requiresUsernamePassword}
-                    onChange={(event) => {
-                      const password = event.currentTarget.value;
-                      setCredentials((current) => ({
-                        ...current,
-                        password,
-                      }));
-                    }}
-                  />
-                  <PasswordInput
-                    autoComplete="new-password"
-                    label={t("settings.data.pluginVpn.credentials.privateKeyPassword")}
-                    value={credentials.privateKeyPassword}
-                    disabled={profileControlsDisabled}
-                    onChange={(event) => {
-                      const privateKeyPassword = event.currentTarget.value;
-                      setCredentials((current) => ({
-                        ...current,
-                        privateKeyPassword,
-                      }));
-                    }}
-                  />
-                  <PasswordInput
-                    autoComplete="new-password"
-                    label={t("settings.data.pluginVpn.credentials.challengeResponse")}
-                    value={credentials.challengeResponse}
-                    disabled={profileControlsDisabled}
-                    onChange={(event) => {
-                      const challengeResponse = event.currentTarget.value;
-                      setCredentials((current) => ({
-                        ...current,
-                        challengeResponse,
-                      }));
-                    }}
-                  />
-                </div>
-              </SettingsWideField>
-            </SettingsFieldRow>
+              <SettingsFieldRow
+                description={t("settings.data.pluginVpn.credentials.description")}
+                layout="stacked"
+              >
+                <SettingsWideField>
+                  <div className="norea-settings-credentials">
+                    <TextInput
+                      autoComplete="off"
+                      label={t("settings.data.pluginVpn.credentials.username")}
+                      value={credentials.username}
+                      disabled={profileControlsDisabled}
+                      required={status.profile.requiresUsernamePassword}
+                      onChange={(event) => {
+                        const username = event.currentTarget.value;
+                        setCredentials((current) => ({
+                          ...current,
+                          username,
+                        }));
+                      }}
+                    />
+                    <PasswordInput
+                      autoComplete="new-password"
+                      label={t("settings.data.pluginVpn.credentials.password")}
+                      value={credentials.password}
+                      disabled={profileControlsDisabled}
+                      required={status.profile.requiresUsernamePassword}
+                      onChange={(event) => {
+                        const password = event.currentTarget.value;
+                        setCredentials((current) => ({
+                          ...current,
+                          password,
+                        }));
+                      }}
+                    />
+                    <PasswordInput
+                      autoComplete="new-password"
+                      label={t("settings.data.pluginVpn.credentials.privateKeyPassword")}
+                      value={credentials.privateKeyPassword}
+                      disabled={profileControlsDisabled}
+                      onChange={(event) => {
+                        const privateKeyPassword = event.currentTarget.value;
+                        setCredentials((current) => ({
+                          ...current,
+                          privateKeyPassword,
+                        }));
+                      }}
+                    />
+                    <PasswordInput
+                      autoComplete="new-password"
+                      label={t("settings.data.pluginVpn.credentials.challengeResponse")}
+                      value={credentials.challengeResponse}
+                      disabled={profileControlsDisabled}
+                      onChange={(event) => {
+                        const challengeResponse = event.currentTarget.value;
+                        setCredentials((current) => ({
+                          ...current,
+                          challengeResponse,
+                        }));
+                      }}
+                    />
+                  </div>
+                </SettingsWideField>
+              </SettingsFieldRow>
+            </SettingsAdvancedGroup>
           ) : null}
-          <SettingsFieldRow
-            label={t("settings.data.pluginVpn.connection.label")}
-            description={t("settings.data.pluginVpn.connection.description")}
-          >
-            <SettingsInlineControls>
-              {!showConnectionStop || (disconnected && vpnOperation === null) ? (
-                <TextButton
-                  disabled={!canConnect}
-                  onClick={() => {
-                    void connect();
-                  }}
-                >
-                  {t("settings.data.pluginVpn.connection.connect")}
-                </TextButton>
-              ) : null}
-              {showConnectionStop ? (
-                <TextButton
-                  disabled={
-                    profileOperationActive ||
-                    vpnOperation?.kind === "disconnect" ||
-                    (!vpnEnabled && !connectionRequestActive && !statusAvailable)
-                  }
-                  loading={vpnOperation?.kind === "disconnect"}
-                  variant="default"
-                  onClick={() => {
-                    void disconnect();
-                  }}
-                >
-                  {cancelConnection
-                    ? t("settings.data.pluginVpn.connection.cancel")
-                    : t("settings.data.pluginVpn.connection.disconnect")}
-                </TextButton>
-              ) : null}
-            </SettingsInlineControls>
-          </SettingsFieldRow>
-          <SavedVpnProfilesSettings disabled={isBusy || vpnOperation !== null} />
+          <SettingsAdvancedGroup forceOpen={verdictQuery.isError}>
+            {currentFinderIp ? (
+              <SettingsFieldRow
+                label={t("settings.data.pluginVpn.finder.verdict.label")}
+                description={t(
+                  "settings.data.pluginVpn.finder.verdict.description",
+                )}
+              >
+                <Group gap="sm" wrap="nowrap">
+                  <Text size="sm">{currentFinderIp}</Text>
+                  <VpnGateServerVerdictControl
+                    disabled={
+                      verdictControlsDisabled ||
+                      verdictSavingIps.has(currentFinderIp)
+                    }
+                    disabledReason={
+                      verdictSavingIps.has(currentFinderIp)
+                        ? t("settings.data.pluginVpn.finder.verdict.saving")
+                        : verdictDisabledReason
+                    }
+                    ip={currentFinderIp}
+                    onChange={(verdict) =>
+                      updateServerVerdict(
+                        currentFinderIp,
+                        verdict,
+                        status?.profile
+                          ? { kind: "active", expectedHash: status.profile.hash }
+                          : undefined,
+                      )
+                    }
+                    verdict={verdicts.get(currentFinderIp) ?? null}
+                  />
+                </Group>
+              </SettingsFieldRow>
+            ) : null}
+            <SavedVpnProfilesSettings disabled={isBusy || vpnOperation !== null} />
+          </SettingsAdvancedGroup>
           <PluginVpnFinder
             connectionError={visibleStatusError}
             connectionPhase={displayPhase}
