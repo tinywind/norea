@@ -25,7 +25,11 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@tanstack/react-query", () => ({
   useMutation: () => mocks.open,
   useQuery: ({ queryKey }: { queryKey: unknown[] }) =>
-    queryKey[1] === "installed" ? { data: mocks.plugins, isLoading: false } : mocks.listing,
+    queryKey[1] === "installed"
+      ? { data: mocks.plugins, isLoading: false }
+      : queryKey[0] === "novel"
+        ? { data: [] }
+        : mocks.listing,
   useQueryClient: () => ({ cancelQueries: vi.fn(), invalidateQueries: vi.fn() }),
 }));
 vi.mock("../i18n", async (original) => ({
@@ -124,6 +128,39 @@ describe("SourcePage", () => {
     expect(props.secondaryAction.label).toBe("common.openSite");
     props.action.onClick();
     expect(mocks.listing.refetch).toHaveBeenCalled();
+  });
+
+  it("loads the next page near the grid end and keeps Load more as the fallback", async () => {
+    mocks.plugins = [plugin()];
+    const items = [{ name: "One", path: "/one" }];
+    mocks.listing = {
+      data: { items, page: 1, scopeKey: "filters||{}|demo" },
+      error: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    };
+    const elements = await mountPage();
+    const sentinel = elements.find((element) => typeof element.props.onNearEnd === "function")!;
+    expect(sentinel.props.enabled).toBe(true);
+    const loadMore = elements.find((element) => element.props.children === "common.loadMore")!;
+    expect(loadMore.props.disabled).toBe(false);
+    expect(loadMore.props.onClick).toBe(sentinel.props.onNearEnd);
+  });
+
+  it("stops loading automatically during a page request, after an error and at the end of the list", async () => {
+    mocks.plugins = [plugin()];
+    const data = { items: [{ name: "One", path: "/one" }], page: 1, scopeKey: "filters||{}|demo" };
+    const sentinelEnabled = async () =>
+      (await mountPage()).find((element) => typeof element.props.onNearEnd === "function")?.props.enabled;
+
+    mocks.listing = { data, error: null, isFetching: true, refetch: vi.fn() };
+    expect(await sentinelEnabled()).toBe(false);
+    await harness!.unmount();
+    mocks.listing = { data, error: new Error("blocked"), isFetching: false, refetch: vi.fn() };
+    expect(await sentinelEnabled()).toBe(false);
+    await harness!.unmount();
+    mocks.listing = { data: { ...data, items: [] }, error: null, isFetching: false, refetch: vi.fn() };
+    expect(await sentinelEnabled()).not.toBe(true);
   });
 
   it("keeps the page when Cancel stops opening a novel", async () => {

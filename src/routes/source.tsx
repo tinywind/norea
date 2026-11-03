@@ -21,6 +21,7 @@ import {
   useInstalledPlugins,
 } from "../components/browse/use-plugin-catalog";
 import { IconButton } from "../components/IconButton";
+import { NearEndSentinel } from "../components/NearEndSentinel";
 import {
   PluginFilters,
   type ResolvedFilterValues,
@@ -495,6 +496,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     listing.data.scopeKey === listingScopeKey &&
     listing.data.items.length > 0;
   const showLoadMoreButton = hasNextPage || (listing.isFetching && page > 1);
+  const loadNextPage = () => setPage((current) => current + 1);
   const activeFilterLabels =
     !isKeywordMode && sourceFilters
       ? getActiveFilterLabels(sourceFilters, activeFilters)
@@ -669,6 +671,11 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                 />
               ))}
             </div>
+            <NearEndSentinel
+              className="norea-source-near-end"
+              enabled={hasNextPage && !listing.error}
+              onNearEnd={loadNextPage}
+            />
             {listing.error ? (
               <StateView
                 action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
@@ -682,7 +689,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                 className="norea-source-load-more"
                 disabled={!hasNextPage}
                 loading={listing.isFetching && page > 1}
-                onClick={() => setPage((current) => current + 1)}
+                onClick={loadNextPage}
                 variant="default"
               >
                 {t("common.loadMore")}

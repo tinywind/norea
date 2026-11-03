@@ -480,6 +480,12 @@
   grid-template-columns: repeat(auto-fill, minmax(7.25rem, 1fr));
 }
 
+/* Zero height, with the frame gap taken back so the grid spacing is unchanged. */
+.norea-source-near-end {
+  height: 0;
+  margin-top: calc(-1 * var(--norea-space-3));
+}
+
 .norea-source-load-more {
   justify-self: center;
   min-width: 12rem;
