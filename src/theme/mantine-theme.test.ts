@@ -50,7 +50,7 @@ const CASES: ThemeCase[] = APP_THEMES.flatMap((theme) =>
         scheme,
         { customAccent: false },
       );
-      const mantine = createNoreaMantineTheme(roles, scheme);
+      const mantine = createNoreaMantineTheme(roles, scheme, "Close");
       return {
         label: `${theme.id} ${scheme}${amoledBlack ? " amoled" : ""}`,
         roles,
@@ -268,5 +268,14 @@ describe("createNoreaMantineTheme motion", () => {
       transitionTimingFunction: "var(--norea-ease-standard)",
     });
     expect(components.Notifications?.defaultProps?.transitionDuration).toBe(MOTION_DURATION_BASE_MS);
+  });
+});
+
+describe("createNoreaMantineTheme overlay labels", () => {
+  it("names the close button of every modal and drawer", () => {
+    const { components } = CASES[0]!.merged;
+    for (const name of ["Modal", "Drawer"]) {
+      expect(components[name]?.defaultProps?.closeButtonProps, name).toEqual({ "aria-label": "Close" });
+    }
   });
 });

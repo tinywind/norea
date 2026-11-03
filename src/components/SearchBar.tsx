@@ -25,8 +25,10 @@ export function SearchBar({
   placeholder,
 }: SearchBarProps) {
   const { t } = useTranslation();
+  const label = placeholder ?? t("searchBar.defaultPlaceholder");
   const input = (
     <TextInput
+      aria-label={label}
       value={value}
       onChange={(event) => onChange(event.currentTarget.value)}
       onKeyDown={
@@ -39,7 +41,7 @@ export function SearchBar({
             }
           : undefined
       }
-      placeholder={placeholder ?? t("searchBar.defaultPlaceholder")}
+      placeholder={label}
       size="sm"
       classNames={{
         input: "norea-search-field-input",

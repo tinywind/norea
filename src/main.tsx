@@ -175,8 +175,8 @@ function AppProviders() {
     [colorScheme, customAccentColor, palette],
   );
   const mantineTheme = useMemo(
-    () => createNoreaMantineTheme(roles, colorScheme),
-    [colorScheme, roles],
+    () => createNoreaMantineTheme(roles, colorScheme, translate(appLocale, "common.close")),
+    [appLocale, colorScheme, roles],
   );
 
   useEffect(() => {

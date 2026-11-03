@@ -131,6 +131,7 @@ export interface NoreaMantineTheme {
 export function createNoreaMantineTheme(
   roles: PaletteRoles,
   scheme: ColorScheme,
+  closeLabel: string,
 ): NoreaMantineTheme {
   const bg = requireColor(roles.bg);
   const surface = requireColor(roles.surface);
@@ -310,12 +311,14 @@ export function createNoreaMantineTheme(
       // Sheets, dialogs and their scrim enter and exit at the base motion token.
       Modal: {
         defaultProps: {
+          closeButtonProps: { "aria-label": closeLabel },
           transitionProps: { ...overlayTransition, transition: "fade-down" },
           zIndex: "var(--norea-z-overlay)",
         },
       },
       Drawer: {
         defaultProps: {
+          closeButtonProps: { "aria-label": closeLabel },
           transitionProps: overlayTransition,
           zIndex: "var(--norea-z-overlay)",
         },
