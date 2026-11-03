@@ -5,7 +5,6 @@ const stylesDir = new URL("../styles/", import.meta.url);
 
 /** Stylesheets that still carry literal values; each one leaves this list in its migration commit. */
 const NOT_YET_MIGRATED = new Set([
-  "settings.css",
   "tasks.css",
   "updates.css",
 ]);
