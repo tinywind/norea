@@ -188,6 +188,23 @@
   color: var(--norea-color-ink);
 }
 
+.norea-novel-offline {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-1);
+}
+
+.norea-novel-offline[data-goal-state="attention"] {
+  color: var(--norea-color-warn);
+}
+
+.norea-novel-check-paused {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-1) var(--norea-space-2);
+}
+
 .norea-novel-categories {
   display: flex;
   flex-wrap: wrap;

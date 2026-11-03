@@ -6,6 +6,9 @@ const DAY = 24 * HOUR;
 /** Automatic checks per source per hour; catch-up beyond it is spread over the following hours. */
 export const SOURCE_CHECKS_PER_HOUR = 30;
 
+/** Failed checks in a row after which a novel's checks back off and show as paused. */
+export const CHECK_BACKOFF_FAILURES = 3;
+
 /** A novel opened after this long without a check is checked in the background. */
 export const STALE_ON_OPEN_SECONDS = 6 * HOUR;
 
@@ -20,8 +23,8 @@ const isFinished = (novel: CheckCandidate) =>
  * after 3 or more failures in a row.
  */
 export function checkIntervalSeconds(novel: CheckCandidate, intervalHours: number): number {
-  if (novel.consecutiveFailures >= 3) {
-    return novel.consecutiveFailures === 3 ? DAY : novel.consecutiveFailures === 4 ? 3 * DAY : 7 * DAY;
+  if (novel.consecutiveFailures >= CHECK_BACKOFF_FAILURES) {
+    return novel.consecutiveFailures === CHECK_BACKOFF_FAILURES ? DAY : novel.consecutiveFailures === 4 ? 3 * DAY : 7 * DAY;
   }
   if (isReading(novel)) return intervalHours * HOUR;
   if (isFinished(novel)) return 7 * DAY;

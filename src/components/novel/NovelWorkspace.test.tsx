@@ -95,3 +95,10 @@ it("shows a known status in the app language and omits Unknown", () => {
   expect(render({ novel: { ...props.novel, status: "Ongoing" } }).text()).toContain("novel.status.ongoing · Source");
   expect(render({ novel: { ...props.novel, status: "Unknown" } }).text()).not.toContain("Unknown");
 });
+
+it("names a goal novel's offline state in the header, as its library card does", () => {
+  expect(render()(".norea-novel-offline").length).toBe(0);
+  const $ = render({ offlineState: "attention" });
+  expect($(".norea-novel-offline").attr("data-goal-state")).toBe("attention");
+  expect($(".norea-novel-offline").text()).toBe("novel.offline.attention");
+});

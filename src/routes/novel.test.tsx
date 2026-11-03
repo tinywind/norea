@@ -50,6 +50,8 @@ vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confi
 vi.mock("../components/novel/use-novel-download-statuses", () => ({ useNovelDownloadStatuses: () => new Map() }));
 vi.mock("../components/novel/use-local-novel-editor", () => ({ useLocalNovelEditor: () => ({ addLocalChapters: {}, reorderLocalChapters: {} }) }));
 vi.mock("../components/ReaderSettingsPanel", () => ({ ReaderSettingsPanel: () => null }));
+vi.mock("../components/library/use-download-goal-offline-states", () => ({ useDownloadGoalOfflineStates: () => undefined }));
+vi.mock("../components/novel/NovelCheckPausedNotice", () => ({ NovelCheckPausedNotice: () => null }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => mocks.installed ? { id: "source-a", name: "Source", getBaseUrl: () => "https://source.example" } : undefined } }));
 vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(), listServerChapterAvailability: vi.fn() }));

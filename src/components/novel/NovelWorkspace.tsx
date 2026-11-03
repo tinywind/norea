@@ -10,17 +10,20 @@ import {
 } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
-import { useTranslation } from "../../i18n";
+import { useTranslation, type TranslationKey } from "../../i18n";
+import type { DownloadGoalOfflineState } from "../../lib/download-goals/goal-offline-state";
 import { pluginManager } from "../../lib/plugins/manager";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { ConsoleCover } from "../ConsolePrimitives";
 import {
   AddToLibraryIcon,
+  DownloadedIcon,
   DownloadIcon,
   FromStartIcon,
   InLibraryIcon,
   PlayIcon,
+  WarningIcon,
 } from "../ui/icons";
 import {
   findContinueReadingChapter,
@@ -42,6 +45,8 @@ interface NovelWorkspaceProps {
   lastReadChapterId: number | undefined;
   libraryBusy: boolean;
   novel: NovelDetailRecord;
+  /** Offline state of a novel with a download goal in effect, as its library card shows it. */
+  offlineState?: DownloadGoalOfflineState;
   onRead: (chapter: ChapterListRow) => void;
   /** Starts chapter selection for a one-time download. */
   onSelectChapters: () => void;
@@ -49,6 +54,14 @@ interface NovelWorkspaceProps {
   sourceName: string;
   titleRef?: Ref<HTMLHeadingElement>;
 }
+
+const OFFLINE_STATE_LABELS: Record<DownloadGoalOfflineState, TranslationKey> = {
+  ready: "novel.offline.ready",
+  downloading: "novel.offline.downloading",
+  attention: "novel.offline.attention",
+};
+
+const OFFLINE_STATE_ICONS = { ready: DownloadedIcon, downloading: DownloadIcon, attention: WarningIcon };
 
 /**
  * The novel's header zone: cover, identity, the Continue action, the library,
@@ -62,6 +75,7 @@ export function NovelWorkspace({
   lastReadChapterId,
   libraryBusy,
   novel,
+  offlineState,
   onRead,
   onSelectChapters,
   onToggleLibrary,
@@ -96,6 +110,7 @@ export function NovelWorkspace({
     novel.artist && novel.artist !== novel.author ? novel.artist : null,
   ].filter(Boolean).join(" · ");
   const meta = [statusLabel, sourceName].filter(Boolean).join(" · ");
+  const OfflineIcon = offlineState ? OFFLINE_STATE_ICONS[offlineState] : null;
 
   return (
     <section aria-labelledby={titleId} className="norea-novel-hero">
@@ -112,6 +127,12 @@ export function NovelWorkspace({
           {chapters.length > 0 ? (
             <p className="norea-novel-meta">
               {t("novel.percentRead", { progress: readPercent })}
+            </p>
+          ) : null}
+          {offlineState && OfflineIcon ? (
+            <p className="norea-novel-meta norea-novel-offline" data-goal-state={offlineState}>
+              <OfflineIcon size="1rem" />
+              {t(OFFLINE_STATE_LABELS[offlineState])}
             </p>
           ) : null}
           {categoryChips}

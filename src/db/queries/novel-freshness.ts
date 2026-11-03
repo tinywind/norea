@@ -1,4 +1,4 @@
-import { getDb } from "../client";
+import { getDb, getReadOnlyDb, type DatabaseReadMode } from "../client";
 
 export interface NovelFreshness {
   novelId: number;
@@ -13,8 +13,11 @@ export interface NovelFreshness {
 const columns = `novel_id AS novelId,last_checked_at AS lastCheckedAt,last_success_at AS lastSuccessAt,
   consecutive_failures AS consecutiveFailures,last_new_chapter_at AS lastNewChapterAt,cover_fetched_at AS coverFetchedAt`;
 
-export async function getNovelFreshness(novelId: number): Promise<NovelFreshness | null> {
-  const db = await getDb();
+export async function getNovelFreshness(
+  novelId: number,
+  readMode: DatabaseReadMode = "queued",
+): Promise<NovelFreshness | null> {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const [row] = await db.select<NovelFreshness[]>(`SELECT ${columns} FROM novel_freshness WHERE novel_id=$1`, [novelId]);
   return row ?? null;
 }

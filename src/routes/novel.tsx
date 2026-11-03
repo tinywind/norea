@@ -70,6 +70,8 @@ import {
 } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
+import { useDownloadGoalOfflineStates } from "../components/library/use-download-goal-offline-states";
+import { NovelCheckPausedNotice } from "../components/novel/NovelCheckPausedNotice";
 import { describeError } from "../lib/errors";
 import { isAbortError } from "../lib/abort";
 import { isNetworkUnavailableError } from "../lib/network";
@@ -160,6 +162,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     staleTime: 30_000,
   });
   const serverSync = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
+  const offlineState = useDownloadGoalOfflineStates(active && Boolean(novelQuery.data?.inLibrary))?.get(id);
   const managedServerWork = useManagedServerWork(
     novelQuery.data ?? undefined,
     serverSourceQuery.data,
@@ -788,6 +791,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 lastReadChapterId={lastReadChapterId}
                 libraryBusy={toggle.isPending}
                 novel={novel}
+                offlineState={offlineState}
                 onRead={openChapter}
                 onSelectChapters={() => setChapterSelectionMode(true)}
                 onToggleLibrary={() =>
@@ -900,6 +904,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   {t("novel.checkingNewChapters")}
                 </Text>
               ) : null}
+
+              <NovelCheckPausedNotice
+                active={active && novel.inLibrary && hasSourcePlugin && !serverSync.checking}
+                checkNow={refreshMetadata}
+                novelId={novel.id}
+              />
 
               {sourcePlugin ? (
                 <SourceAccessNotice
