@@ -33,6 +33,8 @@
   --norea-duration-fast: 120ms;
   --norea-duration-base: 200ms;
   --norea-duration-slow: 320ms;
+  /* Rotation period of busy spinners; reduced motion keeps it because the spin conveys work in progress. */
+  --norea-duration-spin: 900ms;
   --norea-ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --norea-ease-emphasized: cubic-bezier(0.3, 0, 0, 1.15);
 

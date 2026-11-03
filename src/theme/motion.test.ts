@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MOTION_DURATION_BASE_MS,
@@ -41,5 +41,23 @@ describe("prefersReducedMotion", () => {
     expect(prefersReducedMotion()).toBe(false);
     vi.stubGlobal("window", {});
     expect(prefersReducedMotion()).toBe(false);
+  });
+});
+
+describe("JavaScript animation paths", () => {
+  const srcDir = new URL("../", import.meta.url);
+  const sources = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+    .filter((name) => /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name));
+
+  it("check reduced motion wherever they ease or smooth-scroll", () => {
+    const animated = sources.filter((name) => {
+      const source = readFileSync(new URL(name, srcDir), "utf8");
+      return /easeOutCubic\(|animateScrollTop\(|behavior: "smooth"|\.animate\(/.test(source);
+    });
+    expect(animated.length).toBeGreaterThan(0);
+    for (const name of animated) {
+      const source = readFileSync(new URL(name, srcDir), "utf8");
+      expect(source, name).toMatch(/prefersReducedMotion\(|readerScrollAnimationDuration\(/);
+    }
   });
 });

@@ -36,7 +36,7 @@
 }
 
 .norea-downloads-spin-icon {
-  animation: norea-downloads-spin 0.9s linear infinite;
+  animation: norea-downloads-spin var(--norea-duration-spin) linear infinite;
 }
 
 @keyframes norea-downloads-spin {

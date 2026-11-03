@@ -13,6 +13,14 @@ const ALLOWED_FONT_SIZES = new Set([
 const ALLOWED_RADIUS_PARTS = new Set(["0", "50%", "inherit"]);
 const ALLOWED_LETTER_SPACING = new Set(["0", "normal"]);
 const MAX_LOCAL_Z_INDEX = 10;
+const MOTION_PROPERTIES = new Set([
+  "transition",
+  "transition-duration",
+  "transition-delay",
+  "animation",
+  "animation-duration",
+  "animation-delay",
+]);
 const MIN_FONT_SIZE_PX = 12;
 
 interface Declaration {
@@ -103,7 +111,7 @@ function violation({ property, value }: Declaration): string | undefined {
     );
     return literal ? "literal radius instead of --norea-radius-*" : undefined;
   }
-  if (property === "transition" || property === "transition-duration") {
+  if (MOTION_PROPERTIES.has(property)) {
     return literalDurations(value).length > 0
       ? "literal duration instead of --norea-duration-*"
       : undefined;
@@ -164,6 +172,10 @@ describe("design token guard rules", () => {
     expect(flagged("font-size", "0.6875rem")).toBe(true);
     expect(flagged("border-radius", "0.25rem")).toBe(true);
     expect(flagged("transition", "opacity 120ms ease")).toBe(true);
+    expect(flagged("transition-delay", "50ms")).toBe(true);
+    expect(flagged("animation", "spin 0.9s linear infinite")).toBe(true);
+    expect(flagged("animation-duration", "1s")).toBe(true);
+    expect(flagged("animation", "spin var(--norea-duration-spin) linear infinite")).toBe(false);
     expect(flagged("z-index", "30")).toBe(true);
     expect(flagged("text-transform", "uppercase")).toBe(true);
     expect(flagged("letter-spacing", "0.08em")).toBe(true);
