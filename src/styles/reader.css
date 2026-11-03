@@ -591,6 +591,64 @@
   opacity: 0.72;
 }
 
+/* Zoom scales the fit box past the viewport, so both axes scroll and nothing clamps the page to 100%. */
+.norea-pdf-reader-viewport[data-mode][data-zoomed="true"] {
+  overflow: auto;
+}
+
+.norea-pdf-reader-page-wrap[data-zoomed="true"] {
+  max-width: none;
+  min-width: 100%;
+  transform-origin: center top;
+  width: max-content;
+}
+
+.norea-pdf-reader-page-wrap[data-zoomed="true"] .norea-pdf-reader-page-frame {
+  width: auto;
+}
+
+.norea-pdf-reader-page-wrap[data-zoomed="true"] .norea-pdf-reader-canvas {
+  max-width: none;
+}
+
+.norea-pdf-reader-zoom {
+  align-items: center;
+  background: var(--norea-color-surface-raised);
+  border-radius: var(--norea-radius-full);
+  bottom: var(--norea-space-3);
+  box-shadow: var(--norea-shadow-floating);
+  display: flex;
+  gap: var(--norea-space-1);
+  padding: var(--norea-space-1);
+  position: absolute;
+  right: var(--norea-space-3);
+  z-index: 2;
+}
+
+.norea-reader-shell[data-full-page="true"] .norea-pdf-reader-zoom {
+  bottom: calc(var(--norea-reader-bar-height) * 2 + var(--norea-space-3));
+}
+
+.norea-pdf-reader-zoom-level {
+  background: none;
+  border: 0;
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-medium);
+  min-height: var(--norea-control-sm);
+  min-width: 3.5rem;
+  padding: 0 var(--norea-space-2);
+}
+
+.norea-pdf-reader-zoom-level:disabled {
+  color: var(--norea-color-ink-muted);
+  cursor: default;
+}
+
 .norea-pdf-reader-state {
   align-items: center;
   background: var(--norea-reader-bg, var(--norea-color-bg));

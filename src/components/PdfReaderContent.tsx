@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type MouseEvent,
   type Ref,
+  type TouchList as ReactTouchList,
   type WheelEvent,
 } from "react";
 import { Box } from "@mantine/core";
@@ -33,6 +34,8 @@ import {
   type ReaderTapZoneMap,
 } from "../store/reader";
 import { StateView } from "./AppFrame";
+import { IconButton } from "./IconButton";
+import { MinusIcon, PlusIcon } from "./ui/icons";
 import type { ReaderContentHandle } from "./ReaderContent";
 import { ReaderSeekbars } from "./ReaderSeekbars";
 import {
@@ -79,6 +82,12 @@ interface PdfRenderBounds {
 }
 
 const MAX_CANVAS_SCALE = 3;
+/** Keeps a zoomed page canvas under the 4096x4096 area limit of mobile WebViews. */
+const MAX_CANVAS_PIXELS = 4096 * 4096;
+/** Zoom multiplies the fit-mode page box; 1 is the fit itself. */
+export const PDF_ZOOM_STEPS = [1, 1.25, 1.5, 2, 2.5, 3] as const;
+const MIN_PDF_ZOOM = PDF_ZOOM_STEPS[0];
+const MAX_PDF_ZOOM = PDF_ZOOM_STEPS[PDF_ZOOM_STEPS.length - 1];
 const MIN_RENDER_BOUND_PX = 1;
 const PDF_PAGE_GAP_PX = 16;
 const PDF_SCROLL_DEFAULT_ASPECT_RATIO = 1.414;
@@ -98,6 +107,24 @@ const INITIAL_PDF_RENDER_BOUNDS: PdfRenderBounds = {
   height: 0,
   fitMode: "width",
 };
+
+export function clampPdfZoom(zoom: number): number {
+  if (!Number.isFinite(zoom)) return MIN_PDF_ZOOM;
+  return Math.round(Math.max(MIN_PDF_ZOOM, Math.min(MAX_PDF_ZOOM, zoom)) * 100) / 100;
+}
+
+/** The next zoom step above (1) or below (-1) the current zoom. */
+export function stepPdfZoom(zoom: number, direction: 1 | -1): number {
+  if (direction === 1) {
+    return PDF_ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? MAX_PDF_ZOOM;
+  }
+  return [...PDF_ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? MIN_PDF_ZOOM;
+}
+
+function touchDistance(touches: ReactTouchList): number {
+  const [first, second] = [touches[0], touches[1]];
+  return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
 
 function clampProgress(progress: number): number {
   if (!Number.isFinite(progress)) return 0;
@@ -413,12 +440,13 @@ function PdfPageCanvas({
         if (disposed) return undefined;
         const baseViewport = page.getViewport({ scale: 1 });
         const displayScale = getPdfDisplayScale(baseViewport, renderBounds);
+        const cssViewport = page.getViewport({ scale: displayScale });
         const outputScale = Math.min(
           MAX_CANVAS_SCALE,
           Math.max(1, window.devicePixelRatio || 1),
+          Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, cssViewport.width * cssViewport.height)),
         );
         const viewport = page.getViewport({ scale: displayScale * outputScale });
-        const cssViewport = page.getViewport({ scale: displayScale });
 
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
@@ -529,6 +557,7 @@ function PdfReaderContentInner(
   const nativeWheelActionLockedUntilRef = useRef(0);
   const scrollDebugLastAtRef = useRef(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const pinchRef = useRef<{ distance: number; ratio: number } | null>(null);
   const onBoundaryPageRef = useRef(onBoundaryPage);
   const onPageIndexChangeRef = useRef(onPageIndexChange);
   const onProgressChangeRef = useRef(onProgressChange);
@@ -552,6 +581,8 @@ function PdfReaderContentInner(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [zoom, setZoom] = useState<number>(MIN_PDF_ZOOM);
+  const zoomed = zoom > MIN_PDF_ZOOM;
   const viewportHeight =
     requestedViewportHeight ?? "calc(var(--norea-app-content-height) - 3.75rem)";
   const isPagedReader = general.pageReader;
@@ -1128,9 +1159,9 @@ function PdfReaderContentInner(
       const nextBounds: PdfRenderBounds = {
         width: Math.max(
           MIN_RENDER_BOUND_PX,
-          Math.floor((availableWidth - gap * (columns - 1)) / columns),
+          Math.floor(((availableWidth - gap * (columns - 1)) / columns) * zoom),
         ),
-        height: nextHeight,
+        height: Math.floor(nextHeight * zoom),
         fitMode: pdfPageFitMode,
       };
       const current = renderBoundsRef.current;
@@ -1156,7 +1187,7 @@ function PdfReaderContentInner(
     observer.observe(wrapNode);
     observer.observe(viewportNode);
     return () => observer.disconnect();
-  }, [isPagedReader, isTwoPageReader, pdfPageFitMode]);
+  }, [isPagedReader, isTwoPageReader, pdfPageFitMode, zoom]);
 
   useEffect(() => {
     restorePendingRef.current = true;
@@ -1524,22 +1555,42 @@ function PdfReaderContentInner(
         data-fit-mode={pdfPageFitMode}
         data-mode={isPagedReader ? "paged" : "scroll"}
         data-two-page={isTwoPageReader}
+        data-zoomed={zoomed}
         onClickCapture={stopPdfReaderMediaClick}
         onDoubleClickCapture={stopPdfReaderMediaClick}
         onClick={handleClick}
         onScroll={updateProgressFromScroll}
         onTouchStart={(event) => {
+          if (event.touches.length === 2) {
+            touchStartRef.current = null;
+            pinchRef.current = { distance: touchDistance(event.touches), ratio: 1 };
+            return;
+          }
           const touch = event.changedTouches[0];
-          if (touch) {
+          if (touch && !pinchRef.current) {
             touchStartRef.current = { x: touch.clientX, y: touch.clientY };
           }
         }}
-        onTouchMove={() => {
+        onTouchMove={(event) => {
           nativeWheelActionLockedUntilRef.current =
             performance.now() + NATIVE_WHEEL_ACTION_LOCK_MS;
           cancelPendingScrollRestore("touch-native-scroll");
+          const pinch = pinchRef.current;
+          const wrap = canvasWrapRef.current;
+          if (!pinch || event.touches.length !== 2 || pinch.distance <= 0 || !wrap) return;
+          pinch.ratio = clampPdfZoom(zoom * (touchDistance(event.touches) / pinch.distance)) / zoom;
+          wrap.style.transform = `scale(${pinch.ratio})`;
         }}
         onTouchEnd={(event) => {
+          const pinch = pinchRef.current;
+          if (pinch) {
+            if (event.touches.length >= 2) return;
+            pinchRef.current = null;
+            touchStartRef.current = null;
+            if (canvasWrapRef.current) canvasWrapRef.current.style.transform = "";
+            setZoom(clampPdfZoom(zoom * pinch.ratio));
+            return;
+          }
           if (!general.swipeGestures || !touchStartRef.current) {
             touchStartRef.current = null;
             return;
@@ -1561,6 +1612,7 @@ function PdfReaderContentInner(
           data-fit-mode={pdfPageFitMode}
           data-mode={isPagedReader ? "paged" : "scroll"}
           data-two-page={isTwoPageReader}
+          data-zoomed={zoomed}
           style={pageWrapStyle}
         >
           {loading ? (
@@ -1613,6 +1665,40 @@ function PdfReaderContentInner(
           ) : null}
         </div>
       </div>
+      {pdfDocument && chromeVisible ? (
+        <div
+          aria-label={t("reader.pdfZoom.group")}
+          className="norea-pdf-reader-zoom"
+          role="group"
+        >
+          <IconButton
+            disabled={zoom <= MIN_PDF_ZOOM}
+            label={t("reader.pdfZoom.out")}
+            onClick={() => setZoom((current) => stepPdfZoom(current, -1))}
+            size="lg"
+          >
+            <MinusIcon />
+          </IconButton>
+          <button
+            aria-label={t("reader.pdfZoom.fit")}
+            className="norea-pdf-reader-zoom-level norea-state-layer"
+            disabled={!zoomed}
+            onClick={() => setZoom(MIN_PDF_ZOOM)}
+            title={t("reader.pdfZoom.fit")}
+            type="button"
+          >
+            {zoomed ? `${Math.round(zoom * 100)}%` : t("reader.pdfZoom.fitShort")}
+          </button>
+          <IconButton
+            disabled={zoom >= MAX_PDF_ZOOM}
+            label={t("reader.pdfZoom.in")}
+            onClick={() => setZoom((current) => stepPdfZoom(current, 1))}
+            size="lg"
+          >
+            <PlusIcon />
+          </IconButton>
+        </div>
+      ) : null}
       <ReaderSeekbars
         container={seekbarContainer}
         label={t("reader.progressAria", { progress: Math.round(progress) })}

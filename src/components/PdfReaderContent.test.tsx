@@ -8,7 +8,7 @@ import {
 import { getDocument } from "pdfjs-dist";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReaderContentHandle } from "./ReaderContent";
-import { PdfReaderContent } from "./PdfReaderContent";
+import { clampPdfZoom, PdfReaderContent, stepPdfZoom } from "./PdfReaderContent";
 import { READER_GENERAL_DEFAULTS } from "../store/reader";
 
 const hooks = vi.hoisted(() => ({
@@ -91,6 +91,7 @@ interface ReaderNodeProps {
   pageNumber?: number;
   progress?: number;
   ref?: { current: unknown };
+  renderBounds?: { width: number; height: number };
   onScroll?: () => void;
   onSeek?: (progress: number) => void;
   onCommit?: () => void;
@@ -210,6 +211,8 @@ describe("PDF progress readiness", () => {
       page: (number = 1) => findNode(tree, (node) => node.pageNumber === number)!.props,
       retry: () => findNode(tree, (node) => node.action?.label === "common.retry")?.props.action,
       seekbar: () => findNode(tree, (node) => typeof node.onSeek === "function")!.props,
+      button: (label: string) => findNode(tree, (node) => node.label === label || (node as { "aria-label"?: string })["aria-label"] === label)?.props as { disabled?: boolean; onClick: () => void } | undefined,
+      viewportNode: () => findNode(tree, (node) => node.className?.startsWith("norea-pdf-reader-viewport") === true)!.props as Record<string, unknown>,
       scroll: () => findNode(tree, (node) => typeof node.onScroll === "function")!.props.onScroll!(),
     };
   }
@@ -255,6 +258,24 @@ describe("PDF progress readiness", () => {
     expect(getDocument).toHaveBeenCalledTimes(2);
     expect(reader.retry()).toBeUndefined();
     expect(reader.seekbar().progress).toBe(37);
+  });
+
+  it("zooms the page box with the zoom controls and fits it again", async () => {
+    const reader = mountReader();
+    reader.resolveDocument({ numPages: 1 });
+    await reader.settle();
+    expect(reader.page().renderBounds?.width).toBe(300);
+    expect(reader.button("reader.pdfZoom.out")?.disabled).toBe(true);
+
+    reader.button("reader.pdfZoom.in")!.onClick();
+    reader.render();
+    expect(reader.page().renderBounds?.width).toBe(375);
+    expect(reader.viewportNode()["data-zoomed"]).toBe(true);
+
+    reader.button("reader.pdfZoom.fit")!.onClick();
+    reader.render();
+    expect(reader.page().renderBounds?.width).toBe(300);
+    expect(reader.viewportNode()["data-zoomed"]).toBe(false);
   });
 
   it("labels each PDF page with its position", async () => {
@@ -320,5 +341,24 @@ describe("PDF progress readiness", () => {
     expect(reader.ref.current!.completeIfAtEnd()).toBe(false);
     vi.advanceTimersByTime(400);
     expect(reader.onProgressChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("PDF zoom steps", () => {
+  it("steps through the zoom levels and stops at both ends", () => {
+    expect(stepPdfZoom(1, 1)).toBe(1.25);
+    expect(stepPdfZoom(1.25, 1)).toBe(1.5);
+    expect(stepPdfZoom(3, 1)).toBe(3);
+    expect(stepPdfZoom(1.25, -1)).toBe(1);
+    expect(stepPdfZoom(1, -1)).toBe(1);
+    expect(stepPdfZoom(1.7, -1)).toBe(1.5);
+    expect(stepPdfZoom(1.7, 1)).toBe(2);
+  });
+
+  it("keeps a pinch inside the supported zoom range", () => {
+    expect(clampPdfZoom(0.4)).toBe(1);
+    expect(clampPdfZoom(1.736)).toBe(1.74);
+    expect(clampPdfZoom(9)).toBe(3);
+    expect(clampPdfZoom(Number.NaN)).toBe(1);
   });
 });
