@@ -30,7 +30,7 @@ export function VpnDownloadAttention({ snapshot }: { snapshot: VpnDownloadRuntim
     : item.kind === "verification" ? [t("vpnDownload.attention.verification", { title: item.title }), t("vpnDownload.attention.verify"),
       () => openVpnDownloadVerification(item.planId, item.rangeId)] as const
     : item.kind === "exhausted" ? [t("vpnDownload.attention.exhausted", { count: item.ranges }), t("vpnDownload.attention.findServers"),
-      () => navigate({ to: "/settings", search: { section: "data" } })] as const
+      () => navigate({ to: "/settings", search: { section: "network" } })] as const
     : [t("vpnDownload.attention.failed", { count: item.ranges.length }), t("common.retry"),
       () => Promise.all(item.ranges.map(({ planId, rangeId }) => resumeVpnDownloadRange(planId, rangeId)))] as const;
 

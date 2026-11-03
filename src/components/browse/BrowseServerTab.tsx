@@ -69,7 +69,7 @@ export function BrowseServerTab({ active }: { active: boolean }) {
   if (!server) {
     return (
       <StateView
-        action={{ label: t("contentSync.openSettings"), onClick: () => { void navigate({ to: "/settings", search: { section: "data" } }); } }}
+        action={{ label: t("contentSync.openSettings"), onClick: () => { void navigate({ to: "/settings", search: { section: "backup" } }); } }}
         message={t("contentSync.configureHint")}
         title={t("contentSync.notConfigured")}
       />

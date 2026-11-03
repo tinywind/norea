@@ -66,7 +66,7 @@ it("opens the exact verification session, sends exhaustion to server settings an
   await press(render(snapshot([range("a", { pauseReason: "challenge-captcha", challenge: { kind: "captcha", url: "https://source.test" } })])));
   expect(mocks.verify).toHaveBeenCalledWith("plan", "a");
   await press(render(snapshot([range("a", { pauseReason: "profiles-exhausted" })])));
-  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "data" } });
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "network" } });
   await press(render(snapshot([range("a", { pauseReason: "download-failed" }), range("b", { pauseReason: "runtime-error" })])));
   expect(mocks.resumeRange.mock.calls).toEqual([["plan", "a"], ["plan", "b"]]);
 });

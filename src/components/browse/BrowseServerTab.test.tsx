@@ -106,7 +106,7 @@ it("links to the content server settings when no server is configured", () => {
   mocks.server = "";
   const state = render().find(element => element.type === StateView)!;
   state.props.action!.onClick();
-  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "data" } });
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "backup" } });
 });
 
 it("retains the search and source when returning from a work", () => {

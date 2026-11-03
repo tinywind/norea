@@ -1,45 +1,59 @@
 import { useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
-export type SettingsCategoryId =
-  | "app"
-  | "reader"
-  | "library"
-  | "browse"
-  | "data"
-  | "about";
+/** Settings sections in display order. */
+export const SETTINGS_SECTION_IDS = [
+  "appearance",
+  "general",
+  "reader",
+  "library",
+  "downloads",
+  "backup",
+  "network",
+  "reset",
+  "about",
+  "developer",
+] as const;
 
-function normalizeSettingsSection(
+export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
+
+/** Section ids used by earlier builds and links, mapped to their new home. */
+const RENAMED_SETTINGS_SECTIONS: Readonly<Record<string, SettingsSectionId>> = {
+  app: "appearance",
+  browse: "downloads",
+  data: "backup",
+};
+
+function isSettingsSectionId(value: string): value is SettingsSectionId {
+  return (SETTINGS_SECTION_IDS as readonly string[]).includes(value);
+}
+
+/** Returns the section a `?section=` value opens, or null for the section index. */
+export function normalizeSettingsSection(
   section: string | undefined,
-): SettingsCategoryId {
-  switch (section?.toLowerCase()) {
-    case "reader":
-      return "reader";
-    case "library":
-      return "library";
-    case "browse":
-      return "browse";
-    case "data":
-      return "data";
-    case "about":
-      return "about";
-    case "app":
-    default:
-      return "app";
-  }
+): SettingsSectionId | null {
+  const id = section?.trim().toLowerCase();
+  if (!id) return null;
+  if (isSettingsSectionId(id)) return id;
+  return RENAMED_SETTINGS_SECTIONS[id] ?? null;
 }
 
 /**
  * Reads the active settings section from the route search and writes
  * selections back to it, so a later navigation to any section always applies.
+ * Selecting null returns to the section index.
  */
 export function useSettingsSection(
   section: string | undefined,
-): readonly [SettingsCategoryId, (id: SettingsCategoryId) => void] {
+): readonly [SettingsSectionId | null, (id: SettingsSectionId | null) => void] {
   const navigate = useNavigate();
   const selectSection = useCallback(
-    (id: SettingsCategoryId) => {
-      void navigate({ to: "/settings", search: { section: id }, replace: true });
+    (id: SettingsSectionId | null) => {
+      void navigate({
+        to: "/settings",
+        search: { section: id ?? undefined },
+        replace: true,
+      });
     },
     [navigate],
   );

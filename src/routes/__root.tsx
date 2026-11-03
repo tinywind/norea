@@ -328,7 +328,7 @@ export function RootLayout() {
     () => parseDownloadsSearch(search).view,
   );
   const [lastSettingsSection, setLastSettingsSection] = useState(() =>
-    getSearchString(search, "section", "app"),
+    getSearchString(search, "section", ""),
   );
   const browseQuery =
     activePersistentPage === "browse"
@@ -342,7 +342,7 @@ export function RootLayout() {
       : lastDownloadsView;
   const settingsSection =
     activePersistentPage === "settings"
-      ? getSearchString(search, "section", "app")
+      ? getSearchString(search, "section", "")
       : lastSettingsSection;
 
   useEffect(() => {
@@ -469,7 +469,7 @@ export function RootLayout() {
     }
 
     if (activePersistentPage === "settings") {
-      const nextSection = getSearchString(search, "section", "app");
+      const nextSection = getSearchString(search, "section", "");
       setLastSettingsSection((current) =>
         current === nextSection ? current : nextSection,
       );

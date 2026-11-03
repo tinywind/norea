@@ -1,13 +1,18 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { useSettingsSection, type SettingsCategoryId } from "./use-settings-section";
+import {
+  normalizeSettingsSection,
+  SETTINGS_SECTION_IDS,
+  useSettingsSection,
+  type SettingsSectionId,
+} from "./use-settings-section";
 
 const router = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => router.navigate }));
 
 let root: Root | undefined;
-let current: readonly [SettingsCategoryId, (id: SettingsCategoryId) => void];
+let current: readonly [SettingsSectionId | null, (id: SettingsSectionId | null) => void];
 
 function mount() {
   const document = {
@@ -55,12 +60,24 @@ it("writes a selected section to the route so reopening the reader section appli
   expect(current[0]).toBe("reader");
 });
 
-it("falls back to the app section for missing or unknown sections", async () => {
+it("opens the section index for missing or unknown sections", async () => {
   mount();
   await render(undefined);
-  expect(current[0]).toBe("app");
+  expect(current[0]).toBeNull();
   await render("unknown");
-  expect(current[0]).toBe("app");
+  expect(current[0]).toBeNull();
   await render("Reader");
   expect(current[0]).toBe("reader");
+
+  current[1](null);
+  expect(router.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: undefined }, replace: true });
+});
+
+it("keeps every section id and maps the ids of earlier builds to their new sections", () => {
+  for (const id of SETTINGS_SECTION_IDS) expect(normalizeSettingsSection(id)).toBe(id);
+  expect(normalizeSettingsSection("app")).toBe("appearance");
+  expect(normalizeSettingsSection("browse")).toBe("downloads");
+  expect(normalizeSettingsSection("data")).toBe("backup");
+  expect(normalizeSettingsSection(" DATA ")).toBe("backup");
+  expect(normalizeSettingsSection("")).toBeNull();
 });

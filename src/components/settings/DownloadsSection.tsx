@@ -1,0 +1,198 @@
+import { useEffect, useState } from "react";
+import { NumberInput, Stack, Text } from "@mantine/core";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
+import { StorageRecoveryBanner } from "../runtime/StorageRecovery";
+import {
+  SettingsFieldRow,
+  SettingsSection,
+  SettingsWideField,
+} from "../SettingsPrimitives";
+import { TextButton } from "../TextButton";
+import {
+  getChapterMediaStorageRoot,
+  selectChapterMediaStorageRoot,
+} from "../../lib/chapter-media-storage";
+import { restartChapterContentStorageMirrorSweep } from "../../lib/chapter-content-storage";
+import { describeError } from "../../lib/errors";
+import { isAndroidRuntime } from "../../lib/tauri-runtime";
+import { useTranslation } from "../../i18n";
+import { useBrowseStore } from "../../store/browse";
+import { showSettingsToast } from "./settings-toast";
+
+export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
+  "settings",
+  "chapter-media-storage-root",
+] as const;
+
+export function reconcileChapterStorage(queryClient: QueryClient): void {
+  restartChapterContentStorageMirrorSweep({
+    onComplete: () => {
+      void queryClient.invalidateQueries({ queryKey: ["chapter"] });
+      void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
+      void queryClient.invalidateQueries({ queryKey: ["novel"] });
+    },
+  });
+}
+
+function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [mediaStorageRoot, setMediaStorageRoot] = useState<string | null>(null);
+  const [mediaStorageBusy, setMediaStorageBusy] = useState(false);
+
+  useEffect(() => {
+    void getChapterMediaStorageRoot()
+      .then(setMediaStorageRoot)
+      .catch((error: unknown) => {
+        showSettingsToast(
+          "danger",
+          t("settings.data.mediaStorage.loadFailed", {
+            error: describeError(error),
+          }),
+        );
+      });
+  }, [t]);
+
+  async function chooseMediaStorageRoot(): Promise<void> {
+    setMediaStorageBusy(true);
+    try {
+      const root = await selectChapterMediaStorageRoot();
+      if (root) {
+        setMediaStorageRoot(root);
+        queryClient.setQueryData(CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY, root);
+        reconcileChapterStorage(queryClient);
+        showSettingsToast("ok", t("settings.toast.saved"));
+        void queryClient.invalidateQueries({ queryKey: ["novel"] });
+        void queryClient.invalidateQueries({ queryKey: ["category"] });
+      }
+    } catch (error) {
+      showSettingsToast(
+        "danger",
+        t("settings.data.mediaStorage.selectFailed", {
+          error: describeError(error),
+        }),
+      );
+    } finally {
+      setMediaStorageBusy(false);
+    }
+  }
+
+  return (
+    <SettingsSection title={t("settings.data.mediaStorage.title")}>
+      <StorageRecoveryBanner />
+      <SettingsFieldRow
+        label={t("settings.data.mediaStorage.folder.label")}
+        description={
+          isAndroidRuntime()
+            ? t("settings.data.mediaStorage.folder.androidDefaultDescription")
+            : t("settings.data.mediaStorage.folder.description")
+        }
+        layout="stacked"
+      >
+        <SettingsWideField>
+          <Text className="norea-settings-path-value">
+            {mediaStorageRoot ?? t("settings.data.mediaStorage.folder.empty")}
+          </Text>
+        </SettingsWideField>
+      </SettingsFieldRow>
+      <SettingsFieldRow
+        label={t("settings.data.mediaStorage.change.label")}
+        description={
+          isAndroidRuntime()
+            ? t("settings.data.mediaStorage.change.androidDefaultDescription")
+            : t("settings.data.mediaStorage.change.description")
+        }
+      >
+        <TextButton
+          loading={mediaStorageBusy}
+          disabled={mediaStorageBusy || isBusy}
+          onClick={() => {
+            void chooseMediaStorageRoot();
+          }}
+        >
+          {isAndroidRuntime()
+            ? t("storageSetup.selectExternalFolder")
+            : t("storageSetup.selectFolder")}
+        </TextButton>
+      </SettingsFieldRow>
+    </SettingsSection>
+  );
+}
+
+export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
+  const { t } = useTranslation();
+  const [cleanupOpened, setCleanupOpened] = useState(false);
+  const sourceWorkConcurrency = useBrowseStore((s) => s.sourceWorkConcurrency);
+  const setSourceWorkConcurrency = useBrowseStore(
+    (s) => s.setSourceWorkConcurrency,
+  );
+  const chapterDownloadCooldownSeconds = useBrowseStore(
+    (s) => s.chapterDownloadCooldownSeconds,
+  );
+  const setChapterDownloadCooldownSeconds = useBrowseStore(
+    (s) => s.setChapterDownloadCooldownSeconds,
+  );
+
+  return (
+    <Stack gap="md">
+      <MediaStorageSettings isBusy={isBusy} />
+
+      <SettingsSection title={t("browseSettings.group.downloads")}>
+        <SettingsFieldRow
+          label={t("settings.data.downloadedContent.label")}
+          description={t("settings.data.downloadedContent.description")}
+        >
+          <TextButton
+            disabled={isBusy}
+            loading={isBusy}
+            variant="default"
+            tone="danger"
+            onClick={() => setCleanupOpened(true)}
+          >
+            {t("settings.data.downloadedContent.button")}
+          </TextButton>
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("browseSettings.sourceWorkConcurrency")}
+          description={t("browseSettings.sourceWorkConcurrency.description")}
+        >
+          <NumberInput
+            value={sourceWorkConcurrency}
+            min={1}
+            max={10}
+            step={1}
+            clampBehavior="strict"
+            onChange={(value) => {
+              if (typeof value === "number") {
+                setSourceWorkConcurrency(value);
+              }
+            }}
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("browseSettings.chapterDownloadCooldown")}
+          description={t("browseSettings.chapterDownloadCooldown.description")}
+        >
+          <NumberInput
+            value={chapterDownloadCooldownSeconds}
+            min={0}
+            max={60}
+            step={1}
+            clampBehavior="strict"
+            suffix={` ${t("common.seconds")}`}
+            onChange={(value) => {
+              if (typeof value === "number") {
+                setChapterDownloadCooldownSeconds(value);
+              }
+            }}
+          />
+        </SettingsFieldRow>
+      </SettingsSection>
+      <ChapterCleanupPanel
+        opened={cleanupOpened}
+        onClose={() => setCleanupOpened(false)}
+      />
+    </Stack>
+  );
+}
