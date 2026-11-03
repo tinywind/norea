@@ -6,57 +6,59 @@
   align-items: baseline;
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 0.625rem;
+  gap: var(--norea-space-3);
 }
 
 .norea-updates-title-description {
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   font-family: var(--norea-font-ui);
-  font-size: 0.5em;
+  font-size: var(--norea-text-xs);
   font-weight: 400;
   line-height: 1.25;
 }
 
 .norea-updates-summary {
-  padding: 0.875rem 1rem;
+  padding: var(--norea-space-3) var(--norea-space-4);
 }
 
 .norea-updates-row-meta {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
-  font-size: 0.6875rem;
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   line-height: 1.4;
 }
 
 .norea-updates-queue {
-  padding: 0.75rem 0.875rem 0.875rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-updates-row,
 .norea-updates-failure-row {
   align-items: center;
-  background: var(--norea-design-surface);
-  border-top: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-surface);
+  border-top: 1px solid var(--norea-color-rule);
   display: grid;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   min-width: 0;
 }
 
 .norea-updates-row {
   grid-template-columns: 3rem minmax(0, 1fr) auto;
   min-height: 5.375rem;
-  padding: 0.4375rem 0.5rem 0.4375rem 0.125rem;
+  padding: var(--norea-space-2) var(--norea-space-2) var(--norea-space-2)
+    var(--norea-space-1);
 }
 
 .norea-updates-row-open:focus-visible,
 .norea-updates-link:focus-visible,
 .norea-updates-icon-button:focus-visible {
-  outline: 0.125rem solid var(--norea-design-accent);
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
   outline-offset: 0.125rem;
 }
 
 .norea-updates-row:hover {
-  background: var(--norea-design-accent-soft);
+  background: var(--norea-color-accent-soft);
 }
 
 .norea-updates-row-open {
@@ -78,12 +80,12 @@
 }
 
 .norea-updates-row-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   display: block;
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 600;
   line-height: 1.35;
-  margin-top: 0.25rem;
+  margin-top: var(--norea-space-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -92,10 +94,10 @@
 .norea-updates-link {
   background: transparent;
   border: 0;
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   cursor: pointer;
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 700;
   min-width: 0;
   overflow: hidden;
@@ -109,27 +111,27 @@
   align-items: center;
   align-self: stretch;
   display: flex;
-  gap: 0.3125rem;
+  gap: var(--norea-space-1);
   justify-content: flex-end;
 }
 
 .norea-updates-row-flags {
   align-items: center;
   display: inline-flex;
-  gap: 0.3125rem;
+  gap: var(--norea-space-1);
   min-width: 0;
 }
 
 .norea-updates-icon-button {
   align-items: center;
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
   justify-content: center;
 }
 
 .norea-updates-icon-button:hover:not(:disabled) {
-  background: var(--norea-design-panel);
-  color: var(--norea-design-ink);
+  background: var(--norea-color-surface-raised);
+  color: var(--norea-color-ink);
 }
 
 .norea-updates-icon-button:disabled {
@@ -138,27 +140,27 @@
 }
 
 .norea-updates-icon-button[data-tone="accent"] {
-  background: var(--norea-design-accent-soft);
-  border-color: var(--norea-design-accent);
-  color: var(--norea-design-accent);
+  background: var(--norea-color-accent-soft);
+  border-color: var(--norea-color-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-updates-icon-button[data-tone="danger"] {
-  color: var(--norea-design-error);
+  color: var(--norea-color-danger);
 }
 
 .norea-updates-icon-flag {
   align-items: center;
-  border: 1px solid var(--norea-design-rule-strong);
-  border-radius: 0.25rem;
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-sm);
   box-sizing: border-box;
-  color: var(--norea-design-ink-subtle);
+  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  gap: 0.25rem;
+  gap: var(--norea-space-1);
   height: 1.5rem;
   justify-content: center;
   min-width: 1.5rem;
-  padding: 0 0.25rem;
+  padding: 0 var(--norea-space-1);
 }
 
 .norea-updates-icon-flag:not([data-count="true"]) {
@@ -166,24 +168,25 @@
 }
 
 .norea-updates-icon-flag[data-tone="accent"] {
-  color: var(--norea-design-accent);
+  color: var(--norea-color-accent);
 }
 
 .norea-updates-icon-flag[data-tone="done"] {
-  color: var(--norea-design-ok);
+  color: var(--norea-color-ok);
 }
 
 .norea-updates-icon-flag[data-tone="error"] {
-  color: var(--norea-design-error);
+  color: var(--norea-color-danger);
 }
 
 .norea-updates-icon-flag[data-tone="warning"] {
-  color: var(--norea-design-warn);
+  color: var(--norea-color-warn);
 }
 
 .norea-updates-icon-count {
-  font-family: var(--norea-font-meta);
-  font-size: 0.625rem;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   line-height: 1;
   max-width: 3ch;
@@ -217,26 +220,26 @@
 
 .norea-updates-failure-row {
   grid-template-columns: minmax(0, 1fr) auto;
-  padding: 0.625rem 0.875rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-updates-failure-footer {
   align-items: center;
-  background: var(--norea-design-warn-soft);
-  border-top: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-warn-soft);
+  border-top: 1px solid var(--norea-color-rule);
   display: flex;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   justify-content: space-between;
-  padding: 0.625rem 0.875rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-updates-load-more {
   align-items: center;
-  border-top: 1px solid var(--norea-design-rule);
+  border-top: 1px solid var(--norea-color-rule);
   display: flex;
-  gap: 0.625rem;
+  gap: var(--norea-space-3);
   justify-content: center;
-  padding: 0.875rem 0.5rem 0.25rem;
+  padding: var(--norea-space-3) var(--norea-space-2) var(--norea-space-1);
 }
 
 @media (max-width: 767px) {
@@ -248,7 +251,7 @@
     right: 0;
     top: 0;
     width: 0;
-    z-index: 30;
+    z-index: var(--norea-z-nav);
   }
 
   .norea-updates-page .norea-page-header-copy {
@@ -256,23 +259,25 @@
   }
 
   .norea-updates-summary {
-    padding: 0.625rem 3.875rem 0.625rem 0.625rem;
+    padding: var(--norea-space-3) 3.875rem var(--norea-space-3)
+      var(--norea-space-3);
   }
 
   .norea-updates-check-button {
-    background: var(--norea-design-surface);
-    box-shadow: var(--norea-design-shadow-floating);
+    background: var(--norea-color-surface);
+    box-shadow: var(--norea-shadow-floating);
     position: fixed;
     right: 0.75rem;
     top: calc(var(--norea-safe-area-top) + 0.75rem);
-    z-index: 30;
+    z-index: var(--norea-z-nav);
   }
 
   .norea-updates-row {
-    gap: 0.5rem;
+    gap: var(--norea-space-2);
     grid-template-columns: 2.625rem minmax(0, 1fr) auto;
     min-height: 4.8125rem;
-    padding: 0.4375rem 0.375rem 0.4375rem 0.125rem;
+    padding: var(--norea-space-2) var(--norea-space-2) var(--norea-space-2)
+      var(--norea-space-1);
   }
 
   .norea-updates-row .norea-console-cover {
@@ -281,7 +286,7 @@
   }
 
   .norea-updates-row-actions {
-    gap: 0.25rem;
+    gap: var(--norea-space-1);
   }
 
   .norea-updates-failure-footer {

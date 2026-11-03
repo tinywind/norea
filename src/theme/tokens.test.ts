@@ -4,9 +4,7 @@ import { describe, expect, it } from "vitest";
 const stylesDir = new URL("../styles/", import.meta.url);
 
 /** Stylesheets that still carry literal values; each one leaves this list in its migration commit. */
-const NOT_YET_MIGRATED = new Set([
-  "updates.css",
-]);
+const NOT_YET_MIGRATED = new Set<string>();
 
 /** The root size carries the UI scale setting, so it is not a type-scale step. */
 const ALLOWED_FONT_SIZES = new Set([
