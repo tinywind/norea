@@ -1,37 +1,25 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { Button, Group, Loader, Stack, Text } from "@mantine/core";
+import { DetailsGlyph } from "../components/ActionGlyphs";
 import {
-  Group,
-  Loader,
-  Stack,
-  Text,
-  Tooltip,
-} from "@mantine/core";
-import {
-  ClockGlyph,
-  DetailsGlyph,
-  DownloadGlyph,
-  DownloadedGlyph,
-  PlusGlyph,
-  RetryGlyph,
-  SpinnerGlyph,
-  UnreadGlyph,
-} from "../components/ActionGlyphs";
-import {
-  ConsoleCover,
   ConsolePanel,
-  ConsoleSectionHeader,
   ConsoleStatusDot,
 } from "../components/ConsolePrimitives";
-import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
+import { PageFrame, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
+import { RefreshIcon } from "../components/ui/icons";
+import {
+  daysBefore,
+  groupUpdatesByDate,
+  type UpdateListItem,
+} from "../components/updates/update-groups";
+import {
+  UpdateRow,
+  UpdateRowsSkeleton,
+  UpdateRunRow,
+} from "../components/updates/UpdateRows";
 import {
   listLibraryUpdatesPage,
   type LibraryUpdateEntry,
@@ -46,19 +34,13 @@ import {
 import {
   checkLibraryUpdates,
   type UpdateCheckFailure,
-  type UpdateCheckResult,
 } from "../lib/updates/check-library-updates";
 import {
   getUpdatesIndexRevision,
   subscribeUpdatesIndexChanges,
 } from "../lib/updates/update-index-events";
-import {
-  formatDateTimeForLocale,
-  useTranslation,
-  type AppLocale,
-  type TranslationKey,
-} from "../i18n";
-import { useNovelCoverSource } from "../lib/use-novel-cover-source";
+import { describeError } from "../lib/errors";
+import { useTranslation, type AppLocale } from "../i18n";
 import { useUpdatesStore } from "../store/updates";
 import "../styles/updates.css";
 
@@ -94,84 +76,22 @@ function getUpdatesScrollMetrics(): {
   };
 }
 
-function formatDateTime(epochSeconds: number, locale: AppLocale): string {
-  return formatDateTimeForLocale(locale, epochSeconds * 1000);
-}
-
-function countLabel(
+function formatUpdateDay(
+  dayStart: number,
+  locale: AppLocale,
   t: ReturnType<typeof useTranslation>["t"],
-  value: number,
-  singularKey: TranslationKey,
-  pluralKey: TranslationKey,
 ): string {
-  return t(value === 1 ? singularKey : pluralKey, { count: value });
-}
-
-interface UpdateSummaryProps {
-  hasMoreUpdates: boolean;
-  loadedUpdates: number;
-  result: UpdateCheckResult | undefined;
-  running: boolean;
-}
-
-function UpdateSummary({
-  hasMoreUpdates,
-  loadedUpdates,
-  result,
-  running,
-}: UpdateSummaryProps) {
-  const { t } = useTranslation();
-  const failures = result?.failures.length ?? 0;
-
-  return (
-    <ConsolePanel className="norea-updates-summary">
-      <div className="norea-updates-summary-row">
-        <Group gap="xs" wrap="wrap">
-          <ConsoleStatusDot
-            status={running ? "active" : failures > 0 ? "warning" : "idle"}
-            label={
-              running
-                ? t("common.checking")
-                : result
-                  ? t("common.ready")
-                  : t("settings.idle")
-            }
-          />
-          <UpdateFlag
-            count={loadedUpdates}
-            label={countLabel(
-              t,
-              loadedUpdates,
-              "updates.newChapterCount",
-              "updates.newChapterCountPlural",
-            )}
-            tone={loadedUpdates > 0 ? "accent" : "default"}
-          >
-            <UnreadGlyph />
-          </UpdateFlag>
-          {failures > 0 ? (
-            <UpdateFlag
-              count={failures}
-              label={countLabel(
-                t,
-                failures,
-                "updates.failureCount",
-                "updates.failureCountPlural",
-              )}
-              tone="warning"
-            >
-              <AlertIcon />
-            </UpdateFlag>
-          ) : null}
-          {hasMoreUpdates ? (
-            <UpdateFlag label={t("updates.moreAvailable")} tone="accent">
-              <PlusGlyph />
-            </UpdateFlag>
-          ) : null}
-        </Group>
-      </div>
-    </ConsolePanel>
-  );
+  const now = new Date();
+  const delta = daysBefore(dayStart, now);
+  if (delta === 0) return t("time.today");
+  if (delta === 1) return t("time.yesterday");
+  const date = new Date(dayStart);
+  return new Intl.DateTimeFormat(locale, {
+    day: "numeric",
+    month: "short",
+    weekday: "short",
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
 }
 
 interface FailureRowProps {
@@ -204,283 +124,10 @@ function FailureRow({ failure, onOpenNovel }: FailureRowProps) {
           {sourceName} / {reason}
         </Text>
       </div>
-      <UpdateIconButton label={t("updates.details")} onClick={onOpenNovel}>
+      <IconButton label={t("updates.details")} onClick={onOpenNovel} size="lg">
         <DetailsGlyph />
-      </UpdateIconButton>
+      </IconButton>
     </div>
-  );
-}
-
-interface UpdateIconButtonProps {
-  children: ReactNode;
-  className?: string;
-  disabled?: boolean;
-  label: string;
-  onClick: () => void;
-  tone?: "default" | "accent" | "danger";
-}
-
-function UpdateIconButton({
-  children,
-  className,
-  disabled = false,
-  label,
-  onClick,
-  tone = "default",
-}: UpdateIconButtonProps) {
-  const classNames = `norea-updates-icon-button${
-    className ? ` ${className}` : ""
-  }`;
-
-  return (
-    <IconButton
-      className={classNames}
-      disabled={disabled}
-      label={label}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-      size="lg"
-      tone={tone}
-    >
-      {children}
-    </IconButton>
-  );
-}
-
-interface UpdateFlagProps {
-  children: ReactNode;
-  count?: number;
-  label: string;
-  tone?: "accent" | "default" | "done" | "error" | "warning";
-}
-
-function UpdateFlag({
-  children,
-  count,
-  label,
-  tone = "default",
-}: UpdateFlagProps) {
-  const hasCount = count != null;
-
-  return (
-    <Tooltip label={label} openDelay={350} withArrow>
-      <span
-        aria-label={label}
-        className="norea-updates-icon-flag"
-        data-count={hasCount ? "true" : undefined}
-        data-tone={tone}
-        role="img"
-        title={label}
-      >
-        {children}
-        {hasCount ? (
-          <span className="norea-updates-icon-count">{count}</span>
-        ) : null}
-      </span>
-    </Tooltip>
-  );
-}
-
-function UpdateDownloadStatusFlag({
-  status,
-}: {
-  status: ChapterDownloadStatus | undefined;
-}) {
-  const { t } = useTranslation();
-
-  if (!status || status.kind === "done" || status.kind === "cancelled") {
-    return null;
-  }
-
-  if (status.kind === "failed") {
-    return (
-      <UpdateFlag label={status.error} tone="error">
-        <AlertIcon />
-      </UpdateFlag>
-    );
-  }
-
-  if (status.kind === "running") {
-    return (
-      <UpdateFlag label={t("common.downloading")}>
-        <SpinnerGlyph className="norea-updates-spin-icon" />
-      </UpdateFlag>
-    );
-  }
-
-  return (
-    <UpdateFlag label={t("common.queued")}>
-      <ClockGlyph />
-    </UpdateFlag>
-  );
-}
-
-interface UpdateRowProps {
-  downloadStatus: ChapterDownloadStatus | undefined;
-  entry: LibraryUpdateEntry;
-  onDownload: () => void;
-  onOpen: () => void;
-  onOpenNovel: () => void;
-}
-
-function UpdateRow({
-  downloadStatus,
-  entry,
-  onDownload,
-  onOpen,
-  onOpenNovel,
-}: UpdateRowProps) {
-  const { locale, t } = useTranslation();
-  const coverSource = useNovelCoverSource({
-    cover: entry.novelCover,
-    id: entry.novelId,
-    isLocal: entry.novelIsLocal,
-    name: entry.novelName,
-    path: entry.novelPath,
-    pluginId: entry.pluginId,
-  });
-  const isQueued = downloadStatus?.kind === "queued";
-  const isRunning = downloadStatus?.kind === "running";
-  const failedMessage =
-    downloadStatus?.kind === "failed" ? downloadStatus.error : null;
-  const status = entry.isDownloaded ? "done" : "active";
-  const downloadLabel = failedMessage
-    ? `${t("novel.retryDownload")}: ${failedMessage}`
-    : isRunning
-      ? t("common.downloading")
-      : isQueued
-        ? t("common.queued")
-        : t("novel.downloadChapter");
-
-  return (
-    <div className="norea-updates-row">
-      <button
-        aria-label={t("updates.openChapter", { name: entry.chapterName })}
-        className="norea-updates-row-open"
-        onClick={onOpen}
-        type="button"
-      >
-        <ConsoleCover
-          alt={entry.novelName}
-          height={72}
-          src={coverSource}
-          width={48}
-        />
-      </button>
-
-      <div className="norea-updates-row-main">
-        <Group gap="xs" wrap="nowrap">
-          <ConsoleStatusDot
-            status={status}
-            label={entry.isDownloaded ? t("common.downloaded") : t("common.new")}
-          />
-          <button
-            className="norea-updates-link"
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenNovel();
-            }}
-          >
-            {entry.novelName}
-          </button>
-        </Group>
-        <button
-          aria-label={t("updates.openChapter", { name: entry.chapterName })}
-          className="norea-updates-row-open"
-          onClick={onOpen}
-          type="button"
-        >
-          <Text
-            component="span"
-            className="norea-updates-row-title"
-            title={entry.chapterName}
-          >
-            #{entry.position} - {entry.chapterName}
-          </Text>
-          <Group component="span" gap="xs" mt={6} wrap="wrap">
-            <span
-              className="norea-updates-row-flags"
-              aria-label={t("novel.chapterStatus")}
-            >
-              <UpdateFlag label={entry.pluginName ?? entry.pluginId}>
-                <SourceIcon />
-              </UpdateFlag>
-              <UpdateFlag label={t("library.grid.unread")} tone="accent">
-                <UnreadGlyph />
-              </UpdateFlag>
-              {entry.isDownloaded ? (
-                <UpdateFlag label={t("novel.downloaded")} tone="done">
-                  <DownloadedGlyph />
-                </UpdateFlag>
-              ) : null}
-              <UpdateDownloadStatusFlag status={downloadStatus} />
-            </span>
-            <Text component="span" className="norea-updates-row-meta">
-              {formatDateTime(entry.foundAt, locale)}
-            </Text>
-          </Group>
-        </button>
-      </div>
-
-      <div className="norea-updates-row-actions">
-        <UpdateIconButton label={t("common.read")} onClick={onOpen} tone="accent">
-          <ReadForwardIcon />
-        </UpdateIconButton>
-        {!entry.isDownloaded ? (
-          <UpdateIconButton
-            disabled={isQueued || isRunning}
-            label={downloadLabel}
-            onClick={onDownload}
-            tone={failedMessage ? "danger" : "default"}
-          >
-            {isRunning ? (
-              <SpinnerGlyph className="norea-updates-spin-icon" />
-            ) : isQueued ? (
-              <ClockGlyph />
-            ) : (
-              <DownloadGlyph />
-            )}
-          </UpdateIconButton>
-        ) : null}
-        <UpdateIconButton label={t("updates.details")} onClick={onOpenNovel}>
-          <DetailsGlyph />
-        </UpdateIconButton>
-      </div>
-    </div>
-  );
-}
-
-function ReadForwardIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 5h9a4 4 0 0 1 4 4v10H9a4 4 0 0 0-4 4z" />
-      <path d="M9 9h5" />
-      <path d="M9 13h4" />
-    </svg>
-  );
-}
-
-function AlertIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 4l9 16H3z" />
-      <path d="M12 9v5" />
-      <path d="M12 18h.01" />
-    </svg>
-  );
-}
-
-function SourceIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M3 12h18" />
-      <path d="M12 3a14 14 0 0 1 0 18" />
-      <path d="M12 3a14 14 0 0 0 0 18" />
-    </svg>
   );
 }
 
@@ -489,7 +136,7 @@ interface UpdatesPageProps {
 }
 
 export function UpdatesPage({ active = true }: UpdatesPageProps) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const hasLoaded = useUpdatesStore((state) => state.hasLoaded);
@@ -785,186 +432,182 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
     }).promise.catch(() => undefined);
   };
 
+  const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const sections = useMemo(() => groupUpdatesByDate(updates), [updates]);
+  const toggleRun = (key: string) => {
+    setExpandedRuns((current) => {
+      const next = new Set(current);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  };
+  const renderChapterRow = (entry: LibraryUpdateEntry, nested = false) => (
+    <UpdateRow
+      key={entry.chapterId}
+      downloadStatus={downloadStatuses.get(entry.chapterId)}
+      entry={entry}
+      nested={nested}
+      onDownload={() => downloadChapter(entry)}
+      onOpen={() => openChapter(entry.chapterId)}
+      onOpenNovel={() => openNovel(entry.novelId)}
+    />
+  );
+  const renderItem = (item: UpdateListItem) => {
+    if (item.kind === "chapter") return renderChapterRow(item.entry);
+    const expanded = expandedRuns.has(item.key);
+    return (
+      <div className="norea-updates-run" key={item.key}>
+        <UpdateRunRow
+          count={item.entries.length}
+          earliest={item.earliest}
+          expanded={expanded}
+          onOpenEarliest={() => openChapter(item.earliest.chapterId)}
+          onOpenNovel={() => openNovel(item.earliest.novelId)}
+          onToggle={() => toggleRun(item.key)}
+        />
+        {expanded ? (
+          <div
+            aria-label={item.earliest.novelName}
+            className="norea-updates-run-chapters"
+            role="group"
+          >
+            {item.entries.map((entry) => renderChapterRow(entry, true))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   const result = lastCheckResult ?? undefined;
 
   return (
-    <PageFrame className="norea-updates-page" size="wide">
-      <PageHeader
-        title={
-          <span className="norea-updates-title-line">
-            <span>{t("updates.title")}</span>
-            <span className="norea-updates-title-description">
-              {t("updates.description")}
-            </span>
-          </span>
-        }
-        actions={
-          <UpdateIconButton
-            className="norea-updates-check-button"
-            disabled={check.isPending}
-            label={t("updates.check")}
-            onClick={() => check.mutate()}
-            tone="accent"
-          >
+    <div className="norea-updates-page">
+      <header className="norea-updates-app-bar">
+        <div className="norea-updates-app-bar-text">
+          <h1 className="norea-updates-app-bar-title">{t("updates.title")}</h1>
+        </div>
+        <IconButton
+          disabled={check.isPending}
+          label={t("updates.check")}
+          onClick={() => check.mutate()}
+          size="lg"
+        >
+          {check.isPending ? <Loader size="sm" /> : <RefreshIcon />}
+        </IconButton>
+      </header>
+
+      <PageFrame className="norea-updates-frame" size="wide">
+        {isInitialLoading ? (
+          <UpdateRowsSkeleton label={t("updates.loadingRecent")} />
+        ) : refresh.error && !hasLoaded ? (
+          <StateView
+            action={{
+              label: t("common.retry"),
+              onClick: () => refreshFirstPage(),
+            }}
+            color="danger"
+            details={{
+              content: describeError(refresh.error),
+              label: t("common.details"),
+            }}
+            title={t("updates.loadFailed")}
+          />
+        ) : (
+          <Stack gap="md">
             {check.isPending ? (
-              <SpinnerGlyph className="norea-updates-spin-icon" />
-            ) : (
-              <RetryGlyph />
-            )}
-          </UpdateIconButton>
-        }
-      />
-
-      <UpdateSummary
-        hasMoreUpdates={hasMoreUpdates}
-        loadedUpdates={updates.length}
-        result={result}
-        running={check.isPending || refresh.isPending}
-      />
-
-      {isInitialLoading ? (
-        <StateView
-          title={
-            <Group gap="sm">
-              <Loader size="sm" />
-              <Text c="dimmed">{t("updates.loadingRecent")}</Text>
-            </Group>
-          }
-        />
-      ) : refresh.error && !hasLoaded ? (
-        <StateView
-          action={{
-            icon: <RetryGlyph />,
-            iconOnly: true,
-            label: t("common.retry"),
-            onClick: () => refreshFirstPage(),
-          }}
-          color="danger"
-          title={t("updates.loadFailed")}
-          message={
-            refresh.error instanceof Error
-              ? refresh.error.message
-              : String(refresh.error)
-          }
-        />
-      ) : (
-        <Stack gap="md">
-          {check.isPending ? (
-            <StateView
-              title={
-                <Group gap="sm">
-                  <Loader size="sm" />
-                  <Text c="dimmed">{t("updates.checkingLibrarySources")}</Text>
-                </Group>
-              }
-            />
-          ) : check.error ? (
-            <StateView
-              action={{
-                icon: <RetryGlyph />,
-                iconOnly: true,
-                label: t("common.retry"),
-                onClick: () => check.mutate(),
-              }}
-              color="danger"
-              title={t("updates.checkFailed")}
-              message={
-                check.error instanceof Error
-                  ? check.error.message
-                  : String(check.error)
-              }
-            />
-          ) : result && result.failures.length > 0 ? (
-            <ConsolePanel
-              className="norea-updates-failures"
-              title={t("updates.sourceFailures")}
-            >
-              <Stack gap={0}>
-                {result.failures.map((failure) => (
-                  <FailureRow
-                    key={failure.novelId}
-                    failure={failure}
-                    onOpenNovel={() => openNovel(failure.novelId)}
-                  />
-                ))}
-              </Stack>
-              <div className="norea-updates-failure-footer">
-                <Text className="norea-updates-row-meta">
-                  {t("updates.failureFooter")}
-                </Text>
-                <UpdateIconButton
-                  className="norea-updates-footer-action"
-                  disabled={check.isPending}
-                  label={t("updates.retryFailedCheck")}
-                  onClick={() => check.mutate()}
-                  tone="accent"
-                >
-                  {check.isPending ? (
-                    <SpinnerGlyph className="norea-updates-spin-icon" />
-                  ) : (
-                    <RetryGlyph />
-                  )}
-                </UpdateIconButton>
-              </div>
-            </ConsolePanel>
-          ) : null}
-
-          <ConsolePanel className="norea-updates-queue">
-            <ConsoleSectionHeader
-              title={t("updates.newChapters")}
-              count={`${countLabel(
-                t,
-                updates.length,
-                "updates.newChapterCount",
-                "updates.newChapterCountPlural",
-              )}${hasMoreUpdates ? ` / ${t("updates.moreAvailable")}` : ""}`}
-            />
+              <StateView
+                title={
+                  <Group gap="sm">
+                    <Loader size="sm" />
+                    <Text c="dimmed">{t("updates.checkingLibrarySources")}</Text>
+                  </Group>
+                }
+              />
+            ) : check.error ? (
+              <StateView
+                action={{
+                  label: t("common.retry"),
+                  onClick: () => check.mutate(),
+                }}
+                color="danger"
+                details={{
+                  content: describeError(check.error),
+                  label: t("common.details"),
+                }}
+                title={t("updates.checkFailed")}
+              />
+            ) : result && result.failures.length > 0 ? (
+              <ConsolePanel
+                className="norea-updates-failures"
+                title={t("updates.sourceFailures")}
+              >
+                <Stack gap={0}>
+                  {result.failures.map((failure) => (
+                    <FailureRow
+                      key={failure.novelId}
+                      failure={failure}
+                      onOpenNovel={() => openNovel(failure.novelId)}
+                    />
+                  ))}
+                </Stack>
+                <div className="norea-updates-failure-footer">
+                  <Text className="norea-updates-row-meta">
+                    {t("updates.failureFooter")}
+                  </Text>
+                  <Button onClick={() => check.mutate()} variant="light">
+                    {t("updates.retryFailedCheck")}
+                  </Button>
+                </div>
+              </ConsolePanel>
+            ) : null}
 
             {updates.length > 0 ? (
-              <Stack gap={0} mt="sm">
-                {updates.map((entry) => (
-                  <UpdateRow
-                    key={entry.chapterId}
-                    downloadStatus={downloadStatuses.get(entry.chapterId)}
-                    entry={entry}
-                    onDownload={() => downloadChapter(entry)}
-                    onOpen={() => openChapter(entry.chapterId)}
-                    onOpenNovel={() => openNovel(entry.novelId)}
-                  />
+              <div className="norea-updates-list">
+                {sections.map((section) => (
+                  <section
+                    aria-labelledby={`norea-updates-day-${section.dayStart}`}
+                    className="norea-updates-day"
+                    key={section.dayStart}
+                  >
+                    <h2
+                      className="norea-updates-day-title"
+                      id={`norea-updates-day-${section.dayStart}`}
+                    >
+                      {formatUpdateDay(section.dayStart, locale, t)}
+                    </h2>
+                    {section.items.map(renderItem)}
+                  </section>
                 ))}
                 {hasMoreUpdates ? (
                   <div className="norea-updates-load-more">
-                    <UpdateIconButton
-                      className="norea-updates-load-more-action"
-                      disabled={isLoadingMore || !nextUpdateCursor}
-                      label={t("updates.loadMore")}
+                    <Button
+                      disabled={!nextUpdateCursor}
+                      loading={isLoadingMore}
                       onClick={() => {
                         if (nextUpdateCursor) loadMorePage(nextUpdateCursor);
                       }}
-                      tone="accent"
+                      variant="light"
                     >
-                      {isLoadingMore ? (
-                        <SpinnerGlyph className="norea-updates-spin-icon" />
-                      ) : (
-                        <PlusGlyph />
-                      )}
-                    </UpdateIconButton>
-                    <Text className="norea-updates-row-meta">
-                      {t("updates.autoLoadMore")}
-                    </Text>
+                      {t("updates.loadMore")}
+                    </Button>
                   </div>
                 ) : null}
-              </Stack>
+              </div>
             ) : (
               <StateView
-                color="info"
-                title={t("updates.caughtUp")}
+                action={{
+                  label: t("updates.check"),
+                  onClick: () => check.mutate(),
+                }}
                 message={t("updates.caughtUpCurrentMessage")}
+                title={t("updates.caughtUp")}
               />
             )}
-          </ConsolePanel>
-        </Stack>
-      )}
-    </PageFrame>
+          </Stack>
+        )}
+      </PageFrame>
+    </div>
   );
 }
