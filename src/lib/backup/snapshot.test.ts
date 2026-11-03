@@ -19,6 +19,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../chapter-content-storage", () => ({
   writeStoredChapterContentMirror: vi.fn(),
 }));
+vi.mock("../../store/download-goals", () => ({
+  DOWNLOAD_GOAL_SETTINGS_KEY: "download-goal-settings",
+  useDownloadGoalSettingsStore: { persist: { rehydrate: vi.fn() } },
+}));
 vi.mock("../../store/reader", () => ({ useReaderStore: {
   getState: () => ({ lastReadChapterByNovel: {} }), persist: { rehydrate: vi.fn() },
 } }));
@@ -263,6 +267,7 @@ describe("gatherBackupSnapshot", () => {
   it("includes app and plugin settings from localStorage", async () => {
     installLocalStorage({
       "app-appearance-settings": "{\"state\":{\"themeMode\":\"dark\"}}",
+      "download-goal-settings": "{\"state\":{\"defaultKeepAhead\":5}}",
       "plugin-v2:demo:token": "secret",
       "plugin:demo:token": "obsolete-token",
       "source-filters:demo": "{\"filters\":{}}",
@@ -278,6 +283,7 @@ describe("gatherBackupSnapshot", () => {
         key: "app-appearance-settings",
         value: "{\"state\":{\"themeMode\":\"dark\"}}",
       },
+      { key: "download-goal-settings", value: "{\"state\":{\"defaultKeepAhead\":5}}" },
       { key: "plugin-v2:demo:token", value: "secret" },
       { key: "source-filters:demo", value: "{\"filters\":{}}" },
     ]);

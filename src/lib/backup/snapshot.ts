@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
 import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
+import { DOWNLOAD_GOAL_SETTINGS_KEY, useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { useReaderStore } from "../../store/reader";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
 import {
@@ -97,6 +98,7 @@ const BACKUP_SETTING_KEYS = new Set([
   "app-appearance-settings",
   "app-notification-settings",
   "browse-plugin-settings",
+  DOWNLOAD_GOAL_SETTINGS_KEY,
   "http-user-agent",
   "norea-library-settings",
   "reader-settings",
@@ -400,5 +402,6 @@ async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
   invalidateAllNovelCoverSources();
   writeBackupSettings(manifest.settings);
   await useReaderStore.persist.rehydrate();
+  await useDownloadGoalSettingsStore.persist.rehydrate();
   notifyWorkMetadataChanges();
 }

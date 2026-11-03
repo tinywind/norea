@@ -85,6 +85,9 @@ requirements must be decided explicitly before implementation.
   its novel through the foreign key. Full device snapshots include the table
   under the exact-schema policy. Goals are user intent, so portable file backups
   carry them in manifest format 3.
+  The default keep-ahead count for active library novels and the mobile-data
+  choice live in the `download-goal-settings` localStorage entry, which both
+  backup kinds carry with the other settings.
 - Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
   beside the approved `saved-profiles/` vault, with their own index and private
   files. They never write or change an O/X verdict; an entry leaves the pool when

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NumberInput, Stack, Text } from "@mantine/core";
+import { NumberInput, Select, Stack, Switch, Text } from "@mantine/core";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
 import { StorageRecoveryBanner } from "../runtime/StorageRecovery";
@@ -19,6 +19,10 @@ import { describeError } from "../../lib/errors";
 import { isAndroidRuntime } from "../../lib/tauri-runtime";
 import { useTranslation } from "../../i18n";
 import { useBrowseStore } from "../../store/browse";
+import {
+  DEFAULT_KEEP_AHEAD_CHOICES,
+  useDownloadGoalSettingsStore,
+} from "../../store/download-goals";
 import { showSettingsToast } from "./settings-toast";
 
 export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
@@ -139,12 +143,44 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
   const setChapterDownloadCooldownSeconds = useBrowseStore(
     (s) => s.setChapterDownloadCooldownSeconds,
   );
+  const goalSettings = useDownloadGoalSettingsStore();
 
   return (
     <Stack gap="md">
       <MediaStorageSettings isBusy={isBusy} />
 
       <SettingsSection title={t("browseSettings.group.downloads")}>
+        <SettingsFieldRow
+          label={t("settings.downloads.keepAhead.label")}
+          description={t("settings.downloads.keepAhead.description")}
+        >
+          <Select
+            allowDeselect={false}
+            data={DEFAULT_KEEP_AHEAD_CHOICES.map((count) => ({
+              value: String(count),
+              label: count === 0
+                ? t("settings.downloads.keepAhead.off")
+                : t("settings.downloads.keepAhead.count", { count }),
+            }))}
+            value={String(goalSettings.defaultKeepAhead)}
+            onChange={(value) => {
+              if (value !== null) goalSettings.setDefaultKeepAhead(Number(value));
+            }}
+          />
+        </SettingsFieldRow>
+        {isAndroidRuntime() ? (
+          <SettingsFieldRow
+            label={t("settings.downloads.mobileData.label")}
+            description={t("settings.downloads.mobileData.description")}
+          >
+            <Switch
+              checked={goalSettings.automaticOnMobileData}
+              onChange={(event) =>
+                goalSettings.setAutomaticOnMobileData(event.currentTarget.checked)
+              }
+            />
+          </SettingsFieldRow>
+        ) : null}
         <SettingsFieldRow
           label={t("settings.data.downloadedContent.label")}
           description={t("settings.data.downloadedContent.description")}
