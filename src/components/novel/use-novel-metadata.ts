@@ -41,10 +41,11 @@ export function useNovelMetadata(
   }, [id]);
 
   const toggle = useMutation({
-    mutationFn: async () => {
+    /** Removing asks first; `unshelve` sizes the confirmation's optional deletions. */
+    mutationFn: async (unshelve?: { downloadedCount: number; serverWork: boolean }) => {
       if (!novel) return;
       if (novel.inLibrary) {
-        await confirmContentDeletion({ kind: "library", ids: [novel.id], title: novel.name });
+        await confirmContentDeletion({ kind: "library", ids: [novel.id], title: novel.name, ...unshelve });
         return;
       }
       const inLibrary = true;

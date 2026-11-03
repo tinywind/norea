@@ -21,7 +21,15 @@ import { clearNovelCoverDisplayCache } from "./novel-cover-storage";
 import { cancelNovelChapterDownloadWork, deleteDownloadCache } from "./tasks/download-cache-delete";
 
 export type ContentDeletionRequest = (
-  | { kind: "library"; ids: readonly number[]; serverUrl: string }
+  | {
+    kind: "library";
+    ids: readonly number[];
+    serverUrl: string;
+    /** Downloaded chapters the optional device deletion would remove, when the caller knows. */
+    downloadedCount?: number;
+    /** False when the content server is known to hold none of these works. */
+    serverWork?: boolean;
+  }
   | { kind: "downloads"; scope: "chapter" | "novel" | "all"; ids?: readonly number[]; serverUrl: string }
   | { kind: "server-work"; source: ServerNovelSource }
   | { kind: "server-chapters"; source: ServerNovelSource; chapters: readonly ServerChapterSummary[] }

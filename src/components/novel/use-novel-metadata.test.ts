@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   mutations: [] as { mutationFn: () => Promise<unknown>; onSuccess: (result: never) => Promise<void> | void }[],
   queryClient: { setQueryData: vi.fn(), invalidateQueries: vi.fn() },
   source: vi.fn(), refresh: vi.fn(), refreshSource: vi.fn(), cover: vi.fn(), plugin: vi.fn(), library: vi.fn(),
-  enqueue: vi.fn(), sync: vi.fn(),
+  enqueue: vi.fn(), sync: vi.fn(), confirmDeletion: vi.fn(),
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => mocks.queryClient,
@@ -20,6 +20,7 @@ vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: mocks.
 vi.mock("../../lib/plugins/sync-novel", () => ({ getSourceDuplicateChapterInfo: () => [], syncNovelFromSource: mocks.sync }));
 vi.mock("../../lib/tasks/source-tasks", () => ({ enqueueSourceTask: mocks.enqueue }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
+vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: mocks.confirmDeletion }));
 
 import { useNovelMetadata } from "./use-novel-metadata";
 
@@ -125,4 +126,15 @@ it.each(["since", "full"] as const)("refreshes the web cover during an explicit 
     expect.objectContaining({ path: "/novel" }),
     expect.objectContaining({ chapterRefreshMode: mode, refreshCover: true }),
   );
+});
+
+it("asks before removing a library novel and sizes the optional deletions", async () => {
+  mocks.confirmDeletion.mockResolvedValue(true);
+  useNovelMetadata(3, { ...novel, inLibrary: true });
+  const mutation = mocks.mutations[0]! as unknown as { mutationFn: (input?: unknown) => Promise<unknown> };
+  await expect(mutation.mutationFn({ downloadedCount: 4, serverWork: false })).resolves.toBeUndefined();
+  expect(mocks.confirmDeletion).toHaveBeenCalledWith({
+    kind: "library", ids: [3], title: "Novel", downloadedCount: 4, serverWork: false,
+  });
+  expect(mocks.library).not.toHaveBeenCalled();
 });

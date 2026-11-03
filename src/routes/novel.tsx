@@ -718,7 +718,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 onBatchDownload={downloadChapters}
                 onRead={openChapter}
                 onToggleLibrary={() =>
-                  toggle.mutate(undefined, {
+                  toggle.mutate(novel.inLibrary ? {
+                    downloadedCount: chapterStats.downloaded,
+                    serverWork: managedServerWork !== null,
+                  } : undefined, {
                     onSuccess: (result) => {
                       if (result?.inLibrary) showAddedToLibrary(result.novel.id);
                     },

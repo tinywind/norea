@@ -72,7 +72,14 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   const succeeded = new Set(results.filter(result => result.status === "succeeded").map(result => result.id));
   const defaultLabel = request.kind === "library" ? "contentDeletion.unregister" : fromServer
     ? request.kind === "server-work" ? "contentDeletion.serverWork" : "contentDeletion.serverChapters" : "contentDeletion.localDownloads";
-  return <Modal opened onClose={close} title={t("contentDeletion.title")} centered zIndex={400}
+  const unshelve = request.kind === "library";
+  const localOption = request.kind === "library" && request.downloadedCount !== undefined
+    ? request.downloadedCount > 0 ? t("contentDeletion.alsoDeleteDownloads", { count: request.downloadedCount }) : null
+    : t(request.kind === "server-work" ? "contentDeletion.localWork" : "contentDeletion.localDownloads");
+  const serverOption = !fromServer && serverUrl && !(request.kind === "library" && request.serverWork === false)
+    ? t(request.kind === "library" ? "contentDeletion.alsoDeleteFromServer" : "contentDeletion.serverChapters")
+    : null;
+  return <Modal opened onClose={close} title={t(unshelve ? "contentDeletion.unshelveTitle" : "contentDeletion.title")} centered zIndex={400}
     closeOnClickOutside={!busy} closeOnEscape={!busy} withCloseButton={!busy}>
     <Stack>
       <Text fw={600}>{request.title}</Text>
@@ -81,15 +88,14 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
         : request.kind === "downloads" && request.scope === "all" ? t("contentDeletion.allDownloads")
         : t(request.kind === "downloads" && request.scope === "chapter" ? "contentDeletion.chapterCount" : "contentDeletion.workCount", { count: new Set(request.ids).size })}</Text>
       {busy ? <Text size="sm" role="status">{t("contentDeletion.waiting")}</Text> : null}
-      <Text size="sm" c="dimmed">{t("contentDeletion.hint")}</Text>
-      <Checkbox checked disabled label={t(defaultLabel)} />
-      {request.kind === "library" || fromServer ? <Checkbox checked={options.local} disabled={busy || actions !== null}
+      <Text size="sm">{t(defaultLabel)}</Text>
+      {unshelve ? null : <Text size="sm" c="dimmed">{t("contentDeletion.hint")}</Text>}
+      {(request.kind === "library" || fromServer) && localOption ? <Checkbox checked={options.local} disabled={busy || actions !== null}
         onChange={event => { const checked = event.currentTarget.checked; setOptions(current => ({ ...current, local: checked })); }}
-        label={t(request.kind === "server-work" ? "contentDeletion.localWork" : "contentDeletion.localDownloads")} /> : null}
-      {!fromServer ? <Checkbox checked={options.server} disabled={busy || actions !== null || !serverUrl}
+        label={localOption} /> : null}
+      {serverOption ? <Checkbox checked={options.server} disabled={busy || actions !== null}
         onChange={event => { const checked = event.currentTarget.checked; setOptions(current => ({ ...current, server: checked })); }}
-        label={t(request.kind === "library" ? "contentDeletion.serverWork" : "contentDeletion.serverChapters")} /> : null}
-      {serverUrl ? <Text size="xs" c="dimmed" className="norea-server-address">{serverUrl}</Text> : <Text size="xs" c="dimmed">{t("contentSync.notConfigured")}</Text>}
+        label={serverOption} /> : null}
       {request.kind === "server-work" && options.local ? <Alert color="warn">{t("contentDeletion.localWorkHint")}</Alert> : null}
       {actions ? <Stack gap="xs" aria-live="polite">
         {(["library", "device", "server"] as const).map(side => {
@@ -107,7 +113,7 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
       {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
       <Group justify="flex-end">
         <TextButton disabled={busy} onClick={close}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
-        <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : "contentDeletion.confirm")}</TextButton>
+        <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</TextButton>
       </Group>
     </Stack>
   </Modal>;
