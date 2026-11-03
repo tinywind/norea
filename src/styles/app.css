@@ -34,26 +34,8 @@
   --norea-page-max-width: 73.75rem;
   --norea-page-gutter: clamp(1rem, 3vw, 2rem);
   --norea-page-block: clamp(1.125rem, 3vw, 2.25rem);
-  --norea-border-radius: 0.3125rem;
-  --norea-design-bg: #fbfbfa;
-  --norea-design-surface: #ffffff;
-  --norea-design-panel: #f4f4f2;
-  --norea-design-ink: #1a1a18;
-  --norea-design-ink-muted: #4a4a47;
-  --norea-design-ink-subtle: #8a8a85;
-  --norea-design-rule: #e8e8e4;
-  --norea-design-rule-strong: #d4d4ce;
-  --norea-design-accent: #3d6e58;
-  --norea-design-on-accent: #ffffff;
-  --norea-design-accent-soft: rgba(61, 110, 88, 0.1);
-  --norea-design-warn: #9a6a1a;
-  --norea-design-warn-soft: rgba(154, 106, 26, 0.08);
-  --norea-design-error: #c44a3a;
-  --norea-design-ok: #3a7a4a;
-  --norea-design-shadow-floating: 0 0.5rem 1.25rem rgba(15, 23, 42, 0.14);
   --norea-font-ui: "Pretendard Variable", Pretendard, system-ui, -apple-system,
     "Segoe UI", "Malgun Gothic", Roboto, "Noto Sans KR", sans-serif;
-  --norea-font-meta: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
   --norea-focus-ring: 0 0 0 0.125rem var(--norea-color-bg), 0 0 0 0.25rem var(--norea-color-focus);
 }
 

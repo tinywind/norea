@@ -196,10 +196,7 @@ export function resolvePaletteRoles(
   };
 }
 
-/**
- * CSS custom properties for the roles, including the `--norea-design-*`
- * aliases that stay until every stylesheet reads the role names directly.
- */
+/** CSS custom properties for the roles. */
 export function paletteRoleCssVariables(
   roles: PaletteRoles,
 ): Record<string, string> {
@@ -219,22 +216,6 @@ export function paletteRoleCssVariables(
     "--norea-color-selected": roles.selected,
     "--norea-color-focus": roles.focus,
     "--norea-shadow-floating": roles.shadowFloating,
-    "--norea-design-bg": roles.bg,
-    "--norea-design-surface": roles.surface,
-    "--norea-design-panel": roles.surfaceRaised,
-    "--norea-design-ink": roles.ink,
-    "--norea-design-ink-muted": roles.inkMuted,
-    "--norea-design-ink-subtle": roles.iconSubtle,
-    "--norea-design-rule": roles.rule,
-    "--norea-design-rule-strong": roles.ruleStrong,
-    "--norea-design-accent": roles.accent,
-    "--norea-design-on-accent": roles.onAccent,
-    "--norea-design-accent-soft": roles.accentSoft,
-    "--norea-design-warn": roles.warn.color,
-    "--norea-design-warn-soft": roles.warn.soft,
-    "--norea-design-error": roles.danger.color,
-    "--norea-design-ok": roles.ok.color,
-    "--norea-design-shadow-floating": roles.shadowFloating,
   };
   for (const name of STATUS_ROLE_NAMES) {
     variables[`--norea-color-${name}`] = roles[name].color;

@@ -152,12 +152,12 @@ describe("resolvePaletteRoles accents", () => {
 });
 
 describe("paletteRoleCssVariables", () => {
-  it("keeps the legacy design aliases on the role values", () => {
+  it("writes each role under its --norea-color-* name", () => {
     const roles = resolveCase("lavender", "dark", {});
     const variables = paletteRoleCssVariables(roles);
-    expect(variables["--norea-design-ink-muted"]).toBe(roles.inkMuted);
-    expect(variables["--norea-design-panel"]).toBe(roles.surfaceRaised);
-    expect(variables["--norea-design-error"]).toBe(roles.danger.color);
+    expect(variables["--norea-color-ink-muted"]).toBe(roles.inkMuted);
+    expect(variables["--norea-color-surface-raised"]).toBe(roles.surfaceRaised);
+    expect(variables["--norea-color-danger"]).toBe(roles.danger.color);
     expect(variables["--norea-color-on-warn-soft"]).toBe(roles.warn.onSoft);
   });
 });

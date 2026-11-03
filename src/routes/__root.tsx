@@ -590,8 +590,8 @@ export function RootLayout() {
         className="norea-app-main"
         data-reader-full-page={readerFullPageActive}
         style={{
-          background: "var(--norea-design-bg)",
-          color: "var(--norea-design-ink)",
+          background: "var(--norea-color-bg)",
+          color: "var(--norea-color-ink)",
           padding: readerFullPageActive ? 0 : undefined,
         }}
       >
