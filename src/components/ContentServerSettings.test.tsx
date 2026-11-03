@@ -6,10 +6,15 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(), navigate: vi.fn(), sync: vi.fn(), invalidate: vi.fn(),
   defaultName: "TB320FC" as string | undefined, refetchName: vi.fn(),
   stateIndex: 0,
+  stateSlots: [] as unknown[],
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
-  useState: (initial: unknown) => [mocks.stateIndex++ === 0 ? "http://new-server" : initial, vi.fn()],
+  useState: (initial: unknown) => {
+    const index = mocks.stateIndex++;
+    if (!(index in mocks.stateSlots)) mocks.stateSlots[index] = index === 0 ? "http://new-server" : initial;
+    return [mocks.stateSlots[index], (value: unknown) => { mocks.stateSlots[index] = value; }];
+  },
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: mocks.invalidate }),
@@ -22,7 +27,7 @@ vi.mock("../lib/content-sync/sync", () => ({ syncContentServer: mocks.sync }));
 
 import { ContentServerSettings } from "./ContentServerSettings";
 
-interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number | string) => void; value?: unknown; disabled?: boolean; "aria-label"?: string }
+interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number | string) => void; onBlur?: () => void; value?: unknown; disabled?: boolean; "aria-label"?: string }
 function controls(node: ReactNode): ReactElement<ControlProps>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -31,7 +36,7 @@ function controls(node: ReactNode): ReactElement<ControlProps>[] {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.stateIndex = 0;
+  vi.clearAllMocks(); mocks.stateIndex = 0; mocks.stateSlots = [];
   mocks.defaultName = "TB320FC";
   mocks.refetchName.mockResolvedValue({ data: "TB320FC" });
   mocks.state = { serverUrl: "http://server", deviceName: "Phone", syncMode: "manual", syncIntervalMinutes: 15,
@@ -90,4 +95,25 @@ it("keeps connection editing and server browsing available during background syn
   expect(elements.find(element => element.props["aria-label"] === "contentSync.deviceName")!.props.disabled).toBe(false);
   elements.find(element => element.props.children === "contentSync.browse")!.props.onClick!();
   expect(mocks.navigate).toHaveBeenCalledWith({ to: "/browse", search: { q: "", tab: "server" } });
+});
+
+it("keeps spaces while typing a device name and saves the trimmed name on blur", () => {
+  mocks.state.deviceName = "";
+  const deviceNameField = () => {
+    mocks.stateIndex = 0;
+    return controls(ContentServerSettings()).find(element => element.props["aria-label"] === "contentSync.deviceName")!;
+  };
+  const typeValue = (value: string) => {
+    const onChange = deviceNameField().props.onChange as unknown as (event: { currentTarget: { value: string } }) => void;
+    onChange({ currentTarget: { value } });
+  };
+  typeValue("");
+  expect(deviceNameField().props.value).toBe("");
+  for (const value of ["M", "My", "My ", "My P", "My Ph", "My Pho", "My Phon", "My Phone", "My Phone "]) {
+    typeValue(value);
+    expect(deviceNameField().props.value).toBe(value);
+  }
+  expect(mocks.state.setDeviceName).not.toHaveBeenCalled();
+  deviceNameField().props.onBlur!();
+  expect(mocks.state.setDeviceName).toHaveBeenCalledWith("My Phone");
 });

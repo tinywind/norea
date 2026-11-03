@@ -39,6 +39,7 @@ export function ContentServerSettings() {
   const setSyncIntervalMinutes = useContentSyncStore((state) => state.setSyncIntervalMinutes);
   const setLookupTimeoutSeconds = useContentSyncStore((state) => state.setLookupTimeoutSeconds);
   const [urlDraft, setUrlDraft] = useState(serverUrl);
+  const [deviceNameDraft, setDeviceNameDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const disabled = busy;
@@ -80,11 +81,17 @@ export function ContentServerSettings() {
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.deviceName")}>
         <div className="norea-settings-connection">
-          <TextInput aria-label={t("contentSync.deviceName")} value={deviceName || defaultDeviceName.data || ""}
-            disabled={disabled} onChange={(event) => setDeviceName(event.currentTarget.value)} />
+          <TextInput aria-label={t("contentSync.deviceName")} value={deviceNameDraft ?? (deviceName || defaultDeviceName.data || "")}
+            disabled={disabled} onChange={(event) => setDeviceNameDraft(event.currentTarget.value)}
+            onBlur={() => {
+              if (deviceNameDraft === null) return;
+              setDeviceName(deviceNameDraft.trim());
+              setDeviceNameDraft(null);
+            }} />
           <TextButton aria-label={t("contentSync.resetDeviceName")} disabled={disabled} onClick={() => {
             void run(async () => {
               await defaultDeviceName.refetch({ throwOnError: true });
+              setDeviceNameDraft(null);
               setDeviceName("");
             });
           }}>{t("common.reset")}</TextButton>
